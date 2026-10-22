@@ -168,6 +168,8 @@ pub struct App {
     close_requested: bool,
     show_layers: bool,
     show_hydro: bool,
+    /// Cursor position on the active viewport's focal plane, for the status bar.
+    cursor_world: Option<Vec3>,
     /// Geometry changed since the hydrostatics were last computed.
     hydro_dirty: bool,
     hydro: HydroState,
@@ -222,6 +224,7 @@ impl App {
             close_requested: false,
             show_layers: true,
             show_hydro: true,
+            cursor_world: None,
             hydro_dirty: true,
             hydro: HydroState::new(),
             viewport_rects: [egui::Rect::NOTHING; 4],
@@ -279,6 +282,7 @@ impl App {
         self.hydro.hull_revision = u64::MAX;
         self.hydro_dirty = true;
         self.hydro.last_edit = Some(std::time::Instant::now());
+        self.cursor_world = None;
         if let Some(s) = &self.surface {
             let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
             self.hydro.options = HydroOptions::from_surface(s, subdiv);
@@ -325,8 +329,22 @@ impl App {
                     ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), "● unsaved");
                 }
                 ui.label(&self.status);
+                ui.separator();
+                ui.small(format!(
+                    "L{} {} · {} pts · {} faces",
+                    self.level,
+                    match self.mode {
+                        SubdivisionMode::Loop => "Loop",
+                        SubdivisionMode::CatmullClark => "Catmull-Clark",
+                    },
+                    self.control_point_count(),
+                    self.face_count()
+                ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("v{}", seacraft_core::VERSION));
+                    if let Some(p) = self.cursor_world {
+                        ui.monospace(format!("x {:.2}  y {:.2}  z {:.2}", p.x, p.y, p.z));
+                    }
                 });
             });
         });
@@ -434,6 +452,9 @@ impl App {
         if frame {
             self.reset_cameras();
         }
+        if ui.input(|i| i.key_pressed(egui::Key::Space)) {
+            self.display.shaded = !self.display.shaded;
+        }
         for (i, key) in [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4]
             .into_iter()
             .enumerate()
@@ -502,6 +523,20 @@ impl App {
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
+                    ui.separator();
+                    let mut level = self.level as u32;
+                    if ui.add(egui::Slider::new(&mut level, 0..=5).text("subdivision level")).changed() {
+                        self.level = level as u8;
+                    }
+                    egui::ComboBox::from_label("mode")
+                        .selected_text(match self.mode {
+                            SubdivisionMode::Loop => "Loop",
+                            SubdivisionMode::CatmullClark => "Catmull-Clark",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.mode, SubdivisionMode::Loop, "Loop");
+                            ui.selectable_value(&mut self.mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
+                        });
                     ui.separator();
                     if ui.button("Reset cameras (F)").clicked() {
                         self.reset_cameras();
@@ -829,6 +864,15 @@ impl App {
             if response.clicked() {
                 self.active = index;
                 self.selected = self.pick_at(ui, &view, cell);
+            }
+            if self.active == index && response.hovered() {
+                if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
+                    let center = self.cache.as_ref().map_or(Vec3::ZERO, |c| (c.min + c.max) * 0.5);
+                    let plane = picking::drag_plane(&view, center);
+                    self.cursor_world = picking::ray_plane(&view.ray(cursor, cell), &plane);
+                }
+            } else if self.active == index {
+                self.cursor_world = None;
             }
 
             if let (Some(surface), Some(cache)) = (&self.surface, &self.cache) {
