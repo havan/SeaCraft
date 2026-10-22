@@ -48,7 +48,7 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{curves, demo, export, fef, linesplan, offsets, raster, topology};
+use seacraft_core::{curves, demo, export, fef, linesplan, offsets, planing, raster, resistance, topology};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -82,7 +82,7 @@ net and its layers, extents and principal dimensions; `load_hull` {path} or {dem
 `hydro_compute` {draft, trim, heel_deg, kg, free_trim, lcg} for one floating condition (free_trim solves the trim \
 that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
 for the section area at each station against a range of drafts; `table_of_offsets` for the drawing-office \
-half-breadth and buttock tables; `move_point` and \
+half-breadth and buttock tables; `resistance_curve` and `planing_curve` for power; `move_point` and \
 `set_crease`, `split_face` and `insert_edge` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
 look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
 
@@ -391,6 +391,8 @@ impl McpServer {
             "stability_cross_curves" => self.stability_curves(a),
             "bonjean_curves" => self.bonjean_curves(a),
             "table_of_offsets" => self.table_of_offsets(a),
+            "resistance_curve" => self.resistance_curve(a),
+            "planing_curve" => self.planing_curve(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -813,6 +815,102 @@ impl McpServer {
             o.insert("max_half_breadth_m".into(), json!(table.max_half_breadth()));
         }
         Ok(v)
+    }
+
+    fn resistance_curve(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let mut opts = self.opts.clone();
+        opts.subdivision.level = level;
+        if let Some(d) = number_arg(a, "draft") {
+            if !(d.is_finite() && d > 0.0) {
+                return Err("resistance_curve: `draft` must be positive".into());
+            }
+            opts.draft = d;
+        }
+        let hull = hydro::Hull::new(&self.surface, opts.subdivision);
+        let mut input = resistance::HoltropInput::measure(&hull, &opts)
+            .ok_or("resistance_curve: cannot measure the hull (a positive draft and a waterline are needed)")?;
+        if let Some(v) = number_arg(a, "cstern") {
+            if v.abs() > 25.0 {
+                return Err("resistance_curve: `cstern` must be -25 to 25".into());
+            }
+            input.c_stern = v;
+        }
+        input.bulb_area_m2 = number_arg(a, "bulb_area").unwrap_or(0.0).max(0.0);
+        input.bulb_centre_z = number_arg(a, "bulb_z").unwrap_or(0.0).max(0.0);
+        let speeds = match a.get("speeds") {
+            Some(v) => positives(v, "speeds")?,
+            None => vec![6.0, 8.0, 10.0, 12.0, 14.0],
+        };
+        let rows = resistance::curve(&input, &speeds);
+        let diameter = number_arg(a, "propeller_diameter").unwrap_or(0.0).max(0.0);
+        let propulsion: Vec<resistance::Propulsion> = if diameter > 0.0 {
+            let propeller = resistance::Propeller {
+                diameter_m: diameter,
+                expanded_area_ratio: number_arg(a, "expanded_area").unwrap_or(0.70),
+                open_water_efficiency: number_arg(a, "eta_o").unwrap_or(0.60),
+            };
+            rows.iter()
+                .map(|r| {
+                    let mut per_speed = input.clone();
+                    per_speed.viscous_coefficient = r.viscous_coefficient;
+                    per_speed.propulsion(&propeller)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Ok(json!({
+            "backend": "headless",
+            "input": input,
+            "warnings": input.warnings(),
+            "speeds": rows,
+            "propulsion": propulsion,
+        }))
+    }
+
+    fn planing_curve(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let mut opts = self.opts.clone();
+        opts.subdivision.level = level;
+        if let Some(d) = number_arg(a, "draft") {
+            if !(d.is_finite() && d > 0.0) {
+                return Err("planing_curve: `draft` must be positive".into());
+            }
+            opts.draft = d;
+        }
+        let setup = planing::setup(
+            &self.surface,
+            opts.subdivision,
+            &opts,
+            number_arg(a, "beam"),
+            number_arg(a, "lcg_x"),
+            number_arg(a, "deadrise"),
+        )
+        .map_err(|e| format!("planing_curve: {e}"))?;
+        let speeds = match a.get("speeds") {
+            Some(v) => positives(v, "speeds")?,
+            None => vec![20.0, 25.0, 30.0],
+        };
+        let rows = planing::planing_curve(&setup.hull, &speeds);
+        if rows.is_empty() {
+            return Err(format!(
+                "planing_curve: no planing equilibrium between {} and {} kn",
+                speeds.first().copied().unwrap_or(0.0),
+                speeds.last().copied().unwrap_or(0.0)
+            ));
+        }
+        Ok(json!({
+            "backend": "headless",
+            "setup": setup,
+            "speeds": rows,
+        }))
     }
 
     fn export_linesplan(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
@@ -1276,6 +1374,49 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "resistance_curve",
+            "Resistance curve",
+            "Holtrop-Mennen still-water resistance over a speed sweep: RT, its components, the whole \
+             resistance coefficient set and the wave branch used at each speed. Give `propeller_diameter` to \
+             also get the wake fraction, thrust deduction and the power chain to shaft power. Everything is \
+             measured on the refined mesh; the method's own ranges are reported as `warnings`.",
+            obj(
+                json!({
+                    "draft": number("Draft in metres (default: the model's design draft)"),
+                    "speeds": {"type": "array", "items": {"type": "number"}, "description": "Speeds in knots (default 6,8,10,12,14)"},
+                    "cstern": number("Holtrop stern parameter, -10 to +10 (default 0)"),
+                    "bulb_area": number("Immersed bulbous-bow area in m2 (default 0)"),
+                    "bulb_z": number("Height of the bulb centre above the keel, m"),
+                    "propeller_diameter": number("Propeller diameter in metres; enables the power chain"),
+                    "expanded_area": number("Propeller expanded area ratio AE/A0 (default 0.70)"),
+                    "eta_o": number("Open-water efficiency from an open-water chart (default 0.60)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            true,
+        ),
+        tool(
+            "planing_curve",
+            "Planing curve",
+            "Savitsky planing resistance over a speed sweep: trim, mean wetted length, wetted length in metres, \
+             centre of pressure over beam, drag and effective power, with the trim solved so the pressure centre \
+             sits under the CG. Weight comes from the hydrostatics at `draft`, the CG defaults to the LCB and \
+             `deadrise` to the transom section's keel tangent. Speeds where the hull does not plane are omitted.",
+            obj(
+                json!({
+                    "draft": number("Draft the displacement is taken at (default: the model's)"),
+                    "speeds": {"type": "array", "items": {"type": "number"}, "description": "Speeds in knots (default 20,25,30)"},
+                    "beam": number("Planing beam in metres (default: the waterline beam)"),
+                    "lcg_x": number("Centre of gravity in model x (default: the LCB)"),
+                    "deadrise": number("Deadrise at the transom in degrees (default: measured)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            true,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1408,6 +1549,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `insert_edge` -> `model.insert_edge`, `hydro_compute` -> `hydro.compute`,
 /// `stability_cross_curves` -> `stability.cross_curves`,
 /// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
+/// `resistance_curve` -> `resistance.compute`, `planing_curve` -> `planing.compute`,
 /// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
@@ -1573,6 +1715,8 @@ impl Remote {
             }
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
+            "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
+            "planing_curve" => self.request("planing.compute", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -1768,7 +1912,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the thirteen hull tools, each with a JSON Schema.
+        // tools/list: the fifteen hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -1786,6 +1930,8 @@ mod tests {
                 "stability_cross_curves",
                 "bonjean_curves",
                 "table_of_offsets",
+                "resistance_curve",
+                "planing_curve",
                 "export_linesplan",
                 "render_png",
             ]
@@ -2060,6 +2206,43 @@ mod tests {
         let text = std::fs::read_to_string(&svg).expect("the SVG was written");
         assert!(text.starts_with("<?xml") || text.contains("<svg"), "an SVG");
         let _ = std::fs::remove_file(&svg);
+
+        // resistance_curve: PE = RT·V, the branch is reported, and the power
+        // chain closes when a propeller is given.
+        let curve = ok(
+            &mut s,
+            78,
+            "resistance_curve",
+            json!({"draft": 0.62, "speeds": [8.0, 12.0], "propeller_diameter": 0.45}),
+        );
+        let points = curve["speeds"].as_array().expect("speeds");
+        assert_eq!(points.len(), 2, "{curve}");
+        for p in points {
+            let rt = p["rt_n"].as_f64().unwrap_or(0.0);
+            let pe = p["pe_w"].as_f64().unwrap_or(0.0);
+            let v = p["speed_m_s"].as_f64().unwrap_or(0.0);
+            assert!((pe - rt * v).abs() < 1e-6, "{p}");
+            assert!(rt > 0.0 && p["wave_branch"].is_string(), "{p}");
+        }
+        assert_eq!(curve["propulsion"].as_array().map(Vec::len), Some(2), "{curve}");
+        assert!(curve["propulsion"][0]["wake_fraction"].as_f64().is_some(), "{curve}");
+        // planing_curve: the trim equilibrium is pinned by the pressure centre.
+        let plan = ok(
+            &mut s,
+            79,
+            "planing_curve",
+            json!({"speeds": [20.0, 25.0], "deadrise": 15.0}),
+        );
+        let rows = plan["speeds"].as_array().expect("speeds");
+        assert_eq!(rows.len(), 2, "{plan}");
+        for r in rows {
+            let lcp = r["lcp_over_b"].as_f64().unwrap_or(0.0);
+            let lcg = plan["setup"]["hull"]["lcg_from_transom_m"].as_f64().unwrap_or(0.0)
+                / plan["setup"]["hull"]["beam_m"].as_f64().unwrap_or(1.0);
+            assert!((lcp - lcg).abs() < 1e-3, "LCP/b {lcp} against LCG/b {lcg}: {r}");
+            assert!(r["trim_deg"].as_f64().unwrap_or(0.0) > 1.0, "{r}");
+            assert!(r["resistance_n"].as_f64().unwrap_or(0.0) > 0.0);
+        }
 
         // save_hull then load_hull round-trips the control net.
         let fef = temp_path("fef");

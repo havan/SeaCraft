@@ -83,6 +83,76 @@ pub struct PlaningPoint {
     pub trim_residual: f64,
 }
 
+
+/// A planing hull derived from the model, plus where its numbers came from.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PlaningSetup {
+    pub hull: PlaningHull,
+    /// Centre of gravity in model `x`.
+    pub lcg_x: f64,
+    /// Deadrise measured from the transom section, when the model gave one.
+    pub deadrise_measured: Option<f64>,
+    pub draft: f64,
+    pub weight_n: f64,
+}
+
+/// Build a [`PlaningHull`] from a model: weight from the hydrostatics at the
+/// design draft, beam from the waterline, the CG at the LCB unless given, and
+/// the deadrise measured at the transom unless given.
+///
+/// One implementation so the CLI, the control socket and the MCP server cannot
+/// disagree about what "the hull's planing parameters" are.
+pub fn setup(
+    surface: &crate::Surface,
+    subdiv: crate::subdiv::SubdivisionOptions,
+    opts: &crate::hydro::HydroOptions,
+    beam: Option<f64>,
+    lcg_x: Option<f64>,
+    deadrise_deg: Option<f64>,
+) -> Result<PlaningSetup, String> {
+    let hull = crate::hydro::Hull::new(surface, subdiv);
+    let h = hull.hydrostatics(opts);
+    if h.volume_m3 <= 0.0 || !h.volume_m3.is_finite() {
+        return Err(format!("the hull displaces nothing at T = {:.3} m", opts.draft));
+    }
+    let weight_n = h.displacement_kg * G;
+    let beam_m = beam.unwrap_or(h.bwl);
+    if beam_m <= 0.0 {
+        return Err("the planing beam is zero; give one".to_string());
+    }
+    let x_aft = h.model_min.x.max(hull.model_min.x);
+    let lcg = lcg_x.unwrap_or(h.lcb.x);
+    // Deadrise: the tangent at the keel of the transom section.
+    let measured = {
+        let (_, polys) = crate::curves::station_polygons(&hull, x_aft + 0.02 * h.lwl.max(0.1));
+        let pts: Vec<(f64, f64)> = polys
+            .iter()
+            .flat_map(|p| p.iter())
+            .filter(|p| p.y >= -1e-9)
+            .map(|p| (p.y, p.z))
+            .collect();
+        deadrise_from_section(&pts)
+    };
+    Ok(PlaningSetup {
+        hull: PlaningHull {
+            displacement_n: weight_n,
+            beam_m,
+            lcg_from_transom_m: lcg - x_aft,
+            deadrise_deg: deadrise_deg.or(measured).unwrap_or(12.0),
+            water_density: opts.water_density,
+            viscosity: if (opts.water_density - 1000.0).abs() < 25.0 {
+                crate::resistance::VISCOSITY_FRESH_WATER
+            } else {
+                crate::resistance::VISCOSITY_SEA_WATER
+            },
+        },
+        lcg_x: lcg,
+        deadrise_measured: measured,
+        draft: opts.draft,
+        weight_n,
+    })
+}
+
 /// `λ` from the lift equation at a given trim, or `None` when no wetted length
 /// between 0.05 and 20 beams can carry the lift.
 fn lambda_for_trim(hull: &PlaningHull, cv: f64, cl0: f64, trim_deg: f64) -> Option<f64> {

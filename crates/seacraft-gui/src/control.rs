@@ -933,6 +933,74 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "max_half_breadth_m": table.max_half_breadth(),
             }))
         }
+        "resistance.compute" => {
+            // Read-only: the resistance model measures, it does not edit.
+            let mut opts = app.hydro_options().clone();
+            if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
+                opts.draft = d;
+            }
+            let surface = app.surface().ok_or_else(|| "resistance.compute: no model is loaded".to_string())?;
+            let hull = seacraft_core::hydro::Hull::new(surface, opts.subdivision);
+            let mut input = seacraft_core::resistance::HoltropInput::measure(&hull, &opts)
+                .ok_or("resistance.compute: cannot measure the hull")?;
+            input.c_stern = number(p, "cstern")?.unwrap_or(0.0);
+            input.bulb_area_m2 = number(p, "bulb_area")?.unwrap_or(0.0).max(0.0);
+            input.bulb_centre_z = number(p, "bulb_z")?.unwrap_or(0.0).max(0.0);
+            let speeds = match numbers(p, "speeds")? {
+                Some(v) if !v.is_empty() => v,
+                _ => vec![6.0, 8.0, 10.0, 12.0, 14.0],
+            };
+            let rows = seacraft_core::resistance::curve(&input, &speeds);
+            let diameter = number(p, "propeller_diameter")?.unwrap_or(0.0).max(0.0);
+            let propulsion: Vec<seacraft_core::resistance::Propulsion> = if diameter > 0.0 {
+                let propeller = seacraft_core::resistance::Propeller {
+                    diameter_m: diameter,
+                    expanded_area_ratio: number(p, "expanded_area")?.unwrap_or(0.70),
+                    open_water_efficiency: number(p, "eta_o")?.unwrap_or(0.60),
+                };
+                rows.iter()
+                    .map(|r| {
+                        let mut per_speed = input.clone();
+                        per_speed.viscous_coefficient = r.viscous_coefficient;
+                        per_speed.propulsion(&propeller)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            Ok(json!({
+                "backend": "app",
+                "input": input,
+                "warnings": input.warnings(),
+                "speeds": rows,
+                "propulsion": propulsion,
+            }))
+        }
+        "planing.compute" => {
+            let mut opts = app.hydro_options().clone();
+            if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
+                opts.draft = d;
+            }
+            let surface = app.surface().ok_or_else(|| "planing.compute: no model is loaded".to_string())?;
+            let setup = seacraft_core::planing::setup(
+                surface,
+                opts.subdivision,
+                &opts,
+                number(p, "beam")?,
+                number(p, "lcg_x")?,
+                number(p, "deadrise")?,
+            )
+            .map_err(|e| format!("planing.compute: {e}"))?;
+            let speeds = match numbers(p, "speeds")? {
+                Some(v) if !v.is_empty() => v,
+                _ => vec![20.0, 25.0, 30.0],
+            };
+            let rows = seacraft_core::planing::planing_curve(&setup.hull, &speeds);
+            if rows.is_empty() {
+                return Err("planing.compute: no planing equilibrium at those speeds".into());
+            }
+            Ok(json!({ "backend": "app", "setup": setup, "speeds": rows }))
+        }
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -1349,6 +1417,28 @@ mod tests {
         );
         assert_eq!(call(&mut app, &ctx, "model.split_face", json!({ "face": 10_000 }))["ok"], false);
         assert_eq!(call(&mut app, &ctx, "model.split_face", json!({}))["ok"], false);
+
+        // ---- resistance.compute / planing.compute: read-only power ---------
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.62, "speeds": [8.0, 12.0], "propeller_diameter": 0.45 }));
+        assert_eq!(r["ok"], true, "{r}");
+        let pts = r["result"]["speeds"].as_array().expect("speeds");
+        assert_eq!(pts.len(), 2, "{r}");
+        assert!((pts[0]["pe_w"].as_f64().unwrap_or(0.0) - pts[0]["rt_n"].as_f64().unwrap_or(0.0) * pts[0]["speed_m_s"].as_f64().unwrap_or(0.0)).abs() < 1e-6);
+        assert_eq!(r["result"]["propulsion"].as_array().map(Vec::len), Some(2), "{r}");
+        let p = call(&mut app, &ctx, "planing.compute", json!({ "speeds": [20.0], "deadrise": 15.0 }));
+        assert_eq!(p["ok"], true, "{p}");
+        let row = &p["result"]["speeds"][0];
+        let lcp = row["lcp_over_b"].as_f64().unwrap_or(0.0);
+        let lcg = p["result"]["setup"]["hull"]["lcg_from_transom_m"].as_f64().unwrap_or(0.0)
+            / p["result"]["setup"]["hull"]["beam_m"].as_f64().unwrap_or(1.0);
+        assert!((lcp - lcg).abs() < 1e-3, "LCP/b {lcp} against LCG/b {lcg}");
+        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
+        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        // Unknown keys are ignored by the control channel; a bad *value* is not.
+        assert_eq!(call(&mut app, &ctx, "planing.compute", json!({ "draft": -1.0 }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.0 }))["ok"], false);
 
         // ---- curves.offsets: the same table from the app's model ----------
         let dirty_before = app.is_dirty();

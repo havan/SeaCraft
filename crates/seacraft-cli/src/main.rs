@@ -1533,42 +1533,15 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
     if let Some(d) = a.draft {
         opts.draft = d;
     }
-    let hull = seacraft_core::hydro::Hull::new(&s, subdiv);
-    let h = hull.hydrostatics(&opts);
-    if h.volume_m3 <= 0.0 {
-        bail!("the hull displaces nothing at T = {:.3} m", opts.draft);
-    }
-    let weight_n = h.displacement_kg * 9.80665;
-    let beam = a.beam.unwrap_or(h.bwl);
-    // Longitudinal position of the CG: the LCB is the natural default, and the
-    // method wants it from the transom.
-    let x_aft = h.model_min.x.max(hull.model_min.x);
-    let lcg_x = a.lcg_x.unwrap_or(h.lcb.x);
-    let lcg_from_transom = lcg_x - x_aft;
-    // Deadrise: measure the transom section unless the caller knows it.
-    let measured = {
-        let (_, polys) = curves::station_polygons(&hull, x_aft + 0.02 * h.lwl.max(0.1));
-        let pts: Vec<(f64, f64)> = polys
-            .iter()
-            .flat_map(|p| p.iter())
-            .filter(|p| p.y >= -1e-9)
-            .map(|p| (p.y, p.z))
-            .collect();
-        planing::deadrise_from_section(&pts)
-    };
-    let deadrise = a.deadrise.or(measured).unwrap_or(12.0);
-    let sail = planing::PlaningHull {
-        displacement_n: weight_n,
-        beam_m: beam,
-        lcg_from_transom_m: lcg_from_transom,
-        deadrise_deg: deadrise,
-        water_density: opts.water_density,
-        viscosity: if (opts.water_density - 1000.0).abs() < 25.0 {
-            resistance::VISCOSITY_FRESH_WATER
-        } else {
-            resistance::VISCOSITY_SEA_WATER
-        },
-    };
+    let setup = planing::setup(&s, subdiv, &opts, a.beam, a.lcg_x, a.deadrise)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let sail = setup.hull;
+    let measured = setup.deadrise_measured;
+    let lcg_x = setup.lcg_x;
+    let weight_n = setup.weight_n;
+    let beam = sail.beam_m;
+    let deadrise = sail.deadrise_deg;
+    let lcg_from_transom = sail.lcg_from_transom_m;
     let speeds = parse_ordinates(&a.speeds, "speeds")?;
     let curve = planing::planing_curve(&sail, &speeds);
     if curve.is_empty() {
