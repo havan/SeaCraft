@@ -34,6 +34,7 @@ pub mod math;
 pub mod mesh;
 pub mod offsets;
 pub mod raster;
+pub mod resistance;
 pub mod stability;
 pub mod subdiv;
 pub mod threemf;

@@ -141,6 +141,15 @@ symmetry and its ground line; a mirror reverses every face's winding, because a
 reflection would otherwise turn the outward normals inward and measure the
 displacement negative.
 
+`resistance` implements Holtrop–Mennen (1984) still-water resistance:
+`RT = RF(1+k1) + RAPP + RW + RB + RTR + RA` on the ITTC-57 friction line, with
+`PE = RT·V` and no propeller model, so it reports the power the hull needs
+rather than the power the engine delivers. Everything the method takes from the
+hull form — `LWL`, `BWL`, `CB`, `Cp`, `Cm`, `LCB` as a percentage of the length,
+the wetted surface, the immersed transom and the half-angle of entrance `iE` —
+is measured on the refined mesh. `seacraft resistance` prints the breakdown and
+warns when the hull falls outside the ranges the method was fitted to.
+
 `offsets::table_of_offsets` produces the drawing-office table — half-breadths
 at stations x waterlines and buttock heights at stations x buttocks — as a
 terminal table, long-format CSV, JSON or a standalone HTML page
@@ -231,6 +240,8 @@ seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks 
                               [--csv out.csv] [--html offsets.html] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
+seacraft resistance hull.fef [--speeds 6,8,10,12] [--draft T] [--cstern X]
+                              [--appendage-area m2] [--bulb-area m2] [--csv out.csv] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
@@ -323,7 +334,8 @@ cursor position on the active viewport's focal plane and the crate version.
   `stability_cross_curves`, `bonjean_curves`, `table_of_offsets`,
   `export_linesplan` and `render_png`.
 * Not yet implemented: developability/unfolding, Lackenby
-  transformation, resistance and propulsion prediction (Holtrop–Mennen / Savitsky),
+  transformation, propulsion (propeller, wake fraction) and the Savitsky
+  planing method,
   VRML import, and interactive face/edge splitting or extrusion in the GUI.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.

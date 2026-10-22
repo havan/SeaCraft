@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    offsets, raster, transform,
+    offsets, raster, resistance, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -49,6 +49,8 @@ enum Command {
     Offsets(OffsetsArgs),
     /// Scale to target main dimensions, translate or mirror the control net
     Transform(TransformArgs),
+    /// Still-water resistance and effective power (Holtrop-Mennen 1984)
+    Resistance(ResistanceArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -362,6 +364,41 @@ enum MirrorArg {
 }
 
 #[derive(Args, Debug)]
+struct ResistanceArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Speeds in knots, comma separated
+    #[arg(long, default_value = "6,8,10,12,14")]
+    speeds: String,
+    /// Draft to measure at (default: the model's design draft)
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Holtrop stern parameter, -10 (V) .. +10 (U with gondola)
+    #[arg(long, default_value_t = 0.0)]
+    cstern: f64,
+    /// Wetted area of appendages, m²
+    #[arg(long, default_value_t = 0.0)]
+    appendage_area: f64,
+    /// Appendage form factor 1+k2
+    #[arg(long, default_value_t = 1.5)]
+    appendage_factor: f64,
+    /// Immersed bulbous-bow area, m²
+    #[arg(long, default_value_t = 0.0)]
+    bulb_area: f64,
+    /// Height of the bulb's centre above the keel, m
+    #[arg(long, default_value_t = 0.0)]
+    bulb_z: f64,
+    /// Write CSV to this path
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
 struct StabilityArgs {
     file: PathBuf,
     /// Centre of gravity height above the keel
@@ -444,6 +481,7 @@ fn run() -> Result<()> {
         Command::Bonjean(a) => cmd_bonjean(a),
         Command::Offsets(a) => cmd_offsets(a),
         Command::Transform(a) => cmd_transform(a),
+        Command::Resistance(a) => cmd_resistance(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -1090,6 +1128,96 @@ fn cmd_transform(a: TransformArgs) -> Result<()> {
         );
     }
     println!("wrote {}", a.output.display());
+    Ok(())
+}
+
+fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions {
+        level: a.subdiv.level,
+        mode: a.subdiv.mode.into(),
+    };
+    let mut opts = HydroOptions::from_surface(&s, subdiv);
+    if let Some(d) = a.draft {
+        opts.draft = d;
+    }
+    let hull = seacraft_core::hydro::Hull::new(&s, subdiv);
+    let mut input = resistance::HoltropInput::measure(&hull, &opts)
+        .context("cannot measure the hull: it needs a positive draft and a waterline")?;
+    input.c_stern = a.cstern;
+    input.appendage_area_m2 = a.appendage_area;
+    input.appendage_factor = a.appendage_factor;
+    input.bulb_area_m2 = a.bulb_area;
+    input.bulb_centre_z = a.bulb_z;
+
+    let speeds = parse_ordinates(&a.speeds, "speeds")?;
+    let rows = resistance::curve(&input, &speeds);
+    let warnings = input.warnings();
+
+    if let Some(path) = &a.csv {
+        let mut text = String::from(
+            "speed_kn,speed_m_s,fn,re,cf,form_factor,rf_n,rapp_n,rw_n,rb_n,rtr_n,ra_n,rt_n,pe_w\n",
+        );
+        for r in &rows {
+            text.push_str(&format!(
+                "{:.3},{:.4},{:.5},{:.0},{:.6},{:.4},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}\n",
+                r.speed_kn, r.speed_m_s, r.fn_, r.reynolds, r.cf, r.form_factor, r.rf_n,
+                r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
+            ));
+        }
+        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {} ({} speeds)", path.display(), rows.len());
+    }
+    if a.json {
+        let body = serde_json::json!({
+            "input": input,
+            "warnings": warnings,
+            "speeds": rows,
+        });
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    if a.csv.is_some() {
+        return Ok(());
+    }
+
+    println!("{}  -  Holtrop-Mennen resistance, T {:.3} m", s.settings.name, input.draft);
+    println!(
+        "  LWL {:.3}  BWL {:.3}  S {:.2} m2  nabla {:.2} m3  Cb {:.4}  Cp {:.4}  Cm {:.4}",
+        input.length_wl,
+        input.beam_wl,
+        input.wetted_surface_m2,
+        input.volume_m3,
+        input.cb,
+        input.cp,
+        input.cm
+    );
+    println!(
+        "  LCB {:+.2} % L  iE {:.1} deg  AT {:.3} m2  ABT {:.3} m2  c_stern {:+.1}",
+        input.lcb_pct, input.half_entrance_deg, input.transom_area_m2, input.bulb_area_m2,
+        input.c_stern
+    );
+    for w in &warnings {
+        println!("  warning: {w} (outside the method's fitted range)");
+    }
+    println!();
+    println!(
+        "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
+        "kn", "Fn", "1+k1", "RT [kN]", "PE [kW]", "RF [kN]", "RW [kN]"
+    );
+    for r in &rows {
+        println!(
+            "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}",
+            r.speed_kn,
+            r.fn_,
+            r.form_factor,
+            r.rt_n / 1000.0,
+            r.pe_w / 1000.0,
+            r.rf_n / 1000.0,
+            r.rw_n / 1000.0
+        );
+    }
+    println!("\n  effective power only: no propeller, wake fraction or thrust deduction.");
     Ok(())
 }
 
