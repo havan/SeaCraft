@@ -95,16 +95,18 @@ pub enum ExportKind {
     Html,
     Linesplan,
     LinesplanDxf,
+    LinesplanIges,
 }
 
 impl ExportKind {
-    pub const ALL: [ExportKind; 6] = [
+    pub const ALL: [ExportKind; 7] = [
         ExportKind::Obj,
         ExportKind::Stl,
         ExportKind::Ply,
         ExportKind::Html,
         ExportKind::Linesplan,
         ExportKind::LinesplanDxf,
+        ExportKind::LinesplanIges,
     ];
 
     pub fn label(self) -> &'static str {
@@ -115,6 +117,7 @@ impl ExportKind {
             ExportKind::Html => "HTML viewer…",
             ExportKind::Linesplan => "Linesplan SVG…",
             ExportKind::LinesplanDxf => "Linesplan DXF…",
+            ExportKind::LinesplanIges => "Linesplan IGES…",
         }
     }
 
@@ -126,6 +129,7 @@ impl ExportKind {
             ExportKind::Html => "html",
             ExportKind::Linesplan => "svg",
             ExportKind::LinesplanDxf => "dxf",
+            ExportKind::LinesplanIges => "igs",
         }
     }
 }
@@ -686,6 +690,10 @@ impl App {
             ExportKind::LinesplanDxf => std::fs::write(
                 path,
                 seacraft_core::linesplan::dxf(surface, seacraft_core::linesplan::LinesplanOptions::default()),
+            ),
+            ExportKind::LinesplanIges => std::fs::write(
+                path,
+                seacraft_core::linesplan::iges(surface, seacraft_core::linesplan::LinesplanOptions::default()),
             ),
         };
         match written {

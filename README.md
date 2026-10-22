@@ -170,6 +170,15 @@ centrelines dashed. Every curve is repeated as a 3D polyline on
 hull can be reopened in Rhino or ShipConstructor without rebuilding it from the
 views. The writer is dependency-free; see `ATTRIBUTION.md`.
 
+`linesplan::iges` writes the same station, buttock and waterline curves as IGES
+5.3 rational B-spline curves (entity 126) in metres, so a receiving CAD package
+gets exact curves rather than polyline approximations. It has been verified with
+`gmsh`/Open Cascade: all 61 curves of the demo hull transfer, with non-zero
+lengths and the correct 1000× millimetre scale. Entity 128 (B-spline surface) is
+**not** written — a subdivided hull has no rectangular parametrisation, so a
+surface exporter needs a patch decomposition first. That is the one reason IGES
+output here is curve-only rather than a solid or shell.
+
 ---
 
 ## 3. Command line
@@ -257,7 +266,9 @@ cursor position on the active viewport's focal plane and the crate version.
 * Zebra / curvature / draft analysis and a CPU z-buffer renderer with PNG
   output are implemented, in the CLI and in all four GUI viewports. Curvature
   combs on station/buttock curves are not drawn yet.
-* Not yet implemented: IGES export, developability/unfolding, Lackenby
+* IGES export of the linesplan as entity-126 B-spline curves is implemented and
+  verified against Open Cascade; surfaces (entity 128) are out of scope.
+* Not yet implemented: developability/unfolding, Lackenby
   transformation, resistance and propulsion prediction, VRML import, a
   loopback control socket for automated GUI driving, and adding/deleting
   control points or edges.

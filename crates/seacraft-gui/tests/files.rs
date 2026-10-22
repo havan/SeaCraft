@@ -44,6 +44,11 @@ fn every_export_format_writes_a_plausible_file() {
             ExportKind::Html => assert!(head.to_lowercase().starts_with("<!doctype html"), "{head}"),
             ExportKind::Linesplan => assert!(head.starts_with("<?xml"), "{head}"),
             ExportKind::LinesplanDxf => assert!(head.starts_with("  0\nSECTION"), "{head}"),
+            // The Start section is free text; the Global section follows.
+            ExportKind::LinesplanIges => {
+                assert!(head.starts_with("SeaCraft"), "{head}");
+                assert!(bytes.windows(2).any(|w| w == b"1H"), "no Global section");
+            }
             ExportKind::Stl => {
                 // 80-byte header, then a u32 triangle count that matches the size.
                 assert!(bytes.len() > 84);

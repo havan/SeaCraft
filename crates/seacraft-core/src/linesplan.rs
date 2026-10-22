@@ -428,6 +428,47 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
     dxf::write_dxf(&all, &entities)
 }
 
+/// Export the hull curves as an IGES 5.3 file of B-spline curves (entity 126).
+///
+/// Every station, buttock and waterline is interpolated by a cubic spline, so
+/// the receiving application gets exact curves instead of thousands of line
+/// segments. The curves are in model coordinates (metres); see
+/// [`crate::iges`] for what is not written (surfaces).
+pub fn iges(surface: &Surface, opts: LinesplanOptions) -> String {
+    let cut = cut_all(surface, opts);
+    let mut fitted: Vec<(String, crate::iges::BsplineCurve)> = Vec::new();
+    let groups = [
+        ("STA", &cut.stations),
+        ("BUT", &cut.buttocks),
+        ("WL", &cut.waterlines),
+    ];
+    for (prefix, curves) in groups {
+        for (i, curve) in curves.iter().enumerate() {
+            // A closed ring is written open: the first point is repeated so the
+            // spline returns to it, which every reader imports as one curve.
+            let mut points = curve.points3.clone();
+            if curve.closed {
+                if let Some(first) = points.first().copied() {
+                    points.push(first);
+                }
+            }
+            if points.len() < 3 {
+                continue;
+            }
+            if let Some(spline) = crate::iges::fit_curve(&points, 3) {
+                fitted.push((format!("{prefix}{i}"), spline));
+            }
+        }
+    }
+    let name = format!("{}.igs", surface.settings.name.replace(' ', "_"));
+    let file = crate::iges::IgesFile {
+        name: &name,
+        curves: fitted.iter().map(|(label, curve)| (label.as_str(), curve)).collect(),
+        units: 6, // metres
+    };
+    crate::iges::write_iges(&file)
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }

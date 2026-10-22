@@ -257,7 +257,7 @@ struct StabilityArgs {
 struct LinesplanArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Output path: `.svg` (default) or `.dxf` for a layered AutoCAD drawing
+    /// Output path: `.svg` (default), `.dxf` (layered AutoCAD drawing) or `.igs` (B-spline curves)
     #[arg(short, long, default_value = "linesplan.svg")]
     output: PathBuf,
     /// Number of stations in the body plan
@@ -591,10 +591,10 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let text = if extension == "dxf" {
-        linesplan::dxf(&s, opts)
-    } else {
-        linesplan::svg(&s, opts)
+    let text = match extension.as_str() {
+        "dxf" => linesplan::dxf(&s, opts),
+        "igs" | "iges" => linesplan::iges(&s, opts),
+        _ => linesplan::svg(&s, opts),
     };
     std::fs::write(&a.output, text)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
