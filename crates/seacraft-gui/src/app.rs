@@ -14,6 +14,7 @@ use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
 use crate::camera::{Camera, ViewKind};
 use crate::history::History;
+use crate::panels;
 use crate::picking::{self, PICK_RADIUS};
 use crate::render::{self, DisplayOptions, Scene};
 
@@ -126,6 +127,9 @@ pub struct App {
     pending: Option<PendingAction>,
     /// A quit that has been confirmed (the window closes at the end of the frame).
     close_requested: bool,
+    show_layers: bool,
+    /// Geometry changed since the hydrostatics were last computed.
+    hydro_dirty: bool,
     /// Viewport rectangles from the last frame, so tests can aim the pointer.
     viewport_rects: [egui::Rect; 4],
 }
@@ -175,6 +179,8 @@ impl App {
             dialog: None,
             pending: None,
             close_requested: false,
+            show_layers: true,
+            hydro_dirty: true,
             viewport_rects: [egui::Rect::NOTHING; 4],
         }
     }
@@ -273,6 +279,27 @@ impl App {
                 });
             });
         });
+
+        if self.show_layers {
+            let mut changed = false;
+            egui::Panel::left("layer_panel")
+                .resizable(true)
+                .default_size(250.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        if let Some(surface) = self.surface.as_mut() {
+                            changed = panels::layers(ui, surface);
+                        } else {
+                            ui.label("No model loaded.");
+                        }
+                    });
+                });
+            if changed {
+                self.revision += 1;
+                self.dirty = true;
+                self.hydro_dirty = true;
+            }
+        }
 
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         self.dialog_window(ui);
@@ -387,6 +414,8 @@ impl App {
                     ui.checkbox(&mut self.display.points, "Control points");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.grid, "Grid");
+                    ui.separator();
+                    ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.separator();
                     if ui.button("Reset cameras (F)").clicked() {
                         self.reset_cameras();
