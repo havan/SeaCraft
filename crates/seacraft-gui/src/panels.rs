@@ -169,11 +169,12 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     // choice for a model that carries no mass distribution.
     ui.horizontal(|ui| {
         let mut on = *panel.free_trim;
-        if ui.checkbox(&mut on, "GZ free to trim").changed() {
+        if ui.checkbox(&mut on, "Free to trim").changed() {
             *panel.free_trim = on;
             if on && panel.lcg.is_none() {
                 *panel.lcg = panel.result.map(|r| r.lcb.x);
             }
+            changed = true;
         }
         if *panel.free_trim {
             let mut x = panel.lcg.unwrap_or_default();
@@ -189,6 +190,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                 .changed()
             {
                 *panel.lcg = Some(x);
+                changed = true;
             }
         }
     });
@@ -261,6 +263,28 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     if let Some(curves) = panel.curves {
         ui.separator();
         plot_cross_curves(ui, curves);
+        if let Some(imo) = seacraft_core::stability::evaluate_imo_criteria(curves, 2) {
+            ui.add_space(4.0);
+            let badge_color = if imo.passed {
+                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
+            } else {
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a)
+            };
+            ui.horizontal(|ui| {
+                ui.small("IMO A.749 (design disp.):");
+                ui.colored_label(badge_color, if imo.passed { "PASS" } else { "FAIL" });
+            });
+            ui.columns(2, |cols| {
+                cols[0].spacing_mut().item_spacing.y = 2.0;
+                row(&mut cols[0], "A(0–30°)", format!("{:.3} m·rad", imo.area_0_30_m_rad));
+                row(&mut cols[0], "A(0–40°)", format!("{:.3} m·rad", imo.area_0_40_m_rad));
+                row(&mut cols[0], "A(30–40°)", format!("{:.3} m·rad", imo.area_30_40_m_rad));
+                cols[1].spacing_mut().item_spacing.y = 2.0;
+                row(&mut cols[1], "GZ(≥30°)", format!("{:.3} m", imo.max_gz_30_plus_m));
+                row(&mut cols[1], "φ(GZmax)", format!("{:.0}°", imo.angle_of_max_gz_deg));
+                row(&mut cols[1], "GM0", format!("{:.3} m", imo.gm0_m));
+            });
+        }
     }
     action
 }

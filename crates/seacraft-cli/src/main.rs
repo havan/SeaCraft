@@ -2,7 +2,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use seacraft_core::hydro::{self, HydroOptions};
 use seacraft_core::stability::{
-    cross_curves, solve_draft, upright_lcb, StabilityCondition,
+    cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, solve_draft, upright_lcb,
+    StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
@@ -158,6 +159,13 @@ struct HydroArgs {
     /// Heel angle in degrees, positive to starboard
     #[arg(long, default_value_t = 0.0)]
     heel: f64,
+    /// Longitudinal centre of gravity in model x. Implies free trim: the hull
+    /// trims to keep the LCB on this station. Defaults to the upright LCB.
+    #[arg(long)]
+    lcg: Option<f64>,
+    /// Trim freely to longitudinal equilibrium instead of holding --trim
+    #[arg(long)]
+    free_trim: bool,
     /// Water density in kg/m3 (defaults to the project setting)
     #[arg(long)]
     density: Option<f64>,
@@ -410,12 +418,25 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
     if opts.draft <= 0.0 {
         bail!("draft must be positive (use --draft, or set it in the project settings)");
     }
-    let result = hydro::compute(&s, &opts);
+    let free = a.free_trim || a.lcg.is_some();
+    let result = if free {
+        let hull = hydro::Hull::new(&s, opts.subdivision);
+        hydrostatics_free_trim(&hull, &opts, a.lcg).0
+    } else {
+        hydro::compute(&s, &opts)
+    };
     if a.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
-    println!("{}  -  hydrostatics at T {:.3} m", s.settings.name, result.draft);
+    if free {
+        println!(
+            "{}  -  hydrostatics at T {:.3} m, trim {:+.3} m (free to trim)",
+            s.settings.name, result.draft, result.trim_m
+        );
+    } else {
+        println!("{}  -  hydrostatics at T {:.3} m", s.settings.name, result.draft);
+    }
     println!();
     let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
     row("volume", format!("{:.3} m3", result.volume_m3));
@@ -762,6 +783,33 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
             .map(|p| format!("{:.3} m / {:+.3} m", p.draft, p.trim_m))
             .collect();
         println!("    {:>4.0} deg: {}", c.heel_deg, solved.join(", "));
+    }
+    let criteria: Vec<_> = (0..displacements.len())
+        .filter_map(|i| evaluate_imo_criteria(&curves, i))
+        .collect();
+    if !criteria.is_empty() {
+        println!("\n  IMO A.749 / 2008 IS Code Part A intact stability criteria:");
+        println!(
+            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
+            "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
+        );
+        println!(
+            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  ------",
+            "min req.", ">=0.055", ">=0.090", ">=0.030", ">=0.200 m", ">=25 deg", ">=0.15"
+        );
+        for c in &criteria {
+            println!(
+                "    {:>8.2}  {:>9.4}  {:>9.4}  {:>10.4}  {:>10.3}  {:>9.1}  {:>7.3}  {}",
+                c.displacement_t,
+                c.area_0_30_m_rad,
+                c.area_0_40_m_rad,
+                c.area_30_40_m_rad,
+                c.max_gz_30_plus_m,
+                c.angle_of_max_gz_deg,
+                c.gm0_m,
+                if c.passed { "PASS" } else { "FAIL" }
+            );
+        }
     }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;

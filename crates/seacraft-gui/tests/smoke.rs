@@ -88,3 +88,12 @@ fn every_viewport_has_a_usable_rectangle() {
         assert!(rect.width() > 100.0 && rect.height() > 100.0, "viewport {i}: {rect:?}");
     }
 }
+
+#[test]
+fn curvature_combs_render_in_viewports_without_panicking() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(2);
+    app.display_mut().combs = true;
+    frames(&mut app, 2);
+    assert!(app.display().combs);
+}

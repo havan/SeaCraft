@@ -6,10 +6,11 @@ use seacraft_gui::App;
 fn usage() {
     println!(
         "seacraft-gui {}\n\n\
-         Usage: seacraft-gui [--open FILE.fef]\n\n\
+         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs]\n\n\
          Options:\n  \
          --open FILE       Load a FREE!ship .fef model at startup\n  \
          --analysis MODE   Shading: shaded, zebra, curvature or draft\n  \
+         --combs           Overlay station/buttock/waterline curvature combs\n  \
          --version         Print the version and exit\n  \
          --help            Print this help and exit",
         seacraft_core::VERSION
@@ -19,10 +20,12 @@ fn usage() {
 fn main() -> eframe::Result {
     let mut open: Option<PathBuf> = None;
     let mut analysis = seacraft_core::AnalysisMode::Shaded;
+    let mut combs = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--open" => open = args.next().map(PathBuf::from),
+            "--combs" => combs = true,
             "--analysis" => {
                 let value = args.next().unwrap_or_default();
                 analysis = match value.as_str() {
@@ -62,6 +65,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let mut app = App::new(cc, open.clone());
             app.set_analysis(analysis);
+            app.display_mut().combs = combs;
             Ok(Box::new(app))
         }),
     )

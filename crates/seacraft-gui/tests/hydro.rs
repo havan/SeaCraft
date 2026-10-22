@@ -108,6 +108,30 @@ fn the_dock_trims_freely_when_asked() {
 }
 
 #[test]
+fn single_condition_hydrostatics_trims_to_requested_lcg() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(2);
+    app.recompute_hydrostatics();
+    let upright_lcb = app.hydrostatics().unwrap().lcb.x;
+    let target_lcg = upright_lcb - 0.25;
+
+    app.set_free_trim(true, Some(target_lcg));
+    app.recompute_hydrostatics();
+    let solved = app.hydrostatics().expect("solved hydrostatics");
+    assert!(
+        (solved.lcb.x - target_lcg).abs() < 2e-3,
+        "expected LCB {} to match requested LCG {}",
+        solved.lcb.x,
+        target_lcg
+    );
+    assert!(
+        app.hydro_options_mut().trim.abs() > 0.01,
+        "expected non-zero solved trim, got {}",
+        app.hydro_options_mut().trim
+    );
+}
+
+#[test]
 fn a_hidden_layer_leaves_the_measurement_alone() {
     let mut app = App::headless_for_test(Some(&demo_path()));
     app.recompute_hydrostatics();

@@ -263,6 +263,35 @@ pub fn upright_lcb(hull: &Hull, draft: f64) -> f64 {
     hull.buoyancy(draft, 0.0, 0.0).1.x
 }
 
+/// Measure a single floating condition free to trim so `LCB.x` matches `lcg_x`
+/// (or the upright `LCB` at `opts.draft` when `lcg_x` is `None`), keeping the
+/// displacement equal to the upright displacement at `opts.draft`.
+pub fn hydrostatics_free_trim(
+    hull: &Hull,
+    opts: &HydroOptions,
+    lcg_x: Option<f64>,
+) -> (crate::hydro::Hydrostatics, FloatingCondition) {
+    let (target_volume, upright_b) = hull.buoyancy(opts.draft, 0.0, 0.0);
+    let target_lcg = lcg_x.unwrap_or(upright_b.x);
+    let fc = if target_volume > 1e-12 {
+        solve_floating(hull, target_volume, opts.heel_deg, target_lcg, opts.trim).unwrap_or(
+            FloatingCondition {
+                draft: opts.draft,
+                trim: opts.trim,
+            },
+        )
+    } else {
+        FloatingCondition {
+            draft: opts.draft,
+            trim: opts.trim,
+        }
+    };
+    let mut solved_opts = opts.clone();
+    solved_opts.draft = fc.draft;
+    solved_opts.trim = fc.trim;
+    (hull.hydrostatics(&solved_opts), fc)
+}
+
 /// Compute `KN` and `GZ` for every (heel, displacement) pair.
 pub fn cross_curves(
     hull: &Hull,
@@ -312,7 +341,330 @@ pub fn cross_curves(
                 gz,
             });
         }
-        out.push(CrossCurve { heel_deg: heel, points });
+        out.push(CrossCurve {
+            heel_deg: heel,
+            points,
+        });
     }
     out
+}
+
+/// IMO A.749 / 2008 IS Code general intact stability criteria for a GZ curve.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImoCriteria {
+    pub displacement_t: f64,
+    /// Area under the GZ curve from 0 to 30 deg (m·rad); IMO minimum 0.055.
+    pub area_0_30_m_rad: f64,
+    /// Area under the GZ curve from 0 to 40 deg (m·rad); IMO minimum 0.090.
+    pub area_0_40_m_rad: f64,
+    /// Area under the GZ curve from 30 to 40 deg (m·rad); IMO minimum 0.030.
+    pub area_30_40_m_rad: f64,
+    /// Maximum GZ at heel >= 30 deg (m); IMO minimum 0.20.
+    pub max_gz_30_plus_m: f64,
+    /// Angle of maximum GZ (deg); IMO minimum 25.0.
+    pub angle_of_max_gz_deg: f64,
+    /// Initial metacentric height GM0 estimated from the GZ curve slope at 0 deg (m); IMO minimum 0.15.
+    pub gm0_m: f64,
+    /// Whether all six criteria pass.
+    pub passed: bool,
+}
+
+/// `GZ` at an arbitrary heel from a heel-sorted tabulated curve, linearly
+/// interpolated, clamped to the ends.
+fn gz_at(pts: &[(f64, f64)], heel_deg: f64) -> f64 {
+    let Some(&(h0, g0)) = pts.first() else {
+        return 0.0;
+    };
+    if heel_deg <= h0 {
+        return g0;
+    }
+    for w in pts.windows(2) {
+        let ((ha, ga), (hb, gb)) = (w[0], w[1]);
+        if heel_deg <= hb {
+            if hb <= ha {
+                return gb;
+            }
+            let t = (heel_deg - ha) / (hb - ha);
+            return ga + t * (gb - ga);
+        }
+    }
+    pts.last().map(|&(_, g)| g).unwrap_or(0.0)
+}
+
+/// Righting area between two heels, in m·rad. Negative levers contribute no
+/// positive righting area, so the interpolated endpoints and every interior
+/// sample are clamped at zero; the integration is trapezoidal in degrees.
+///
+/// The interval is clipped to the sampled heel range: past the last tabulated
+/// heel there is no GZ curve, so a curve that stops at 20 deg contributes
+/// nothing to the 30–40 deg area rather than a constant extension of its last
+/// ordinate.
+fn area_between(pts: &[(f64, f64)], a_deg: f64, b_deg: f64) -> f64 {
+    if pts.len() < 2 || !a_deg.is_finite() || !b_deg.is_finite() || b_deg <= a_deg {
+        return 0.0;
+    }
+    let lo = a_deg.max(pts[0].0);
+    let hi = b_deg.min(pts[pts.len() - 1].0);
+    if hi <= lo {
+        return 0.0;
+    }
+    let mut samples: Vec<(f64, f64)> = Vec::with_capacity(pts.len() + 2);
+    samples.push((lo, gz_at(pts, lo).max(0.0)));
+    samples.extend(
+        pts.iter()
+            .filter(|(h, _)| *h > lo && *h < hi)
+            .map(|&(h, g)| (h, g.max(0.0))),
+    );
+    samples.push((hi, gz_at(pts, hi).max(0.0)));
+    let mut area = 0.0;
+    for w in samples.windows(2) {
+        area += 0.5 * (w[0].1 + w[1].1) * (w[1].0 - w[0].0);
+    }
+    area * std::f64::consts::PI / 180.0
+}
+
+/// Evaluate the IMO A.749 / 2008 IS Code Part A general intact stability
+/// criteria on the `disp_index`-th point of every heel curve.
+///
+/// The curve must reach at least 30 deg for the 30–40 deg area and the
+/// "maximum GZ above 30 deg" checks to mean anything; a shorter curve simply
+/// fails them (the area past its end contributes nothing).
+pub fn evaluate_imo_criteria(curves: &[CrossCurve], disp_index: usize) -> Option<ImoCriteria> {
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let mut displacement_t = 0.0;
+    for c in curves {
+        let Some(p) = c.points.get(disp_index) else {
+            continue;
+        };
+        if !p.gz.is_finite() || !c.heel_deg.is_finite() || c.heel_deg < 0.0 {
+            continue;
+        }
+        if pts.is_empty() {
+            displacement_t = p.displacement_t;
+        }
+        pts.push((c.heel_deg, p.gz));
+    }
+    if pts.len() < 2 {
+        return None;
+    }
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let area_0_30 = area_between(&pts, 0.0, 30.0);
+    let area_0_40 = area_between(&pts, 0.0, 40.0);
+    let area_30_40 = area_between(&pts, 30.0, 40.0);
+
+    let (h_min, h_max) = (pts[0].0, pts[pts.len() - 1].0);
+    let mut max_gz_30 = f64::NEG_INFINITY;
+    for &(h, g) in &pts {
+        if h >= 30.0 {
+            max_gz_30 = max_gz_30.max(g);
+        }
+    }
+    if h_min <= 30.0 && h_max >= 30.0 {
+        max_gz_30 = max_gz_30.max(gz_at(&pts, 30.0));
+    }
+    let max_gz_30 = if max_gz_30.is_finite() {
+        max_gz_30
+    } else {
+        0.0
+    };
+
+    // Highest sample, earliest sample wins a tie (the conservative angle).
+    let mut best = pts[0];
+    for &(h, g) in pts.iter().skip(1) {
+        if g > best.1 {
+            best = (h, g);
+        }
+    }
+    let angle_of_max = best.0;
+
+    // Slope at the origin: the standard `GM0 ≈ dGZ/dheel` at zero heel.
+    let mut gm0 = 0.0;
+    if let Some(w) = pts.windows(2).find(|w| w[1].0 > w[0].0) {
+        gm0 = (w[1].1 - w[0].1) / deg_to_rad(w[1].0 - w[0].0);
+    }
+
+    let passed = area_0_30 >= 0.055
+        && area_0_40 >= 0.090
+        && area_30_40 >= 0.030
+        && max_gz_30 >= 0.20
+        && angle_of_max >= 25.0
+        && gm0 >= 0.15;
+
+    Some(ImoCriteria {
+        displacement_t,
+        area_0_30_m_rad: area_0_30,
+        area_0_40_m_rad: area_0_40,
+        area_30_40_m_rad: area_30_40,
+        max_gz_30_plus_m: max_gz_30,
+        angle_of_max_gz_deg: angle_of_max,
+        gm0_m: gm0,
+        passed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hydro::Hull;
+    use crate::subdiv::SubdivisionOptions;
+
+    fn point(heel_deg: f64, gz: f64) -> CrossCurve {
+        CrossCurve {
+            heel_deg,
+            points: vec![CrossCurvePoint {
+                displacement_t: 20.0,
+                draft: 0.5,
+                trim_m: 0.0,
+                kn: gz + 2.0 * deg_to_rad(heel_deg).sin(),
+                gz,
+            }],
+        }
+    }
+
+    #[test]
+    fn free_trim_hydrostatics_put_the_lcb_on_the_lcg() {
+        let surface = crate::demo::demo_hull(false);
+        let opts = HydroOptions {
+            draft: 0.62,
+            trim: 0.0,
+            heel_deg: 0.0,
+            water_density: 1025.0,
+            appendage_coefficient: 1.0,
+            mainframe_x: None,
+            stations: 11,
+            subdivision: SubdivisionOptions {
+                level: 2,
+                mode: Default::default(),
+            },
+        };
+        let hull = Hull::new(&surface, opts.subdivision);
+        let (upright_volume, upright_b) = hull.buoyancy(opts.draft, 0.0, 0.0);
+
+        // `None` must reproduce the upright condition: LCB at the upright LCB,
+        // displacement at the upright displacement.
+        let (h, fc) = hydrostatics_free_trim(&hull, &opts, None);
+        assert!(fc.trim.abs() < 1e-3, "upright trim {}", fc.trim);
+        assert!((fc.draft - opts.draft).abs() < 1e-3, "draft {}", fc.draft);
+        assert!(
+            (h.lcb.x - upright_b.x).abs() < 1e-3,
+            "LCB {} vs upright {}",
+            h.lcb.x,
+            upright_b.x
+        );
+        assert!(
+            (h.volume_m3 - upright_volume).abs() < 1e-3 * upright_volume,
+            "volume {} vs {}",
+            h.volume_m3,
+            upright_volume
+        );
+
+        // A centre of gravity forward of the upright LCB must be reached by
+        // trimming, and the reported LCB has to actually match it.
+        let lcg = upright_b.x + 0.30;
+        let (h, fc) = hydrostatics_free_trim(&hull, &opts, Some(lcg));
+        assert!(
+            (h.lcb.x - lcg).abs() < 1e-3,
+            "LCB {} did not reach the requested {lcg} (trim {})",
+            h.lcb.x,
+            fc.trim
+        );
+        assert!(
+            (h.volume_m3 - upright_volume).abs() < 1e-3 * upright_volume,
+            "volume changed with trim: {} vs {}",
+            h.volume_m3,
+            upright_volume
+        );
+        assert!((h.draft - fc.draft).abs() < 1e-12);
+        assert!((h.trim_m - fc.trim).abs() < 1e-12);
+    }
+
+    #[test]
+    fn imo_areas_are_exact_for_a_linear_gz_curve() {
+        // GZ = k * heel has an analytic area k/2 (b^2 - a^2) in metre-radians,
+        // which the trapezoid reproduces exactly because the curve is linear.
+        let k = 0.01;
+        let curves: Vec<CrossCurve> = (0..=9)
+            .map(|i| point(10.0 * i as f64, k * 10.0 * i as f64))
+            .collect();
+        let c = evaluate_imo_criteria(&curves, 0).expect("criteria");
+
+        let rad = std::f64::consts::PI / 180.0;
+        let want = |a: f64, b: f64| 0.5 * k * (b * b - a * a) * rad;
+        assert!((c.area_0_30_m_rad - want(0.0, 30.0)).abs() < 1e-12);
+        assert!((c.area_0_40_m_rad - want(0.0, 40.0)).abs() < 1e-12);
+        assert!((c.area_30_40_m_rad - want(30.0, 40.0)).abs() < 1e-12);
+        assert!((c.max_gz_30_plus_m - k * 90.0).abs() < 1e-12);
+        assert!((c.angle_of_max_gz_deg - 90.0).abs() < 1e-12);
+        // Slope at the origin in radians: k * 180/pi.
+        assert!((c.gm0_m - k / rad).abs() < 1e-12, "GM0 {}", c.gm0_m);
+        assert!((c.displacement_t - 20.0).abs() < 1e-12);
+        assert!(c.passed, "linear GZ {k} should satisfy the criteria: {c:?}");
+    }
+
+    #[test]
+    fn imo_interpolates_between_samples_and_clamps_negative_levers() {
+        // Samples only at 0, 45 and 90 deg, so 30 and 40 deg are interpolated
+        // ordinates and 45 deg is the only interior sample.
+        let curves = vec![point(0.0, 0.0), point(45.0, 0.40), point(90.0, -0.10)];
+        let c = evaluate_imo_criteria(&curves, 0).expect("criteria");
+        let rad = std::f64::consts::PI / 180.0;
+        let gz30 = 0.40 * 30.0 / 45.0;
+        let gz40 = 0.40 * 40.0 / 45.0;
+        let trap = |a: f64, ga: f64, b: f64, gb: f64| 0.5 * (ga + gb) * (b - a) * rad;
+
+        assert!((c.area_0_30_m_rad - trap(0.0, 0.0, 30.0, gz30)).abs() < 1e-12);
+        // No interior sample lies inside [0, 40]: the whole interval is one
+        // trapezoid between the interpolated endpoints.
+        assert!((c.area_0_40_m_rad - trap(0.0, 0.0, 40.0, gz40)).abs() < 1e-12);
+        assert!((c.area_30_40_m_rad - trap(30.0, gz30, 40.0, gz40)).abs() < 1e-12);
+        assert!((c.max_gz_30_plus_m - 0.40).abs() < 1e-12);
+        assert!((c.angle_of_max_gz_deg - 45.0).abs() < 1e-12);
+        // GM0 from the first two samples: (0.40 - 0.0) / 45 deg in radians.
+        assert!((c.gm0_m - 0.40 / deg_to_rad(45.0)).abs() < 1e-12);
+        assert!(c.passed, "{c:?}");
+
+        // A negative lever contributes no righting area: the -0.10 m sample at
+        // 60 deg is clamped to zero rather than subtracting from the integral.
+        let negative = vec![
+            point(0.0, 0.0),
+            point(30.0, 0.25),
+            point(40.0, 0.10),
+            point(60.0, -0.10),
+        ];
+        let c = evaluate_imo_criteria(&negative, 0).expect("criteria");
+        let clamped_trap = 0.5 * (0.25 + 0.10) * 10.0 * rad;
+        assert!((c.area_30_40_m_rad - clamped_trap).abs() < 1e-12);
+        // Past the end of the table the ordinate is clamped, never extrapolated.
+        assert!((gz_at(&[(0.0, 0.0), (45.0, 0.30)], 90.0) - 0.30).abs() < 1e-12);
+    }
+
+    #[test]
+    fn imo_flags_a_failing_curve() {
+        // Same shape, half the lever: areas fall below the minima even though
+        // the angle of maximum GZ is fine.
+        let k = 0.002;
+        let curves: Vec<CrossCurve> = (0..=9)
+            .map(|i| point(10.0 * i as f64, k * 10.0 * i as f64))
+            .collect();
+        let c = evaluate_imo_criteria(&curves, 0).expect("criteria");
+        assert!(c.area_0_30_m_rad < 0.055, "{c:?}");
+        assert!(!c.passed);
+        // GM0 is 0.002/rad = 0.1146 m, below the 0.15 m minimum, so that
+        // criterion alone would also fail.
+        assert!(c.gm0_m < 0.15, "GM0 {}", c.gm0_m);
+
+        // A curve that never reaches 30 deg fails the 30-40 deg checks.
+        let short = vec![point(0.0, 0.0), point(10.0, 0.1), point(20.0, 0.2)];
+        let c = evaluate_imo_criteria(&short, 0).expect("criteria");
+        assert_eq!(c.max_gz_30_plus_m, 0.0);
+        assert_eq!(c.area_30_40_m_rad, 0.0);
+        assert!(!c.passed);
+
+        // Too few points is not a curve.
+        assert!(evaluate_imo_criteria(&[point(0.0, 0.0)], 0).is_none());
+        assert!(evaluate_imo_criteria(&[], 0).is_none());
+        // A missing displacement index skips every curve.
+        assert!(evaluate_imo_criteria(&curves, 7).is_none());
+    }
 }

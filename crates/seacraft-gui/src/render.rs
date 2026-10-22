@@ -28,6 +28,9 @@ pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
 pub const SELECTED: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
 pub const WATERPLANE: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
 pub const WATERLINE: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
+pub const SECTION_CURVE: Color32 = Color32::from_rgb(0x9a, 0xb8, 0xd4);
+pub const COMB_SPIKE: Color32 = Color32::from_rgb(0x4b, 0x9c, 0x62);
+pub const COMB_ENV: Color32 = Color32::from_rgb(0x63, 0xd4, 0x82);
 pub const TEXT: Color32 = Color32::from_rgb(0x8e, 0x9e, 0xae);
 
 /// What the viewports may draw.
@@ -45,6 +48,8 @@ pub struct DisplayOptions {
     pub waterplane: bool,
     /// Draw the ground grid.
     pub grid: bool,
+    /// Draw station/buttock/waterline section curves and curvature combs.
+    pub combs: bool,
     /// Shading mode. Anything but `Shaded` renders the viewport through the
     /// CPU rasterizer, which is the only way to get per-pixel zebra stripes
     /// and curvature maps.
@@ -60,6 +65,7 @@ impl Default for DisplayOptions {
             points: true,
             waterplane: true,
             grid: true,
+            combs: false,
             analysis: AnalysisMode::Shaded,
         }
     }
@@ -70,6 +76,8 @@ pub struct Scene<'a> {
     pub surface: &'a Surface,
     /// The refined hull, already mirrored and filtered to visible layers.
     pub mesh: &'a RenderMesh,
+    /// Optional 3D stations/buttocks/waterlines and their curvature combs.
+    pub curves: Option<&'a seacraft_core::linesplan::LinesplanCurves3d>,
     pub min: Vec3,
     pub max: Vec3,
     /// Current floating condition, for the waterplane.
@@ -151,6 +159,11 @@ pub fn viewport_with_texture(
     }
     if opts.waterplane {
         draw_waterplane(&painter, &view, rect, scene, texture.is_none());
+    }
+    if opts.combs {
+        if let Some(curves) = scene.curves {
+            draw_combs(&painter, &view, camera.kind, rect, curves);
+        }
     }
     if opts.control_net {
         draw_control_net(&painter, &view, rect, scene.surface);
@@ -308,6 +321,50 @@ fn draw_waterplane(
                 if let (Some(p0), Some(p1)) = (view.project(hits[0], rect), view.project(hits[1], rect)) {
                     painter.line_segment([p0, p1], Stroke::new(1.5, WATERLINE));
                 }
+            }
+        }
+    }
+}
+
+fn draw_combs(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    kind: crate::camera::ViewKind,
+    rect: Rect,
+    curves: &seacraft_core::linesplan::LinesplanCurves3d,
+) {
+    let groups: &[&[seacraft_core::linesplan::CurveWithCombs]] = match kind {
+        crate::camera::ViewKind::Profile => &[&curves.buttocks],
+        crate::camera::ViewKind::Plan => &[&curves.waterlines],
+        crate::camera::ViewKind::Body => &[&curves.stations],
+        crate::camera::ViewKind::Perspective => {
+            &[&curves.stations, &curves.buttocks, &curves.waterlines]
+        }
+    };
+    for group in groups {
+        for curve in *group {
+            for w in curve.points.windows(2) {
+                if let (Some(p), Some(q)) = (view.project(w[0], rect), view.project(w[1], rect)) {
+                    painter.line_segment([p, q], Stroke::new(1.0, SECTION_CURVE));
+                }
+            }
+            if curve.closed && curve.points.len() >= 3 {
+                if let (Some(p), Some(q)) = (
+                    view.project(*curve.points.last().unwrap(), rect),
+                    view.project(curve.points[0], rect),
+                ) {
+                    painter.line_segment([p, q], Stroke::new(1.0, SECTION_CURVE));
+                }
+            }
+            let mut tips: Vec<Pos2> = Vec::with_capacity(curve.spikes.len());
+            for &(base, tip) in &curve.spikes {
+                if let (Some(b), Some(t)) = (view.project(base, rect), view.project(tip, rect)) {
+                    painter.line_segment([b, t], Stroke::new(0.8, COMB_SPIKE));
+                    tips.push(t);
+                }
+            }
+            for w in tips.windows(2) {
+                painter.line_segment([w[0], w[1]], Stroke::new(1.1, COMB_ENV));
             }
         }
     }

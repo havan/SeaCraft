@@ -26,6 +26,7 @@ struct RenderCache {
     level: u8,
     mode: SubdivisionMode,
     mesh: RenderMesh,
+    curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
     min: Vec3,
     max: Vec3,
 }
@@ -342,9 +343,23 @@ impl App {
                 level,
                 mode: self.mode,
                 mesh,
+                curves: None,
                 min,
                 max,
             });
+        }
+        if self.display.combs {
+            if let Some(cache) = self.cache.as_mut() {
+                if cache.curves.is_none() {
+                    let opts = seacraft_core::linesplan::LinesplanOptions {
+                        level,
+                        mode: self.mode,
+                        combs: true,
+                        ..Default::default()
+                    };
+                    cache.curves = Some(seacraft_core::linesplan::curves_3d(surface, opts));
+                }
+            }
         }
     }
 
@@ -548,6 +563,7 @@ impl App {
                     ui.checkbox(&mut self.display.points, "Control points");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.grid, "Grid");
+                    ui.checkbox(&mut self.display.combs, "Curvature combs");
                     ui.separator();
                     ui.label("Surface analysis");
                     ui.horizontal_wrapped(|ui| {
@@ -931,6 +947,7 @@ impl App {
                 let scene = Scene {
                     surface,
                     mesh: &cache.mesh,
+                    curves: cache.curves.as_ref(),
                     min: cache.min,
                     max: cache.max,
                     draft: self.hydro.options.draft,
@@ -1084,7 +1101,17 @@ impl App {
         let Some(surface) = &self.surface else { return };
         let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
         let hull = Hull::new(surface, subdiv);
-        let result = hull.hydrostatics(&self.hydro.options);
+        let result = if self.hydro.free_trim {
+            let (res, fc) =
+                stability::hydrostatics_free_trim(&hull, &self.hydro.options, self.hydro.lcg);
+            self.hydro.options.trim = fc.trim;
+            if self.hydro.lcg.is_none() {
+                self.hydro.lcg = Some(res.lcb.x);
+            }
+            res
+        } else {
+            hull.hydrostatics(&self.hydro.options)
+        };
         self.hydro.result = Some(result);
         self.hydro.hull = Some(hull);
         self.hydro.hull_revision = self.revision;
@@ -1239,12 +1266,13 @@ impl App {
         self.touch_geometry();
     }
 
-    /// Solver setting for the GZ curves: free to trim about `lcg` (or hold the
-    /// trim when `free` is false). `None` leaves the LCG to be filled from the
-    /// upright LCB on the next solve.
+    /// Solver setting for hydrostatics and GZ curves: free to trim about `lcg`
+    /// (or hold the trim when `free` is false). `None` leaves the LCG to be
+    /// filled from the upright LCB on the next solve.
     pub fn set_free_trim(&mut self, free: bool, lcg: Option<f64>) {
         self.hydro.free_trim = free;
         self.hydro.lcg = lcg;
+        self.hydro_dirty = true;
     }
 
     pub fn free_trim(&self) -> bool {

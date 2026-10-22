@@ -48,6 +48,73 @@ struct Curve {
     points: Vec<(f64, f64)>,
     points3: Vec<Vec3>,
     closed: bool,
+    /// The cutting plane the 2D view coordinates live in, so a 2D point can be
+    /// lifted back to 3D: `origin + u * pu + v * pv` with `(u, v) = plane.basis()`
+    /// and `origin = plane.n * (-plane.d)`.
+    plane: Plane,
+}
+
+/// A 3D intersection curve and its optional 3D curvature-comb spikes `(base, tip)`.
+#[derive(Debug, Clone)]
+pub struct CurveWithCombs {
+    pub points: Vec<Vec3>,
+    pub closed: bool,
+    pub spikes: Vec<(Vec3, Vec3)>,
+}
+
+/// All 3D curves and optional curvature combs for the hull.
+#[derive(Debug, Clone)]
+pub struct LinesplanCurves3d {
+    pub stations: Vec<CurveWithCombs>,
+    pub buttocks: Vec<CurveWithCombs>,
+    pub waterlines: Vec<CurveWithCombs>,
+}
+
+/// The stations, buttocks and waterlines as 3D curves, with their curvature
+/// combs lifted back into 3D when `opts.combs` is set.
+///
+/// The comb sampling matches [`view_combs`] exactly (same gain, same spacing,
+/// same clamp), so a GUI viewport draws the same porcupine the drawing does;
+/// only the coordinates differ — 3D here, view-plane 2D in the SVG/DXF.
+pub fn curves_3d(surface: &Surface, opts: LinesplanOptions) -> LinesplanCurves3d {
+    let cut = cut_all(surface, opts);
+    // Each view's comb extent: the body plan spans the beam, the profile the
+    // depth, the plan the length/beam footprint.
+    let b = (cut.max.y - cut.min.y).max(0.1);
+    let d = (cut.max.z - cut.min.z).max(0.1);
+
+    let group = |curves: &[Curve], extent: f64| -> Vec<CurveWithCombs> {
+        let extent = extent.max(1e-6);
+        let max_len = 0.12 * extent;
+        let spacing = 0.02 * extent;
+        curves
+            .iter()
+            .map(|c| {
+                let spikes = if opts.combs {
+                    let len = arc_length(&c.points);
+                    let step = if len > 0.0 { spacing.min(len / 8.0) } else { spacing };
+                    let raw = comb_spikes(&c.points, opts.comb_scale, max_len, step);
+                    if raw.len() < 2 {
+                        Vec::new()
+                    } else {
+                        let (u, v) = c.plane.basis();
+                        let origin = c.plane.n * (-c.plane.d);
+                        let to3 = |(pu, pv): P2| origin + u * pu + v * pv;
+                        raw.into_iter().map(|(base, tip)| (to3(base), to3(tip))).collect()
+                    }
+                } else {
+                    Vec::new()
+                };
+                CurveWithCombs { points: c.points3.clone(), closed: c.closed, spikes }
+            })
+            .collect()
+    };
+
+    LinesplanCurves3d {
+        stations: group(&cut.stations, b),
+        buttocks: group(&cut.buttocks, d),
+        waterlines: group(&cut.waterlines, b),
+    }
 }
 
 /// The curves of every view plus the model's extents.
@@ -90,6 +157,7 @@ fn cut(verts: &[Vec3], tris: &[[usize; 3]], plane: &Plane, tol: f64) -> Vec<Curv
             points: p.iter().map(|q| (u.dot(*q), v.dot(*q))).collect(),
             points3: p,
             closed,
+            plane: *plane,
         })
         .collect()
 }
@@ -819,5 +887,63 @@ mod tests {
             lines_combs > lines_plain + 50,
             "expected combs to add lines: {lines_plain} -> {lines_combs}"
         );
+    }
+
+    /// The GUI draws stations, buttocks and waterlines in 3D, so the comb
+    /// spikes must come back as 3D points, each still in its curve's cutting
+    /// plane: a station spike spans only (y, z), a waterline only (x, y).
+    #[test]
+    fn curves_3d_emits_3d_comb_spikes_in_section_planes() {
+        let surface = crate::demo::demo_hull(false);
+        let curves = curves_3d(&surface, LinesplanOptions { combs: true, ..Default::default() });
+
+        assert!(!curves.stations.is_empty(), "no stations");
+        assert!(!curves.buttocks.is_empty(), "no buttocks");
+        assert!(!curves.waterlines.is_empty(), "no waterlines");
+
+        let with_spikes = |cs: &[CurveWithCombs]| cs.iter().filter(|c| !c.spikes.is_empty()).count();
+        for (name, cs) in [
+            ("stations", &curves.stations),
+            ("buttocks", &curves.buttocks),
+            ("waterlines", &curves.waterlines),
+        ] {
+            assert!(with_spikes(cs) > 0, "{name} carry no 3D combs");
+            for c in cs {
+                assert!(!c.points.is_empty(), "{name} curve with no 3D points");
+                assert!(c.points.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()));
+            }
+        }
+
+        // Stations are cut at x = const, so a spike is pure (y, z).
+        let mut checked = 0;
+        for c in &curves.stations {
+            for (base, tip) in &c.spikes {
+                assert!((base.x - tip.x).abs() < 1e-9, "station spike leaves x=const: {base:?} {tip:?}");
+                // Both ends sit on the station's plane, and so do the curve's
+                // own points.
+                assert!(base.x.is_finite() && tip.x.is_finite());
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no station spikes to check");
+
+        // Buttocks are cut at y = const, waterlines at z = const.
+        for c in &curves.buttocks {
+            for (base, tip) in &c.spikes {
+                assert!((base.y - tip.y).abs() < 1e-9, "buttock spike leaves y=const");
+            }
+        }
+        for c in &curves.waterlines {
+            for (base, tip) in &c.spikes {
+                assert!((base.z - tip.z).abs() < 1e-9, "waterline spike leaves z=const");
+            }
+        }
+
+        // Combs are opt-in: without them the same curves arrive spike-free.
+        let plain = curves_3d(&surface, LinesplanOptions::default());
+        assert!(plain.stations.iter().all(|c| c.spikes.is_empty()));
+        assert!(plain.buttocks.iter().all(|c| c.spikes.is_empty()));
+        assert!(plain.waterlines.iter().all(|c| c.spikes.is_empty()));
+        assert_eq!(plain.stations.len(), curves.stations.len());
     }
 }
