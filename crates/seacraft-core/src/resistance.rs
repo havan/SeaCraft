@@ -218,6 +218,8 @@ pub struct Resistance {
     pub rb_n: f64,
     pub rtr_n: f64,
     pub ra_n: f64,
+    /// Which wave-resistance branch this speed used.
+    pub wave_branch: WaveBranch,
     /// Total still-water resistance.
     pub rt_n: f64,
     /// Effective power, `RT · V`, in watts.
@@ -226,6 +228,18 @@ pub struct Resistance {
 
 /// Wave resistance coefficient pieces, exposed because they are the part most
 /// worth checking against the paper.
+/// Which wave-resistance branch a Froude number falls in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveBranch {
+    /// `Fn <= 0.40`: the `c1` / `m1` fit.
+    Low,
+    /// `0.40 < Fn < 0.55`: the paper's own interpolation between the two fits.
+    Interpolated,
+    /// `Fn >= 0.55`: the `c17` / `m3` high-speed fit of the 1984 re-analysis.
+    High,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct WaveCoefficients {
     pub c1: f64,
@@ -236,6 +250,11 @@ pub struct WaveCoefficients {
     pub m1: f64,
     pub m2: f64,
     pub c16: f64,
+    /// High-speed fit coefficient (`Fn >= 0.55`).
+    pub c17: f64,
+    /// High-speed hump exponent (`Fn >= 0.55`).
+    pub m3: f64,
+    pub branch: WaveBranch,
 }
 
 fn c7_of(b_over_l: f64) -> f64 {
@@ -307,19 +326,66 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
         1.0
     };
     let m1 = 0.0140407 * l / t - 1.75254 * vol.cbrt() / l - 4.79323 * b / l - c16;
+    // The hump amplitude. This is the *published* `m2` of the 1982 paper and of
+    // every textbook reproduction: `c15·Cp²·exp(−0.1/Fn²)`. The paper's own
+    // worked example prints m2 = −0.17087 for a 205 m hull at Fn 0.2868, and
+    // this expression gives −0.17093 there; the `0.4·c15·exp(−0.034·Fn^−3.29)`
+    // form that circulates in some implementations gives −0.085 and is the
+    // *high-speed* branch below, not this one.
     let m2 = c15 * input.cp * input.cp * (-0.1 / (fn_ * fn_)).exp();
-    WaveCoefficients { c1, c2, c5, c7, lambda, m1, m2, c16 }
+    // High-speed fit (1984 re-analysis): c17 and m3 replace c1 and m1 above
+    // Fn 0.55, where the low-speed fit was never valid.
+    let c17 = 6919.3 * input.cm.max(1e-6).powf(-1.3346) * (vol / l.powi(3)).powf(2.00977)
+        * (l / b - 2.0).max(1e-6).powf(1.40692);
+    let m3 = -7.2035 * (b / l).powf(0.326869) * (t / b).powf(0.605375);
+    let branch = if fn_ <= 0.40 {
+        WaveBranch::Low
+    } else if fn_ >= 0.55 {
+        WaveBranch::High
+    } else {
+        WaveBranch::Interpolated
+    };
+    WaveCoefficients { c1, c2, c5, c7, lambda, m1, m2, c16, c17, m3, branch }
+}
+
+/// The low-speed wave resistance at a Froude number, `c1`/`m1` fit.
+fn wave_low(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
+    let d = -0.9;
+    w.c1 * w.c2 * w.c5 * input.volume_m3 * input.water_density * GRAVITY
+        * (w.m1 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
+}
+
+/// The high-speed wave resistance at a Froude number, `c17`/`m3` fit.
+fn wave_high(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
+    let d = -0.9;
+    w.c17 * w.c2 * w.c5 * input.volume_m3 * input.water_density * GRAVITY
+        * (w.m3 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
 }
 
 /// Wave resistance in newtons at Froude number `fn_`.
+///
+/// Three branches, exactly as published: the `c1` fit up to 0.40, the `c17`
+/// high-speed fit from 0.55, and between them the paper's own straight-line
+/// interpolation. The anchors are evaluated **at 0.40 and 0.55**, not at the
+/// ship's Froude number — every Fn-dependent term (`Fn^d`, `m2`, the cosine)
+/// belongs to the anchor. Computing the anchors at the ship's Fn and
+/// interpolating scalars is the usual way to get a plausible but wrong hump.
 pub fn wave_resistance(input: &HoltropInput, fn_: f64) -> f64 {
     if fn_ <= 0.0 {
         return 0.0;
     }
     let w = wave_coefficients(input, fn_);
-    let d = -0.9;
-    w.c1 * w.c2 * w.c5 * input.volume_m3 * input.water_density * GRAVITY
-        * (w.m1 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
+    match w.branch {
+        WaveBranch::Low => wave_low(input, &w, fn_),
+        WaveBranch::High => wave_high(input, &w, fn_),
+        WaveBranch::Interpolated => {
+            let w40 = wave_coefficients(input, 0.40);
+            let w55 = wave_coefficients(input, 0.55);
+            let low = wave_low(input, &w40, 0.40);
+            let high = wave_high(input, &w55, 0.55);
+            low + (10.0 * fn_ - 4.0) * (high - low) / 1.5
+        }
+    }
 }
 
 /// Total still-water resistance and its breakdown at `speed_m_s`.
@@ -358,12 +424,17 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
 
     // Bulb, equation (31)/(32): zero without a bulb.
     let rb = if input.bulb_area_m2 > 0.0 && input.draft > input.bulb_centre_z {
+        // The paper's own example prints RB = 0.049 kN, and only this form
+        // reproduces it: ABT^1.5 (not ABT), and the 0.15 V² term *inside* the
+        // square root of Fni. With either one different the bulb term is out by
+        // orders of magnitude.
         let pb = 0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * input.bulb_centre_z).max(1e-6);
-        let fni = v / (GRAVITY * (input.draft - input.bulb_centre_z
-            - 0.25 * input.bulb_area_m2.sqrt()))
-        .max(1e-6)
-        .sqrt();
-        0.11 * (-3.0 / (pb * pb)).exp() * fni.powi(3) * input.bulb_area_m2 * input.water_density
+        let inside = GRAVITY
+            * (input.draft - input.bulb_centre_z - 0.25 * input.bulb_area_m2.sqrt()).max(1e-6)
+            + 0.15 * v * v;
+        let fni = v / inside.sqrt();
+        0.11 * (-3.0 / (pb * pb)).exp() * fni.powi(3) * input.bulb_area_m2.powf(1.5)
+            * input.water_density
             * GRAVITY
             / (1.0 + fni * fni)
     } else {
@@ -405,6 +476,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
 
     let rt = rf * form_factor + rapp + rw + rb + rtr + ra;
     Resistance {
+        wave_branch: wave_coefficients(input, fn_).branch,
         speed_kn: v / KNOT,
         speed_m_s: v,
         fn_,
@@ -670,6 +742,77 @@ mod tests {
         near(r.rt_n / 1e3, 1793.26, 2e-2, "RT [kN]");
         // Bulb resistance is a rounding error on this hull, as printed.
         assert!(r.rb_n < 100.0, "RB {} N", r.rb_n);
+    }
+
+
+    #[test]
+    fn bulb_resistance_matches_the_paper() {
+        // The published example: ABT 20 m2, hB 4.0 m, T 10 m, 25 kn, prints
+        // RB = 0.049 kN. It is a tiny term, but it is the only check on the
+        // bulb formula, and both ABT^1.5 and the 0.15 V² inside Fni's root are
+        // needed to land on it.
+        let mut i = sample();
+        i.length_wl = 205.0;
+        i.beam_wl = 32.0;
+        i.draft = 10.0;
+        i.volume_m3 = 37500.0;
+        i.cb = 37500.0 / (205.0 * 32.0 * 10.0);
+        i.cp = 0.5833;
+        i.cm = 0.98;
+        i.cwp = 0.75;
+        i.half_entrance_deg = 12.08;
+        i.bulb_area_m2 = 20.0;
+        i.bulb_centre_z = 4.0;
+        i.c_stern = 10.0;
+        let r = holtrop(&i, 25.0 * KNOT);
+        assert!(
+            (r.rb_n - 49.0).abs() / 49.0 < 0.05,
+            "RB {:.2} N against the paper's 0.049 kN",
+            r.rb_n
+        );
+        // No bulb, no bulb resistance.
+        let mut none = i;
+        none.bulb_area_m2 = 0.0;
+        assert_eq!(holtrop(&none, 25.0 * KNOT).rb_n, 0.0);
+    }
+
+    #[test]
+    fn the_wave_branches_meet_at_their_anchors() {
+        let i = sample();
+        // Branch selection.
+        assert_eq!(wave_coefficients(&i, 0.40).branch, WaveBranch::Low);
+        assert_eq!(wave_coefficients(&i, 0.4001).branch, WaveBranch::Interpolated);
+        assert_eq!(wave_coefficients(&i, 0.5499).branch, WaveBranch::Interpolated);
+        assert_eq!(wave_coefficients(&i, 0.55).branch, WaveBranch::High);
+
+        // Continuity at both anchors. Exact at 0.55 by construction (the
+        // interpolation factor reaches 1 there); at 0.40 the interpolated value
+        // is one thousandth of the anchor span away, so a 1 % check is the
+        // honest resolution of a sampled curve.
+        let low_anchor = wave_resistance(&i, 0.40);
+        let high_anchor = wave_resistance(&i, 0.55);
+        for (fn_, want) in [(0.4001, low_anchor), (0.5499, high_anchor)] {
+            let got = wave_resistance(&i, fn_);
+            assert!(
+                (got - want).abs() / want < 1e-2,
+                "Fn {fn_}: {got:.0} N against the anchor {want:.0} N"
+            );
+        }
+
+        // The interpolation is the paper's straight line between the anchors,
+        // with every Fn-dependent term evaluated *at* the anchor.
+        let mid = wave_resistance(&i, 0.475);
+        let want_mid = low_anchor + 0.5 * (high_anchor - low_anchor);
+        assert!(
+            (mid - want_mid).abs() / want_mid < 1e-9,
+            "midpoint {mid:.1} vs line {want_mid:.1}"
+        );
+
+        // The high-speed branch really is the c17/m3 fit.
+        let w = wave_coefficients(&i, 0.60);
+        assert!(w.c17 > 0.0 && w.c17.is_finite(), "c17 {}", w.c17);
+        assert!(w.m3 < 0.0, "m3 {}", w.m3);
+        assert!(wave_resistance(&i, 0.60).is_finite());
     }
 
     #[test]

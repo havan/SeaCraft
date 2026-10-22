@@ -1256,6 +1256,15 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             r.rw_n / 1000.0
         );
     }
+    if rows.iter().any(|r| r.fn_ > 0.40) {
+        println!(
+            "  Fn above 0.40: the wave term switches to Holtrop's c17/m3 high-speed fit at 0.55, \
+             interpolated between (this run: {} low, {} interpolated, {} high).",
+            rows.iter().filter(|r| r.fn_ <= 0.40).count(),
+            rows.iter().filter(|r| r.fn_ > 0.40 && r.fn_ < 0.55).count(),
+            rows.iter().filter(|r| r.fn_ >= 0.55).count()
+        );
+    }
     println!("\n  effective power only: no propeller, wake fraction or thrust deduction.");
     Ok(())
 }

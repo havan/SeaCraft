@@ -141,7 +141,9 @@ symmetry and its ground line; a mirror reverses every face's winding, because a
 reflection would otherwise turn the outward normals inward and measure the
 displacement negative.
 
-`resistance` implements Holtrop–Mennen (1984) still-water resistance:
+`resistance` implements Holtrop–Mennen still-water resistance (the 1982/1984
+coefficient set, including the high-speed `c17`/`m3` wave fit above `Fn` 0.55 and
+the paper's own interpolation between 0.40 and 0.55):
 `RT = RF(1+k1) + RAPP + RW + RB + RTR + RA` on the ITTC-57 friction line, with
 `PE = RT·V` and no propeller model, so it reports the power the hull needs
 rather than the power the engine delivers. Everything the method takes from the
