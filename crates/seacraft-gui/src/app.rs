@@ -9,10 +9,12 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use seacraft_core::export::{self, RenderMesh};
-use seacraft_core::math::Vec3;
+use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
 use crate::camera::{Camera, ViewKind};
+use crate::history::History;
+use crate::picking::{self, PICK_RADIUS};
 use crate::render::{self, DisplayOptions, Scene};
 
 /// Cached refined mesh, invalidated by the revision counter, level or mode.
@@ -23,6 +25,19 @@ struct RenderCache {
     mesh: RenderMesh,
     min: Vec3,
     max: Vec3,
+}
+
+/// A control point being dragged in one viewport.
+struct DragState {
+    point: usize,
+    /// Plane through the point, facing that viewport's camera.
+    plane: Plane,
+    /// Vector from the cursor's plane hit to the point, so it does not jump.
+    offset: Vec3,
+    view: usize,
+    /// Position when grabbed, so a click that never moved can drop its
+    /// snapshot again.
+    original: Vec3,
 }
 
 pub struct App {
@@ -38,6 +53,10 @@ pub struct App {
     active: usize,
     cache: Option<RenderCache>,
     selected: Option<usize>,
+    history: History,
+    drag: Option<DragState>,
+    /// Viewport rectangles from the last frame, so tests can aim the pointer.
+    viewport_rects: [egui::Rect; 4],
 }
 
 impl App {
@@ -79,6 +98,9 @@ impl App {
             active: 0,
             cache: None,
             selected: None,
+            history: History::new(64),
+            drag: None,
+            viewport_rects: [egui::Rect::NOTHING; 4],
         }
     }
 
@@ -122,7 +144,9 @@ impl App {
     fn adopt(&mut self) {
         self.revision += 1;
         self.selected = None;
+        self.drag = None;
         self.cache = None;
+        self.history.clear();
         if let Some(s) = &self.surface {
             let (min, max) = s.extents();
             for cam in &mut self.cameras {
@@ -131,22 +155,25 @@ impl App {
         }
     }
 
-    /// Refine the hull when anything it depends on changed.
+    /// Refine the hull when anything it depends on changed. While a point is
+    /// being dragged the preview drops to level 2; the full level returns when
+    /// the drag ends.
     fn sync_cache(&mut self) {
         let Some(surface) = &self.surface else {
             self.cache = None;
             return;
         };
+        let level = if self.drag.is_some() { self.level.min(2) } else { self.level };
         let stale = match &self.cache {
-            Some(c) => c.revision != self.revision || c.level != self.level || c.mode != self.mode,
+            Some(c) => c.revision != self.revision || c.level != level || c.mode != self.mode,
             None => true,
         };
         if stale {
-            let mesh = export::render_mesh(surface, self.level, self.mode);
+            let mesh = export::render_mesh(surface, level, self.mode);
             let (min, max) = surface.extents();
             self.cache = Some(RenderCache {
                 revision: self.revision,
-                level: self.level,
+                level,
                 mode: self.mode,
                 mesh,
                 min,
@@ -156,6 +183,7 @@ impl App {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        self.shortcuts(ui);
         self.menu(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -169,9 +197,69 @@ impl App {
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
     }
 
+    fn shortcuts(&mut self, ui: &mut egui::Ui) {
+        // Read the modifiers from the key event itself: `InputState::modifiers`
+        // is only refreshed by a `ModifiersChanged` event, which a synthesised
+        // test frame need not send.
+        let (undo, redo, escape, frame) = ui.input(|i| {
+            let mut undo = false;
+            let mut redo = false;
+            for event in &i.events {
+                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                    match key {
+                        egui::Key::Z if modifiers.command || modifiers.ctrl => {
+                            if modifiers.shift {
+                                redo = true;
+                            } else {
+                                undo = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (
+                undo,
+                redo,
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::F),
+            )
+        });
+        if undo {
+            self.undo();
+        }
+        if redo {
+            self.redo();
+        }
+        if escape {
+            self.selected = None;
+        }
+        if frame {
+            self.reset_cameras();
+        }
+        for (i, key) in [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4]
+            .into_iter()
+            .enumerate()
+        {
+            if ui.input(|i| i.key_pressed(key)) {
+                self.active = i;
+            }
+        }
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("Edit", |ui| {
+                    if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)")).clicked() {
+                        self.undo();
+                        ui.close();
+                    }
+                    if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo  (Ctrl+Shift+Z)")).clicked() {
+                        self.redo();
+                        ui.close();
+                    }
+                });
                 ui.menu_button("File", |ui| {
                     if ui.button("Load demo hull").clicked() {
                         self.load_demo();
@@ -213,6 +301,25 @@ impl App {
         }
     }
 
+    fn undo(&mut self) {
+        let Some(current) = self.surface.clone() else { return };
+        if let Some(previous) = self.history.undo(&current) {
+            let moved = previous.points.len();
+            self.surface = Some(previous);
+            self.revision += 1;
+            self.status = format!("undo — {moved} control points restored");
+        }
+    }
+
+    fn redo(&mut self) {
+        let Some(current) = self.surface.clone() else { return };
+        if let Some(next) = self.history.redo(&current) {
+            self.surface = Some(next);
+            self.revision += 1;
+            self.status = "redo".to_owned();
+        }
+    }
+
     fn viewports(&mut self, ui: &mut egui::Ui) {
         self.sync_cache();
         let rect = ui.available_rect_before_wrap();
@@ -222,28 +329,58 @@ impl App {
         let cells = render::quad(rect);
 
         for (cell, index) in cells {
+            self.viewport_rects[index] = cell;
             let response = ui.allocate_rect(cell, egui::Sense::click_and_drag());
+            let view = self.cameras[index].transform();
+
             if response.hovered() {
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                 if scroll.abs() > 0.0 {
                     self.cameras[index].zoom((-scroll as f64 * 0.0025).exp());
                 }
             }
-            if response.dragged() {
+
+            let secondary = ui.input(|i| i.pointer.secondary_down());
+            if response.dragged() && secondary && self.cameras[index].kind.is_perspective() {
                 let delta = response.drag_delta();
-                let secondary = ui.input(|i| i.pointer.secondary_down());
-                if secondary && self.cameras[index].kind.is_perspective() {
-                    self.cameras[index].orbit(delta.x, -delta.y);
-                } else {
-                    self.cameras[index].pan(delta.x, delta.y, cell);
+                self.cameras[index].orbit(delta.x, -delta.y);
+            } else {
+                // Grab on *press*, not when egui decides it is a drag: the
+                // pick must use the pixel the user aimed at, not where the
+                // cursor has already slid to.
+                if response.hovered() && ui.input(|i| i.pointer.primary_pressed()) {
+                    self.begin_drag(ui, &view, cell, index);
+                }
+                if response.dragged_by(egui::PointerButton::Primary) {
+                    if self.drag.as_ref().is_some_and(|d| d.view == index) {
+                        self.drag_to(ui, &view, cell);
+                    } else if self.drag.is_none() {
+                        let delta = response.drag_delta();
+                        self.cameras[index].pan(delta.x, delta.y, cell);
+                    }
+                }
+                if ui.input(|i| i.pointer.any_released()) {
+                    if let Some(drag) = self.drag.take_if(|d| d.view == index) {
+                        let moved = self
+                            .surface
+                            .as_ref()
+                            .map(|s| (s.points[drag.point].p - drag.original).length() > 1e-12)
+                            .unwrap_or(false);
+                        if moved {
+                            // Full refinement and measurement again.
+                            self.revision += 1;
+                            self.status = "control point moved".to_owned();
+                        } else {
+                            self.history.discard_last();
+                        }
+                    }
                 }
             }
             if response.clicked() {
                 self.active = index;
+                self.selected = self.pick_at(ui, &view, cell);
             }
 
-            // The scene borrows the surface, so build it here (the cache is
-            // already synced; nothing below mutates `self`).
             if let (Some(surface), Some(cache)) = (&self.surface, &self.cache) {
                 let scene = Scene {
                     surface,
@@ -254,14 +391,78 @@ impl App {
                     trim: 0.0,
                     heel_deg: 0.0,
                 };
-                render::viewport(ui, cell, &self.cameras[index], Some(&scene), &self.display, self.active == index, self.selected);
+                render::viewport(
+                    ui,
+                    cell,
+                    &self.cameras[index],
+                    Some(&scene),
+                    &self.display,
+                    self.active == index,
+                    self.selected,
+                );
             } else {
-                render::viewport(ui, cell, &self.cameras[index], None, &self.display, self.active == index, None);
+                render::viewport(
+                    ui,
+                    cell,
+                    &self.cameras[index],
+                    None,
+                    &self.display,
+                    self.active == index,
+                    None,
+                );
             }
         }
     }
 
-    // ---- accessors (tests and future dock panels) ----------------------
+    fn pick_at(
+        &self,
+        ui: &egui::Ui,
+        view: &crate::camera::ViewTransform,
+        cell: egui::Rect,
+    ) -> Option<usize> {
+        let cursor = ui.input(|i| i.pointer.interact_pos())?;
+        let surface = self.surface.as_ref()?;
+        let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
+        picking::pick_point(view, cell, cursor, &pts, PICK_RADIUS)
+    }
+
+    /// A primary drag starts either a point drag (when it grabs a point) or a
+    /// camera pan (handled by the caller when `drag` stays `None`).
+    fn begin_drag(
+        &mut self,
+        ui: &egui::Ui,
+        view: &crate::camera::ViewTransform,
+        cell: egui::Rect,
+        index: usize,
+    ) {
+        let Some(point) = self.pick_at(ui, view, cell) else { return };
+        let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else { return };
+        let Some(surface) = self.surface.as_ref() else { return };
+        let center = surface.points[point].p;
+        let plane = picking::drag_plane(view, center);
+        let offset = picking::ray_plane(&view.ray(cursor, cell), &plane)
+            .map(|hit| center - hit)
+            .unwrap_or(Vec3::ZERO);
+        self.history.snapshot(surface);
+        self.selected = Some(point);
+        self.active = index;
+        self.status = format!("dragging control point {point}");
+        self.drag = Some(DragState { point, plane, offset, view: index, original: center });
+    }
+
+    fn drag_to(&mut self, ui: &egui::Ui, view: &crate::camera::ViewTransform, cell: egui::Rect) {
+        let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else { return };
+        let Some(drag) = self.drag.as_ref() else { return };
+        let Some(hit) = picking::ray_plane(&view.ray(cursor, cell), &drag.plane) else { return };
+        let target = hit + drag.offset;
+        let point = drag.point;
+        if let Some(surface) = self.surface.as_mut() {
+            surface.points[point].p = target;
+        }
+        self.revision += 1;
+    }
+
+    // ---- accessors (tests and dock panels) -----------------------------
 
     pub fn surface(&self) -> Option<&Surface> {
         self.surface.as_ref()
@@ -293,6 +494,19 @@ impl App {
 
     pub fn active_view(&self) -> usize {
         self.active
+    }
+
+    /// Where viewport `i` was drawn last frame (test hook).
+    pub fn viewport_rect(&self, i: usize) -> egui::Rect {
+        self.viewport_rects[i]
+    }
+
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
+    }
+
+    pub fn undo_len(&self) -> usize {
+        self.history.undo_len()
     }
 
     pub fn display(&self) -> &DisplayOptions {

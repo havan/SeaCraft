@@ -5,6 +5,8 @@
 
 pub mod app;
 pub mod camera;
+pub mod history;
+pub mod picking;
 pub mod render;
 
 pub use app::App;
