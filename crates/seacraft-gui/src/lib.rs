@@ -4,5 +4,6 @@
 //! algorithms, only interaction and drawing.
 
 pub mod app;
+pub mod camera;
 
 pub use app::App;
