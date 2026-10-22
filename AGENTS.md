@@ -33,19 +33,18 @@ Rust. It reads and writes FREE!ship's text `.fef` exchange format, refines the
 control net with the same hybrid Loop / Catmull-Clark scheme, and measures the
 submerged hull.
 
-**Status.** Library, CLI, tests, `.fef` round-trip, hydrostatics, stability,
-linesplan SVG and mesh export are implemented and verified. There is **no GUI**:
-the only interactive surface is the CLI plus the self-contained three.js HTML
-viewer produced by `seacraft export ... -o hull.html`. An interactive
-modeller (drag control points) does not exist yet.
+**Status.** Library, CLI, GUI, tests, `.fef` round-trip, hydrostatics,
+stability, linesplan SVG and mesh export are implemented and verified. The
+desktop modeller (`seacraft-gui`) has four linked viewports, control-point
+dragging with undo, a layer dock, a live hydrostatics dock with GZ cross
+curves, and file/export actions.
 
-Workspace is not a git repository at the time of writing; `git init` before
-making history.
+The workspace is a **local-only** git repository: no remotes, no push.
 
 ## Layout
 
 ```
-Cargo.toml                  workspace: seacraft-core + seacraft-cli
+Cargo.toml                  workspace: core + cli + gui, one shared version
 crates/seacraft-core/
   src/lib.rs                public API and module map
   src/math.rs               Vec3, Plane, 2D polygon moments (area/mx/my/ix/iy)
@@ -60,20 +59,36 @@ crates/seacraft-core/
   src/export.rs             OBJ (y- or z-up), binary STL, ASCII PLY, HTML viewer
   src/demo.rs               parametric 12 m demo hull, full and half model
 crates/seacraft-cli/src/main.rs   clap front end, table/JSON/CSV output
+crates/seacraft-gui/
+  src/main.rs               eframe bootstrap, `--open FILE`
+  src/app.rs                App state, menus, file actions, dock wiring
+  src/camera.rs             ViewKind, Camera, ViewTransform, Ray
+  src/render.rs             viewport painter: grid, shading, control net
+  src/picking.rs            screen-space picking, drag plane
+  src/history.rs            snapshot undo/redo (64)
+  src/panels.rs             layer dock, hydrostatics dock, GZ plot
+  tests/                    drag, files, hydro, smoke (all headless)
 examples/demo-hull.fef      generated demo model, safe to regenerate
 README.md                   user-facing docs + FREE!ship investigation notes
+ATTRIBUTION.md              provenance of code ported from ../resource/*
 ```
 
 ## Build and test
 
 ```console
 cargo build --release
-cargo test                       # 9 unit tests in core + 1 doctest
+cargo test                       # core + gui unit + 5 integration suites
+cargo clippy --all-targets       # must stay silent
 cargo run --release -- demo -o /tmp/demo.fef
 cargo run --release -- hydro /tmp/demo.fef --kg 2.2 --stations 11
 cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.svg
 cargo run --release -- export /tmp/demo.fef -o /tmp/hull.html --level 2
+cargo run -p seacraft-gui -- --open examples/demo-hull.fef
 ```
+
+The GUI runs headlessly for tests: `egui::Context::run_ui` with synthetic
+pointer and key events (`crates/seacraft-gui/tests/`). A real check needs the
+display: `DISPLAY=:1 import -window root /tmp/gui.png` while the app runs.
 
 Reference numbers for the demo hull at T = 0.62 m (level 3, Loop mode):
 volume ≈ 11.85 m³, Cb ≈ 0.504, Cwp ≈ 0.824, KB ≈ 0.392 m, KM ≈ 2.63 m,
@@ -112,7 +127,9 @@ Breaking any of these produces plausible-looking but wrong numbers.
 5. **Subdivision weights are FREE!ship's, not a textbook's.** Edge points are
    midpoints, face points are centroids, and `average` applies
    `P' = P + a (C - P)` with `a = 4/n` for all-quad, the Loop beta formula for
-   all-triangle, and `12/(3Nq + 2Nt)` mixed, then crease `0.5P + 0.25(N1+N2)`.
+   all-triangle, and `12/(3Nq + 2Nt)` mixed, then crease `0.5P + 0.25(N1+N2)`
+   for crease vertices with **exactly two** crease neighbours (others are
+   pinned, so the weights can never sum past 1).
    Do not substitute standard Catmull-Clark.
 
 ## Pitfalls already hit
@@ -134,6 +151,10 @@ These were real failures in this codebase; the fixes are load-bearing.
   centreline (lateral) cut needs the same.
 * **Mirroring reads `face_layer` per face.** Clear it only after
   `mirror_symmetric`, or it panics with an index-out-of-bounds.
+* **Crease junctions must not average.** A vertex with three or more incident
+  crease edges (chine + transom + sheer) summed `0.5 + 0.25k > 1` and drifted
+  outward by 25 % per level. The rule is `nb.len() == 2`; write the weights as
+  a single expression so the sum is visible.
 * **`PolygonMoments::from_polygon` returns signed values.** Areas/moments may
   come back negative depending on winding; callers take `abs()` where the
   orientation is not guaranteed.
@@ -152,14 +173,25 @@ These were real failures in this codebase; the fixes are load-bearing.
 * **New test**: prefer analytic or invariant checks (box displacement, barge
   waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror
   symmetry, `.fef` round-trip) over golden files.
+* **New GUI panel**: add a function in `crates/seacraft-gui/src/panels.rs`
+  taking `&mut egui::Ui` plus the state it needs, return what the user asked
+  for, and let `App::draw` apply it after the closure (never mutate the model
+  from inside a panel closure). Headless tests drive frames through
+  `egui::Context::run_ui`; the docks settle on the second frame, so draw two
+  before reading `App::viewport_rect`.
+* **Ported code**: keep the source file, project and licence in the module
+  header *and* in `ATTRIBUTION.md`. Adapt the vector type to
+  `seacraft_core::math::Vec3`; never add `solidcraft-*`, `fieldcraft-*` or
+  `solidcore` as Cargo dependencies (millimetres, `truck`, `egui 0.36`).
 
 ## Versioning and history
 
 * Semver with a prerelease counter, shared through
-  `[workspace.package] version`: `0.1.0-alpha.1` at import time, then
-  `alpha.2`, `alpha.3` … after every completed task while no usable GUI exists.
-  `0.1.0-beta.1` when the acceptance checklist passes; `0.1.0` when a user can
-  open, edit and measure a hull without a known blocking defect.
+  `[workspace.package] version`. History: `0.1.0-alpha.1` at import time,
+  `alpha.2` … `alpha.10` per completed GUI task, `0.1.0-beta.1` when the
+  acceptance checklist passed, then `beta.N` per completed task. `0.1.0` only
+  when a user can open, edit and measure a hull without a known blocking
+  defect.
 * The version must be identical in `Cargo.toml`, `Cargo.lock`, the window title
   and `seacraft --version`.
 * **Local-only Git.** `git remote -v` must stay empty: no push, no publish, no

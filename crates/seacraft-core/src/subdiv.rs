@@ -238,13 +238,15 @@ impl SubdivMesh {
             match kind {
                 VertexKind::Corner => {}
                 VertexKind::Crease => {
+                    // FREE!ship's crease rule is exactly two neighbours:
+                    // `P' = 0.5 P + 0.25 (N1 + N2)`. With three or more incident
+                    // crease edges (a chine meeting the transom and the sheer)
+                    // the weights would sum above one and the vertex would be
+                    // pushed outward on every refinement level, so such a
+                    // junction stays pinned at its old position instead.
                     let nb = &crease_nbrs[i];
-                    if nb.len() >= 2 {
-                        let mut acc = old[i] * 0.5;
-                        for &j in nb {
-                            acc += old[j] * 0.25;
-                        }
-                        out[i] = acc;
+                    if nb.len() == 2 {
+                        out[i] = old[i] * 0.5 + old[nb[0]] * 0.25 + old[nb[1]] * 0.25;
                     }
                 }
                 _ => {

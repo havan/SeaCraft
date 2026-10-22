@@ -206,10 +206,16 @@ pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
     );
     let _ = writeln!(html, "const P=[{}];", positions);
     let _ = writeln!(html, "const I=[{}];", indices);
+    // The geometry is SeaCraft's own: x forward, y starboard, z up. Three.js
+    // defaults to y-up, which would lay the hull on its side, so the whole
+    // scene is switched to z-up before anything is built and the ground grid
+    // is turned into the XY plane.
     let _ = writeln!(
         html,
-        "const scene=new THREE.Scene();scene.background=new THREE.Color(0x0b1016);\
+        "THREE.Object3D.DEFAULT_UP.set(0,0,1);\
+         const scene=new THREE.Scene();scene.background=new THREE.Color(0x0b1016);\
          const cam=new THREE.PerspectiveCamera(40,innerWidth/innerHeight,0.05,5000);\
+         cam.up.set(0,0,1);\
          cam.position.set({:.2},{:.2},{:.2});\
          const r=new THREE.WebGLRenderer({{antialias:true}});r.setSize(innerWidth,innerHeight);\
          r.setPixelRatio(Math.min(devicePixelRatio,2));document.body.appendChild(r.domElement);\
@@ -223,17 +229,18 @@ pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
          const m=new THREE.MeshStandardMaterial({{color:0x9fb4c7,metalness:0.15,roughness:0.55,side:THREE.DoubleSide,flatShading:false}});\
          const mesh=new THREE.Mesh(g,m);scene.add(mesh);\
          const w=new THREE.LineSegments(new THREE.WireframeGeometry(g),new THREE.LineBasicMaterial({{color:0x39506b,transparent:true,opacity:.35}}));scene.add(w);\
-         const grid=new THREE.GridHelper(200,200,0x22303f,0x16202b);grid.position.y={:.4};scene.add(grid);\
+         const grid=new THREE.GridHelper(200,200,0x22303f,0x16202b);grid.rotation.x=Math.PI/2;grid.position.z={:.4};scene.add(grid);\
          ctl.target.set({:.3},{:.3},{:.3});ctl.update();\
          addEventListener('resize',()=>{{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();r.setSize(innerWidth,innerHeight);}});\
          (function loop(){{requestAnimationFrame(loop);ctl.update();r.render(scene,cam);}})();\n",
-        cx + size * 1.5,
-        cy + size * 1.1,
-        cz + size * 1.6,
-        cz,
+        cx + size * 1.4,
+        cy - size * 1.6,
+        cz + size * 1.1,
+        // The grid sits at the keel: it reads as the ground the hull rests on.
+        min.z,
         cx,
-        cz,
-        cy
+        cy,
+        cz
     );
     html.push_str("</script>\n</body>\n</html>\n");
     html

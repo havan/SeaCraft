@@ -183,11 +183,18 @@ pub fn waterplane(surface: &Surface, draft: f64, trim: f64, heel_deg: f64) -> Pl
 pub fn waterplane_for(keel_z: f64, length: f64, draft: f64, trim: f64, heel_deg: f64) -> Plane {
     let length = length.max(1e-6);
     let heel = deg_to_rad(heel_deg);
-    let z1 = keel_z + draft - trim * 0.5;
-    let z2 = keel_z + draft + trim * 0.5;
+    // `trim` is positive when the bow is higher than the stern, so the stern
+    // (x = 0) is the deeper end in ship coordinates.
+    let z1 = keel_z + draft + trim * 0.5;
+    let z2 = keel_z + draft - trim * 0.5;
     let p1 = Vec3::new(0.0, 0.0, z1);
     let p2 = Vec3::new(length, 0.0, z2);
-    let p3 = Vec3::new(0.0, 1.0, z1 - heel.sin());
+    // Heel is positive to starboard. In ship-fixed coordinates that raises the
+    // water surface towards +y (the ship turns, not the sea), so the starboard
+    // side goes deeper. The slope is `tan`, not `sin`: the surface must make
+    // exactly `heel_deg` with the horizontal, or the angle reported is not the
+    // angle floated and GZ is measured at the wrong heel.
+    let p3 = Vec3::new(0.0, 1.0, z1 + heel.tan());
     Plane::through(p1, p2, p3)
 }
 
@@ -751,4 +758,47 @@ impl Hull {
 /// Compute hydrostatics for one floating condition.
 pub fn compute(surface: &Surface, opts: &HydroOptions) -> Hydrostatics {
     Hull::new(surface, opts.subdivision).hydrostatics(opts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The waterplane must make exactly the requested angle with the
+    /// horizontal, and positive heel must put starboard deeper.
+    #[test]
+    fn waterplane_tilts_by_the_heel_angle_towards_starboard() {
+        for heel in [0.0, 5.0, 10.0, 30.0, -20.0] {
+            let wp = waterplane_for(0.0, 12.0, 1.0, 0.0, heel);
+            // The slope along y is `tan(heel)`, in the plane's own terms.
+            let at = |y: f64| {
+                // Height of the surface at (x = 6, y) given the plane.
+                let x = 6.0;
+                -(wp.n.x * x + wp.n.y * y + wp.d) / wp.n.z
+            };
+            let slope = (at(1.0) - at(0.0)).abs();
+            let expected = deg_to_rad(heel).tan().abs();
+            assert!(
+                (slope - expected).abs() < 1e-9,
+                "heel {heel}: slope {slope} vs {expected}"
+            );
+            // Positive heel: starboard (y > 0) is deeper, so a point there is
+            // below the surface.
+            let starboard = wp.side(Vec3::new(6.0, 2.0, 0.5));
+            let port = wp.side(Vec3::new(6.0, -2.0, 0.5));
+            if heel > 0.0 {
+                assert!(starboard < port, "heel {heel} must sink starboard: {starboard} vs {port}");
+            } else if heel < 0.0 {
+                assert!(starboard > port, "heel {heel} must sink port: {starboard} vs {port}");
+            }
+        }
+    }
+
+    #[test]
+    fn trim_raises_the_bow() {
+        let wp = waterplane_for(0.0, 12.0, 1.0, 0.4, 0.0);
+        let bow = wp.side(Vec3::new(12.0, 0.0, 1.0));
+        let stern = wp.side(Vec3::new(0.0, 0.0, 1.0));
+        assert!(bow > 0.0 && stern < 0.0, "positive trim lifts the bow: {bow} / {stern}");
+    }
 }
