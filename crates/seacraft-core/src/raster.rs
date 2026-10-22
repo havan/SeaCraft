@@ -14,7 +14,7 @@
 //! opaque surface, one camera and one background.
 
 use crate::analysis::{self, AnalysisMode, Curvature};
-use crate::math::Vec3;
+use crate::math::{Plane, Vec3};
 
 /// RGBA pixels plus a depth buffer.
 pub struct Canvas {
@@ -118,6 +118,9 @@ pub struct RenderOptions {
     /// usually modelled as a shell open at the deck, so a top-down view would
     /// otherwise be empty: the interior has to be drawn.
     pub two_sided: bool,
+    /// Optional waterplane quad to composite with depth testing against the
+    /// hull so an obliquely heeled or trimmed waterplane slices cleanly.
+    pub waterplane: Option<Plane>,
 }
 
 impl Default for RenderOptions {
@@ -130,6 +133,7 @@ impl Default for RenderOptions {
             supersample: 2,
             wireframe: false,
             two_sided: true,
+            waterplane: None,
         }
     }
 }
@@ -300,6 +304,94 @@ pub fn render(
                         rgba[o] = (stroke[0] * 255.0) as u8;
                         rgba[o + 1] = (stroke[1] * 255.0) as u8;
                         rgba[o + 2] = (stroke[2] * 255.0) as u8;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(plane) = opts.waterplane {
+        if !verts.is_empty() {
+            let mut min = verts[0];
+            let mut max = verts[0];
+            for v in verts {
+                min = min.min(*v);
+                max = max.max(*v);
+            }
+            let (u, v) = plane.basis();
+            let centre = plane.project((min + max) * 0.5);
+            let mut u_min = f64::INFINITY;
+            let mut u_max = f64::NEG_INFINITY;
+            let mut v_min = f64::INFINITY;
+            let mut v_max = f64::NEG_INFINITY;
+            for x in [min.x, max.x] {
+                for y in [min.y, max.y] {
+                    for z in [min.z, max.z] {
+                        let d = plane.project(Vec3::new(x, y, z)) - centre;
+                        let du = d.dot(u);
+                        let dv = d.dot(v);
+                        u_min = u_min.min(du);
+                        u_max = u_max.max(du);
+                        v_min = v_min.min(dv);
+                        v_max = v_max.max(dv);
+                    }
+                }
+            }
+            let pad_u = ((u_max - u_min) * 0.12).max(0.2);
+            let pad_v = ((v_max - v_min) * 0.12).max(0.2);
+            let corners = [
+                centre + u * (u_min - pad_u) + v * (v_min - pad_v),
+                centre + u * (u_max + pad_u) + v * (v_min - pad_v),
+                centre + u * (u_max + pad_u) + v * (v_max + pad_v),
+                centre + u * (u_min - pad_u) + v * (v_max + pad_v),
+            ];
+            let p_corners: Vec<Option<[f64; 3]>> =
+                corners.iter().map(|p| view.project(*p, sw, sh)).collect();
+            for tri in [[0usize, 1, 2], [0, 2, 3]] {
+                let (Some(a), Some(b), Some(c)) =
+                    (p_corners[tri[0]], p_corners[tri[1]], p_corners[tri[2]])
+                else {
+                    continue;
+                };
+                let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+                if area.abs() < 1e-12 {
+                    continue;
+                }
+                let x0 = [a[0], b[0], c[0]].into_iter().fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
+                let x1 = ([a[0], b[0], c[0]].into_iter().fold(f64::NEG_INFINITY, f64::max).ceil() as i64)
+                    .min(sw as i64 - 1)
+                    .max(0) as usize;
+                let y0 = [a[1], b[1], c[1]].into_iter().fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
+                let y1 = ([a[1], b[1], c[1]].into_iter().fold(f64::NEG_INFINITY, f64::max).ceil() as i64)
+                    .min(sh as i64 - 1)
+                    .max(0) as usize;
+                if x0 > x1 || y0 > y1 {
+                    continue;
+                }
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                        let w0 = ((b[0] - px) * (c[1] - py) - (b[1] - py) * (c[0] - px)) / area;
+                        let w1 = ((c[0] - px) * (a[1] - py) - (c[1] - py) * (a[0] - px)) / area;
+                        let w2 = 1.0 - w0 - w1;
+                        if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                            continue;
+                        }
+                        let z = (w0 * a[2] + w1 * b[2] + w2 * c[2]) as f32;
+                        let idx = y * sw + x;
+                        if z <= depth[idx] {
+                            let o = idx * 4;
+                            let near_hull = depth[idx].is_finite()
+                                && (depth[idx] - z).abs() < 0.02 * (1.0 + z.abs()).max(1.0);
+                            let (tint, alpha) = if near_hull {
+                                ([92.0, 168.0, 240.0], 0.75)
+                            } else {
+                                ([48.0, 108.0, 184.0], 0.22)
+                            };
+                            rgba[o] = ((rgba[o] as f64 * (1.0 - alpha) + tint[0] * alpha).round()) as u8;
+                            rgba[o + 1] = ((rgba[o + 1] as f64 * (1.0 - alpha) + tint[1] * alpha).round()) as u8;
+                            rgba[o + 2] = ((rgba[o + 2] as f64 * (1.0 - alpha) + tint[2] * alpha).round()) as u8;
+                        }
                     }
                 }
             }
@@ -498,5 +590,58 @@ mod tests {
         assert!(bytes.ends_with(&[0xAE, 0x42, 0x60, 0x82]), "IEND crc: {:?}", &bytes[bytes.len() - 4..]);
         assert!(png(0, 0, &[]).is_none());
         assert!(png(4, 4, &[0; 3]).is_none());
+    }
+
+    #[test]
+    fn waterplane_depth_test_tints_only_submerged_depth() {
+        let mut verts = Vec::new();
+        let mut faces = Vec::new();
+        for (k, z) in [-2.0f64, 2.0].into_iter().enumerate() {
+            let base = k * 4;
+            verts.extend([
+                Vec3::new(-5.0, -5.0, z),
+                Vec3::new(5.0, -5.0, z),
+                Vec3::new(5.0, 5.0, z),
+                Vec3::new(-5.0, 5.0, z),
+            ]);
+            faces.push(vec![base, base + 1, base + 2, base + 3]);
+        }
+        let view = View::ortho(Vec3::new(0.0, 0.0, -1.0), Vec3::ZERO, 12.0);
+        let dry = render(
+            &verts,
+            &faces,
+            &view,
+            &RenderOptions { width: 32, height: 32, supersample: 1, ..Default::default() },
+        );
+        // Waterplane at z = 0 is behind the z = +2 panel, so the centre pixel must stay dry.
+        let wp_behind = render(
+            &verts,
+            &faces,
+            &view,
+            &RenderOptions {
+                width: 32,
+                height: 32,
+                supersample: 1,
+                waterplane: Some(Plane::new(Vec3::new(0.0, 0.0, 1.0), 0.0)),
+                ..Default::default()
+            },
+        );
+        let mid = (16 * 32 + 16) * 4;
+        assert_eq!(&dry.rgba[mid..mid + 3], &wp_behind.rgba[mid..mid + 3]);
+
+        // Waterplane at z = 4 is in front of both panels, so the centre pixel is tinted blue.
+        let wp_in_front = render(
+            &verts,
+            &faces,
+            &view,
+            &RenderOptions {
+                width: 32,
+                height: 32,
+                supersample: 1,
+                waterplane: Some(Plane::new(Vec3::new(0.0, 0.0, 1.0), -4.0)),
+                ..Default::default()
+            },
+        );
+        assert_ne!(&dry.rgba[mid..mid + 3], &wp_in_front.rgba[mid..mid + 3]);
     }
 }

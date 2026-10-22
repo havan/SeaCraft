@@ -151,3 +151,43 @@ fn a_drag_that_misses_every_point_pans_the_camera_instead() {
     assert!(points_before.iter().zip(&points_after).all(|(a, b)| (*a - *b).length() < 1e-12));
     assert_eq!(app.undo_len(), 0, "a pan is not an edit");
 }
+
+#[test]
+fn symmetric_layer_clamps_dragged_point_at_the_centreline() {
+    let mut app = App::headless_for_test(None);
+    {
+        let surface = app.surface_mut().expect("model");
+        *surface = seacraft_core::demo::demo_hull(true);
+    }
+    app.mark_geometry_changed();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    // Pick a starboard point on the symmetric half-hull in the Plan viewport (+x right, +y up).
+    let index = {
+        let surface = app.surface().expect("model");
+        surface
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.p.x > 3.0 && p.p.x < 9.0 && p.p.y > 0.2)
+            .min_by(|a, b| a.1.p.y.total_cmp(&b.1.p.y))
+            .map(|(i, _)| i)
+            .expect("starboard point")
+    };
+    let before = app.surface().unwrap().points[index].p;
+    assert!(before.y > 0.0);
+    let rect = app.viewport_rect(2); // plan: +y is up on screen, so dragging down moves toward -y
+    let screen = app.cameras()[2].transform().project(before, rect).expect("visible");
+
+    // Drag 250 px down (well past the y = 0 centreline into -y).
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen + egui::vec2(0.0, 20.0))]);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen + egui::vec2(0.0, 250.0))]);
+    frame(&ctx, &mut app, vec![button(screen + egui::vec2(0.0, 250.0), false)]);
+
+    let after = app.surface().unwrap().points[index].p;
+    assert_eq!(after.y, 0.0, "symmetric layer must clamp y >= 0, got {after:?}");
+}

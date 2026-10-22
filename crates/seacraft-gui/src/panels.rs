@@ -31,11 +31,19 @@ pub fn layers(ui: &mut egui::Ui, surface: &mut Surface) -> bool {
                     layer.color = ((rgb[0] as i32) << 16) | ((rgb[1] as i32) << 8) | rgb[2] as i32;
                     changed = true;
                 }
-                if ui.text_edit_singleline(&mut layer.name).changed() {
+                if ui
+                    .add(
+                        egui::TextEdit::singleline(&mut layer.name)
+                            .desired_width(ui.available_width()),
+                    )
+                    .changed()
+                {
                     changed = true;
                 }
             });
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
                 changed |= ui.checkbox(&mut layer.visible, "visible").changed();
                 changed |= ui.checkbox(&mut layer.symmetric, "symmetric").changed();
             });
@@ -101,20 +109,61 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     ui.add_space(4.0);
 
     let mut changed = false;
-    egui::Grid::new("floating_condition").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-        ui.label("draft");
-        changed |= ui.add(egui::DragValue::new(&mut panel.options.draft).speed(0.01).range(0.0..=20.0).suffix(" m")).changed();
-        ui.end_row();
-        ui.label("trim");
-        changed |= ui.add(egui::DragValue::new(&mut panel.options.trim).speed(0.01).range(-5.0..=5.0).suffix(" m")).changed();
-        ui.end_row();
-        ui.label("heel");
-        changed |= ui.add(egui::DragValue::new(&mut panel.options.heel_deg).speed(0.2).range(-60.0..=60.0).suffix(" °")).changed();
-        ui.end_row();
-        ui.label("KG");
-        changed |= ui.add(egui::DragValue::new(panel.kg).speed(0.02).range(0.0..=10.0).suffix(" m")).changed();
-        ui.end_row();
-    });
+    egui::Grid::new("floating_condition")
+        .num_columns(2)
+        .min_col_width(56.0)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Draft");
+            changed |= ui
+                .add_sized(
+                    [96.0, 20.0],
+                    egui::DragValue::new(&mut panel.options.draft)
+                        .speed(0.01)
+                        .range(0.0..=20.0)
+                        .fixed_decimals(2)
+                        .suffix(" m"),
+                )
+                .changed();
+            ui.end_row();
+            ui.label("Trim");
+            changed |= ui
+                .add_sized(
+                    [96.0, 20.0],
+                    egui::DragValue::new(&mut panel.options.trim)
+                        .speed(0.01)
+                        .range(-5.0..=5.0)
+                        .fixed_decimals(2)
+                        .suffix(" m"),
+                )
+                .changed();
+            ui.end_row();
+            ui.label("Heel");
+            changed |= ui
+                .add_sized(
+                    [96.0, 20.0],
+                    egui::DragValue::new(&mut panel.options.heel_deg)
+                        .speed(0.2)
+                        .range(-60.0..=60.0)
+                        .fixed_decimals(1)
+                        .suffix(" °"),
+                )
+                .changed();
+            ui.end_row();
+            ui.label("KG");
+            changed |= ui
+                .add_sized(
+                    [96.0, 20.0],
+                    egui::DragValue::new(panel.kg)
+                        .speed(0.02)
+                        .range(0.0..=10.0)
+                        .fixed_decimals(2)
+                        .suffix(" m"),
+                )
+                .changed();
+            ui.end_row();
+        });
+    ui.add_space(4.0);
     // Free trim: the hull trims to keep the LCB on the LCG while it heels.
     // Enabling it without an LCG takes the measured one, which is the natural
     // choice for a model that carries no mass distribution.
@@ -133,6 +182,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     egui::DragValue::new(&mut x)
                         .speed(0.01)
                         .range(-50.0..=50.0)
+                        .fixed_decimals(3)
                         .prefix("LCG ")
                         .suffix(" m"),
                 )
@@ -151,6 +201,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             ui.small("recomputing…");
         });
     }
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui.button("Recompute").clicked() {
             action = HydroAction::Recompute;
@@ -159,31 +210,32 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             action = HydroAction::CrossCurves;
         }
     });
+    ui.add_space(2.0);
     ui.separator();
+    ui.add_space(2.0);
 
     match panel.result {
         Some(h) if h.volume_m3 > 0.0 => {
-            egui::Grid::new("hydro_readout").num_columns(2).spacing([8.0, 2.0]).show(ui, |ui| {
-                ui.vertical(|ui| {
-                    row(ui, "volume", format!("{:.3} m³", h.volume_m3));
-                    row(ui, "displacement", format!("{:.2} t", h.displacement_t));
-                    row(ui, "Cb", format!("{:.3}", h.block_coefficient));
-                    row(ui, "Cp", format!("{:.3}", h.prismatic_coefficient));
-                    row(ui, "Cm", format!("{:.3}", h.midship_coefficient));
-                    row(ui, "Cwp", format!("{:.3}", h.waterplane_coefficient));
-                    row(ui, "LCB", format!("{:.3} m", h.lcb.x));
-                    row(ui, "LCF", format!("{:.3} m", h.lcf.x));
-                });
-                ui.vertical(|ui| {
-                    row(ui, "KB", format!("{:.3} m", h.kb));
-                    row(ui, "BM(t)", format!("{:.3} m", h.bm_transverse));
-                    row(ui, "KM(t)", format!("{:.3} m", h.km_transverse));
-                    row(ui, "GM", format!("{:+.3} m", h.gm(*panel.kg)));
-                    row(ui, "wetted", format!("{:.2} m²", h.wetted_surface_m2));
-                    row(ui, "waterplane", format!("{:.2} m²", h.waterplane_area_m2));
-                    row(ui, "LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl));
-                    row(ui, "midship", format!("{:.3} m²", h.mainframe_area_m2));
-                });
+            ui.columns(2, |cols| {
+                cols[0].spacing_mut().item_spacing.y = 4.0;
+                row(&mut cols[0], "volume", format!("{:.3} m³", h.volume_m3));
+                row(&mut cols[0], "displacement", format!("{:.2} t", h.displacement_t));
+                row(&mut cols[0], "Cb", format!("{:.3}", h.block_coefficient));
+                row(&mut cols[0], "Cp", format!("{:.3}", h.prismatic_coefficient));
+                row(&mut cols[0], "Cm", format!("{:.3}", h.midship_coefficient));
+                row(&mut cols[0], "Cwp", format!("{:.3}", h.waterplane_coefficient));
+                row(&mut cols[0], "LCB", format!("{:.3} m", h.lcb.x));
+                row(&mut cols[0], "LCF", format!("{:.3} m", h.lcf.x));
+
+                cols[1].spacing_mut().item_spacing.y = 4.0;
+                row(&mut cols[1], "KB", format!("{:.3} m", h.kb));
+                row(&mut cols[1], "BM(t)", format!("{:.3} m", h.bm_transverse));
+                row(&mut cols[1], "KM(t)", format!("{:.3} m", h.km_transverse));
+                row(&mut cols[1], "GM", format!("{:+.3} m", h.gm(*panel.kg)));
+                row(&mut cols[1], "wetted", format!("{:.2} m²", h.wetted_surface_m2));
+                row(&mut cols[1], "waterplane", format!("{:.2} m²", h.waterplane_area_m2));
+                row(&mut cols[1], "LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl));
+                row(&mut cols[1], "midship", format!("{:.3} m²", h.mainframe_area_m2));
             });
             for warning in &h.warnings {
                 ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), &warning.message);

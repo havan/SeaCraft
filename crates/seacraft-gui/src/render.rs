@@ -26,7 +26,7 @@ pub const CONTROL: Color32 = Color32::from_rgb(0xe8, 0x9d, 0x3a);
 pub const CREASE: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
 pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
 pub const SELECTED: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
-pub const WATERPLANE: Color32 = Color32::from_rgba_premultiplied(0x30, 0x6c, 0xb8, 0x38);
+pub const WATERPLANE: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
 pub const WATERLINE: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 pub const TEXT: Color32 = Color32::from_rgb(0x8e, 0x9e, 0xae);
 
@@ -82,10 +82,6 @@ impl Scene<'_> {
     fn center(&self) -> Vec3 {
         (self.min + self.max) * 0.5
     }
-
-    fn extent(&self) -> f64 {
-        (self.max - self.min).length().max(1e-6)
-    }
 }
 
 /// Project every vertex once; `None` for points behind a perspective camera.
@@ -137,9 +133,6 @@ pub fn viewport_with_texture(
     if opts.grid {
         draw_grid(&painter, &view, rect, &scene.center());
     }
-    if opts.waterplane {
-        draw_waterplane(&painter, &view, rect, scene);
-    }
     match texture {
         Some(texture) => {
             // A rasterizer frame: per-pixel shading, already depth-tested.
@@ -155,6 +148,9 @@ pub fn viewport_with_texture(
                 draw_hull(&painter, &view, rect, scene, opts);
             }
         }
+    }
+    if opts.waterplane {
+        draw_waterplane(&painter, &view, rect, scene, texture.is_none());
     }
     if opts.control_net {
         draw_control_net(&painter, &view, rect, scene.surface);
@@ -231,7 +227,13 @@ fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: 
     let _ = width;
 }
 
-fn draw_waterplane(painter: &egui::Painter, view: &ViewTransform, rect: Rect, scene: &Scene) {
+fn draw_waterplane(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    rect: Rect,
+    scene: &Scene,
+    fill_quad: bool,
+) {
     let plane = seacraft_core::hydro::waterplane(
         scene.surface,
         scene.draft,
@@ -240,17 +242,74 @@ fn draw_waterplane(painter: &egui::Painter, view: &ViewTransform, rect: Rect, sc
     );
     let (u, v) = plane.basis();
     let center = plane.project(scene.center());
-    let half = scene.extent();
+    let mut u_min = f64::INFINITY;
+    let mut u_max = f64::NEG_INFINITY;
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+    for x in [scene.min.x, scene.max.x] {
+        for y in [scene.min.y, scene.max.y] {
+            for z in [scene.min.z, scene.max.z] {
+                let d = plane.project(Vec3::new(x, y, z)) - center;
+                let du = d.dot(u);
+                let dv = d.dot(v);
+                u_min = u_min.min(du);
+                u_max = u_max.max(du);
+                v_min = v_min.min(dv);
+                v_max = v_max.max(dv);
+            }
+        }
+    }
+    let pad_u = ((u_max - u_min) * 0.12).max(0.2);
+    let pad_v = ((v_max - v_min) * 0.12).max(0.2);
     let corners = [
-        center + u * -half + v * -half,
-        center + u * half + v * -half,
-        center + u * half + v * half,
-        center + u * -half + v * half,
+        center + u * (u_min - pad_u) + v * (v_min - pad_v),
+        center + u * (u_max + pad_u) + v * (v_min - pad_v),
+        center + u * (u_max + pad_u) + v * (v_max + pad_v),
+        center + u * (u_min - pad_u) + v * (v_max + pad_v),
     ];
     let pts: Vec<Pos2> = corners.iter().filter_map(|p| view.project(*p, rect)).collect();
     if pts.len() == 4 {
-        painter.add(egui::Shape::convex_polygon(pts.clone(), WATERPLANE, Stroke::new(1.0, WATERLINE)));
-        painter.line_segment([pts[0], pts[2]], Stroke::new(1.0, WATERLINE));
+        if view.perspective && fill_quad {
+            let mut quad_mesh = egui::Mesh::default();
+            for &p in &pts {
+                quad_mesh.colored_vertex(p, WATERPLANE);
+            }
+            quad_mesh.add_triangle(0, 1, 2);
+            quad_mesh.add_triangle(0, 2, 3);
+            painter.add(egui::Shape::mesh(quad_mesh));
+        }
+        let border = Color32::from_rgba_unmultiplied(0x5c, 0xa8, 0xf0, 0x80);
+        for i in 0..4 {
+            painter.line_segment([pts[i], pts[(i + 1) % 4]], Stroke::new(1.0, border));
+        }
+    }
+
+    // Draw the true waterline intersection curve on the hull surface.
+    for f in &scene.mesh.faces {
+        if f.len() < 3 {
+            continue;
+        }
+        for k in 1..f.len() - 1 {
+            let tri = [
+                scene.mesh.verts[f[0]],
+                scene.mesh.verts[f[k]],
+                scene.mesh.verts[f[k + 1]],
+            ];
+            let s = [plane.side(tri[0]), plane.side(tri[1]), plane.side(tri[2])];
+            let mut hits: Vec<Vec3> = Vec::with_capacity(2);
+            for (i, j) in [(0usize, 1usize), (1, 2), (2, 0)] {
+                if (s[i] <= 0.0) != (s[j] <= 0.0) {
+                    let denom = s[i] - s[j];
+                    let t = if denom.abs() > 1e-15 { (s[i] / denom).clamp(0.0, 1.0) } else { 0.5 };
+                    hits.push(tri[i] + (tri[j] - tri[i]) * t);
+                }
+            }
+            if hits.len() == 2 {
+                if let (Some(p0), Some(p1)) = (view.project(hits[0], rect), view.project(hits[1], rect)) {
+                    painter.line_segment([p0, p1], Stroke::new(1.5, WATERLINE));
+                }
+            }
+        }
     }
 }
 
@@ -308,22 +367,34 @@ fn draw_hull(
             } else {
                 -view.forward
             };
-            if normal.dot(to_eye) <= 0.0 {
-                continue; // back face
-            }
+            // Render both sides of open hull shells (such as the top-down Plan view),
+            // dimming the interior slightly so the outside remains distinct.
+            let facing = normal.dot(to_eye);
+            let side_factor = if facing >= 0.0 { 1.0 } else { 0.82 };
 
             let base = layer_color(scene.surface, mesh.face_layer.get(fi).copied());
-            let shade = (0.35 + 0.65 * normal.dot(light).abs()) as f32;
+            let shade = ((0.35 + 0.65 * normal.dot(light).abs()) * side_factor) as f32;
             items.push((depth, pts, base.gamma_multiply(shade)));
         }
-        // Painter's algorithm: farthest face first.
+        // Painter's algorithm: farthest face first, emitted into one triangle
+        // mesh so epaint's path miter-join extruder never shoots spikes on
+        // near-silhouette faces.
         items.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut tri_mesh = egui::Mesh::default();
         for (_, pts, color) in items {
-            painter.add(egui::Shape::convex_polygon(
-                pts,
-                color,
-                Stroke::new(0.6, color.gamma_multiply(0.75)),
-            ));
+            if pts.len() < 3 {
+                continue;
+            }
+            let base_idx = tri_mesh.vertices.len() as u32;
+            for &p in &pts {
+                tri_mesh.colored_vertex(p, color);
+            }
+            for k in 1..(pts.len() as u32 - 1) {
+                tri_mesh.add_triangle(base_idx, base_idx + k, base_idx + k + 1);
+            }
+        }
+        if !tri_mesh.is_empty() {
+            painter.add(egui::Shape::mesh(tri_mesh));
         }
     }
 
@@ -393,7 +464,13 @@ fn draw_points(
 
 /// A hash of everything a rasterized frame depends on, so the texture is only
 /// rebuilt when the model, the camera, the viewport size or the mode changes.
-pub fn frame_key(revision: u64, camera: &Camera, rect: Rect, mode: AnalysisMode) -> u64 {
+pub fn frame_key(
+    revision: u64,
+    camera: &Camera,
+    rect: Rect,
+    scene: &Scene,
+    opts: &DisplayOptions,
+) -> u64 {
     fn mix(h: &mut u64, x: f64) {
         *h ^= x.to_bits();
         *h = h.wrapping_mul(0x0100_0000_01b3);
@@ -411,7 +488,7 @@ pub fn frame_key(revision: u64, camera: &Camera, rect: Rect, mode: AnalysisMode)
     mix(&mut h, view.ortho_height);
     mix(&mut h, view.fov_tan);
     mix(&mut h, if view.perspective { 1.0 } else { 0.0 });
-    let (a, b) = match mode {
+    let (a, b) = match opts.analysis {
         AnalysisMode::Shaded => (0.0, 0.0),
         AnalysisMode::Zebra { stripes } => (1.0, stripes),
         AnalysisMode::Curvature { radius } => (2.0, radius),
@@ -419,6 +496,12 @@ pub fn frame_key(revision: u64, camera: &Camera, rect: Rect, mode: AnalysisMode)
     };
     mix(&mut h, a);
     mix(&mut h, b);
+    mix(&mut h, if opts.waterplane { 1.0 } else { 0.0 });
+    if opts.waterplane {
+        mix(&mut h, scene.draft);
+        mix(&mut h, scene.trim);
+        mix(&mut h, scene.heel_deg);
+    }
     h
 }
 
@@ -450,6 +533,7 @@ pub fn raster_frame(
     view: &ViewTransform,
     scene: &Scene,
     mode: AnalysisMode,
+    waterplane: bool,
     width: usize,
     height: usize,
 ) -> (usize, usize, Vec<u8>) {
@@ -464,6 +548,14 @@ pub fn raster_frame(
         supersample: 1,
         wireframe: false,
         two_sided: true,
+        waterplane: (waterplane && view.perspective).then(|| {
+            seacraft_core::hydro::waterplane(
+                scene.surface,
+                scene.draft,
+                scene.trim,
+                scene.heel_deg,
+            )
+        }),
     };
     let canvas = raster::render(&scene.mesh.verts, &scene.mesh.faces, &raster_view(view), &opts);
     (canvas.w, canvas.h, canvas.rgba)

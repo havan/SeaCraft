@@ -262,12 +262,14 @@ impl App {
         match std::fs::read_to_string(&path) {
             Ok(text) => match fef::parse(&text) {
                 Ok(surface) => {
+                    let layers_word = if surface.layers.len() == 1 { "layer" } else { "layers" };
                     self.status = format!(
-                        "{} — {} points, {} faces, {} layers",
+                        "{} — {} points, {} faces, {} {}",
                         surface.settings.name,
                         surface.points.len(),
                         surface.faces.len(),
-                        surface.layers.len()
+                        surface.layers.len(),
+                        layers_word
                     );
                     self.surface = Some(surface);
                     self.path = Some(path);
@@ -356,15 +358,13 @@ impl App {
                 }
                 ui.label(&self.status);
                 ui.separator();
-                ui.small(format!(
-                    "L{} {} · {} pts · {} faces",
+                ui.label(format!(
+                    "L{} {}",
                     self.level,
                     match self.mode {
                         SubdivisionMode::Loop => "Loop",
                         SubdivisionMode::CatmullClark => "Catmull-Clark",
                     },
-                    self.control_point_count(),
-                    self.face_count()
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("v{}", seacraft_core::VERSION));
@@ -496,16 +496,6 @@ impl App {
     fn menu(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("Edit", |ui| {
-                    if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)")).clicked() {
-                        self.undo();
-                        ui.close();
-                    }
-                    if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo  (Ctrl+Shift+Z)")).clicked() {
-                        self.redo();
-                        ui.close();
-                    }
-                });
                 ui.menu_button("File", |ui| {
                     if ui.button("New demo hull").clicked() {
                         self.request(PendingAction::NewDemo);
@@ -538,6 +528,16 @@ impl App {
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         self.request(PendingAction::Quit);
+                        ui.close();
+                    }
+                });
+                ui.menu_button("Edit", |ui| {
+                    if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)")).clicked() {
+                        self.undo();
+                        ui.close();
+                    }
+                    if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo  (Ctrl+Shift+Z)")).clicked() {
+                        self.redo();
                         ui.close();
                     }
                 });
@@ -933,9 +933,9 @@ impl App {
                     mesh: &cache.mesh,
                     min: cache.min,
                     max: cache.max,
-                    draft: surface.settings.draft,
-                    trim: 0.0,
-                    heel_deg: 0.0,
+                    draft: self.hydro.options.draft,
+                    trim: self.hydro.options.trim,
+                    heel_deg: self.hydro.options.heel_deg,
                 };
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
@@ -944,7 +944,13 @@ impl App {
                 let texture = if mode.is_shaded() {
                     None
                 } else {
-                    let key = render::frame_key(self.revision, &self.cameras[index], cell, mode);
+                    let key = render::frame_key(
+                        self.revision,
+                        &self.cameras[index],
+                        cell,
+                        &scene,
+                        &self.display,
+                    );
                     if let Some(frame) = self.analysis_frames[index].as_ref().filter(|f| f.key == key)
                     {
                         Some(frame.texture.clone())
@@ -953,8 +959,14 @@ impl App {
                             cell.width().round().max(1.0) as usize,
                             cell.height().round().max(1.0) as usize,
                         );
-                        let (w, h, rgba) =
-                            render::raster_frame(&self.cameras[index].transform(), &scene, mode, w, h);
+                        let (w, h, rgba) = render::raster_frame(
+                            &self.cameras[index].transform(),
+                            &scene,
+                            mode,
+                            self.display.waterplane,
+                            w,
+                            h,
+                        );
                         let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
                         let texture = ui.ctx().load_texture(
                             format!("analysis-{index}"),
@@ -1032,9 +1044,20 @@ impl App {
         let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else { return };
         let Some(drag) = self.drag.as_ref() else { return };
         let Some(hit) = picking::ray_plane(&view.ray(cursor, cell), &drag.plane) else { return };
-        let target = hit + drag.offset;
+        let mut target = hit + drag.offset;
         let point = drag.point;
         if let Some(surface) = self.surface.as_mut() {
+            let on_symmetric_layer = surface.faces.iter().enumerate().any(|(fi, f)| {
+                f.contains(&point)
+                    && surface
+                        .face_layer
+                        .get(fi)
+                        .and_then(|&li| surface.layers.get(li))
+                        .is_some_and(|l| l.symmetric)
+            });
+            if on_symmetric_layer {
+                target.y = target.y.max(0.0);
+            }
             surface.points[point].p = target;
         }
         self.dirty = true;
