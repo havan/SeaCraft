@@ -9,7 +9,9 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use seacraft_core::export::{self, RenderMesh};
+use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
 use seacraft_core::math::{Plane, Vec3};
+use seacraft_core::stability::{self, CrossCurve};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
 use crate::camera::{Camera, ViewKind};
@@ -26,6 +28,43 @@ struct RenderCache {
     mesh: RenderMesh,
     min: Vec3,
     max: Vec3,
+}
+
+/// Live hydrostatics: the floating condition, the last report and the hull
+/// cache they were measured from.
+struct HydroState {
+    options: HydroOptions,
+    kg: f64,
+    result: Option<Hydrostatics>,
+    curves: Option<Vec<CrossCurve>>,
+    hull: Option<Hull>,
+    /// Revision the cached hull was built from.
+    hull_revision: u64,
+    /// When the geometry last changed, for the recompute debounce.
+    last_edit: Option<std::time::Instant>,
+}
+
+impl HydroState {
+    fn new() -> Self {
+        Self {
+            options: HydroOptions {
+                draft: 0.62,
+                trim: 0.0,
+                heel_deg: 0.0,
+                water_density: 1025.0,
+                appendage_coefficient: 1.0,
+                mainframe_x: None,
+                stations: 11,
+                subdivision: seacraft_core::SubdivisionOptions::default(),
+            },
+            kg: 2.2,
+            result: None,
+            curves: None,
+            hull: None,
+            hull_revision: u64::MAX,
+            last_edit: None,
+        }
+    }
 }
 
 /// A control point being dragged in one viewport.
@@ -128,8 +167,10 @@ pub struct App {
     /// A quit that has been confirmed (the window closes at the end of the frame).
     close_requested: bool,
     show_layers: bool,
+    show_hydro: bool,
     /// Geometry changed since the hydrostatics were last computed.
     hydro_dirty: bool,
+    hydro: HydroState,
     /// Viewport rectangles from the last frame, so tests can aim the pointer.
     viewport_rects: [egui::Rect; 4],
 }
@@ -180,7 +221,9 @@ impl App {
             pending: None,
             close_requested: false,
             show_layers: true,
+            show_hydro: true,
             hydro_dirty: true,
+            hydro: HydroState::new(),
             viewport_rects: [egui::Rect::NOTHING; 4],
         }
     }
@@ -230,7 +273,15 @@ impl App {
         self.drag = None;
         self.cache = None;
         self.history.clear();
+        self.hydro.result = None;
+        self.hydro.curves = None;
+        self.hydro.hull = None;
+        self.hydro.hull_revision = u64::MAX;
+        self.hydro_dirty = true;
+        self.hydro.last_edit = Some(std::time::Instant::now());
         if let Some(s) = &self.surface {
+            let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
+            self.hydro.options = HydroOptions::from_surface(s, subdiv);
             let (min, max) = s.extents();
             for cam in &mut self.cameras {
                 cam.frame(min, max);
@@ -297,9 +348,43 @@ impl App {
             if changed {
                 self.revision += 1;
                 self.dirty = true;
-                self.hydro_dirty = true;
+                self.touch_geometry();
             }
         }
+
+        if self.show_hydro {
+            let action = egui::Panel::right("hydro_panel")
+                .resizable(true)
+                .default_size(340.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        panels::hydrostatics(
+                            ui,
+                            panels::HydroPanel {
+                                options: &mut self.hydro.options,
+                                kg: &mut self.hydro.kg,
+                                result: self.hydro.result.as_ref(),
+                                stale: self.hydro_dirty,
+                                curves: self.hydro.curves.as_deref(),
+                            },
+                        )
+                    })
+                    .inner
+                })
+                .inner;
+            match action {
+                panels::HydroAction::Recompute => {
+                    self.hydro_dirty = true;
+                    self.refresh_hydro(true);
+                }
+                panels::HydroAction::CrossCurves => self.compute_curves(),
+                panels::HydroAction::None => {}
+            }
+            if self.hydro_dirty {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+            }
+        }
+        self.refresh_hydro(false);
 
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         self.dialog_window(ui);
@@ -416,6 +501,7 @@ impl App {
                     ui.checkbox(&mut self.display.grid, "Grid");
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
+                    ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
                     ui.separator();
                     if ui.button("Reset cameras (F)").clicked() {
                         self.reset_cameras();
@@ -668,6 +754,7 @@ impl App {
             self.surface = Some(previous);
             self.revision += 1;
             self.dirty = true;
+            self.touch_geometry();
             self.status = format!("undo — {moved} control points restored");
         }
     }
@@ -678,6 +765,7 @@ impl App {
             self.surface = Some(next);
             self.revision += 1;
             self.dirty = true;
+            self.touch_geometry();
             self.status = "redo".to_owned();
         }
     }
@@ -823,6 +911,67 @@ impl App {
         }
         self.dirty = true;
         self.revision += 1;
+        self.touch_geometry();
+    }
+
+    /// Rebuild the hull and the report once the drag has ended and 120 ms have
+    /// passed since the last change, so a drag does not measure every frame.
+    fn refresh_hydro(&mut self, force: bool) {
+        if self.drag.is_some() {
+            return;
+        }
+        if !force {
+            if !self.hydro_dirty {
+                return;
+            }
+            if let Some(then) = self.hydro.last_edit {
+                if then.elapsed() < std::time::Duration::from_millis(120) {
+                    return;
+                }
+            }
+        }
+        let Some(surface) = &self.surface else { return };
+        let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
+        let hull = Hull::new(surface, subdiv);
+        let result = hull.hydrostatics(&self.hydro.options);
+        self.hydro.result = Some(result);
+        self.hydro.hull = Some(hull);
+        self.hydro.hull_revision = self.revision;
+        self.hydro.curves = None;
+        self.hydro_dirty = false;
+    }
+
+    /// GZ cross curves for the current displacement and a spread around it.
+    fn compute_curves(&mut self) {
+        if self.hydro.result.is_none() || self.hydro.hull_revision != self.revision {
+            self.refresh_hydro(true);
+        }
+        let Some(hull) = self.hydro.hull.take() else { return };
+        let displacement_t = self.hydro.result.as_ref().map_or(0.0, |r| r.displacement_t);
+        if displacement_t > 0.0 {
+            let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
+            let factors = [0.7, 0.85, 1.0, 1.15, 1.3];
+            let displacements: Vec<f64> = factors.iter().map(|f| displacement_t * f).collect();
+            self.hydro.curves = Some(stability::cross_curves(
+                &hull,
+                &heels,
+                &displacements,
+                self.hydro.kg,
+                self.hydro.options.trim,
+                &self.hydro.options,
+            ));
+            self.status = format!(
+                "GZ cross curves for {:.2} t and ±30 %",
+                displacement_t
+            );
+        }
+        self.hydro.hull = Some(hull);
+    }
+
+    /// Note that the geometry moved: a measurement is due after the debounce.
+    fn touch_geometry(&mut self) {
+        self.hydro_dirty = true;
+        self.hydro.last_edit = Some(std::time::Instant::now());
     }
 
     // ---- accessors (tests and dock panels) -----------------------------
@@ -874,6 +1023,40 @@ impl App {
 
     pub fn dialog_open(&self) -> bool {
         self.dialog.is_some()
+    }
+
+    /// Mutable access to the model, for panels and tests. Call
+    /// [`App::mark_geometry_changed`] afterwards.
+    pub fn surface_mut(&mut self) -> Option<&mut Surface> {
+        self.surface.as_mut()
+    }
+
+    pub fn mark_geometry_changed(&mut self) {
+        self.revision += 1;
+        self.dirty = true;
+        self.touch_geometry();
+    }
+
+    pub fn hydrostatics(&self) -> Option<&Hydrostatics> {
+        self.hydro.result.as_ref()
+    }
+
+    /// Recompute now, without waiting for the debounce (test hook).
+    pub fn recompute_hydrostatics(&mut self) {
+        self.refresh_hydro(true);
+    }
+
+    pub fn hydro_options_mut(&mut self) -> &mut HydroOptions {
+        &mut self.hydro.options
+    }
+
+    pub fn set_kg(&mut self, kg: f64) {
+        self.hydro.kg = kg;
+        self.hydro_dirty = true;
+    }
+
+    pub fn kg(&self) -> f64 {
+        self.hydro.kg
     }
 
     pub fn undo_len(&self) -> usize {

@@ -1,6 +1,8 @@
 //! Side docks: the layer manager and the hydrostatics report.
 
 use eframe::egui;
+use seacraft_core::hydro::{HydroOptions, Hydrostatics};
+use seacraft_core::stability::CrossCurve;
 use seacraft_core::Surface;
 
 /// Draw one row per layer. Returns whether any flag or colour changed.
@@ -59,4 +61,181 @@ pub fn layers(ui: &mut egui::Ui, surface: &mut Surface) -> bool {
         ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), "no visible layers");
     }
     changed
+}
+
+/// What the user asked the hydrostatics dock to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HydroAction {
+    None,
+    Recompute,
+    CrossCurves,
+}
+
+/// Everything the hydrostatics dock draws.
+pub struct HydroPanel<'a> {
+    pub options: &'a mut HydroOptions,
+    pub kg: &'a mut f64,
+    pub result: Option<&'a Hydrostatics>,
+    /// The geometry changed and the report has not been rebuilt yet.
+    pub stale: bool,
+    pub curves: Option<&'a [CrossCurve]>,
+}
+
+fn row(ui: &mut egui::Ui, label: &str, value: String) {
+    ui.horizontal(|ui| {
+        ui.small(label);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.monospace(value);
+        });
+    });
+}
+
+/// Draft, trim, heel and KG controls plus the measurement readout.
+pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
+    let mut action = HydroAction::None;
+    ui.heading("Hydrostatics");
+    ui.add_space(4.0);
+
+    let mut changed = false;
+    egui::Grid::new("floating_condition").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+        ui.label("draft");
+        changed |= ui.add(egui::DragValue::new(&mut panel.options.draft).speed(0.01).range(0.0..=20.0).suffix(" m")).changed();
+        ui.end_row();
+        ui.label("trim");
+        changed |= ui.add(egui::DragValue::new(&mut panel.options.trim).speed(0.01).range(-5.0..=5.0).suffix(" m")).changed();
+        ui.end_row();
+        ui.label("heel");
+        changed |= ui.add(egui::DragValue::new(&mut panel.options.heel_deg).speed(0.2).range(-60.0..=60.0).suffix(" °")).changed();
+        ui.end_row();
+        ui.label("KG");
+        changed |= ui.add(egui::DragValue::new(panel.kg).speed(0.02).range(0.0..=10.0).suffix(" m")).changed();
+        ui.end_row();
+    });
+    if changed {
+        action = HydroAction::Recompute;
+    }
+    if panel.stale {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.small("recomputing…");
+        });
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Recompute").clicked() {
+            action = HydroAction::Recompute;
+        }
+        if ui.button("GZ curves").clicked() {
+            action = HydroAction::CrossCurves;
+        }
+    });
+    ui.separator();
+
+    match panel.result {
+        Some(h) if h.volume_m3 > 0.0 => {
+            egui::Grid::new("hydro_readout").num_columns(2).spacing([8.0, 2.0]).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    row(ui, "volume", format!("{:.3} m³", h.volume_m3));
+                    row(ui, "displacement", format!("{:.2} t", h.displacement_t));
+                    row(ui, "Cb", format!("{:.3}", h.block_coefficient));
+                    row(ui, "Cp", format!("{:.3}", h.prismatic_coefficient));
+                    row(ui, "Cm", format!("{:.3}", h.midship_coefficient));
+                    row(ui, "Cwp", format!("{:.3}", h.waterplane_coefficient));
+                    row(ui, "LCB", format!("{:.3} m", h.lcb.x));
+                    row(ui, "LCF", format!("{:.3} m", h.lcf.x));
+                });
+                ui.vertical(|ui| {
+                    row(ui, "KB", format!("{:.3} m", h.kb));
+                    row(ui, "BM(t)", format!("{:.3} m", h.bm_transverse));
+                    row(ui, "KM(t)", format!("{:.3} m", h.km_transverse));
+                    row(ui, "GM", format!("{:+.3} m", h.gm(*panel.kg)));
+                    row(ui, "wetted", format!("{:.2} m²", h.wetted_surface_m2));
+                    row(ui, "waterplane", format!("{:.2} m²", h.waterplane_area_m2));
+                    row(ui, "LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl));
+                    row(ui, "midship", format!("{:.3} m²", h.mainframe_area_m2));
+                });
+            });
+            for warning in &h.warnings {
+                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), &warning.message);
+            }
+            if h.gm(*panel.kg) < 0.0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+                    "negative GM: the hull is unstable upright",
+                );
+            }
+        }
+        Some(_) => {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                "nothing is submerged at this draft",
+            );
+        }
+        None => {
+            ui.small("no measurement yet");
+        }
+    }
+
+    if let Some(curves) = panel.curves {
+        ui.separator();
+        plot_cross_curves(ui, curves);
+    }
+    action
+}
+
+/// A small GZ plot: heel across, righting lever up, one line per displacement.
+fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve]) {
+    let height = 150.0;
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let rect = response.rect;
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
+    let mut gz_max: f64 = 0.1;
+    let mut heel_max: f64 = 1.0;
+    for curve in curves {
+        heel_max = heel_max.max(curve.heel_deg);
+        for p in &curve.points {
+            if p.gz.is_finite() {
+                gz_max = gz_max.max(p.gz.abs());
+            }
+        }
+    }
+    let to_screen = |heel: f64, gz: f64| -> egui::Pos2 {
+        let x = rect.left() + (heel / heel_max) as f32 * rect.width();
+        let y = rect.bottom() - ((gz / gz_max) as f32 * 0.45 + 0.45) * rect.height();
+        egui::pos2(x, y)
+    };
+    // Zero line and the axes.
+    painter.line_segment(
+        [to_screen(0.0, 0.0), to_screen(heel_max, 0.0)],
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
+    );
+    let colours = [
+        egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
+        egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
+        egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+        egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+    ];
+    for (i, curve) in curves.iter().enumerate() {
+        let points: Vec<egui::Pos2> = curve
+            .points
+            .iter()
+            .filter(|p| p.gz.is_finite())
+            .map(|p| to_screen(curve.heel_deg, p.gz))
+            .collect();
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(
+                points,
+                egui::Stroke::new(1.4, colours[i % colours.len()]),
+            ));
+        }
+    }
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 2.0),
+        egui::Align2::LEFT_TOP,
+        format!("GZ up to {gz_max:.2} m · heel to {heel_max:.0}°"),
+        egui::FontId::monospace(10.0),
+        egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
+    );
 }

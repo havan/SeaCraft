@@ -101,6 +101,8 @@ fn dragging_a_control_point_moves_it_and_undo_restores_it() {
 fn a_click_without_movement_leaves_no_undo_entry() {
     let mut app = App::headless_for_test(Some(&demo_path()));
     let ctx = egui::Context::default();
+    // Two frames: the resizable docks settle on the second.
+    frame(&ctx, &mut app, Vec::new());
     frame(&ctx, &mut app, Vec::new());
     let index = {
         let surface = app.surface().expect("model loaded");
