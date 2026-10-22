@@ -1172,34 +1172,23 @@ fn cmd_transform(a: TransformArgs) -> Result<()> {
         bail!("nothing to do: give --lwl/--bwl/--draft, --scale, --translate or --mirror");
     }
 
-    // Measure the input once; every later number is compared against it.
-    let before = transform::MainDimensions::measure(&s, subdiv);
-
-    let (mut out, fit) = if targets.is_empty() {
-        (s.clone(), None)
-    } else {
-        let (fitted, report) = transform::fit_to_targets(&s, targets, subdiv, 1e-3, 4)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        (fitted, Some(report))
-    };
-    if let Some(scale) = scale {
-        transform::apply(&mut out, scale, Vec3::ZERO)
-            .map_err(|e| anyhow::anyhow!("--scale: {e}"))?;
-    }
-    if translate != Vec3::ZERO {
-        transform::apply(&mut out, Vec3::new(1.0, 1.0, 1.0), translate)
-            .map_err(|e| anyhow::anyhow!("--translate: {e}"))?;
-    }
-    if let Some(axis) = a.mirror {
-        let axis = match axis {
+    let request = transform::TransformRequest {
+        lwl: a.lwl,
+        bwl: a.bwl,
+        draft: a.draft,
+        scale,
+        translate,
+        mirror: a.mirror.map(|m| match m {
             MirrorArg::X => transform::Axis::X,
             MirrorArg::Y => transform::Axis::Y,
             MirrorArg::Z => transform::Axis::Z,
-        };
-        transform::mirror(&mut out, axis).map_err(|e| anyhow::anyhow!("--mirror: {e}"))?;
-    }
-
-    let after = transform::MainDimensions::measure(&out, subdiv);
+        }),
+    };
+    let (out, report) =
+        transform::run(&s, &request, subdiv).map_err(|e| anyhow::anyhow!(e))?;
+    let before = report.before;
+    let after = report.after;
+    let fit = report.fit.clone();
     std::fs::write(&a.output, fef::write(&out))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
 

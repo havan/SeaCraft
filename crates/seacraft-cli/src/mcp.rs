@@ -48,7 +48,7 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{curves, demo, export, fef, linesplan, offsets, planing, raster, resistance, topology};
+use seacraft_core::{curves, demo, export, fef, linesplan, offsets, planing, raster, resistance, topology, transform};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -83,7 +83,7 @@ net and its layers, extents and principal dimensions; `load_hull` {path} or {dem
 that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
 for the section area at each station against a range of drafts; `table_of_offsets` for the drawing-office \
 half-breadth and buttock tables; `resistance_curve` and `planing_curve` for power; `move_point` and \
-`set_crease`, `split_face` and `insert_edge` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
+`set_crease`, `split_face`, `insert_edge` and `transform_hull` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
 look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
 
 // ---------------------------------------------------------------- framing --
@@ -393,6 +393,7 @@ impl McpServer {
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
             "planing_curve" => self.planing_curve(a),
+            "transform_hull" => self.transform_hull(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -913,6 +914,51 @@ impl McpServer {
         }))
     }
 
+    fn transform_hull(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let subdiv = self.opts.subdivision;
+        let mirror = match str_arg(a, "mirror") {
+            None => None,
+            Some(name) => Some(
+                transform::Axis::parse(name)
+                    .ok_or_else(|| format!("transform_hull: `mirror` must be x, y or z (got `{name}`)"))?,
+            ),
+        };
+        let vec3 = |key: &str| -> Result<Option<Vec3>, String> {
+            match a.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(v) => {
+                    let items = numbers(v, key)?;
+                    if items.len() != 3 {
+                        return Err(format!("transform_hull: `{key}` must be [x, y, z]"));
+                    }
+                    Ok(Some(Vec3::new(items[0], items[1], items[2])))
+                }
+            }
+        };
+        let request = transform::TransformRequest {
+            lwl: number_arg(a, "lwl"),
+            bwl: number_arg(a, "bwl"),
+            draft: number_arg(a, "draft"),
+            scale: vec3("scale")?,
+            translate: vec3("translate")?.unwrap_or(Vec3::ZERO),
+            mirror,
+        };
+        let (out, report) =
+            transform::run(&self.surface, &request, subdiv).map_err(|e| format!("transform_hull: {e}"))?;
+        let new_draft = out.settings.draft;
+        self.surface = out;
+        if new_draft > 0.0 {
+            self.opts.draft = new_draft;
+        }
+        Ok(json!({
+            "backend": "headless",
+            "report": report,
+            "draft": self.opts.draft,
+            "faces": self.surface.faces.len(),
+            "points": self.surface.points.len(),
+        }))
+    }
+
     fn export_linesplan(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let path = str_arg(a, "path")
             .filter(|p| !p.trim().is_empty())
@@ -1417,6 +1463,27 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "transform_hull",
+            "Transform the hull",
+            "Scale the model to target main dimensions, apply an extra axis scale, translate it, or mirror it. \
+             The scale is anchored at the aft end, the centreline and the keel, and a mirror reverses every \
+             face's winding so the normals still point out. Order is fixed: fit, scale, translate, mirror. \
+             The project's length, beam and draft move with it, and so does the measurement draft. Returns the \
+             before/after dimensions and the cumulative scale.",
+            obj(
+                json!({
+                    "lwl": number("Target waterline length in metres"),
+                    "bwl": number("Target waterline beam in metres"),
+                    "draft": number("Target draft in metres above the keel"),
+                    "scale": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Extra scale [x, y, z] applied after the fit"},
+                    "translate": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Translation [dx, dy, dz] in metres"},
+                    "mirror": {"type": "string", "enum": ["x", "y", "z"], "description": "Reflect in this axis"},
+                }),
+                &[],
+            ),
+            false,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1550,6 +1617,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `stability_cross_curves` -> `stability.cross_curves`,
 /// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
 /// `resistance_curve` -> `resistance.compute`, `planing_curve` -> `planing.compute`,
+/// `transform_hull` -> `model.transform`,
 /// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
@@ -1717,6 +1785,7 @@ impl Remote {
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
             "planing_curve" => self.request("planing.compute", Value::Object(a.clone())),
+            "transform_hull" => self.request("model.transform", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -1912,7 +1981,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the fifteen hull tools, each with a JSON Schema.
+        // tools/list: the sixteen hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -1932,6 +2001,7 @@ mod tests {
                 "table_of_offsets",
                 "resistance_curve",
                 "planing_curve",
+                "transform_hull",
                 "export_linesplan",
                 "render_png",
             ]
@@ -2244,6 +2314,30 @@ mod tests {
             assert!(r["resistance_n"].as_f64().unwrap_or(0.0) > 0.0);
         }
 
+        // transform_hull: the model really is rescaled, and the measurement
+        // draft moves with a draft target.
+        let before_t = ok(&mut s, 80, "hull_info", json!({}));
+        let faces_before_t = before_t["faces"].as_u64().unwrap_or(0);
+        let t = ok(&mut s, 81, "transform_hull", json!({ "lwl": 18.0 }));
+        assert_eq!(t["backend"], "headless", "{t}");
+        assert!(
+            (t["report"]["after"]["lwl"].as_f64().unwrap_or(0.0) - 18.0).abs() < 0.02,
+            "{t}"
+        );
+        assert_eq!(t["faces"].as_u64(), Some(faces_before_t), "a transform keeps the topology");
+        // A draft target scales z (and with it the measurement draft).
+        let d = ok(&mut s, 82, "transform_hull", json!({ "draft": 0.9 }));
+        assert!(
+            (d["report"]["after"]["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3,
+            "{d}"
+        );
+        assert!((d["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3, "{d}");
+        // A mirror keeps the model valid; bad input is refused.
+        let m = ok(&mut s, 83, "transform_hull", json!({ "mirror": "x" }));
+        assert_eq!(m["report"]["mirror"], "x", "{m}");
+        fails(&mut s, 85, "transform_hull", json!({}));
+        fails(&mut s, 86, "transform_hull", json!({ "scale": [1.0, 1.0] }));
+
         // save_hull then load_hull round-trips the control net.
         let fef = temp_path("fef");
         let saved = ok(&mut s, 17, "save_hull", json!({"path": fef}));
@@ -2345,6 +2439,7 @@ mod tests {
             json!({"name": "bonjean_curves", "arguments": {"drafts": "0.1,0.2"}}),
             json!({"name": "table_of_offsets", "arguments": {"waterlines": "0.1"}}),
             json!({"name": "split_face", "arguments": {"face": "first"}}),
+            json!({"name": "transform_hull", "arguments": {"mirror": "w"}}),
             json!({"name": "insert_edge", "arguments": {"face": 0, "a": 1}}),
         ] {
             let v = request(&mut s, 20, "tools/call", params.clone());

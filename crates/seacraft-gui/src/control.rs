@@ -1001,6 +1001,60 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }
             Ok(json!({ "backend": "app", "setup": setup, "speeds": rows }))
         }
+        "model.transform" => {
+            let subdiv = seacraft_core::subdiv::SubdivisionOptions {
+                level: app.subdivision_level(),
+                mode: app.subdivision_mode(),
+            };
+            let mirror = match text(p, "mirror")? {
+                None => None,
+                Some(name) => Some(
+                    seacraft_core::transform::Axis::parse(name)
+                        .ok_or_else(|| format!("`mirror` must be x, y or z (got `{name}`)"))?,
+                ),
+            };
+            let vec3 = |key: &str| -> Result<Option<Vec3>, String> {
+                match p.get(key) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(_) => Ok(Some(triple(p, key)?)),
+                }
+            };
+            let request = seacraft_core::transform::TransformRequest {
+                lwl: number_in(p, "lwl", 0.01..=1.0e4)?,
+                bwl: number_in(p, "bwl", 0.01..=1.0e4)?,
+                draft: number_in(p, "draft", 0.001..=1.0e3)?,
+                scale: vec3("scale")?,
+                translate: vec3("translate")?.unwrap_or(Vec3::ZERO),
+                mirror,
+            };
+            let surface = app.surface().ok_or_else(|| "model.transform: no model is loaded".to_string())?;
+            let (out, report) = seacraft_core::transform::run(surface, &request, subdiv)
+                .map_err(|e| format!("model.transform: {e}"))?;
+            app.snapshot_undo();
+            if let Some(surface) = app.surface_mut() {
+                *surface = out;
+            }
+            app.select_point(None);
+            // The fit rescales the model's own design draft; the app measures at
+            // its hydro option, so carry the new draft across or every number
+            // after this would be read at the old waterline.
+            let new_draft = app.surface().map(|s| s.settings.draft).unwrap_or(0.0);
+            if new_draft > 0.0 {
+                app.hydro_options_mut().draft = new_draft;
+            }
+            app.mark_geometry_changed();
+            app.status_note(format!(
+                "hull transformed: scale {:.3} x {:.3} x {:.3}",
+                report.scale.x, report.scale.y, report.scale.z
+            ));
+            Ok(json!({
+                "report": report,
+                "faces": app.face_count(),
+                "points": app.control_point_count(),
+                "draft": app.hydro_options().draft,
+                "undo_len": app.undo_len(),
+            }))
+        }
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -1485,6 +1539,26 @@ mod tests {
             assert_eq!(call(&mut app, &ctx, "ui.render", bad.clone())["ok"], false, "{bad}");
         }
         assert!(std::fs::metadata(&png_path).is_err(), "a refused render writes nothing");
+
+        // ---- model.transform: a real edit, with undo ------------------------
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(&mut app, &ctx, "model.transform", json!({ "lwl": 13.0, "draft": 0.9 }));
+        assert_eq!(r["ok"], true, "{r}");
+        let rep = &r["result"]["report"];
+        assert!((rep["after"]["lwl"].as_f64().unwrap_or(0.0) - 13.0).abs() < 0.05, "{r}");
+        assert!((rep["after"]["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3, "{r}");
+        // The app measures at the new draft, and the edit is undoable.
+        assert!((app.hydro_options().draft - 0.9).abs() < 1e-3, "{}", app.hydro_options().draft);
+        assert_eq!(app.undo_len(), undo_before + 1, "a transform is one snapshot");
+        assert!(app.is_dirty(), "the model changed");
+        let faces_after = app.face_count();
+        assert_eq!(faces_after, faces_before + 3, "a transform keeps the topology: {r}");
+        // A mirror is a valid transform; a bad axis and an empty request are not.
+        assert_eq!(call(&mut app, &ctx, "model.transform", json!({ "mirror": "x" }))["ok"], true);
+        assert_eq!(call(&mut app, &ctx, "model.transform", json!({ "mirror": "w" }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "model.transform", json!({}))["ok"], false);
+        let _ = dirty_before;
 
         // ---- model.save / model.open / model.export ------------------------
         let fef_path = scratch("hull.fef");

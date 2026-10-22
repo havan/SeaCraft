@@ -88,6 +88,93 @@ impl Targets {
     }
 }
 
+
+/// What a caller wants done to the model, in one request.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct TransformRequest {
+    pub lwl: Option<f64>,
+    pub bwl: Option<f64>,
+    pub draft: Option<f64>,
+    /// Extra axis scale applied *after* the target fit.
+    pub scale: Option<Vec3>,
+    pub translate: Vec3,
+    pub mirror: Option<Axis>,
+}
+
+impl TransformRequest {
+    pub fn is_empty(&self) -> bool {
+        self.lwl.is_none()
+            && self.bwl.is_none()
+            && self.draft.is_none()
+            && self.scale.is_none()
+            && self.translate == Vec3::ZERO
+            && self.mirror.is_none()
+    }
+}
+
+/// The outcome of [`run`].
+#[derive(Debug, Clone, Serialize)]
+pub struct TransformReport {
+    pub fit: Option<FitReport>,
+    pub before: Option<MainDimensions>,
+    pub after: Option<MainDimensions>,
+    pub scale: Vec3,
+    pub translate: Vec3,
+    pub mirror: Option<Axis>,
+}
+
+/// Apply a whole [`TransformRequest`] to a copy of `surface`.
+///
+/// The order is fixed and documented: fit to the target dimensions, then the
+/// extra scale, then the translation, then the mirror. One implementation so the
+/// CLI, the control socket and the MCP server cannot drift apart in what
+/// "transform" means.
+pub fn run(
+    surface: &Surface,
+    request: &TransformRequest,
+    subdiv: SubdivisionOptions,
+) -> Result<(Surface, TransformReport), String> {
+    if request.is_empty() {
+        return Err("nothing to do: give target dimensions, a scale, a translation or a mirror"
+            .to_string());
+    }
+    let before = MainDimensions::measure(surface, subdiv);
+    let targets = Targets { lwl: request.lwl, bwl: request.bwl, draft: request.draft };
+    let (mut out, fit) = if targets.is_empty() {
+        (surface.clone(), None)
+    } else {
+        let (fitted, report) = fit_to_targets(surface, targets, subdiv, 1e-3, 4)?;
+        (fitted, Some(report))
+    };
+    let mut cumulative_scale = fit.as_ref().map(|f| f.scale).unwrap_or(Vec3::new(1.0, 1.0, 1.0));
+    if let Some(scale) = request.scale {
+        apply(&mut out, scale, Vec3::ZERO)?;
+        cumulative_scale = Vec3::new(
+            cumulative_scale.x * scale.x,
+            cumulative_scale.y * scale.y,
+            cumulative_scale.z * scale.z,
+        );
+    }
+    if request.translate != Vec3::ZERO {
+        apply(&mut out, Vec3::new(1.0, 1.0, 1.0), request.translate)?;
+    }
+    if let Some(axis) = request.mirror {
+        mirror(&mut out, axis)?;
+    }
+    let after = MainDimensions::measure(&out, subdiv);
+    Ok((
+        out,
+        TransformReport {
+            fit,
+            before,
+            after,
+            scale: cumulative_scale,
+            translate: request.translate,
+            mirror: request.mirror,
+        },
+    ))
+}
+
 /// What [`fit_to_targets`] did.
 #[derive(Debug, Clone, Serialize)]
 pub struct FitReport {
