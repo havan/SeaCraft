@@ -223,6 +223,27 @@ fn number(p: &Value, key: &str) -> Result<Option<f64>, String> {
     }
 }
 
+/// An optional array of finite numbers from `key`.
+fn numbers(p: &Value, key: &str) -> Result<Option<Vec<f64>>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => {
+            if items.len() > 10_000 {
+                return Err(format!("`{key}` has too many entries (at most 10000)"));
+            }
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_f64().filter(|x| x.is_finite()) {
+                    Some(n) => out.push(n),
+                    None => return Err(format!("`{key}` must contain only finite numbers")),
+                }
+            }
+            Ok(Some(out))
+        }
+        Some(_) => Err(format!("`{key}` must be an array of numbers")),
+    }
+}
+
 /// A finite `f64` from `key` inside `range`.
 fn number_in(p: &Value, key: &str, range: std::ops::RangeInclusive<f64>) -> Result<Option<f64>, String> {
     match number(p, key)? {
@@ -754,6 +775,60 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "imo": imo,
             }))
         }
+        "curves.bonjean" => {
+            // Read-only measurement of the app's own model, so an agent can
+            // draw the curves the way `seacraft bonjean` does. Nothing is
+            // changed: no snapshot, no dirty flag.
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            let stations = number_in(p, "stations", 2.0..=200.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(21);
+            let steps = number_in(p, "draft_steps", 2.0..=50.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(10);
+            let surface = app
+                .surface()
+                .ok_or_else(|| "curves.bonjean: no model is loaded".to_string())?;
+            let hull = seacraft_core::hydro::Hull::new(
+                surface,
+                seacraft_core::subdiv::SubdivisionOptions {
+                    level,
+                    mode: app.subdivision_mode(),
+                },
+            );
+            let depth = hull.model_max.z - hull.keel;
+            if depth <= 0.0 {
+                return Err("curves.bonjean: the hull has no height above the keel".into());
+            }
+            let drafts = match numbers(p, "drafts")? {
+                Some(mut given) => {
+                    if given.len() < 2 {
+                        return Err("curves.bonjean: `drafts` needs at least two ordinates".into());
+                    }
+                    if given.iter().any(|d| *d <= 0.0) {
+                        return Err("curves.bonjean: `drafts` must be positive".into());
+                    }
+                    given.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    given
+                }
+                None => seacraft_core::curves::draft_range(depth / steps as f64, depth, steps),
+            };
+            let bj = seacraft_core::curves::bonjean(&hull, stations, &drafts);
+            Ok(json!({
+                "backend": "app",
+                "level": level,
+                "depth_m": depth,
+                "design_draft_m": app.hydro_options().draft,
+                "drafts_m": bj.drafts_m,
+                "sections": bj.sections,
+                "area_max_m2": bj.max_area(),
+            }))
+        }
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -1100,6 +1175,37 @@ mod tests {
         assert_eq!(curves[0]["points"].as_array().unwrap().len(), 5);
         assert!(r["result"]["imo"].is_object(), "IMO criteria for the design displacement: {r}");
         assert_eq!(call(&mut app, &ctx, "stability.cross_curves", json!({ "lcg": "forward" }))["ok"], false);
+
+        // ---- curves.bonjean: read-only, and it does not dirty the model ---
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(&mut app, &ctx, "curves.bonjean", json!({ "stations": 11, "drafts": [0.3, 0.6, 1.2] }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["drafts_m"], json!([0.3, 0.6, 1.2]));
+        let sections = r["result"]["sections"].as_array().expect("sections");
+        assert_eq!(sections.len(), 11, "{r}");
+        let area = sections[5]["areas_m2"][1].as_f64().expect("an area");
+        assert!(area > 0.5 && area < 3.0, "mid station at T = 0.6: {area}");
+        assert!(
+            r["result"]["area_max_m2"].as_f64().unwrap_or(0.0) >= area,
+            "the family maximum covers the mid station: {r}"
+        );
+        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
+        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        // The default draft range comes from the hull's own depth.
+        let d = call(&mut app, &ctx, "curves.bonjean", json!({ "draft_steps": 3 }));
+        assert_eq!(d["ok"], true, "{d}");
+        let top = d["result"]["drafts_m"][2].as_f64().unwrap_or(0.0);
+        assert!((top - d["result"]["depth_m"].as_f64().unwrap_or(-1.0)).abs() < 1e-9, "{d}");
+        for bad in [
+            json!({ "drafts": [0.5] }),
+            json!({ "drafts": [0.0, 0.5] }),
+            json!({ "drafts": "0.5,1.0" }),
+            json!({ "stations": 500 }),
+            json!({ "level": 9 }),
+        ] {
+            assert_eq!(call(&mut app, &ctx, "curves.bonjean", bad.clone())["ok"], false, "{bad}");
+        }
 
         // ---- ui.render writes a PNG ---------------------------------------
         let png_path = scratch("render.png");

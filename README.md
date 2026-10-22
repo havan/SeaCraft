@@ -301,7 +301,9 @@ cursor position on the active viewport's focal plane and the crate version.
 * Programmatic automation is supported via `seacraft-gui --control 127.0.0.1:PORT`
   (JSON lines over TCP, executed on the next frame) and `seacraft mcp` (JSON-RPC
   2.0 Model Context Protocol over stdio, either headless or connected via
-  `--connect 127.0.0.1:PORT`).
+  `--connect 127.0.0.1:PORT`). Ten tools: `hull_info`, `load_hull`, `save_hull`,
+  `move_point`, `set_crease`, `hydro_compute`, `stability_cross_curves`,
+  `bonjean_curves`, `export_linesplan` and `render_png`.
 * Not yet implemented: developability/unfolding, Lackenby
   transformation, resistance and propulsion prediction (Holtrop–Mennen / Savitsky),
   VRML import, and interactive face/edge splitting or extrusion in the GUI.

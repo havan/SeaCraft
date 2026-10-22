@@ -48,7 +48,7 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{demo, export, fef, linesplan, raster};
+use seacraft_core::{curves, demo, export, fef, linesplan, raster};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -80,7 +80,8 @@ y to starboard, z up, metres and kg; the keel is the lowest hydrostatics point, 
 A symmetric layer models only y >= 0 and is mirrored on evaluation. Typical use: `hull_info` for the control \
 net and its layers, extents and principal dimensions; `load_hull` {path} or {demo: true, symmetric}; \
 `hydro_compute` {draft, trim, heel_deg, kg, free_trim, lcg} for one floating condition (free_trim solves the trim \
-that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `move_point` and \
+that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
+for the section area at each station against a range of drafts; `move_point` and \
 `set_crease` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
 look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
 
@@ -385,6 +386,7 @@ impl McpServer {
             "set_crease" => self.set_crease(a),
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
+            "bonjean_curves" => self.bonjean_curves(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -692,6 +694,48 @@ impl McpServer {
             "displacements_t": displacements,
             "curves": serde_json::to_value(&curves).map_err(|e| e.to_string())?,
             "imo_criteria": imo,
+        }))
+    }
+
+    fn bonjean_curves(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let stations = count_arg(a, "stations", 21, 2, 200)?;
+        let steps = count_arg(a, "draft_steps", 10, 2, 50)?;
+        let mut subdiv = self.opts.subdivision;
+        subdiv.level = level;
+        let hull = hydro::Hull::new(&self.surface, subdiv);
+        let depth = hull.model_max.z - hull.keel;
+        if depth <= 0.0 {
+            return Err(
+                "bonjean_curves: the hull has no height above the keel (is a layer hidden?)".to_string(),
+            );
+        }
+        let drafts = match a.get("drafts") {
+            None | Some(Value::Null) => curves::draft_range(depth / steps as f64, depth, steps),
+            Some(v) => {
+                let mut given = numbers(v, "drafts").map_err(|e| format!("bonjean_curves: {e}"))?;
+                if given.len() < 2 {
+                    return Err("bonjean_curves: `drafts` needs at least two ordinates".into());
+                }
+                if given.iter().any(|d| *d <= 0.0) {
+                    return Err("bonjean_curves: `drafts` must be positive".into());
+                }
+                given.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+                given
+            }
+        };
+        let bj = curves::bonjean(&hull, stations, &drafts);
+        Ok(json!({
+            "backend": "headless",
+            "level": level,
+            "depth_m": depth,
+            "design_draft_m": self.opts.draft,
+            "drafts_m": bj.drafts_m,
+            "sections": bj.sections,
+            "area_max_m2": bj.max_area(),
         }))
     }
 
@@ -1076,6 +1120,25 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "bonjean_curves",
+            "Bonjean curves",
+            "Section area against draft at every longitudinal station, cut from the refined mesh at even keel: the \
+             standard curve for grounding and damage-draft work. `drafts` fixes the ordinates in metres above the \
+             keel; otherwise `draft_steps` drafts spread evenly from depth/steps to the hull's own depth are used. \
+             Stations sit at slice midpoints, so no cut lands on an end face. Returns `drafts_m`, one section per \
+             station (`x`, `areas_m2` in the same order), the maximum area and the hull depth.",
+            obj(
+                json!({
+                    "stations": integer("Stations along the model length, 2-200 (default 21)"),
+                    "drafts": {"type": "array", "items": {"type": "number"}, "description": "Draft ordinates in metres, positive and ascending after sorting (default: depth/steps ... depth)"},
+                    "draft_steps": integer("Number of drafts in the default range, 2-50 (default 10)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            true,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1205,7 +1268,8 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `hull_info` -> `ui.inspect`, `load_hull` -> `model.open` / `model.load_demo`,
 /// `save_hull` -> `model.save`, `move_point` -> `point.move`,
 /// `set_crease` -> `edge.crease`, `hydro_compute` -> `hydro.compute`,
-/// `stability_cross_curves` -> `stability.cross_curves`, `export_linesplan`
+/// `stability_cross_curves` -> `stability.cross_curves`,
+/// `bonjean_curves` -> `curves.bonjean`, `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
 pub struct Remote {
@@ -1366,6 +1430,7 @@ impl Remote {
                     "backend": "app",
                 }))
             }
+            "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -1561,7 +1626,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the nine hull tools, each with a JSON Schema.
+        // tools/list: the ten hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -1575,6 +1640,7 @@ mod tests {
                 "set_crease",
                 "hydro_compute",
                 "stability_cross_curves",
+                "bonjean_curves",
                 "export_linesplan",
                 "render_png",
             ]
@@ -1624,6 +1690,59 @@ mod tests {
         assert_eq!(fixed["free_to_trim"], false);
         let fixed_draft = fixed["draft"].as_f64().unwrap_or(0.0);
         assert!((fixed_draft - 0.62).abs() < 1e-12, "{fixed}");
+
+        // bonjean_curves: the section area at the design draft has to agree
+        // with the hydrostatic mainframe area of the same mesh, and the family
+        // must grow with draft.
+        let bj = ok(
+            &mut s,
+            60,
+            "bonjean_curves",
+            json!({"stations": 21, "drafts": [0.31, 0.62, 1.24]}),
+        );
+        assert_eq!(bj["backend"], "headless", "{bj}");
+        assert_eq!(bj["drafts_m"], json!([0.31, 0.62, 1.24]));
+        let sections = bj["sections"].as_array().expect("sections");
+        assert_eq!(sections.len(), 21, "{bj}");
+        let mid = &sections[10];
+        assert!((mid["x"].as_f64().unwrap_or(0.0) - 6.0).abs() < 0.6, "{mid}");
+        let a: Vec<f64> = mid["areas_m2"]
+            .as_array()
+            .expect("areas")
+            .iter()
+            .filter_map(Value::as_f64)
+            .collect();
+        assert_eq!(a.len(), 3);
+        assert!(a[0] < a[1] && a[1] < a[2], "area grows with draft: {a:?}");
+        // The largest area at the design draft is the midship section, within
+        // the demo hull's 1.467 m2 mainframe area (the peak sits a little
+        // forward of the LCF, at ~1.49 m2).
+        let at_design = sections
+            .iter()
+            .filter_map(|s| s["areas_m2"][1].as_f64())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (at_design - 1.467).abs() < 0.06,
+            "largest area at T = 0.62 was {at_design} (expected ~1.467 m2)"
+        );
+        assert!(
+            bj["area_max_m2"].as_f64().unwrap_or(0.0) > a[2],
+            "the deepest station is not the largest: {bj}"
+        );
+        // The default draft range covers the hull depth and stays in order.
+        let dflt = ok(&mut s, 61, "bonjean_curves", json!({"draft_steps": 4}));
+        let drafts: Vec<f64> = dflt["drafts_m"]
+            .as_array()
+            .expect("drafts")
+            .iter()
+            .filter_map(Value::as_f64)
+            .collect();
+        assert_eq!(drafts.len(), 4, "{dflt}");
+        assert!(drafts.windows(2).all(|w| w[1] > w[0]), "{drafts:?}");
+        assert!(
+            (drafts[3] - dflt["depth_m"].as_f64().unwrap_or(0.0)).abs() < 1e-9,
+            "{dflt}"
+        );
 
         // move_point: an asymmetric layer keeps the y it is given ...
         let moved = ok(
@@ -1817,6 +1936,7 @@ mod tests {
             json!({"name": "move_point", "arguments": {"index": "one", "xyz": [0, 0, 0]}}),
             json!({"name": "render_png", "arguments": {"path": "x.png", "mode": "hologram"}}),
             json!({"name": "render_png", "arguments": {"path": "x.png", "view": "under"}}),
+            json!({"name": "bonjean_curves", "arguments": {"drafts": "0.1,0.2"}}),
         ] {
             let v = request(&mut s, 20, "tools/call", params.clone());
             assert_eq!(v["error"]["code"], INVALID_PARAMS, "{params} -> {v}");
@@ -1845,6 +1965,8 @@ mod tests {
             ("stability_cross_curves", json!({"heels": []})),
             ("stability_cross_curves", json!({"heels": ["0"]})),
             ("stability_cross_curves", json!({"displacements": [0.0]})),
+            ("bonjean_curves", json!({"drafts": []})),
+            ("bonjean_curves", json!({"drafts": [0.0, 1.0]})),
             ("export_linesplan", json!({"path": "/tmp/x.obj"})),
             ("export_linesplan", json!({"path": "/no/such/dir/x.svg"})),
             ("render_png", json!({"path": "/no/such/dir/x.png"})),
