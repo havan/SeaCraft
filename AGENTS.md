@@ -1,0 +1,177 @@
+---
+summary: >
+  SeaCraft is a Rust reimplementation of the open-source FREE!ship hull
+  modeller: a subdivision-surface geometry kernel, the .fef exchange format,
+  panel-based hydrostatics, stability cross curves, a linesplan generator and
+  mesh export. Occasionally refines to the same shape as FREE!ship, so the
+  weighting rules in subdiv.rs are load-bearing and must not be "tidied".
+section_index:
+  - "What this is": overview and status
+  - "Layout": where every module lives
+  - "Build and test": the only commands you need
+  - "Domain conventions": axes, units, signs, datum
+  - "Invariants": rules that silently corrupt results if broken
+  - "Pitfalls already hit": bugs that were fixed; do not reintroduce
+  - "Extending": recipes for a new CLI command / measurement
+  - "Licensing and provenance": GPL-2.0-or-later
+agent_instructions: >
+  Read "Invariants" and "Pitfalls already hit" before touching geometry or
+  hydrostatics. Measure on the refined mesh, never on the control net. After
+  any change to subdiv.rs, hydro.rs or linesplan.rs run `cargo test` and the
+  smoke sequence in "Build and test". Never reorder or re-derive the
+  subdivision weights from a textbook: FREE!ship's averaging pass is a
+  deliberate variant, and matching it is the point of the project.
+---
+
+# AGENTS.md
+
+## What this is
+
+SeaCraft reproduces the modelling and measurement pipeline of
+[FREE!ship](https://sourceforge.net/projects/freeship/) (GPLv2, Delphi) in
+Rust. It reads and writes FREE!ship's text `.fef` exchange format, refines the
+control net with the same hybrid Loop / Catmull-Clark scheme, and measures the
+submerged hull.
+
+**Status.** Library, CLI, tests, `.fef` round-trip, hydrostatics, stability,
+linesplan SVG and mesh export are implemented and verified. There is **no GUI**:
+the only interactive surface is the CLI plus the self-contained three.js HTML
+viewer produced by `seacraft export ... -o hull.html`. An interactive
+modeller (drag control points) does not exist yet.
+
+Workspace is not a git repository at the time of writing; `git init` before
+making history.
+
+## Layout
+
+```
+Cargo.toml                  workspace: seacraft-core + seacraft-cli
+crates/seacraft-core/
+  src/lib.rs                public API and module map
+  src/math.rs               Vec3, Plane, 2D polygon moments (area/mx/my/ix/iy)
+  src/mesh.rs               Surface = control points/edges/faces/layers, extents,
+                            edge incidence, boundary/crease initialisation
+  src/subdiv.rs             refinement kernel: refine_once, average, mirroring
+  src/fef.rs                .fef parse/write (format documented in file header)
+  src/hydro.rs              Hull, waterplane, clipping, integration, sections,
+                            waterline chaining, coefficients
+  src/stability.rs          draft solving by bisection + KN/GZ cross curves
+  src/linesplan.rs          stations/buttocks/waterlines -> three-view SVG
+  src/export.rs             OBJ (y- or z-up), binary STL, ASCII PLY, HTML viewer
+  src/demo.rs               parametric 12 m demo hull, full and half model
+crates/seacraft-cli/src/main.rs   clap front end, table/JSON/CSV output
+examples/demo-hull.fef      generated demo model, safe to regenerate
+README.md                   user-facing docs + FREE!ship investigation notes
+```
+
+## Build and test
+
+```console
+cargo build --release
+cargo test                       # 9 unit tests in core + 1 doctest
+cargo run --release -- demo -o /tmp/demo.fef
+cargo run --release -- hydro /tmp/demo.fef --kg 2.2 --stations 11
+cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.svg
+cargo run --release -- export /tmp/demo.fef -o /tmp/hull.html --level 2
+```
+
+Reference numbers for the demo hull at T = 0.62 m (level 3, Loop mode):
+volume ≈ 11.85 m³, Cb ≈ 0.504, Cwp ≈ 0.824, KB ≈ 0.392 m, KM ≈ 2.63 m,
+midship area ≈ 1.47 m². A change that moves these by more than ~1 % is a
+regression, not an improvement.
+
+## Domain conventions
+
+* **Axes**: `x` forward, `y` to starboard, `z` up; keel at low `z`.
+* **Units**: metres and kg inside the core. `.fef` carries the project's
+  units flag; imperial is only a project setting at present.
+* **Layers** may be `symmetric` (only `y >= 0` modelled, mirrored on evaluation)
+  and `use_in_hydrostatics` (filter for measurement, without affecting display).
+* **Heel** is positive to starboard. **Trim** is a length in metres, positive
+  when the bow is higher than the stern.
+* **Datum**: `KB`, `BM`, `KM`, `KG` are above the keel (lowest hydrostatic
+  point). `LCB`, `LCF` are in model coordinates.
+* **Waterplane** is built in `hydro::waterplane_for` from draft, trim and heel;
+  the normal points up, and points with `side <= 0` are submerged.
+
+## Invariants
+
+Breaking any of these produces plausible-looking but wrong numbers.
+
+1. **Measure on the refined mesh.** All hydrostatics, sections and linesplan
+   curves use `subdiv::evaluate` output, never the control polygon.
+2. **Outward normals.** The volume integral is a divergence integral over the
+   hull panels; reversed winding flips the sign or corrupts the volume.
+3. **Closed below the waterline.** Edges must have two adjacent faces except
+   deliberate model boundaries. A submerged boundary edge is a leak. A
+   symmetric half model also needs a transom face, otherwise its waterplane
+   never closes.
+4. **Integration origin lives in the waterplane.** `integrate` projects the
+   world origin onto the plane so the waterplane lid contributes zero; the
+   centroid is shifted back by that origin afterwards.
+5. **Subdivision weights are FREE!ship's, not a textbook's.** Edge points are
+   midpoints, face points are centroids, and `average` applies
+   `P' = P + a (C - P)` with `a = 4/n` for all-quad, the Loop beta formula for
+   all-triangle, and `12/(3Nq + 2Nt)` mixed, then crease `0.5P + 0.25(N1+N2)`.
+   Do not substitute standard Catmull-Clark.
+
+## Pitfalls already hit
+
+These were real failures in this codebase; the fixes are load-bearing.
+
+* **Curves fragment into many short paths.** Two causes, both fixed in
+  `hydro::chain_paths`: walking an open chain from an edge in its middle (walk
+  forward, then backward from the other endpoint and concatenate), and
+  duplicate segments from quad diagonals (dedupe by unordered endpoint pair).
+* **Closure detection.** A closed ring returns to the start edge's *other*
+  vertex, not to the first vertex walked. Comparing against the wrong one makes
+  every waterline look open.
+* **Endpoint snapping.** the same crossing computed from the two adjacent
+  triangles differs in the last bits; grid rounding splits it at cell
+  boundaries. Snap by proximity with a neighbour search.
+* **Open station cuts need closing.** A hull open at the deck gives an open
+  station curve; close it along the waterplane before computing area. The
+  centreline (lateral) cut needs the same.
+* **Mirroring reads `face_layer` per face.** Clear it only after
+  `mirror_symmetric`, or it panics with an index-out-of-bounds.
+* **`PolygonMoments::from_polygon` returns signed values.** Areas/moments may
+  come back negative depending on winding; callers take `abs()` where the
+  orientation is not guaranteed.
+
+## Extending
+
+* **New CLI command**: add a variant to `Command` plus an `Args` struct in
+  `crates/seacraft-cli/src/main.rs`, then a `cmd_*` function; output tables by
+  default and offer `--json`/`--csv` where the data is numeric.
+* **New measurement**: build a `hydro::Hull` once, derive the cutting plane,
+  reuse `plane_segments` + `chain_paths` + `clipped_loop_moments`, and add the
+  field to `Hydrostatics` (it derives `Serialize`). Document the datum.
+* **New export format**: add a function in `export.rs` taking
+  `render_mesh(surface, level, mode)`; keep it dependency-free so the core stays
+  light.
+* **New test**: prefer analytic or invariant checks (box displacement, barge
+  waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror
+  symmetry, `.fef` round-trip) over golden files.
+
+## Versioning and history
+
+* Semver with a prerelease counter, shared through
+  `[workspace.package] version`: `0.1.0-alpha.1` at import time, then
+  `alpha.2`, `alpha.3` … after every completed task while no usable GUI exists.
+  `0.1.0-beta.1` when the acceptance checklist passes; `0.1.0` when a user can
+  open, edit and measure a hull without a known blocking defect.
+* The version must be identical in `Cargo.toml`, `Cargo.lock`, the window title
+  and `seacraft --version`.
+* **Local-only Git.** `git remote -v` must stay empty: no push, no publish, no
+  origin. One linear commit per task.
+* `.hermes/NEXT.md` is the session handoff: current version and commit, what was
+  just done and how it was verified, the next task's first three actions, open
+  decisions. A fresh session starts there, not from chat history.
+
+## Licensing and provenance
+
+SeaCraft is GPL-2.0-or-later, matching FREE!ship. FREE!ship is Copyright its
+authors; this is an independent reimplementation written from documented
+behaviour and the GPL source, not a translation. The modelling ideas
+(subdivision scheme, `.fef` layout, panel hydrostatics) come from FREE!ship;
+keep attribution intact when adding derived documentation.

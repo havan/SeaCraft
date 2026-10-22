@@ -1,0 +1,188 @@
+# SeaCraft — a Rust clone of FREE!ship
+
+SeaCraft is an independent Rust reimplementation of the open-source
+[FREE!ship](https://sourceforge.net/projects/freeship/) hull-design program.
+It reproduces FREE!ship's modelling kernel and its naval-architecture
+measurement pipeline, and it reads and writes FREE!ship's `.fef` exchange
+format so control nets can move between the two applications.
+
+FREE!ship itself is a Delphi (Object Pascal) application released under the
+GNU GPL v2. Its descendant **FREE!ship Plus** (Victor Timoshenko) and its
+Lazarus port **FreeShip Plus in Lazarus** (Mark Malakanov) continue the same
+codebase. SeaCraft is a clean-room Rust implementation written from the
+documented behaviour and the GPL source, not a line-by-line translation.
+
+---
+
+## 1. How FREE!ship works (investigation notes)
+
+### 1.1 Modelling: subdivision surfaces instead of NURBS
+
+FREE!ship's core idea is that a hull is a **subdivision surface** — a coarse
+*control net* of polygons that the program repeatedly refines and smooths.
+The designer moves control points; the program shows the smooth limit surface.
+This gives more freedom than NURBS because the control grid need not be
+rectangular: holes, knuckles and local detail are just extra polygons.
+
+The refinement is a hybrid of **Loop** and **Catmull–Clark** subdivision
+("quad-triangle subdivision"). In the FREE!ship sources this is
+`TFreeSubdivisionSurface.SubDivide` (`Units/FreeGeometry.pas`):
+
+1. Every face is split by inserting an **edge point** in the middle of each
+   edge and, for faces with more than three corners, a **face point** at the
+   centroid. Triangles split into four triangles; larger faces connect each
+   edge point to the face point.
+2. Every point is then moved by an **averaging** step that combines the new
+   face/edge points with the original vertex position. The averaging weights
+   depend on the vertex type — regular, crease, corner, boundary — so that
+   creases (knuckle lines) and corners are preserved instead of being
+   smoothed away.
+3. The resulting mesh replaces the old one; repeating the two steps `n` times
+   is "subdivision level `n`".
+
+Key practical consequences that SeaCraft mirrors:
+
+* Faces must be consistently wound and normals must point **outward** —
+  hydrostatics integrates the volume "behind" the faces.
+* Edges should have exactly two adjacent faces except at deliberate boundary
+  edges. A submerged boundary edge makes the volume integral meaningless.
+* Crease edges keep a knuckle sharp; corner points are pinned.
+* Layers group faces and carry per-layer flags (visible, symmetric,
+  use-in-hydrostatics, material density, plate thickness).
+
+### 1.2 Exchange format: `.fef`
+
+`TFreeSubdivisionSurface.ExportFEFFile` / `ImportFEFFile` define a plain-text
+format: layer count and layer records, then control points, control edges and
+control faces. It is the format SeaCraft parses and writes, which makes it a
+practical bridge to the original program (see `crates/seacraft-core/src/fef.rs`).
+
+### 1.3 Hydrostatics: panel integration
+
+FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
+(`Units/FreeShipUnit.pas`) integrates the refined surface directly:
+
+* The hull is refined to the current subdivision level.
+* Every triangle is clipped against the waterplane.
+* Volume and the centre of buoyancy come from the divergence theorem over the
+  submerged panels; the waterplane closes the volume, so the projection origin
+  is placed *in* the waterplane to cancel the lid's contribution.
+* Wetted surface is the sum of the submerged panel areas.
+* The waterline is the intersection of the mesh with the waterplane; chaining
+  those segments gives waterplane area, centre of flotation and the transverse
+  and longitudinal second moments, hence `BM = I / ∇` and `KM = KB + BM`.
+* Section areas along the hull give the section-area curve; the centreline cut
+  gives the lateral (profile) area.
+* Coefficients follow from these: `Cb = ∇/(L·B·T)`, `Cp = ∇/(Am·L)`,
+  `Cm = Am/(B·T)`, `Cwp = Awp/(L·B)`.
+* Heel and trim are handled by tilting the waterplane, so the same panel
+  machinery yields cross curves (`KN`) and, with `KG`, righting levers (`GZ`).
+
+### 1.4 Other FREE!ship features
+
+* **Intersections / linesplan** — stations, buttocks, waterlines and diagonals
+  are computed by cutting the refined surface with planes and are drawn as a
+  conventional three-view linesplan.
+* **Unfolding (developability)** — flat-plate development of (near-)developable
+  surface regions, with a check of the 3D area against the unfolded area.
+* **Exports** — OBJ, STL, DXF, IGES (NURBS), VRML, GHS and its own `.fef`.
+* **Hullform transformation** — Lackenby transformation to hit a target `Cb`,
+  `Cp` and `LCB`.
+
+---
+
+## 2. What SeaCraft implements
+
+| FREE!ship concept | SeaCraft module |
+| --- | --- |
+| Control net, layers, creases | `crates/seacraft-core/src/mesh.rs` |
+| Loop / Catmull–Clark refinement | `subdiv.rs` |
+| `.fef` import/export | `fef.rs` |
+| Panel hydrostatics, coefficients, SAC | `hydro.rs` |
+| Cross curves, `KN`/`GZ`, draft solving | `stability.rs` |
+| Stations / buttocks / waterlines (SVG) | `linesplan.rs` |
+| OBJ / STL / PLY / HTML viewer | `export.rs` |
+| Parametric demo hull | `demo.rs` |
+| Command-line front end | `crates/seacraft-cli` |
+
+### Modelling kernel
+
+`subdiv::evaluate` refines a `Surface` to a given level. `SubdivisionMode`
+selects the FREE!ship default (`Loop`: triangles become four triangles, larger
+faces become quads) or pure Catmull–Clark. Creases, corners and boundary
+vertices keep their FREE!ship weights. `evaluate_full` additionally mirrors
+symmetric layers so the whole hull is produced.
+
+### Hydrostatics
+
+`hydro::Hull` refines once and can then be measured for many floating
+conditions, which is what the stability solver does. `hydro::compute` returns
+volume, displacement, `LCB`, `KB`, waterplane area/inertia, `LCF`, `BM`, `KM`,
+all the coefficients, the section-area curve and the lateral area. The results
+are serde-serialisable and available as JSON from the CLI.
+
+### Stability
+
+`stability::cross_curves` trims the hull to a constant displacement for each
+heel angle by bisection on the draft, then reports `KN` and `GZ = KN − KG·sin φ`.
+
+### Linesplan and export
+
+`linesplan::svg` produces a standalone three-view drawing (profile, plan, body
+plan) with stations, buttocks and waterlines. `export` writes OBJ, binary STL,
+ASCII PLY and a self-contained three.js HTML viewer.
+
+---
+
+## 3. Command line
+
+```text
+seacraft demo      -o hull.fef [--symmetric]
+seacraft info      hull.fef
+seacraft hydro     hull.fef [--draft T] [--trim m] [--heel deg] [--kg m] [--json]
+seacraft sac       hull.fef [--stations N] [--csv out.csv]
+seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
+seacraft linesplan hull.fef -o linesplan.svg [--stations N] [--buttocks N] [--waterlines N]
+seacraft export    hull.fef -o hull.obj|.stl|.ply|.html [--level N] [--control]
+seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
+```
+
+Subdivision level defaults to 3; `--mode cc` selects pure Catmull–Clark.
+
+### Example
+
+```console
+$ cargo run --release -- demo -o /tmp/demo.fef
+$ cargo run --release -- hydro /tmp/demo.fef --kg 2.2
+$ cargo run --release -- linesplan /tmp/demo.fef -o /tmp/demo.svg
+```
+
+---
+
+## 4. Coordinate system and units
+
+* `x` forward, `y` to starboard, `z` up, keel at low `z`.
+* Internal units are metres; `.fef` carries the project settings (length,
+  beam, draft, water density, appendage coefficient, imperial flag).
+* Heel is positive to starboard; trim is a length in metres, positive when the
+  bow sits higher than the stern.
+* Hydrostatics report `KB`/`KM`/`BM` above the keel, `LCB`/`LCF` in model
+  coordinates.
+
+---
+
+## 5. Status and limitations
+
+* The kernel, `.fef` round-trip, hydrostatics, stability, linesplan and mesh
+  exports are implemented and tested.
+* Not yet implemented: interactive GUI, developability/unfolding, NURBS/IGES
+  export, DXF linesplan export, Lackenby transformation, resistance and
+  propulsion prediction, VRML import.
+* FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
+  documented text `.fef` exchange format instead.
+
+## 6. Licence
+
+SeaCraft is distributed under the GNU GPL v2 or later, matching FREE!ship's
+licence. FREE!ship itself is Copyright (C) its authors; this project is an
+independent reimplementation and is not affiliated with it.

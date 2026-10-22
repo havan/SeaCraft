@@ -1,0 +1,20 @@
+[workspace]
+members = ["crates/seacraft-core", "crates/seacraft-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+authors = ["SeaCraft contributors"]
+repository = "https://github.com/havan/SeaCraft"
+
+[workspace.dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
