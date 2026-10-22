@@ -16,10 +16,15 @@
 //! `Fn ≤ 0.55`. [`HoltropInput::warnings`] reports the ones a given hull
 //! violates instead of silently extrapolating.
 //!
-//! Coefficients are transcribed from the paper's equations (1)–(39); the tests
-//! pin the pieces that can be checked exactly (the ITTC-57 line, the piecewise
-//! coefficient switches, Froude scaling of the wave term, linearity in density)
-//! rather than a golden total, which would only pin one hull.
+//! Coefficients are transcribed from the paper's equations (1)–(39) and checked
+//! against the worked example the paper itself prints for a 205 m ship: `CF`,
+//! `RF`, `CA`, `RA`, `RAPP`, `c1`, `c2`, `c5`, `c7`, `λ`, `m1`, `m2` and `RW`
+//! reproduce to better than 1 %, and the transom term is zero at `FnT` 5.4 as
+//! the paper prints. The one number that does not reproduce is `1+k1` (1.156
+//! there, 1.188 from equation (9) as printed), so the total comes out 1.4 %
+//! high; see the test's comment. The other tests pin what can be checked
+//! exactly — the ITTC-57 line, the piecewise coefficient switches, Froude
+//! scaling of the wave term, linearity in density.
 
 use crate::hydro::{self, Hull, HydroOptions};
 use crate::subdiv::SubdivisionOptions;
@@ -327,6 +332,11 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     let q = 0.5 * input.water_density * v * v;
 
     // Form factor, equation (9) with LR from (10) and c14 from (11).
+    //
+    // The paper defines lcb as a percentage of L, so `lcb_pct` enters (10) as a
+    // percentage. Some published implementations divide it by 100 as well,
+    // which moves LR by up to 15 % and `1+k1` by about 0.3 % — small, but it is
+    // the reason two tools rarely agree to the fourth digit on the form factor.
     let lr = l * (1.0 - input.cp + 0.06 * input.cp * input.lcb_pct / (4.0 * input.cp - 1.0));
     let c14 = 1.0 + 0.011 * input.c_stern;
     let form_factor = 0.93
@@ -361,8 +371,14 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     };
 
     // Immersed transom, equation (33)/(34) with c6 from (35).
+    //
+    // FnT uses the **waterplane** coefficient in its denominator. With CF there
+    // instead, the published example hull (AT 16 m2, CWP 0.75, B 32 m) reports
+    // FnT 4.11 where the paper prints 5.433, c6 stays above zero, and a phantom
+    // 48 kN of transom drag appears in a case the paper says is 0.00 kN.
     let rtr = if input.transom_area_m2 > 0.0 {
-        let fnt = v / (2.0 * GRAVITY * input.transom_area_m2 / input.beam_wl).max(1e-6).sqrt();
+        let denom = (input.beam_wl + input.beam_wl * input.cwp).max(1e-6);
+        let fnt = v / (2.0 * GRAVITY * input.transom_area_m2 / denom).max(1e-6).sqrt();
         let c6 = if fnt < 5.0 { 0.2 * (1.0 - 0.2 * fnt) } else { 0.0 };
         q * input.transom_area_m2 * c6
     } else {
@@ -371,8 +387,18 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
 
     // Correlation allowance, equations (37)-(39).
     let c4 = (input.draft / l).min(0.04);
-    // c2 multiplies the bulb-swell term; with no bulb c3 = 0 and c2 = 1.
-    let c2 = 1.0;
+    // c2 is the same bulb-swell factor as in the wave term; with no bulb the
+    // coefficient of the second term is zero anyway (c4 saturates at 0.04 for
+    // any hull with T/L >= 0.04, and c2 = 1 when c3 = 0).
+    let c3 = if input.bulb_area_m2 > 0.0 {
+        0.56 * input.bulb_area_m2.powf(1.5)
+            / (input.beam_wl * input.draft
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z)
+                    .max(1e-6))
+    } else {
+        0.0
+    };
+    let c2 = (-1.89 * c3.sqrt()).exp();
     let ca = 0.006 * (l + 100.0).powf(-0.16) - 0.00205
         + 0.003 * (l / 7.5).sqrt() * input.cb.powi(4) * c2 * (0.04 - c4).max(0.0);
     let ra = q * input.wetted_surface_m2 * ca;
@@ -572,6 +598,78 @@ mod tests {
         // Friction dominates at this speed: the wave term is a tenth of it.
         assert!(r.rw_n < 0.5 * r.rf_n, "RW {} vs RF {}", r.rw_n, r.rf_n);
         assert!(r.form_factor > 1.2 && r.form_factor < 1.4, "{}", r.form_factor);
+    }
+
+
+    /// The worked example printed in Holtrop & Mennen (1982), p. 170.
+    ///
+    /// A 205 m ship, 32 m beam, 10 m draft, 37 500 m³, Cp 0.5833, Cm 0.98,
+    /// Cwp 0.75, lcb 2.02 % aft of ½L, iE 12.08°, AT 16 m², ABT 20 m²,
+    /// hB 4.0 m, S 7381.45 m², SAPP 50 m², c_stern 10, at 25 knots. The paper
+    /// prints every coefficient of the method for it, which makes it the one
+    /// case where the implementation can be checked against the source rather
+    /// than against itself.
+    ///
+    /// Every component reproduces to better than 1 %. Two printed numbers do
+    /// not: `1+k1` is 1.156 there against 1.188 from equation (9) as printed,
+    /// and the total follows it (1793.26 kN against 1819 kN, 1.4 %). The
+    /// friction, correlation, wave and appendage terms — everything this crate
+    /// could have got wrong by a sign or a factor — agree, so the difference is
+    /// in the form factor the paper's example used, not in the transcription.
+    #[test]
+    fn published_example_reproduces_the_paper() {
+        let i = HoltropInput {
+            length_wl: 205.0,
+            beam_wl: 32.0,
+            draft: 10.0,
+            volume_m3: 37500.0,
+            cb: 37500.0 / (205.0 * 32.0 * 10.0),
+            cp: 0.5833,
+            cm: 0.98,
+            cwp: 0.75,
+            lcb_pct: -2.02,
+            wetted_surface_m2: 7381.45,
+            half_entrance_deg: 12.08,
+            transom_area_m2: 16.0,
+            bulb_area_m2: 20.0,
+            bulb_centre_z: 4.0,
+            c_stern: 10.0,
+            appendage_area_m2: 50.0,
+            appendage_factor: 1.5,
+            water_density: 1025.0,
+            viscosity: VISCOSITY_SEA_WATER,
+        };
+        let r = holtrop(&i, 25.0 * KNOT);
+        let w = wave_coefficients(&i, r.fn_);
+        let near = |got: f64, want: f64, tol: f64, what: &str| {
+            assert!(
+                (got - want).abs() / want.abs().max(1e-12) < tol,
+                "{what}: {got:.6} vs published {want:.6}"
+            );
+        };
+        near(r.fn_, 0.2868, 1e-3, "Fn");
+        near(r.cf, 0.001390, 1e-3, "CF");
+        near(r.rf_n / 1e3, 869.63, 1e-3, "RF [kN]");
+        near(w.c7, 0.15610, 1e-4, "c7");
+        near(w.c1, 1.398, 1e-3, "c1");
+        near(w.c2, 0.7595, 1e-3, "c2");
+        near(w.c5, 0.9592, 1e-3, "c5");
+        near(w.lambda, 0.6513, 1e-3, "lambda");
+        near(w.m1, -2.1274, 1e-3, "m1");
+        near(w.m2, -0.17087, 1e-3, "m2");
+        near(r.rw_n / 1e3, 557.11, 1e-3, "RW [kN]");
+        near(r.rapp_n / 1e3, 8.83, 1e-2, "RAPP [kN]");
+        near(r.ra_n / 1e3, 221.98, 1e-2, "RA [kN]");
+        // FnT > 5, so the paper's transom term is zero; with CF instead of Cwp
+        // in the denominator it came out 4.11 and added 48 kN of phantom drag.
+        near(r.rtr_n / 1e3, 0.0, 1.0, "RTR [kN]");
+        assert!(r.rtr_n < 1e-9, "RTR must vanish above FnT 5: {}", r.rtr_n);
+        // The total lands at 1819.3 kN against the paper's 1793.26 kN (+1.4 %),
+        // which is the form-factor gap above and nothing else: every additive
+        // term reproduces to better than 1 %.
+        near(r.rt_n / 1e3, 1793.26, 2e-2, "RT [kN]");
+        // Bulb resistance is a rounding error on this hull, as printed.
+        assert!(r.rb_n < 100.0, "RB {} N", r.rb_n);
     }
 
     #[test]

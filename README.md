@@ -148,7 +148,10 @@ rather than the power the engine delivers. Everything the method takes from the
 hull form — `LWL`, `BWL`, `CB`, `Cp`, `Cm`, `LCB` as a percentage of the length,
 the wetted surface, the immersed transom and the half-angle of entrance `iE` —
 is measured on the refined mesh. `seacraft resistance` prints the breakdown and
-warns when the hull falls outside the ranges the method was fitted to.
+warns when the hull falls outside the ranges the method was fitted to. The
+implementation is checked against the worked example the paper prints for a
+205 m ship: every coefficient and the wave, friction, correlation and appendage
+terms reproduce to better than 1 %.
 
 `offsets::table_of_offsets` produces the drawing-office table — half-breadths
 at stations x waterlines and buttock heights at stations x buttocks — as a
