@@ -67,6 +67,12 @@ impl HydroState {
     }
 }
 
+/// One viewport's rasterized frame, kept until the geometry or camera moves.
+struct AnalysisFrame {
+    key: u64,
+    texture: egui::TextureHandle,
+}
+
 /// A control point being dragged in one viewport.
 struct DragState {
     point: usize,
@@ -179,6 +185,8 @@ pub struct App {
     hydro: HydroState,
     /// Viewport rectangles from the last frame, so tests can aim the pointer.
     viewport_rects: [egui::Rect; 4],
+    /// Rasterized frames for the analysis modes, one per viewport.
+    analysis_frames: [Option<AnalysisFrame>; 4],
 }
 
 impl App {
@@ -232,6 +240,7 @@ impl App {
             hydro_dirty: true,
             hydro: HydroState::new(),
             viewport_rects: [egui::Rect::NOTHING; 4],
+            analysis_frames: [None, None, None, None],
         }
     }
 
@@ -287,6 +296,7 @@ impl App {
         self.hydro_dirty = true;
         self.hydro.last_edit = Some(std::time::Instant::now());
         self.cursor_world = None;
+        self.analysis_frames = [None, None, None, None];
         if let Some(s) = &self.surface {
             let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
             self.hydro.options = HydroOptions::from_surface(s, subdiv);
@@ -524,6 +534,21 @@ impl App {
                     ui.checkbox(&mut self.display.points, "Control points");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.grid, "Grid");
+                    ui.separator();
+                    ui.label("Surface analysis");
+                    ui.horizontal_wrapped(|ui| {
+                        let current = self.display.analysis;
+                        for (mode, label) in [
+                            (seacraft_core::AnalysisMode::Shaded, "Shaded"),
+                            (seacraft_core::AnalysisMode::Zebra { stripes: 14.0 }, "Zebra"),
+                            (seacraft_core::AnalysisMode::Curvature { radius: 1.0 }, "Curvature"),
+                            (seacraft_core::AnalysisMode::Draft { angle_deg: 3.0 }, "Draft"),
+                        ] {
+                            if ui.selectable_label(current == mode, label).clicked() {
+                                self.display.analysis = mode;
+                            }
+                        }
+                    });
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
@@ -820,6 +845,7 @@ impl App {
             return;
         }
         let cells = render::quad(rect);
+        let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
 
         for (cell, index) in cells {
             self.viewport_rects[index] = cell;
@@ -893,7 +919,35 @@ impl App {
                     trim: 0.0,
                     heel_deg: 0.0,
                 };
-                render::viewport(
+                // An analysis mode needs per-pixel shading, which only the
+                // rasterizer provides: render it into a texture and reuse it
+                // until the model, camera, size or mode changes.
+                let mode = self.display.analysis;
+                let texture = if mode.is_shaded() {
+                    None
+                } else {
+                    let key = render::frame_key(self.revision, &self.cameras[index], cell, mode);
+                    if let Some(frame) = self.analysis_frames[index].as_ref().filter(|f| f.key == key)
+                    {
+                        Some(frame.texture.clone())
+                    } else {
+                        let (w, h) = (
+                            cell.width().round().max(1.0) as usize,
+                            cell.height().round().max(1.0) as usize,
+                        );
+                        let (w, h, rgba) =
+                            render::raster_frame(&self.cameras[index].transform(), &scene, mode, w, h);
+                        let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                        let texture = ui.ctx().load_texture(
+                            format!("analysis-{index}"),
+                            image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        fresh.push((index, AnalysisFrame { key, texture: texture.clone() }));
+                        Some(texture)
+                    }
+                };
+                render::viewport_with_texture(
                     ui,
                     cell,
                     &self.cameras[index],
@@ -901,6 +955,7 @@ impl App {
                     &self.display,
                     self.active == index,
                     self.selected,
+                    texture.as_ref(),
                 );
             } else {
                 render::viewport(
@@ -913,6 +968,9 @@ impl App {
                     None,
                 );
             }
+        }
+        for (index, frame) in fresh {
+            self.analysis_frames[index] = Some(frame);
         }
     }
 
@@ -1121,6 +1179,12 @@ impl App {
 
     pub fn display_mut(&mut self) -> &mut DisplayOptions {
         &mut self.display
+    }
+
+    /// Pick the surface-analysis shading (also settable from the View menu).
+    pub fn set_analysis(&mut self, mode: seacraft_core::AnalysisMode) {
+        self.display.analysis = mode;
+        self.analysis_frames = [None, None, None, None];
     }
 }
 

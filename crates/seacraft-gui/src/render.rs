@@ -6,9 +6,11 @@
 //! control net, the control points, the waterplane and a caption.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
+use seacraft_core::analysis::AnalysisMode;
 use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::math::Vec3;
 use seacraft_core::mesh::Surface;
+use seacraft_core::raster;
 
 use crate::camera::{Camera, ViewTransform};
 
@@ -43,6 +45,10 @@ pub struct DisplayOptions {
     pub waterplane: bool,
     /// Draw the ground grid.
     pub grid: bool,
+    /// Shading mode. Anything but `Shaded` renders the viewport through the
+    /// CPU rasterizer, which is the only way to get per-pixel zebra stripes
+    /// and curvature maps.
+    pub analysis: AnalysisMode,
 }
 
 impl Default for DisplayOptions {
@@ -54,6 +60,7 @@ impl Default for DisplayOptions {
             points: true,
             waterplane: true,
             grid: true,
+            analysis: AnalysisMode::Shaded,
         }
     }
 }
@@ -96,6 +103,22 @@ pub fn viewport(
     active: bool,
     selected: Option<usize>,
 ) {
+    viewport_with_texture(ui, rect, camera, scene, opts, active, selected, None)
+}
+
+/// Draw a viewport, optionally using `texture` (a rasterizer frame) in place
+/// of the painter's shaded hull.
+#[allow(clippy::too_many_arguments)]
+pub fn viewport_with_texture(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    camera: &Camera,
+    scene: Option<&Scene>,
+    opts: &DisplayOptions,
+    active: bool,
+    selected: Option<usize>,
+    texture: Option<&egui::TextureHandle>,
+) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, BG);
     let Some(scene) = scene else {
@@ -117,8 +140,21 @@ pub fn viewport(
     if opts.waterplane {
         draw_waterplane(&painter, &view, rect, scene);
     }
-    if opts.shaded || opts.wireframe {
-        draw_hull(&painter, &view, rect, scene, opts);
+    match texture {
+        Some(texture) => {
+            // A rasterizer frame: per-pixel shading, already depth-tested.
+            painter.image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        None => {
+            if opts.shaded || opts.wireframe {
+                draw_hull(&painter, &view, rect, scene, opts);
+            }
+        }
     }
     if opts.control_net {
         draw_control_net(&painter, &view, rect, scene.surface);
@@ -353,6 +389,84 @@ fn draw_points(
             painter.circle_filled(s, 2.0, POINT);
         }
     }
+}
+
+/// A hash of everything a rasterized frame depends on, so the texture is only
+/// rebuilt when the model, the camera, the viewport size or the mode changes.
+pub fn frame_key(revision: u64, camera: &Camera, rect: Rect, mode: AnalysisMode) -> u64 {
+    fn mix(h: &mut u64, x: f64) {
+        *h ^= x.to_bits();
+        *h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    let view = camera.transform();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    mix(&mut h, revision as f64);
+    mix(&mut h, rect.width() as f64);
+    mix(&mut h, rect.height() as f64);
+    for p in [view.eye, view.right, view.up, view.forward] {
+        mix(&mut h, p.x);
+        mix(&mut h, p.y);
+        mix(&mut h, p.z);
+    }
+    mix(&mut h, view.ortho_height);
+    mix(&mut h, view.fov_tan);
+    mix(&mut h, if view.perspective { 1.0 } else { 0.0 });
+    let (a, b) = match mode {
+        AnalysisMode::Shaded => (0.0, 0.0),
+        AnalysisMode::Zebra { stripes } => (1.0, stripes),
+        AnalysisMode::Curvature { radius } => (2.0, radius),
+        AnalysisMode::Draft { angle_deg } => (3.0, angle_deg),
+    };
+    mix(&mut h, a);
+    mix(&mut h, b);
+    h
+}
+
+/// A title for the analysis mode, for the viewport caption and the menu.
+pub fn mode_label(mode: AnalysisMode) -> &'static str {
+    match mode {
+        AnalysisMode::Shaded => "Shaded",
+        AnalysisMode::Zebra { .. } => "Zebra",
+        AnalysisMode::Curvature { .. } => "Gaussian curvature",
+        AnalysisMode::Draft { .. } => "Draft angle",
+    }
+}
+
+/// The rasterizer's camera for this view transform, at `width × height` pixels.
+pub fn raster_view(view: &ViewTransform) -> raster::View {
+    raster::View {
+        eye: view.eye,
+        right: view.right,
+        up: view.up,
+        forward: view.forward,
+        ortho_height: view.ortho_height,
+        fov_tan: view.fov_tan,
+        perspective: view.perspective,
+    }
+}
+
+/// Render one viewport with the CPU rasterizer. Returns the RGBA pixels.
+pub fn raster_frame(
+    view: &ViewTransform,
+    scene: &Scene,
+    mode: AnalysisMode,
+    width: usize,
+    height: usize,
+) -> (usize, usize, Vec<u8>) {
+    let opts = raster::RenderOptions {
+        width,
+        height,
+        mode,
+        background: (
+            [0x13 as f64 / 255.0, 0x19 as f64 / 255.0, 0x21 as f64 / 255.0],
+            [0x0d as f64 / 255.0, 0x12 as f64 / 255.0, 0x18 as f64 / 255.0],
+        ),
+        supersample: 1,
+        wireframe: false,
+        two_sided: true,
+    };
+    let canvas = raster::render(&scene.mesh.verts, &scene.mesh.faces, &raster_view(view), &opts);
+    (canvas.w, canvas.h, canvas.rgba)
 }
 
 /// Screen-space rectangle of a viewport inside `rect`, split 2×2.

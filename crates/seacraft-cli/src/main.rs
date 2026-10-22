@@ -3,7 +3,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use seacraft_core::hydro::{self, HydroOptions};
 use seacraft_core::stability::{cross_curves, solve_draft};
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{demo, export, fef, linesplan, math::Vec3, mesh::Surface};
+use seacraft_core::{
+    analysis::AnalysisMode, demo, export, fef, linesplan, math::Vec3, mesh::Surface, raster,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser, Debug)]
@@ -37,8 +39,65 @@ enum Command {
     Sac(SacArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
-    /// Linesplan: stations, buttocks and waterlines as SVG
+    /// Linesplan: stations, buttocks and waterlines as SVG or DXF
     Linesplan(LinesplanArgs),
+    /// Render a preview PNG, including zebra, curvature and draft analysis
+    Render(RenderArgs),
+}
+
+#[derive(Args, Debug)]
+struct RenderArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output PNG path
+    #[arg(short, long, default_value = "preview.png")]
+    output: PathBuf,
+    /// Shading mode
+    #[arg(long, value_enum, default_value_t = RenderModeArg::Shaded)]
+    mode: RenderModeArg,
+    /// Camera: a three-quarter perspective or one of the orthographic views
+    #[arg(long, value_enum, default_value_t = RenderViewArg::Perspective)]
+    view: RenderViewArg,
+    /// Image size in pixels, WIDTHxHEIGHT
+    #[arg(long, default_value = "1280x800")]
+    size: String,
+    /// Zebra stripe count
+    #[arg(long, default_value_t = 14.0)]
+    stripes: f64,
+    /// Curvature scale: 1 / radius at which the map turns red (metres)
+    #[arg(long, default_value_t = 1.0)]
+    radius: f64,
+    /// Draft angle in degrees
+    #[arg(long, default_value_t = 3.0)]
+    draft: f64,
+    /// Overlay the mesh edges
+    #[arg(long)]
+    wireframe: bool,
+    /// Supersampling factor (1 = off, 2 = four samples per pixel)
+    #[arg(long, default_value_t = 2)]
+    samples: usize,
+    /// Subdivision level (0 = control net, max 6)
+    #[arg(long, default_value_t = 3)]
+    level: u8,
+    /// Use Catmull-Clark instead of the FREE!ship default Loop scheme
+    #[arg(long)]
+    catmull_clark: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum RenderModeArg {
+    Shaded,
+    Zebra,
+    Curvature,
+    Draft,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum RenderViewArg {
+    Perspective,
+    Profile,
+    Plan,
+    Body,
 }
 
 #[derive(Args, Debug)]
@@ -231,6 +290,7 @@ fn run() -> Result<()> {
         Command::Sac(a) => cmd_sac(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
+        Command::Render(a) => cmd_render(a),
     }
 }
 
@@ -540,6 +600,62 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());
     Ok(())
+}
+
+fn cmd_render(a: RenderArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let mode = if a.catmull_clark { SubdivisionMode::CatmullClark } else { SubdivisionMode::Loop };
+    let mesh = export::render_mesh(&s, a.level, mode);
+
+    let (min, max) = s.extents();
+    let centre = (min + max) * 0.5;
+    let size = (max - min).length().max(0.5);
+    let view = match a.view {
+        RenderViewArg::Perspective => raster::View::perspective(centre, size, 2.2, 0.30, 45.0),
+        RenderViewArg::Profile => raster::View::ortho(Vec3::new(0.0, 1.0, 0.0), centre, size),
+        RenderViewArg::Plan => raster::View::ortho(Vec3::new(0.0, 0.0, -1.0), centre, size),
+        RenderViewArg::Body => raster::View::ortho(Vec3::new(1.0, 0.0, 0.0), centre, size),
+    };
+    let mode = match a.mode {
+        RenderModeArg::Shaded => AnalysisMode::Shaded,
+        RenderModeArg::Zebra => AnalysisMode::Zebra { stripes: a.stripes },
+        RenderModeArg::Curvature => AnalysisMode::Curvature { radius: a.radius },
+        RenderModeArg::Draft => AnalysisMode::Draft { angle_deg: a.draft },
+    };
+    let (width, height) = parse_size(&a.size)?;
+    let opts = raster::RenderOptions {
+        width,
+        height,
+        mode,
+        supersample: a.samples.max(1),
+        wireframe: a.wireframe,
+        ..Default::default()
+    };
+    let canvas = raster::render(&mesh.verts, &mesh.faces, &view, &opts);
+    let bytes = raster::png(canvas.w, canvas.h, &canvas.rgba)
+        .ok_or_else(|| anyhow::anyhow!("cannot encode a {}x{} PNG", width, height))?;
+    std::fs::write(&a.output, bytes)
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    println!(
+        "wrote {} ({}x{}, {} mode, {} faces)",
+        a.output.display(),
+        width,
+        height,
+        mode.label(),
+        mesh.faces.len()
+    );
+    Ok(())
+}
+
+fn parse_size(text: &str) -> Result<(usize, usize)> {
+    let (w, h) = text
+        .split_once('x')
+        .or_else(|| text.split_once('X'))
+        .with_context(|| format!("image size must be WIDTHxHEIGHT, got '{text}'"))?;
+    Ok((
+        w.trim().parse().with_context(|| format!("bad width '{w}'"))?,
+        h.trim().parse().with_context(|| format!("bad height '{h}'"))?,
+    ))
 }
 
 fn parse_list(text: &str) -> Result<Vec<f64>> {

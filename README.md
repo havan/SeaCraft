@@ -102,6 +102,8 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | Cross curves, `KN`/`GZ`, draft solving | `stability.rs` |
 || Stations / buttocks / waterlines (SVG, DXF) | `linesplan.rs` |
 || AutoCAD 2000 DXF writer | `dxf.rs` |
+|| Curvature, zebra and draft analysis | `analysis.rs` |
+|| CPU z-buffer rasterizer + PNG | `raster.rs` |
 | OBJ / STL / PLY / HTML viewer | `export.rs` |
 || Parametric demo hull | `demo.rs` |
 || Command-line front end | `crates/seacraft-cli` |
@@ -127,6 +129,31 @@ are serde-serialisable and available as JSON from the CLI.
 
 `stability::cross_curves` trims the hull to a constant displacement for each
 heel angle by bisection on the draft, then reports `KN` and `GZ = KN − KG·sin φ`.
+
+### Fairing analysis
+
+Fairing a hull means looking at how light reflects off it. `analysis` computes
+per-vertex normals and discrete curvature (cotangent Laplacian for the mean
+curvature, angle deficit for the Gaussian one) and provides three analysis
+shades:
+
+* **Zebra** — reflection stripes; an unfair bump shows up as a kink in a band.
+* **Curvature** — false colour from flat (blue) through medium (green) to tight
+  (red), with `--radius` the curvature at which it saturates.
+* **Draft** — green where the surface can be pulled from +z at more than the
+  draft angle, red on undercuts.
+
+`raster` is a dependency-free CPU z-buffer renderer with 2× supersampling and a
+small PNG encoder, so those modes work per pixel with no GPU:
+
+```console
+seacraft render hull.fef -o zebra.png --mode zebra --stripes 16
+seacraft render hull.fef -o curvature.png --mode curvature --radius 1.5 --view body
+```
+
+The desktop app draws the same modes in all four viewports (View ▸ Surface
+analysis, or `--analysis zebra`), rendering each viewport through the
+rasterizer into a texture and caching it until the model or camera changes.
 
 ### Linesplan and export
 
@@ -155,6 +182,7 @@ seacraft sac       hull.fef [--stations N] [--csv out.csv]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
 seacraft linesplan hull.fef -o linesplan.svg|linesplan.dxf [--stations N] [--buttocks N] [--waterlines N]
 seacraft export    hull.fef -o hull.obj|.stl|.ply|.html [--level N] [--control]
+seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
 ```
 
@@ -226,9 +254,12 @@ cursor position on the active viewport's focal plane and the crate version.
   and hydrostatics docks, file actions) is implemented and tested headlessly.
 * DXF export of the linesplan (2D views plus 3D curve copies) is implemented
   and audit-clean under `ezdxf`.
-* Not yet implemented: zebra/curvature fairing analysis, a software z-buffer
-  viewport, IGES export, developability/unfolding, Lackenby transformation,
-  resistance and propulsion prediction, VRML import, and adding/deleting
+* Zebra / curvature / draft analysis and a CPU z-buffer renderer with PNG
+  output are implemented, in the CLI and in all four GUI viewports. Curvature
+  combs on station/buttock curves are not drawn yet.
+* Not yet implemented: IGES export, developability/unfolding, Lackenby
+  transformation, resistance and propulsion prediction, VRML import, a
+  loopback control socket for automated GUI driving, and adding/deleting
   control points or edges.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.

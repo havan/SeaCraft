@@ -21,6 +21,7 @@
 //!
 //! [FREE!ship]: https://sourceforge.net/projects/freeship
 
+pub mod analysis;
 pub mod demo;
 pub mod dxf;
 pub mod export;
@@ -29,9 +30,11 @@ pub mod hydro;
 pub mod linesplan;
 pub mod math;
 pub mod mesh;
+pub mod raster;
 pub mod stability;
 pub mod subdiv;
 
+pub use analysis::AnalysisMode;
 pub use hydro::{HydroOptions, Hydrostatics};
 pub use mesh::{Layer, ProjectSettings, Surface};
 pub use subdiv::{SubdivisionMode, SubdivisionOptions};

@@ -8,19 +8,34 @@ fn usage() {
         "seacraft-gui {}\n\n\
          Usage: seacraft-gui [--open FILE.fef]\n\n\
          Options:\n  \
-         --open FILE   Load a FREE!ship .fef model at startup\n  \
-         --version     Print the version and exit\n  \
-         --help        Print this help and exit",
+         --open FILE       Load a FREE!ship .fef model at startup\n  \
+         --analysis MODE   Shading: shaded, zebra, curvature or draft\n  \
+         --version         Print the version and exit\n  \
+         --help            Print this help and exit",
         seacraft_core::VERSION
     );
 }
 
 fn main() -> eframe::Result {
     let mut open: Option<PathBuf> = None;
+    let mut analysis = seacraft_core::AnalysisMode::Shaded;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--open" => open = args.next().map(PathBuf::from),
+            "--analysis" => {
+                let value = args.next().unwrap_or_default();
+                analysis = match value.as_str() {
+                    "shaded" => seacraft_core::AnalysisMode::Shaded,
+                    "zebra" => seacraft_core::AnalysisMode::Zebra { stripes: 14.0 },
+                    "curvature" => seacraft_core::AnalysisMode::Curvature { radius: 1.0 },
+                    "draft" => seacraft_core::AnalysisMode::Draft { angle_deg: 3.0 },
+                    other => {
+                        eprintln!("unknown analysis mode: {other} (shaded, zebra, curvature, draft)");
+                        std::process::exit(2);
+                    }
+                };
+            }
             "--version" | "-V" => {
                 println!("seacraft-gui {}", seacraft_core::VERSION);
                 return Ok(());
@@ -44,6 +59,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "SeaCraft",
         options,
-        Box::new(move |cc| Ok(Box::new(App::new(cc, open.clone())))),
+        Box::new(move |cc| {
+            let mut app = App::new(cc, open.clone());
+            app.set_analysis(analysis);
+            Ok(Box::new(app))
+        }),
     )
 }
