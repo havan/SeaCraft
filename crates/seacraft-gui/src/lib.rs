@@ -5,5 +5,6 @@
 
 pub mod app;
 pub mod camera;
+pub mod render;
 
 pub use app::App;
