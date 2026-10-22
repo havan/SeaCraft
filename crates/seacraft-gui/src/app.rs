@@ -35,6 +35,12 @@ struct RenderCache {
 struct HydroState {
     options: HydroOptions,
     kg: f64,
+    /// Compute the GZ curves free to trim about `lcg`.
+    free_trim: bool,
+    /// Longitudinal centre of gravity in model x (the station the LCB is held
+    /// at while free to trim). `None` until the user sets it: the dock fills it
+    /// with the upright LCB, which is the natural value for a bare model.
+    lcg: Option<f64>,
     result: Option<Hydrostatics>,
     curves: Option<Vec<CrossCurve>>,
     hull: Option<Hull>,
@@ -58,6 +64,8 @@ impl HydroState {
                 subdivision: seacraft_core::SubdivisionOptions::default(),
             },
             kg: 2.2,
+            free_trim: false,
+            lcg: None,
             result: None,
             curves: None,
             hull: None,
@@ -399,6 +407,8 @@ impl App {
                             panels::HydroPanel {
                                 options: &mut self.hydro.options,
                                 kg: &mut self.hydro.kg,
+                                free_trim: &mut self.hydro.free_trim,
+                                lcg: &mut self.hydro.lcg,
                                 result: self.hydro.result.as_ref(),
                                 stale: self.hydro_dirty,
                                 curves: self.hydro.curves.as_deref(),
@@ -1070,18 +1080,39 @@ impl App {
             let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
             let factors = [0.7, 0.85, 1.0, 1.15, 1.3];
             let displacements: Vec<f64> = factors.iter().map(|f| displacement_t * f).collect();
+            // Free trim needs a longitudinal centre of gravity. A bare model
+            // carries none, so the upright LCB is the natural stand-in.
+            if self.hydro.free_trim && self.hydro.lcg.is_none() {
+                self.hydro.lcg = Some(stability::upright_lcb(
+                    &hull,
+                    self.hydro.options.draft,
+                ));
+            }
+            let cond = stability::StabilityCondition {
+                kg: self.hydro.kg,
+                trim: self.hydro.options.trim,
+                lcg_x: if self.hydro.free_trim {
+                    self.hydro.lcg
+                } else {
+                    None
+                },
+            };
             self.hydro.curves = Some(stability::cross_curves(
                 &hull,
                 &heels,
                 &displacements,
-                self.hydro.kg,
-                self.hydro.options.trim,
+                &cond,
                 &self.hydro.options,
             ));
-            self.status = format!(
-                "GZ cross curves for {:.2} t and ±30 %",
-                displacement_t
-            );
+            self.status = if cond.lcg_x.is_some() {
+                format!(
+                    "GZ cross curves for {:.2} t and ±30 %, free to trim about {:.3} m",
+                    displacement_t,
+                    cond.lcg_x.unwrap_or_default()
+                )
+            } else {
+                format!("GZ cross curves for {:.2} t and ±30 %", displacement_t)
+            };
         }
         self.hydro.hull = Some(hull);
     }
@@ -1175,6 +1206,36 @@ impl App {
 
     pub fn kg(&self) -> f64 {
         self.hydro.kg
+    }
+
+    /// Refinement level used for display and measurement. Tests drop it to keep
+    /// repeated solves cheap; the UI drives the same field from the menu.
+    pub fn set_subdivision_level(&mut self, level: u8) {
+        self.level = level.clamp(0, 5);
+        self.revision += 1;
+        self.touch_geometry();
+    }
+
+    /// Solver setting for the GZ curves: free to trim about `lcg` (or hold the
+    /// trim when `free` is false). `None` leaves the LCG to be filled from the
+    /// upright LCB on the next solve.
+    pub fn set_free_trim(&mut self, free: bool, lcg: Option<f64>) {
+        self.hydro.free_trim = free;
+        self.hydro.lcg = lcg;
+    }
+
+    pub fn free_trim(&self) -> bool {
+        self.hydro.free_trim
+    }
+
+    /// The GZ curves as last computed, if any.
+    pub fn cross_curves(&self) -> Option<&[CrossCurve]> {
+        self.hydro.curves.as_deref()
+    }
+
+    /// Rebuild the GZ curves now instead of waiting for the dock button.
+    pub fn compute_cross_curves(&mut self) {
+        self.compute_curves();
     }
 
     pub fn undo_len(&self) -> usize {

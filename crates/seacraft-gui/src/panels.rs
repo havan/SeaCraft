@@ -75,6 +75,10 @@ pub enum HydroAction {
 pub struct HydroPanel<'a> {
     pub options: &'a mut HydroOptions,
     pub kg: &'a mut f64,
+    /// Solve the GZ curves free to trim about `lcg` instead of holding `trim`.
+    pub free_trim: &'a mut bool,
+    /// Longitudinal centre of gravity for the free-trim solve.
+    pub lcg: &'a mut Option<f64>,
     pub result: Option<&'a Hydrostatics>,
     /// The geometry changed and the report has not been rebuilt yet.
     pub stale: bool,
@@ -110,6 +114,33 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         ui.label("KG");
         changed |= ui.add(egui::DragValue::new(panel.kg).speed(0.02).range(0.0..=10.0).suffix(" m")).changed();
         ui.end_row();
+    });
+    // Free trim: the hull trims to keep the LCB on the LCG while it heels.
+    // Enabling it without an LCG takes the measured one, which is the natural
+    // choice for a model that carries no mass distribution.
+    ui.horizontal(|ui| {
+        let mut on = *panel.free_trim;
+        if ui.checkbox(&mut on, "GZ free to trim").changed() {
+            *panel.free_trim = on;
+            if on && panel.lcg.is_none() {
+                *panel.lcg = panel.result.map(|r| r.lcb.x);
+            }
+        }
+        if *panel.free_trim {
+            let mut x = panel.lcg.unwrap_or_default();
+            if ui
+                .add(
+                    egui::DragValue::new(&mut x)
+                        .speed(0.01)
+                        .range(-50.0..=50.0)
+                        .prefix("LCG ")
+                        .suffix(" m"),
+                )
+                .changed()
+            {
+                *panel.lcg = Some(x);
+            }
+        }
     });
     if changed {
         action = HydroAction::Recompute;

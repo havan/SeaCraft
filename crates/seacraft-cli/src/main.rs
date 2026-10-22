@@ -1,7 +1,9 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use seacraft_core::hydro::{self, HydroOptions};
-use seacraft_core::stability::{cross_curves, solve_draft};
+use seacraft_core::stability::{
+    cross_curves, solve_draft, upright_lcb, StabilityCondition,
+};
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode, demo, export, fef, linesplan, math::Vec3, mesh::Surface, raster,
@@ -244,8 +246,16 @@ struct StabilityArgs {
     /// Displacements in tonnes, comma separated (defaults to the design one)
     #[arg(long)]
     displacements: Option<String>,
+    /// Trim held fixed while heeling, in metres (positive bow-up)
     #[arg(long, default_value_t = 0.0)]
     trim: f64,
+    /// Longitudinal centre of gravity in model x. Implies free trim: the hull
+    /// trims to keep the LCB on this station. Defaults to the upright LCB.
+    #[arg(long)]
+    lcg: Option<f64>,
+    /// Trim freely to longitudinal equilibrium instead of holding --trim
+    #[arg(long)]
+    free_trim: bool,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
     /// Write CSV to this path (otherwise print a table)
@@ -686,15 +696,27 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
             vec![(t * 0.5).round(), t.round(), (t * 1.25).round()]
         }
     };
-    let curves = cross_curves(&hull, &heels, &displacements, a.kg, a.trim, &base);
+    let free = a.free_trim || a.lcg.is_some();
+    let lcg = match (free, a.lcg) {
+        (true, Some(x)) => Some(x),
+        // No mass distribution in the model: the design LCB is the natural LCG.
+        (true, None) => Some(upright_lcb(&hull, base.draft)),
+        (false, _) => None,
+    };
+    let cond = StabilityCondition {
+        kg: a.kg,
+        trim: a.trim,
+        lcg_x: lcg,
+    };
+    let curves = cross_curves(&hull, &heels, &displacements, &cond, &base);
 
     if let Some(path) = a.csv {
-        let mut text = String::from("heel_deg,displacement_t,draft_m,kn_m,gz_m\n");
+        let mut text = String::from("heel_deg,displacement_t,draft_m,trim_m,kn_m,gz_m\n");
         for c in &curves {
             for p in &c.points {
                 text.push_str(&format!(
-                    "{:.2},{:.3},{:.4},{:.4},{:.4}\n",
-                    c.heel_deg, p.displacement_t, p.draft, p.kn, p.gz
+                    "{:.2},{:.3},{:.4},{:.4},{:.4},{:.4}\n",
+                    c.heel_deg, p.displacement_t, p.draft, p.trim_m, p.kn, p.gz
                 ));
             }
         }
@@ -707,6 +729,10 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         "{}  -  cross curves, KG {:.3} m above keel",
         s.settings.name, a.kg
     );
+    match lcg {
+        Some(x) => println!("  free to trim about LCG x = {:.3} m", x),
+        None => println!("  trim held at {:+.3} m", a.trim),
+    }
     print!("  heel |");
     for d in &displacements {
         print!("  {:>8.1} t", d);
@@ -720,10 +746,14 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         }
         println!();
     }
-    println!("\n  GZ in metres. Draft solver:");
+    println!("\n  GZ in metres. Solved draft / trim per displacement:");
     for c in &curves {
-        let drafts: Vec<String> = c.points.iter().map(|p| format!("{:.3}", p.draft)).collect();
-        println!("    {:>4.0} deg: {}", c.heel_deg, drafts.join(", "));
+        let solved: Vec<String> = c
+            .points
+            .iter()
+            .map(|p| format!("{:.3} m / {:+.3} m", p.draft, p.trim_m))
+            .collect();
+        println!("    {:>4.0} deg: {}", c.heel_deg, solved.join(", "));
     }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;

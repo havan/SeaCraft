@@ -160,6 +160,13 @@ These were real failures in this codebase; the fixes are load-bearing.
   crease edges (chine + transom + sheer) summed `0.5 + 0.25k > 1` and drifted
   outward by 25 % per level. The rule is `nb.len() == 2`; write the weights as
   a single expression so the sum is visible.
+* **A heeled hull is free to trim.** Holding `trim` while heeling leaves `LCB`
+  off `LCG`, and the usual hull (wide transom, fine bow) then reports a `KN`/
+  `GZ` that is too high — the error grows with heel and is invisible upright.
+  `StabilityCondition::lcg_x: Some(x)` runs the two-unknown solve; `None` keeps
+  the old fixed-trim behaviour for speed and compatibility. The check is the
+  analytic box: at 2 m draft, asking a 10 m box for `LCB` 4.0 m must trim 2.4 m
+  bow-up (see `tests/analytic.rs`).
 * **`PolygonMoments::from_polygon` returns signed values.** Areas/moments may
   come back negative depending on winding; callers take `abs()` where the
   orientation is not guaranteed.

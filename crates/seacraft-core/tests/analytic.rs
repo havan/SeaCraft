@@ -133,7 +133,13 @@ fn a_box_has_no_righting_lever_upright() {
     let draft = stability::solve_draft(&hull, target, 0.0, 0.0).expect("the barge floats");
     assert!((draft - t).abs() < 1e-6, "solved draft {draft}");
 
-    let curves = stability::cross_curves(&hull, &[0.0, 10.0], &[target], 1.0, 0.0, &base);
+    let curves = stability::cross_curves(
+        &hull,
+        &[0.0, 10.0],
+        &[target],
+        &stability::StabilityCondition::fixed(1.0, 0.0),
+        &base,
+    );
     let upright = &curves[0].points[0];
     assert!(upright.gz.abs() < 1e-9, "GZ at zero heel {}", upright.gz);
     assert!(upright.kn.abs() < 1e-9, "KN at zero heel {}", upright.kn);
@@ -172,4 +178,118 @@ fn demo_hull_matches_the_reference_numbers() {
     // The reference was measured at the centre of flotation, which is what a
     // `.fef` without a main-frame location falls back to.
     check("midship", h.mainframe_area_m2, 1.47, 0.02);
+}
+
+/// Free trim against an exact answer. A rectangular box of length `L`, beam
+/// `B` and draft `d` that floats with the bow up by `trim` submerges
+/// `h(x) = d + trim (1/2 - x/L)`, so the displacement stays `L·B·d` for every
+/// trim while the centre of buoyancy moves aft:
+///
+///     x̄ = L/2 - trim · L / (12 d)
+///
+/// Asking for `x̄ = 4 m` on a 10 m box at 2 m draft therefore has to trim
+/// `2.4 m` bow-up. Nothing else in the solver has a closed form to check.
+#[test]
+fn free_trim_moves_the_lcb_to_the_requested_station() {
+    let (l, b, depth, t) = (10.0, 4.0, 4.0, 2.0);
+    let surface = barge(l, b, depth);
+    let base = options(&surface, t);
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = l * b * t;
+    let lcg = 4.0;
+
+    let fc = stability::solve_floating(&hull, target, 0.0, lcg, 0.0).expect("the box floats");
+
+    let want_trim = (l * 0.5 - lcg) * 12.0 * t / l;
+    assert!(
+        (fc.trim - want_trim).abs() < 0.02 * want_trim,
+        "trim {} vs the analytic {want_trim}",
+        fc.trim
+    );
+    assert!((fc.draft - t).abs() < 1e-3, "draft {}", fc.draft);
+
+    // The solve really is in equilibrium, not just near the analytic answer.
+    let (v, cb) = hull.buoyancy(fc.draft, fc.trim, 0.0);
+    assert!((v - target).abs() < 1e-6 * target, "volume {v} vs {target}");
+    assert!(
+        (cb.x - lcg).abs() < 1e-4,
+        "LCB {} did not reach the LCG {lcg}",
+        cb.x
+    );
+
+    // A box is symmetric fore and aft, so heeling must not make it trim.
+    let fc = stability::solve_floating(&hull, target, 20.0, l / 2.0, 0.0).expect("heeled box");
+    assert!(fc.trim.abs() < 1e-3, "a symmetric box should not trim: {}", fc.trim);
+}
+
+/// Free-to-trim cross curves must stay in longitudinal equilibrium at every
+/// heel, and the demo hull — wide transom, fine bow — really does trim: a heel
+/// is worth several centimetres of trim, and letting it happen costs some
+/// righting lever relative to holding the trim fixed.
+#[test]
+fn free_trim_cross_curves_hold_the_lcb_on_the_lcg() {
+    let surface = seacraft_core::demo::demo_hull(false);
+    let base = HydroOptions {
+        draft: 0.62,
+        trim: 0.0,
+        heel_deg: 0.0,
+        water_density: 1025.0,
+        appendage_coefficient: 1.0,
+        mainframe_x: None,
+        stations: 0,
+        subdivision: SubdivisionOptions { level: 3, mode: Default::default() },
+    };
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = hull.buoyancy(base.draft, 0.0, 0.0).0;
+    let lcg = stability::upright_lcb(&hull, base.draft);
+    let heels = [0.0, 10.0, 20.0, 30.0];
+
+    let free = stability::cross_curves(
+        &hull,
+        &heels,
+        &[target * base.water_density / 1000.0],
+        &stability::StabilityCondition::free_to_trim(2.0, lcg),
+        &base,
+    );
+    let fixed = stability::cross_curves(
+        &hull,
+        &heels,
+        &[target * base.water_density / 1000.0],
+        &stability::StabilityCondition::fixed(2.0, 0.0),
+        &base,
+    );
+
+    for (i, curve) in free.iter().enumerate() {
+        let p = &curve.points[0];
+        assert!(p.gz.is_finite(), "heel {} did not solve", curve.heel_deg);
+        let (v, cb) = hull.buoyancy(p.draft, p.trim_m, curve.heel_deg);
+        assert!(
+            (v - target).abs() < 1e-4 * target,
+            "heel {}: volume {v} vs {target}",
+            curve.heel_deg
+        );
+        assert!(
+            (cb.x - lcg).abs() < 2e-3,
+            "heel {}: LCB {} vs LCG {lcg}",
+            curve.heel_deg,
+            cb.x
+        );
+        if curve.heel_deg >= 20.0 {
+            assert!(
+                p.trim_m.abs() > 0.005,
+                "heel {}: a hull with a wide transom must trim, got {}",
+                curve.heel_deg,
+                p.trim_m
+            );
+            // Holding the trim fixed leaves the hull out of equilibrium and
+            // overstates the righting lever.
+            let fixed_gz = fixed[i].points[0].gz;
+            assert!(
+                p.gz < fixed_gz,
+                "heel {}: free-trim GZ {} should not exceed the fixed-trim {fixed_gz}",
+                curve.heel_deg,
+                p.gz
+            );
+        }
+    }
 }

@@ -592,8 +592,23 @@ impl Hull {
 
     /// Submerged volume only - fast path used by the stability solver.
     pub fn displaced_volume(&self, draft: f64, trim: f64, heel_deg: f64) -> f64 {
+        self.buoyancy(draft, trim, heel_deg).0
+    }
+
+    /// Submerged volume and centre of buoyancy in one pass, without the
+    /// waterplane chaining, section areas or coefficients that
+    /// [`Hull::hydrostatics`] builds. This is what a floating-condition solver
+    /// iterates on; `b` is in model coordinates.
+    pub fn buoyancy(&self, draft: f64, trim: f64, heel_deg: f64) -> (f64, Vec3) {
         let wp = waterplane_for(self.keel, self.length, draft, trim, heel_deg);
-        integrate(&self.verts, &self.tris, &wp).0
+        let origin = wp.project(Vec3::ZERO);
+        let (volume, moment, _, _, _) = integrate(&self.verts, &self.tris, &wp);
+        let b = if volume > 1e-12 {
+            moment / volume + origin
+        } else {
+            Vec3::ZERO
+        };
+        (volume, b)
     }
 
     fn hydrostatics_inner(&self, opts: &HydroOptions) -> Hydrostatics {

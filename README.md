@@ -127,8 +127,14 @@ are serde-serialisable and available as JSON from the CLI.
 
 ### Stability
 
-`stability::cross_curves` trims the hull to a constant displacement for each
-heel angle by bisection on the draft, then reports `KN` and `GZ = KN − KG·sin φ`.
+`stability::cross_curves` floats the hull at a constant displacement for each
+heel angle, then reports `KN` and `GZ = KN − KG·sin φ`. Two conditions are
+supported. *Fixed trim* holds the trim and bisects on the draft only — fast,
+but the `LCB` drifts away from the `LCG` as the hull heels. *Free to trim*
+(`--free-trim`, `--lcg x`) solves `(draft, trim)` so the hull is in
+longitudinal equilibrium at every heel; it costs a few more iterations and is
+what a real boat does. With no `--lcg`, the upright `LCB` at the design draft
+is used.
 
 ### Fairing analysis
 
@@ -189,6 +195,7 @@ seacraft info      hull.fef
 seacraft hydro     hull.fef [--draft T] [--trim m] [--heel deg] [--kg m] [--json]
 seacraft sac       hull.fef [--stations N] [--csv out.csv]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
+                            [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|linesplan.dxf [--stations N] [--buttocks N] [--waterlines N]
 seacraft export    hull.fef -o hull.obj|.stl|.ply|.html [--level N] [--control]
 seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]

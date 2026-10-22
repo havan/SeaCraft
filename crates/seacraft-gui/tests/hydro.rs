@@ -59,6 +59,54 @@ fn clearing_the_hydrostatics_flag_empties_the_displacement() {
     assert!((app.hydrostatics().unwrap().volume_m3 - full).abs() < 1e-9);
 }
 
+/// The dock's "GZ free to trim" switch must change the solved trim, not just
+/// the status line. Fixed trim holds `trim` at zero; free trim finds the
+/// equilibrium trim for every heel and displacement.
+#[test]
+fn the_dock_trims_freely_when_asked() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_kg(2.2);
+    app.recompute_hydrostatics();
+    let lcb = app.hydrostatics().unwrap().lcb.x;
+    assert!(lcb > 0.5, "LCB {lcb} should be a real station");
+
+    // The curves are 45 two-unknown solves; a coarse mesh proves the wiring
+    // without making the suite wait for level 3 in a debug build.
+    app.set_subdivision_level(2);
+    app.recompute_hydrostatics();
+
+    app.compute_cross_curves();
+    let fixed: Vec<f64> = app
+        .cross_curves()
+        .expect("curves")
+        .iter()
+        .map(|c| c.points[2].trim_m)
+        .collect();
+    assert!(
+        fixed.iter().all(|t| t.abs() < 1e-12),
+        "fixed trim must hold the trim: {fixed:?}"
+    );
+
+    // No LCG given: the dock falls back to the upright LCB it just measured.
+    app.set_free_trim(true, None);
+    app.compute_cross_curves();
+    let curves = app.cross_curves().expect("curves");
+    let heeled = &curves[3]; // 30 degrees
+    assert!((heeled.heel_deg - 30.0).abs() < 1e-12);
+    let p = &heeled.points[2];
+    assert!(p.gz.is_finite() && p.draft.is_finite(), "the solve must converge");
+    assert!(
+        p.trim_m.abs() > 0.01,
+        "the demo hull trims when heeled, got {}",
+        p.trim_m
+    );
+    assert!(app.status().contains("free to trim"), "status: {}", app.status());
+
+    // The dock still draws with the switch on.
+    frame(&mut app);
+    frame(&mut app);
+}
+
 #[test]
 fn a_hidden_layer_leaves_the_measurement_alone() {
     let mut app = App::headless_for_test(Some(&demo_path()));
