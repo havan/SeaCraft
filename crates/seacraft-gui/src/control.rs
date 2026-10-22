@@ -787,6 +787,51 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "imo": imo,
             }))
         }
+        "model.split_face" => {
+            // A topology edit: snapshot first, so Ctrl+Z in the window undoes it
+            // exactly like a drag does.
+            let faces = app.surface().map(|s| s.faces.len()).unwrap_or(0);
+            let face = index_at(p, "face", faces)?.ok_or("model.split_face: give `face`")?;
+            app.snapshot_undo();
+            let report = {
+                let surface = app.surface_mut().ok_or("no model loaded")?;
+                seacraft_core::topology::split_face(surface, face)
+                    .map_err(|e| format!("model.split_face: {e}"))?
+            };
+            app.mark_geometry_changed();
+            app.status_note(format!("face {face} split into {} triangles", report.pieces));
+            Ok(json!({
+                "face": report.face,
+                "point": report.point,
+                "pieces": report.pieces,
+                "faces": report.faces_after,
+                "points": report.points_after,
+                "undo_len": app.undo_len(),
+            }))
+        }
+        "model.insert_edge" => {
+            let faces_total = app.surface().map(|s| s.faces.len()).unwrap_or(0);
+            let f = index_at(p, "face", faces_total)?.ok_or("model.insert_edge: give `face`")?;
+            let count = app.surface().map(|s| s.points.len()).unwrap_or(0);
+            let a = index_at(p, "a", count)?.ok_or("model.insert_edge: give `a`")?;
+            let b = index_at(p, "b", count)?.ok_or("model.insert_edge: give `b`")?;
+            app.snapshot_undo();
+            {
+                let surface = app.surface_mut().ok_or("no model loaded")?;
+                seacraft_core::topology::insert_edge(surface, f, a, b)
+                    .map_err(|e| format!("model.insert_edge: {e}"))?;
+            }
+            app.mark_geometry_changed();
+            app.status_note(format!("edge {a}-{b} inserted on face {f}"));
+            let faces = app.surface().map(|s| s.faces.len()).unwrap_or(0);
+            Ok(json!({
+                "face": f,
+                "a": a,
+                "b": b,
+                "faces": faces,
+                "undo_len": app.undo_len(),
+            }))
+        }
         "curves.bonjean" => {
             // Read-only measurement of the app's own model, so an agent can
             // draw the curves the way `seacraft bonjean` does. Nothing is
@@ -1265,6 +1310,45 @@ mod tests {
         ] {
             assert_eq!(call(&mut app, &ctx, "curves.bonjean", bad.clone())["ok"], false, "{bad}");
         }
+
+        // ---- model.split_face / model.insert_edge: edits with undo ----------
+        let faces_before = app.face_count();
+        let undo_before = app.undo_len();
+        let r = call(&mut app, &ctx, "model.split_face", json!({ "face": 0 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["pieces"], 4, "a quad fans into four: {r}");
+        assert_eq!(app.face_count(), faces_before + 3, "{r}");
+        assert_eq!(app.undo_len(), undo_before + 1, "a topology edit is undoable");
+        assert_eq!(r["result"]["undo_len"], json!(app.undo_len()));
+        // The fan's point is a real control point and the fan edges exist.
+        let new_point = r["result"]["point"].as_u64().unwrap_or(u64::MAX);
+        let r = call(
+            &mut app,
+            &ctx,
+            "edge.crease",
+            json!({ "edge": [new_point, 0], "crease": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        // The edit is one snapshot, so one undo (Ctrl+Z in the window, the
+        // history unit test covers the key path) takes the whole fan away.
+        // `ui.key` only queues synthetic input; the frame applies it, so the
+        // count is checked through the queue length here instead.
+        assert!(app.undo_len() > undo_before, "no snapshot was taken");
+        let r = call(&mut app, &ctx, "ui.key", json!({ "key": "Z", "ctrl": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.synthetic_len() >= 2, "press and release are queued");
+        // insert_edge shares the same validation path as the core and CLI tests
+        // (which exercise the positive case); here it is the refusals and the
+        // snapshot that matter for the control channel.
+        assert_eq!(call(&mut app, &ctx, "model.insert_edge", json!({ "face": 0, "a": 0, "b": 1 }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "model.insert_edge", json!({ "face": 0, "a": 0, "b": 100_000 }))["ok"], false);
+        assert_eq!(
+            app.face_count(),
+            faces_before + 3,
+            "a refused insert_edge changes nothing (the split above stands)"
+        );
+        assert_eq!(call(&mut app, &ctx, "model.split_face", json!({ "face": 10_000 }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "model.split_face", json!({}))["ok"], false);
 
         // ---- curves.offsets: the same table from the app's model ----------
         let dirty_before = app.is_dirty();

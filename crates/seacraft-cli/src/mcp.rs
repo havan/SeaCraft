@@ -48,7 +48,7 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{curves, demo, export, fef, linesplan, offsets, raster};
+use seacraft_core::{curves, demo, export, fef, linesplan, offsets, raster, topology};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -83,7 +83,7 @@ net and its layers, extents and principal dimensions; `load_hull` {path} or {dem
 that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
 for the section area at each station against a range of drafts; `table_of_offsets` for the drawing-office \
 half-breadth and buttock tables; `move_point` and \
-`set_crease` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
+`set_crease`, `split_face` and `insert_edge` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
 look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
 
 // ---------------------------------------------------------------- framing --
@@ -385,6 +385,8 @@ impl McpServer {
             "save_hull" => self.save_hull(a),
             "move_point" => self.move_point(a),
             "set_crease" => self.set_crease(a),
+            "split_face" => self.split_face(a),
+            "insert_edge" => self.insert_edge(a),
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
             "bonjean_curves" => self.bonjean_curves(a),
@@ -610,6 +612,49 @@ impl McpServer {
             e.crease = crease;
         }
         Ok(json!({"a": key.0, "b": key.1, "crease": crease, "edges": self.surface.edges.len()}))
+    }
+
+    fn split_face(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let faces = self.surface.faces.len();
+        let face = usize_arg(a, "face")
+            .filter(|f| *f < faces)
+            .ok_or_else(|| format!("split_face: `face` must be from 0 to {}", faces.saturating_sub(1)))?;
+        let report = topology::split_face(&mut self.surface, face)
+            .map_err(|e| format!("split_face: {e}"))?;
+        Ok(json!({
+            "face": report.face,
+            "point": report.point,
+            "pieces": report.pieces,
+            "faces": report.faces_after,
+            "points": report.points_after,
+            "points_before": report.points_before,
+            "faces_before": report.faces_before,
+        }))
+    }
+
+    fn insert_edge(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let faces = self.surface.faces.len();
+        let points = self.surface.points.len();
+        let face = usize_arg(a, "face")
+            .filter(|f| *f < faces)
+            .ok_or_else(|| format!("insert_edge: `face` must be from 0 to {}", faces.saturating_sub(1)))?;
+        let pick = |key: &str| -> Result<usize, String> {
+            usize_arg(a, key)
+                .filter(|v| *v < points)
+                .ok_or_else(|| format!("insert_edge: `{key}` must be from 0 to {}", points.saturating_sub(1)))
+        };
+        let (x, y) = (pick("a")?, pick("b")?);
+        let before = self.surface.faces.len();
+        topology::insert_edge(&mut self.surface, face, x, y)
+            .map_err(|e| format!("insert_edge: {e}"))?;
+        Ok(json!({
+            "face": face,
+            "a": x,
+            "b": y,
+            "faces": self.surface.faces.len(),
+            "faces_before": before,
+            "edges": self.surface.edges.len(),
+        }))
     }
 
     fn hydro_compute(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
@@ -1121,6 +1166,32 @@ pub fn tool_definitions() -> Vec<Value> {
             false,
         ),
         tool(
+            "split_face",
+            "Split a face",
+            "Replace control face `face` with a triangle fan around a new point at its centroid. The face keeps its \
+             index and layer, so a later `insert_edge` naming the same index refers to the first triangle of the \
+             fan. Every new edge is interior to the face, so the net stays closed and manifold; on a planar face \
+             the geometry is untouched, on a curved one the fan refines to a slightly different surface.",
+            obj(json!({"face": integer("Control face index (see hull_info for the count)")}), &["face"]),
+            false,
+        ),
+        tool(
+            "insert_edge",
+            "Insert an edge",
+            "Join two non-adjacent points of control face `face` with a new edge, splitting the face in two. Both \
+             points must already be on that face and must not be neighbours along it. The halves keep the original \
+             face's layer and the surface is unchanged: only the topology is divided.",
+            obj(
+                json!({
+                    "face": integer("Control face index"),
+                    "a": integer("First control point index, on that face"),
+                    "b": integer("Second control point index, on that face"),
+                }),
+                &["face", "a", "b"],
+            ),
+            false,
+        ),
+        tool(
             "hydro_compute",
             "Hydrostatics",
             "Measure one floating condition on the refined mesh: volume, displacement, the coefficients (Cb, Cp, Cm, \
@@ -1333,7 +1404,8 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// tools, so each tool is translated to the one that does the same thing:
 /// `hull_info` -> `ui.inspect`, `load_hull` -> `model.open` / `model.load_demo`,
 /// `save_hull` -> `model.save`, `move_point` -> `point.move`,
-/// `set_crease` -> `edge.crease`, `hydro_compute` -> `hydro.compute`,
+/// `set_crease` -> `edge.crease`, `split_face` -> `model.split_face`,
+/// `insert_edge` -> `model.insert_edge`, `hydro_compute` -> `hydro.compute`,
 /// `stability_cross_curves` -> `stability.cross_curves`,
 /// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
 /// `export_linesplan`
@@ -1465,6 +1537,8 @@ impl Remote {
                 }
                 self.request("point.move", json!({"index": index, "xyz": p}))
             }
+            "split_face" => self.request("model.split_face", Value::Object(a.clone())),
+            "insert_edge" => self.request("model.insert_edge", Value::Object(a.clone())),
             "set_crease" => {
                 let a_idx = usize_arg(a, "a").ok_or("set_crease: `a` must be a point index")?;
                 let b_idx = usize_arg(a, "b").ok_or("set_crease: `b` must be a point index")?;
@@ -1694,7 +1768,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the eleven hull tools, each with a JSON Schema.
+        // tools/list: the thirteen hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -1706,6 +1780,8 @@ mod tests {
                 "save_hull",
                 "move_point",
                 "set_crease",
+                "split_face",
+                "insert_edge",
                 "hydro_compute",
                 "stability_cross_curves",
                 "bonjean_curves",
@@ -1905,6 +1981,40 @@ mod tests {
             json!({"a": 0, "b": 100_000, "crease": true}),
         );
 
+        // split_face / insert_edge: the topology grows, the model stays valid,
+        // and the hydrostatics barely move (a planar fan does not move them at
+        // all; this net is curved, so allow a fraction of a percent).
+        let before = ok(&mut s, 70, "hull_info", json!({}));
+        let faces_before = before["faces"].as_u64().unwrap_or(0);
+        let vol_before = ok(&mut s, 71, "hydro_compute", json!({"draft": 0.62}))["volume_m3"]
+            .as_f64()
+            .unwrap_or(0.0);
+        let split = ok(&mut s, 72, "split_face", json!({"face": 0}));
+        assert_eq!(split["pieces"], 4, "a quad fans into four triangles: {split}");
+        assert_eq!(split["faces"].as_u64(), Some(faces_before + 3), "{split}");
+        let after = ok(&mut s, 73, "hull_info", json!({}));
+        assert_eq!(after["validation"]["ok"], true, "{after}");
+        let vol_after = ok(&mut s, 74, "hydro_compute", json!({"draft": 0.62}))["volume_m3"]
+            .as_f64()
+            .unwrap_or(0.0);
+        assert!(
+            (vol_after - vol_before).abs() / vol_before < 5e-3,
+            "splitting a face moved the displacement from {vol_before} to {vol_after}"
+        );
+        // The fan's new point is addressable, and the fan edges are real edges.
+        let new_point = split["point"].as_u64().unwrap_or(u64::MAX) as usize;
+        let crease = ok(
+            &mut s,
+            75,
+            "set_crease",
+            json!({"a": new_point, "b": 0, "crease": true}),
+        );
+        assert_eq!(crease["crease"], true, "{crease}");
+        // An edge cannot be inserted between neighbours that are already joined.
+        fails(&mut s, 76, "insert_edge", json!({"face": 0, "a": new_point, "b": 0}));
+        // The edited net is what the file round-trip below has to reproduce.
+        let edited = ok(&mut s, 77, "hull_info", json!({}));
+
         // stability_cross_curves: KN and GZ, with the IMO criteria.
         let curves = ok(
             &mut s,
@@ -1954,10 +2064,10 @@ mod tests {
         // save_hull then load_hull round-trips the control net.
         let fef = temp_path("fef");
         let saved = ok(&mut s, 17, "save_hull", json!({"path": fef}));
-        assert_eq!(saved["points"], info["points"]);
+        assert_eq!(saved["points"], edited["points"]);
         let demoted = ok(&mut s, 18, "load_hull", json!({"path": fef}));
-        assert_eq!(demoted["points"], info["points"]);
-        assert_eq!(demoted["faces"], info["faces"]);
+        assert_eq!(demoted["points"], edited["points"]);
+        assert_eq!(demoted["faces"], edited["faces"]);
         assert_eq!(demoted["source"], json!(fef.to_string_lossy()));
         let _ = std::fs::remove_file(&fef);
 
@@ -2051,6 +2161,8 @@ mod tests {
             json!({"name": "render_png", "arguments": {"path": "x.png", "view": "under"}}),
             json!({"name": "bonjean_curves", "arguments": {"drafts": "0.1,0.2"}}),
             json!({"name": "table_of_offsets", "arguments": {"waterlines": "0.1"}}),
+            json!({"name": "split_face", "arguments": {"face": "first"}}),
+            json!({"name": "insert_edge", "arguments": {"face": 0, "a": 1}}),
         ] {
             let v = request(&mut s, 20, "tools/call", params.clone());
             assert_eq!(v["error"]["code"], INVALID_PARAMS, "{params} -> {v}");
@@ -2081,6 +2193,9 @@ mod tests {
             ("stability_cross_curves", json!({"displacements": [0.0]})),
             ("bonjean_curves", json!({"drafts": []})),
             ("bonjean_curves", json!({"drafts": [0.0, 1.0]})),
+            ("split_face", json!({"face": 999})),
+            ("insert_edge", json!({"face": 999, "a": 0, "b": 1})),
+            ("insert_edge", json!({"face": 0, "a": 0, "b": 1})),
             ("table_of_offsets", json!({"waterlines": []})),
             ("table_of_offsets", json!({"buttocks": [-0.5]})),
             ("export_linesplan", json!({"path": "/tmp/x.obj"})),
