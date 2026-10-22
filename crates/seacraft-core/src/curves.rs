@@ -58,7 +58,7 @@ impl Bonjean {
 /// draft of the Bonjean family clips the same polylines instead of re-cutting
 /// the whole mesh. This is the performance-critical inner loop: a 21 × 10
 /// family is 21 cuts, not 210.
-fn station_polygons(hull: &Hull, x: f64) -> (Plane, Vec<Vec<Vec3>>) {
+pub(crate) fn station_polygons(hull: &Hull, x: f64) -> (Plane, Vec<Vec<Vec3>>) {
     let plane = Plane::new(Vec3::new(1.0, 0.0, 0.0), -x);
     let segs = plane_segments(&hull.verts, &hull.tris, &plane);
     let paths = chain_paths(&segs, 1e-7);

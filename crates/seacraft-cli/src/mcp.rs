@@ -48,7 +48,7 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{curves, demo, export, fef, linesplan, raster};
+use seacraft_core::{curves, demo, export, fef, linesplan, offsets, raster};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -81,7 +81,8 @@ A symmetric layer models only y >= 0 and is mirrored on evaluation. Typical use:
 net and its layers, extents and principal dimensions; `load_hull` {path} or {demo: true, symmetric}; \
 `hydro_compute` {draft, trim, heel_deg, kg, free_trim, lcg} for one floating condition (free_trim solves the trim \
 that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
-for the section area at each station against a range of drafts; `move_point` and \
+for the section area at each station against a range of drafts; `table_of_offsets` for the drawing-office \
+half-breadth and buttock tables; `move_point` and \
 `set_crease` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
 look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
 
@@ -387,6 +388,7 @@ impl McpServer {
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
             "bonjean_curves" => self.bonjean_curves(a),
+            "table_of_offsets" => self.table_of_offsets(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -739,6 +741,35 @@ impl McpServer {
         }))
     }
 
+    fn table_of_offsets(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let stations = count_arg(a, "stations", 21, 2, 200)?;
+        let wl_steps = count_arg(a, "waterline_steps", 6, 1, 50)?;
+        let b_steps = count_arg(a, "buttock_steps", 4, 1, 50)?;
+        let mut subdiv = self.opts.subdivision;
+        subdiv.level = level;
+        let hull = hydro::Hull::new(&self.surface, subdiv);
+        let waterlines = match a.get("waterlines") {
+            None | Some(Value::Null) => offsets::default_waterlines(&hull, wl_steps),
+            Some(v) => positives(v, "waterlines")?,
+        };
+        let buttocks = match a.get("buttocks") {
+            None | Some(Value::Null) => offsets::default_buttocks(&hull, b_steps),
+            Some(v) => positives(v, "buttocks")?,
+        };
+        let table = offsets::table_of_offsets(&hull, stations, &waterlines, &buttocks);
+        let mut v = serde_json::to_value(&table).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+            o.insert("level".into(), json!(level));
+            o.insert("max_half_breadth_m".into(), json!(table.max_half_breadth()));
+        }
+        Ok(v)
+    }
+
     fn export_linesplan(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let path = str_arg(a, "path")
             .filter(|p| !p.trim().is_empty())
@@ -969,6 +1000,19 @@ fn numbers(v: &Value, key: &str) -> Result<Vec<f64>, String> {
     Ok(out)
 }
 
+/// A non-empty list of positive ordinates, sorted ascending.
+fn positives(v: &Value, key: &str) -> Result<Vec<f64>, String> {
+    let mut out = numbers(v, key)?;
+    if out.is_empty() {
+        return Err(format!("`{key}` needs at least one ordinate"));
+    }
+    if out.iter().any(|x| *x <= 0.0) {
+        return Err(format!("`{key}` must be positive"));
+    }
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(out)
+}
+
 // ------------------------------------------------------ tool definitions --
 
 fn string(desc: &str) -> Value {
@@ -1139,6 +1183,28 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "table_of_offsets",
+            "Table of offsets",
+            "The drawing-office table: half-breadths where each station section meets each waterline, plus the \
+             height of the hull on each buttock plane. Stations are sampled at slice midpoints and every reading \
+             comes from the refined mesh. `waterlines` are heights above the keel in metres and `buttocks` are \
+             offsets to starboard from the centreline; omit either to get `waterline_steps`/`buttock_steps` \
+             evenly spaced ordinates over the hull's own depth and half beam. A cell is null when the section does \
+             not reach that ordinate (printed as `-`, which is not the same as 0.000 on the centreline).",
+            obj(
+                json!({
+                    "stations": integer("Stations along the model length, 2-200 (default 21)"),
+                    "waterlines": {"type": "array", "items": {"type": "number"}, "description": "Waterline heights above the keel, metres (default: depth/steps ... depth)"},
+                    "waterline_steps": integer("Number of waterlines in the default range, 1-50 (default 6)"),
+                    "buttocks": {"type": "array", "items": {"type": "number"}, "description": "Buttock offsets from the centreline, metres (default: spread over the half beam)"},
+                    "buttock_steps": integer("Number of buttocks in the default range, 1-50 (default 4)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            true,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1269,7 +1335,8 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `save_hull` -> `model.save`, `move_point` -> `point.move`,
 /// `set_crease` -> `edge.crease`, `hydro_compute` -> `hydro.compute`,
 /// `stability_cross_curves` -> `stability.cross_curves`,
-/// `bonjean_curves` -> `curves.bonjean`, `export_linesplan`
+/// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
+/// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
 pub struct Remote {
@@ -1431,6 +1498,7 @@ impl Remote {
                 }))
             }
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
+            "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -1626,7 +1694,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the ten hull tools, each with a JSON Schema.
+        // tools/list: the eleven hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -1641,6 +1709,7 @@ mod tests {
                 "hydro_compute",
                 "stability_cross_curves",
                 "bonjean_curves",
+                "table_of_offsets",
                 "export_linesplan",
                 "render_png",
             ]
@@ -1729,6 +1798,50 @@ mod tests {
             bj["area_max_m2"].as_f64().unwrap_or(0.0) > a[2],
             "the deepest station is not the largest: {bj}"
         );
+        // table_of_offsets: half-breadths and buttocks, spot-checked against
+        // the hydrostatic beam and the hull's own depth.
+        let ofs = ok(
+            &mut s,
+            62,
+            "table_of_offsets",
+            json!({"stations": 11, "waterlines": [0.62], "buttocks": [1.0]}),
+        );
+        assert_eq!(ofs["backend"], "headless", "{ofs}");
+        assert_eq!(ofs["waterlines_m"], json!([0.62]));
+        let rows = ofs["stations"].as_array().expect("stations");
+        assert_eq!(rows.len(), 11, "{ofs}");
+        let widest = rows
+            .iter()
+            .filter_map(|r| r["waterline_half_breadths"][0].as_f64())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            (widest - 1.771).abs() < 0.03,
+            "half-breadth at T = 0.62 was {widest} (BWL/2 is 1.771)"
+        );
+        // A cell the section cannot reach is null, never zero.
+        let bow = rows.last().expect("a bow station");
+        assert!(rows.iter().any(|r| r["waterline_half_breadths"][0].is_null()), "{ofs}");
+        assert!(bow["buttock_heights"][0].is_null() || bow["buttock_heights"][0].as_f64().unwrap_or(0.0) > 0.0);
+        // Defaults cover the depth and the half beam.
+        let dflt = ok(&mut s, 63, "table_of_offsets", json!({"waterline_steps": 3, "buttock_steps": 2}));
+        let wls = dflt["waterlines_m"].as_array().expect("waterlines");
+        assert_eq!(wls.len(), 3, "{dflt}");
+        let top = wls[2].as_f64().unwrap_or(0.0);
+        let depth = dflt["stations"]
+            .as_array()
+            .expect("stations")
+            .iter()
+            .filter_map(|r| r["deck_z"].as_f64())
+            .fold(0.0_f64, f64::max)
+            - dflt["keel_z"].as_f64().unwrap_or(0.0);
+        // The tallest sampled station is a little lower than the model's own
+        // maximum sheer (the stem is not a midpoint), so the top default
+        // waterline sits at or just above the sampled depth.
+        assert!(
+            top >= depth && top < depth + 0.1,
+            "top waterline {top} vs sampled depth {depth}"
+        );
+
         // The default draft range covers the hull depth and stays in order.
         let dflt = ok(&mut s, 61, "bonjean_curves", json!({"draft_steps": 4}));
         let drafts: Vec<f64> = dflt["drafts_m"]
@@ -1937,6 +2050,7 @@ mod tests {
             json!({"name": "render_png", "arguments": {"path": "x.png", "mode": "hologram"}}),
             json!({"name": "render_png", "arguments": {"path": "x.png", "view": "under"}}),
             json!({"name": "bonjean_curves", "arguments": {"drafts": "0.1,0.2"}}),
+            json!({"name": "table_of_offsets", "arguments": {"waterlines": "0.1"}}),
         ] {
             let v = request(&mut s, 20, "tools/call", params.clone());
             assert_eq!(v["error"]["code"], INVALID_PARAMS, "{params} -> {v}");
@@ -1967,6 +2081,8 @@ mod tests {
             ("stability_cross_curves", json!({"displacements": [0.0]})),
             ("bonjean_curves", json!({"drafts": []})),
             ("bonjean_curves", json!({"drafts": [0.0, 1.0]})),
+            ("table_of_offsets", json!({"waterlines": []})),
+            ("table_of_offsets", json!({"buttocks": [-0.5]})),
             ("export_linesplan", json!({"path": "/tmp/x.obj"})),
             ("export_linesplan", json!({"path": "/no/such/dir/x.svg"})),
             ("render_png", json!({"path": "/no/such/dir/x.png"})),

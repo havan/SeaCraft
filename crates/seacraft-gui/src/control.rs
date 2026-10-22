@@ -244,6 +244,18 @@ fn numbers(p: &Value, key: &str) -> Result<Option<Vec<f64>>, String> {
     }
 }
 
+/// A non-empty list of positive ordinates, sorted ascending.
+fn positive_ordinates(mut v: Vec<f64>, key: &str) -> Result<Vec<f64>, String> {
+    if v.is_empty() {
+        return Err(format!("curves.offsets: `{key}` needs at least one ordinate"));
+    }
+    if v.iter().any(|x| *x <= 0.0) {
+        return Err(format!("curves.offsets: `{key}` must be positive"));
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Ok(v)
+}
+
 /// A finite `f64` from `key` inside `range`.
 fn number_in(p: &Value, key: &str, range: std::ops::RangeInclusive<f64>) -> Result<Option<f64>, String> {
     match number(p, key)? {
@@ -829,6 +841,53 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "area_max_m2": bj.max_area(),
             }))
         }
+        "curves.offsets" => {
+            // Read-only, like curves.bonjean: no snapshot, no dirty flag.
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            let stations = number_in(p, "stations", 2.0..=200.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(21);
+            let wl_steps = number_in(p, "waterline_steps", 1.0..=50.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(6);
+            let b_steps = number_in(p, "buttock_steps", 1.0..=50.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(4);
+            let surface = app
+                .surface()
+                .ok_or_else(|| "curves.offsets: no model is loaded".to_string())?;
+            let hull = seacraft_core::hydro::Hull::new(
+                surface,
+                seacraft_core::subdiv::SubdivisionOptions {
+                    level,
+                    mode: app.subdivision_mode(),
+                },
+            );
+            let waterlines = match numbers(p, "waterlines")? {
+                Some(v) => positive_ordinates(v, "waterlines")?,
+                None => seacraft_core::offsets::default_waterlines(&hull, wl_steps),
+            };
+            let buttocks = match numbers(p, "buttocks")? {
+                Some(v) => positive_ordinates(v, "buttocks")?,
+                None => seacraft_core::offsets::default_buttocks(&hull, b_steps),
+            };
+            let table =
+                seacraft_core::offsets::table_of_offsets(&hull, stations, &waterlines, &buttocks);
+            Ok(json!({
+                "backend": "app",
+                "level": level,
+                "keel_z": table.keel_z,
+                "waterlines_m": table.waterlines_m,
+                "buttocks_m": table.buttocks_m,
+                "stations": table.stations,
+                "max_half_breadth_m": table.max_half_breadth(),
+            }))
+        }
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -1205,6 +1264,29 @@ mod tests {
             json!({ "level": 9 }),
         ] {
             assert_eq!(call(&mut app, &ctx, "curves.bonjean", bad.clone())["ok"], false, "{bad}");
+        }
+
+        // ---- curves.offsets: the same table from the app's model ----------
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(&mut app, &ctx, "curves.offsets", json!({ "stations": 9, "waterlines": [0.62], "buttocks": [1.0] }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["waterlines_m"], json!([0.62]));
+        let rows = r["result"]["stations"].as_array().expect("stations");
+        assert_eq!(rows.len(), 9, "{r}");
+        let widest = rows
+            .iter()
+            .filter_map(|row| row["waterline_half_breadths"][0].as_f64())
+            .fold(0.0_f64, f64::max);
+        assert!((widest - 1.771).abs() < 0.04, "half-breadth at T = 0.62: {widest}");
+        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
+        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        for bad in [
+            json!({ "waterlines": [] }),
+            json!({ "buttocks": [0.0] }),
+            json!({ "stations": 1e9 }),
+        ] {
+            assert_eq!(call(&mut app, &ctx, "curves.offsets", bad.clone())["ok"], false, "{bad}");
         }
 
         // ---- ui.render writes a PNG ---------------------------------------

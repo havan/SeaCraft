@@ -32,6 +32,7 @@ pub mod iges;
 pub mod linesplan;
 pub mod math;
 pub mod mesh;
+pub mod offsets;
 pub mod raster;
 pub mod stability;
 pub mod subdiv;

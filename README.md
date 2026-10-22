@@ -133,6 +133,11 @@ prismatic coefficient from the section-area curve. Both curves plot to
 standalone SVG with no external dependency, and both are cut from the same
 refined mesh and clipping path as the hydrostatics.
 
+`offsets::table_of_offsets` produces the drawing-office table — half-breadths
+at stations x waterlines and buttock heights at stations x buttocks — as a
+terminal table, long-format CSV, JSON or a standalone HTML page
+(`seacraft offsets`). A cell the section cannot reach is empty (`-`), not zero.
+
 ### Stability
 
 `stability::cross_curves` floats the hull at a constant displacement for each
@@ -214,6 +219,8 @@ seacraft hydro     hull.fef [--draft T] [--trim m | --free-trim [--lcg x]] [--he
 seacraft sac       hull.fef [--stations N] [--csv out.csv] [--svg sac.svg] [--json]
 seacraft bonjean   hull.fef [--stations N] [--drafts T1,T2,...] [--draft-steps N]
                               [--csv out.csv] [--svg bonjean.svg] [--json]
+seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks y1,y2,...]
+                              [--csv out.csv] [--html offsets.html] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
@@ -301,9 +308,10 @@ cursor position on the active viewport's focal plane and the crate version.
 * Programmatic automation is supported via `seacraft-gui --control 127.0.0.1:PORT`
   (JSON lines over TCP, executed on the next frame) and `seacraft mcp` (JSON-RPC
   2.0 Model Context Protocol over stdio, either headless or connected via
-  `--connect 127.0.0.1:PORT`). Ten tools: `hull_info`, `load_hull`, `save_hull`,
-  `move_point`, `set_crease`, `hydro_compute`, `stability_cross_curves`,
-  `bonjean_curves`, `export_linesplan` and `render_png`.
+  `--connect 127.0.0.1:PORT`). Eleven tools: `hull_info`, `load_hull`,
+  `save_hull`, `move_point`, `set_crease`, `hydro_compute`,
+  `stability_cross_curves`, `bonjean_curves`, `table_of_offsets`,
+  `export_linesplan` and `render_png`.
 * Not yet implemented: developability/unfolding, Lackenby
   transformation, resistance and propulsion prediction (Holtrop–Mennen / Savitsky),
   VRML import, and interactive face/edge splitting or extrusion in the GUI.

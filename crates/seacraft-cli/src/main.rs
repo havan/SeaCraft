@@ -9,7 +9,8 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
-    analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface, raster,
+    analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
+    offsets, raster,
 };
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,8 @@ enum Command {
     Sac(SacArgs),
     /// Bonjean curves: section area against draft at each station
     Bonjean(BonjeanArgs),
+    /// Table of offsets: half-breadths at stations x waterlines, plus buttocks
+    Offsets(OffsetsArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -283,6 +286,37 @@ struct BonjeanArgs {
 }
 
 #[derive(Args, Debug)]
+struct OffsetsArgs {
+    file: PathBuf,
+    /// Number of stations, end points excluded (slice midpoints)
+    #[arg(long, default_value_t = 21)]
+    stations: usize,
+    /// Waterline heights above the keel in metres, comma separated
+    #[arg(long)]
+    waterlines: Option<String>,
+    /// Number of waterlines in the default range
+    #[arg(long, default_value_t = 6)]
+    waterline_steps: usize,
+    /// Buttock offsets from the centreline in metres, comma separated
+    #[arg(long)]
+    buttocks: Option<String>,
+    /// Number of buttocks in the default range
+    #[arg(long, default_value_t = 4)]
+    buttock_steps: usize,
+    /// Write CSV to this path (long format)
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Write the HTML table to this path
+    #[arg(long)]
+    html: Option<PathBuf>,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
 struct StabilityArgs {
     file: PathBuf,
     /// Centre of gravity height above the keel
@@ -363,6 +397,7 @@ fn run() -> Result<()> {
         Command::Subdiv(a) => cmd_subdiv(a),
         Command::Sac(a) => cmd_sac(a),
         Command::Bonjean(a) => cmd_bonjean(a),
+        Command::Offsets(a) => cmd_offsets(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -786,6 +821,125 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
     println!(
         "draft [m] across the columns; max area {:.3} m² at the deepest draft",
         bonjean.max_area()
+    );
+    Ok(())
+}
+
+fn parse_ordinates(text: &str, key: &str) -> Result<Vec<f64>> {
+    let mut out: Vec<f64> = text
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<f64>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("invalid {key} list '{text}'"))?;
+    out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if out.is_empty() {
+        bail!("{key} must list at least one ordinate");
+    }
+    if out.iter().any(|v| *v <= 0.0 || !v.is_finite()) {
+        bail!("{key} must be positive");
+    }
+    Ok(out)
+}
+
+fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+    );
+    let hull = seacraft_core::hydro::Hull::new(&s, opts.subdivision);
+    let waterlines = match &a.waterlines {
+        Some(text) => parse_ordinates(text, "waterlines")?,
+        None => offsets::default_waterlines(&hull, a.waterline_steps),
+    };
+    let buttocks = match &a.buttocks {
+        Some(text) => parse_ordinates(text, "buttocks")?,
+        None => offsets::default_buttocks(&hull, a.buttock_steps),
+    };
+    let table = offsets::table_of_offsets(&hull, a.stations, &waterlines, &buttocks);
+    let title = format!("{} - table of offsets", s.settings.name);
+
+    if let Some(path) = &a.html {
+        std::fs::write(path, offsets::html(&table, &title))
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
+    if let Some(path) = &a.csv {
+        // Long format: one row per (station, waterline, buttock) reading would
+        // be three tables; keep it to two blocks with a type column.
+        let mut text = String::from("kind,station_x,ordinate,value\n");
+        for st in &table.stations {
+            for (i, wl) in table.waterlines_m.iter().enumerate() {
+                if let Some(y) = st.waterline_half_breadths[i] {
+                    text.push_str(&format!("half_breadth,{:.4},{:.4},{:.6}\n", st.x, wl, y));
+                }
+            }
+            for (i, b) in table.buttocks_m.iter().enumerate() {
+                if let Some(z) = st.buttock_heights[i] {
+                    text.push_str(&format!("buttock_height,{:.4},{:.4},{:.6}\n", st.x, b, z));
+                }
+            }
+        }
+        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        println!(
+            "wrote {} ({} stations x {} waterlines)",
+            path.display(),
+            table.stations.len(),
+            table.waterlines_m.len()
+        );
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&table)?);
+        return Ok(());
+    }
+    if a.html.is_some() && a.csv.is_none() {
+        println!(
+            "{} stations x {} waterlines, widest half-breadth {:.3} m",
+            table.stations.len(),
+            table.waterlines_m.len(),
+            table.max_half_breadth()
+        );
+        return Ok(());
+    }
+
+    println!("{}", title);
+    println!("  half-breadths [m], waterlines above the keel\n");
+    print!("{:>8}", "x [m]");
+    for wl in &table.waterlines_m {
+        print!("{:>8}", format!("WL{wl:.2}"));
+    }
+    println!("{:>8}{:>8}{:>8}", "keel", "sheer", "B/2");
+    for st in &table.stations {
+        print!("{:>8.3}", st.x);
+        for v in &st.waterline_half_breadths {
+            match v {
+                Some(y) => print!("{:>8.3}", y),
+                None => print!("{:>8}", "-"),
+            }
+        }
+        println!("{:>8.3}{:>8.3}{:>8.3}", st.keel_z, st.deck_z, st.half_beam);
+    }
+    println!("\n  buttock heights [m, model z]\n");
+    print!("{:>8}", "x [m]");
+    for b in &table.buttocks_m {
+        print!("{:>8}", format!("B{b:.2}"));
+    }
+    println!();
+    for st in &table.stations {
+        print!("{:>8.3}", st.x);
+        for v in &st.buttock_heights {
+            match v {
+                Some(z) => print!("{:>8.3}", z),
+                None => print!("{:>8}", "-"),
+            }
+        }
+        println!();
+    }
+    println!(
+        "- means the section does not reach that ordinate; widest half-breadth {:.3} m",
+        table.max_half_breadth()
     );
     Ok(())
 }
