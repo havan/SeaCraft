@@ -55,7 +55,8 @@ crates/seacraft-core/
   src/hydro.rs              Hull, waterplane, clipping, integration, sections,
                             waterline chaining, coefficients
   src/stability.rs          draft solving by bisection + KN/GZ cross curves
-  src/linesplan.rs          stations/buttocks/waterlines -> three-view SVG
+  src/linesplan.rs          stations/buttocks/waterlines -> three-view SVG/DXF
+  src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
   src/export.rs             OBJ (y- or z-up), binary STL, ASCII PLY, HTML viewer
   src/demo.rs               parametric 12 m demo hull, full and half model
 crates/seacraft-cli/src/main.rs   clap front end, table/JSON/CSV output
@@ -82,6 +83,7 @@ cargo clippy --all-targets       # must stay silent
 cargo run --release -- demo -o /tmp/demo.fef
 cargo run --release -- hydro /tmp/demo.fef --kg 2.2 --stations 11
 cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.svg
+cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.dxf
 cargo run --release -- export /tmp/demo.fef -o /tmp/hull.html --level 2
 cargo run -p seacraft-gui -- --open examples/demo-hull.fef
 ```

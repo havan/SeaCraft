@@ -22,6 +22,7 @@
 //! [FREE!ship]: https://sourceforge.net/projects/freeship
 
 pub mod demo;
+pub mod dxf;
 pub mod export;
 pub mod fef;
 pub mod hydro;

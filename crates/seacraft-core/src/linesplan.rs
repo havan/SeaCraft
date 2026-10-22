@@ -1,11 +1,13 @@
-//! Linesplan: stations, buttocks and waterlines as an SVG drawing.
+//! Linesplan: stations, buttocks and waterlines as SVG or DXF.
 //!
 //! FREE!ship derives its linesplan from the same intersection machinery used
 //! for hydrostatics: cut the refined hull with a set of planes, chain the
 //! resulting segments into polylines and project them onto the three
 //! orthographic views. This module does exactly that and lays the curves out
-//! as a conventional three-view drawing (profile, plan, body plan).
+//! as a conventional three-view drawing (profile, plan, body plan), either as
+//! a standalone SVG or as an AutoCAD 2000 DXF with named layers.
 
+use crate::dxf::{self, DxfEntity, DxfLayer, DxfShape, Vec2};
 use crate::math::{Plane, Vec3};
 use crate::mesh::Surface;
 use crate::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
@@ -26,10 +28,23 @@ impl Default for LinesplanOptions {
     }
 }
 
-/// A polyline in one of the orthographic views, in view coordinates.
+/// A polyline in one of the orthographic views: its 2D view coordinates and
+/// the 3D curve it came from.
 struct Curve {
     points: Vec<(f64, f64)>,
+    points3: Vec<Vec3>,
     closed: bool,
+}
+
+/// The curves of every view plus the model's extents.
+struct Cut {
+    stations: Vec<Curve>,
+    buttocks: Vec<Curve>,
+    waterlines: Vec<Curve>,
+    /// The cut at the project's design draft, for the waterplane.
+    waterplane: Option<Curve>,
+    min: Vec3,
+    max: Vec3,
 }
 
 /// Triangles of every visible layer, mirrored where the layer is symmetric.
@@ -59,9 +74,55 @@ fn cut(verts: &[Vec3], tris: &[[usize; 3]], plane: &Plane, tol: f64) -> Vec<Curv
         .filter(|(p, _)| p.len() >= 2)
         .map(|(p, closed)| Curve {
             points: p.iter().map(|q| (u.dot(*q), v.dot(*q))).collect(),
+            points3: p,
             closed,
         })
         .collect()
+}
+
+/// Cut the hull once for every view.
+fn cut_all(surface: &Surface, opts: LinesplanOptions) -> Cut {
+    let subdiv = SubdivisionOptions { level: opts.level, mode: opts.mode };
+    let (verts, tris) = visible_triangles(surface, subdiv);
+    let (min, max) = surface.extents();
+    let l = (max.x - min.x).max(0.1);
+    let b = (max.y - min.y).max(0.1);
+    let tol = l.max(b) * 1e-6;
+
+    // Body plan: stations at x = const, viewed from the bow (u = y, v = z).
+    let mut stations: Vec<Curve> = Vec::new();
+    for i in 0..opts.stations.max(2) {
+        let t = i as f64 / (opts.stations.max(2) - 1) as f64;
+        let x = min.x + (max.x - min.x) * t;
+        let plane = Plane::new(Vec3::new(1.0, 0.0, 0.0), -x);
+        stations.extend(cut(&verts, &tris, &plane, tol));
+    }
+    // Profile: buttocks at y = const, viewed from starboard (u = x, v = z).
+    let mut buttocks: Vec<Curve> = Vec::new();
+    for i in 0..opts.buttocks.max(2) {
+        let t = i as f64 / (opts.buttocks.max(2) - 1) as f64;
+        let y = min.y + (max.y - min.y) * t;
+        let plane = Plane::new(Vec3::new(0.0, 1.0, 0.0), -y);
+        buttocks.extend(cut(&verts, &tris, &plane, tol));
+    }
+    // Plan: waterlines at z = const, viewed from above (u = x, v = y).
+    let mut waterlines: Vec<Curve> = Vec::new();
+    for i in 0..opts.waterlines.max(2) {
+        let t = i as f64 / (opts.waterlines.max(2) - 1) as f64;
+        let z = min.z + (max.z - min.z) * t;
+        let plane = Plane::new(Vec3::new(0.0, 0.0, 1.0), -z);
+        waterlines.extend(cut(&verts, &tris, &plane, tol));
+    }
+    // The design waterline, drawn highlighted in the plan view.
+    let waterplane = if surface.settings.draft > 0.0 {
+        let z = surface.lowest_hydrostatics_point() + surface.settings.draft;
+        let plane = Plane::new(Vec3::new(0.0, 0.0, 1.0), -z);
+        cut(&verts, &tris, &plane, tol).into_iter().max_by_key(|c| c.points.len())
+    } else {
+        None
+    };
+
+    Cut { stations, buttocks, waterlines, waterplane, min, max }
 }
 
 /// Extend a closed curve back to its first point so the SVG path closes.
@@ -83,44 +144,11 @@ fn svg_path(c: &Curve, map: &dyn Fn(f64, f64) -> (f64, f64)) -> String {
 
 /// Render the linesplan as a standalone SVG document.
 pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
-    let subdiv = SubdivisionOptions { level: opts.level, mode: opts.mode };
-    let (verts, tris) = visible_triangles(surface, subdiv);
-    let (min, max) = surface.extents();
+    let cut = cut_all(surface, opts);
+    let (min, max) = (cut.min, cut.max);
     let l = (max.x - min.x).max(0.1);
     let b = (max.y - min.y).max(0.1);
     let d = (max.z - min.z).max(0.1);
-    let tol = l.max(b) * 1e-6;
-
-    // Body plan: stations at x = const, viewed from the bow (u = y, v = z).
-    let mut stations: Vec<Curve> = Vec::new();
-    for i in 0..opts.stations {
-        let t = i as f64 / (opts.stations - 1).max(1) as f64;
-        let x = min.x + (max.x - min.x) * t;
-        let plane = Plane::new(Vec3::new(1.0, 0.0, 0.0), -x);
-        for c in cut(&verts, &tris, &plane, tol) {
-            stations.push(c);
-        }
-    }
-    // Profile: buttocks at y = const, viewed from starboard (u = x, v = z).
-    let mut buttocks: Vec<Curve> = Vec::new();
-    for i in 0..opts.buttocks {
-        let t = i as f64 / (opts.buttocks - 1).max(1) as f64;
-        let y = min.y + (max.y - min.y) * t;
-        let plane = Plane::new(Vec3::new(0.0, 1.0, 0.0), -y);
-        for c in cut(&verts, &tris, &plane, tol) {
-            buttocks.push(c);
-        }
-    }
-    // Plan: waterlines at z = const, viewed from above (u = x, v = y).
-    let mut waterlines: Vec<Curve> = Vec::new();
-    for i in 0..opts.waterlines {
-        let t = i as f64 / (opts.waterlines - 1).max(1) as f64;
-        let z = min.z + (max.z - min.z) * t;
-        let plane = Plane::new(Vec3::new(0.0, 0.0, 1.0), -z);
-        for c in cut(&verts, &tris, &plane, tol) {
-            waterlines.push(c);
-        }
-    }
 
     // Panel geometry in millimetres (1 m = 1 unit here; scaled for print).
     let scale = 900.0 / l.max(2.0 * b);
@@ -170,12 +198,12 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     let map_profile = |x: f64, z: f64| -> (f64, f64) {
         (margin + (x - min.x) * scale, top + dw - (z - min.z) * scale)
     };
-    for c in &buttocks {
+    for c in &cut.buttocks {
         let d = svg_path(c, &map_profile);
         let _ = writeln!(out, "<path class=\"buttock\" d=\"{d}\"/>");
     }
-    for i in 0..opts.waterlines {
-        let t = i as f64 / (opts.waterlines - 1).max(1) as f64;
+    for i in 0..opts.waterlines.max(2) {
+        let t = i as f64 / (opts.waterlines.max(2) - 1) as f64;
         let z = min.z + (max.z - min.z) * t;
         let (_, y) = map_profile(min.x, z);
         let _ = writeln!(
@@ -203,13 +231,13 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     let map_plan = |x: f64, y: f64| -> (f64, f64) {
         (margin + (x - min.x) * scale, plan_y + bw / 2.0 - y * scale)
     };
-    for c in &waterlines {
+    for c in &cut.waterlines {
         let d = svg_path(c, &map_plan);
         let _ = writeln!(out, "<path class=\"waterline\" d=\"{d}\"/>");
     }
     // Station lines in the plan view.
-    for i in 0..opts.stations {
-        let t = i as f64 / (opts.stations - 1).max(1) as f64;
+    for i in 0..opts.stations.max(2) {
+        let t = i as f64 / (opts.stations.max(2) - 1) as f64;
         let x = min.x + (max.x - min.x) * t;
         let px = margin + (x - min.x) * scale;
         let _ = writeln!(
@@ -238,7 +266,7 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     let map_body = |y: f64, z: f64| -> (f64, f64) {
         (body_x + bw / 2.0 + y * scale, plan_y + bw - (z - min.z) * scale)
     };
-    for c in &stations {
+    for c in &cut.stations {
         let d = svg_path(c, &map_body);
         let _ = writeln!(out, "<path class=\"station\" d=\"{d}\"/>");
     }
@@ -259,6 +287,183 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     out
 }
 
+/// Render the linesplan as an AutoCAD 2000 DXF drawing, in metres.
+///
+/// The three views share the waterline axis, as a conventional linesplan does:
+/// the profile sits at the model's own `(x, z)`, the plan below it in `(x, y)`
+/// and the body plan to the right in `(y, z)`. Every curve is also written as a
+/// 3D polyline at its true coordinates on its own `… 3D` layer, so the hull can
+/// be handed to Rhino or ShipConstructor without rebuilding it from the views.
+pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
+    let cut = cut_all(surface, opts);
+    let (min, max) = (cut.min, cut.max);
+    let l = (max.x - min.x).max(0.1);
+    let b = (max.y - min.y).max(0.1);
+    let gap = 0.12 * l.max(2.0 * b);
+    let plan_y0 = min.z - gap - b;
+    let body_x0 = max.x + gap;
+
+    let layers = [
+        DxfLayer::new("Stations", 7),
+        DxfLayer::new("Buttocks", 1),
+        DxfLayer::new("Waterlines", 5),
+        DxfLayer::new("Grid", 8).dashed(),
+        DxfLayer::new("Centerline", 8).dashed(),
+        DxfLayer::new("Waterplane", 4).dashed(),
+    ];
+
+    let mut entities: Vec<DxfEntity> = Vec::new();
+    let frame = |x0: f64, y0: f64, x1: f64, y1: f64| DxfShape::Polyline {
+        points: vec![
+            Vec2::new(x0, y0),
+            Vec2::new(x1, y0),
+            Vec2::new(x1, y1),
+            Vec2::new(x0, y1),
+            Vec2::new(x0, y0),
+        ],
+    };
+    entities.push(DxfEntity::new("Grid", frame(min.x, min.z, max.x, max.z)));
+    entities.push(DxfEntity::new("Grid", frame(min.x, plan_y0, max.x, plan_y0 + b)));
+    entities.push(DxfEntity::new("Grid", frame(body_x0, min.z, body_x0 + b, max.z)));
+
+    // Labels above each view.
+    let text_height = 0.03 * l;
+    // TEXT is centred on its point, so shift each label by half its width to
+    // keep it inside the drawing's extents.
+    let mut label = |x: f64, y: f64, s: &str| {
+        let half = 0.4 * text_height * s.chars().count() as f64;
+        entities.push(DxfEntity::new(
+            "Grid",
+            DxfShape::Text {
+                at: Vec2::new(x + half, y),
+                height: text_height,
+                angle_deg: 0.0,
+                text: s.to_owned(),
+            },
+        ));
+    };
+    label(min.x, max.z + 2.0 * text_height, "PROFILE - buttocks");
+    label(min.x, plan_y0 - 2.0 * text_height, "PLAN - waterlines");
+    label(body_x0, max.z + 2.0 * text_height, "BODY PLAN - stations");
+
+    // The two centrelines (ship y = 0) and the keel line.
+    entities.push(DxfEntity::new(
+        "Centerline",
+        DxfShape::Line(Vec2::new(min.x, plan_y0 - min.y), Vec2::new(max.x, plan_y0 - min.y)),
+    ));
+    entities.push(DxfEntity::new(
+        "Centerline",
+        DxfShape::Line(Vec2::new(body_x0 - min.y, min.z), Vec2::new(body_x0 - min.y, max.z)),
+    ));
+    entities.push(DxfEntity::new(
+        "Centerline",
+        DxfShape::Line(Vec2::new(min.x, min.z), Vec2::new(max.x, min.z)),
+    ));
+
+    // Body plan: stations in (y, z), to the right of the profile.
+    for curve in &cut.stations {
+        entities.push(DxfEntity::new(
+            "Stations",
+            DxfShape::Polyline {
+                points: curve
+                    .points
+                    .iter()
+                    .map(|(u, v)| Vec2::new(body_x0 + (u - min.y), *v))
+                    .collect(),
+            },
+        ));
+        entities.push(DxfEntity::new(
+            "Stations 3D",
+            DxfShape::Polyline3 { points: curve.points3.clone() },
+        ));
+    }
+    // Profile: buttocks in (x, z).
+    for curve in &cut.buttocks {
+        entities.push(DxfEntity::new(
+            "Buttocks",
+            DxfShape::Polyline {
+                points: curve.points.iter().map(|(u, v)| Vec2::new(*u, *v)).collect(),
+            },
+        ));
+        entities.push(DxfEntity::new(
+            "Buttocks 3D",
+            DxfShape::Polyline3 { points: curve.points3.clone() },
+        ));
+    }
+    // Plan: waterlines in (x, y), below the profile.
+    for curve in &cut.waterlines {
+        entities.push(DxfEntity::new(
+            "Waterlines",
+            DxfShape::Polyline {
+                points: curve
+                    .points
+                    .iter()
+                    .map(|(u, v)| Vec2::new(*u, plan_y0 + (v - min.y)))
+                    .collect(),
+            },
+        ));
+        entities.push(DxfEntity::new(
+            "Waterlines 3D",
+            DxfShape::Polyline3 { points: curve.points3.clone() },
+        ));
+    }
+    // The design waterline, highlighted in the plan.
+    if let Some(curve) = &cut.waterplane {
+        entities.push(DxfEntity::new(
+            "Waterplane",
+            DxfShape::Polyline {
+                points: curve
+                    .points
+                    .iter()
+                    .map(|(u, v)| Vec2::new(*u, plan_y0 + (v - min.y)))
+                    .collect(),
+            },
+        ));
+    }
+
+    let mut all = layers.to_vec();
+    all.push(DxfLayer::new("Stations 3D", 3));
+    all.push(DxfLayer::new("Buttocks 3D", 3));
+    all.push(DxfLayer::new("Waterlines 3D", 3));
+    dxf::write_dxf(&all, &entities)
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_svg_and_dxf_carry_the_same_views() {
+        let surface = crate::demo::demo_hull(false);
+        let opts = LinesplanOptions::default();
+        let drawing = dxf(&surface, opts);
+        assert!(drawing.starts_with("  0\nSECTION"));
+        assert!(drawing.contains("AC1015"));
+        for layer in [
+            "Stations",
+            "Buttocks",
+            "Waterlines",
+            "Grid",
+            "Centerline",
+            "Waterplane",
+            "Stations 3D",
+            "Waterlines 3D",
+        ] {
+            assert!(drawing.contains(&format!("\n{layer}\n")), "layer {layer} missing");
+        }
+        // Entities: three frames + three labels + three centrelines, then every
+        // curve twice (2D view and 3D copy), plus the design waterline.
+        let polylines = drawing.matches("\nLWPOLYLINE\n").count();
+        let poly3d = drawing.matches("\nPOLYLINE\n").count();
+        assert!(polylines > 30, "2D polylines: {polylines}");
+        // Three frames and the design waterline have no 3D twin.
+        assert_eq!(polylines - poly3d, 4, "every curve but the frames has a 3D twin");
+        // The SVG still renders.
+        let svg = svg(&surface, opts);
+        assert!(svg.contains("<svg") && svg.contains("bodyplan"));
+    }
 }

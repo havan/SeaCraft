@@ -43,6 +43,7 @@ fn every_export_format_writes_a_plausible_file() {
             ExportKind::Ply => assert!(head.starts_with("ply\n"), "{head}"),
             ExportKind::Html => assert!(head.to_lowercase().starts_with("<!doctype html"), "{head}"),
             ExportKind::Linesplan => assert!(head.starts_with("<?xml"), "{head}"),
+            ExportKind::LinesplanDxf => assert!(head.starts_with("  0\nSECTION"), "{head}"),
             ExportKind::Stl => {
                 // 80-byte header, then a u32 triangle count that matches the size.
                 assert!(bytes.len() > 84);

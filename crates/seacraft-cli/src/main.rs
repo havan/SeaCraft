@@ -198,7 +198,7 @@ struct StabilityArgs {
 struct LinesplanArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Output SVG path
+    /// Output path: `.svg` (default) or `.dxf` for a layered AutoCAD drawing
     #[arg(short, long, default_value = "linesplan.svg")]
     output: PathBuf,
     /// Number of stations in the body plan
@@ -524,7 +524,18 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         level: a.subdiv.level,
         mode: a.subdiv.mode.into(),
     };
-    let text = linesplan::svg(&s, opts);
+    // The extension picks the format: `.dxf` gives the three views on named
+    // layers plus 3D copies of every curve, anything else the standalone SVG.
+    let extension = a
+        .output
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let text = if extension == "dxf" {
+        linesplan::dxf(&s, opts)
+    } else {
+        linesplan::svg(&s, opts)
+    };
     std::fs::write(&a.output, text)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());

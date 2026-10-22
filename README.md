@@ -100,7 +100,8 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | `.fef` import/export | `fef.rs` |
 | Panel hydrostatics, coefficients, SAC | `hydro.rs` |
 | Cross curves, `KN`/`GZ`, draft solving | `stability.rs` |
-| Stations / buttocks / waterlines (SVG) | `linesplan.rs` |
+|| Stations / buttocks / waterlines (SVG, DXF) | `linesplan.rs` |
+|| AutoCAD 2000 DXF writer | `dxf.rs` |
 | OBJ / STL / PLY / HTML viewer | `export.rs` |
 || Parametric demo hull | `demo.rs` |
 || Command-line front end | `crates/seacraft-cli` |
@@ -133,6 +134,15 @@ heel angle by bisection on the draft, then reports `KN` and `GZ = KN − KG·sin
 plan) with stations, buttocks and waterlines. `export` writes OBJ, binary STL,
 ASCII PLY and a self-contained three.js HTML viewer.
 
+`linesplan::dxf` writes the same three views as an AutoCAD 2000 (`AC1015`)
+drawing in metres, laid out conventionally (plan below the profile, body plan
+to the right) on named layers — `Stations`, `Buttocks`, `Waterlines`,
+`Waterplane`, `Centerline`, `Grid`, each with its own ACI colour, the frame and
+centrelines dashed. Every curve is repeated as a 3D polyline on
+`Stations 3D` / `Buttocks 3D` / `Waterlines 3D` at its true coordinates, so the
+hull can be reopened in Rhino or ShipConstructor without rebuilding it from the
+views. The writer is dependency-free; see `ATTRIBUTION.md`.
+
 ---
 
 ## 3. Command line
@@ -143,7 +153,7 @@ seacraft info      hull.fef
 seacraft hydro     hull.fef [--draft T] [--trim m] [--heel deg] [--kg m] [--json]
 seacraft sac       hull.fef [--stations N] [--csv out.csv]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
-seacraft linesplan hull.fef -o linesplan.svg [--stations N] [--buttocks N] [--waterlines N]
+seacraft linesplan hull.fef -o linesplan.svg|linesplan.dxf [--stations N] [--buttocks N] [--waterlines N]
 seacraft export    hull.fef -o hull.obj|.stl|.ply|.html [--level N] [--control]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
 ```
@@ -214,10 +224,12 @@ cursor position on the active viewport's focal plane and the crate version.
   exports are implemented and tested.
 * The desktop modeller (four viewports, control-point dragging with undo, layer
   and hydrostatics docks, file actions) is implemented and tested headlessly.
+* DXF export of the linesplan (2D views plus 3D curve copies) is implemented
+  and audit-clean under `ezdxf`.
 * Not yet implemented: zebra/curvature fairing analysis, a software z-buffer
-  viewport, DXF and IGES export, developability/unfolding, Lackenby
-  transformation, resistance and propulsion prediction, VRML import, and
-  adding/deleting control points or edges.
+  viewport, IGES export, developability/unfolding, Lackenby transformation,
+  resistance and propulsion prediction, VRML import, and adding/deleting
+  control points or edges.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.
 
