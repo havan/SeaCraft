@@ -137,6 +137,16 @@ pub fn stl(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode) -
     out
 }
 
+/// 3MF (Core 1.3) package of the refined hull, in metres (`unit="meter"`).
+///
+/// The archive is stored, not deflated: `threemf::write_3mf` writes a
+/// dependency-free ZIP, and the mesh is welded at 1 µm first so a slicer sees a
+/// watertight solid rather than one with a crack along every layer seam.
+pub fn threemf(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode) -> Vec<u8> {
+    let mesh = render_mesh(surface, level, mode);
+    crate::threemf::write_3mf(&surface.settings.name, &mesh.verts, &mesh.faces)
+}
+
 /// ASCII PLY of the refined hull.
 pub fn ply(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode) -> String {
     let mesh = render_mesh(surface, level, mode);

@@ -1,0 +1,1290 @@
+//! Programmatic control of the running app: a loopback JSON-lines socket for
+//! agents and scripted tests.
+//!
+//! `--control HOST:PORT` binds the socket (see [`spawn_listener`]); every
+//! accepted connection sends one request per JSON line and gets one
+//! single-line JSON reply, `{"ok": true, "result": …}` or
+//! `{"ok": false, "error": "…"}`. The app serves the queue once per frame
+//! ([`crate::App::process_control`]), so a request reads and edits exactly the
+//! state the next painted frame shows, and input methods (`ui.click`,
+//! `ui.drag`, …) are injected into the next frame's [`egui::RawInput`].
+//!
+//! Adapted from Tangency Labs' `fieldcraft/crates/ui-egui/src/control.rs`
+//! (MIT OR Apache-2.0): the request/reply shape, the synthetic-input queue and
+//! the validate-then-apply style. Nothing is copied verbatim — the methods
+//! below are SeaCraft's own. See `ATTRIBUTION.md`.
+//!
+//! Requests are untrusted input: every number is checked for finiteness and
+//! range, every index against the model's size, and nothing here panics.
+
+use std::io::{BufRead, BufReader, ErrorKind, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
+
+use eframe::egui;
+use seacraft_core::math::Vec3;
+use seacraft_core::{AnalysisMode, SubdivisionMode};
+use serde_json::{json, Value};
+
+use crate::render::{self, Scene};
+use crate::App;
+
+/// Longest accepted request line. A hostile client cannot make the reader
+/// allocate more than this per line.
+const MAX_LINE: usize = 64 * 1024;
+/// How long a connection waits for the window to answer one request.
+const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Largest image side `ui.render` accepts, in pixels.
+const MAX_RENDER: usize = 4096;
+/// The default `ui.render` image size.
+const RENDER_DEFAULT: [usize; 2] = [1280, 800];
+/// Most synthetic events that may wait for a frame.
+pub const MAX_SYNTHETIC: usize = 512;
+/// Largest absolute angle or length a camera request may give, in metres.
+const MAX_CAMERA: f64 = 1e6;
+/// Largest absolute position a synthetic pointer event may give, in points.
+const MAX_POINT: f64 = 1e6;
+/// Pitch stops just short of the pole, where the camera basis degenerates.
+const MAX_PITCH: f64 = std::f64::consts::FRAC_PI_2 - 0.001;
+
+/// One request from the socket, handed to the app thread with the channel that
+/// carries the reply back.
+pub struct ControlRequest {
+    pub method: String,
+    pub params: Value,
+    pub reply: Sender<Value>,
+}
+
+impl ControlRequest {
+    /// A request whose reply goes to `reply`. The socket thread makes the
+    /// channel and waits on it, so the window never blocks on a client.
+    pub fn new(method: impl Into<String>, params: Value, reply: Sender<Value>) -> Self {
+        Self { method: method.into(), params, reply }
+    }
+}
+
+/// Bind `addr` and serve JSON lines on a background thread.
+///
+/// Returns the address actually bound (so `127.0.0.1:0` can pick a free port)
+/// and the channel the app drains. One thread per connection, so a client that
+/// opens a socket and says nothing cannot stall the others.
+pub fn spawn_listener(addr: &str) -> std::io::Result<(SocketAddr, Receiver<ControlRequest>)> {
+    let listener = TcpListener::bind(addr)?;
+    let local = listener.local_addr()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("seacraft-control".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let tx = tx.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("seacraft-control-conn".into())
+                    .spawn(move || serve(stream, &tx));
+                if spawned.is_err() {
+                    // Out of threads: refusing the connection is the only
+                    // safe answer, and it must not take the listener down.
+                    continue;
+                }
+            }
+        })?;
+    Ok((local, rx))
+}
+
+/// Read one line, at most `max` bytes, from `reader`.
+///
+/// `Ok(None)` at end of stream. A line that does not fit is reported as
+/// [`Line::TooLong`] and the rest of it is discarded, so the next line still
+/// parses — the reader never holds more than `max` bytes.
+fn read_line(reader: &mut impl BufRead, max: usize) -> std::io::Result<Option<Line>> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut too_long = false;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(b) => b,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            if buf.is_empty() && !too_long {
+                return Ok(None);
+            }
+            break;
+        }
+        let (end, consume) = match available.iter().position(|&b| b == b'\n') {
+            Some(i) => (i, i + 1),
+            None => (available.len(), available.len()),
+        };
+        if !too_long {
+            if buf.len() + end > max {
+                too_long = true;
+                buf = Vec::new();
+            } else {
+                buf.extend_from_slice(&available[..end]);
+            }
+        }
+        reader.consume(consume);
+        if consume > end {
+            break; // the newline was there
+        }
+    }
+    if too_long {
+        return Ok(Some(Line::TooLong));
+    }
+    match String::from_utf8(buf) {
+        Ok(text) => Ok(Some(Line::Text(text))),
+        Err(_) => Ok(Some(Line::NotUtf8)),
+    }
+}
+
+enum Line {
+    Text(String),
+    TooLong,
+    NotUtf8,
+}
+
+fn error(message: impl std::fmt::Display) -> Value {
+    json!({ "ok": false, "error": message.to_string() })
+}
+
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>) {
+    let _ = stream.set_nodelay(true);
+    let Ok(read_half) = stream.try_clone() else { return };
+    let mut writer = stream;
+    let mut reader = BufReader::new(read_half);
+    loop {
+        let line = match read_line(&mut reader, MAX_LINE) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(_) => break,
+        };
+        let reply = match line {
+            Line::TooLong => error(format!("line longer than {} KiB", MAX_LINE / 1024)),
+            Line::NotUtf8 => error("a request line must be UTF-8"),
+            Line::Text(text) if text.trim().is_empty() => continue,
+            Line::Text(text) => match parse_request(&text) {
+                Err(e) => error(e),
+                Ok((method, params)) => {
+                    let (reply_tx, reply_rx) = mpsc::channel();
+                    if tx.send(ControlRequest::new(method, params, reply_tx)).is_err() {
+                        break; // the window is gone
+                    }
+                    match reply_rx.recv_timeout(REPLY_TIMEOUT) {
+                        Ok(v) => v,
+                        Err(mpsc::RecvTimeoutError::Timeout) => error(format!(
+                            "the window did not answer within {} s",
+                            REPLY_TIMEOUT.as_secs()
+                        )),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            },
+        };
+        if !write_reply(&mut writer, &reply) {
+            break;
+        }
+    }
+}
+
+/// Parse one request line into `(method, params)`. The params default to `{}`.
+fn parse_request(text: &str) -> Result<(String, Value), String> {
+    let value: Value = serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or("a request needs a string `method`")?
+        .to_string();
+    let params = match value.get("params") {
+        None | Some(Value::Null) => json!({}),
+        Some(p) => p.clone(),
+    };
+    Ok((method, params))
+}
+
+/// Write one reply line. A value serde_json cannot render (it cannot happen for
+/// the replies produced here) still gets an answer rather than silence.
+fn write_reply(stream: &mut TcpStream, reply: &Value) -> bool {
+    let text = serde_json::to_string(reply).unwrap_or_else(|_| "{\"ok\":false,\"error\":\"the reply could not be encoded\"}".to_string());
+    stream.write_all(text.as_bytes()).is_ok() && stream.write_all(b"\n").is_ok() && stream.flush().is_ok()
+}
+
+// ---- parameter helpers -------------------------------------------------
+
+/// A finite `f64` from `key`, or an error naming the type problem.
+fn number(p: &Value, key: &str) -> Result<Option<f64>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .filter(|x| x.is_finite())
+            .map(Some)
+            .ok_or_else(|| format!("`{key}` must be a finite number")),
+    }
+}
+
+/// A finite `f64` from `key` inside `range`.
+fn number_in(p: &Value, key: &str, range: std::ops::RangeInclusive<f64>) -> Result<Option<f64>, String> {
+    match number(p, key)? {
+        None => Ok(None),
+        Some(x) if range.contains(&x) => Ok(Some(x)),
+        Some(_) => Err(format!("`{key}` must be from {} to {}", range.start(), range.end())),
+    }
+}
+
+fn boolean(p: &Value, key: &str) -> Result<Option<bool>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(v)) => Ok(Some(*v)),
+        Some(_) => Err(format!("`{key}` must be true or false")),
+    }
+}
+
+fn text<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.as_str())),
+        Some(_) => Err(format!("`{key}` must be a string")),
+    }
+}
+
+/// A whole number in `0..max` (exclusive `max`).
+fn index_at(p: &Value, key: &str, max: usize) -> Result<Option<usize>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let x = v
+                .as_f64()
+                .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < max as f64)
+                .ok_or_else(|| {
+                    format!(
+                        "`{key}` must be a whole number from 0 to {}",
+                        max.saturating_sub(1)
+                    )
+                })?;
+            Ok(Some(x as usize))
+        }
+    }
+}
+
+/// Exactly three finite numbers.
+fn triple(v: &Value, key: &str) -> Result<Vec3, String> {
+    let bad = || format!("`{key}` must be three finite numbers [x, y, z]");
+    let list = v.as_array().filter(|a| a.len() == 3).ok_or_else(bad)?;
+    let mut out = [0.0; 3];
+    for (slot, value) in out.iter_mut().zip(list) {
+        *slot = value.as_f64().filter(|x| x.is_finite()).ok_or_else(bad)?;
+    }
+    Ok(Vec3::new(out[0], out[1], out[2]))
+}
+
+/// A pointer position in window points.
+fn position(p: &Value) -> Result<egui::Pos2, String> {
+    let bad = || "`x` and `y` must be finite window coordinates".to_string();
+    let x = p
+        .get("x")
+        .and_then(Value::as_f64)
+        .filter(|x| x.is_finite() && x.abs() <= MAX_POINT)
+        .ok_or_else(bad)?;
+    let y = p
+        .get("y")
+        .and_then(Value::as_f64)
+        .filter(|x| x.is_finite() && x.abs() <= MAX_POINT)
+        .ok_or_else(bad)?;
+    Ok(egui::pos2(x as f32, y as f32))
+}
+
+/// `[x, y]` as a pointer position, for the drag endpoints.
+fn point_pair(p: &Value, key: &str) -> Result<Option<egui::Pos2>, String> {
+    let Some(v) = p.get(key) else { return Ok(None) };
+    if v.is_null() {
+        return Ok(None);
+    }
+    let bad = || format!("`{key}` must be [x, y] in window points");
+    let list = v.as_array().filter(|a| a.len() == 2).ok_or_else(bad)?;
+    let mut out = [0.0f32; 2];
+    for (slot, value) in out.iter_mut().zip(list) {
+        *slot = value
+            .as_f64()
+            .filter(|x| x.is_finite() && x.abs() <= MAX_POINT)
+            .ok_or_else(bad)? as f32;
+    }
+    Ok(Some(egui::pos2(out[0], out[1])))
+}
+
+fn modifiers(p: &Value) -> egui::Modifiers {
+    let on = |key: &str| p.get(key).and_then(Value::as_bool).unwrap_or(false);
+    egui::Modifiers {
+        shift: on("shift"),
+        ctrl: on("ctrl"),
+        command: on("ctrl") || on("cmd") || on("command"),
+        alt: on("alt"),
+        ..Default::default()
+    }
+}
+
+fn pointer_button(name: Option<&str>) -> Result<egui::PointerButton, String> {
+    match name {
+        None | Some("left") | Some("primary") => Ok(egui::PointerButton::Primary),
+        Some("right") | Some("secondary") => Ok(egui::PointerButton::Secondary),
+        Some("middle") => Ok(egui::PointerButton::Middle),
+        Some(other) => Err(format!("`button` must be left, right or middle, not `{other}`")),
+    }
+}
+
+fn key_from(name: &str) -> Option<egui::Key> {
+    let lower = name.to_ascii_lowercase();
+    let alias = match lower.as_str() {
+        "enter" | "return" => Some(egui::Key::Enter),
+        "esc" | "escape" => Some(egui::Key::Escape),
+        "delete" | "del" => Some(egui::Key::Delete),
+        "space" => Some(egui::Key::Space),
+        "tab" => Some(egui::Key::Tab),
+        _ => None,
+    };
+    alias.or_else(|| egui::Key::from_name(name)).or_else(|| {
+        // `num1`…`num4` name the number keys the viewport shortcuts use.
+        let digit = lower.strip_prefix("num")?.chars().next()?;
+        egui::Key::from_name(&digit.to_string())
+    })
+}
+
+fn analysis_from(name: &str) -> Option<AnalysisMode> {
+    Some(match name {
+        "shaded" => AnalysisMode::Shaded,
+        "zebra" => AnalysisMode::Zebra { stripes: 14.0 },
+        "curvature" => AnalysisMode::Curvature { radius: 1.0 },
+        "draft" => AnalysisMode::Draft { angle_deg: 3.0 },
+        _ => return None,
+    })
+}
+
+fn button_event(pos: egui::Pos2, button: egui::PointerButton, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::PointerButton { pos, button, pressed, modifiers }
+}
+
+fn key_event(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers,
+    }
+}
+
+fn mode_name(mode: SubdivisionMode) -> &'static str {
+    match mode {
+        SubdivisionMode::Loop => "loop",
+        SubdivisionMode::CatmullClark => "catmull-clark",
+    }
+}
+
+// ---- the methods -------------------------------------------------------
+
+/// Answer one request. Every arm validates its input before touching the app,
+/// so a bad request leaves the window exactly as it was.
+pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value {
+    let empty = Value::Object(serde_json::Map::new());
+    let p = if req.params.is_null() { &empty } else { &req.params };
+    if !p.is_object() {
+        return error("`params` must be a JSON object");
+    }
+    match handle_inner(app, ctx, req, p) {
+        Ok(v) => json!({ "ok": true, "result": v }),
+        Err(e) => error(e),
+    }
+}
+
+fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Value) -> Result<Value, String> {
+    match req.method.as_str() {
+        "ui.inspect" => Ok(inspect(app)),
+        "ui.set" => {
+            let object = p.as_object().ok_or("`params` must be a JSON object")?;
+            // Read and validate everything first: a bad key must not leave a
+            // half-applied state behind.
+            let mut display = app.display().clone();
+            let mut analysis: Option<AnalysisMode> = None;
+            let mut level: Option<usize> = None;
+            let mut active: Option<usize> = None;
+            for (key, value) in object {
+                match key.as_str() {
+                    "shaded" => display.shaded = value.as_bool().ok_or("`shaded` must be true or false")?,
+                    "wireframe" => display.wireframe = value.as_bool().ok_or("`wireframe` must be true or false")?,
+                    "control_net" => display.control_net = value.as_bool().ok_or("`control_net` must be true or false")?,
+                    "points" => display.points = value.as_bool().ok_or("`points` must be true or false")?,
+                    "waterplane" => display.waterplane = value.as_bool().ok_or("`waterplane` must be true or false")?,
+                    "grid" => display.grid = value.as_bool().ok_or("`grid` must be true or false")?,
+                    "combs" => display.combs = value.as_bool().ok_or("`combs` must be true or false")?,
+                    "analysis" => {
+                        let name = value.as_str().ok_or("`analysis` must be a string")?;
+                        analysis = Some(analysis_from(name).ok_or_else(|| {
+                            format!("`analysis` must be shaded, zebra, curvature or draft, not `{name}`")
+                        })?);
+                    }
+                    "level" => {
+                        level = Some(
+                            value
+                                .as_f64()
+                                .filter(|x| x.is_finite() && x.fract() == 0.0 && (0.0..=5.0).contains(x))
+                                .ok_or("`level` must be a whole number from 0 to 5")?
+                                as usize,
+                        );
+                    }
+                    "active_view" => {
+                        active = Some(
+                            value
+                                .as_f64()
+                                .filter(|x| x.is_finite() && x.fract() == 0.0 && (0.0..=3.0).contains(x))
+                                .ok_or("`active_view` must be a whole number from 0 to 3")?
+                                as usize,
+                        );
+                    }
+                    other => return Err(format!("unknown setting `{other}`")),
+                }
+            }
+            *app.display_mut() = display;
+            if let Some(mode) = analysis {
+                app.set_analysis(mode);
+            }
+            if let Some(level) = level {
+                app.set_subdivision_level(level as u8);
+            }
+            if let Some(view) = active {
+                app.set_active_view(view);
+            }
+            Ok(inspect(app))
+        }
+        "ui.view" => {
+            let what = text(p, "view")?.ok_or("missing `view`")?;
+            match what {
+                "fit" | "reset" => app.reset_cameras(),
+                "perspective" => app.set_active_view(0),
+                "profile" => app.set_active_view(1),
+                "plan" => app.set_active_view(2),
+                "body" => app.set_active_view(3),
+                other => {
+                    return Err(format!(
+                        "unknown view `{other}` (fit, reset, perspective, profile, plan, body)"
+                    ))
+                }
+            }
+            Ok(json!({
+                "active_view": app.active_view(),
+                "camera": camera_json(app, app.active_view()),
+            }))
+        }
+        "ui.camera" => {
+            let view = index_at(p, "view", 4)?.unwrap_or_else(|| app.active_view());
+            let yaw = number(p, "yaw")?;
+            let pitch = number(p, "pitch")?;
+            let distance = number_in(p, "distance", 0.0..=MAX_CAMERA)?;
+            let ortho = number_in(p, "ortho_height", 0.0..=MAX_CAMERA)?;
+            if distance == Some(0.0) || ortho == Some(0.0) {
+                return Err("`distance` and `ortho_height` must be greater than 0".into());
+            }
+            let target = match p.get("target") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(triple(v, "target")?),
+            };
+            let camera = &mut app.cameras_mut()[view];
+            if let Some(yaw) = yaw {
+                camera.yaw = yaw.to_radians();
+            }
+            if let Some(pitch) = pitch {
+                // A perspective eye exactly over the target degenerates the
+                // basis, so stop just short of the pole.
+                camera.pitch = pitch.to_radians().clamp(-MAX_PITCH, MAX_PITCH);
+            }
+            if let Some(distance) = distance {
+                camera.distance = distance;
+            }
+            if let Some(ortho) = ortho {
+                camera.ortho_height = ortho;
+            }
+            if let Some(target) = target {
+                camera.target = target;
+            }
+            Ok(camera_json(app, view))
+        }
+        "ui.move" => {
+            let pos = position(p)?;
+            let queued = app.queue_events([egui::Event::PointerMoved(pos)])?;
+            Ok(json!({ "queued": queued, "pending": app.synthetic_len() }))
+        }
+        "ui.click" => {
+            let pos = position(p)?;
+            let button = pointer_button(text(p, "button")?)?;
+            let modifiers = modifiers(p);
+            let clicks = if boolean(p, "double")?.unwrap_or(false) { 2 } else { 1 };
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            for _ in 0..clicks {
+                events.push(button_event(pos, button, true, modifiers));
+                events.push(button_event(pos, button, false, modifiers));
+            }
+            let queued = app.queue_events(events)?;
+            Ok(json!({ "queued": queued, "pending": app.synthetic_len() }))
+        }
+        "ui.drag" => {
+            // `from`/`to` pairs, or the x0/y0/x1/y1 scalars.
+            let pair = |p: &Value, key: &str, x: &str, y: &str| -> Result<egui::Pos2, String> {
+                if let Some(pos) = point_pair(p, key)? {
+                    return Ok(pos);
+                }
+                let bad = || format!("missing `{key}` (or `{x}` and `{y}`)");
+                let get = |k: &str| {
+                    p.get(k)
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite() && v.abs() <= MAX_POINT)
+                };
+                Ok(egui::pos2(get(x).ok_or_else(bad)? as f32, get(y).ok_or_else(bad)? as f32))
+            };
+            let from = pair(p, "from", "x0", "y0")?;
+            let to = pair(p, "to", "x1", "y1")?;
+            let button = pointer_button(text(p, "button")?)?;
+            let modifiers = modifiers(p);
+            let steps = number_in(p, "steps", 1.0..=64.0)?.unwrap_or(8.0) as usize;
+            let mut events = vec![egui::Event::PointerMoved(from), button_event(from, button, true, modifiers)];
+            for step in 1..=steps {
+                let t = step as f32 / steps as f32;
+                events.push(egui::Event::PointerMoved(from + (to - from) * t));
+            }
+            events.push(button_event(to, button, false, modifiers));
+            let queued = app.queue_events(events)?;
+            Ok(json!({ "queued": queued, "pending": app.synthetic_len() }))
+        }
+        "ui.scroll" => {
+            let lines = number_in(p, "delta", -100.0..=100.0)?.ok_or("missing `delta`")?;
+            let mut events = Vec::new();
+            if p.get("x").is_some() || p.get("y").is_some() {
+                events.push(egui::Event::PointerMoved(position(p)?));
+            }
+            events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: egui::vec2(0.0, lines as f32),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+                modifiers: modifiers(p),
+            });
+            let queued = app.queue_events(events)?;
+            Ok(json!({ "queued": queued, "pending": app.synthetic_len() }))
+        }
+        "ui.key" => {
+            let name = text(p, "key")?.ok_or("missing `key`")?;
+            let key = key_from(name).ok_or_else(|| format!("unknown key `{name}`"))?;
+            let modifiers = modifiers(p);
+            let pressed = boolean(p, "pressed")?.unwrap_or(true);
+            let mut events = vec![key_event(key, pressed, modifiers)];
+            if pressed {
+                // A tap: egui reads the release as the end of the press.
+                events.push(key_event(key, false, modifiers));
+            }
+            let queued = app.queue_events(events)?;
+            Ok(json!({ "queued": queued, "pending": app.synthetic_len() }))
+        }
+        "ui.render" => {
+            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let width = index_at(p, "width", MAX_RENDER + 1)?.unwrap_or(RENDER_DEFAULT[0]);
+            let height = index_at(p, "height", MAX_RENDER + 1)?.unwrap_or(RENDER_DEFAULT[1]);
+            if width == 0 || height == 0 {
+                return Err(format!("`width` and `height` must be from 1 to {MAX_RENDER}"));
+            }
+            let view = index_at(p, "view", 4)?.unwrap_or_else(|| app.active_view());
+            let mode = match text(p, "mode")? {
+                None => app.display().analysis,
+                Some(name) => analysis_from(name)
+                    .ok_or_else(|| format!("`mode` must be shaded, zebra, curvature or draft, not `{name}`"))?,
+            };
+            let png = render_png(app, width, height, view, mode)?;
+            let bytes = png.len();
+            std::fs::write(path, &png).map_err(|e| format!("{path}: {e}"))?;
+            app.status_note(format!("rendered {view} to {path} ({width}×{height})"));
+            Ok(json!({ "path": path, "width": width, "height": height, "bytes": bytes }))
+        }
+        "model.load_demo" => {
+            let symmetric = boolean(p, "symmetric")?.unwrap_or(false);
+            app.load_demo_shape(symmetric);
+            Ok(json!({
+                "symmetric": symmetric,
+                "points": app.control_point_count(),
+                "faces": app.face_count(),
+                "layers": app.layer_count(),
+            }))
+        }
+        "model.open" => {
+            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            app.open_model(std::path::Path::new(path.trim()))?;
+            Ok(json!({
+                "path": app.path().map(|p| p.to_string_lossy().to_string()),
+                "points": app.control_point_count(),
+                "faces": app.face_count(),
+            }))
+        }
+        "model.save" => {
+            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let path = std::path::PathBuf::from(path.trim());
+            if !app.save_to(&path) {
+                return Err(app.status().to_string());
+            }
+            Ok(json!({ "path": path.to_string_lossy(), "dirty": app.is_dirty() }))
+        }
+        "model.export" => {
+            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let format = text(p, "format")?.ok_or("missing `format`")?;
+            let kind = export_kind(format).ok_or_else(|| {
+                format!("`format` must be obj, stl, 3mf, ply, html, svg, dxf or igs, not `{format}`")
+            })?;
+            let path = std::path::PathBuf::from(path.trim());
+            if !app.export_to(kind, &path) {
+                return Err(app.status().to_string());
+            }
+            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            Ok(json!({
+                "path": path.to_string_lossy(),
+                "format": format.to_ascii_lowercase(),
+                "bytes": bytes,
+            }))
+        }
+        "point.move" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let count = app.control_point_count();
+            let index = index_at(p, "index", count.max(1))?.ok_or("missing `index`")?;
+            if index >= count {
+                return Err(format!("`index` must be from 0 to {}", count.saturating_sub(1)));
+            }
+            let current = app.surface().map(|s| s.points[index].p).unwrap_or(Vec3::ZERO);
+            let target = match (p.get("xyz"), p.get("delta")) {
+                (Some(v), None) if !v.is_null() => triple(v, "xyz")?,
+                (None | Some(Value::Null), Some(v)) if !v.is_null() => current + triple(v, "delta")?,
+                _ => return Err("give `xyz` [x, y, z] or `delta` [dx, dy, dz]".into()),
+            };
+            if !target.is_finite() {
+                return Err("the new position must be finite".into());
+            }
+            // A symmetric layer models only y >= 0: the mirror supplies the
+            // other half, so a point dragged across the centreline is clamped.
+            let symmetric = app.surface().map(|s| on_symmetric_layer(s, index)).unwrap_or(false);
+            let target = if symmetric && target.y < 0.0 {
+                Vec3::new(target.x, 0.0, target.z)
+            } else {
+                target
+            };
+            app.snapshot_undo();
+            if let Some(surface) = app.surface_mut() {
+                surface.points[index].p = target;
+            }
+            app.select_point(Some(index));
+            app.mark_geometry_changed();
+            app.status_note(format!("control point {index} moved"));
+            Ok(json!({
+                "index": index,
+                "point": [target.x, target.y, target.z],
+                "clamped": symmetric && target.y == 0.0,
+                "undo_len": app.undo_len(),
+            }))
+        }
+        "edge.crease" => {
+            let surface = app.surface().ok_or("no model loaded")?;
+            let count = surface.points.len();
+            let list = p
+                .get("edge")
+                .and_then(Value::as_array)
+                .filter(|a| a.len() == 2)
+                .ok_or("`edge` must be [a, b] control point indices")?;
+            let mut ends = [0usize; 2];
+            for (slot, value) in ends.iter_mut().zip(list) {
+                *slot = value
+                    .as_f64()
+                    .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
+                    .ok_or_else(|| format!("an `edge` index must be from 0 to {}", count.saturating_sub(1)))?
+                    as usize;
+            }
+            let edge = seacraft_core::mesh::ordered(ends[0], ends[1]);
+            if !surface.edges.iter().any(|e| e.key() == edge) {
+                return Err(format!("no control edge between {} and {}", edge.0, edge.1));
+            }
+            let crease = boolean(p, "crease")?.unwrap_or(true);
+            app.snapshot_undo();
+            if let Some(surface) = app.surface_mut() {
+                for e in &mut surface.edges {
+                    if e.key() == edge {
+                        e.crease = crease;
+                    }
+                }
+            }
+            app.mark_geometry_changed();
+            app.status_note(format!("edge {}-{} crease {crease}", edge.0, edge.1));
+            Ok(json!({
+                "edge": [edge.0, edge.1],
+                "crease": crease,
+                "undo_len": app.undo_len(),
+            }))
+        }
+        "hydro.compute" => {
+            apply_hydro_inputs(app, p)?;
+            app.recompute_hydrostatics();
+            let result = serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null);
+            Ok(json!({
+                "draft": app.hydro_options().draft,
+                "trim": app.hydro_options().trim,
+                "heel_deg": app.hydro_options().heel_deg,
+                "kg": app.kg(),
+                "free_trim": app.free_trim(),
+                "lcg": app.lcg(),
+                "result": result,
+            }))
+        }
+        "stability.cross_curves" => {
+            apply_stability_inputs(app, p)?;
+            app.compute_cross_curves();
+            let curves = app.cross_curves().map(|c| serde_json::to_value(c).unwrap_or(Value::Null)).unwrap_or(Value::Null);
+            let longest = app.cross_curves().map(|c| c.iter().map(|x| x.points.len()).max().unwrap_or(0)).unwrap_or(0);
+            let imo = match app.cross_curves() {
+                Some(c) if longest > 0 => serde_json::to_value(seacraft_core::stability::evaluate_imo_criteria(c, 2.min(longest - 1)))
+                    .unwrap_or(Value::Null),
+                _ => Value::Null,
+            };
+            Ok(json!({
+                "kg": app.kg(),
+                "free_trim": app.free_trim(),
+                "lcg": app.lcg(),
+                "curves": curves,
+                "imo": imo,
+            }))
+        }
+        "app.quit" => {
+            app.request_quit(ctx);
+            Ok(json!({ "quitting": true }))
+        }
+        other => Err(format!("unknown method `{other}`")),
+    }
+}
+
+/// Everything `ui.inspect` reports.
+fn inspect(app: &App) -> Value {
+    let d = app.display();
+    let h = app.hydro_options();
+    json!({
+        "version": seacraft_core::VERSION,
+        "status": app.status(),
+        "dirty": app.is_dirty(),
+        "path": app.path().map(|p| p.to_string_lossy().to_string()),
+        "level": app.subdivision_level(),
+        "mode": mode_name(app.subdivision_mode()),
+        "active_view": app.active_view(),
+        "selected_point": app.selected(),
+        "undo_len": app.undo_len(),
+        "points": app.control_point_count(),
+        "faces": app.face_count(),
+        "layers": app.layer_count(),
+        "display": {
+            "shaded": d.shaded,
+            "wireframe": d.wireframe,
+            "control_net": d.control_net,
+            "points": d.points,
+            "waterplane": d.waterplane,
+            "grid": d.grid,
+            "combs": d.combs,
+            "analysis": d.analysis.label(),
+        },
+        "hydro": {
+            "draft": h.draft,
+            "trim": h.trim,
+            "heel_deg": h.heel_deg,
+            "kg": app.kg(),
+            "free_trim": app.free_trim(),
+            "lcg": app.lcg(),
+            "result": serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null),
+        },
+    })
+}
+
+fn camera_json(app: &App, view: usize) -> Value {
+    let camera = &app.cameras()[view];
+    json!({
+        "view": view,
+        "kind": camera.kind.label(),
+        "yaw_deg": camera.yaw.to_degrees(),
+        "pitch_deg": camera.pitch.to_degrees(),
+        "distance": camera.distance,
+        "ortho_height": camera.ortho_height,
+        "target": [camera.target.x, camera.target.y, camera.target.z],
+    })
+}
+
+/// Update the floating condition from `draft`, `trim` and `heel_deg`, all
+/// checked before any of them is applied.
+fn apply_hydro_inputs(app: &mut App, p: &Value) -> Result<(), String> {
+    let draft = number_in(p, "draft", -1_000.0..=1_000.0)?;
+    let trim = number_in(p, "trim", -1_000.0..=1_000.0)?;
+    let heel = number_in(p, "heel_deg", -180.0..=180.0)?;
+    let kg = number_in(p, "kg", 0.0..=10_000.0)?;
+    let opts = app.hydro_options_mut();
+    if let Some(v) = draft {
+        opts.draft = v;
+    }
+    if let Some(v) = trim {
+        opts.trim = v;
+    }
+    if let Some(v) = heel {
+        opts.heel_deg = v;
+    }
+    if let Some(v) = kg {
+        app.set_kg(v);
+    }
+    apply_stability_inputs(app, p)
+}
+
+/// Update `kg`, `free_trim` and `lcg` (the GZ solve's condition).
+fn apply_stability_inputs(app: &mut App, p: &Value) -> Result<(), String> {
+    let kg = number_in(p, "kg", 0.0..=10_000.0)?;
+    let free = boolean(p, "free_trim")?;
+    let lcg = match p.get("lcg") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => Some(Some(
+            v.as_f64()
+                .filter(|x| x.is_finite() && x.abs() <= MAX_CAMERA)
+                .ok_or("`lcg` must be a finite number or null")?,
+        )),
+    };
+    if let Some(kg) = kg {
+        app.set_kg(kg);
+    }
+    if free.is_some() || lcg.is_some() {
+        let free = free.unwrap_or_else(|| app.free_trim());
+        let lcg = match lcg {
+            Some(lcg) => lcg,
+            None => app.lcg(),
+        };
+        app.set_free_trim(free, lcg);
+    }
+    Ok(())
+}
+
+/// A control point's layer: symmetric layers model only `y >= 0`.
+fn on_symmetric_layer(surface: &seacraft_core::Surface, point: usize) -> bool {
+    surface.faces.iter().enumerate().any(|(fi, f)| {
+        f.contains(&point)
+            && surface
+                .face_layer
+                .get(fi)
+                .and_then(|&li| surface.layers.get(li))
+                .is_some_and(|l| l.symmetric)
+    })
+}
+
+fn export_kind(format: &str) -> Option<crate::app::ExportKind> {
+    use crate::app::ExportKind;
+    Some(match format.to_ascii_lowercase().as_str() {
+        "obj" => ExportKind::Obj,
+        "stl" => ExportKind::Stl,
+        "3mf" => ExportKind::ThreeMf,
+        "ply" => ExportKind::Ply,
+        "html" => ExportKind::Html,
+        "svg" => ExportKind::Linesplan,
+        "dxf" => ExportKind::LinesplanDxf,
+        "igs" | "iges" => ExportKind::LinesplanIges,
+        _ => return None,
+    })
+}
+
+/// Render one viewport to PNG pixels with the CPU rasterizer.
+fn render_png(app: &mut App, width: usize, height: usize, view: usize, mode: AnalysisMode) -> Result<Vec<u8>, String> {
+    app.refresh_cache();
+    let surface = app.surface().ok_or("no model loaded")?;
+    let mesh = app.render_cache().ok_or("the model could not be refined")?;
+    let (min, max) = surface.extents();
+    let (draft, trim, heel_deg) = {
+        let options = app.hydro_options();
+        (options.draft, options.trim, options.heel_deg)
+    };
+    let scene = Scene {
+        surface,
+        mesh,
+        curves: None,
+        min,
+        max,
+        draft,
+        trim,
+        heel_deg,
+    };
+    let transform = app.cameras()[view].transform();
+    let waterplane = app.display().waterplane;
+    let (w, h, rgba) = render::raster_frame(&transform, &scene, mode, waterplane, width, height);
+    seacraft_core::raster::png(w, h, &rgba).ok_or_else(|| "could not encode the PNG".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, Write};
+
+    use super::*;
+
+    /// A demo model at a cheap subdivision level: these tests drive the
+    /// protocol, not the refinement.
+    fn demo() -> (App, egui::Context) {
+        let mut app = App::headless_for_test(None);
+        app.set_subdivision_level(2);
+        (app, egui::Context::default())
+    }
+
+    fn call(app: &mut App, ctx: &egui::Context, method: &str, params: Value) -> Value {
+        let (tx, _rx) = mpsc::channel();
+        handle(app, ctx, &ControlRequest::new(method, params, tx))
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("seacraft-control-{name}-{}.bin", std::process::id()))
+    }
+
+    #[test]
+    fn inspect_set_move_hydro_and_render_over_control() {
+        let (mut app, ctx) = demo();
+
+        // ---- inspect on the freshly loaded demo ------------------------
+        let r = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        assert_eq!(v["version"], seacraft_core::VERSION);
+        assert_eq!(v["dirty"], true, "a built-in demo is unsaved work: {v}");
+        assert_eq!(v["level"], 2);
+        assert_eq!(v["mode"], "loop");
+        assert_eq!(v["active_view"], 0);
+        assert_eq!(v["undo_len"], 0);
+        assert!(v["points"].as_u64().unwrap() > 10, "{v}");
+        assert!(v["faces"].as_u64().unwrap() > 5, "{v}");
+        assert_eq!(v["layers"], 1);
+        assert_eq!(v["selected_point"], Value::Null);
+        assert_eq!(v["display"]["shaded"], true);
+        assert_eq!(v["display"]["analysis"], "shaded");
+        assert_eq!(v["hydro"]["draft"], 0.62);
+        assert_eq!(v["hydro"]["kg"], 2.2);
+        assert_eq!(v["hydro"]["free_trim"], false);
+        assert!(v["hydro"]["result"].is_null(), "nothing measured yet: {v}");
+
+        // ---- ui.set changes display and model settings ------------------
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.set",
+            json!({ "shaded": false, "analysis": "zebra", "level": 1, "active_view": 2 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["shaded"], false);
+        assert_eq!(r["result"]["display"]["analysis"], "zebra");
+        assert_eq!(r["result"]["level"], 1);
+        assert_eq!(r["result"]["active_view"], 2);
+        assert_eq!(app.display().analysis, AnalysisMode::Zebra { stripes: 14.0 });
+        for bad in [
+            json!({ "nope": 1 }),
+            json!({ "level": 9 }),
+            json!({ "level": 1.5 }),
+            json!({ "level": "high" }),
+            json!({ "active_view": -1 }),
+            json!({ "analysis": "hologram" }),
+            json!({ "shaded": "yes" }),
+            // A batch with one bad key applies nothing at all.
+            json!({ "shaded": true, "waterplane": "maybe" }),
+        ] {
+            let r = call(&mut app, &ctx, "ui.set", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        assert!(!app.display().shaded, "a refused batch changed nothing");
+        assert!(app.display().waterplane);
+
+        // ---- ui.view and ui.camera -------------------------------------
+        let r = call(&mut app, &ctx, "ui.view", json!({ "view": "body" }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.active_view(), 3);
+        assert_eq!(r["result"]["camera"]["kind"], "Body plan");
+        assert_eq!(call(&mut app, &ctx, "ui.view", json!({ "view": "fit" }))["ok"], true);
+        assert_eq!(call(&mut app, &ctx, "ui.view", json!({ "view": "sideways" }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "ui.view", json!({}))["ok"], false);
+
+        let r = call(&mut app, &ctx, "ui.camera", json!({ "view": 1, "yaw": 90, "pitch": 10, "ortho_height": 6.0 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!((app.cameras()[1].yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "{r}");
+        assert!((app.cameras()[1].pitch - 10f64.to_radians()).abs() < 1e-9);
+        assert_eq!(r["result"]["ortho_height"], 6.0);
+        // A perspective camera can be aimed and moved; the pitch stops short
+        // of the pole where the basis degenerates.
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.camera",
+            json!({ "view": 0, "yaw": -30, "pitch": 90, "distance": 40, "target": [1, 2, 3] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!((app.cameras()[0].target - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-12);
+        assert!(app.cameras()[0].pitch < std::f64::consts::FRAC_PI_2);
+        for bad in [
+            json!({ "distance": 0 }),
+            json!({ "distance": -1 }),
+            json!({ "ortho_height": 0 }),
+            json!({ "distance": "far" }),
+            json!({ "view": 7 }),
+            json!({ "target": [1, 2] }),
+            json!({ "target": [1, 2, "x"] }),
+            json!({ "yaw": "left" }),
+        ] {
+            assert_eq!(call(&mut app, &ctx, "ui.camera", bad.clone())["ok"], false, "{bad}");
+        }
+
+        // ---- point.move: undoable, and the next frame sees it -----------
+        let before = app.surface().unwrap().points[3].p;
+        let r = call(&mut app, &ctx, "point.move", json!({ "index": 3, "delta": [0.25, 0.0, 0.1] }));
+        assert_eq!(r["ok"], true, "{r}");
+        let after = app.surface().unwrap().points[3].p;
+        assert!((after - before - Vec3::new(0.25, 0.0, 0.1)).length() < 1e-12, "{after:?} vs {before:?}");
+        assert_eq!(app.undo_len(), 1, "the move is undoable");
+        assert_eq!(app.selected(), Some(3));
+        assert_eq!(r["result"]["undo_len"], 1);
+        let r = call(&mut app, &ctx, "point.move", json!({ "index": 3, "xyz": [-1.0, -2.0, 0.5] }));
+        assert_eq!(r["ok"], true, "{r}");
+        let moved = app.surface().unwrap().points[3].p;
+        assert!((moved - Vec3::new(-1.0, -2.0, 0.5)).length() < 1e-12, "{r}");
+        assert_eq!(app.undo_len(), 2);
+        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": 99999, "xyz": [0, 0, 0] }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": -3, "xyz": [0, 0, 0] }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": 3 }))["ok"], false, "needs xyz or delta");
+        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": 3, "xyz": [1, 2] }))["ok"], false);
+        let r = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(r["result"]["selected_point"], 3);
+        assert_eq!(r["result"]["undo_len"], 2);
+
+        // ---- edge.crease -------------------------------------------------
+        let edge = app.surface().unwrap().edges[0].key();
+        let r = call(&mut app, &ctx, "edge.crease", json!({ "edge": [edge.0, edge.1], "crease": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.surface().unwrap().edges[0].crease);
+        assert_eq!(call(&mut app, &ctx, "edge.crease", json!({ "edge": [0, 99999] }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "edge.crease", json!({ "edge": [0] }))["ok"], false);
+
+        // ---- synthetic input waits for the next frame --------------------
+        let r = call(&mut app, &ctx, "ui.click", json!({ "x": 700, "y": 400 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.synthetic_len(), 3, "move, press, release");
+        let mut raw = egui::RawInput::default();
+        app.raw_input_hook(&mut raw);
+        assert_eq!(raw.events.len(), 3);
+        assert_eq!(app.synthetic_len(), 0, "the queue is drained by the frame");
+        assert_eq!(call(&mut app, &ctx, "ui.key", json!({ "key": "Escape" }))["ok"], true);
+        assert_eq!(call(&mut app, &ctx, "ui.key", json!({ "key": "Num2" }))["ok"], true, "num aliases name the number keys");
+        assert_eq!(call(&mut app, &ctx, "ui.key", json!({ "key": "NoSuchKey" }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "ui.drag", json!({ "from": [10, 10], "to": [80, 60], "steps": 4 }))["ok"], true);
+        assert_eq!(call(&mut app, &ctx, "ui.drag", json!({ "from": [10] }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "ui.scroll", json!({ "x": 700, "y": 400, "delta": -2 }))["ok"], true);
+        assert_eq!(call(&mut app, &ctx, "ui.scroll", json!({}))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "ui.move", json!({ "x": 5, "y": 5 }))["ok"], true);
+
+        // ---- hydro.compute reports the measurement -----------------------
+        let r = call(&mut app, &ctx, "hydro.compute", json!({ "draft": 0.5, "kg": 2.0 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["draft"], 0.5);
+        assert_eq!(r["result"]["kg"], 2.0);
+        let volume = r["result"]["result"]["volume_m3"].as_f64().expect("volume");
+        assert!(volume > 5.0 && volume < 30.0, "volume {volume}");
+        assert_eq!(r["result"]["result"]["draft"], 0.5);
+        assert_eq!(call(&mut app, &ctx, "hydro.compute", json!({ "draft": 1e9 }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "hydro.compute", json!({ "heel_deg": 400 }))["ok"], false);
+
+        // ---- stability.cross_curves --------------------------------------
+        let r = call(&mut app, &ctx, "stability.cross_curves", json!({ "kg": 2.2, "free_trim": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        let curves = r["result"]["curves"].as_array().expect("curves");
+        assert_eq!(curves.len(), 9, "0..80 deg in 10 deg steps");
+        assert_eq!(curves[0]["points"].as_array().unwrap().len(), 5);
+        assert!(r["result"]["imo"].is_object(), "IMO criteria for the design displacement: {r}");
+        assert_eq!(call(&mut app, &ctx, "stability.cross_curves", json!({ "lcg": "forward" }))["ok"], false);
+
+        // ---- ui.render writes a PNG ---------------------------------------
+        let png_path = scratch("render.png");
+        let path_text = png_path.to_string_lossy().to_string();
+        let r = call(&mut app, &ctx, "ui.render", json!({ "path": path_text, "width": 64, "height": 48, "view": 1, "mode": "zebra" }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["width"], 64);
+        assert_eq!(r["result"]["height"], 48);
+        let bytes = std::fs::read(&png_path).expect("the PNG was written");
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "not a PNG");
+        assert_eq!(r["result"]["bytes"], bytes.len());
+        let _ = std::fs::remove_file(&png_path);
+        for bad in [
+            json!({ "width": 10, "height": 10 }),
+            json!({ "path": path_text, "width": 0 }),
+            json!({ "path": path_text, "width": MAX_RENDER + 1 }),
+            json!({ "path": path_text, "height": 10.5 }),
+            json!({ "path": path_text, "mode": "hologram" }),
+            json!({ "path": path_text, "view": 4 }),
+        ] {
+            assert_eq!(call(&mut app, &ctx, "ui.render", bad.clone())["ok"], false, "{bad}");
+        }
+        assert!(std::fs::metadata(&png_path).is_err(), "a refused render writes nothing");
+
+        // ---- model.save / model.open / model.export ------------------------
+        let fef_path = scratch("hull.fef");
+        let fef_text = fef_path.to_string_lossy().to_string();
+        let r = call(&mut app, &ctx, "model.save", json!({ "path": fef_text }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(!app.is_dirty(), "saving clears the dirty flag");
+        let points = app.control_point_count();
+        let r = call(&mut app, &ctx, "model.open", json!({ "path": fef_text }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["points"], points);
+        assert_eq!(app.path().map(|p| p.to_path_buf()), Some(fef_path.clone()));
+        assert_eq!(call(&mut app, &ctx, "model.open", json!({ "path": "/nonexistent/hull.fef" }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "model.open", json!({}))["ok"], false);
+        let _ = std::fs::remove_file(&fef_path);
+
+        let obj_path = scratch("hull.obj");
+        let obj_text = obj_path.to_string_lossy().to_string();
+        let r = call(&mut app, &ctx, "model.export", json!({ "path": obj_text, "format": "obj" }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(std::fs::read_to_string(&obj_path).unwrap().contains("v "), "an OBJ with vertices");
+        let _ = std::fs::remove_file(&obj_path);
+        assert_eq!(call(&mut app, &ctx, "model.export", json!({ "path": obj_text, "format": "tiff" }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "model.export", json!({ "path": obj_text }))["ok"], false);
+
+        // ---- model.load_demo ----------------------------------------------
+        let r = call(&mut app, &ctx, "model.load_demo", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["symmetric"], false);
+        let r = call(&mut app, &ctx, "model.load_demo", json!({ "symmetric": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["symmetric"], true);
+        assert!(app.surface().unwrap().layers.iter().any(|l| l.symmetric), "a half model");
+        assert_eq!(call(&mut app, &ctx, "model.load_demo", json!({ "symmetric": "yes" }))["ok"], false);
+
+        // A symmetric layer models only y >= 0, so a move across the
+        // centreline is clamped instead of producing an unmirrorable half.
+        let off_centre = app
+            .surface()
+            .unwrap()
+            .points
+            .iter()
+            .position(|p| p.p.y > 0.1)
+            .expect("a point off the centreline");
+        let r = call(&mut app, &ctx, "point.move", json!({ "index": off_centre, "xyz": [3.0, -2.0, 0.4] }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["clamped"], true, "{r}");
+        assert_eq!(r["result"]["point"][1], 0.0, "{r}");
+        assert_eq!(app.surface().unwrap().points[off_centre].p.y, 0.0);
+    }
+
+    #[test]
+    fn hostile_requests_never_panic() {
+        let (mut app, ctx) = demo();
+        let hostile = [
+            json!({}),
+            json!({"x": 1e300, "y": -1e300, "width": 1e12, "height": -5, "path": "", "index": 1e30}),
+            json!({"xyz": [1e308, 1e308, 1e308], "delta": [f64::MAX, 0.0, 0.0], "steps": 1e12, "edge": [1, 2], "x0": "a"}),
+            json!({"key": 5, "button": "sideways", "view": "nope", "analysis": 7, "level": "high", "symmetric": 1}),
+            json!({"target": {"x": 1}, "lcg": "nope", "free_trim": "yes", "kg": -1, "draft": "deep"}),
+            json!({"edge": [0, 0], "crease": "maybe", "format": "tiff", "mode": [], "path": 7}),
+            json!({"index": 0.5, "delta": [], "steps": -1, "delta_scroll": null}),
+            json!({"view": [0, 1], "active_view": {}, "shaded": null}),
+        ];
+        let methods = [
+            "ui.inspect",
+            "ui.set",
+            "ui.view",
+            "ui.camera",
+            "ui.click",
+            "ui.move",
+            "ui.drag",
+            "ui.scroll",
+            "ui.key",
+            "ui.render",
+            "model.load_demo",
+            "model.open",
+            "model.save",
+            "model.export",
+            "point.move",
+            "edge.crease",
+            "hydro.compute",
+            "stability.cross_curves",
+            "app.quit",
+            "no.such.method",
+        ];
+        for method in methods {
+            for params in &hostile {
+                let reply = call(&mut app, &ctx, method, params.clone());
+                assert!(
+                    reply.get("ok").and_then(Value::as_bool).is_some(),
+                    "{method} {params}: {reply}"
+                );
+            }
+        }
+        // Params of any other JSON type are refused, not ignored.
+        for bad in [json!([1, 2]), json!("x"), json!(7), json!(true)] {
+            let reply = call(&mut app, &ctx, "ui.inspect", bad.clone());
+            assert_eq!(reply["ok"], false, "{bad}");
+        }
+        // The refusal is clean: the model and the queues are untouched.
+        assert!(app.control_point_count() > 0);
+        assert!(app.synthetic_len() <= MAX_SYNTHETIC);
+        assert_eq!(call(&mut app, &ctx, "app.quit", json!({}))["result"]["quitting"], true);
+    }
+
+    #[test]
+    fn tcp_listener_serves_json_lines_round_trip() {
+        let (addr, rx) = spawn_listener("127.0.0.1:0").expect("bind an ephemeral port");
+        assert_ne!(addr.port(), 0, "the listener reports the port it got");
+        let (mut app, ctx) = demo();
+
+        let stream = TcpStream::connect(addr).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+        let mut writer = stream;
+
+        fn read_reply(reader: &mut BufReader<TcpStream>) -> Value {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("a reply line");
+            serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("the reply is not JSON: {line:?} ({e})"))
+        }
+
+        // Send one request and answer it as the window's frame would.
+        let exchange =
+            |writer: &mut TcpStream, reader: &mut BufReader<TcpStream>, app: &mut App, request: &str| -> Value {
+                writer.write_all(request.as_bytes()).unwrap();
+                writer.write_all(b"\n").unwrap();
+                writer.flush().unwrap();
+                let request = rx.recv_timeout(Duration::from_secs(5)).expect("the request reached the app");
+                let reply = handle(app, &ctx, &request);
+                request.reply.send(reply).expect("the app is still listening");
+                read_reply(reader)
+            };
+
+        let first = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"ui.inspect\",\"params\":{}}");
+        assert_eq!(first["ok"], true, "{first}");
+        assert_eq!(first["result"]["version"], seacraft_core::VERSION);
+        assert_eq!(first["result"]["points"], app.control_point_count());
+
+        // A malformed line is answered by the socket, so the app never sees it.
+        writer.write_all(b"not json\n").unwrap();
+        writer.flush().unwrap();
+        let bad = read_reply(&mut reader);
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(bad["error"].as_str().unwrap().contains("invalid JSON"), "{bad}");
+
+        // An unknown method is a clean error from `handle`.
+        let unknown = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"no.such.method\",\"params\":{}}");
+        assert_eq!(unknown["ok"], false, "{unknown}");
+        assert!(unknown["error"].as_str().unwrap().contains("unknown method"), "{unknown}");
+
+        // A line past the cap is refused and the rest of it discarded, so the
+        // next request on the same connection still works.
+        let mut too_long = vec![b'a'; MAX_LINE + 10];
+        too_long.push(b'\n');
+        writer.write_all(&too_long).unwrap();
+        writer.flush().unwrap();
+        let long = read_reply(&mut reader);
+        assert_eq!(long["ok"], false, "{long}");
+        assert!(long["error"].as_str().unwrap().contains("KiB"), "{long}");
+        let again = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"ui.inspect\",\"params\":{}}");
+        assert_eq!(again["ok"], true, "{again}");
+        assert_eq!(again["result"]["version"], first["result"]["version"]);
+    }
+}

@@ -54,15 +54,39 @@ What changed:
 
 ---
 
-## Ideas taken from the same projects without copying code
+## `crates/seacraft-core/src/analysis.rs` and `crates/seacraft-core/src/raster.rs`
 
-These influenced design decisions but carry no copied text:
+* **Source:** `solidcraft/crates/render/src/analysis.rs` and
+  `solidcraft/crates/render/src/raster.rs`
+* **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
+* **Licence:** MIT OR Apache-2.0
+* **Copyright:** Tangency Labs and the solidcraft contributors
 
-* the "analysis mode" vocabulary for surface fairing (zebra stripes,
-  curvature false colour, draft angle) comes from
-  `solidcraft/crates/render/src/analysis.rs` and the `analysis()` function in
-  `solidcraft/assets/shaders/viewport.wgsl`;
-* the depth-buffered CPU rasterizer in `solidcraft/crates/render/src/raster.rs`
-  is the model for SeaCraft's headless renderer.
+Surface-fairing analysis modes (`Zebra`, `Curvature`, `Draft`) and the
+dependency-free 2× SSAA CPU z-buffer triangle rasterizer plus stored-deflate PNG
+encoder, adapted to `crate::math::Vec3` and extended with depth-tested
+translucent waterplane compositing.
 
-When either is ported, add its file and licence here before the code lands.
+## `crates/seacraft-core/src/threemf.rs`
+
+* **Source:** `solidcraft/crates/io/src/threemf.rs`
+* **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
+* **Licence:** MIT OR Apache-2.0
+* **Copyright:** Tangency Labs and the solidcraft contributors
+
+Spatial-grid vertex welding (`weld`) and 3MF 1.3 package structure
+(`[Content_Types].xml`, `_rels/.rels`, `3D/3dmodel.model`), written in metres
+through a zero-dependency stored-ZIP writer with IEEE 802.3 CRC-32.
+
+## `crates/seacraft-gui/src/control.rs` and `crates/seacraft-cli/src/mcp.rs`
+
+* **Source:** `fieldcraft/crates/ui-egui/src/control.rs` and
+  `fieldcraft/crates/mcp/src/`
+* **Project:** [fieldcraft](https://github.com/tangency-labs/fieldcraft) (Tangency Labs)
+* **Licence:** MIT OR Apache-2.0
+* **Copyright:** Tangency Labs and the fieldcraft contributors
+
+Loopback TCP JSON-lines GUI control channel (`--control HOST:PORT`, executed on
+the next `egui` frame with input clamping) and the stdio JSON-RPC 2.0 Model
+Context Protocol (`seacraft mcp`) server supporting both in-process headless
+evaluation and remote `--connect` to a live GUI window.

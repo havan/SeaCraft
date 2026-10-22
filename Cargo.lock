@@ -2906,7 +2906,7 @@ dependencies = [
 
 [[package]]
 name = "seacraft-cli"
-version = "0.1.0-beta.9"
+version = "0.1.0-beta.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -2917,7 +2917,7 @@ dependencies = [
 
 [[package]]
 name = "seacraft-core"
-version = "0.1.0-beta.9"
+version = "0.1.0-beta.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -2925,12 +2925,13 @@ dependencies = [
 
 [[package]]
 name = "seacraft-gui"
-version = "0.1.0-beta.9"
+version = "0.1.0-beta.10"
 dependencies = [
  "anyhow",
  "eframe",
  "egui",
  "seacraft-core",
+ "serde_json",
 ]
 
 [[package]]

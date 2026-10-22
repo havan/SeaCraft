@@ -1,3 +1,5 @@
+mod mcp;
+
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use seacraft_core::hydro::{self, HydroOptions};
@@ -46,6 +48,8 @@ enum Command {
     Linesplan(LinesplanArgs),
     /// Render a preview PNG, including zebra, curvature and draft analysis
     Render(RenderArgs),
+    /// Serve the hull to a Model Context Protocol client over stdio
+    Mcp(McpArgs),
 }
 
 #[derive(Args, Debug)]
@@ -192,7 +196,7 @@ struct HydroArgs {
 struct ExportArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Output file; the extension selects the format (.obj/.stl/.ply/.html)
+    /// Output file; the extension selects the format (.obj/.stl/.3mf/.ply/.html)
     #[arg(short, long)]
     output: PathBuf,
     #[command(flatten)]
@@ -272,6 +276,16 @@ struct StabilityArgs {
 }
 
 #[derive(Args, Debug)]
+struct McpArgs {
+    /// Forward tool calls to a running `seacraft-gui --control HOST:PORT`
+    #[arg(long, value_name = "HOST:PORT")]
+    connect: Option<String>,
+    /// Hull to serve (defaults to the built-in demo hull)
+    #[arg(long, value_name = "FILE")]
+    open: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
 struct LinesplanArgs {
     /// Input .fef file
     file: PathBuf,
@@ -315,6 +329,7 @@ fn run() -> Result<()> {
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
+        Command::Mcp(a) => cmd_mcp(a),
     }
 }
 
@@ -516,9 +531,10 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
             text.into_bytes()
         }
         "stl" => export::stl(&s, a.subdiv.level, mode),
+        "3mf" => export::threemf(&s, a.subdiv.level, mode),
         "ply" => export::ply(&s, a.subdiv.level, mode).into_bytes(),
         "html" | "htm" => export::viewer_html(&s, a.subdiv.level, mode).into_bytes(),
-        other => bail!("unsupported output format '{}' (use .obj, .stl, .ply or .html)", other),
+        other => bail!("unsupported output format '{}' (use .obj, .stl, .3mf, .ply or .html)", other),
     };
     std::fs::write(&a.output, &data)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
@@ -813,5 +829,32 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
     }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;
+    Ok(())
+}
+
+/// JSON-RPC 2.0 over stdio: one MCP message per line, in and out. Diagnostics
+/// go to stderr so the protocol stream stays clean.
+fn cmd_mcp(a: McpArgs) -> Result<()> {
+    let mut server = match &a.open {
+        Some(path) => mcp::McpServer::load_file(path).map_err(anyhow::Error::msg)?,
+        None => mcp::McpServer::new(),
+    };
+    if let Some(addr) = &a.connect {
+        match mcp::McpServer::connect(addr) {
+            Ok(remote) => {
+                if a.open.is_some() {
+                    eprintln!("seacraft mcp: --open ignored; the app at {addr} owns the model");
+                }
+                server = remote;
+            }
+            // A dead app is not a failure: the model still measures headless.
+            Err(e) => eprintln!("seacraft mcp: {e}; running headless"),
+        }
+    }
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    server
+        .serve(stdin.lock(), stdout.lock())
+        .context("MCP session failed")?;
     Ok(())
 }

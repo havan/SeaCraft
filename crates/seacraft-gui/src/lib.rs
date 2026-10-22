@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod camera;
+pub mod control;
 pub mod history;
 pub mod panels;
 pub mod picking;

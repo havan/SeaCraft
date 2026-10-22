@@ -100,6 +100,7 @@ struct DragState {
 pub enum ExportKind {
     Obj,
     Stl,
+    ThreeMf,
     Ply,
     Html,
     Linesplan,
@@ -108,9 +109,10 @@ pub enum ExportKind {
 }
 
 impl ExportKind {
-    pub const ALL: [ExportKind; 7] = [
+    pub const ALL: [ExportKind; 8] = [
         ExportKind::Obj,
         ExportKind::Stl,
+        ExportKind::ThreeMf,
         ExportKind::Ply,
         ExportKind::Html,
         ExportKind::Linesplan,
@@ -122,6 +124,7 @@ impl ExportKind {
         match self {
             ExportKind::Obj => "Wavefront OBJ…",
             ExportKind::Stl => "STL (binary)…",
+            ExportKind::ThreeMf => "3MF (welded mesh)…",
             ExportKind::Ply => "PLY (ASCII)…",
             ExportKind::Html => "HTML viewer…",
             ExportKind::Linesplan => "Linesplan SVG…",
@@ -134,6 +137,7 @@ impl ExportKind {
         match self {
             ExportKind::Obj => "obj",
             ExportKind::Stl => "stl",
+            ExportKind::ThreeMf => "3mf",
             ExportKind::Ply => "ply",
             ExportKind::Html => "html",
             ExportKind::Linesplan => "svg",
@@ -200,6 +204,12 @@ pub struct App {
     viewport_rects: [egui::Rect; 4],
     /// Rasterized frames for the analysis modes, one per viewport.
     analysis_frames: [Option<AnalysisFrame>; 4],
+    /// Requests from the loopback control socket (`--control`), served once
+    /// per frame by [`App::process_control`].
+    control: Option<std::sync::mpsc::Receiver<crate::control::ControlRequest>>,
+    /// Synthetic input queued by the control socket, injected into the next
+    /// frame by [`App::raw_input_hook`].
+    synthetic: Vec<egui::Event>,
 }
 
 impl App {
@@ -254,39 +264,59 @@ impl App {
             hydro: HydroState::new(),
             viewport_rects: [egui::Rect::NOTHING; 4],
             analysis_frames: [None, None, None, None],
+            control: None,
+            synthetic: Vec::new(),
         }
     }
 
     /// Load a `.fef` model, reporting failures in the status bar instead of
     /// panicking: a bad file must never take the application down.
     pub fn load(&mut self, path: PathBuf) {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match fef::parse(&text) {
-                Ok(surface) => {
-                    let layers_word = if surface.layers.len() == 1 { "layer" } else { "layers" };
-                    self.status = format!(
-                        "{} — {} points, {} faces, {} {}",
-                        surface.settings.name,
-                        surface.points.len(),
-                        surface.faces.len(),
-                        surface.layers.len(),
-                        layers_word
-                    );
-                    self.surface = Some(surface);
-                    self.path = Some(path);
-                    self.dirty = false;
-                    self.adopt();
-                }
-                Err(err) => self.status = format!("Parse error in {}: {err}", path.display()),
-            },
-            Err(err) => self.status = format!("Cannot read {}: {err}", path.display()),
+        let _ = self.open_model(&path);
+    }
+
+    /// Load a `.fef` model, returning the status-bar message on failure.
+    pub fn open_model(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let parsed = std::fs::read_to_string(path)
+            .map_err(|err| format!("Cannot read {}: {err}", path.display()))
+            .and_then(|text| {
+                fef::parse(&text).map_err(|err| format!("Parse error in {}: {err}", path.display()))
+            });
+        match parsed {
+            Ok(surface) => {
+                let layers_word = if surface.layers.len() == 1 { "layer" } else { "layers" };
+                self.status = format!(
+                    "{} — {} points, {} faces, {} {}",
+                    surface.settings.name,
+                    surface.points.len(),
+                    surface.faces.len(),
+                    surface.layers.len(),
+                    layers_word
+                );
+                self.surface = Some(surface);
+                self.path = Some(path.to_path_buf());
+                self.dirty = false;
+                self.adopt();
+                Ok(())
+            }
+            Err(err) => {
+                self.status = err.clone();
+                Err(err)
+            }
         }
     }
 
     pub fn load_demo(&mut self) {
-        let surface = demo::demo_hull(false);
+        self.load_demo_shape(false);
+    }
+
+    /// The built-in demo hull, full or as a symmetric half model (only
+    /// `y >= 0` modelled, mirrored on evaluation).
+    pub fn load_demo_shape(&mut self, symmetric: bool) {
+        let surface = demo::demo_hull(symmetric);
+        let half = if symmetric { " (symmetric)" } else { "" };
         self.status = format!(
-            "{} — built-in demo hull ({} points, {} faces)",
+            "{} — built-in demo hull{half} ({} points, {} faces)",
             surface.settings.name,
             surface.points.len(),
             surface.faces.len()
@@ -707,6 +737,9 @@ impl App {
                 export::obj(surface, self.level, self.mode, export::UpAxis::Z),
             ),
             ExportKind::Stl => std::fs::write(path, export::stl(surface, self.level, self.mode)),
+            ExportKind::ThreeMf => {
+                std::fs::write(path, export::threemf(surface, self.level, self.mode))
+            }
             ExportKind::Ply => std::fs::write(path, export::ply(surface, self.level, self.mode)),
             ExportKind::Html => std::fs::write(path, export::viewer_html(surface, self.level, self.mode)),
             ExportKind::Linesplan => std::fs::write(
@@ -840,7 +873,7 @@ impl App {
         }
     }
 
-    fn reset_cameras(&mut self) {
+    pub fn reset_cameras(&mut self) {
         if let Some(s) = &self.surface {
             let (min, max) = s.extents();
             for cam in &mut self.cameras {
@@ -1306,6 +1339,138 @@ impl App {
         self.display.analysis = mode;
         self.analysis_frames = [None, None, None, None];
     }
+
+    pub fn subdivision_level(&self) -> u8 {
+        self.level
+    }
+
+    pub fn subdivision_mode(&self) -> SubdivisionMode {
+        self.mode
+    }
+
+    pub fn set_active_view(&mut self, view: usize) {
+        self.active = view.min(3);
+    }
+
+    pub fn hydro_options(&self) -> &HydroOptions {
+        &self.hydro.options
+    }
+
+    /// Longitudinal centre of gravity used by the free-to-trim solve.
+    pub fn lcg(&self) -> Option<f64> {
+        self.hydro.lcg
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.surface.as_ref().map_or(0, |s| s.layers.len())
+    }
+
+    pub fn cameras_mut(&mut self) -> &mut [Camera; 4] {
+        &mut self.cameras
+    }
+
+    /// Select a control point (`None` clears the selection).
+    pub fn select_point(&mut self, index: Option<usize>) {
+        self.selected = index;
+    }
+
+    /// Record the current model on the undo stack, as a drag does on grab.
+    pub fn snapshot_undo(&mut self) {
+        if let Some(surface) = self.surface.as_ref() {
+            self.history.snapshot(surface);
+        }
+    }
+
+    /// Refine the hull now if anything it depends on changed (the control
+    /// socket's `ui.render` needs a mesh without waiting for a frame).
+    pub fn refresh_cache(&mut self) {
+        self.sync_cache();
+    }
+
+    /// A status line for an action that changed nothing about the model.
+    pub fn status_note(&mut self, text: impl Into<String>) {
+        self.status = text.into();
+    }
+
+    /// Ask the window to close (the control socket's `app.quit`).
+    pub fn request_quit(&mut self, ctx: &egui::Context) {
+        self.close_requested = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    // ---- control socket ------------------------------------------------
+
+    /// Serve `rx` from the next frame on (`--control`).
+    pub fn attach_control(&mut self, rx: std::sync::mpsc::Receiver<crate::control::ControlRequest>) {
+        self.control = Some(rx);
+    }
+
+    /// Whether a control socket is attached.
+    pub fn has_control(&self) -> bool {
+        self.control.is_some()
+    }
+
+    /// Answer up to eight pending control requests, then ask for another frame
+    /// so the next ones are served even while the window is idle.
+    ///
+    /// Called once per frame before the UI is built: a request therefore reads
+    /// and edits the state the frame is about to paint. Synthetic input it
+    /// queues reaches the following frame through [`App::raw_input_hook`].
+    pub fn process_control(&mut self, ctx: &egui::Context) {
+        if self.control.is_none() {
+            return;
+        }
+        for _ in 0..8 {
+            let received = match self.control.as_ref() {
+                Some(rx) => rx.try_recv(),
+                None => break,
+            };
+            let request = match received {
+                Ok(request) => request,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.control = None;
+                    break;
+                }
+            };
+            let reply = crate::control::handle(self, ctx, &request);
+            let _ = request.reply.send(reply);
+        }
+        // The listener thread holds no `egui::Context`, so it cannot wake the
+        // window: poll instead. A request waiting at most 100 ms is the price.
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    /// Move the queued synthetic input into this frame's raw input.
+    pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
+        if !self.synthetic.is_empty() {
+            raw.events.append(&mut self.synthetic);
+        }
+    }
+
+    /// Queue synthetic input for the next frame. Returns how many events were
+    /// queued; a full queue is an error rather than unbounded memory.
+    pub fn queue_events(&mut self, events: impl IntoIterator<Item = egui::Event>) -> Result<usize, String> {
+        let events: Vec<egui::Event> = events.into_iter().collect();
+        if self.synthetic.len() + events.len() > crate::control::MAX_SYNTHETIC {
+            return Err(format!(
+                "the synthetic input queue is full ({} events, at most {})",
+                self.synthetic.len(),
+                crate::control::MAX_SYNTHETIC
+            ));
+        }
+        if events.is_empty() {
+            return Ok(0);
+        }
+        let count = events.len();
+        self.synthetic.extend(events);
+        Ok(count)
+    }
+
+    /// How many synthetic events are waiting for the next frame.
+    pub fn synthetic_len(&self) -> usize {
+        self.synthetic.len()
+    }
 }
 
 /// Directories and files ending in `wanted`, for the in-app file dialog.
@@ -1337,6 +1502,16 @@ fn listing(path: &str, wanted: &str) -> Vec<(String, String)> {
 }
 
 impl eframe::App for App {
+    /// Serve the control socket's queue before the UI runs.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.process_control(ctx);
+    }
+
+    /// Inject the synthetic input the control socket queued.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.raw_input_hook(raw);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
     }

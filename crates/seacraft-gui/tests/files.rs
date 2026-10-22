@@ -56,6 +56,13 @@ fn every_export_format_writes_a_plausible_file() {
                 assert_eq!(bytes.len(), 84 + tris * 50, "binary STL size");
                 assert!(tris > 1000, "the refined hull has faces: {tris}");
             }
+            ExportKind::ThreeMf => {
+                assert!(bytes.starts_with(b"PK\x03\x04"), "3MF must be a ZIP archive");
+                assert!(
+                    bytes.windows(16).any(|w| w == b"3D/3dmodel.model"),
+                    "3MF must contain 3D/3dmodel.model"
+                );
+            }
         }
     }
 }
