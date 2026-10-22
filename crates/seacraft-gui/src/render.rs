@@ -6,7 +6,7 @@
 //! control net, the control points, the waterplane and a caption.
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
-use seacraft_core::export::RenderMesh;
+use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::math::Vec3;
 use seacraft_core::mesh::Surface;
 
@@ -48,8 +48,8 @@ pub struct DisplayOptions {
 impl Default for DisplayOptions {
     fn default() -> Self {
         Self {
-            shaded: false,
-            wireframe: true,
+            shaded: true,
+            wireframe: false,
             control_net: true,
             points: true,
             waterplane: true,
@@ -226,6 +226,72 @@ fn draw_hull(
     opts: &DisplayOptions,
 ) {
     let mesh = scene.mesh;
+
+    // ---- flat-shaded faces ------------------------------------------------
+    if opts.shaded && !mesh.faces.is_empty() {
+        // A key light from over the viewer's shoulder: the hull reads as a
+        // solid form instead of a silhouette.
+        let light = (-view.forward + view.up * 0.45 + view.right * 0.35).norm();
+        let mut items: Vec<(f64, Vec<Pos2>, Color32)> = Vec::with_capacity(mesh.faces.len());
+        let mut poly: Vec<Vec3> = Vec::new();
+        for (fi, f) in mesh.faces.iter().enumerate() {
+            if f.len() < 3 {
+                continue;
+            }
+            let mut pts: Vec<Pos2> = Vec::with_capacity(f.len());
+            let mut center = Vec3::ZERO;
+            let mut depth = 0.0;
+            let mut complete = true;
+            for &i in f {
+                match view.project(mesh.verts[i], rect) {
+                    Some(p) => pts.push(p),
+                    None => {
+                        complete = false;
+                        break;
+                    }
+                }
+                center += mesh.verts[i];
+                depth += (mesh.verts[i] - view.eye).dot(view.forward);
+            }
+            if !complete {
+                continue;
+            }
+            let n = f.len() as f64;
+            center = center / n;
+            depth /= n;
+
+            poly.clear();
+            poly.extend(f.iter().map(|&i| mesh.verts[i]));
+            let normal = export::newell_normal(&poly);
+            if normal.length() < 1e-12 {
+                continue;
+            }
+            let normal = normal.norm();
+            let to_eye = if view.perspective {
+                (view.eye - center).norm()
+            } else {
+                -view.forward
+            };
+            if normal.dot(to_eye) <= 0.0 {
+                continue; // back face
+            }
+
+            let base = layer_color(scene.surface, mesh.face_layer.get(fi).copied());
+            let shade = (0.35 + 0.65 * normal.dot(light).abs()) as f32;
+            items.push((depth, pts, base.gamma_multiply(shade)));
+        }
+        // Painter's algorithm: farthest face first.
+        items.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (_, pts, color) in items {
+            painter.add(egui::Shape::convex_polygon(
+                pts,
+                color,
+                Stroke::new(0.6, color.gamma_multiply(0.75)),
+            ));
+        }
+    }
+
+    // ---- wireframe --------------------------------------------------------
     if opts.wireframe {
         for f in &mesh.faces {
             for i in 0..f.len() {
@@ -237,6 +303,15 @@ fn draw_hull(
             }
         }
     }
+}
+
+/// A layer's colour, or the default hull grey when the index is out of range.
+fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
+    let Some(layer) = layer.and_then(|i| surface.layers.get(i)) else {
+        return Color32::from_rgb(0x9f, 0xb4, 0xc7);
+    };
+    let c = layer.color.max(0) as u32;
+    Color32::from_rgb(((c >> 16) & 0xff) as u8, ((c >> 8) & 0xff) as u8, (c & 0xff) as u8)
 }
 
 fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, surface: &Surface) {

@@ -26,6 +26,9 @@ impl UpAxis {
 pub struct RenderMesh {
     pub verts: Vec<Vec3>,
     pub faces: Vec<Vec<usize>>,
+    /// Layer index per face, parallel to `faces`, so a renderer can colour by
+    /// layer. Empty only for meshes that carry no layer information.
+    pub face_layer: Vec<usize>,
 }
 
 /// Refine the hull for display, dropping hidden layers and mirroring the
@@ -36,18 +39,40 @@ pub fn render_mesh(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
     mesh.mirror_symmetric(&sym);
     // Drop hidden layers only after mirroring, which needs the per-face layer.
     let mut faces: Vec<Vec<usize>> = Vec::new();
+    let mut face_layer: Vec<usize> = Vec::new();
     for (fi, f) in mesh.faces.iter().enumerate() {
         if surface.layers[mesh.face_layer[fi]].visible {
             faces.push(f.clone());
+            face_layer.push(mesh.face_layer[fi]);
         }
     }
-    mesh.faces = faces;
-    mesh.face_layer = Vec::new();
-    RenderMesh { verts: mesh.verts, faces: mesh.faces }
+    RenderMesh { verts: mesh.verts, faces, face_layer }
 }
 
 pub fn control_mesh(surface: &Surface) -> RenderMesh {
-    RenderMesh { verts: surface.points.iter().map(|p| p.p).collect(), faces: surface.faces.clone() }
+    RenderMesh {
+        verts: surface.points.iter().map(|p| p.p).collect(),
+        faces: surface.faces.clone(),
+        face_layer: surface.face_layer.clone(),
+    }
+}
+
+/// Newell's method: an unnormalised normal whose length is twice the area of
+/// the polygon. Robust for non-planar quads, which a refined hull quad is.
+pub fn newell_normal(points: &[Vec3]) -> Vec3 {
+    let mut n = Vec3::ZERO;
+    let len = points.len();
+    if len < 3 {
+        return n;
+    }
+    for i in 0..len {
+        let a = points[i];
+        let b = points[(i + 1) % len];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    n
 }
 
 fn write_obj(mesh: &RenderMesh, up: UpAxis, header: &str) -> String {
