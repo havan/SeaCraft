@@ -279,6 +279,12 @@ struct LinesplanArgs {
     /// Number of waterlines in the plan view
     #[arg(long, default_value_t = 7)]
     waterlines: usize,
+    /// Draw porcupine curvature combs along the curves (SVG and DXF)
+    #[arg(long)]
+    combs: bool,
+    /// Comb gain: metres of spike per 1/m of curvature
+    #[arg(long, default_value_t = 0.6)]
+    comb_scale: f64,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
 }
@@ -593,6 +599,8 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         waterlines: a.waterlines,
         level: a.subdiv.level,
         mode: a.subdiv.mode.into(),
+        combs: a.combs,
+        comb_scale: a.comb_scale,
     };
     // The extension picks the format: `.dxf` gives the three views on named
     // layers plus 3D copies of every curve, anything else the standalone SVG.

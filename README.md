@@ -167,6 +167,15 @@ rasterizer into a texture and caching it until the model or camera changes.
 plan) with stations, buttocks and waterlines. `export` writes OBJ, binary STL,
 ASCII PLY and a self-contained three.js HTML viewer.
 
+Add `--combs` to either drawing and every curve grows a **porcupine comb**:
+spikes normal to the curve whose length is the local curvature times a gain
+(`--comb-scale`, 0.6 m per 1/m by default, clamped to 12 % of the view). The
+curvature is read at the comb's own sampling interval (~2 % of the view, not at
+every refined vertex 5 mm apart, which would measure the mesh and not the
+hull), and the line through the spike tips is the curve a fair hull keeps
+smooth — so `--combs` turns a linesplan into a fairing check. In DXF the combs
+go on their own `Combs` layer.
+
 `linesplan::dxf` writes the same three views as an AutoCAD 2000 (`AC1015`)
 drawing in metres, laid out conventionally (plan below the profile, body plan
 to the right) on named layers — `Stations`, `Buttocks`, `Waterlines`,
@@ -196,7 +205,7 @@ seacraft hydro     hull.fef [--draft T] [--trim m] [--heel deg] [--kg m] [--json
 seacraft sac       hull.fef [--stations N] [--csv out.csv]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
-seacraft linesplan hull.fef -o linesplan.svg|linesplan.dxf [--stations N] [--buttocks N] [--waterlines N]
+seacraft linesplan hull.fef -o linesplan.svg|linesplan.dxf [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft export    hull.fef -o hull.obj|.stl|.ply|.html [--level N] [--control]
 seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
@@ -272,7 +281,8 @@ cursor position on the active viewport's focal plane and the crate version.
   and audit-clean under `ezdxf`.
 * Zebra / curvature / draft analysis and a CPU z-buffer renderer with PNG
   output are implemented, in the CLI and in all four GUI viewports. Curvature
-  combs on station/buttock curves are not drawn yet.
+  combs are drawn on the linesplan (`--combs`, SVG and DXF), not in the
+  viewports.
 * IGES export of the linesplan as entity-126 B-spline curves is implemented and
   verified against Open Cascade; surfaces (entity 128) are out of scope.
 * Not yet implemented: developability/unfolding, Lackenby

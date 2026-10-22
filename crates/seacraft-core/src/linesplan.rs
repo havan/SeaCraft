@@ -20,11 +20,25 @@ pub struct LinesplanOptions {
     pub waterlines: usize,
     pub level: u8,
     pub mode: SubdivisionMode,
+    /// Draw porcupine combs along the curves of every view.
+    pub combs: bool,
+    /// Metres a curvature of 1/m draws: the comb's gain, not a physical scale.
+    /// Spikes are clamped to 12 % of the view so a sharp bilge cannot swamp the
+    /// drawing.
+    pub comb_scale: f64,
 }
 
 impl Default for LinesplanOptions {
     fn default() -> Self {
-        Self { stations: 11, buttocks: 5, waterlines: 7, level: 3, mode: SubdivisionMode::Loop }
+        Self {
+            stations: 11,
+            buttocks: 5,
+            waterlines: 7,
+            level: 3,
+            mode: SubdivisionMode::Loop,
+            combs: false,
+            comb_scale: 0.6,
+        }
     }
 }
 
@@ -125,6 +139,145 @@ fn cut_all(surface: &Surface, opts: LinesplanOptions) -> Cut {
     Cut { stations, buttocks, waterlines, waterplane, min, max }
 }
 
+/// A point in a view's own 2D coordinates.
+type P2 = (f64, f64);
+/// A comb spike: the point on the curve and the end of its spike.
+type Spike = (P2, P2);
+
+/// Circumcircle curvature of the polyline at `points[i]`, in 1/m.
+///
+/// `k = 4A / (ab·bc·ca)` for the triangle of the two neighbouring segments;
+/// the cross product gives twice the area, so `k = 2|cross| / (ab·bc·ca)`.
+/// A straight run (or a repeated point) is `0`.
+fn curvature_at(points: &[P2], i: usize) -> f64 {
+    if i == 0 || i + 1 >= points.len() {
+        return 0.0;
+    }
+    let (a, b, c) = (points[i - 1], points[i], points[i + 1]);
+    let len = |p: (f64, f64), q: (f64, f64)| ((q.0 - p.0).powi(2) + (q.1 - p.1).powi(2)).sqrt();
+    let denom = len(a, b) * len(b, c) * len(c, a);
+    if denom < 1e-12 {
+        return 0.0;
+    }
+    let cross = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    2.0 * cross.abs() / denom
+}
+
+/// Porcupine comb for one drawn curve: a spike at every interior point whose
+/// length is `curvature * scale`, pointing to the convex side.
+///
+/// The convex side is opposite the discrete second difference `a - 2b + c`,
+/// which points at the centre of curvature. The pair is (base, tip), both in
+/// view coordinates.
+fn comb_spikes(points: &[P2], scale: f64, max_len: f64, spacing: f64) -> Vec<Spike> {
+    if points.len() < 3 || scale <= 0.0 {
+        return Vec::new();
+    }
+    // Curvature read at the comb's own sampling interval, not at every refined
+    // vertex: the refined mesh is 5 mm apart, and a circumcircle through three
+    // such points measures the mesh's discretisation, not the hull's fairness.
+    let sampled = resample(points, spacing);
+    if sampled.len() < 3 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for i in 1..sampled.len() - 1 {
+        let (a, b, c) = (sampled[i - 1], sampled[i], sampled[i + 1]);
+        let dx = a.0 + c.0 - 2.0 * b.0;
+        let dy = a.1 + c.1 - 2.0 * b.1;
+        let bend = (dx * dx + dy * dy).sqrt();
+        if bend < 1e-12 {
+            continue;
+        }
+        let h = (curvature_at(&sampled, i) * scale).min(max_len);
+        if !h.is_finite() {
+            continue;
+        }
+        out.push((b, (b.0 - dx / bend * h, b.1 - dy / bend * h)));
+    }
+    out
+}
+
+/// Walk a polyline and return points every `spacing` metres of arc length,
+/// with the original end point kept so the comb reaches the end of the curve.
+fn resample(points: &[P2], spacing: f64) -> Vec<P2> {
+    let mut out = vec![points[0]];
+    if spacing <= 0.0 || points.len() < 2 {
+        out.extend_from_slice(&points[1..]);
+        return out;
+    }
+    let mut carry = 0.0;
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let seg = (b.0 - a.0).hypot(b.1 - a.1);
+        if seg < 1e-12 {
+            continue;
+        }
+        let mut pos = spacing - carry;
+        while pos <= seg {
+            let f = pos / seg;
+            out.push((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f));
+            pos += spacing;
+        }
+        carry = seg - (pos - spacing);
+    }
+    if let Some(last) = points.last() {
+        let prev = *out.last().unwrap();
+        if (last.0 - prev.0).hypot(last.1 - prev.1) > 0.5 * spacing {
+            out.push(*last);
+        }
+    }
+    out
+}
+
+/// Comb spikes for every curve of one view, at a fixed gain.
+///
+/// A fixed gain is what makes combs readable: the same curvature draws the same
+/// spike on every station, so a curve that bulges out of the family is the
+/// unfair one. Normalising per view instead would rescale the whole view
+/// whenever one point is sharp, and the combs collapse to nothing.
+fn view_combs(curves: &[Curve], scale: f64, extent: f64) -> Vec<Vec<Spike>> {
+    let extent = extent.max(1e-6);
+    let max_len = 0.12 * extent;
+    // ~50 spikes across the view: fine enough for a fairing check, coarse
+    // enough that the spikes do not merge into a band. A short curve gets a
+    // finer interval of its own so it still shows eight or so spikes.
+    let spacing = 0.02 * extent;
+    curves
+        .iter()
+        .map(|c| {
+            let len = arc_length(&c.points);
+            let step = if len > 0.0 { spacing.min(len / 8.0) } else { spacing };
+            comb_spikes(&c.points, scale, max_len, step)
+        })
+        .filter(|s| s.len() >= 2)
+        .collect()
+}
+
+/// Total length of a polyline.
+fn arc_length(points: &[P2]) -> f64 {
+    points
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum()
+}
+
+/// SVG paths for one comb: the spikes, and the line through their tips.
+fn comb_svg(spikes: &[Spike], map: &dyn Fn(f64, f64) -> P2) -> (String, String) {
+    let mut lines = String::new();
+    let mut tips = String::new();
+    for (i, (base, tip)) in spikes.iter().enumerate() {
+        let (p0, p1) = (map(base.0, base.1), map(tip.0, tip.1));
+        let _ = write!(lines, "M{:.2},{:.2}L{:.2},{:.2}", p0.0, p0.1, p1.0, p1.1);
+        let _ = if i == 0 {
+            write!(tips, "M{:.2},{:.2}", p1.0, p1.1)
+        } else {
+            write!(tips, "L{:.2},{:.2}", p1.0, p1.1)
+        };
+    }
+    (lines, tips)
+}
+
 /// Extend a closed curve back to its first point so the SVG path closes.
 fn svg_path(c: &Curve, map: &dyn Fn(f64, f64) -> (f64, f64)) -> String {
     let mut d = String::new();
@@ -176,6 +329,8 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     out.push_str(".station{fill:none;stroke:#111;stroke-width:0.7}\n");
     out.push_str(".buttock{fill:none;stroke:#c0392b;stroke-width:0.7}\n");
     out.push_str(".centerline{fill:none;stroke:#888;stroke-width:0.5;stroke-dasharray:6 4}\n");
+    out.push_str(".comb{fill:none;stroke:#2b8a3e;stroke-width:0.8}\n");
+    out.push_str(".spike{fill:none;stroke:#7bbf8a;stroke-width:0.25}\n");
     out.push_str(".label{font:11px ui-sans-serif,system-ui,sans-serif;fill:#333}\n");
     out.push_str(".title{font:13px ui-sans-serif,system-ui,sans-serif;fill:#111}\n");
     out.push_str("</style>\n");
@@ -201,6 +356,22 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     for c in &cut.buttocks {
         let d = svg_path(c, &map_profile);
         let _ = writeln!(out, "<path class=\"buttock\" d=\"{d}\"/>");
+    }
+    if opts.combs {
+        let combs = view_combs(&cut.buttocks, opts.comb_scale, d);
+        for comb in &combs {
+            let (spikes, tips) = comb_svg(comb, &map_profile);
+            let _ = writeln!(out, "<path class=\"spike\" d=\"{spikes}\"/>");
+            let _ = writeln!(out, "<path class=\"comb\" d=\"{tips}\"/>");
+        }
+        if !combs.is_empty() {
+            let _ = writeln!(
+                out,
+                "<text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">combs: 1 m⁻¹ = {} m</text>",
+                top + dw + 26.0,
+                opts.comb_scale
+            );
+        }
     }
     for i in 0..opts.waterlines.max(2) {
         let t = i as f64 / (opts.waterlines.max(2) - 1) as f64;
@@ -234,6 +405,22 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     for c in &cut.waterlines {
         let d = svg_path(c, &map_plan);
         let _ = writeln!(out, "<path class=\"waterline\" d=\"{d}\"/>");
+    }
+    if opts.combs {
+        let combs = view_combs(&cut.waterlines, opts.comb_scale, b);
+        for comb in &combs {
+            let (spikes, tips) = comb_svg(comb, &map_plan);
+            let _ = writeln!(out, "<path class=\"spike\" d=\"{spikes}\"/>");
+            let _ = writeln!(out, "<path class=\"comb\" d=\"{tips}\"/>");
+        }
+        if !combs.is_empty() {
+            let _ = writeln!(
+                out,
+                "<text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">combs: 1 m⁻¹ = {} m</text>",
+                plan_y + bw + 26.0,
+                opts.comb_scale
+            );
+        }
     }
     // Station lines in the plan view.
     for i in 0..opts.stations.max(2) {
@@ -270,6 +457,22 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         let d = svg_path(c, &map_body);
         let _ = writeln!(out, "<path class=\"station\" d=\"{d}\"/>");
     }
+    if opts.combs {
+        let combs = view_combs(&cut.stations, opts.comb_scale, b);
+        for comb in &combs {
+            let (spikes, tips) = comb_svg(comb, &map_body);
+            let _ = writeln!(out, "<path class=\"spike\" d=\"{spikes}\"/>");
+            let _ = writeln!(out, "<path class=\"comb\" d=\"{tips}\"/>");
+        }
+        if !combs.is_empty() {
+            let _ = writeln!(
+                out,
+                "<text class=\"label\" x=\"{body_x:.1}\" y=\"{:.1}\">combs: 1 m⁻¹ = {} m</text>",
+                plan_y + bw + 26.0,
+                opts.comb_scale
+            );
+        }
+    }
     out.push_str("</g>\n");
 
     // Scale bar and captions.
@@ -303,7 +506,7 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
     let plan_y0 = min.z - gap - b;
     let body_x0 = max.x + gap;
 
-    let layers = [
+    let mut layers = vec![
         DxfLayer::new("Stations", 7),
         DxfLayer::new("Buttocks", 1),
         DxfLayer::new("Waterlines", 5),
@@ -311,6 +514,9 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         DxfLayer::new("Centerline", 8).dashed(),
         DxfLayer::new("Waterplane", 4).dashed(),
     ];
+    if opts.combs {
+        layers.push(DxfLayer::new("Combs", 2));
+    }
 
     let mut entities: Vec<DxfEntity> = Vec::new();
     let frame = |x0: f64, y0: f64, x1: f64, y1: f64| DxfShape::Polyline {
@@ -421,6 +627,38 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         ));
     }
 
+    // Combs, one set per view, drawn in the view's own coordinates so they sit
+    // on the lines they belong to.
+    if opts.combs {
+        let d = (max.z - min.z).max(0.1);
+        let mut push = |spikes: &[Spike], map: &dyn Fn(f64, f64) -> P2| {
+            let mut tips = Vec::with_capacity(spikes.len());
+            for (base, tip) in spikes {
+                let (a, b) = (map(base.0, base.1), map(tip.0, tip.1));
+                entities.push(DxfEntity::new(
+                    "Combs",
+                    DxfShape::Line(Vec2::new(a.0, a.1), Vec2::new(b.0, b.1)),
+                ));
+                tips.push(Vec2::new(b.0, b.1));
+            }
+            if tips.len() >= 2 {
+                entities.push(DxfEntity::new("Combs", DxfShape::Polyline { points: tips }));
+            }
+        };
+        let map_body = |u: f64, v: f64| (body_x0 + (u - min.y), v);
+        let map_profile = |u: f64, v: f64| (u, v);
+        let map_plan = |u: f64, v: f64| (u, plan_y0 + (v - min.y));
+        for (curves, extent, map) in [
+            (&cut.stations, b, &map_body as &dyn Fn(f64, f64) -> P2),
+            (&cut.buttocks, d, &map_profile),
+            (&cut.waterlines, b, &map_plan),
+        ] {
+            for comb in &view_combs(curves, opts.comb_scale, extent) {
+                push(comb, map);
+            }
+        }
+    }
+
     let mut all = layers.to_vec();
     all.push(DxfLayer::new("Stations 3D", 3));
     all.push(DxfLayer::new("Buttocks 3D", 3));
@@ -506,5 +744,80 @@ mod tests {
         // The SVG still renders.
         let svg = svg(&surface, opts);
         assert!(svg.contains("<svg") && svg.contains("bodyplan"));
+    }
+
+    /// A circle is the one curve whose curvature is known everywhere, and a
+    /// straight run is the one whose comb must vanish.
+    #[test]
+    fn the_comb_reads_a_circles_curvature() {
+        let r = 5.0;
+        // Fine enough that resampling samples the geometry, not the joints.
+        let n = 200;
+        let points: Vec<(f64, f64)> = (0..=n)
+            .map(|i| {
+                let a = std::f64::consts::FRAC_PI_2 * i as f64 / n as f64;
+                (r * a.cos(), r * a.sin())
+            })
+            .collect();
+        for i in 1..points.len() - 1 {
+            let k = curvature_at(&points, i);
+            assert!((k - 1.0 / r).abs() < 1e-6, "curvature {k} at {i}, want {}", 1.0 / r);
+        }
+        // Spikes point away from the centre of curvature, i.e. outside the arc.
+        let spikes = comb_spikes(&points, 2.0, 10.0, 0.05);
+        assert!(spikes.len() > 120, "one spike per 5 cm of a 7.9 m arc, got {}", spikes.len());
+        // |k| = 1/5 and the scale is 2, so every spike is 0.4 long; the
+        // resampled points sit on chords, which flattens the first and last few
+        // by ~5 %.
+        let mut lengths = Vec::new();
+        for (base, tip) in &spikes {
+            let rb = (base.0 * base.0 + base.1 * base.1).sqrt();
+            let rt = (tip.0 * tip.0 + tip.1 * tip.1).sqrt();
+            assert!(rt > rb, "spike should point outward: {rb} -> {rt}");
+            lengths.push((tip.0 - base.0).hypot(tip.1 - base.1));
+        }
+        lengths.sort_by(f64::total_cmp);
+        let median = lengths[lengths.len() / 2];
+        assert!((median - 0.4).abs() < 0.02, "median spike length {median}");
+        assert!(
+            (0.3..0.5).contains(lengths.first().unwrap())
+                && (0.3..0.5).contains(lengths.last().unwrap()),
+            "spike lengths out of range: {} .. {}",
+            lengths.first().unwrap(),
+            lengths.last().unwrap()
+        );
+
+        let line: Vec<(f64, f64)> = (0..=5).map(|i| (i as f64, 0.0)).collect();
+        assert!(comb_spikes(&line, 2.0, 10.0, 0.5).is_empty(), "a straight line has no comb");
+        assert_eq!(curvature_at(&line, 2), 0.0);
+    }
+
+    /// Combs are opt-in and land on their own layer, so a plain linesplan is
+    /// unchanged.
+    #[test]
+    fn combs_are_drawn_only_when_asked() {
+        let surface = crate::demo::demo_hull(false);
+        let plain = LinesplanOptions::default();
+        let with = LinesplanOptions { combs: true, ..plain };
+
+        let svg_plain = svg(&surface, plain);
+        let svg_combs = svg(&surface, with);
+        assert!(!svg_plain.contains("class=\"comb\""), "no combs by default");
+        assert!(svg_combs.contains("class=\"comb\""), "combs in every view");
+        assert!(svg_combs.contains("class=\"spike\""));
+        assert!(svg_combs.contains("1 m⁻¹"));
+
+        let dxf_plain = dxf(&surface, plain);
+        let dxf_combs = dxf(&surface, with);
+        assert!(!dxf_plain.contains("\nCombs\n"));
+        assert!(dxf_combs.contains("\nCombs\n"), "combs layer missing");
+        // Every station, buttock and waterline contributes spikes: far more
+        // lines than the plain drawing.
+        let lines_plain = dxf_plain.matches("\nLINE\n").count();
+        let lines_combs = dxf_combs.matches("\nLINE\n").count();
+        assert!(
+            lines_combs > lines_plain + 50,
+            "expected combs to add lines: {lines_plain} -> {lines_combs}"
+        );
     }
 }
