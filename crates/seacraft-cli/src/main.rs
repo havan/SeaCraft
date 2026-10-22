@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    develop, offsets, raster, resistance, topology, transform,
+    develop, offsets, planing, raster, resistance, topology, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -55,6 +55,8 @@ enum Command {
     Unfold(UnfoldArgs),
     /// Edit the control net: split faces, insert edges, toggle creases
     Edit(EditArgs),
+    /// Savitsky planing resistance: trim, wetted length and drag
+    Planing(PlaningArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -475,6 +477,37 @@ struct EditArgs {
 }
 
 #[derive(Args, Debug)]
+struct PlaningArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Speeds in knots, comma separated
+    #[arg(long, default_value = "20,25,30,35,40")]
+    speeds: String,
+    /// Draft the displacement is taken at (default: the model's design draft)
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Planing beam in metres (default: the waterline beam)
+    #[arg(long)]
+    beam: Option<f64>,
+    /// Longitudinal centre of gravity in model x (default: the LCB)
+    #[arg(long)]
+    lcg_x: Option<f64>,
+    /// Deadrise at the transom in degrees (default: the tangent at the keel of
+    /// the transom section, which understates it on a round-bilge hull — give
+    /// the mean deadrise here for a V-bottom)
+    #[arg(long)]
+    deadrise: Option<f64>,
+    /// Write CSV to this path
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
 struct StabilityArgs {
     file: PathBuf,
     /// Centre of gravity height above the keel
@@ -560,6 +593,7 @@ fn run() -> Result<()> {
         Command::Resistance(a) => cmd_resistance(a),
         Command::Unfold(a) => cmd_unfold(a),
         Command::Edit(a) => cmd_edit(a),
+        Command::Planing(a) => cmd_planing(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -1489,6 +1523,121 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
     );
     println!("  validates: closed and manifold");
     println!("wrote {}", a.output.display());
+    Ok(())
+}
+
+fn cmd_planing(a: PlaningArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() };
+    let mut opts = HydroOptions::from_surface(&s, subdiv);
+    if let Some(d) = a.draft {
+        opts.draft = d;
+    }
+    let hull = seacraft_core::hydro::Hull::new(&s, subdiv);
+    let h = hull.hydrostatics(&opts);
+    if h.volume_m3 <= 0.0 {
+        bail!("the hull displaces nothing at T = {:.3} m", opts.draft);
+    }
+    let weight_n = h.displacement_kg * 9.80665;
+    let beam = a.beam.unwrap_or(h.bwl);
+    // Longitudinal position of the CG: the LCB is the natural default, and the
+    // method wants it from the transom.
+    let x_aft = h.model_min.x.max(hull.model_min.x);
+    let lcg_x = a.lcg_x.unwrap_or(h.lcb.x);
+    let lcg_from_transom = lcg_x - x_aft;
+    // Deadrise: measure the transom section unless the caller knows it.
+    let measured = {
+        let (_, polys) = curves::station_polygons(&hull, x_aft + 0.02 * h.lwl.max(0.1));
+        let pts: Vec<(f64, f64)> = polys
+            .iter()
+            .flat_map(|p| p.iter())
+            .filter(|p| p.y >= -1e-9)
+            .map(|p| (p.y, p.z))
+            .collect();
+        planing::deadrise_from_section(&pts)
+    };
+    let deadrise = a.deadrise.or(measured).unwrap_or(12.0);
+    let sail = planing::PlaningHull {
+        displacement_n: weight_n,
+        beam_m: beam,
+        lcg_from_transom_m: lcg_from_transom,
+        deadrise_deg: deadrise,
+        water_density: opts.water_density,
+        viscosity: if (opts.water_density - 1000.0).abs() < 25.0 {
+            resistance::VISCOSITY_FRESH_WATER
+        } else {
+            resistance::VISCOSITY_SEA_WATER
+        },
+    };
+    let speeds = parse_ordinates(&a.speeds, "speeds")?;
+    let curve = planing::planing_curve(&sail, &speeds);
+    if curve.is_empty() {
+        bail!(
+            "no planing condition found between {:.0} and {:.0} kn: the hull is too heavy for its \
+             beam, or the LCG is too far aft for the pressure centre to reach it",
+            speeds.first().copied().unwrap_or(0.0),
+            speeds.last().copied().unwrap_or(0.0)
+        );
+    }
+
+    if let Some(path) = &a.csv {
+        let mut text = String::from(
+            "speed_kn,speed_m_s,cv,c_delta,cl_beta,trim_deg,lambda,wetted_length_m,lcp_over_b,cf,resistance_n,pe_w\n",
+        );
+        for p in &curve {
+            text.push_str(&format!(
+                "{:.2},{:.3},{:.4},{:.5},{:.5},{:.3},{:.4},{:.3},{:.4},{:.6},{:.1},{:.1}\n",
+                p.speed_kn, p.speed_m_s, p.cv, p.c_delta, p.cl_beta, p.trim_deg, p.lambda,
+                p.wetted_length_m, p.lcp_over_b, p.cf, p.resistance_n, p.pe_w
+            ));
+        }
+        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {} ({} speeds)", path.display(), curve.len());
+    }
+    if a.json {
+        let body = serde_json::json!({
+            "hull": sail,
+            "lcg_x": lcg_x,
+            "deadrise_measured": measured,
+            "speeds": curve,
+        });
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    if a.csv.is_some() {
+        return Ok(());
+    }
+    println!("{}  -  Savitsky planing, T {:.3} m", s.settings.name, opts.draft);
+    println!(
+        "  weight {:.2} kN, beam {:.3} m, LCG {:.3} m from the transom ({:.3} b), deadrise {:.1} deg{}",
+        weight_n / 1000.0,
+        beam,
+        lcg_from_transom,
+        lcg_from_transom / beam,
+        deadrise,
+        if a.deadrise.is_none() && measured.is_some() { " (measured)" } else { "" }
+    );
+    println!();
+    println!(
+        "  {:>6}  {:>6}  {:>7}  {:>7}  {:>10}  {:>7}  {:>10}  {:>10}",
+        "kn", "CV", "trim", "lambda", "wetted [m]", "LCP/b", "RT [kN]", "PE [kW]"
+    );
+    for p in &curve {
+        println!(
+            "  {:>6.1}  {:>6.3}  {:>6.2}d  {:>7.3}  {:>10.3}  {:>7.3}  {:>10.2}  {:>10.2}",
+            p.speed_kn, p.cv, p.trim_deg, p.lambda, p.wetted_length_m, p.lcp_over_b,
+            p.resistance_n / 1000.0, p.pe_w / 1000.0
+        );
+    }
+    let missed: Vec<f64> = speeds
+        .iter()
+        .filter(|s| !curve.iter().any(|p| (p.speed_kn - **s).abs() < 1.0))
+        .copied()
+        .collect();
+    if !missed.is_empty() {
+        println!("  no planing equilibrium at {:?} kn (outside the hull's planing range)", missed);
+    }
+    println!("\n  effective power only; add --propeller-diameter to `resistance` for the shaft power.");
     Ok(())
 }
 

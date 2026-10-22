@@ -58,7 +58,12 @@ impl Bonjean {
 /// draft of the Bonjean family clips the same polylines instead of re-cutting
 /// the whole mesh. This is the performance-critical inner loop: a 21 × 10
 /// family is 21 cuts, not 210.
-pub(crate) fn station_polygons(hull: &Hull, x: f64) -> (Plane, Vec<Vec<Vec3>>) {
+///
+/// The plane is returned with the polygons: the polylines are in model
+/// coordinates, and a caller that needs 2D section coordinates uses the plane's
+/// own basis. The offsets table and the planing deadrise measurement both build
+/// on this.
+pub fn station_polygons(hull: &Hull, x: f64) -> (Plane, Vec<Vec<Vec3>>) {
     let plane = Plane::new(Vec3::new(1.0, 0.0, 0.0), -x);
     let segs = plane_segments(&hull.verts, &hull.tris, &plane);
     let paths = chain_paths(&segs, 1e-7);

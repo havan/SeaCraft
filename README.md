@@ -182,6 +182,14 @@ Gaussian curvature from the same discrete operator the curvature shading uses;
 under 0.5 % of the plate diagonal it is called developable. `-o plate.svg` writes
 the flat pattern with its outline.
 
+`planing` is Savitsky's method for a prismatic planing hull
+(`seacraft planing`): lift, mean wetted length, trim and drag at each speed, with
+the trim solved so the centre of pressure sits under the centre of gravity. The
+tests check the physics the method must satisfy — lift equilibrium to 1e-6, λ
+falling as trim rises, the drag hump — rather than a golden number. Deadrise is
+measured as the tangent at the keel of the transom section, which is exact for a
+hard-chine V and understates a round-bilge hull; `--deadrise` overrides it.
+
 `offsets::table_of_offsets` produces the drawing-office table — half-breadths
 at stations x waterlines and buttock heights at stations x buttocks — as a
 terminal table, long-format CSV, JSON or a standalone HTML page
@@ -279,6 +287,8 @@ seacraft unfold    hull.fef [--axis x|y|z] [--from a] [--to b] [--x-from a] [--x
                               [--both-sides] [-o plate.svg] [--json]
 seacraft edit      hull.fef -o edited.fef [--split-face N]... [--insert-edge F,A,B]...
                               [--crease A,B]... [--clear-crease A,B]... [--json]
+seacraft planing   hull.fef [--speeds 20,25,30] [--draft T] [--beam B] [--lcg-x X]
+                              [--deadrise deg] [--csv out.csv] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]

@@ -34,6 +34,7 @@ pub mod linesplan;
 pub mod math;
 pub mod mesh;
 pub mod offsets;
+pub mod planing;
 pub mod raster;
 pub mod resistance;
 pub mod stability;
