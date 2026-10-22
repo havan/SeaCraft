@@ -112,9 +112,7 @@ pub fn demo_hull(symmetric: bool) -> Surface {
         transom.push(sb[0][j]);
     }
     transom.push(keel[0]);
-    for j in 1..=np {
-        transom.push(pt[0][j]);
-    }
+    transom.extend(pt[0].iter().skip(1).take(np));
     if !symmetric {
         let normal = polygon_normal(&s, &transom);
         if normal.x > 0.0 {

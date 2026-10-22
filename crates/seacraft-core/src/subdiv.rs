@@ -23,19 +23,17 @@ use crate::mesh::{ordered, Surface, VertexKind};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SubdivisionMode {
     /// Triangles stay triangles (Loop); polygons with >3 points become quads.
+    #[default]
     Loop,
     /// Every face gets a centroid, so triangles become three quads.
     CatmullClark,
 }
 
-impl Default for SubdivisionMode {
-    fn default() -> Self {
-        SubdivisionMode::Loop
-    }
-}
+/// Ordered endpoint pair -> indices of the adjacent faces.
+type EdgeFaces = HashMap<(usize, usize), Vec<usize>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubdivisionOptions {
@@ -87,7 +85,7 @@ impl SubdivMesh {
     }
 
     /// Edge incidence: ordered endpoint pair -> indices of adjacent faces.
-    fn edge_faces(&self) -> (HashMap<(usize, usize), Vec<usize>>, Vec<(usize, usize)>) {
+    fn edge_faces(&self) -> (EdgeFaces, Vec<(usize, usize)>) {
         let mut map: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
         for (fi, f) in self.faces.iter().enumerate() {
             for i in 0..f.len() {

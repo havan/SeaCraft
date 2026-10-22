@@ -87,11 +87,15 @@ pub fn parse(text: &str) -> Result<Surface, FefError> {
         Ok(s)
     };
 
-    let mut settings = ProjectSettings::default();
-    settings.name = next(&mut i)?;
-    settings.designer = next(&mut i)?;
-    settings.created_by = next(&mut i)?;
-    settings.comment = next(&mut i)?;
+    // Field initialisers run in written order, so the four lines are read in
+    // the order the format stores them.
+    let mut settings = ProjectSettings {
+        name: next(&mut i)?,
+        designer: next(&mut i)?,
+        created_by: next(&mut i)?,
+        comment: next(&mut i)?,
+        ..Default::default()
+    };
 
     let hdr_line = i;
     let hdr = next(&mut i)?;
@@ -124,13 +128,15 @@ pub fn parse(text: &str) -> Result<Surface, FefError> {
         if t.len() < 5 {
             return Err(err(data_line, "layer line needs at least 5 fields"));
         }
-        let mut l = Layer::default();
-        l.name = name;
-        l.id = parse_i32(t[0], data_line, "layer id")?;
-        l.color = parse_i32(t[1], data_line, "layer colour")?;
-        l.visible = parse_bool(t[2]).unwrap_or(true);
-        l.developable = parse_bool(t[3]).unwrap_or(false);
-        l.symmetric = parse_bool(t[4]).unwrap_or(true);
+        let mut l = Layer {
+            name,
+            id: parse_i32(t[0], data_line, "layer id")?,
+            color: parse_i32(t[1], data_line, "layer colour")?,
+            visible: parse_bool(t[2]).unwrap_or(true),
+            developable: parse_bool(t[3]).unwrap_or(false),
+            symmetric: parse_bool(t[4]).unwrap_or(true),
+            ..Default::default()
+        };
         if t.len() > 5 {
             l.use_for_intersections = parse_bool(t[5]).unwrap_or(true);
         }

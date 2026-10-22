@@ -86,7 +86,7 @@ mod tests {
         for _ in 0..100 {
             // Snapshot before mutating, as the app does.
             history.snapshot(&surface);
-            surface.points[7].p = surface.points[7].p + seacraft_core::math::Vec3::new(0.0, 0.0, 0.01);
+            surface.points[7].p.z += 0.01;
         }
         assert_eq!(history.undo_len(), 64, "history must be capped");
         let mut current = surface;

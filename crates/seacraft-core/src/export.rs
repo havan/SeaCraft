@@ -78,7 +78,7 @@ pub fn newell_normal(points: &[Vec3]) -> Vec3 {
 fn write_obj(mesh: &RenderMesh, up: UpAxis, header: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {} - SeaCraft {}", header, crate::VERSION);
-    let _ = write!(out, "# {} vertices, {} faces\n", mesh.verts.len(), mesh.faces.len());
+    let _ = writeln!(out, "# {} vertices, {} faces", mesh.verts.len(), mesh.faces.len());
     for v in &mesh.verts {
         let (a, b, c) = up.map(*v);
         let _ = writeln!(out, "v {:.6} {:.6} {:.6}", a, b, c);
@@ -193,9 +193,9 @@ pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
     html.push_str(
         "<style>html,body{margin:0;height:100%;background:#0b1016;color:#cfd8e3;font:13px/1.4 ui-sans-serif,system-ui,sans-serif}canvas{display:block}#hud{position:fixed;left:16px;top:14px;pointer-events:none;text-shadow:0 1px 2px #000}a{color:#7fb2ff}</style>\n</head>\n<body>\n<div id=\"hud\">",
     );
-    let _ = write!(
+    let _ = writeln!(
         html,
-        "<b>{}</b><br>{} verts &middot; {} faces &middot; subdivision level {}<br><span style=\"opacity:.65\">drag to orbit &middot; scroll to zoom</span></div>\n",
+        "<b>{}</b><br>{} verts &middot; {} faces &middot; subdivision level {}<br><span style=\"opacity:.65\">drag to orbit &middot; scroll to zoom</span></div>",
         title,
         mesh.verts.len(),
         mesh.faces.len(),

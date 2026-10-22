@@ -102,8 +102,9 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | Cross curves, `KN`/`GZ`, draft solving | `stability.rs` |
 | Stations / buttocks / waterlines (SVG) | `linesplan.rs` |
 | OBJ / STL / PLY / HTML viewer | `export.rs` |
-| Parametric demo hull | `demo.rs` |
-| Command-line front end | `crates/seacraft-cli` |
+|| Parametric demo hull | `demo.rs` |
+|| Command-line front end | `crates/seacraft-cli` |
+|| Desktop modeller (four viewports, drag, docks) | `crates/seacraft-gui` |
 
 ### Modelling kernel
 
@@ -159,7 +160,43 @@ $ cargo run --release -- linesplan /tmp/demo.fef -o /tmp/demo.svg
 
 ---
 
-## 4. Coordinate system and units
+## 4. Desktop application
+
+`seacraft-gui` is an `eframe`/`egui` front end with no GPU pipeline: every
+viewport is CPU-projected into an `egui::Painter`, so it runs on a plain X
+display or a software renderer.
+
+```console
+cargo run --release -p seacraft-gui -- --open examples/demo-hull.fef
+```
+
+```
+Perspective | Profile
+------------+------------
+Plan        | Body plan
+```
+
+* Drag a control point to deform the hull; the preview refines at level 2
+  while dragging and at the full level on release. **Ctrl+Z** / **Ctrl+Shift+Z**
+  undo and redo (64 snapshots), **Esc** clears the selection, **F** frames the
+  model, **1**–**4** activate a viewport, **Space** toggles shading.
+* Primary drag on empty space pans, secondary drag in the perspective view
+  orbits, the wheel zooms.
+* The left dock manages layers (colour, name, visible, symmetric, use in
+  hydrostatics). The right dock is the live hydrostatics report: draft, trim,
+  heel and KG, the full coefficient set, and GZ cross curves drawn in place.
+  It recomputes 120 ms after the last geometry change, never mid-drag.
+* File menu: new demo hull, open/save `.fef` (with an in-app path dialog, so
+  no desktop portal is needed), export OBJ / STL / PLY / HTML viewer /
+  linesplan SVG. Unsaved work is flagged in the status bar and confirmed
+  before it is discarded.
+
+The status bar carries the model summary, the subdivision level and mode, the
+cursor position on the active viewport's focal plane and the crate version.
+
+---
+
+## 5. Coordinate system and units
 
 * `x` forward, `y` to starboard, `z` up, keel at low `z`.
 * Internal units are metres; `.fef` carries the project settings (length,
@@ -171,17 +208,20 @@ $ cargo run --release -- linesplan /tmp/demo.fef -o /tmp/demo.svg
 
 ---
 
-## 5. Status and limitations
+## 6. Status and limitations
 
 * The kernel, `.fef` round-trip, hydrostatics, stability, linesplan and mesh
   exports are implemented and tested.
-* Not yet implemented: interactive GUI, developability/unfolding, NURBS/IGES
-  export, DXF linesplan export, Lackenby transformation, resistance and
-  propulsion prediction, VRML import.
+* The desktop modeller (four viewports, control-point dragging with undo, layer
+  and hydrostatics docks, file actions) is implemented and tested headlessly.
+* Not yet implemented: zebra/curvature fairing analysis, a software z-buffer
+  viewport, DXF and IGES export, developability/unfolding, Lackenby
+  transformation, resistance and propulsion prediction, VRML import, and
+  adding/deleting control points or edges.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.
 
-## 6. Licence
+## 7. Licence
 
 SeaCraft is distributed under the GNU GPL v2 or later, matching FREE!ship's
 licence. FREE!ship itself is Copyright (C) its authors; this project is an
