@@ -57,6 +57,8 @@ crates/seacraft-core/
   src/stability.rs          draft solving by bisection + KN/GZ cross curves
   src/linesplan.rs          stations/buttocks/waterlines -> three-view SVG/DXF
   src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
+  src/analysis.rs           vertex normals, discrete curvature, zebra/draft/curvature
+  src/raster.rs             CPU z-buffer rasterizer, 2x SSAA, PNG encoder
   src/export.rs             OBJ (y- or z-up), binary STL, ASCII PLY, HTML viewer
   src/demo.rs               parametric 12 m demo hull, full and half model
 crates/seacraft-cli/src/main.rs   clap front end, table/JSON/CSV output
@@ -84,6 +86,7 @@ cargo run --release -- demo -o /tmp/demo.fef
 cargo run --release -- hydro /tmp/demo.fef --kg 2.2 --stations 11
 cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.svg
 cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.dxf
+cargo run --release -- render /tmp/demo.fef -o /tmp/zebra.png --mode zebra
 cargo run --release -- export /tmp/demo.fef -o /tmp/hull.html --level 2
 cargo run -p seacraft-gui -- --open examples/demo-hull.fef
 ```
@@ -171,7 +174,13 @@ These were real failures in this codebase; the fixes are load-bearing.
   field to `Hydrostatics` (it derives `Serialize`). Document the datum.
 * **New export format**: add a function in `export.rs` taking
   `render_mesh(surface, level, mode)`; keep it dependency-free so the core stays
-  light.
+  light. The DXF writer (`dxf.rs`) is the model for a format that needs its own
+  module: a `DxfShape` variant, a group-code branch in `write_dxf`, and a test
+  that reads the output back as group-code pairs.
+* **New analysis shade**: extend `analysis::AnalysisMode`, add its colour in
+  `analysis_color`, then give it a default in both front ends (`RenderModeArg`
+  in the CLI, the View menu and `render::frame_key` in the GUI — the key must
+  include the mode's parameters or the cached texture will not refresh).
 * **New test**: prefer analytic or invariant checks (box displacement, barge
   waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror
   symmetry, `.fef` round-trip) over golden files.
