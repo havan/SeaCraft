@@ -40,6 +40,71 @@ struct DragState {
     original: Vec3,
 }
 
+/// What the File menu can produce besides a `.fef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportKind {
+    Obj,
+    Stl,
+    Ply,
+    Html,
+    Linesplan,
+}
+
+impl ExportKind {
+    pub const ALL: [ExportKind; 5] = [
+        ExportKind::Obj,
+        ExportKind::Stl,
+        ExportKind::Ply,
+        ExportKind::Html,
+        ExportKind::Linesplan,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ExportKind::Obj => "Wavefront OBJ…",
+            ExportKind::Stl => "STL (binary)…",
+            ExportKind::Ply => "PLY (ASCII)…",
+            ExportKind::Html => "HTML viewer…",
+            ExportKind::Linesplan => "Linesplan SVG…",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportKind::Obj => "obj",
+            ExportKind::Stl => "stl",
+            ExportKind::Ply => "ply",
+            ExportKind::Html => "html",
+            ExportKind::Linesplan => "svg",
+        }
+    }
+}
+
+/// Which file dialog is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DialogKind {
+    Open,
+    SaveAs,
+    Export(ExportKind),
+}
+
+/// An action that may need to discard unsaved work first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingAction {
+    NewDemo,
+    Open,
+    Quit,
+}
+
+/// The in-app file dialog. A native dialog needs a desktop portal, which a
+/// plain X session or a test harness does not have, so the path is typed (or
+/// picked from the directory listing) in a modal window.
+struct FileDialogState {
+    kind: DialogKind,
+    path: String,
+    error: Option<String>,
+}
+
 pub struct App {
     surface: Option<Surface>,
     path: Option<PathBuf>,
@@ -55,6 +120,12 @@ pub struct App {
     selected: Option<usize>,
     history: History,
     drag: Option<DragState>,
+    /// Unsaved edits since the last save / load.
+    dirty: bool,
+    dialog: Option<FileDialogState>,
+    pending: Option<PendingAction>,
+    /// A quit that has been confirmed (the window closes at the end of the frame).
+    close_requested: bool,
     /// Viewport rectangles from the last frame, so tests can aim the pointer.
     viewport_rects: [egui::Rect; 4],
 }
@@ -100,6 +171,10 @@ impl App {
             selected: None,
             history: History::new(64),
             drag: None,
+            dirty: false,
+            dialog: None,
+            pending: None,
+            close_requested: false,
             viewport_rects: [egui::Rect::NOTHING; 4],
         }
     }
@@ -119,6 +194,7 @@ impl App {
                     );
                     self.surface = Some(surface);
                     self.path = Some(path);
+                    self.dirty = false;
                     self.adopt();
                 }
                 Err(err) => self.status = format!("Parse error in {}: {err}", path.display()),
@@ -137,6 +213,7 @@ impl App {
         );
         self.surface = Some(surface);
         self.path = None;
+        self.dirty = true;
         self.adopt();
     }
 
@@ -187,6 +264,9 @@ impl App {
         self.menu(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
+                if self.dirty {
+                    ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), "● unsaved");
+                }
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("v{}", seacraft_core::VERSION));
@@ -195,6 +275,11 @@ impl App {
         });
 
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
+        self.dialog_window(ui);
+        self.pending_window(ui);
+        if self.close_requested {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     fn shortcuts(&mut self, ui: &mut egui::Ui) {
@@ -261,15 +346,39 @@ impl App {
                     }
                 });
                 ui.menu_button("File", |ui| {
-                    if ui.button("Load demo hull").clicked() {
-                        self.load_demo();
+                    if ui.button("New demo hull").clicked() {
+                        self.request(PendingAction::NewDemo);
+                        ui.close();
+                    }
+                    if ui.button("Open .fef…").clicked() {
+                        self.request(PendingAction::Open);
                         ui.close();
                     }
                     ui.separator();
-                    ui.add_enabled(false, egui::Button::new("Open .fef…"));
-                    ui.add_enabled(false, egui::Button::new("Save"));
+                    if ui.add_enabled(self.surface.is_some(), egui::Button::new("Save")).clicked() {
+                        self.save();
+                        ui.close();
+                    }
+                    if ui.add_enabled(self.surface.is_some(), egui::Button::new("Save as…")).clicked() {
+                        self.open_dialog(DialogKind::SaveAs);
+                        ui.close();
+                    }
                     ui.separator();
-                    ui.add_enabled(false, egui::Button::new("Export…"));
+                    ui.add_enabled_ui(self.surface.is_some(), |ui| {
+                        ui.menu_button("Export", |ui| {
+                            for kind in ExportKind::ALL {
+                                if ui.button(kind.label()).clicked() {
+                                    self.open_dialog(DialogKind::Export(kind));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                    ui.separator();
+                    if ui.button("Quit").clicked() {
+                        self.request(PendingAction::Quit);
+                        ui.close();
+                    }
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.display.shaded, "Shaded hull");
@@ -292,6 +401,228 @@ impl App {
         });
     }
 
+    // ---- file actions --------------------------------------------------
+
+    /// Run `action`, asking first when there are unsaved edits.
+    fn request(&mut self, action: PendingAction) {
+        if self.dirty {
+            self.pending = Some(action);
+        } else {
+            self.perform(action);
+        }
+    }
+
+    fn perform(&mut self, action: PendingAction) {
+        match action {
+            PendingAction::NewDemo => self.load_demo(),
+            PendingAction::Open => self.open_dialog(DialogKind::Open),
+            PendingAction::Quit => self.close_requested = true,
+        }
+    }
+
+    /// Path to pre-fill a dialog with.
+    fn suggested_path(&self, kind: DialogKind) -> String {
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .or_else(|| self.surface.as_ref().map(|s| s.settings.name.clone()))
+            .unwrap_or_else(|| "hull".to_owned());
+        let clean: String = stem
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let dir = self
+            .path
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        match kind {
+            DialogKind::Open => {
+                let demo = std::path::PathBuf::from("examples/demo-hull.fef");
+                if self.path.is_none() && demo.exists() {
+                    return demo.to_string_lossy().to_string();
+                }
+                self.path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| demo.to_string_lossy().to_string())
+            }
+            DialogKind::SaveAs => dir.join(format!("{clean}.fef")).to_string_lossy().to_string(),
+            DialogKind::Export(kind) => dir
+                .join(format!("{clean}.{}", kind.extension()))
+                .to_string_lossy()
+                .to_string(),
+        }
+    }
+
+    fn open_dialog(&mut self, kind: DialogKind) {
+        let path = self.suggested_path(kind);
+        self.dialog = Some(FileDialogState { kind, path, error: None });
+    }
+
+    /// Save to the model's path, or ask for one.
+    pub fn save(&mut self) {
+        match self.path.clone() {
+            Some(path) => {
+                self.save_to(&path);
+            }
+            None => self.open_dialog(DialogKind::SaveAs),
+        }
+    }
+
+    /// Write the model as `.fef`. Returns whether it was written.
+    pub fn save_to(&mut self, path: &std::path::Path) -> bool {
+        let Some(surface) = &self.surface else { return false };
+        let text = fef::write(surface);
+        match std::fs::write(path, text) {
+            Ok(()) => {
+                self.path = Some(path.to_path_buf());
+                self.dirty = false;
+                self.status = format!("saved {}", path.display());
+                true
+            }
+            Err(err) => {
+                self.status = format!("cannot write {}: {err}", path.display());
+                false
+            }
+        }
+    }
+
+    /// Write one of the export formats. Returns whether it was written.
+    pub fn export_to(&mut self, kind: ExportKind, path: &std::path::Path) -> bool {
+        let Some(surface) = &self.surface else { return false };
+        let written = match kind {
+            ExportKind::Obj => std::fs::write(
+                path,
+                export::obj(surface, self.level, self.mode, export::UpAxis::Z),
+            ),
+            ExportKind::Stl => std::fs::write(path, export::stl(surface, self.level, self.mode)),
+            ExportKind::Ply => std::fs::write(path, export::ply(surface, self.level, self.mode)),
+            ExportKind::Html => std::fs::write(path, export::viewer_html(surface, self.level, self.mode)),
+            ExportKind::Linesplan => std::fs::write(
+                path,
+                seacraft_core::linesplan::svg(surface, seacraft_core::linesplan::LinesplanOptions::default()),
+            ),
+        };
+        match written {
+            Ok(()) => {
+                self.status = format!("exported {} ({})", path.display(), kind.label().trim_end_matches('…'));
+                true
+            }
+            Err(err) => {
+                self.status = format!("cannot write {}: {err}", path.display());
+                false
+            }
+        }
+    }
+
+    fn dialog_window(&mut self, ui: &mut egui::Ui) {
+        let Some(mut dialog) = self.dialog.take() else { return };
+        let title = match dialog.kind {
+            DialogKind::Open => "Open .fef",
+            DialogKind::SaveAs => "Save as",
+            DialogKind::Export(k) => k.label(),
+        };
+        let mut accept = false;
+        let mut cancel = false;
+        egui::Window::new(title)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(520.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.label("Path");
+                ui.add(egui::TextEdit::singleline(&mut dialog.path).desired_width(f32::INFINITY));
+                if let Some(err) = &dialog.error {
+                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), err);
+                }
+                ui.separator();
+                let wanted = match dialog.kind {
+                    DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
+                    DialogKind::Export(k) => format!(".{}", k.extension()),
+                };
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                    for (label, path) in listing(&dialog.path, &wanted) {
+                        if ui.selectable_label(false, label).clicked() {
+                            dialog.path = path;
+                        }
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui.button("OK").clicked() {
+                        accept = true;
+                    }
+                });
+            });
+
+        if cancel {
+            return;
+        }
+        if !accept {
+            self.dialog = Some(dialog);
+            return;
+        }
+        let path = std::path::PathBuf::from(dialog.path.trim());
+        let ok = match dialog.kind {
+            DialogKind::Open => {
+                self.load(path);
+                self.dialog_open_error()
+            }
+            DialogKind::SaveAs => self.save_to(&path),
+            DialogKind::Export(kind) => self.export_to(kind, &path),
+        };
+        if !ok {
+            dialog.error = Some(self.status.clone());
+            self.dialog = Some(dialog);
+        }
+    }
+
+    /// `load` reports failure in the status bar; turn that into a flag.
+    fn dialog_open_error(&self) -> bool {
+        !self.status.starts_with("Parse error") && !self.status.starts_with("Cannot read")
+    }
+
+    fn pending_window(&mut self, ui: &mut egui::Ui) {
+        let Some(action) = self.pending else { return };
+        let mut choice: Option<Option<PendingAction>> = None; // Some(None) = cancel
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                ui.label("There are unsaved changes. Save them first?");
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        choice = Some(Some(action));
+                    }
+                    if ui.button("Discard").clicked() {
+                        choice = Some(None);
+                        self.pending = None;
+                        self.perform(action);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = Some(None);
+                    }
+                });
+            });
+        match choice {
+            Some(Some(action)) => {
+                self.save();
+                if !self.dirty {
+                    self.pending = None;
+                    self.perform(action);
+                }
+            }
+            Some(None) => self.pending = None,
+            None => {}
+        }
+    }
+
     fn reset_cameras(&mut self) {
         if let Some(s) = &self.surface {
             let (min, max) = s.extents();
@@ -307,6 +638,7 @@ impl App {
             let moved = previous.points.len();
             self.surface = Some(previous);
             self.revision += 1;
+            self.dirty = true;
             self.status = format!("undo — {moved} control points restored");
         }
     }
@@ -316,6 +648,7 @@ impl App {
         if let Some(next) = self.history.redo(&current) {
             self.surface = Some(next);
             self.revision += 1;
+            self.dirty = true;
             self.status = "redo".to_owned();
         }
     }
@@ -459,6 +792,7 @@ impl App {
         if let Some(surface) = self.surface.as_mut() {
             surface.points[point].p = target;
         }
+        self.dirty = true;
         self.revision += 1;
     }
 
@@ -505,6 +839,14 @@ impl App {
         self.selected
     }
 
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
     pub fn undo_len(&self) -> usize {
         self.history.undo_len()
     }
@@ -516,6 +858,34 @@ impl App {
     pub fn display_mut(&mut self) -> &mut DisplayOptions {
         &mut self.display
     }
+}
+
+/// Directories and files ending in `wanted`, for the in-app file dialog.
+fn listing(path: &str, wanted: &str) -> Vec<(String, String)> {
+    let path = std::path::Path::new(path.trim());
+    let dir = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
+    };
+    let wanted = wanted.to_ascii_lowercase();
+    let mut out = Vec::new();
+    if let Ok(read) = std::fs::read_dir(&dir) {
+        let mut entries: Vec<_> = read.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries.into_iter().take(300) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if entry.path().is_dir() {
+                out.push((format!("{name}/"), entry.path().to_string_lossy().to_string()));
+            } else if name.to_ascii_lowercase().ends_with(&wanted) {
+                out.push((name, entry.path().to_string_lossy().to_string()));
+            }
+        }
+    }
+    out
 }
 
 impl eframe::App for App {

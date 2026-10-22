@@ -341,7 +341,7 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
     }
     println!("{}  -  hydrostatics at T {:.3} m", s.settings.name, result.draft);
     println!();
-    let mut row = |label: &str, value: String| println!("  {:<26} {}", label, value);
+    let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
     row("volume", format!("{:.3} m3", result.volume_m3));
     row(
         "displacement",
