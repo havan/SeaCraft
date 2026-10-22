@@ -386,6 +386,18 @@ struct ResistanceArgs {
     /// Appendage form factor 1+k2
     #[arg(long, default_value_t = 1.5)]
     appendage_factor: f64,
+    /// Propeller diameter in metres; enables the propulsion factors and shaft power
+    #[arg(long, default_value_t = 0.0)]
+    propeller_diameter: f64,
+    /// Propeller expanded blade-area ratio AE/A0
+    #[arg(long, default_value_t = 0.70)]
+    expanded_area: f64,
+    /// Open-water efficiency at the design point
+    #[arg(long, default_value_t = 0.60)]
+    eta_o: f64,
+    /// Shafting efficiency, for brake power
+    #[arg(long, default_value_t = 0.98)]
+    shaft_efficiency: f64,
     /// Immersed bulbous-bow area, m²
     #[arg(long, default_value_t = 0.0)]
     bulb_area: f64,
@@ -1220,16 +1232,53 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
     let rows = resistance::curve(&input, &speeds);
     let warnings = input.warnings();
 
+    // Propulsion factors, when a propeller is given. They depend on the speed
+    // through CV, so each speed gets its own solve.
+    let propeller = resistance::Propeller {
+        diameter_m: a.propeller_diameter,
+        expanded_area_ratio: a.expanded_area,
+        open_water_efficiency: a.eta_o,
+    };
+    let with_propeller = a.propeller_diameter > 0.0;
+    let propulsion: Vec<resistance::Propulsion> = if with_propeller {
+        rows.iter()
+            .map(|r| {
+                let mut per_speed = input.clone();
+                per_speed.viscous_coefficient = r.viscous_coefficient;
+                per_speed.propulsion(&propeller)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     if let Some(path) = &a.csv {
         let mut text = String::from(
             "speed_kn,speed_m_s,fn,re,cf,form_factor,rf_n,rapp_n,rw_n,rb_n,rtr_n,ra_n,rt_n,pe_w\n",
         );
-        for r in &rows {
+        if with_propeller {
+            text.push_str(",wake_fraction,thrust_deduction,eta_r,eta_d,pd_w,ps_w");
+            text.push('\n');
+        }
+        for (i, r) in rows.iter().enumerate() {
             text.push_str(&format!(
-                "{:.3},{:.4},{:.5},{:.0},{:.6},{:.4},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}\n",
+                "{:.3},{:.4},{:.5},{:.0},{:.6},{:.4},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}",
                 r.speed_kn, r.speed_m_s, r.fn_, r.reynolds, r.cf, r.form_factor, r.rf_n,
                 r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
             ));
+            if let Some(p) = propulsion.get(i) {
+                let pd = r.pe_w / p.propulsive_coefficient.max(1e-6);
+                text.push_str(&format!(
+                    ",{:.4},{:.4},{:.4},{:.4},{:.1},{:.1}",
+                    p.wake_fraction,
+                    p.thrust_deduction,
+                    p.relative_rotative,
+                    p.propulsive_coefficient,
+                    pd,
+                    pd / a.shaft_efficiency.max(1e-6)
+                ));
+            }
+            text.push('\n');
         }
         std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {} ({} speeds)", path.display(), rows.len());
@@ -1239,6 +1288,9 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             "input": input,
             "warnings": warnings,
             "speeds": rows,
+            "propeller": if with_propeller { Some(propeller) } else { None },
+            "propulsion": propulsion,
+            "shaft_efficiency": a.shaft_efficiency,
         });
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
@@ -1267,21 +1319,60 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         println!("  warning: {w} (outside the method's fitted range)");
     }
     println!();
-    println!(
-        "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
-        "kn", "Fn", "1+k1", "RT [kN]", "PE [kW]", "RF [kN]", "RW [kN]"
-    );
-    for r in &rows {
+    if with_propeller {
         println!(
-            "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}",
-            r.speed_kn,
-            r.fn_,
-            r.form_factor,
-            r.rt_n / 1000.0,
-            r.pe_w / 1000.0,
-            r.rf_n / 1000.0,
-            r.rw_n / 1000.0
+            "  {:>6}  {:>6}  {:>10}  {:>10}  {:>7}  {:>7}  {:>7}  {:>10}  {:>10}",
+            "kn", "Fn", "RT [kN]", "PE [kW]", "w", "t", "etaD", "PD [kW]", "PS [kW]"
         );
+        for (i, r) in rows.iter().enumerate() {
+            let p = &propulsion[i];
+            let pd = r.pe_w / p.propulsive_coefficient.max(1e-6);
+            println!(
+                "  {:>6.2}  {:>6.3}  {:>10.2}  {:>10.2}  {:>7.4}  {:>7.4}  {:>7.4}  {:>10.1}  {:>10.1}",
+                r.speed_kn,
+                r.fn_,
+                r.rt_n / 1000.0,
+                r.pe_w / 1000.0,
+                p.wake_fraction,
+                p.thrust_deduction,
+                p.propulsive_coefficient,
+                pd / 1000.0,
+                pd / a.shaft_efficiency.max(1e-6) / 1000.0
+            );
+        }
+        println!(
+            "  propeller D {:.2} m, AE/A0 {:.2}, etaO {:.2}, etaR {:.4}, etaH {:.4}, shaft {:.2}",
+            a.propeller_diameter,
+            a.expanded_area,
+            a.eta_o,
+            propulsion[0].relative_rotative,
+            propulsion[0].hull_efficiency,
+            a.shaft_efficiency
+        );
+        if !propulsion[0].plausible {
+            println!(
+                "  warning: w {:.3}, t {:.3} and LCB {:+.2} %L are outside the regressions' \
+                 fitted range, so the shaft power is indicative only",
+                propulsion[0].wake_fraction, propulsion[0].thrust_deduction, input.lcb_pct
+            );
+        }
+    } else {
+        println!(
+            "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
+            "kn", "Fn", "1+k1", "RT [kN]", "PE [kW]", "RF [kN]", "RW [kN]"
+        );
+        for r in &rows {
+            println!(
+                "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}",
+                r.speed_kn,
+                r.fn_,
+                r.form_factor,
+                r.rt_n / 1000.0,
+                r.pe_w / 1000.0,
+                r.rf_n / 1000.0,
+                r.rw_n / 1000.0
+            );
+        }
     }
     if rows.iter().any(|r| r.fn_ > 0.40) {
         println!(
@@ -1292,7 +1383,14 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             rows.iter().filter(|r| r.fn_ >= 0.55).count()
         );
     }
-    println!("\n  effective power only: no propeller, wake fraction or thrust deduction.");
+    if with_propeller {
+        println!(
+            "\n  PE is the hull's effective power; PD = PE/etaD and PS = PD/etaS. etaO is an input, \
+             not a prediction."
+        );
+    } else {
+        println!("\n  effective power only: give --propeller-diameter for the power chain.");
+    }
     Ok(())
 }
 

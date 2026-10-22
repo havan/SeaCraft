@@ -150,7 +150,13 @@ rather than the power the engine delivers. Everything the method takes from the
 hull form — `LWL`, `BWL`, `CB`, `Cp`, `Cm`, `LCB` as a percentage of the length,
 the wetted surface, the immersed transom and the half-angle of entrance `iE` —
 is measured on the refined mesh. `seacraft resistance` prints the breakdown and
-warns when the hull falls outside the ranges the method was fitted to. The
+warns when the hull falls outside the ranges the method was fitted to. Given a
+propeller diameter it also estimates Holtrop's wake fraction, thrust deduction
+and relative rotative efficiency, and prints the power chain
+`PD = PE/ηD`, `ηD = ηH·ηR·ηO`, `PS = PD/ηS` — with `ηO` supplied by the user from
+an open-water chart, since the method predicts the hull's side of the bargain,
+not the propeller's. The wake and thrust-deduction regressions are the
+single-screw fits and are flagged when the answer leaves their range. The
 implementation is checked against the worked example the paper prints for a
 205 m ship: every coefficient and the wave, friction, correlation and appendage
 terms reproduce to better than 1 %.
@@ -267,7 +273,8 @@ seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks 
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
 seacraft resistance hull.fef [--speeds 6,8,10,12] [--draft T] [--cstern X]
-                              [--appendage-area m2] [--bulb-area m2] [--csv out.csv] [--json]
+                              [--propeller-diameter D] [--expanded-area 0.7] [--eta-o 0.6]
+                              [--shaft-efficiency 0.98] [--appendage-area m2] [--csv out.csv] [--json]
 seacraft unfold    hull.fef [--axis x|y|z] [--from a] [--to b] [--x-from a] [--x-to b]
                               [--both-sides] [-o plate.svg] [--json]
 seacraft edit      hull.fef -o edited.fef [--split-face N]... [--insert-edge F,A,B]...

@@ -70,6 +70,11 @@ pub struct HoltropInput {
     pub appendage_factor: f64,
     pub water_density: f64,
     pub viscosity: f64,
+    /// `CV = (1+k1)·CF + CA` at the design speed, needed by the wake-fraction
+    /// regression. [`HoltropInput::measure`] leaves it at 0; set it from the
+    /// resistance result at the speed the propeller is designed for
+    /// ([`Resistance::viscous_coefficient`]).
+    pub viscous_coefficient: f64,
 }
 
 impl HoltropInput {
@@ -141,6 +146,7 @@ impl HoltropInput {
             } else {
                 VISCOSITY_SEA_WATER
             },
+            viscous_coefficient: 0.0,
         })
     }
 
@@ -200,6 +206,122 @@ fn half_entrance_deg(
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Propulsion: wake fraction, thrust deduction, and the power chain
+// ---------------------------------------------------------------------------
+
+/// The propeller a power estimate is made for.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Propeller {
+    /// Diameter in metres.
+    pub diameter_m: f64,
+    /// Expanded blade-area ratio `AE/A0`.
+    pub expanded_area_ratio: f64,
+    /// Open-water efficiency at the design point, from an open-water chart or a
+    /// B-series polynomial. Holtrop's method does not predict it.
+    pub open_water_efficiency: f64,
+}
+
+impl Default for Propeller {
+    fn default() -> Self {
+        Self { diameter_m: 0.0, expanded_area_ratio: 0.70, open_water_efficiency: 0.60 }
+    }
+}
+
+/// Holtrop's propulsion factors for a single screw.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct Propulsion {
+    /// Taylor wake fraction `w`.
+    pub wake_fraction: f64,
+    /// Thrust deduction `t`.
+    pub thrust_deduction: f64,
+    /// Relative rotative efficiency `ηR`.
+    pub relative_rotative: f64,
+    /// Hull efficiency `ηH = (1 − t)/(1 − w)`.
+    pub hull_efficiency: f64,
+    /// Open-water efficiency, as supplied.
+    pub open_water_efficiency: f64,
+    /// Quasi-propulsive coefficient `ηD = ηH · ηR · ηO`.
+    pub propulsive_coefficient: f64,
+    /// The viscous coefficient `CV` the wake formula is built on.
+    pub cv: f64,
+    /// False when the answer came out outside the range the regressions were
+    /// fitted to (a wake fraction below 2 % or above 60 %, a thrust deduction
+    /// outside 0–60 %, or an LCB further than 6 % of L from midships). The
+    /// numbers are still returned — they are the formula's answer — but a
+    /// designer should not trust them.
+    pub plausible: bool,
+}
+
+impl HoltropInput {
+    /// Wake fraction, thrust deduction and the propulsive coefficient.
+    ///
+    /// Equations (42)–(53) of Holtrop & Mennen: single-screw, twin-screw
+    /// neglected, and the propeller's own open-water efficiency has to come
+    /// from outside — the method predicts the hull's side of the bargain, not
+    /// the propeller's.
+    pub fn propulsion(&self, propeller: &Propeller) -> Propulsion {
+        let d = propeller.diameter_m.max(1e-3);
+        let (b, ta) = (self.beam_wl, self.draft);
+        let s = self.wetted_surface_m2;
+        let cp = self.cp;
+        let lcb = self.lcb_pct;
+        // CV = (1+k1)CF + CA, evaluated at a representative Froude number: the
+        // wake and thrust-deduction regressions were fitted on trial data with
+        // CF taken at the ship's speed, so the caller passes the speed in.
+        let cv = self.viscous_coefficient;
+        let bta = b / ta;
+        let c8 = if bta < 5.0 {
+            b * s.max(1e-6) / (self.length_wl * d * ta)
+        } else {
+            s.max(1e-6) * (7.0 * bta - 25.0) / (self.length_wl * d * (bta - 3.0))
+        };
+        let c9 = if c8 < 28.0 { c8 } else { 32.0 - 16.0 / (c8 - 24.0) };
+        let tadover = ta / d;
+        let c11 = if tadover < 2.0 {
+            tadover
+        } else {
+            0.0833333 * tadover.powi(3) + 1.33333
+        };
+        let c19 = if bta < 5.0 {
+            0.12997 / (bta - 0.95) - 0.11056 / (bta - 0.95).powi(2)
+        } else {
+            0.18567 / (1.3571 - self.cm) - 0.71276 + 0.38648 * cp
+        };
+        let c20 = 1.0 + 0.015 * self.c_stern;
+        // `1 − Cp1` divides, so it is floored: a hull with a large |lcb| or a
+        // high Cp pushes Cp1 towards 1 and the unguarded formula to absurd
+        // wake fractions (the demo hull, lcb −9.9 %, returned w = 525).
+        let cp1 = (1.45 * cp - 0.315 - 0.0225 * lcb).clamp(-1.0, 0.95);
+        let wake = (c9 * cv * (cv * self.length_wl / ta).sqrt()
+            * (0.050776 + 0.93405 * c11 * cv / (1.0 - cp1)).max(0.0)
+            + 0.27915 * c20 * (b / (self.length_wl * (1.0 - cp1)).max(1e-6)).sqrt()
+            + c19 * c20)
+            .max(0.0);
+        let thrust = 0.25014 * (b / self.length_wl).powf(0.28956)
+            * ((b * ta).sqrt() / d).powf(0.2624)
+            / (1.0 - cp + 0.0225 * lcb).max(1e-6).powf(0.01762)
+            + 0.0015 * self.c_stern;
+        let etar = 0.9922 - 0.05908 * propeller.expanded_area_ratio
+            + 0.07424 * (cp - 0.0225 * lcb);
+        let eta_h = (1.0 - thrust) / (1.0 - wake).max(1e-6);
+        let plausible = (0.02..=0.60).contains(&wake)
+            && (0.0..=0.60).contains(&thrust)
+            && lcb.abs() <= 6.0;
+        Propulsion {
+            plausible,
+            wake_fraction: wake,
+            thrust_deduction: thrust,
+            relative_rotative: etar,
+            hull_efficiency: eta_h,
+            open_water_efficiency: propeller.open_water_efficiency,
+            propulsive_coefficient: eta_h * etar * propeller.open_water_efficiency,
+            cv,
+        }
+    }
+}
+
 /// One speed's resistance breakdown, all forces in newtons.
 #[derive(Debug, Clone, Serialize)]
 pub struct Resistance {
@@ -218,6 +340,9 @@ pub struct Resistance {
     pub rb_n: f64,
     pub rtr_n: f64,
     pub ra_n: f64,
+    /// `CV = (1+k1)·CF + CA`, the viscous coefficient a wake-fraction estimate
+    /// is built on.
+    pub viscous_coefficient: f64,
     /// Which wave-resistance branch this speed used.
     pub wave_branch: WaveBranch,
     /// Total still-water resistance.
@@ -476,6 +601,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
 
     let rt = rf * form_factor + rapp + rw + rb + rtr + ra;
     Resistance {
+        viscous_coefficient: form_factor * cf + ca,
         wave_branch: wave_coefficients(input, fn_).branch,
         speed_kn: v / KNOT,
         speed_m_s: v,
@@ -531,6 +657,7 @@ mod tests {
             appendage_factor: 1.5,
             water_density: 1025.0,
             viscosity: VISCOSITY_SEA_WATER,
+            viscous_coefficient: 0.0020,
         }
     }
 
@@ -710,6 +837,7 @@ mod tests {
             appendage_factor: 1.5,
             water_density: 1025.0,
             viscosity: VISCOSITY_SEA_WATER,
+            viscous_coefficient: 0.0,
         };
         let r = holtrop(&i, 25.0 * KNOT);
         let w = wave_coefficients(&i, r.fn_);
@@ -813,6 +941,77 @@ mod tests {
         assert!(w.c17 > 0.0 && w.c17.is_finite(), "c17 {}", w.c17);
         assert!(w.m3 < 0.0, "m3 {}", w.m3);
         assert!(wave_resistance(&i, 0.60).is_finite());
+    }
+
+
+    #[test]
+    fn relative_rotative_efficiency_matches_the_paper() {
+        // The paper's example prints ηR = 0.9931 for a 4-blade propeller; its
+        // expanded area ratio is not printed, but inverting the formula gives
+        // AE/A0 = 0.775, and that value reproduces the printed number exactly.
+        let mut i = sample();
+        i.length_wl = 205.0;
+        i.beam_wl = 32.0;
+        i.draft = 10.0;
+        i.volume_m3 = 37500.0;
+        i.cp = 0.5833;
+        i.cm = 0.98;
+        i.lcb_pct = -2.02;
+        let prop = Propeller { diameter_m: 8.0, expanded_area_ratio: 0.775, open_water_efficiency: 0.60 };
+        let p = i.propulsion(&prop);
+        assert!(
+            (p.relative_rotative - 0.9931).abs() < 5e-4,
+            "etaR {:.4} against the paper's 0.9931",
+            p.relative_rotative
+        );
+        // And the chain closes: ηD = ηH · ηR · ηO with ηH = (1−t)/(1−w).
+        assert!((p.hull_efficiency - (1.0 - p.thrust_deduction) / (1.0 - p.wake_fraction)).abs() < 1e-12);
+        assert!((p.propulsive_coefficient - p.hull_efficiency * p.relative_rotative * 0.60).abs() < 1e-12);
+    }
+
+    #[test]
+    fn propulsion_factors_stay_physical_and_move_the_right_way() {
+        let mut i = sample();
+        i.viscous_coefficient = 0.0021;
+        let prop = Propeller { diameter_m: 5.0, expanded_area_ratio: 0.70, open_water_efficiency: 0.55 };
+        let base = i.propulsion(&prop);
+        assert!(
+            base.wake_fraction > 0.10 && base.wake_fraction < 0.45,
+            "w {}",
+            base.wake_fraction
+        );
+        assert!(
+            base.thrust_deduction > 0.05 && base.thrust_deduction < 0.40,
+            "t {}",
+            base.thrust_deduction
+        );
+        assert!(base.hull_efficiency > 0.8 && base.hull_efficiency < 1.5, "ηH {}", base.hull_efficiency);
+
+        // A beamier hull at the same length drags more water: more wake.
+        let mut wide = i.clone();
+        wide.beam_wl *= 1.3;
+        assert!(
+            wide.propulsion(&prop).wake_fraction > base.wake_fraction,
+            "wake must grow with beam"
+        );
+        // A fuller hull (higher Cp) has *more* thrust deduction: the coefficient
+        // divides by (1 − Cp + 0.0225·lcb)^0.01762, so the exponent is tiny but
+        // the direction is the physical one.
+        let mut full = i.clone();
+        full.cp += 0.06;
+        assert!(
+            full.propulsion(&prop).thrust_deduction > base.thrust_deduction,
+            "t must grow with Cp: {} vs {}",
+            full.propulsion(&prop).thrust_deduction,
+            base.thrust_deduction
+        );
+        // A degenerate propeller must not produce infinities.
+        let tiny = Propeller { diameter_m: 0.0, expanded_area_ratio: 0.0, open_water_efficiency: 0.0 };
+        let p = i.propulsion(&tiny);
+        for v in [p.wake_fraction, p.thrust_deduction, p.hull_efficiency, p.propulsive_coefficient] {
+            assert!(v.is_finite(), "{p:?}");
+        }
+        assert_eq!(p.propulsive_coefficient, 0.0, "no open-water efficiency, no power");
     }
 
     #[test]
