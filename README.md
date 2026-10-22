@@ -155,6 +155,16 @@ implementation is checked against the worked example the paper prints for a
 205 m ship: every coefficient and the wave, friction, correlation and appendage
 terms reproduce to better than 1 %.
 
+`topology` edits the control net without moving the surface (`seacraft edit`):
+`split_face` fans a face around its centroid, `insert_edge` joins two
+non-adjacent points of a face, and `set_crease` makes an edge hard through
+subdivision. Both splits are interior to a face, so every new edge keeps two
+adjacent faces — the net stays closed and manifold, and the tests assert it by
+counting faces per edge rather than by eye. On a planar face the geometry is
+untouched; on a curved quad the fan refines to a slightly different surface
+(0.04 % of displacement on the demo hull), which is a property of subdivision,
+not of the edit.
+
 `develop` flattens a hull patch into the sheet a plate would be cut from
 (`seacraft unfold`). The patch is selected as a simply connected plate — between
 two waterlines *and* two stations, or between two buttocks and two stations — and
@@ -260,6 +270,8 @@ seacraft resistance hull.fef [--speeds 6,8,10,12] [--draft T] [--cstern X]
                               [--appendage-area m2] [--bulb-area m2] [--csv out.csv] [--json]
 seacraft unfold    hull.fef [--axis x|y|z] [--from a] [--to b] [--x-from a] [--x-to b]
                               [--both-sides] [-o plate.svg] [--json]
+seacraft edit      hull.fef -o edited.fef [--split-face N]... [--insert-edge F,A,B]...
+                              [--crease A,B]... [--clear-crease A,B]... [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]

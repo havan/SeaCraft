@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    develop, offsets, raster, resistance, transform,
+    develop, offsets, raster, resistance, topology, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -53,6 +53,8 @@ enum Command {
     Resistance(ResistanceArgs),
     /// Developable plate expansion: flatten a strake or buttock band
     Unfold(UnfoldArgs),
+    /// Edit the control net: split faces, insert edges, toggle creases
+    Edit(EditArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -437,6 +439,30 @@ struct UnfoldArgs {
 }
 
 #[derive(Args, Debug)]
+struct EditArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output .fef path
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Split this face into a triangle fan around its centroid (repeatable)
+    #[arg(long = "split-face", value_name = "FACE")]
+    split_face: Vec<usize>,
+    /// Insert an edge between two points of a face, FACE,A,B (repeatable)
+    #[arg(long = "insert-edge", value_name = "FACE,A,B")]
+    insert_edge: Vec<String>,
+    /// Mark the edge between two points as a crease, A,B (repeatable)
+    #[arg(long = "crease", value_name = "A,B")]
+    crease: Vec<String>,
+    /// Clear the crease between two points, A,B (repeatable)
+    #[arg(long = "clear-crease", value_name = "A,B")]
+    clear_crease: Vec<String>,
+    /// Emit the report as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct StabilityArgs {
     file: PathBuf,
     /// Centre of gravity height above the keel
@@ -521,6 +547,7 @@ fn run() -> Result<()> {
         Command::Transform(a) => cmd_transform(a),
         Command::Resistance(a) => cmd_resistance(a),
         Command::Unfold(a) => cmd_unfold(a),
+        Command::Edit(a) => cmd_edit(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -1266,6 +1293,104 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         );
     }
     println!("\n  effective power only: no propeller, wake fraction or thrust deduction.");
+    Ok(())
+}
+
+fn parse_pair(text: &str, key: &str) -> Result<(usize, usize)> {
+    let parts: Vec<&str> = text.split(',').map(|t| t.trim()).collect();
+    if parts.len() != 2 {
+        bail!("{key} takes two point indices, A,B");
+    }
+    let a: usize = parts[0].parse().with_context(|| format!("{key}: `{}` is not an index", parts[0]))?;
+    let b: usize = parts[1].parse().with_context(|| format!("{key}: `{}` is not an index", parts[1]))?;
+    Ok((a, b))
+}
+
+fn parse_triple_indices(text: &str, key: &str) -> Result<(usize, usize, usize)> {
+    let parts: Vec<&str> = text.split(',').map(|t| t.trim()).collect();
+    if parts.len() != 3 {
+        bail!("{key} takes FACE,A,B");
+    }
+    let mut out = [0usize; 3];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = p.parse().with_context(|| format!("{key}: `{p}` is not an index"))?;
+    }
+    Ok((out[0], out[1], out[2]))
+}
+
+fn cmd_edit(a: EditArgs) -> Result<()> {
+    let mut s = load(&a.file)?;
+    let faces_before = s.faces.len();
+    let points_before = s.points.len();
+    let creases_before = s.edges.iter().filter(|e| e.crease).count();
+    let mut splits = Vec::new();
+
+    // Documented order: splits, then inserted edges, then crease toggles. A
+    // split keeps the face's index, so an `--insert-edge` naming that face
+    // afterwards refers to the first triangle of the fan.
+    for &face in &a.split_face {
+        let r = topology::split_face(&mut s, face).map_err(|e| anyhow::anyhow!("--split-face: {e}"))?;
+        splits.push(r);
+    }
+    for text in &a.insert_edge {
+        let (face, x, y) = parse_triple_indices(text, "--insert-edge")?;
+        topology::insert_edge(&mut s, face, x, y)
+            .map_err(|e| anyhow::anyhow!("--insert-edge {text}: {e}"))?;
+    }
+    for text in &a.crease {
+        let (x, y) = parse_pair(text, "--crease")?;
+        topology::set_crease(&mut s, x, y, true).map_err(|e| anyhow::anyhow!("--crease {text}: {e}"))?;
+    }
+    for text in &a.clear_crease {
+        let (x, y) = parse_pair(text, "--clear-crease")?;
+        topology::set_crease(&mut s, x, y, false)
+            .map_err(|e| anyhow::anyhow!("--clear-crease {text}: {e}"))?;
+    }
+
+    if a.split_face.is_empty()
+        && a.insert_edge.is_empty()
+        && a.crease.is_empty()
+        && a.clear_crease.is_empty()
+    {
+        bail!("nothing to do: give --split-face, --insert-edge, --crease or --clear-crease");
+    }
+    s.validate().map_err(|e| anyhow::anyhow!("the edited model does not validate: {e}"))?;
+    std::fs::write(&a.output, fef::write(&s))
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+
+    let creases_after = s.edges.iter().filter(|e| e.crease).count();
+    if a.json {
+        let body = serde_json::json!({
+            "output": a.output.display().to_string(),
+            "splits": splits,
+            "faces_before": faces_before,
+            "faces_after": s.faces.len(),
+            "points_before": points_before,
+            "points_after": s.points.len(),
+            "creases_before": creases_before,
+            "creases_after": creases_after,
+            "valid": true,
+        });
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    for r in &splits {
+        println!(
+            "  split face {} into {} triangles around new point {}",
+            r.face, r.pieces, r.point
+        );
+    }
+    println!(
+        "  faces {} -> {}, points {} -> {}, creases {} -> {}",
+        faces_before,
+        s.faces.len(),
+        points_before,
+        s.points.len(),
+        creases_before,
+        creases_after
+    );
+    println!("  validates: closed and manifold");
+    println!("wrote {}", a.output.display());
     Ok(())
 }
 

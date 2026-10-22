@@ -39,6 +39,7 @@ pub mod resistance;
 pub mod stability;
 pub mod subdiv;
 pub mod threemf;
+pub mod topology;
 pub mod transform;
 
 pub use analysis::AnalysisMode;
