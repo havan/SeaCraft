@@ -37,6 +37,7 @@ pub mod raster;
 pub mod stability;
 pub mod subdiv;
 pub mod threemf;
+pub mod transform;
 
 pub use analysis::AnalysisMode;
 pub use hydro::{HydroOptions, Hydrostatics};

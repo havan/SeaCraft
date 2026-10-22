@@ -133,6 +133,14 @@ prismatic coefficient from the section-area curve. Both curves plot to
 standalone SVG with no external dependency, and both are cut from the same
 refined mesh and clipping path as the hydrostatics.
 
+`transform::fit_to_targets` rescales the control net to a target waterline
+length, beam and draft (`seacraft transform`), and `transform::apply` /
+`transform::mirror` translate or reflect it. The scale is anchored at the aft
+end, the centreline and the keel, so a stretched hull keeps its transom, its
+symmetry and its ground line; a mirror reverses every face's winding, because a
+reflection would otherwise turn the outward normals inward and measure the
+displacement negative.
+
 `offsets::table_of_offsets` produces the drawing-office table — half-breadths
 at stations x waterlines and buttock heights at stations x buttocks — as a
 terminal table, long-format CSV, JSON or a standalone HTML page
@@ -221,6 +229,8 @@ seacraft bonjean   hull.fef [--stations N] [--drafts T1,T2,...] [--draft-steps N
                               [--csv out.csv] [--svg bonjean.svg] [--json]
 seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks y1,y2,...]
                               [--csv out.csv] [--html offsets.html] [--json]
+seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
+                              [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]

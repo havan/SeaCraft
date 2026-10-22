@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    offsets, raster,
+    offsets, raster, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -47,6 +47,8 @@ enum Command {
     Bonjean(BonjeanArgs),
     /// Table of offsets: half-breadths at stations x waterlines, plus buttocks
     Offsets(OffsetsArgs),
+    /// Scale to target main dimensions, translate or mirror the control net
+    Transform(TransformArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -317,6 +319,49 @@ struct OffsetsArgs {
 }
 
 #[derive(Args, Debug)]
+struct TransformArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output .fef path
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Target waterline length in metres
+    #[arg(long)]
+    lwl: Option<f64>,
+    /// Target waterline beam in metres
+    #[arg(long)]
+    bwl: Option<f64>,
+    /// Target draft in metres (above the keel)
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Extra scale factors, x,y,z (applied after the target fit)
+    #[arg(long)]
+    scale: Option<String>,
+    /// Translation in metres, dx,dy,dz
+    #[arg(long)]
+    translate: Option<String>,
+    /// Reflect in x, y or z
+    #[arg(long, value_enum)]
+    mirror: Option<MirrorArg>,
+    /// Subdivision level (0 = control net, max 6)
+    #[arg(long, default_value_t = 3)]
+    level: u8,
+    /// Use Catmull-Clark instead of the FREE!ship default Loop scheme
+    #[arg(long)]
+    catmull_clark: bool,
+    /// Emit the report as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum MirrorArg {
+    X,
+    Y,
+    Z,
+}
+
+#[derive(Args, Debug)]
 struct StabilityArgs {
     file: PathBuf,
     /// Centre of gravity height above the keel
@@ -398,6 +443,7 @@ fn run() -> Result<()> {
         Command::Sac(a) => cmd_sac(a),
         Command::Bonjean(a) => cmd_bonjean(a),
         Command::Offsets(a) => cmd_offsets(a),
+        Command::Transform(a) => cmd_transform(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -941,6 +987,109 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         "- means the section does not reach that ordinate; widest half-breadth {:.3} m",
         table.max_half_breadth()
     );
+    Ok(())
+}
+
+fn parse_triple(text: &str, key: &str) -> Result<Vec3> {
+    let parts: Vec<f64> = text
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<f64>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("{key} must be three comma-separated numbers"))?;
+    if parts.len() != 3 {
+        bail!("{key} must be three comma-separated numbers, got {}", parts.len());
+    }
+    Ok(Vec3::new(parts[0], parts[1], parts[2]))
+}
+
+fn cmd_transform(a: TransformArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions {
+        level: a.level,
+        mode: if a.catmull_clark { SubdivisionMode::CatmullClark } else { SubdivisionMode::Loop },
+    };
+    let targets = transform::Targets { lwl: a.lwl, bwl: a.bwl, draft: a.draft };
+    let scale = a.scale.as_deref().map(|t| parse_triple(t, "--scale")).transpose()?;
+    let translate = a
+        .translate
+        .as_deref()
+        .map(|t| parse_triple(t, "--translate"))
+        .transpose()?
+        .unwrap_or(Vec3::ZERO);
+    if targets.is_empty() && scale.is_none() && translate == Vec3::ZERO && a.mirror.is_none() {
+        bail!("nothing to do: give --lwl/--bwl/--draft, --scale, --translate or --mirror");
+    }
+
+    // Measure the input once; every later number is compared against it.
+    let before = transform::MainDimensions::measure(&s, subdiv);
+
+    let (mut out, fit) = if targets.is_empty() {
+        (s.clone(), None)
+    } else {
+        let (fitted, report) = transform::fit_to_targets(&s, targets, subdiv, 1e-3, 4)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        (fitted, Some(report))
+    };
+    if let Some(scale) = scale {
+        transform::apply(&mut out, scale, Vec3::ZERO)
+            .map_err(|e| anyhow::anyhow!("--scale: {e}"))?;
+    }
+    if translate != Vec3::ZERO {
+        transform::apply(&mut out, Vec3::new(1.0, 1.0, 1.0), translate)
+            .map_err(|e| anyhow::anyhow!("--translate: {e}"))?;
+    }
+    if let Some(axis) = a.mirror {
+        let axis = match axis {
+            MirrorArg::X => transform::Axis::X,
+            MirrorArg::Y => transform::Axis::Y,
+            MirrorArg::Z => transform::Axis::Z,
+        };
+        transform::mirror(&mut out, axis).map_err(|e| anyhow::anyhow!("--mirror: {e}"))?;
+    }
+
+    let after = transform::MainDimensions::measure(&out, subdiv);
+    std::fs::write(&a.output, fef::write(&out))
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+
+    if a.json {
+        let body = serde_json::json!({
+            "output": a.output.display().to_string(),
+            "fit": fit,
+            "before": before,
+            "after": after,
+            "settings": {
+                "length": out.settings.length,
+                "beam": out.settings.beam,
+                "draft": out.settings.draft,
+                "mainframe_location": out.settings.mainframe_location,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    let line = |label: &str, d: Option<transform::MainDimensions>| match d {
+        Some(d) => println!(
+            "  {label:<7} LWL {:7.3}  BWL {:6.3}  T {:5.3}  V {:8.3} m3",
+            d.lwl, d.bwl, d.draft, d.volume_m3
+        ),
+        None => println!("  {label:<7} (no waterline: draft is zero)"),
+    };
+    println!("{}", s.settings.name);
+    line("before", before);
+    line("after", after);
+    if let Some(f) = &fit {
+        println!(
+            "  fit      {} iteration(s), scale {:.4} x {:.4} x {:.4}, residual {:.3} %",
+            f.iterations,
+            f.scale.x,
+            f.scale.y,
+            f.scale.z,
+            f.max_error * 100.0
+        );
+    }
+    println!("wrote {}", a.output.display());
     Ok(())
 }
 
