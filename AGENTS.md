@@ -54,17 +54,22 @@ crates/seacraft-core/
   src/fef.rs                .fef parse/write (format documented in file header)
   src/hydro.rs              Hull, waterplane, clipping, integration, sections,
                             waterline chaining, coefficients
-  src/stability.rs          draft solving by bisection + KN/GZ cross curves
-  src/linesplan.rs          stations/buttocks/waterlines -> three-view SVG/DXF
+  src/stability.rs          draft/trim solving + KN/GZ cross curves + IMO A.749
+  src/linesplan.rs          stations/buttocks/waterlines -> SVG/DXF/IGES + combs
   src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
+  src/iges.rs               IGES 5.3 B-spline curve (126) + surface (128) writer
+  src/threemf.rs            spatial-grid vertex welding + 3MF 1.3 archive writer
   src/analysis.rs           vertex normals, discrete curvature, zebra/draft/curvature
-  src/raster.rs             CPU z-buffer rasterizer, 2x SSAA, PNG encoder
-  src/export.rs             OBJ (y- or z-up), binary STL, ASCII PLY, HTML viewer
+  src/raster.rs             CPU z-buffer rasterizer, 2x SSAA, waterplane depth, PNG
+  src/export.rs             OBJ (y- or z-up), binary STL, 3MF, PLY, IGES, HTML viewer
   src/demo.rs               parametric 12 m demo hull, full and half model
-crates/seacraft-cli/src/main.rs   clap front end, table/JSON/CSV output
+crates/seacraft-cli/
+  src/main.rs               clap front end, table/JSON/CSV output
+  src/mcp.rs                JSON-RPC 2.0 MCP server over stdio (headless + --connect)
 crates/seacraft-gui/
-  src/main.rs               eframe bootstrap, `--open FILE`
+  src/main.rs               eframe bootstrap, `--open FILE`, `--control HOST:PORT`
   src/app.rs                App state, menus, file actions, dock wiring
+  src/control.rs            loopback TCP JSON-lines control channel
   src/camera.rs             ViewKind, Camera, ViewTransform, Ray
   src/render.rs             viewport painter: grid, shading, control net
   src/picking.rs            screen-space picking, drag plane

@@ -1,8 +1,10 @@
-//! Mesh and report export: OBJ, STL, PLY and a self contained HTML viewer.
+//! Mesh and report export: OBJ, STL, PLY, 3MF, an IGES surface patch and a
+//! self contained HTML viewer.
 
+use crate::linesplan::{LinesplanCurves3d, LinesplanOptions};
 use crate::math::Vec3;
 use crate::mesh::Surface;
-use crate::subdiv::{evaluate, SubdivisionOptions};
+use crate::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +176,153 @@ pub fn ply(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode) -
     out
 }
 
+/// IGES 5.3 file of B-spline surface patches (entity 128) lofted through the
+/// hull's station curves.
+///
+/// A subdivided hull has no rectangular parametrisation of its own, so the
+/// patches are built from the linesplan's station cuts — the same cuts that
+/// draw the body plan. Every station plane is split at the centreline into its
+/// starboard (`y >= 0`) and port (`y <= 0`) halves, each half is resampled to
+/// 25 points from keel to deck, and the rows, sorted by station position `x`,
+/// are interpolated with a bicubic patch per side. Measured in metres, written
+/// with the IGES metre unit code (6), like `linesplan::iges`.
+///
+/// A station whose section is too flat to resample is left out, and so is a
+/// second curve in the same plane (a section cut in two by a deck opening);
+/// with fewer than two stations left the file carries no entity at all. So are
+/// the planes at the model's own ends, which lie in the transom and the stem
+/// faces — the cut there is a fan of fragments, not a section.
+pub fn iges_surface(surface: &Surface, level: u8, mode: SubdivisionMode) -> String {
+    // 25 girth points per station: enough to carry a bilge radius around, few
+    // enough to keep the parameter data readable.
+    const COLUMNS: usize = 25;
+    let curves = crate::linesplan::curves_3d(surface, LinesplanOptions { level, mode, ..Default::default() });
+    let (min, max) = surface.extents();
+    let tol = ((max.x - min.x).max(max.y - min.y).max(max.z - min.z)).max(0.1) * 1e-6;
+    let mut patches: Vec<(&str, crate::iges::BsplineSurface)> = Vec::new();
+    for (label, starboard) in [("STBD", true), ("PORT", false)] {
+        let grid = station_grid(&curves, starboard, COLUMNS, tol);
+        if let Some(patch) = crate::iges::fit_surface(&grid, 3, 3) {
+            patches.push((label, patch));
+        }
+    }
+    let patches: Vec<(&str, &crate::iges::BsplineSurface)> =
+        patches.iter().map(|(label, patch)| (*label, patch)).collect();
+    crate::iges::write_iges_surfaces(&surface.settings.name, &patches, 6)
+}
+
+/// The station sections of one side as a `stations × columns` grid of points,
+/// with the rows sorted by station position `x`.
+fn station_grid(curves: &LinesplanCurves3d, starboard: bool, columns: usize, tol: f64) -> Vec<Vec<Vec3>> {
+    // The planes at the extreme `x` of the mesh lie *in* its end faces (the
+    // transom and the stem). There the cut is not a section at all but every
+    // in-plane edge of those faces, which arrives as a fan of degenerate
+    // fragments; and a plane that touches the mesh's own bounding plane cannot
+    // cross a face transversally anyway. Such a station is no loft column.
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for station in &curves.stations {
+        for point in &station.points {
+            lo = lo.min(point.x);
+            hi = hi.max(point.x);
+        }
+    }
+    let mut rows: Vec<(f64, Vec<Vec3>)> = Vec::new();
+    for station in &curves.stations {
+        if station.points.is_empty() {
+            continue;
+        }
+        let x = station.points.iter().map(|p| p.x).sum::<f64>() / station.points.len() as f64;
+        if x <= lo + tol || x >= hi - tol {
+            continue;
+        }
+        let branch = side_branch(&station.points, starboard);
+        if branch.len() < 2 {
+            continue;
+        }
+        let Some(sampled) = resample(&branch, columns) else {
+            continue;
+        };
+        // A grazing cut can leave a sliver whose collocation system is
+        // numerically singular.
+        if arc_length(&sampled) <= tol {
+            continue;
+        }
+        rows.push((x, sampled));
+    }
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Two curves in the same plane would put two equal parameters in the grid,
+    // which makes the collocation system singular: keep the longer section.
+    let mut out: Vec<Vec<Vec3>> = Vec::with_capacity(rows.len());
+    let mut last_x = f64::NEG_INFINITY;
+    for (x, row) in rows {
+        if x - last_x <= tol {
+            if out.last().is_some_and(|previous| arc_length(&row) > arc_length(previous)) {
+                out.pop();
+                out.push(row);
+            }
+            continue;
+        }
+        last_x = x;
+        out.push(row);
+    }
+    out
+}
+
+/// The half of a station section on one side of the centreline, ordered from
+/// keel to deck.
+///
+/// A cut of the mirrored hull runs around the whole girth, so the two halves
+/// are separated before they are lofted: starboard is every point with
+/// `y >= 0`, port every point with `y <= 0`, a micrometre of slack being what
+/// puts the centreline point into both (which is where the two patches meet).
+/// Ordering by height, rather than by the order the chain walk produced, which
+/// wraps around a closed section, puts the keel first and the sheer last on
+/// both sides.
+fn side_branch(points: &[Vec3], starboard: bool) -> Vec<Vec3> {
+    const EPS: f64 = 1e-6;
+    let mut branch: Vec<Vec3> = points
+        .iter()
+        .filter(|p| if starboard { p.y >= -EPS } else { p.y <= EPS })
+        .copied()
+        .collect();
+    branch.sort_by(|a, b| a.z.total_cmp(&b.z));
+    branch.dedup_by(|a, b| a.dist(*b) < 1e-12);
+    branch
+}
+
+/// The length of an ordered polyline.
+fn arc_length(points: &[Vec3]) -> f64 {
+    points.windows(2).map(|w| w[0].dist(w[1])).sum()
+}
+
+/// Resample an ordered polyline to exactly `count` points, equally spaced by
+/// arc length. `None` when the polyline has no length to walk.
+fn resample(points: &[Vec3], count: usize) -> Option<Vec<Vec3>> {
+    let total = arc_length(points);
+    if count < 2 || points.len() < 2 || total <= 1e-12 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count);
+    let mut segment = 0usize;
+    let mut walked = 0.0;
+    for k in 0..count {
+        let target = total * k as f64 / (count - 1) as f64;
+        while segment + 2 < points.len() {
+            let length = points[segment + 1].dist(points[segment]);
+            if walked + length >= target {
+                break;
+            }
+            walked += length;
+            segment += 1;
+        }
+        let length = points[segment + 1].dist(points[segment]);
+        let t = if length > 0.0 { ((target - walked) / length).clamp(0.0, 1.0) } else { 0.0 };
+        out.push(points[segment].lerp(points[segment + 1], t));
+    }
+    Some(out)
+}
+
 /// A self contained three.js viewer (three.js is pulled from a CDN, the model
 /// data is embedded so the file works without any other asset).
 pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode) -> String {
@@ -258,4 +407,74 @@ pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
 
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The parameter data of every parameter record, joined the way a reader
+    /// joins it: the 64 data columns of consecutive lines, concatenated.
+    fn parameter_data(text: &str) -> String {
+        let mut joined = String::new();
+        for line in text.lines().filter(|l| l.chars().nth(72) == Some('P')) {
+            joined.push_str(line[..64].trim_end());
+        }
+        joined
+    }
+
+    #[test]
+    fn iges_surface_export_writes_a_patch_per_side_of_the_hull() {
+        // The symmetric half model is the usual case: the station cuts only
+        // close around the girth once the layer has been mirrored.
+        let hull = crate::demo::demo_hull(true);
+        let text = iges_surface(&hull, 3, SubdivisionMode::Loop);
+        for line in text.lines() {
+            assert_eq!(line.chars().count(), 80, "not 80 columns: {line:?}");
+        }
+
+        // Two patches — one per side of the centreline — two directory records
+        // and one parameter block each.
+        let d: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('D')).collect();
+        assert_eq!(d.len(), 4, "two patches, two directory records each");
+        for record in &d {
+            assert_eq!(&record[0..8].trim(), &"128", "every entity is a B-spline surface");
+        }
+        let labels: Vec<String> = d.chunks(2).map(|pair| pair[1][56..64].trim().to_owned()).collect();
+        assert_eq!(labels, vec!["STBD".to_owned(), "PORT".to_owned()]);
+        let p: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('P')).collect();
+        assert!(p[0].starts_with("128,"), "{:?}", &p[0][..16]);
+        let first_pd: usize = d[0][8..16].trim().parse().unwrap();
+        let pd_count: usize = d[1][24..32].trim().parse().unwrap();
+        assert_eq!(first_pd, 1);
+        assert!(pd_count > 0 && pd_count < p.len(), "each entity owns a block of records");
+
+        // The sections the patches were built from: one row per usable station,
+        // 25 girth points each, sorted from the after end forward.
+        let curves = crate::linesplan::curves_3d(
+            &hull,
+            LinesplanOptions { level: 3, mode: SubdivisionMode::Loop, ..Default::default() },
+        );
+        let (min, max) = hull.extents();
+        let tol = ((max.x - min.x).max(max.y - min.y).max(max.z - min.z)).max(0.1) * 1e-6;
+        let grid = station_grid(&curves, true, 25, tol);
+        assert!(grid.len() >= 2, "the demo hull has stations to loft through");
+        assert!(grid.iter().all(|row| row.len() == 25), "every row is 25 girth points");
+        assert!(grid.windows(2).all(|w| w[0][0].x < w[1][0].x), "rows sorted by x");
+        assert!(grid.iter().flatten().all(|p| p.y >= -1e-6 && p.x >= min.x - 1e-9 && p.x <= max.x + 1e-9));
+
+        // Interpolation is exact at the grid, so the file carries the hull's own
+        // corner points: the after keel point and the fore sheer point of each
+        // patch are in its parameter data.
+        let joined = parameter_data(&text);
+        let numbers: Vec<f64> = joined.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        for corner in [grid[0][0], grid[grid.len() - 1][24]] {
+            for v in [corner.x, corner.y, corner.z] {
+                assert!(
+                    numbers.iter().any(|n| (n - v).abs() < 1e-9),
+                    "coordinate {v} of {corner:?} is missing from the file"
+                );
+            }
+        }
+    }
 }

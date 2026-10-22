@@ -883,6 +883,7 @@ fn export_kind(format: &str) -> Option<crate::app::ExportKind> {
         "stl" => ExportKind::Stl,
         "3mf" => ExportKind::ThreeMf,
         "ply" => ExportKind::Ply,
+        "igs_surface" | "iges_surface" => ExportKind::HullIges,
         "html" => ExportKind::Html,
         "svg" => ExportKind::Linesplan,
         "dxf" => ExportKind::LinesplanDxf,

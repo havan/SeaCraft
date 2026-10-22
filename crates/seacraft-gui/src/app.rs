@@ -102,6 +102,7 @@ pub enum ExportKind {
     Stl,
     ThreeMf,
     Ply,
+    HullIges,
     Html,
     Linesplan,
     LinesplanDxf,
@@ -109,11 +110,12 @@ pub enum ExportKind {
 }
 
 impl ExportKind {
-    pub const ALL: [ExportKind; 8] = [
+    pub const ALL: [ExportKind; 9] = [
         ExportKind::Obj,
         ExportKind::Stl,
         ExportKind::ThreeMf,
         ExportKind::Ply,
+        ExportKind::HullIges,
         ExportKind::Html,
         ExportKind::Linesplan,
         ExportKind::LinesplanDxf,
@@ -126,6 +128,7 @@ impl ExportKind {
             ExportKind::Stl => "STL (binary)…",
             ExportKind::ThreeMf => "3MF (welded mesh)…",
             ExportKind::Ply => "PLY (ASCII)…",
+            ExportKind::HullIges => "Hull IGES (surfaces)…",
             ExportKind::Html => "HTML viewer…",
             ExportKind::Linesplan => "Linesplan SVG…",
             ExportKind::LinesplanDxf => "Linesplan DXF…",
@@ -139,6 +142,7 @@ impl ExportKind {
             ExportKind::Stl => "stl",
             ExportKind::ThreeMf => "3mf",
             ExportKind::Ply => "ply",
+            ExportKind::HullIges => "igs",
             ExportKind::Html => "html",
             ExportKind::Linesplan => "svg",
             ExportKind::LinesplanDxf => "dxf",
@@ -741,6 +745,9 @@ impl App {
                 std::fs::write(path, export::threemf(surface, self.level, self.mode))
             }
             ExportKind::Ply => std::fs::write(path, export::ply(surface, self.level, self.mode)),
+            ExportKind::HullIges => {
+                std::fs::write(path, export::iges_surface(surface, self.level, self.mode))
+            }
             ExportKind::Html => std::fs::write(path, export::viewer_html(surface, self.level, self.mode)),
             ExportKind::Linesplan => std::fs::write(
                 path,
@@ -1154,7 +1161,10 @@ impl App {
 
     /// GZ cross curves for the current displacement and a spread around it.
     fn compute_curves(&mut self) {
-        if self.hydro.result.is_none() || self.hydro.hull_revision != self.revision {
+        if self.hydro.result.is_none()
+            || self.hydro.hull_revision != self.revision
+            || self.hydro_dirty
+        {
             self.refresh_hydro(true);
         }
         let Some(hull) = self.hydro.hull.take() else { return };

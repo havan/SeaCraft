@@ -196,7 +196,7 @@ struct HydroArgs {
 struct ExportArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Output file; the extension selects the format (.obj/.stl/.3mf/.ply/.html)
+    /// Output file; the extension selects the format (.obj/.stl/.3mf/.ply/.igs/.html)
     #[arg(short, long)]
     output: PathBuf,
     #[command(flatten)]
@@ -533,8 +533,12 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
         "stl" => export::stl(&s, a.subdiv.level, mode),
         "3mf" => export::threemf(&s, a.subdiv.level, mode),
         "ply" => export::ply(&s, a.subdiv.level, mode).into_bytes(),
+        "igs" | "iges" => export::iges_surface(&s, a.subdiv.level, mode).into_bytes(),
         "html" | "htm" => export::viewer_html(&s, a.subdiv.level, mode).into_bytes(),
-        other => bail!("unsupported output format '{}' (use .obj, .stl, .3mf, .ply or .html)", other),
+        other => bail!(
+            "unsupported output format '{}' (use .obj, .stl, .3mf, .ply, .igs or .html)",
+            other
+        ),
     };
     std::fs::write(&a.output, &data)
         .with_context(|| format!("cannot write {}", a.output.display()))?;

@@ -45,7 +45,7 @@ fn every_export_format_writes_a_plausible_file() {
             ExportKind::Linesplan => assert!(head.starts_with("<?xml"), "{head}"),
             ExportKind::LinesplanDxf => assert!(head.starts_with("  0\nSECTION"), "{head}"),
             // The Start section is free text; the Global section follows.
-            ExportKind::LinesplanIges => {
+            ExportKind::LinesplanIges | ExportKind::HullIges => {
                 assert!(head.starts_with("SeaCraft"), "{head}");
                 assert!(bytes.windows(2).any(|w| w == b"1H"), "no Global section");
             }

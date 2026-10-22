@@ -99,15 +99,17 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | Loop / Catmull–Clark refinement | `subdiv.rs` |
 | `.fef` import/export | `fef.rs` |
 | Panel hydrostatics, coefficients, SAC | `hydro.rs` |
-| Cross curves, `KN`/`GZ`, draft solving | `stability.rs` |
-|| Stations / buttocks / waterlines (SVG, DXF) | `linesplan.rs` |
-|| AutoCAD 2000 DXF writer | `dxf.rs` |
-|| Curvature, zebra and draft analysis | `analysis.rs` |
-|| CPU z-buffer rasterizer + PNG | `raster.rs` |
-| OBJ / STL / PLY / HTML viewer | `export.rs` |
-|| Parametric demo hull | `demo.rs` |
-|| Command-line front end | `crates/seacraft-cli` |
-|| Desktop modeller (four viewports, drag, docks) | `crates/seacraft-gui` |
+| Cross curves, `KN`/`GZ`, draft/trim solving, IMO A.749 | `stability.rs` |
+| Stations / buttocks / waterlines (SVG, DXF, IGES, 3D combs) | `linesplan.rs` |
+| AutoCAD 2000 DXF writer | `dxf.rs` |
+| IGES 5.3 B-spline curve (126) & surface (128) writer | `iges.rs` |
+| Watertight vertex welding + 3MF 1.3 archive writer | `threemf.rs` |
+| Curvature, zebra and draft analysis | `analysis.rs` |
+| CPU z-buffer rasterizer + waterplane depth + PNG | `raster.rs` |
+| OBJ / STL / 3MF / PLY / IGES / HTML viewer | `export.rs` |
+| Parametric demo hull | `demo.rs` |
+| Command-line front end + MCP stdio server (`seacraft mcp`) | `crates/seacraft-cli` |
+| Desktop modeller (4 viewports, drag, docks, `--control`) | `crates/seacraft-gui` |
 
 ### Modelling kernel
 
@@ -189,10 +191,11 @@ views. The writer is dependency-free; see `ATTRIBUTION.md`.
 5.3 rational B-spline curves (entity 126) in metres, so a receiving CAD package
 gets exact curves rather than polyline approximations. It has been verified with
 `gmsh`/Open Cascade: all 61 curves of the demo hull transfer, with non-zero
-lengths and the correct 1000× millimetre scale. Entity 128 (B-spline surface) is
-**not** written — a subdivided hull has no rectangular parametrisation, so a
-surface exporter needs a patch decomposition first. That is the one reason IGES
-output here is curve-only rather than a solid or shell.
+lengths and the correct 1000× millimetre scale. `export::iges_surface` (`seacraft
+export hull.fef -o hull.igs`) additionally fits bicubic tensor-product B-spline
+surfaces (entity 128) across the resampled starboard and port station curves,
+and `export::threemf` (`-o hull.3mf`) writes a welded, watertight 3MF 1.3
+archive in metres.
 
 ---
 
@@ -201,14 +204,15 @@ output here is curve-only rather than a solid or shell.
 ```text
 seacraft demo      -o hull.fef [--symmetric]
 seacraft info      hull.fef
-seacraft hydro     hull.fef [--draft T] [--trim m] [--heel deg] [--kg m] [--json]
+seacraft hydro     hull.fef [--draft T] [--trim m | --free-trim [--lcg x]] [--heel deg] [--kg m] [--json]
 seacraft sac       hull.fef [--stations N] [--csv out.csv]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
-seacraft linesplan hull.fef -o linesplan.svg|linesplan.dxf [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
-seacraft export    hull.fef -o hull.obj|.stl|.ply|.html [--level N] [--control]
+seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
+seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]
 seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
+seacraft mcp       [--open hull.fef] [--connect 127.0.0.1:PORT]
 ```
 
 Subdivision level defaults to 3; `--mode cc` selects pure Catmull–Clark.
@@ -281,14 +285,18 @@ cursor position on the active viewport's focal plane and the crate version.
   and audit-clean under `ezdxf`.
 * Zebra / curvature / draft analysis and a CPU z-buffer renderer with PNG
   output are implemented, in the CLI and in all four GUI viewports. Curvature
-  combs are drawn on the linesplan (`--combs`, SVG and DXF), not in the
-  viewports.
-* IGES export of the linesplan as entity-126 B-spline curves is implemented and
-  verified against Open Cascade; surfaces (entity 128) are out of scope.
+  combs are drawn both on the linesplan (`--combs`, SVG and DXF) and in the four
+  GUI viewports (View ▸ Curvature combs, or `seacraft-gui --combs`).
+* IGES export is implemented both for the linesplan as entity-126 B-spline
+  curves and for the lofted hull as entity-128 bicubic B-spline surface patches;
+  3MF export (`threemf.rs`) welds coincident vertices into a watertight mesh.
+* Programmatic automation is supported via `seacraft-gui --control 127.0.0.1:PORT`
+  (JSON lines over TCP, executed on the next frame) and `seacraft mcp` (JSON-RPC
+  2.0 Model Context Protocol over stdio, either headless or connected via
+  `--connect 127.0.0.1:PORT`).
 * Not yet implemented: developability/unfolding, Lackenby
-  transformation, resistance and propulsion prediction, VRML import, a
-  loopback control socket for automated GUI driving, and adding/deleting
-  control points or edges.
+  transformation, resistance and propulsion prediction (Holtrop–Mennen / Savitsky),
+  VRML import, and interactive face/edge splitting or extrusion in the GUI.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.
 

@@ -78,6 +78,17 @@ Spatial-grid vertex welding (`weld`) and 3MF 1.3 package structure
 (`[Content_Types].xml`, `_rels/.rels`, `3D/3dmodel.model`), written in metres
 through a zero-dependency stored-ZIP writer with IEEE 802.3 CRC-32.
 
+## `crates/seacraft-core/src/iges.rs` (B-spline surface fit, entity 128)
+
+* **Source:** `solidcore/crates/solidcore/src/nurbs/srf_fit.rs`
+* **Project:** [solidcore](https://github.com/tangency-labs/solidcore) (Tangency Labs)
+* **Licence:** MIT OR Apache-2.0
+* **Copyright:** Tangency Labs and the solidcore contributors
+
+Tensor-product B-spline surface interpolation (`fit_surface` / `interpolate_grid`:
+averaged chord-length parameters, averaging knot vectors, and sequential `u`/`v`
+collocation solves) for exporting lofted hull patches as IGES 5.3 entity 128.
+
 ## `crates/seacraft-gui/src/control.rs` and `crates/seacraft-cli/src/mcp.rs`
 
 * **Source:** `fieldcraft/crates/ui-egui/src/control.rs` and
