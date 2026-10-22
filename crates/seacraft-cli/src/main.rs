@@ -9,7 +9,7 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
-    analysis::AnalysisMode, demo, export, fef, linesplan, math::Vec3, mesh::Surface, raster,
+    analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface, raster,
 };
 use std::path::{Path, PathBuf};
 
@@ -42,6 +42,8 @@ enum Command {
     Subdiv(SubdivArgs),
     /// Section area curve
     Sac(SacArgs),
+    /// Bonjean curves: section area against draft at each station
+    Bonjean(BonjeanArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -242,6 +244,40 @@ struct SacArgs {
     /// Write CSV to this path (otherwise print a table)
     #[arg(long)]
     csv: Option<PathBuf>,
+    /// Write the plotted curve to this SVG path
+    #[arg(long)]
+    svg: Option<PathBuf>,
+    /// Emit the curve as JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
+struct BonjeanArgs {
+    file: PathBuf,
+    /// Number of stations, end points included
+    #[arg(long, default_value_t = 21)]
+    stations: usize,
+    /// Drafts in metres, comma separated (default: depth/10 … depth)
+    #[arg(long)]
+    drafts: Option<String>,
+    /// Number of drafts in the default range
+    #[arg(long, default_value_t = 10)]
+    draft_steps: usize,
+    /// Design draft used for the header and coefficients
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Write the long-format table (x,draft,area_m2) to this CSV path
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Write the plotted curves to this SVG path
+    #[arg(long)]
+    svg: Option<PathBuf>,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
 }
@@ -326,6 +362,7 @@ fn run() -> Result<()> {
         Command::Export(a) => cmd_export(a),
         Command::Subdiv(a) => cmd_subdiv(a),
         Command::Sac(a) => cmd_sac(a),
+        Command::Bonjean(a) => cmd_bonjean(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -612,6 +649,30 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
         bail!("draft must be positive (use --draft)");
     }
     let result = hydro::compute(&s, &opts);
+    if let Some(path) = &a.svg {
+        let title = format!("{} - sectional area curve, T = {:.3} m", s.settings.name, opts.draft);
+        std::fs::write(path, curves::sac_svg(&result.sac, &title))
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
+    if a.json {
+        let cp = curves::prismatic_from_sac(&result.sac);
+        let span = result
+            .sac
+            .last()
+            .zip(result.sac.first())
+            .map(|(b, a)| b.x - a.x)
+            .unwrap_or(0.0);
+        let body = serde_json::json!({
+            "draft": opts.draft,
+            "length": span,
+            "area_max": result.sac.iter().map(|p| p.area).fold(0.0_f64, f64::max),
+            "prismatic_coefficient": cp,
+            "stations": result.sac,
+        });
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
     match a.csv {
         Some(path) => {
             let mut text = String::from("x,area_m2\n");
@@ -629,6 +690,103 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn parse_drafts(text: &str) -> Result<Vec<f64>> {
+    let mut drafts: Vec<f64> = text
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<f64>())
+        .collect::<std::result::Result<_, _>>()
+        .with_context(|| format!("invalid draft list '{text}'"))?;
+    drafts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if drafts.len() < 2 {
+        bail!("at least two drafts are needed for a Bonjean family");
+    }
+    if drafts[0] <= 0.0 {
+        bail!("drafts must be positive");
+    }
+    Ok(drafts)
+}
+
+fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let mut opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+    );
+    if let Some(d) = a.draft {
+        opts.draft = d;
+    }
+    let hull = seacraft_core::hydro::Hull::new(&s, opts.subdivision);
+    let depth = hull.model_max.z - hull.keel;
+    let drafts = match &a.drafts {
+        Some(text) => parse_drafts(text)?,
+        None => {
+            if depth <= 0.0 {
+                bail!("hull has no height above the keel; pass --drafts");
+            }
+            curves::draft_range(depth / a.draft_steps.max(2) as f64, depth, a.draft_steps)
+        }
+    };
+    let bonjean = curves::bonjean(&hull, a.stations, &drafts);
+
+    if let Some(path) = &a.svg {
+        let title = format!(
+            "{} - Bonjean curves ({} stations, design draft {:.3} m)",
+            s.settings.name,
+            bonjean.sections.len(),
+            opts.draft
+        );
+        std::fs::write(path, curves::bonjean_svg(&bonjean, &title))
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
+    if let Some(path) = &a.csv {
+        let mut text = String::from("x,draft_m,area_m2\n");
+        for sec in &bonjean.sections {
+            for (i, &d) in bonjean.drafts_m.iter().enumerate() {
+                text.push_str(&format!("{:.4},{:.4},{:.6}\n", sec.x, d, sec.areas_m2[i]));
+            }
+        }
+        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {} ({} stations)", path.display(), bonjean.sections.len());
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&bonjean)?);
+        return Ok(());
+    }
+    if a.csv.is_some() || a.svg.is_some() {
+        // Files were requested: a short confirmation is enough.
+        println!(
+            "{} stations x {} drafts, max area {:.3} m², hull depth {:.3} m",
+            bonjean.sections.len(),
+            bonjean.drafts_m.len(),
+            bonjean.max_area(),
+            depth
+        );
+        return Ok(());
+    }
+
+    // Terminal table: one row per station, one column per draft.
+    print!("{:>8}", "x [m]");
+    for d in &bonjean.drafts_m {
+        print!("{:>8}", format!("{d:.2}"));
+    }
+    println!();
+    for sec in &bonjean.sections {
+        print!("{:>8.3}", sec.x);
+        for area in &sec.areas_m2 {
+            print!("{:>8.3}", area);
+        }
+        println!();
+    }
+    println!(
+        "draft [m] across the columns; max area {:.3} m² at the deepest draft",
+        bonjean.max_area()
+    );
     Ok(())
 }
 

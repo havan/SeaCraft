@@ -127,6 +127,12 @@ volume, displacement, `LCB`, `KB`, waterplane area/inertia, `LCF`, `BM`, `KM`,
 all the coefficients, the section-area curve and the lateral area. The results
 are serde-serialisable and available as JSON from the CLI.
 
+`curves::bonjean` builds the Bonjean family: the submerged section area at each
+station against a range of drafts (`seacraft bonjean`), plus an area-curve
+prismatic coefficient from the section-area curve. Both curves plot to
+standalone SVG with no external dependency, and both are cut from the same
+refined mesh and clipping path as the hydrostatics.
+
 ### Stability
 
 `stability::cross_curves` floats the hull at a constant displacement for each
@@ -205,7 +211,9 @@ archive in metres.
 seacraft demo      -o hull.fef [--symmetric]
 seacraft info      hull.fef
 seacraft hydro     hull.fef [--draft T] [--trim m | --free-trim [--lcg x]] [--heel deg] [--kg m] [--json]
-seacraft sac       hull.fef [--stations N] [--csv out.csv]
+seacraft sac       hull.fef [--stations N] [--csv out.csv] [--svg sac.svg] [--json]
+seacraft bonjean   hull.fef [--stations N] [--drafts T1,T2,...] [--draft-steps N]
+                              [--csv out.csv] [--svg bonjean.svg] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]

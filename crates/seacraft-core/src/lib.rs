@@ -22,6 +22,7 @@
 //! [FREE!ship]: https://sourceforge.net/projects/freeship
 
 pub mod analysis;
+pub mod curves;
 pub mod demo;
 pub mod dxf;
 pub mod export;
