@@ -326,7 +326,7 @@ pub fn chain_paths(segs: &[(Vec3, Vec3)], tol: f64) -> Vec<(Vec<Vec3>, bool)> {
     let cell = tol.max(1e-12);
     let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
     let mut points: Vec<Vec3> = Vec::new();
-    let mut id = |p: Vec3, points: &mut Vec<Vec3>, grid: &mut HashMap<(i64, i64, i64), Vec<usize>>| -> usize {
+    let id = |p: Vec3, points: &mut Vec<Vec3>, grid: &mut HashMap<(i64, i64, i64), Vec<usize>>| -> usize {
         let key = |v: Vec3| {
             (
                 (v.x / cell).floor() as i64,

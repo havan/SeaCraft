@@ -78,7 +78,7 @@ fn parse_i32(s: &str, line: usize, what: &str) -> Result<i32, FefError> {
 pub fn parse(text: &str) -> Result<Surface, FefError> {
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0usize;
-    let mut next = |i: &mut usize| -> Result<String, FefError> {
+    let next = |i: &mut usize| -> Result<String, FefError> {
         if *i >= lines.len() {
             return Err(err(lines.len(), "unexpected end of file"));
         }
