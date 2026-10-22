@@ -153,6 +153,17 @@ implementation is checked against the worked example the paper prints for a
 205 m ship: every coefficient and the wave, friction, correlation and appendage
 terms reproduce to better than 1 %.
 
+`develop` flattens a hull patch into the sheet a plate would be cut from
+(`seacraft unfold`). The patch is selected as a simply connected plate — between
+two waterlines *and* two stations, or between two buttocks and two stations — and
+developed by edge-joining: each face is laid flat by an isometry across the edge
+it shares with a face already placed, so the areas are preserved exactly and the
+strain shows up as **seam gap** where the flattened patch refuses to close. The
+report gives the flat pattern size, the maximum and RMS gap, and the mean
+Gaussian curvature from the same discrete operator the curvature shading uses;
+under 0.5 % of the plate diagonal it is called developable. `-o plate.svg` writes
+the flat pattern with its outline.
+
 `offsets::table_of_offsets` produces the drawing-office table — half-breadths
 at stations x waterlines and buttock heights at stations x buttocks — as a
 terminal table, long-format CSV, JSON or a standalone HTML page
@@ -245,6 +256,8 @@ seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
 seacraft resistance hull.fef [--speeds 6,8,10,12] [--draft T] [--cstern X]
                               [--appendage-area m2] [--bulb-area m2] [--csv out.csv] [--json]
+seacraft unfold    hull.fef [--axis x|y|z] [--from a] [--to b] [--x-from a] [--x-to b]
+                              [--both-sides] [-o plate.svg] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
@@ -336,9 +349,8 @@ cursor position on the active viewport's focal plane and the crate version.
   `save_hull`, `move_point`, `set_crease`, `hydro_compute`,
   `stability_cross_curves`, `bonjean_curves`, `table_of_offsets`,
   `export_linesplan` and `render_png`.
-* Not yet implemented: developability/unfolding, Lackenby
-  transformation, propulsion (propeller, wake fraction) and the Savitsky
-  planing method,
+* Not yet implemented: Lackenby transformation, propulsion (propeller, wake
+  fraction) and the Savitsky planing method,
   VRML import, and interactive face/edge splitting or extrusion in the GUI.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.

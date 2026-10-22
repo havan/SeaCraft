@@ -24,6 +24,7 @@
 pub mod analysis;
 pub mod curves;
 pub mod demo;
+pub mod develop;
 pub mod dxf;
 pub mod export;
 pub mod fef;

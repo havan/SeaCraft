@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    offsets, raster, resistance, transform,
+    develop, offsets, raster, resistance, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -51,6 +51,8 @@ enum Command {
     Transform(TransformArgs),
     /// Still-water resistance and effective power (Holtrop-Mennen 1984)
     Resistance(ResistanceArgs),
+    /// Developable plate expansion: flatten a strake or buttock band
+    Unfold(UnfoldArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -399,6 +401,42 @@ struct ResistanceArgs {
 }
 
 #[derive(Args, Debug)]
+struct UnfoldArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Axis the band is cut across: x (stations), y (buttocks) or z (waterlines)
+    #[arg(long, default_value = "z")]
+    axis: String,
+    /// Lower bound of the band in metres (default: the model's minimum)
+    #[arg(long)]
+    from: Option<f64>,
+    /// Upper bound of the band in metres (default: the model's maximum)
+    #[arg(long)]
+    to: Option<f64>,
+    /// Start of the plate's run along x (default: the model's minimum)
+    #[arg(long)]
+    x_from: Option<f64>,
+    /// End of the plate's run along x (default: the model's maximum)
+    #[arg(long)]
+    x_to: Option<f64>,
+    /// Include the port side too (the default cuts only the starboard plate)
+    #[arg(long)]
+    both_sides: bool,
+    /// Write the flat pattern as SVG
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Emit the report as JSON
+    #[arg(long)]
+    json: bool,
+    /// Subdivision level (0 = control net, max 6)
+    #[arg(long, default_value_t = 3)]
+    level: u8,
+    /// Use Catmull-Clark instead of the FREE!ship default Loop scheme
+    #[arg(long)]
+    catmull_clark: bool,
+}
+
+#[derive(Args, Debug)]
 struct StabilityArgs {
     file: PathBuf,
     /// Centre of gravity height above the keel
@@ -482,6 +520,7 @@ fn run() -> Result<()> {
         Command::Offsets(a) => cmd_offsets(a),
         Command::Transform(a) => cmd_transform(a),
         Command::Resistance(a) => cmd_resistance(a),
+        Command::Unfold(a) => cmd_unfold(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Render(a) => cmd_render(a),
@@ -1218,6 +1257,81 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         );
     }
     println!("\n  effective power only: no propeller, wake fraction or thrust deduction.");
+    Ok(())
+}
+
+fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions {
+        level: a.level,
+        mode: if a.catmull_clark { SubdivisionMode::CatmullClark } else { SubdivisionMode::Loop },
+    };
+    let axis = develop::BandAxis::parse(&a.axis)
+        .with_context(|| format!("unknown --axis `{}` (use x, y or z)", a.axis))?;
+    let hull = seacraft_core::hydro::Hull::new(&s, subdiv);
+    let lo = a.from.unwrap_or(match axis {
+        develop::BandAxis::X => hull.model_min.x,
+        develop::BandAxis::Y => hull.model_min.y,
+        develop::BandAxis::Z => hull.keel,
+    });
+    let hi = a.to.unwrap_or(match axis {
+        develop::BandAxis::X => hull.model_max.x,
+        develop::BandAxis::Y => hull.model_max.y,
+        develop::BandAxis::Z => hull.model_max.z,
+    });
+    let x_lo = a.x_from.unwrap_or(hull.model_min.x);
+    let x_hi = a.x_to.unwrap_or(hull.model_max.x);
+    let selection = develop::PatchSelection {
+        slabs: vec![(axis, lo, hi), (develop::BandAxis::X, x_lo, x_hi)],
+        starboard_only: !a.both_sides,
+    };
+    let faces = develop::select(&hull.verts, &hull.tris, &selection);
+    if faces.is_empty() {
+        bail!(
+            "no faces in the band {lo:.3}..{hi:.3} on {axis:?} between x {x_lo:.3} and {x_hi:.3}; \
+             widen --from/--to or --x-from/--x-to"
+        );
+    }
+    let unfolded = develop::unfold(&hull.verts, &faces);
+
+    if let Some(path) = &a.output {
+        let title = format!(
+            "{} - plate between {:.2} and {:.2} m on {:?}",
+            s.settings.name, lo, hi, axis
+        );
+        std::fs::write(path, develop::svg(&unfolded, &title))
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&unfolded)?);
+        return Ok(());
+    }
+    println!("{}  -  plate expansion across a {:?} band", s.settings.name, axis);
+    println!(
+        "  band {lo:.3} .. {hi:.3} m on {axis:?}, stations {x_lo:.3} .. {x_hi:.3}, {} of {} faces",
+        faces.len(),
+        hull.tris.len()
+    );
+    println!(
+        "  flat pattern {:.3} x {:.3} m, area {:.4} m2 (3D {:.4} m2)",
+        unfolded.width_m, unfolded.height_m, unfolded.area_2d_m2, unfolded.area_3d_m2
+    );
+    println!(
+        "  seam gap max {:.2} mm, rms {:.2} mm, {:.3} % of the diagonal",
+        unfolded.max_gap_m * 1000.0,
+        unfolded.rms_gap_m * 1000.0,
+        unfolded.gap_ratio * 100.0
+    );
+    println!(
+        "  mean |K| {:.4} 1/m2  ->  {}",
+        unfolded.mean_abs_gaussian,
+        if unfolded.developable {
+            "developable (within 0.5 % of the diagonal)"
+        } else {
+            "not developable: the plate needs a joint, a press or a different cut"
+        }
+    );
     Ok(())
 }
 
