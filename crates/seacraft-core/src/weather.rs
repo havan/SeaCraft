@@ -6,10 +6,8 @@
 //! in metres. Vertical centroids (`KG`, `z_centroid`, `underwater_z`) are
 //! measured above the keel datum (`hull.keel`).
 
-use crate::hydro::{
-    clipped_loop_moments, plane_segments, waterplane_for, Hull, HydroOptions, Hydrostatics,
-};
-use crate::math::{deg_to_rad, Plane, Vec3};
+use crate::hydro::{waterplane_for, Hull, HydroOptions, Hydrostatics};
+use crate::math::deg_to_rad;
 use crate::mesh::Surface;
 use crate::stability::{cross_curves, hydrostatics_free_trim, StabilityCondition};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -467,197 +465,90 @@ pub fn rollback_angle_deg(k: f64, x1: f64, x2: f64, r: f64, s: f64) -> f64 {
     109.0 * k * x1 * x2 * (r.max(0.0) * s.max(0.0)).sqrt()
 }
 
-/// Maximum `z` of the refined hull mesh at longitudinal coordinate `x`.
-fn max_z_at_x(hull: &Hull, x: f64) -> Option<f64> {
-    let mut z_max = f64::NEG_INFINITY;
+/// Lowest and highest `z` of the refined hull mesh in the transverse plane at
+/// `x`: the vertical extent of the hull's side silhouette there.
+fn z_range_at_x(hull: &Hull, x: f64, tol: f64) -> Option<(f64, f64)> {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     for t in &hull.tris {
-        let tri = [hull.verts[t[0]], hull.verts[t[1]], hull.verts[t[2]]];
         for i in 0..3 {
-            let a = tri[i];
-            let b = tri[(i + 1) % 3];
-            if (a.x - x).abs() <= 1e-7 {
-                z_max = z_max.max(a.z);
+            let a = hull.verts[t[i]];
+            let b = hull.verts[t[(i + 1) % 3]];
+            if (a.x - x).abs() <= tol {
+                lo = lo.min(a.z);
+                hi = hi.max(a.z);
             }
             if (a.x < x && b.x > x) || (b.x < x && a.x > x) {
-                let u = (x - a.x) / (b.x - a.x);
-                let z = a.z + u * (b.z - a.z);
-                z_max = z_max.max(z);
+                let z = a.z + (x - a.x) / (b.x - a.x) * (b.z - a.z);
+                lo = lo.min(z);
+                hi = hi.max(z);
             }
         }
     }
-    z_max.is_finite().then_some(z_max)
+    (lo <= hi).then_some((lo, hi))
 }
 
-/// Chain coplanar segments into polylines `(points, closed)` without dropping
-/// the final corner of a closed ring.
-fn chain_profile_paths(segs: &[(Vec3, Vec3)], tol: f64) -> Vec<(Vec<Vec3>, bool)> {
-    let mut points: Vec<Vec3> = Vec::new();
-    let mut find_or_insert = |p: Vec3| -> usize {
-        for (i, q) in points.iter().enumerate() {
-            if (*q - p).length() <= tol {
-                return i;
-            }
-        }
-        let idx = points.len();
-        points.push(p);
-        idx
-    };
+/// Stations across the hull for the silhouette integral.
+const SILHOUETTE_STATIONS: usize = 400;
 
-    let mut seen = std::collections::HashSet::new();
-    let mut edges: Vec<(usize, usize)> = Vec::new();
-    for (a, b) in segs {
-        let ia = find_or_insert(*a);
-        let ib = find_or_insert(*b);
-        if ia != ib {
-            let key = if ia < ib { (ia, ib) } else { (ib, ia) };
-            if seen.insert(key) {
-                edges.push((ia, ib));
-            }
-        }
-    }
-
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
-    for (i, (a, b)) in edges.iter().enumerate() {
-        adj[*a].push(i);
-        adj[*b].push(i);
-    }
-    let mut used = vec![false; edges.len()];
-    let mut paths: Vec<(Vec<Vec3>, bool)> = Vec::new();
-
-    let walk = |mut cur: usize,
-                target_vertex: usize,
-                used: &mut Vec<bool>,
-                adj: &[Vec<usize>],
-                edges: &[(usize, usize)]|
-     -> (Vec<usize>, bool) {
-        let mut seq = vec![cur];
-        let mut closed = false;
-        loop {
-            let next = adj[cur].iter().copied().find(|&e| !used[e]);
-            match next {
-                Some(e) => {
-                    used[e] = true;
-                    let (x, y) = edges[e];
-                    cur = if x == cur { y } else { x };
-                    if cur == target_vertex {
-                        closed = true;
-                        break;
-                    }
-                    seq.push(cur);
-                }
-                None => break,
-            }
-            if seq.len() > edges.len() + 2 {
-                break;
-            }
-        }
-        (seq, closed)
-    };
-
-    for start_edge in 0..edges.len() {
-        if used[start_edge] {
-            continue;
-        }
-        used[start_edge] = true;
-        let (a, b) = edges[start_edge];
-        let (fwd, closed) = walk(b, a, &mut used, &adj, &edges);
-        let mut poly: Vec<Vec3> = Vec::with_capacity(fwd.len() + 1);
-        poly.push(points[a]);
-        for i in &fwd {
-            poly.push(points[*i]);
-        }
-        if !closed {
-            let (mut back, _) = walk(a, b, &mut used, &adj, &edges);
-            back.remove(0);
-            back.reverse();
-            let mut full: Vec<Vec3> = back.iter().map(|i| points[*i]).collect();
-            full.extend(poly);
-            poly = full;
-        }
-        if poly.len() >= 2 {
-            paths.push((poly, closed));
-        }
-    }
-    paths
-}
-
-/// Build the closed lateral (`y = 0` profile) polygon loops of `hull`.
-///
-/// For a closed-deck hull (e.g. a box barge with a deck), the `y = 0` cut
-/// produces a closed loop directly. For an open-deck hull (whose `y = 0` cut is
-/// an open polyline along the transom, keel and stem), the open polyline is
-/// closed along the hull's upper sheer profile projected onto `y = 0`, so the
-/// above-waterline area covers the hull side up to the sheer while the
-/// underwater clipped area matches [`Hydrostatics::lateral_area_m2`].
-fn profile_loops(hull: &Hull) -> (Plane, Vec<Vec<Vec3>>) {
-    let centre = Plane::new(Vec3::new(0.0, 1.0, 0.0), 0.0);
-    let lsegs = plane_segments(&hull.verts, &hull.tris, &centre);
-    let lpaths = chain_profile_paths(&lsegs, 1e-7);
-
-    let mut loops = Vec::with_capacity(lpaths.len().max(1));
-    let x_lo = hull.model_min.x;
-    let x_hi = hull.model_max.x;
-    let span = (x_hi - x_lo).max(1e-6);
-
-    for (mut pts, closed) in lpaths {
-        if pts.len() < 2 {
-            continue;
-        }
-        if !closed {
-            let first = pts[0];
-            let last = pts[pts.len() - 1];
-            const STEPS: usize = 48;
-            for k in 0..=STEPS {
-                let t = k as f64 / STEPS as f64;
-                let x_raw = last.x + t * (first.x - last.x);
-                let x = x_raw.clamp(x_lo + 1e-6 * span, x_hi - 1e-6 * span);
-                if let Some(z_sheer) = max_z_at_x(hull, x) {
-                    let z_end = last.z + t * (first.z - last.z);
-                    pts.push(Vec3::new(x_raw, 0.0, z_sheer.max(z_end)));
-                }
-            }
-            pts.push(first);
-        }
-        loops.push(pts);
-    }
-
-    (centre, loops)
-}
-
-/// Compute the hull's lateral (`y = 0` / profile) projected windage area and
-/// centroid above the waterline, and the underwater lateral area and centroid
-/// below the waterline:
+/// Compute the hull's lateral projected windage area and centroid above the
+/// waterline, and the underwater lateral area and centroid below it:
 /// `(area_m2, z_centroid, underwater_area_m2, underwater_z)`.
+///
+/// The lateral area is the hull's side silhouette — its projection on the
+/// centreplane — which at each `x` spans the lowest to the highest point of the
+/// hull there, so flare and a sheer above the centreline count, as the IS Code
+/// asks. It is integrated over evenly spaced stations (the trapezoidal rule),
+/// split at the waterline of the given draft and trim.
 ///
 /// Both `z_centroid` and `underwater_z` are measured above the keel
 /// (`hull.keel`), matching `draft`, `KB`, `KM`, and `KG`.
 pub fn hull_windage_on_hull(hull: &Hull, draft: f64, trim: f64) -> (f64, f64, f64, f64) {
-    let (centre, loops) = profile_loops(hull);
     let wp = waterplane_for(hull.keel, hull.length, draft, trim, 0.0);
-    let above_wp = Plane { n: -wp.n, d: -wp.d };
-    let (u, v) = centre.basis();
-
-    let (underwater_area_m2, underwater_z) =
-        if let Some(m) = clipped_loop_moments(&loops, &centre, &wp) {
-            let area = m.area.abs();
-            let cx = m.mx / m.area;
-            let cy = m.my / m.area;
-            let c = u * cx + v * cy;
-            (area, c.z - hull.keel)
+    // Waterline height at `x` on the centreplane: n·p + d = 0 with y = 0.
+    let z_wl = |x: f64| {
+        if wp.n.z.abs() > 1e-12 {
+            -(wp.n.x * x + wp.d) / wp.n.z
         } else {
-            (0.0, 0.5 * draft.max(0.0))
-        };
-
-    let (area_m2, z_centroid) = if let Some(m) = clipped_loop_moments(&loops, &centre, &above_wp) {
-        let area = m.area.abs();
-        let cx = m.mx / m.area;
-        let cy = m.my / m.area;
-        let c = u * cx + v * cy;
-        (area, c.z - hull.keel)
+            hull.keel + draft
+        }
+    };
+    let (x_lo, x_hi) = (hull.model_min.x, hull.model_max.x);
+    let span = x_hi - x_lo;
+    let tol = 1e-9 * span.abs().max(1.0);
+    // ∫ (top − bottom) dx and ∫ (top² − bottom²)/2 dx above and below the waterline.
+    let mut above = [0.0; 2];
+    let mut under = [0.0; 2];
+    if span > 1e-9 {
+        let n = SILHOUETTE_STATIONS;
+        for k in 0..=n {
+            let x = x_lo + span * k as f64 / n as f64;
+            let Some((bottom, top)) = z_range_at_x(hull, x, tol) else {
+                continue;
+            };
+            let w = if k == 0 || k == n { 0.5 } else { 1.0 } * span / n as f64;
+            let wl = z_wl(x);
+            let (a0, a1) = (bottom.max(wl), top);
+            if a1 > a0 {
+                above[0] += w * (a1 - a0);
+                above[1] += w * 0.5 * (a1 * a1 - a0 * a0);
+            }
+            let (u0, u1) = (bottom, top.min(wl));
+            if u1 > u0 {
+                under[0] += w * (u1 - u0);
+                under[1] += w * 0.5 * (u1 * u1 - u0 * u0);
+            }
+        }
+    }
+    let (underwater_area_m2, underwater_z) = if under[0] > 1e-12 {
+        (under[0], under[1] / under[0] - hull.keel)
+    } else {
+        (0.0, 0.5 * draft.max(0.0))
+    };
+    let (area_m2, z_centroid) = if above[0] > 1e-12 {
+        (above[0], above[1] / above[0] - hull.keel)
     } else {
         (0.0, draft.max(0.0))
     };
-
     (area_m2, z_centroid, underwater_area_m2, underwater_z)
 }
 
@@ -1063,6 +954,7 @@ pub fn evaluate_hull_weather(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::math::Vec3;
     use crate::subdiv::{SubdivisionMode, SubdivisionOptions};
 
     #[test]
@@ -1148,6 +1040,61 @@ mod tests {
         assert!(
             (got_phi1 - want_phi1).abs() < 1e-12,
             "{got_phi1} vs {want_phi1}"
+        );
+    }
+
+    #[test]
+    fn windage_is_the_side_silhouette_not_the_centreline_cut() {
+        // A 10 m x 4 m barge whose deck dips from z = 3 at the sides to
+        // z = 2.5 on the centreline. Seen from the side the hull reaches z = 3
+        // everywhere, so at d = 1.2 the windage is 10 x 1.8 = 18 m² at
+        // z = 2.1; the centreline cut would give only 10 x 1.3 = 13 m².
+        let mut s = Surface::new();
+        s.layers.push(crate::mesh::Layer::default());
+        let (l, hb) = (10.0, 2.0);
+        let mut ring = |x: f64| {
+            [
+                s.add_point(Vec3::new(x, -hb, 0.0)),
+                s.add_point(Vec3::new(x, hb, 0.0)),
+                s.add_point(Vec3::new(x, hb, 3.0)),
+                s.add_point(Vec3::new(x, 0.0, 2.5)),
+                s.add_point(Vec3::new(x, -hb, 3.0)),
+            ]
+        };
+        let a = ring(0.0);
+        let f = ring(l);
+        s.add_face(vec![a[0], f[0], f[1], a[1]], 0); // bottom
+        s.add_face(vec![a[1], f[1], f[2], a[2]], 0); // starboard side
+        s.add_face(vec![a[2], f[2], f[3], a[3]], 0); // starboard deck
+        s.add_face(vec![a[3], f[3], f[4], a[4]], 0); // port deck
+        s.add_face(vec![a[4], f[4], f[0], a[0]], 0); // port side
+        s.add_face(vec![a[0], a[1], a[2], a[3], a[4]], 0); // transom
+        s.add_face(vec![f[4], f[3], f[2], f[1], f[0]], 0); // bow
+        s.initialize_trace();
+        // The unrefined net: the faces are flat and the edges straight.
+        let opts = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 0,
+                mode: SubdivisionMode::CatmullClark,
+            },
+        );
+        let (a_above, z_above, a_under, z_under) = hull_windage(&s, &opts, 1.2, 0.0);
+        assert!((a_above - 18.0).abs() < 1e-6, "a_above = {a_above}");
+        assert!((z_above - 2.1).abs() < 1e-6, "z_above = {z_above}");
+        assert!((a_under - 12.0).abs() < 1e-6, "a_under = {a_under}");
+        assert!((z_under - 0.6).abs() < 1e-6, "z_under = {z_under}");
+
+        // Trimmed 1 m by the bow: the waterline runs from 1.7 m aft to 0.7 m
+        // forward, so the underwater area is still 12 m² and its centroid is
+        // ∫(d(x)²/2)dx / 12 with d linear over 10 m: 10 (1.7³ − 0.7³) / 6 / 12.
+        let (a_above, _, a_under, z_under) = hull_windage(&s, &opts, 1.2, 1.0);
+        let want_z = 10.0 * (1.7f64.powi(3) - 0.7f64.powi(3)) / 6.0 / 12.0;
+        assert!((a_under - 12.0).abs() < 1e-6, "a_under = {a_under}");
+        assert!((a_above - 18.0).abs() < 1e-6, "a_above = {a_above}");
+        assert!(
+            (z_under - want_z).abs() < 1e-4,
+            "z_under = {z_under} vs {want_z}"
         );
     }
 
