@@ -1076,6 +1076,9 @@ struct McpArgs {
     /// Forward tool calls to a running `seacraft-gui --control HOST:PORT`
     #[arg(long, value_name = "HOST:PORT")]
     connect: Option<String>,
+    /// Token file for authenticating with the running app (defaults to $XDG_RUNTIME_DIR/seacraft-control-<port>.token)
+    #[arg(long, value_name = "PATH")]
+    token_file: Option<PathBuf>,
     /// Hull to serve (defaults to the built-in demo hull)
     #[arg(long, value_name = "FILE")]
     open: Option<PathBuf>,
@@ -3049,7 +3052,7 @@ fn cmd_mcp(a: McpArgs) -> Result<()> {
         None => mcp::McpServer::new(),
     };
     if let Some(addr) = &a.connect {
-        match mcp::McpServer::connect(addr) {
+        match mcp::McpServer::connect(addr, a.token_file.as_deref()) {
             Ok(remote) => {
                 if a.open.is_some() {
                     eprintln!("seacraft mcp: --open ignored; the app at {addr} owns the model");

@@ -44,6 +44,11 @@ seacraft-gui --control 127.0.0.1:7878 --open hull.fef
 claude mcp add seacraft -- seacraft mcp --connect 127.0.0.1:7878
 ```
 
+Authentication is required by default:
+* `seacraft-gui` generates a random 32-byte hex token, saves it with mode `0600` to `$XDG_RUNTIME_DIR/seacraft-control-<port>.token` (or system temp dir), and removes it on exit. Override with `--control-token-file PATH` or opt out with `--control-no-auth`.
+* `seacraft mcp --connect HOST:PORT` automatically reads the matching token file (or `--token-file PATH`) and sends the `auth` method on connect.
+* Restrict file access with `--control-read-root DIR` and `--control-write-root DIR`.
+
 ## Maintaining
 
 - `skills_name_only_real_tools` in `crates/seacraft-cli/src/mcp.rs` runs in CI. It reads every `SKILL.md`, checks that

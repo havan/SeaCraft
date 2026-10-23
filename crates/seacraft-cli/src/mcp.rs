@@ -249,11 +249,47 @@ impl McpServer {
     }
 
     /// A server that forwards tool calls to `seacraft-gui --control addr`.
-    pub fn connect(addr: &str) -> Result<Self, String> {
-        let remote = Remote::connect(addr).map_err(|e| format!("cannot reach {addr}: {e}"))?;
+    ///
+    /// Reads the authentication token from `token_file` if given, or the default token
+    /// file for `addr` ($XDG_RUNTIME_DIR/seacraft-control-<port>.token or temp dir).
+    pub fn connect(addr: &str, token_file: Option<&Path>) -> Result<Self, String> {
+        let token_path = match token_file {
+            Some(p) => p.to_path_buf(),
+            None => {
+                let port = addr
+                    .rsplit(':')
+                    .next()
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .or_else(|| {
+                        use std::net::ToSocketAddrs;
+                        addr.to_socket_addrs().ok()?.next().map(|sa| sa.port())
+                    })
+                    .ok_or_else(|| format!("cannot determine port from `{addr}`"))?;
+                seacraft_core::control_auth::default_token_path(port)
+            }
+        };
+        // An explicit file must be readable; a missing default file means the
+        // app runs `--control-no-auth` (if it does not, its first reply says so).
+        let token = match seacraft_core::control_auth::read_token_file(&token_path) {
+            Ok(t) => Some(t),
+            Err(e) if token_file.is_none() && e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("cannot read control token file `{}`: {e}", token_path.display())),
+        };
+        Self::connect_with_token(addr, token)
+    }
+
+    /// A server that forwards tool calls with an explicit token or no authentication (if None).
+    pub fn connect_with_token(addr: &str, token: Option<String>) -> Result<Self, String> {
+        let remote = Remote::connect_with_token(addr, token).map_err(|e| format!("cannot reach {addr}: {e}"))?;
         let mut server = Self::new();
         server.remote = Some(remote);
         Ok(server)
+    }
+
+    /// A server that forwards tool calls without authentication (for --control-no-auth).
+    #[cfg(test)]
+    pub fn connect_no_auth(addr: &str) -> Result<Self, String> {
+        Self::connect_with_token(addr, None)
     }
 
     /// Whether tool calls are forwarded to an app instead of running here.
@@ -2837,18 +2873,62 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// as the tool's result (its own field names); a failure is a tool error.
 pub struct Remote {
     addr: String,
+    token: Option<String>,
     conn: Option<(BufReader<TcpStream>, TcpStream)>,
 }
 
 impl Remote {
-    /// Connect to `addr` (`host:port`), failing at once when nothing listens.
-    pub fn connect(addr: &str) -> std::io::Result<Self> {
+    /// Connect to `addr` (`host:port`) with an optional authentication token,
+    /// failing at once when nothing listens.
+    pub fn connect_with_token(addr: &str, token: Option<String>) -> std::io::Result<Self> {
         let mut r = Self {
             addr: addr.to_string(),
+            token,
             conn: None,
         };
         r.reconnect()?;
         Ok(r)
+    }
+
+    fn authenticate(&mut self, token: &str) -> std::io::Result<()> {
+        let auth_cmd = json!({"method": "auth", "params": {"token": token}}).to_string();
+        let Some((reader, writer)) = self.conn.as_mut() else {
+            return Err(std::io::Error::other("not connected"));
+        };
+        writer.write_all(auth_cmd.as_bytes())?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+
+        let mut reply = String::new();
+        let n = match reader.by_ref().take(MAX_REPLY).read_line(&mut reply) {
+            Ok(n) => n,
+            Err(e) => {
+                self.conn = None;
+                return Err(e);
+            }
+        };
+        if n == 0 || !reply.ends_with('\n') {
+            self.conn = None;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "connection closed during authentication",
+            ));
+        }
+        let v: Value = serde_json::from_str(&reply)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if v.get("ok").and_then(Value::as_bool) == Some(true) {
+            Ok(())
+        } else {
+            self.conn = None;
+            let err = v
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("authentication rejected");
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                err.to_string(),
+            ))
+        }
     }
 
     fn reconnect(&mut self) -> std::io::Result<()> {
@@ -2866,6 +2946,9 @@ impl Remote {
                     s.set_read_timeout(None).ok();
                     let read = s.try_clone()?;
                     self.conn = Some((BufReader::new(read), s));
+                    if let Some(token) = &self.token.clone() {
+                        self.authenticate(token)?;
+                    }
                     return Ok(());
                 }
                 Err(e) => last = e,
@@ -4575,7 +4658,7 @@ mod tests {
             stream.write_all(b"{\"ok\":true,\"result\":{\"restored\":true}}\n").expect("write");
         });
 
-        let mut s = McpServer::connect(&addr.to_string()).expect("connect");
+        let mut s = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
         assert!(s.is_remote());
 
         let err_text = fails(
@@ -4602,5 +4685,60 @@ mod tests {
         assert!(fail_json["failed"]["error"].as_str().unwrap().contains("split error"));
 
         handle.join().expect("server thread finished");
+    }
+
+    #[test]
+    fn mcp_connect_with_token_file_succeeds_end_to_end() {
+        use std::io::Write;
+        let token = seacraft_core::control_auth::generate_token().expect("generate token");
+        let temp_dir = std::env::temp_dir();
+        let token_path = temp_dir.join(format!("seacraft-test-mcp-{}.token", std::process::id()));
+        seacraft_core::control_auth::write_token_file(&token_path, &token).expect("write token");
+        let _guard = seacraft_core::control_auth::TokenFile(token_path.clone());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let expected_token = token.clone();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+
+            // 1. First line must be auth
+            reader.read_line(&mut line).expect("read");
+            let v: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v["method"], "auth");
+            assert_eq!(v["params"]["token"], expected_token);
+            stream
+                .write_all(b"{\"ok\":true,\"result\":{\"authenticated\":true}}\n")
+                .expect("write");
+
+            // 2. Next line is the tool request
+            line.clear();
+            reader.read_line(&mut line).expect("read");
+            let v2: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v2["method"], "ui.inspect");
+            stream
+                .write_all(b"{\"ok\":true,\"result\":{\"version\":\"0.1.0-beta.48\"}}\n")
+                .expect("write");
+        });
+
+        // Test connecting with the token file
+        let mut s = McpServer::connect(&addr.to_string(), Some(&token_path)).expect("connect with token file");
+        assert!(s.is_remote());
+
+        let info = s.call_tool("hull_info", &json!({}));
+        assert_eq!(info["content"][0]["text"], "{\n  \"version\": \"0.1.0-beta.48\"\n}");
+
+        handle.join().expect("server thread finished");
+
+        // Missing token file returns clear error
+        let non_existent = temp_dir.join(format!("seacraft-missing-{}.token", std::process::id()));
+        let err = match McpServer::connect(&addr.to_string(), Some(&non_existent)) {
+            Err(e) => e,
+            Ok(_) => panic!("expected missing token file to fail"),
+        };
+        assert!(err.contains("cannot read control token file"));
     }
 }

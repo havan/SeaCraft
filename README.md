@@ -480,7 +480,14 @@ cursor position on the active viewport's focal plane and the crate version.
 * Programmatic automation is supported via `seacraft-gui --control 127.0.0.1:PORT`
   (JSON lines over TCP, executed on the next frame) and `seacraft mcp` (JSON-RPC
   2.0 Model Context Protocol over stdio, either headless or connected via
-  `--connect 127.0.0.1:PORT`). Tools include `hull_info`, `load_hull`,
+  `--connect 127.0.0.1:PORT`). The control channel enforces per-launch 32-byte hex
+  token authentication (`$XDG_RUNTIME_DIR/seacraft-control-<port>.token`, mode 0600,
+  overridable with `--control-token-file PATH` or opted out with `--control-no-auth`)
+  and optional path sandboxing (`--control-read-root DIR`, `--control-write-root DIR`).
+  `seacraft mcp --connect HOST:PORT [--token-file PATH]` automatically authenticates
+  against the running GUI (without `--token-file` and no default token file, it
+  connects unauthenticated, for a GUI started with `--control-no-auth`).
+  Tools include `hull_info`, `load_hull`,
   `save_hull`, `move_point`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,

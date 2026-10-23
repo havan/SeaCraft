@@ -101,3 +101,14 @@ Loopback TCP JSON-lines GUI control channel (`--control HOST:PORT`, executed on
 the next `egui` frame with input clamping) and the stdio JSON-RPC 2.0 Model
 Context Protocol (`seacraft mcp`) server supporting both in-process headless
 evaluation and remote `--connect` to a live GUI window.
+
+## `crates/seacraft-core/src/control_auth.rs`
+
+* **Source:** `solidcraft/crates/engine/src/control_auth.rs`
+* **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
+* **Licence:** MIT OR Apache-2.0
+* **Copyright:** Tangency Labs and the solidcraft contributors
+
+Control channel token generation, constant-time token comparison, 0600 token
+file creation, RAII token file cleanup, and canonical path root sandboxing
+(`check_read_path` and `check_write_path`).

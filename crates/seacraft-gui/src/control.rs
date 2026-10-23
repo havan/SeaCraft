@@ -64,24 +64,61 @@ impl ControlRequest {
     }
 }
 
+/// Options for starting the loopback control socket.
+#[derive(Clone, Debug, Default)]
+pub struct ControlOptions {
+    /// Explicit token file path (overrides default $XDG_RUNTIME_DIR/seacraft-control-<port>.token).
+    pub token_file: Option<std::path::PathBuf>,
+    /// Disable control channel authentication (warning printed).
+    pub no_auth: bool,
+    /// Explicit token string (used in testing).
+    pub explicit_token: Option<String>,
+}
+
+/// The result of spawning a control listener.
+pub struct ControlListener {
+    pub addr: SocketAddr,
+    pub token: Option<String>,
+    pub token_file: Option<seacraft_core::control_auth::TokenFile>,
+    pub receiver: Receiver<ControlRequest>,
+}
+
 /// Bind `addr` and serve JSON lines on a background thread.
 ///
-/// Returns the address actually bound (so `127.0.0.1:0` can pick a free port)
-/// and the channel the app drains. One thread per connection, so a client that
-/// opens a socket and says nothing cannot stall the others.
-pub fn spawn_listener(addr: &str) -> std::io::Result<(SocketAddr, Receiver<ControlRequest>)> {
+/// Returns the listener information (bound address, token, token file RAII guard, and request receiver).
+pub fn spawn_listener(addr: &str, opts: ControlOptions) -> std::io::Result<ControlListener> {
     let listener = TcpListener::bind(addr)?;
     let local = listener.local_addr()?;
     let (tx, rx) = mpsc::channel();
+
+    let (token, token_file) = if opts.no_auth {
+        eprintln!("seacraft-gui: warning: control channel authentication is disabled (--control-no-auth)");
+        (None, None)
+    } else {
+        let token = match opts.explicit_token {
+            Some(t) => t,
+            None => seacraft_core::control_auth::generate_token()?,
+        };
+        let token_path = opts
+            .token_file
+            .unwrap_or_else(|| seacraft_core::control_auth::default_token_path(local.port()));
+        seacraft_core::control_auth::write_token_file(&token_path, &token)?;
+        eprintln!("seacraft-gui: control token written to {}", token_path.display());
+        let token_file = Some(seacraft_core::control_auth::TokenFile(token_path));
+        (Some(token), token_file)
+    };
+
+    let thread_token = token.clone();
     std::thread::Builder::new()
         .name("seacraft-control".into())
         .spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let tx = tx.clone();
+                let thread_token = thread_token.clone();
                 let spawned = std::thread::Builder::new()
                     .name("seacraft-control-conn".into())
-                    .spawn(move || serve(stream, &tx));
+                    .spawn(move || serve(stream, &tx, thread_token));
                 if spawned.is_err() {
                     // Out of threads: refusing the connection is the only
                     // safe answer, and it must not take the listener down.
@@ -89,7 +126,12 @@ pub fn spawn_listener(addr: &str) -> std::io::Result<(SocketAddr, Receiver<Contr
                 }
             }
         })?;
-    Ok((local, rx))
+    Ok(ControlListener {
+        addr: local,
+        token,
+        token_file,
+        receiver: rx,
+    })
 }
 
 /// Read one line, at most `max` bytes, from `reader`.
@@ -148,38 +190,92 @@ fn error(message: impl std::fmt::Display) -> Value {
     json!({ "ok": false, "error": message.to_string() })
 }
 
-fn serve(stream: TcpStream, tx: &Sender<ControlRequest>) {
+fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<String>) {
     let _ = stream.set_nodelay(true);
     let Ok(read_half) = stream.try_clone() else { return };
     let mut writer = stream;
     let mut reader = BufReader::new(read_half);
+    let mut authenticated = expected_token.is_none();
     loop {
         let line = match read_line(&mut reader, MAX_LINE) {
             Ok(Some(line)) => line,
             Ok(None) => break,
             Err(_) => break,
         };
-        let reply = match line {
-            Line::TooLong => error(format!("line longer than {} KiB", MAX_LINE / 1024)),
-            Line::NotUtf8 => error("a request line must be UTF-8"),
-            Line::Text(text) if text.trim().is_empty() => continue,
-            Line::Text(text) => match parse_request(&text) {
-                Err(e) => error(e),
-                Ok((method, params)) => {
-                    let (reply_tx, reply_rx) = mpsc::channel();
-                    if tx.send(ControlRequest::new(method, params, reply_tx)).is_err() {
-                        break; // the window is gone
-                    }
-                    match reply_rx.recv_timeout(REPLY_TIMEOUT) {
-                        Ok(v) => v,
-                        Err(mpsc::RecvTimeoutError::Timeout) => error(format!(
-                            "the window did not answer within {} s",
-                            REPLY_TIMEOUT.as_secs()
-                        )),
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    }
+        let text = match line {
+            Line::TooLong => {
+                let _ = write_reply(&mut writer, &error(format!("line longer than {} KiB", MAX_LINE / 1024)));
+                if !authenticated {
+                    break;
                 }
-            },
+                continue;
+            }
+            Line::NotUtf8 => {
+                let _ = write_reply(&mut writer, &error("a request line must be UTF-8"));
+                if !authenticated {
+                    break;
+                }
+                continue;
+            }
+            Line::Text(text) if text.trim().is_empty() => continue,
+            Line::Text(text) => text,
+        };
+        let (method, params) = match parse_request(&text) {
+            Ok(pair) => pair,
+            Err(e) => {
+                let _ = write_reply(&mut writer, &error(e));
+                if !authenticated {
+                    break;
+                }
+                continue;
+            }
+        };
+
+        if !authenticated {
+            if method == "auth" {
+                let token_param = params.get("token").and_then(Value::as_str).unwrap_or("");
+                let expected = expected_token.as_deref().unwrap_or("");
+                if seacraft_core::control_auth::tokens_match(token_param, expected) {
+                    authenticated = true;
+                    if !write_reply(&mut writer, &json!({ "ok": true, "result": { "authenticated": true } })) {
+                        break;
+                    }
+                    continue;
+                } else {
+                    let _ = write_reply(&mut writer, &error("unauthorized: invalid token"));
+                    break;
+                }
+            } else {
+                let _ = write_reply(&mut writer, &error("unauthorized: first request must be auth"));
+                break;
+            }
+        }
+
+        if method == "auth" {
+            let token_param = params.get("token").and_then(Value::as_str).unwrap_or("");
+            let expected = expected_token.as_deref().unwrap_or("");
+            if expected_token.is_none() || seacraft_core::control_auth::tokens_match(token_param, expected) {
+                if !write_reply(&mut writer, &json!({ "ok": true, "result": { "authenticated": true } })) {
+                    break;
+                }
+            } else {
+                let _ = write_reply(&mut writer, &error("unauthorized: invalid token"));
+                break;
+            }
+            continue;
+        }
+
+        let (reply_tx, reply_rx) = mpsc::channel();
+        if tx.send(ControlRequest::new(method, params, reply_tx)).is_err() {
+            break; // the window is gone
+        }
+        let reply = match reply_rx.recv_timeout(REPLY_TIMEOUT) {
+            Ok(v) => v,
+            Err(mpsc::RecvTimeoutError::Timeout) => error(format!(
+                "the window did not answer within {} s",
+                REPLY_TIMEOUT.as_secs()
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if !write_reply(&mut writer, &reply) {
             break;
@@ -649,6 +745,7 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
         }
         "ui.render" => {
             let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let validated = app.check_control_write_path(std::path::Path::new(path.trim()))?;
             let width = index_at(p, "width", MAX_RENDER + 1)?.unwrap_or(RENDER_DEFAULT[0]);
             let height = index_at(p, "height", MAX_RENDER + 1)?.unwrap_or(RENDER_DEFAULT[1]);
             if width == 0 || height == 0 {
@@ -662,9 +759,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             };
             let png = render_png(app, width, height, view, mode)?;
             let bytes = png.len();
-            std::fs::write(path, &png).map_err(|e| format!("{path}: {e}"))?;
-            app.status_note(format!("rendered {view} to {path} ({width}×{height})"));
-            Ok(json!({ "path": path, "width": width, "height": height, "bytes": bytes }))
+            std::fs::write(&validated, &png).map_err(|e| format!("{}: {e}", validated.display()))?;
+            app.status_note(format!("rendered {view} to {} ({width}×{height})", validated.display()));
+            Ok(json!({ "path": validated.to_string_lossy(), "width": width, "height": height, "bytes": bytes }))
         }
         "model.load_demo" => {
             let symmetric = boolean(p, "symmetric")?.unwrap_or(false);
@@ -725,7 +822,8 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
         }
         "model.open" => {
             let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
-            app.open_model(std::path::Path::new(path.trim()))?;
+            let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
+            app.open_model(&validated)?;
             Ok(json!({
                 "path": app.path().map(|p| p.to_string_lossy().to_string()),
                 "points": app.control_point_count(),
@@ -735,10 +833,11 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
         "model.save" => {
             let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
             let path = std::path::PathBuf::from(path.trim());
-            if !app.save_to(&path) {
+            let validated = app.check_control_write_path(&path)?;
+            if !app.save_to(&validated) {
                 return Err(app.status().to_string());
             }
-            Ok(json!({ "path": path.to_string_lossy(), "dirty": app.is_dirty() }))
+            Ok(json!({ "path": validated.to_string_lossy(), "dirty": app.is_dirty() }))
         }
         "model.export" => {
             let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
@@ -747,12 +846,13 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 format!("`format` must be obj, stl, 3mf, ply, html, svg, dxf or igs, not `{format}`")
             })?;
             let path = std::path::PathBuf::from(path.trim());
-            if !app.export_to(kind, &path) {
+            let validated = app.check_control_write_path(&path)?;
+            if !app.export_to(kind, &validated) {
                 return Err(app.status().to_string());
             }
-            let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
             Ok(json!({
-                "path": path.to_string_lossy(),
+                "path": validated.to_string_lossy(),
                 "format": format.to_ascii_lowercase(),
                 "bytes": bytes,
             }))
@@ -963,10 +1063,11 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     serde_json::from_value(case_val.clone())
                         .map_err(|e| format!("stability.loading_condition: invalid `case`: {e}"))?
                 } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
-                    let contents = std::fs::read_to_string(path)
-                        .map_err(|e| format!("stability.loading_condition: cannot read {path}: {e}"))?;
+                    let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
+                    let contents = std::fs::read_to_string(&validated)
+                        .map_err(|e| format!("stability.loading_condition: cannot read {}: {e}", validated.display()))?;
                     serde_json::from_str(&contents)
-                        .map_err(|e| format!("stability.loading_condition: invalid JSON in {path}: {e}"))?
+                        .map_err(|e| format!("stability.loading_condition: invalid JSON in {}: {e}", validated.display()))?
                 } else {
                     return Err("stability.loading_condition: give `case` or `case_path`".into());
                 };
@@ -1091,10 +1192,11 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     serde_json::from_value(case_val.clone())
                         .map_err(|e| format!("stability.damage_stability: invalid `case`: {e}"))?
                 } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
-                    let contents = std::fs::read_to_string(path)
-                        .map_err(|e| format!("stability.damage_stability: cannot read {path}: {e}"))?;
+                    let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
+                    let contents = std::fs::read_to_string(&validated)
+                        .map_err(|e| format!("stability.damage_stability: cannot read {}: {e}", validated.display()))?;
                     serde_json::from_str(&contents)
-                        .map_err(|e| format!("stability.damage_stability: invalid JSON in {path}: {e}"))?
+                        .map_err(|e| format!("stability.damage_stability: invalid JSON in {}: {e}", validated.display()))?
                 } else {
                     return Err("stability.damage_stability: give `case` or `case_path`".into());
                 };
@@ -1570,6 +1672,7 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let unfolded = seacraft_core::develop::unfold(&hull.verts, &faces);
             let mut written = None;
             if let Some(path) = text(p, "path")?.filter(|s| !s.trim().is_empty()) {
+                let validated = app.check_control_write_path(std::path::Path::new(path.trim()))?;
                 let title = format!(
                     "{} - plate on {:?} {:.2}..{:.2} m",
                     surface.settings.name,
@@ -1577,9 +1680,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     selection.slabs[0].1,
                     selection.slabs[0].2
                 );
-                std::fs::write(path, seacraft_core::develop::svg(&unfolded, &title))
-                    .map_err(|e| format!("curves.unfold: cannot write {path}: {e}"))?;
-                written = Some(path.to_string());
+                std::fs::write(&validated, seacraft_core::develop::svg(&unfolded, &title))
+                    .map_err(|e| format!("curves.unfold: cannot write {}: {e}", validated.display()))?;
+                written = Some(validated.to_string_lossy().to_string());
             }
             Ok(json!({
                 "backend": "app",
@@ -1592,6 +1695,7 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
         "report.design" => {
             let path_str = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("report.design: `path` is required")?;
             let path = std::path::PathBuf::from(path_str.trim());
+            let validated = app.check_control_write_path(&path)?;
             let surface = app.surface().ok_or_else(|| "report.design: no model loaded".to_string())?;
 
             let mut opts = seacraft_core::report::ReportOptions::from_surface(surface);
@@ -1624,8 +1728,8 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
 
             let html = seacraft_core::report::design_report(surface, &opts)
                 .map_err(|e| format!("report.design: {e}"))?;
-            std::fs::write(&path, &html)
-                .map_err(|e| format!("report.design: cannot write {}: {e}", path.display()))?;
+            std::fs::write(&validated, &html)
+                .map_err(|e| format!("report.design: cannot write {}: {e}", validated.display()))?;
 
             let sections = seacraft_core::report::report_sections(&opts);
 
@@ -1641,7 +1745,7 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let imo_pass = seacraft_core::stability::evaluate_imo_criteria(&curves, 0).map(|c| c.passed).unwrap_or(false);
 
             Ok(json!({
-                "path": path.to_string_lossy(),
+                "path": validated.to_string_lossy(),
                 "bytes": html.len(),
                 "sections": sections,
                 "imo_pass": imo_pass,
@@ -2388,7 +2492,10 @@ mod tests {
 
     #[test]
     fn tcp_listener_serves_json_lines_round_trip() {
-        let (addr, rx) = spawn_listener("127.0.0.1:0").expect("bind an ephemeral port");
+        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("bind an ephemeral port");
+        let addr = listener.addr;
+        let rx = listener.receiver;
+        let token = listener.token.expect("token");
         assert_ne!(addr.port(), 0, "the listener reports the port it got");
         let (mut app, ctx) = demo();
 
@@ -2402,6 +2509,12 @@ mod tests {
             reader.read_line(&mut line).expect("a reply line");
             serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("the reply is not JSON: {line:?} ({e})"))
         }
+
+        // Authenticate first
+        writer.write_all(format!("{{\"method\":\"auth\",\"params\":{{\"token\":\"{token}\"}}}}\n").as_bytes()).unwrap();
+        writer.flush().unwrap();
+        let auth_reply = read_reply(&mut reader);
+        assert_eq!(auth_reply["ok"], true, "{auth_reply}");
 
         // Send one request and answer it as the window's frame would.
         let exchange =
@@ -2444,6 +2557,138 @@ mod tests {
         let again = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"ui.inspect\",\"params\":{}}");
         assert_eq!(again["ok"], true, "{again}");
         assert_eq!(again["result"]["version"], first["result"]["version"]);
+    }
+
+    #[test]
+    fn wrong_token_rejected_and_connection_closed() {
+        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
+        let stream = TcpStream::connect(listener.addr).expect("connect");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut writer = stream;
+
+        writer.write_all(b"{\"method\":\"auth\",\"params\":{\"token\":\"wrong_token_hex\"}}\n").unwrap();
+        writer.flush().unwrap();
+
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).expect("read reply");
+        assert!(n > 0);
+        let reply: Value = serde_json::from_str(line.trim()).expect("json reply");
+        assert_eq!(reply["ok"], false);
+        assert!(reply["error"].as_str().unwrap().contains("invalid token"));
+
+        // Connection must be closed
+        line.clear();
+        let eof = reader.read_line(&mut line).expect("read eof");
+        assert_eq!(eof, 0, "connection must be closed after failed auth");
+    }
+
+    #[test]
+    fn right_token_authenticates_and_methods_work() {
+        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
+        let token = listener.token.expect("token");
+        let rx = listener.receiver;
+        let (mut app, ctx) = demo();
+
+        let stream = TcpStream::connect(listener.addr).expect("connect");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut writer = stream;
+
+        // 1. Auth succeeds
+        writer.write_all(format!("{{\"method\":\"auth\",\"params\":{{\"token\":\"{token}\"}}}}\n").as_bytes()).unwrap();
+        writer.flush().unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["result"]["authenticated"], true);
+
+        // 2. Next method works
+        writer.write_all(b"{\"method\":\"ui.inspect\",\"params\":{}}\n").unwrap();
+        writer.flush().unwrap();
+
+        let req = rx.recv_timeout(Duration::from_secs(5)).expect("receive request");
+        let res = handle(&mut app, &ctx, &req);
+        req.reply.send(res).unwrap();
+
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let inspect_reply: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(inspect_reply["ok"], true);
+        assert_eq!(inspect_reply["result"]["version"], seacraft_core::VERSION);
+    }
+
+    #[test]
+    fn method_before_auth_is_rejected_and_connection_closed() {
+        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
+        let stream = TcpStream::connect(listener.addr).expect("connect");
+        let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+        let mut writer = stream;
+
+        writer.write_all(b"{\"method\":\"ui.inspect\",\"params\":{}}\n").unwrap();
+        writer.flush().unwrap();
+
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).expect("read reply");
+        assert!(n > 0);
+        let reply: Value = serde_json::from_str(line.trim()).expect("json reply");
+        assert_eq!(reply["ok"], false);
+        assert!(reply["error"].as_str().unwrap().contains("first request must be auth"));
+
+        // Connection must be closed
+        line.clear();
+        let eof = reader.read_line(&mut line).expect("read eof");
+        assert_eq!(eof, 0, "connection must be closed after method before auth");
+    }
+
+    #[test]
+    fn read_root_violation_rejected() {
+        let (mut app, ctx) = demo();
+        let dir = std::env::temp_dir().join(format!("seacraft-read-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![dir.clone()],
+            vec![],
+        ));
+
+        // Reading /etc/passwd or /etc/hosts outside the root is rejected
+        #[cfg(unix)]
+        {
+            let target = if std::path::Path::new("/etc/passwd").exists() { "/etc/passwd" } else { "/etc/hosts" };
+            let r = call(&mut app, &ctx, "model.open", json!({ "path": target }));
+            assert_eq!(r["ok"], false);
+            assert!(r["error"].as_str().unwrap().contains("read-root rule violation"), "{r}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_root_violation_with_traversal_rejected() {
+        let (mut app, ctx) = demo();
+        let dir = std::env::temp_dir().join(format!("seacraft-write-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+
+        // Writing with .. traversal outside root is rejected
+        let traversal_path = dir.join("../evil_traversal.fef");
+        let r = call(&mut app, &ctx, "model.save", json!({ "path": traversal_path.to_string_lossy().to_string() }));
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("write-root rule violation"), "{r}");
+
+        let traversal_render = dir.join("../evil_traversal.png");
+        let r2 = call(&mut app, &ctx, "ui.render", json!({ "path": traversal_render.to_string_lossy().to_string() }));
+        assert_eq!(r2["ok"], false);
+        assert!(r2["error"].as_str().unwrap().contains("write-root rule violation"), "{r2}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

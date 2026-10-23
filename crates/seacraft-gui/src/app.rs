@@ -216,6 +216,10 @@ pub struct App {
     /// Synthetic input queued by the control socket, injected into the next
     /// frame by [`App::raw_input_hook`].
     synthetic: Vec<egui::Event>,
+    /// Allowed read and write directory roots for the control channel.
+    control_roots: seacraft_core::control_auth::ControlRoots,
+    /// Token file removed on clean shutdown.
+    token_file: Option<seacraft_core::control_auth::TokenFile>,
 }
 
 impl App {
@@ -274,6 +278,8 @@ impl App {
             analysis_frames: [None, None, None, None],
             control: None,
             synthetic: Vec::new(),
+            control_roots: seacraft_core::control_auth::ControlRoots::default(),
+            token_file: None,
         }
     }
 
@@ -1540,6 +1546,31 @@ impl App {
     /// How many synthetic events are waiting for the next frame.
     pub fn synthetic_len(&self) -> usize {
         self.synthetic.len()
+    }
+
+    /// Set the allowed file roots for the control channel.
+    pub fn set_control_roots(&mut self, roots: seacraft_core::control_auth::ControlRoots) {
+        self.control_roots = roots;
+    }
+
+    /// Allowed file roots for the control channel.
+    pub fn control_roots(&self) -> &seacraft_core::control_auth::ControlRoots {
+        &self.control_roots
+    }
+
+    /// Check that `path` resolves inside an allowed read root.
+    pub fn check_control_read_path(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        seacraft_core::control_auth::check_read_path(path, &self.control_roots.read_roots)
+    }
+
+    /// Check that `path` resolves inside an allowed write root.
+    pub fn check_control_write_path(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        seacraft_core::control_auth::check_write_path(path, &self.control_roots.write_roots)
+    }
+
+    /// Attach a token file to be deleted when the app is dropped (clean shutdown).
+    pub fn set_token_file(&mut self, file: Option<seacraft_core::control_auth::TokenFile>) {
+        self.token_file = file;
     }
 }
 
