@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/seacraft-core", "crates/seacraft-cli", "crates/seacraft-gui"]
+members = ["crates/seacraft-core", "crates/seacraft-cli", "crates/seacraft-gui", "xtask"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-beta.48"
+version = "0.1.0-beta.49"
 edition = "2021"
 license = "GPL-2.0-or-later"
 authors = ["SeaCraft contributors"]

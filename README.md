@@ -406,9 +406,9 @@ Subdivision level defaults to 3; `--mode cc` selects pure Catmull–Clark.
 ### Example
 
 ```console
-$ cargo run --release -- demo -o /tmp/demo.fef
-$ cargo run --release -- hydro /tmp/demo.fef --kg 2.2
-$ cargo run --release -- linesplan /tmp/demo.fef -o /tmp/demo.svg
+$ cargo run --release --bin seacraft -- demo -o /tmp/demo.fef
+$ cargo run --release --bin seacraft -- hydro /tmp/demo.fef --kg 2.2
+$ cargo run --release --bin seacraft -- linesplan /tmp/demo.fef -o /tmp/demo.svg
 ```
 
 ---

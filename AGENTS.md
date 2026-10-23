@@ -85,6 +85,8 @@ crates/seacraft-gui/
   src/history.rs            snapshot undo/redo (64)
   src/panels.rs             layer dock, hydrostatics dock, GZ plot
   tests/                    drag, files, hydro, smoke (all headless)
+xtask/                      cargo xtask ci: clippy, tests, version check, demo numbers
+docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 skills/                     agent skills for the MCP server (CI-checked tool names)
 examples/demo-hull.fef      generated demo model, safe to regenerate
 README.md                   user-facing docs + FREE!ship investigation notes
@@ -95,14 +97,15 @@ ATTRIBUTION.md              provenance of code ported from ../resource/*
 
 ```console
 cargo build --release
+cargo xtask ci   # the full gate: clippy, tests, versions, demo numbers, no remotes
 cargo test                       # core + gui unit + 5 integration suites
 cargo clippy --all-targets       # must stay silent
-cargo run --release -- demo -o /tmp/demo.fef
-cargo run --release -- hydro /tmp/demo.fef --kg 2.2 --stations 11
-cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.svg
-cargo run --release -- linesplan /tmp/demo.fef -o /tmp/lines.dxf
-cargo run --release -- render /tmp/demo.fef -o /tmp/zebra.png --mode zebra
-cargo run --release -- export /tmp/demo.fef -o /tmp/hull.html --level 2
+cargo run --release --bin seacraft -- demo -o /tmp/demo.fef
+cargo run --release --bin seacraft -- hydro /tmp/demo.fef --kg 2.2 --stations 11
+cargo run --release --bin seacraft -- linesplan /tmp/demo.fef -o /tmp/lines.svg
+cargo run --release --bin seacraft -- linesplan /tmp/demo.fef -o /tmp/lines.dxf
+cargo run --release --bin seacraft -- render /tmp/demo.fef -o /tmp/zebra.png --mode zebra
+cargo run --release --bin seacraft -- export /tmp/demo.fef -o /tmp/hull.html --level 2
 cargo run -p seacraft-gui -- --open examples/demo-hull.fef
 ```
 

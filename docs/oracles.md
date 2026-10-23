@@ -1,0 +1,379 @@
+# SeaCraft Numeric Oracles
+
+This document records every numeric oracle used across the SeaCraft test suite:
+the mathematical formula, the exact test function (`file::test_name`), the numbers
+and parameters evaluated, and the provenance describing how the reference value
+was produced.
+
+Per project conventions, only facts stated in the codebase, code comments,
+`.hermes/NEXT.md`, or `ATTRIBUTION.md` are documented.
+
+---
+
+## 1. Analytic Box Displacement and Hydrostatics
+
+### Formula
+For an upright, creased rectangular cuboid barge of length $L$, beam $B$, depth $D$, floating at draft $T < D$ in water of density $\rho$:
+- **Displaced volume**: $\nabla = L \cdot B \cdot T$
+- **Displacement mass**: $\Delta = \rho \cdot \nabla$
+- **Form coefficients**: $C_b = C_{wp} = C_m = C_p = 1.0$
+- **Centre of buoyancy**: $KB = T / 2$, $LCB_x = L / 2$, $LCB_y = 0$
+- **Centre of flotation**: $LCF_x = L / 2$, $LCF_y = 0$
+- **Waterplane area**: $A_{wp} = L \cdot B$
+- **Metacentric radii**:
+  - Transverse: $BM_T = \frac{B^2}{12 T}$, $KM_T = KB + BM_T = \frac{T}{2} + \frac{B^2}{12 T}$
+  - Longitudinal: $BM_L = \frac{L^2}{12 T}$
+- **Wetted surface area**: $S = L \cdot B + 2 L T + 2 B T$
+- **Midship section area**: $A_m = B \cdot T$
+
+### Test Location
+- [`crates/seacraft-core/tests/analytic.rs::a_closed_barge_has_exact_hydrostatics`](../crates/seacraft-core/tests/analytic.rs)
+
+### Numbers Used
+- $L = 10.0\text{ m}$, $B = 4.0\text{ m}$, $D = 4.0\text{ m}$, draft $T = 2.0\text{ m}$, $\rho = 1000.0\text{ kg/m}^3$.
+- Displaced volume: $\nabla = 80.0\text{ m}^3$, $\Delta = 80.0\text{ t}$.
+- Coefficients: $C_b = C_{wp} = C_m = C_p = 1.0000$.
+- Buoyancy & Metacentre: $KB = 1.000\text{ m}$, $A_{wp} = 40.0\text{ m}^2$, $BM_T = 0.6667\text{ m}$, $BM_L = 4.1667\text{ m}$, $KM_T = 1.6667\text{ m}$.
+- Centroids: $LCB = (5.0, 0.0, 1.0)\text{ m}$, $LCF = (5.0, 0.0)\text{ m}$.
+- Areas: $S = 96.0\text{ m}^2$, $A_m = 8.0\text{ m}^2$.
+
+### Provenance
+Exact closed-form geometric integration for a rectangular cuboid. Edges are creased and corner points pinned so subdivision does not round corners.
+
+---
+
+## 2. Upright Stability of a Symmetric Box Barge
+
+### Formula
+For a box barge with transverse symmetry about the centreline $y = 0$:
+- At upright condition ($\phi = 0^\circ$), righting lever $GZ = 0$ and cross-curve lever $KN = 0$.
+- At positive heel $\phi > 0^\circ$, center of buoyancy shifts to leeward, producing positive righting lever $GZ > 0$.
+
+### Test Location
+- [`crates/seacraft-core/tests/analytic.rs::a_box_has_no_righting_lever_upright`](../crates/seacraft-core/tests/analytic.rs)
+
+### Numbers Used
+- Box $10.0 \times 4.0 \times 4.0\text{ m}$, $T = 2.0\text{ m}$, target volume $\nabla = 80.0\text{ m}^3$, $KG = 1.0\text{ m}$.
+- Heel $0.0^\circ$: $GZ = 0.0\text{ m}$, $KN = 0.0\text{ m}$.
+- Heel $10.0^\circ$: $GZ > 0.0\text{ m}$.
+
+### Provenance
+Transverse geometric symmetry of an upright rectangular barge.
+
+---
+
+## 3. Box-Barge Trim to LCB Equilibrium
+
+### Formula
+A rectangular box barge of length $L$, beam $B$, draft $d$ floating with bow-up trim has submerged local depth $h(x) = d + \text{trim}(1/2 - x/L)$.
+Displaced volume is invariant to trim: $\nabla = L \cdot B \cdot d$.
+Centroid of submerged volume along $x$:
+$$\bar{x} = \frac{L}{2} - \text{trim} \cdot \frac{L}{12 d}$$
+Inverting to solve for the equilibrium trim required to position $LCB$ at target $LCG = \bar{x}$:
+$$\text{trim} = \left(\frac{L}{2} - LCG\right) \cdot \frac{12 d}{L}$$
+
+### Test Location
+- [`crates/seacraft-core/tests/analytic.rs::free_trim_moves_the_lcb_to_the_requested_station`](../crates/seacraft-core/tests/analytic.rs)
+
+### Numbers Used
+- Box $L = 10.0\text{ m}$, $B = 4.0\text{ m}$, $D = 4.0\text{ m}$, $d = 2.0\text{ m}$.
+- Target $LCG = 4.0\text{ m}$.
+- Analytic trim: $(5.0 - 4.0) \cdot 12 \cdot 2.0 / 10.0 = 2.400\text{ m}$ bow-up.
+- Equilibrium draft: $2.000\text{ m}$.
+- Symmetry check: at heel $20^\circ$ and $LCG = 5.0\text{ m}$, trim must be $0.0\text{ m}$.
+
+### Provenance
+Analytic 1D moment integration of a trapezoidal submerged waterplane on a prismatic rectangular geometry.
+
+---
+
+## 4. Free-to-Trim Stability Cross Curves Invariance
+
+### Formula
+Non-linear two-unknown solve for $(T, \text{trim})$ ensuring displaced volume matches target displacement and $LCB_x = LCG$.
+For a non-prismatic hull with a wide transom and fine bow, heeling moves the centre of buoyancy aft, causing trim. Holding trim fixed leaves $LCB$ away from $LCG$ and overstates $GZ$; allowing the hull to trim freely yields the true, lower equilibrium righting lever $GZ_{\text{free}} < GZ_{\text{fixed}}$.
+
+### Test Location
+- [`crates/seacraft-core/tests/analytic.rs::free_trim_cross_curves_hold_the_lcb_on_the_lcg`](../crates/seacraft-core/tests/analytic.rs)
+
+### Numbers Used
+- Demo hull at $T = 0.62\text{ m}$, heels $[0^\circ, 10^\circ, 20^\circ, 30^\circ]$, $LCG = 4.297\text{ m}$ (upright LCB).
+- At heel $\ge 20^\circ$: $|\text{trim}| > 0.005\text{ m}$ and $GZ_{\text{free}} < GZ_{\text{fixed}}$.
+
+### Provenance
+Multi-dimensional root finding equilibrium invariant on refined surface mesh.
+
+---
+
+## 5. Closed Box High Heel Stability (Singularity Avoidance)
+
+### Formula
+Deriving cutting waterplane orientation from $(\sin\phi, \cos\phi)$ avoids the $\tan\phi$ singularity at $\phi = 90^\circ$. For a completely closed box, righting lever $GZ$ and cross curve $KN$ remain finite and continuous at high heel angles.
+
+### Test Location
+- [`crates/seacraft-core/tests/analytic.rs::closed_box_cross_curve_at_75_and_90_degrees_is_finite`](../crates/seacraft-core/tests/analytic.rs)
+
+### Numbers Used
+- Box $10.0 \times 4.0 \times 4.0\text{ m}$ at draft $2.0\text{ m}$.
+- Heel angles: $75.0^\circ$ and $90.0^\circ$. Both yield finite $GZ$ and $KN$.
+
+### Provenance
+Trigonometric formulation verification for extreme angles.
+
+---
+
+## 6. Demo Hull Reference Hydrostatics (Project Regression Oracle)
+
+### Formula
+Panel divergence divergence integration over triangular panels of the refined limit mesh (Loop subdivision mode, level 3) at design draft $T = 0.62\text{ m}$, water density $\rho = 1025.0\text{ kg/m}^3$, appendage coefficient $1.0$, $11$ stations.
+
+### Test Locations
+- [`crates/seacraft-core/tests/analytic.rs::demo_hull_matches_the_reference_numbers`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-gui/tests/hydro.rs::the_dock_reports_the_cli_reference_numbers`](../crates/seacraft-gui/tests/hydro.rs)
+- [`crates/seacraft-core/src/table.rs::a_row_matches_the_single_point_measurement`](../crates/seacraft-core/src/table.rs)
+- `xtask/src/main.rs` (CI gate)
+
+### Numbers Used
+- **Volume $\nabla$**: $11.851\text{ m}^3$ (tolerance $1.0\%$)
+- **Block coefficient $C_b$**: $0.5042$ (tolerance $1.0\%$)
+- **Prismatic coefficient $C_p$**: $0.7548$ (tolerance $1.0\%$)
+- **Midship coefficient $C_m$**: $0.6680$ (tolerance $1.0\%$)
+- **Waterplane coefficient $C_{wp}$**: $0.8235$ (tolerance $1.0\%$)
+- **Vertical centre of buoyancy $KB$**: $0.392\text{ m}$ (tolerance $1.0\%$)
+- **Transverse metacentre $KM$**: $2.625\text{ m}$ (tolerance $1.0\%$)
+- **Midship area $A_m$**: $1.467\text{ m}^2$ (tolerance $1.0\%$)
+
+### Provenance
+SeaCraft's own output for the built-in demo hull, frozen as a regression baseline (not an independent or FREE!ship-computed value; provenance of the original numbers: not recorded). Recorded in `AGENTS.md` and `.hermes/NEXT.md` as the project's primary regression gate: any change altering these metrics by $> 1\%$ is a regression.
+
+---
+
+## 7. Wigley Michell Wave Resistance Quadrature Reference
+
+### Formula
+Michell thin-ship wave resistance integral:
+$$R_w = \frac{4 \rho g^2}{\pi U^2} \int_0^{\pi/2} (P^2 + Q^2) \sec^3\theta \, d\theta$$
+For the parabolic Wigley hull $y = \pm \frac{B}{2} (1 - (2x/L)^2)(1 - (z/T)^2)$:
+$P = 0$ due to fore-aft symmetry, while $Q$ evaluates by exact separable quadrature in $x$ and $z$:
+$$I_x = -\frac{L/2}{k_x} \cos\left(k_x \frac{L}{2}\right) + \frac{1}{k_x^2} \sin\left(k_x \frac{L}{2}\right)$$
+$$I_z = \frac{1}{k_z} - \frac{2}{k_z (k_z T)^2} + \left(\frac{2}{k_z (k_z T)} + \frac{2}{k_z (k_z T)^2}\right) e^{-k_z T}$$
+with $k_x = k_0 \sec\theta$, $k_z = k_0 \sec^2\theta$, $k_0 = g / U^2$.
+
+### Test Location
+- [`crates/seacraft-core/src/michell.rs::test_wigley_hull_matches_independent_quadrature_and_self_consistency`](../crates/seacraft-core/src/michell.rs)
+- [`crates/seacraft-core/src/michell.rs::wigley_analytic_rw`](../crates/seacraft-core/src/michell.rs)
+
+### Numbers Used
+- Hull: $L = 10.0\text{ m}$, $B = 1.0\text{ m}$, $T = 0.625\text{ m}$ ($L/B = 10$, $B/T = 1.6$).
+- Physical constants: $\rho = 1000.0\text{ kg/m}^3$, $g = 9.80665\text{ m/s}^2$.
+- Numerical grid: $65 \times 25$ offsets, $n_\theta = 128$.
+- Independent reference $C_w = R_w / (\frac{1}{2}\rho U^2 S)$:
+  - $Fn = 0.25$: $C_w = 1.064 \times 10^{-3}$
+  - $Fn = 0.30$: $C_w = 2.142 \times 10^{-3}$ (interference hump)
+  - $Fn = 0.35$: $C_w = 1.248 \times 10^{-3}$ (hollow)
+  - $Fn = 0.40$: $C_w = 2.734 \times 10^{-3}$
+  - $Fn = 0.50$: $C_w = 4.517 \times 10^{-3}$ (main hump)
+- Grid result matches 1D analytical quadrature `wigley_analytic_rw` within $1\%$.
+
+### Provenance
+Independent numerical quadrature using variable substitution $\lambda = \sec\theta = \cosh u$ ($u \in [0, 6]$) over an $801 \times 201$ offset grid using the trapezoidal rule, computed specifically for this regression check. As documented in the module comments and `.hermes/NEXT.md`, these are not published experimental or tabulated values.
+
+---
+
+## 8. DSYHS Yacht Residuary Resistance Polynomial Cross-Check
+
+### Formula
+Delft Systematic Yacht Hull Series (DSYHS Keuning & Katgert 2008, Table 2):
+$$R_r = \Delta \cdot g \cdot \frac{\nabla^{1/3}}{L_{WL}} \cdot P(x_1, \dots, x_7)$$
+where $P = a_0 + \sum_{i=1}^7 a_i x_i$, with dimensionless parameters:
+- $x_1 = LCB / LWL$ (from FPP, fraction of $LWL$, positive aft)
+- $x_2 = C_p$
+- $x_3 = \nabla^{2/3} / A_w$
+- $x_4 = BWL / LWL$
+- $x_5 = LCB / LCF$
+- $x_6 = BWL / T_c$
+- $x_7 = C_m$
+
+### Test Locations
+- [`crates/seacraft-core/src/resistance.rs::dsyhs_polynomial_at_tabulated_fn_matches_hand_arithmetic`](../crates/seacraft-core/src/resistance.rs)
+- [`crates/seacraft-core/src/resistance.rs::dsyhs_interpolation_midway_between_fn_rows`](../crates/seacraft-core/src/resistance.rs)
+- Coefficient table comments in [`crates/seacraft-core/src/resistance.rs#L792-L809`](../crates/seacraft-core/src/resistance.rs)
+
+### Numbers Used
+- Sample hull: $L_{WL} = 10.0\text{ m}$, $B_{WL} = 3.0\text{ m}$, $T_c = 0.50\text{ m}$, $\nabla = 5.0\text{ m}^3$, $A_w = 18.0\text{ m}^2$, $S_w = 25.0\text{ m}^2$, $C_p = 0.55$, $C_m = 0.70$, $LCB / LWL = 0.52$, $LCF / LWL = 0.56$, $\rho = 1025.0\text{ kg/m}^3$, $g = 9.80665\text{ m/s}^2$.
+- At $Fn = 0.40$:
+  - Dimensionless inputs: $x_1 = 0.52$, $x_2 = 0.55$, $x_3 \approx 0.162445$, $x_4 = 0.30$, $x_5 = 13/14 \approx 0.928571$, $x_6 = 6.0$, $x_7 = 0.70$.
+  - Coefficients: $a = [-0.0064, -0.4034, -0.1250, 0.0273, -0.1341, 0.3578, 0.0045, 0.1115]$.
+  - Polynomial value $P = 0.116579612$.
+  - Scaling factors: $\nabla^{1/3}/L_{WL} = 0.17099759$, $\Delta g = 50259.08125\text{ N}$.
+  - Expected residuary resistance $R_r = 1001.90645\text{ N}$.
+
+### Provenance
+Coefficients from Table 2 of J. A. Keuning and M. Katgert (2008), "A bare hull resistance prediction method derived from the results of the Delft Systematic Yacht Hull Series extended to higher speeds", InnovSail '08.
+Cross-checked against Pedro Teixeira (2014) MSc thesis (IST Lisbon), Appendix IV, Table IV-1: 103 of 104 coefficients match identically; $a_3$ at $Fn = 0.55$ is $0.8762$ in the thesis versus $0.8726$ in Keuning & Katgert (2008). Test verifies polynomial evaluation against step-by-step arithmetic hand calculation.
+
+---
+
+## 9. Deterministic Damage Stability: Box Barge Sinkage
+
+### Formula
+For a box barge $L \times B \times D$ at initial draft $T$, damaged by flooding a full-breadth midship compartment of length $l$ and permeability $\mu$ open to the sea and extending above the waterline:
+- Intact displaced volume: $V_0 = L \cdot B \cdot T$
+- Lost buoyancy volume: $\mu \cdot l \cdot B \cdot T'$
+- Equilibrium buoyant volume: $(L - \mu \cdot l) \cdot B \cdot T' = V_0 = L \cdot B \cdot T$
+- Damaged equilibrium draft:
+  $$T' = T \cdot \frac{L}{L - \mu \cdot l}$$
+- With midship and symmetric flooding: $\text{trim} = 0.0\text{ m}$, $\text{heel} = 0.0^\circ$.
+
+### Test Location
+- [`crates/seacraft-core/src/damage.rs::box_barge_lost_buoyancy_sinkage_matches_analytic_derived_oracle`](../crates/seacraft-core/src/damage.rs)
+
+### Numbers Used
+- $L = 10.0\text{ m}$, $B = 4.0\text{ m}$, $D = 2.0\text{ m}$, initial draft $T = 0.80\text{ m}$.
+- Compartment: length $l = 2.0\text{ m}$, permeability $\mu = 0.95$.
+- Analytic damaged draft: $T' = 0.80 \cdot 10.0 / (10.0 - 0.95 \cdot 2.0) = 8.0 / 8.1 \approx 0.987654\text{ m}$.
+- Asserted within $0.5\%$ relative tolerance; trim $< 10^{-3}\text{ m}$, heel $< 10^{-3\circ}$.
+
+### Provenance
+Direct algebraic derivation from the lost-buoyancy principle for prismatic rectangular box hulls.
+
+---
+
+## 10. Tank Free-Surface Moment and Virtual KG Correction
+
+### Formula
+For an upright rectangular tank of length $l$ and breadth $b$:
+- **Transverse waterplane second moment**: $I_T = \frac{l \cdot b^3}{12}$
+- **Free-surface moment**: $\text{FSM} = \rho_{\text{fluid}} \cdot I_T = \rho_{\text{fluid}} \cdot \frac{l \cdot b^3}{12}$
+- **Free-surface correction**: $\text{FSC} = \frac{\sum \text{FSM}}{\Delta}$
+- **Virtual KG**: $KG_{\text{fluid}} = KG_{\text{solid}} + \text{FSC}$
+- For empty ($\text{fill} = 0$) or pressed-up ($\text{fill} = 1$) tanks: $\text{FSM} = 0$.
+*(Rule note: FSM is not reduced by permeability, maintaining a conservative margin).*
+
+### Test Locations
+- [`crates/seacraft-core/src/loading.rs::box_tank_volume_and_centroid_at_half_fill`](../crates/seacraft-core/src/loading.rs)
+- [`crates/seacraft-core/src/loading.rs::rectangular_tank_fsm_is_exact_and_zero_when_empty_or_pressed_up`](../crates/seacraft-core/src/loading.rs)
+- [`crates/seacraft-core/src/loading.rs::kg_of_items_is_mass_weighted_mean_and_fsc_is_fsm_over_displacement`](../crates/seacraft-core/src/loading.rs)
+
+### Numbers Used
+- Tank: $l = 4.0\text{ m}$, $b = 2.4\text{ m}$, $h = 1.5\text{ m}$, $\rho = 1.025\text{ t/m}^3$, permeability $0.98$.
+  - $I_T = 4.0 \cdot (2.4)^3 / 12 = 4.608\text{ m}^4$.
+  - $\text{FSM} = 1.025 \cdot 4.608 = 4.7232\text{ t}\cdot\text{m}$ for slack fills ($0.1, 0.5, 0.9$).
+  - At fill $0.0$ and $1.0$: $\text{FSM} = 0.0$.
+- In multi-item test: tank $l = 2.0\text{ m}$, $b = 1.2\text{ m}$, $\rho = 1.0\text{ t/m}^3 \implies \text{FSM} = 0.288\text{ t}\cdot\text{m}$.
+
+### Provenance
+Classical naval architecture formula for second moment of area of a rectangular free water surface.
+
+---
+
+## 11. IMO Weather Criterion (IS Code Part A §2.3)
+
+### Formula
+IMO 2008 Intact Stability Code Part A §2.3:
+- **Wind heeling levers**:
+  $$l_{w1} = \frac{P \cdot A \cdot Z}{1000 \cdot g \cdot \Delta}\text{ (m)}, \quad l_{w2} = 1.5 \cdot l_{w1}$$
+  where $P = 504\text{ Pa}$, $A$ is above-water lateral projected area, $Z$ is lever between centroids of windage and underwater lateral area.
+- **Roll period**:
+  $$T_{\text{roll}} = \frac{2 \cdot C \cdot B}{\sqrt{GM}}$$
+  with $C = 0.373 + 0.023(B/d) - 0.043(L_{WL}/100)$.
+- **Rollback angle**:
+  $$\phi_1 = 109 \cdot k \cdot X_1 \cdot X_2 \cdot \sqrt{r \cdot s}\text{ (deg)}$$
+  with $r = 0.73 + 0.6(OG/d)$, $OG = KG - d$, and empirical table factors $X_1(B/d)$, $X_2(C_b)$, $s(T_{\text{roll}})$, $k(\text{bilge})$.
+- **Area integration**:
+  - $\text{Area } a$: integral of $(l_{w2} - GZ)$ from $\phi_{\text{start}} = \phi_0 - \phi_1$ to equilibrium $\phi_c$.
+  - $\text{Area } b$: integral of $(GZ - l_{w2})$ from $\phi_c$ to downflooding/deck angle $\phi_2$.
+  - Criterion: $\text{Area } b \ge \text{Area } a$.
+
+### Test Locations
+- [`crates/seacraft-core/src/weather.rs::roll_period_and_phi1_hand_computed`](../crates/seacraft-core/src/weather.rs)
+- [`crates/seacraft-core/src/weather.rs::box_barge_windage_and_lw1_match_analytic`](../crates/seacraft-core/src/weather.rs)
+- [`crates/seacraft-core/src/weather.rs::synthetic_sine_gz_areas_match_analytic_within_one_percent`](../crates/seacraft-core/src/weather.rs)
+
+### Numbers Used
+1. Roll period & $\phi_1$ case:
+   - $B = 10.0\text{ m}$, $d = 4.0\text{ m}$ ($B/d = 2.5 \implies X_1 = 0.98$), $L_{WL} = 50.0\text{ m}$, $C_b = 0.55 \implies X_2 = 0.89$.
+   - $KG = 4.4\text{ m} \implies OG = 0.4\text{ m} \implies r = 0.79$, $GM = 1.00\text{ m}$.
+   - $C = 0.409$, $T = 8.18\text{ s}$, $s(8.18) = 0.09174$, $k = 1.0$.
+   - $\phi_1 = 109 \cdot 1.0 \cdot 0.98 \cdot 0.89 \cdot \sqrt{0.79 \cdot 0.09174} \approx 25.59^\circ$.
+2. Box barge windage case:
+   - Box $10.0 \times 4.0 \times 3.0\text{ m}$, draft $d = 1.2\text{ m}$.
+   - Underwater lateral area: $10 \times 1.2 = 12.0\text{ m}^2$, $z = 0.6\text{ m}$.
+   - Above-water windage: $10 \times 1.8 = 18.0\text{ m}^2$, $z = 2.1\text{ m}$.
+   - Lever $Z = 2.1 - 0.6 = 1.5\text{ m}$.
+   - Displacement $\Delta = 49.2\text{ t} \implies l_{w1} = 0.02816\text{ m}$, $l_{w2} = 0.04224\text{ m}$.
+3. Synthetic sine $GZ$ areas:
+   - $GZ(\phi) = GM \sin\phi$ ($GM = 1.0\text{ m}$).
+   - $l_{w1} = 0.08\text{ m}$, $l_{w2} = 0.12\text{ m}$.
+   - Exact trigonometric integrals evaluated analytically:
+     $$\text{Area } a = l_{w2}(\phi_c - \phi_{\text{start}}) + GM(\cos\phi_c - \cos\phi_{\text{start}})$$
+     $$\text{Area } b = GM(\cos\phi_c - \cos\phi_2) - l_{w2}(\phi_2 - \phi_c)$$
+   - Numerical integration agrees with analytic solution within $1\%$.
+
+### Provenance
+Formulas from IMO 2008 IS Code Part A §2.3 / Resolution MSC.267(85). Hand calculation and exact trigonometric integration.
+
+---
+
+## 12. Linear GZ Curve IMO Area Integration
+
+### Formula
+For a linear righting arm curve $GZ(\phi) = k \cdot \phi$ (with $\phi$ in degrees):
+$$\text{Area}_{a \to b} = \int_{\theta_a}^{\theta_b} k \left(\frac{180}{\pi}\theta\right) d\theta = \frac{k}{2} (\phi_b^2 - \phi_a^2) \cdot \frac{\pi}{180^\circ}$$
+Because $GZ(\phi)$ is linear, trapezoidal quadrature is exact.
+Initial metacentric height: $GM_0 = k / (\pi / 180)$.
+
+### Test Location
+- [`crates/seacraft-core/src/stability.rs::imo_areas_are_exact_for_a_linear_gz_curve`](../crates/seacraft-core/src/stability.rs)
+
+### Numbers Used
+- $k = 0.01\text{ m/deg}$, heels from $0^\circ$ to $90^\circ$ in $10^\circ$ steps.
+- $\text{Area}_{0 \to 30} = 0.07854\text{ m}\cdot\text{rad}$.
+- $\text{Area}_{0 \to 40} = 0.13963\text{ m}\cdot\text{rad}$.
+- $\text{Area}_{30 \to 40} = 0.06109\text{ m}\cdot\text{rad}$.
+- Max $GZ = 0.90\text{ m}$ at $90^\circ$.
+- $GM_0 = 0.572958\text{ m}$.
+
+### Provenance
+Exact algebraic integration of a linear function.
+
+---
+
+## 13. Three-Point Parabolic GZ Peak Interpolation
+
+### Formula
+Fitting a second-order parabola through 3 consecutive points around the discrete maximum:
+$$GZ(\phi) = a \phi^2 + b \phi + c$$
+yields vertex location $\phi_{\text{max}} = -b / (2a)$ and interpolated maximum $GZ_{\text{max}} = c - b^2 / (4a)$.
+
+### Test Location
+- [`crates/seacraft-core/tests/analytic.rs::parabola_interpolated_angle_of_max_gz_on_synthetic_curve`](../crates/seacraft-core/tests/analytic.rs)
+
+### Numbers Used
+- Synthetic test parabola: $GZ(\phi) = 0.55 - 0.001 \cdot (\phi - 33.5)^2$.
+- Sampled at $10^\circ$ intervals: $\phi \in [0^\circ, 80^\circ]$.
+- Analytical peak: $\phi = 33.5^\circ$, $GZ_{\text{max}} = 0.55\text{ m}$.
+
+### Provenance
+Synthetic algebraic test function.
+
+---
+
+## 14. Box Barge Bonjean Section Areas
+
+### Formula
+For a rectangular box barge of constant breadth $B$ and depth $D$, underwater cross-sectional area at longitudinal station $x$ and draft $d \le D$:
+$$A(x, d) = B \cdot d$$
+Prismatic coefficient $C_p = \nabla / (L \cdot A_m) = 1.0$.
+
+### Test Locations
+- [`crates/seacraft-core/src/curves.rs::bonjean_on_a_box_is_width_times_draft`](../crates/seacraft-core/src/curves.rs)
+- [`crates/seacraft-core/src/curves.rs::prismatic_on_a_box_is_one`](../crates/seacraft-core/src/curves.rs)
+
+### Numbers Used
+- $L = 10.0\text{ m}$, $B = 4.0\text{ m}$, $D = 3.0\text{ m}$.
+- Drafts: $[0.5, 1.0, 1.5, 2.0, 2.5, 3.0]\text{ m}$.
+- Section area $A = 4.0 \cdot d\text{ m}^2$ at all internal stations.
+
+### Provenance
+Exact cross-sectional geometry of rectangular prisms.
