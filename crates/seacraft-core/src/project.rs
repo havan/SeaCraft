@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::damage::{Compartment, CompartmentSpec, DamageCase};
 use crate::loading::LoadingCondition;
 use crate::report::ReportOptions;
+use crate::seastate::WaveSpectrum;
 use crate::weather::WindageItem;
 
 /// The `format` tag of a project file.
@@ -65,6 +66,16 @@ impl Default for Project {
     }
 }
 
+/// Seakeeping configuration for the design report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReportSeakeeping {
+    pub speed_kn: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sea: Option<WaveSpectrum>,
+}
+
 /// Saved report choices; `None` fields keep [`ReportOptions::from_surface`]'s default.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReportSettings {
@@ -84,9 +95,22 @@ pub struct ReportSettings {
     pub include_resistance: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_planing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading_conditions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub damage_cases: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_weather: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seakeeping: Option<ReportSeakeeping>,
 }
 
 impl ReportSettings {
+    /// True when no custom report settings are specified.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
     /// Overlay the saved choices on `base`.
     pub fn apply(&self, mut base: ReportOptions) -> ReportOptions {
         if let Some(v) = self.draft {
@@ -129,7 +153,7 @@ impl Project {
             && self.compartments.is_empty()
             && self.damage_cases.is_empty()
             && self.windage.is_empty()
-            && self.report == ReportSettings::default()
+            && self.report.is_empty()
             && self.extra.is_empty()
     }
 
@@ -217,6 +241,12 @@ impl Project {
                     "windage `{}`: area must be >= 0 and z finite",
                     w.name
                 ));
+            }
+        }
+        if let Some(sk) = &self.report.seakeeping {
+            if let Some(sea) = &sk.sea {
+                sea.validate()
+                    .map_err(|e| format!("report seakeeping sea: {e}"))?;
             }
         }
         Ok(())
@@ -322,6 +352,14 @@ mod tests {
             report: ReportSettings {
                 kg: Some(1.1),
                 speeds_kn: Some(vec![5.0, 7.0]),
+                loading_conditions: Some(vec!["Demo condition".into()]),
+                damage_cases: Some(vec!["Damage Case".into()]),
+                include_weather: Some(true),
+                seakeeping: Some(ReportSeakeeping {
+                    speed_kn: 6.0,
+                    kg: Some(1.1),
+                    sea: Some(WaveSpectrum::Bretschneider { hs: 1.5, tp: 6.0 }),
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -335,6 +373,25 @@ mod tests {
         assert_eq!(back, p);
         assert!(!p.is_empty());
         assert!(Project::default().is_empty());
+    }
+
+    #[test]
+    fn loads_legacy_project_without_new_report_keys() {
+        let legacy_json = r#"{
+            "format": "seacraft-project",
+            "version": 1,
+            "report": {
+                "kg": 1.1,
+                "speeds_kn": [5.0, 7.0]
+            }
+        }"#;
+        let p = Project::from_json(legacy_json).unwrap();
+        assert_eq!(p.report.kg, Some(1.1));
+        assert_eq!(p.report.speeds_kn, Some(vec![5.0, 7.0]));
+        assert_eq!(p.report.loading_conditions, None);
+        assert_eq!(p.report.damage_cases, None);
+        assert_eq!(p.report.include_weather, None);
+        assert_eq!(p.report.seakeeping, None);
     }
 
     #[test]

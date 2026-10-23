@@ -8,11 +8,16 @@
 use std::fmt::Write as _;
 
 use crate::curves;
+use crate::damage;
 use crate::hydro::{Hull, HydroOptions};
 use crate::linesplan::{self, LinesplanOptions};
+use crate::loading;
 use crate::mesh::Surface;
 use crate::planing::{self, PlaningPoint};
+use crate::project::Project;
 use crate::resistance::{self, HoltropInput, Resistance};
+use crate::seakeeping::{self, SeakeepingSpec};
+use crate::seastate::{self, IrregularSpec, WaveSpectrum};
 use crate::stability::{self, upright_lcb, ImoCriteria, StabilityCondition};
 use crate::subdiv::{SubdivisionMode, SubdivisionOptions};
 use crate::table;
@@ -100,6 +105,11 @@ impl Default for ReportOptions {
 
 /// Names of the HTML `<section>` elements that this configuration will produce.
 pub fn report_sections(opts: &ReportOptions) -> Vec<&'static str> {
+    report_sections_with_project(opts, &Project::default())
+}
+
+/// Names of the HTML `<section>` elements that this configuration and project will produce.
+pub fn report_sections_with_project(opts: &ReportOptions, project: &Project) -> Vec<&'static str> {
     let mut sections = vec![
         "particulars",
         "lines",
@@ -110,6 +120,23 @@ pub fn report_sections(opts: &ReportOptions) -> Vec<&'static str> {
     ];
     if opts.include_planing {
         sections.push("planing");
+    }
+    let has_loading = match &project.report.loading_conditions {
+        Some(names) => !names.is_empty(),
+        None => !project.loading_conditions.is_empty(),
+    };
+    if has_loading {
+        sections.push("loading");
+    }
+    let has_damage = match &project.report.damage_cases {
+        Some(names) => !names.is_empty(),
+        None => !project.damage_cases.is_empty(),
+    };
+    if has_damage {
+        sections.push("damage");
+    }
+    if project.report.seakeeping.is_some() {
+        sections.push("seakeeping");
     }
     sections
 }
@@ -126,6 +153,15 @@ pub fn report_sections(opts: &ReportOptions) -> Vec<&'static str> {
 /// - `resistance`
 /// - `planing` (when `opts.include_planing` is true)
 pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, String> {
+    design_report_with_project(surface, opts, &Project::default())
+}
+
+/// Produce a standalone self-contained HTML5 design report of the hull and project sidecar data.
+pub fn design_report_with_project(
+    surface: &Surface,
+    opts: &ReportOptions,
+    project: &Project,
+) -> Result<String, String> {
     if !opts.draft.is_finite() || opts.draft <= 0.0 {
         return Err("design_report: draft must be positive and finite".into());
     }
@@ -903,6 +939,562 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
         out.push_str("</section>\n\n");
     }
 
+    // ------------------------------------------------------------- 8. Loading Conditions
+    let has_loading = match &project.report.loading_conditions {
+        Some(names) => !names.is_empty(),
+        None => !project.loading_conditions.is_empty(),
+    };
+    if has_loading {
+        out.push_str("<section id=\"loading\">\n");
+        out.push_str("  <h2>Loading Conditions</h2>\n");
+
+        let cond_names: Vec<&str> = match &project.report.loading_conditions {
+            Some(names) => names.iter().map(|s| s.as_str()).collect(),
+            None => project
+                .loading_conditions
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect(),
+        };
+
+        let inc_weather = project.report.include_weather.unwrap_or(true);
+
+        for name in cond_names {
+            let Some(orig_cond) = project.loading_conditions.iter().find(|c| c.name == name) else {
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"warn-box\">Loading condition <strong>{}</strong> not found in project.</div>",
+                    html_escape(name)
+                );
+                continue;
+            };
+
+            let cond = project.with_windage(orig_cond);
+            let esc_cond = html_escape(&cond.name);
+            let _ = writeln!(out, "  <h3>{}</h3>", esc_cond);
+
+            let res = loading::evaluate(surface, &h_opts, &cond);
+
+            out.push_str("  <table>\n");
+            out.push_str("    <thead>\n");
+            out.push_str("      <tr><th>&Delta; [t]</th><th>LCG [m]</th><th>TCG [m]</th><th>KG solid [m]</th><th>FSC [m]</th><th>KG fluid [m]</th><th>Draft [m]</th><th>Trim [m]</th><th>List [&deg;]</th><th>GM fluid [m]</th></tr>\n");
+            out.push_str("    </thead>\n");
+            out.push_str("    <tbody>\n");
+            let _ = writeln!(
+                out,
+                "      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                fmt_num(res.displacement_t, 3),
+                fmt_num(res.lcg, 3),
+                fmt_num(res.tcg, 3),
+                fmt_num(res.kg_solid, 3),
+                fmt_num(res.fsc_m, 3),
+                fmt_num(res.kg_fluid, 3),
+                fmt_num(res.draft, 3),
+                fmt_num(res.trim_m, 3),
+                fmt_num(res.list_deg, 2),
+                fmt_num(res.gm_fluid, 3),
+            );
+            out.push_str("    </tbody>\n");
+            out.push_str("  </table>\n");
+
+            // IMO A.749 Criteria
+            out.push_str("  <h4>IMO A.749 / 2008 IS Code Intact Stability Criteria</h4>\n");
+            out.push_str("  <table>\n");
+            out.push_str("    <thead>\n");
+            out.push_str("      <tr><th class=\"text-left\">Criterion</th><th>Required</th><th>Actual</th><th class=\"text-center\">Status</th></tr>\n");
+            out.push_str("    </thead>\n");
+            out.push_str("    <tbody>\n");
+            if let Some(ref imo) = res.imo_criteria {
+                let p_0_30 = imo.area_0_30_m_rad >= 0.055;
+                let p_0_40 = imo.area_0_40_m_rad >= 0.090;
+                let p_30_40 = imo.area_30_40_m_rad >= 0.030;
+                let p_max_30 = imo.max_gz_30_plus_m >= 0.20;
+                let p_angle = imo.angle_of_max_gz_deg >= 25.0;
+                let p_gm0 = imo.gm0_m >= 0.15;
+
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Area under GZ curve 0&deg; to 30&deg;</td><td>&ge; 0.055 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.area_0_30_m_rad, 4),
+                    badge(p_0_30)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Area under GZ curve 0&deg; to 40&deg;</td><td>&ge; 0.090 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.area_0_40_m_rad, 4),
+                    badge(p_0_40)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Area under GZ curve 30&deg; to 40&deg;</td><td>&ge; 0.030 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.area_30_40_m_rad, 4),
+                    badge(p_30_40)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Maximum GZ at heel &ge; 30&deg;</td><td>&ge; 0.200 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.max_gz_30_plus_m, 3),
+                    badge(p_max_30)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Angle of maximum GZ</td><td>&ge; 25.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.angle_of_max_gz_deg, 1),
+                    badge(p_angle)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Initial metacentric height GM0</td><td>&ge; 0.150 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.gm0_m, 3),
+                    badge(p_gm0)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Overall Status</strong></td><td>All criteria met</td><td>Displ. {} t</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(imo.displacement_t, 3),
+                    badge(imo.passed)
+                );
+            } else {
+                out.push_str("      <tr><td class=\"text-left\">IMO Criteria Evaluation</td><td>&mdash;</td><td>Insufficient heel range or equilibrium data</td><td class=\"text-center\"><span class=\"badge-fail\">FAIL</span></td></tr>\n");
+            }
+            out.push_str("    </tbody>\n");
+            out.push_str("  </table>\n");
+
+            // Weather criterion
+            if inc_weather {
+                if let Some(ref weather_res) = res.weather {
+                    out.push_str("  <h4>IMO 2008 IS Code Part A &sect;2.3 Severe Wind and Rolling (Weather) Criterion</h4>\n");
+                    out.push_str("  <table>\n");
+                    out.push_str("    <thead>\n");
+                    out.push_str("      <tr><th class=\"text-left\">Parameter / Criterion</th><th>Requirement / Formula</th><th>Value</th><th class=\"text-center\">Status</th></tr>\n");
+                    out.push_str("    </thead>\n");
+                    out.push_str("    <tbody>\n");
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Lateral windage area A &amp; lever Z</td><td>P = {} Pa</td><td>A = {} m&sup2;, Z = {} m</td><td class=\"text-center\">&mdash;</td></tr>",
+                        fmt_num(weather_res.wind_pressure_pa, 0),
+                        fmt_num(weather_res.area_m2, 3),
+                        fmt_num(weather_res.z_m, 3)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Wind heeling levers l<sub>w1</sub> / l<sub>w2</sub></td><td>l<sub>w2</sub> = 1.5 &middot; l<sub>w1</sub></td><td>{} m / {} m</td><td class=\"text-center\">&mdash;</td></tr>",
+                        fmt_num(weather_res.lw1_m, 4),
+                        fmt_num(weather_res.lw2_m, 4)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Roll factors (X<sub>1</sub>, X<sub>2</sub>, k, r, s) &amp; period T</td><td>T = 2&middot;C&middot;B / &radic;GM</td><td>({}, {}, {}, {}, {}), T = {} s</td><td class=\"text-center\">&mdash;</td></tr>",
+                        fmt_num(weather_res.x1, 3),
+                        fmt_num(weather_res.x2, 3),
+                        fmt_num(weather_res.k, 3),
+                        fmt_num(weather_res.r, 3),
+                        fmt_num(weather_res.s, 4),
+                        fmt_num(weather_res.roll_period_s, 2)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Roll-back angle &phi;<sub>1</sub></td><td>109&middot;k&middot;X<sub>1</sub>&middot;X<sub>2</sub>&middot;&radic;(r&middot;s)</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
+                        fmt_num(weather_res.phi1_deg, 2)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Steady wind heel angle &phi;<sub>0</sub></td><td>&le; {}&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+                        fmt_num(weather_res.phi0_limit_deg, 1),
+                        fmt_opt(weather_res.phi0_deg, 2),
+                        badge(weather_res.phi0_passed)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Integration limits (&phi;<sub>0</sub> &minus; &phi;<sub>1</sub>, &phi;<sub>c</sub>, &phi;<sub>2</sub>)</td><td>&phi;<sub>2</sub> = min(50&deg;, &phi;<sub>f</sub>, &phi;<sub>c2</sub>)</td><td>({}&deg;, {}&deg;, {}&deg;)</td><td class=\"text-center\">&mdash;</td></tr>",
+                        fmt_opt(weather_res.phi_roll_deg, 2),
+                        fmt_opt(weather_res.phic_deg, 2),
+                        fmt_opt(weather_res.phi2_deg, 2)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">Energy balance (area b vs area a)</td><td>b &ge; a</td><td>a = {} m&middot;rad, b = {} m&middot;rad (b/a = {})</td><td class=\"text-center\">{}</td></tr>",
+                        fmt_num(weather_res.area_a_m_rad, 4),
+                        fmt_num(weather_res.area_b_m_rad, 4),
+                        fmt_num(weather_res.area_ratio, 2),
+                        badge(weather_res.area_passed)
+                    );
+                    let _ = writeln!(
+                        out,
+                        "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Weather Criterion Overall</strong></td><td>&phi;<sub>0</sub> &le; 16&deg; and b &ge; a</td><td>l<sub>w1</sub> = {} m, l<sub>w2</sub> = {} m</td><td class=\"text-center\">{}</td></tr>",
+                        fmt_num(weather_res.lw1_m, 4),
+                        fmt_num(weather_res.lw2_m, 4),
+                        badge(weather_res.passed)
+                    );
+                    out.push_str("    </tbody>\n");
+                    out.push_str("  </table>\n");
+                }
+            }
+
+            // GZ curve via gz_chart_svg
+            let mut gz_points: Vec<(f64, Option<f64>)> = Vec::with_capacity(res.cross_curves.len());
+            for c in &res.cross_curves {
+                let gz = c.points.first().and_then(|p| p.gz);
+                gz_points.push((c.heel_deg, gz));
+            }
+            let gz_title = format!(
+                "{} - Righting Lever GZ (Displ. {} t, KG fluid {} m)",
+                esc_cond,
+                fmt_num(res.displacement_t, 3),
+                fmt_num(res.kg_fluid, 3)
+            );
+            let gz_svg = gz_chart_svg(&gz_points, res.imo_criteria.as_ref(), &gz_title);
+            out.push_str("  <div class=\"svg-frame\">\n");
+            out.push_str(&gz_svg);
+            out.push_str("  </div>\n");
+        }
+        out.push_str("</section>\n\n");
+    }
+
+    // ------------------------------------------------------------- 9. Damage Cases
+    let has_damage = match &project.report.damage_cases {
+        Some(names) => !names.is_empty(),
+        None => !project.damage_cases.is_empty(),
+    };
+    if has_damage {
+        out.push_str("<section id=\"damage\">\n");
+        out.push_str("  <h2>Damage Cases</h2>\n");
+
+        let case_names: Vec<&str> = match &project.report.damage_cases {
+            Some(names) => names.iter().map(|s| s.as_str()).collect(),
+            None => project
+                .damage_cases
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect(),
+        };
+
+        for name in case_names {
+            let Some(raw_case) = project.damage_cases.iter().find(|c| c.name == name) else {
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"warn-box\">Damage case <strong>{}</strong> not found in project.</div>",
+                    html_escape(name)
+                );
+                continue;
+            };
+
+            let esc_case = html_escape(&raw_case.name);
+            let _ = writeln!(out, "  <h3>{}</h3>", esc_case);
+
+            let resolved = match project.resolve_damage_case(raw_case) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = writeln!(
+                        out,
+                        "  <div class=\"warn-box\">Cannot resolve damage case: {}</div>",
+                        html_escape(&e)
+                    );
+                    continue;
+                }
+            };
+
+            let res = match damage::evaluate(surface, &h_opts, &resolved) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = writeln!(
+                        out,
+                        "  <div class=\"warn-box\">Damage evaluation error: {}</div>",
+                        html_escape(&e)
+                    );
+                    continue;
+                }
+            };
+
+            for w in &res.warnings {
+                let _ = writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(w));
+            }
+
+            // Intact vs damaged draft/trim/heel, sinkage, freeboard
+            out.push_str("  <h4>Equilibrium Floating Condition</h4>\n");
+            out.push_str("  <table>\n");
+            out.push_str("    <thead>\n");
+            out.push_str("      <tr><th class=\"text-left\">Condition</th><th>Draft [m]</th><th>Trim [m]</th><th>Heel [&deg;]</th><th>Sinkage [m]</th><th>Freeboard [m]</th></tr>\n");
+            out.push_str("    </thead>\n");
+            out.push_str("    <tbody>\n");
+            let _ = writeln!(
+                out,
+                "      <tr><td class=\"text-left\">Intact</td><td>{}</td><td>{}</td><td>0.00</td><td>&mdash;</td><td>&mdash;</td></tr>",
+                fmt_num(res.intact_draft, 3),
+                fmt_num(res.intact_trim_m, 3)
+            );
+            let _ = writeln!(
+                out,
+                "      <tr class=\"active-row\"><td class=\"text-left\">Damaged</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                fmt_num(res.draft, 3),
+                fmt_num(res.trim_m, 3),
+                fmt_num(res.heel_deg, 2),
+                fmt_num(res.sinkage_m, 3),
+                fmt_opt(res.freeboard_m, 3)
+            );
+            out.push_str("    </tbody>\n");
+            out.push_str("  </table>\n");
+
+            // Flooded compartments table
+            out.push_str("  <h4>Flooded Compartments</h4>\n");
+            out.push_str("  <table>\n");
+            out.push_str("    <thead>\n");
+            out.push_str("      <tr><th class=\"text-left\">Compartment</th><th>Permeability &mu;</th><th>Submerged Vol [m&sup3;]</th><th>Lost Buoyancy [m&sup3;]</th><th>Centroid X [m]</th><th>Centroid Y [m]</th><th>Centroid Z [m]</th></tr>\n");
+            out.push_str("    </thead>\n");
+            out.push_str("    <tbody>\n");
+            if res.compartments.is_empty() {
+                out.push_str("      <tr><td colspan=\"7\" class=\"text-center\">No compartments flooded</td></tr>\n");
+            } else {
+                for c in &res.compartments {
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                        html_escape(&c.name),
+                        fmt_num(c.permeability, 2),
+                        fmt_num(c.submerged_volume_m3, 3),
+                        fmt_num(c.lost_volume_m3, 3),
+                        fmt_num(c.centroid.x, 3),
+                        fmt_num(c.centroid.y, 3),
+                        fmt_num(c.centroid.z, 3),
+                    );
+                }
+            }
+            out.push_str("    </tbody>\n");
+            out.push_str("  </table>\n");
+
+            // Residual criteria PASS/FAIL
+            out.push_str("  <h4>Residual Stability Criteria (SOLAS II-1 Reg. 7-2)</h4>\n");
+            out.push_str("  <table>\n");
+            out.push_str("    <thead>\n");
+            out.push_str("      <tr><th class=\"text-left\">Criterion</th><th>Required</th><th>Actual</th><th class=\"text-center\">Status</th></tr>\n");
+            out.push_str("    </thead>\n");
+            out.push_str("    <tbody>\n");
+            if let Some(ref crit) = res.criteria {
+                let p_range = crit.positive_range_deg >= 15.0;
+                let p_max = crit.max_gz_m >= 0.10;
+                let p_area = crit.area_m_rad >= 0.015;
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Positive righting lever range</td><td>&ge; 15.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(crit.positive_range_deg, 1),
+                    badge(p_range)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Maximum residual righting lever GZ</td><td>&ge; 0.100 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(crit.max_gz_m, 3),
+                    badge(p_max)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Angle of maximum residual GZ</td><td>&mdash;</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
+                    fmt_num(crit.angle_of_max_gz_deg, 1)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">Area under residual GZ curve</td><td>&ge; 0.0150 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+                    fmt_num(crit.area_m_rad, 4),
+                    badge(p_area)
+                );
+                let _ = writeln!(
+                    out,
+                    "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Overall Residual Status</strong></td><td>All criteria met</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
+                    html_escape(&crit.label),
+                    badge(crit.passed)
+                );
+            } else {
+                out.push_str("      <tr><td class=\"text-left\">Residual Criteria Evaluation</td><td>&mdash;</td><td>Damaged equilibrium not found or criteria not evaluated</td><td class=\"text-center\"><span class=\"badge-fail\">FAIL</span></td></tr>\n");
+            }
+            out.push_str("    </tbody>\n");
+            out.push_str("  </table>\n");
+
+            // Residual GZ chart
+            let gz_pts: Vec<(f64, Option<f64>)> = res
+                .residual_gz
+                .iter()
+                .map(|p| (p.relative_heel_deg, p.gz))
+                .collect();
+            let gz_title = format!(
+                "{} - Residual Righting Levers (Damaged Equilibrium)",
+                esc_case
+            );
+            let gz_svg = gz_chart_svg(&gz_pts, None, &gz_title);
+            out.push_str("  <div class=\"svg-frame\">\n");
+            out.push_str(&gz_svg);
+            out.push_str("  </div>\n");
+        }
+        out.push_str("</section>\n\n");
+    }
+
+    // ------------------------------------------------------------- 10. Seakeeping
+    if let Some(ref sk_conf) = project.report.seakeeping {
+        out.push_str("<section id=\"seakeeping\">\n");
+        out.push_str("  <h2>Seakeeping</h2>\n");
+
+        let kg = sk_conf.kg.unwrap_or(opts.kg);
+        let mut spec = SeakeepingSpec {
+            draft: opts.draft,
+            speed_kn: sk_conf.speed_kn,
+            kg,
+            stations: 21,
+            ..Default::default()
+        };
+        let irr_spec = sk_conf.sea.map(|sea| IrregularSpec::new(sea, spec.clone()));
+        if let Some(ref irr) = irr_spec {
+            spec.omegas = irr.omega_grid();
+        }
+
+        match seakeeping::head_sea_raos(surface, &spec) {
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"warn-box\">Seakeeping calculation error: {}</div>",
+                    html_escape(&e)
+                );
+            }
+            Ok(rep) => {
+                let _ = writeln!(
+                    out,
+                    "  <h3>Head Sea Motion RAOs (Speed: {} kn, Draft: {} m, KG: {} m)</h3>",
+                    fmt_num(sk_conf.speed_kn, 1),
+                    fmt_num(opts.draft, 3),
+                    fmt_num(kg, 3)
+                );
+
+                out.push_str("  <table>\n");
+                out.push_str("    <thead>\n");
+                out.push_str("      <tr><th>&lambda;/L</th><th>Wave &omega; [rad/s]</th><th>&lambda; [m]</th><th>Heave Amp [m/m]</th><th>Heave Phase [&deg;]</th><th>Pitch Amp [rad/rad]</th><th>Pitch Phase [&deg;]</th></tr>\n");
+                out.push_str("    </thead>\n");
+                out.push_str("    <tbody>\n");
+                for p in &rep.frequencies {
+                    let _ = writeln!(
+                        out,
+                        "      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                        fmt_num(p.lambda_over_l, 3),
+                        fmt_num(p.omega, 3),
+                        fmt_num(p.wavelength_m, 2),
+                        fmt_num(p.heave_amp, 4),
+                        fmt_num(p.heave_phase_deg, 1),
+                        fmt_num(p.pitch_amp, 4),
+                        fmt_num(p.pitch_phase_deg, 1),
+                    );
+                }
+                out.push_str("    </tbody>\n");
+                out.push_str("  </table>\n");
+
+                if let Some(ref irr) = irr_spec {
+                    let sea = irr.sea;
+                    match seastate::irregular_from_raos(&rep, irr) {
+                        Err(e) => {
+                            let _ = writeln!(
+                                out,
+                                "  <div class=\"warn-box\">Irregular sea response error: {}</div>",
+                                html_escape(&e)
+                            );
+                        }
+                        Ok(irr) => {
+                            out.push_str("  <h3>Irregular Head Sea Responses</h3>\n");
+                            out.push_str("  <div class=\"cards-grid\">\n");
+
+                            out.push_str("    <div class=\"card\">\n");
+                            out.push_str("      <h3>Wave Spectrum</h3>\n");
+                            out.push_str("      <dl>\n");
+                            let spec_type = match sea {
+                                WaveSpectrum::Bretschneider { .. } => "Bretschneider",
+                                WaveSpectrum::Jonswap { .. } => "JONSWAP",
+                            };
+                            let _ =
+                                writeln!(out, "        <dt>Spectrum</dt><dd>{}</dd>", spec_type);
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Target Hs</dt><dd>{} m</dd>",
+                                fmt_num(sea.hs(), 2)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Peak Period Tp</dt><dd>{} s</dd>",
+                                fmt_num(sea.tp(), 2)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Spectrum Hs Check</dt><dd>{} m</dd>",
+                                fmt_num(irr.spectrum.hs_check, 2)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Peak &omega;p</dt><dd>{} rad/s</dd>",
+                                fmt_num(irr.spectrum.peak_omega, 3)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Zero-Crossing Tz</dt><dd>{} s</dd>",
+                                fmt_num(irr.spectrum.tz_s, 2)
+                            );
+                            out.push_str("      </dl>\n");
+                            out.push_str("    </div>\n");
+
+                            out.push_str("    <div class=\"card\">\n");
+                            out.push_str("      <h3>Ship Responses</h3>\n");
+                            out.push_str("      <dl>\n");
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Heave Significant</dt><dd>{} m</dd>",
+                                fmt_num(irr.heave.significant, 3)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Heave RMS</dt><dd>{} m</dd>",
+                                fmt_num(irr.heave.rms, 3)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Pitch Significant</dt><dd>{}&deg;</dd>",
+                                fmt_num(irr.pitch_deg.significant, 2)
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>Pitch RMS</dt><dd>{}&deg;</dd>",
+                                fmt_num(irr.pitch_deg.rms, 2)
+                            );
+                            out.push_str("      </dl>\n");
+                            out.push_str("    </div>\n");
+
+                            out.push_str("  </div>\n");
+
+                            out.push_str("  <h4>Point Responses &amp; Motion Sickness</h4>\n");
+                            out.push_str("  <table>\n");
+                            out.push_str("    <thead>\n");
+                            out.push_str("      <tr><th class=\"text-left\">Point</th><th>Position X [m]</th><th>Vertical Motion Sig. [m]</th><th>Relative Motion Sig. [m]</th><th>Vert. Accel. RMS [g]</th><th>MSI [% (2 h)]</th></tr>\n");
+                            out.push_str("    </thead>\n");
+                            out.push_str("    <tbody>\n");
+                            for pt in &irr.points {
+                                let _ = writeln!(
+                                    out,
+                                    "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{} %</td></tr>",
+                                    html_escape(&pt.name),
+                                    fmt_num(pt.x, 3),
+                                    fmt_num(pt.vertical_motion.significant, 3),
+                                    fmt_num(pt.relative_motion.significant, 3),
+                                    fmt_num(pt.acceleration_rms_g, 3),
+                                    fmt_num(pt.msi_percent, 1),
+                                );
+                            }
+                            out.push_str("    </tbody>\n");
+                            out.push_str("  </table>\n");
+
+                            let _ = writeln!(
+                                out,
+                                "  <div class=\"note-box\">{}</div>\n",
+                                html_escape(irr.msi_note)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        out.push_str("</section>\n\n");
+    }
+
     // ------------------------------------------------------------- Footer
     let version = env!("CARGO_PKG_VERSION");
     out.push_str("<footer>\n");
@@ -1567,5 +2159,154 @@ mod tests {
             h1, h2,
             "two calls on identical inputs must produce identical output"
         );
+    }
+
+    #[test]
+    fn design_report_matches_design_report_with_empty_project() {
+        let surface = demo::demo_hull(true);
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+        let r1 = design_report(&surface, &opts).expect("design_report succeeds");
+        let r2 = design_report_with_project(&surface, &opts, &Project::default())
+            .expect("design_report_with_project succeeds");
+        assert_eq!(
+            r1, r2,
+            "empty project report must be byte-identical to design_report"
+        );
+    }
+
+    fn demo_hull_project() -> (Surface, ReportOptions, Project) {
+        use crate::damage::{CompartmentSpec, DamageCase};
+        use crate::loading::LoadingCondition;
+        use crate::project::ReportSeakeeping;
+
+        let surface = demo::demo_hull(true);
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+
+        let orig_case: DamageCase =
+            serde_json::from_str(include_str!("../../../examples/demo-damage.json"))
+                .expect("demo-damage.json");
+        let comp = match &orig_case.compartments[0] {
+            CompartmentSpec::Inline(c) => c.clone(),
+            CompartmentSpec::Named(_) => panic!("expected inline compartment"),
+        };
+        let case = DamageCase {
+            compartments: vec![CompartmentSpec::Named(comp.name.clone())],
+            ..orig_case
+        };
+        let lc: LoadingCondition =
+            serde_json::from_str(include_str!("../../../examples/demo-loadcase.json"))
+                .expect("demo-loadcase.json");
+
+        let project = Project {
+            compartments: vec![comp],
+            damage_cases: vec![case],
+            loading_conditions: vec![lc],
+            report: crate::project::ReportSettings {
+                loading_conditions: None,
+                damage_cases: None,
+                seakeeping: Some(ReportSeakeeping {
+                    speed_kn: 6.0,
+                    kg: None,
+                    sea: Some(WaveSpectrum::Bretschneider { hs: 1.2, tp: 5.5 }),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        (surface, opts, project)
+    }
+
+    #[test]
+    fn report_sections_appear_exactly_when_selected() {
+        let (surface, opts, mut project) = demo_hull_project();
+
+        // 1. All selected
+        let html_all = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(html_all.contains("Loading Conditions"));
+        assert!(html_all.contains("Damage Cases"));
+        assert!(html_all.contains("Seakeeping"));
+        let secs = report_sections_with_project(&opts, &project);
+        assert!(secs.contains(&"loading"));
+        assert!(secs.contains(&"damage"));
+        assert!(secs.contains(&"seakeeping"));
+
+        // 2. None selected
+        project.report.loading_conditions = Some(vec![]);
+        project.report.damage_cases = Some(vec![]);
+        project.report.seakeeping = None;
+        let html_none = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(!html_none.contains("Loading Conditions"));
+        assert!(!html_none.contains("Damage Cases"));
+        assert!(!html_none.contains("Seakeeping"));
+        let secs_none = report_sections_with_project(&opts, &project);
+        assert!(!secs_none.contains(&"loading"));
+        assert!(!secs_none.contains(&"damage"));
+        assert!(!secs_none.contains(&"seakeeping"));
+
+        // 3. Only Loading Conditions
+        project.report.loading_conditions = None; // all in project
+        let html_lc = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(html_lc.contains("Loading Conditions"));
+        assert!(!html_lc.contains("Damage Cases"));
+        assert!(!html_lc.contains("Seakeeping"));
+
+        // 4. Only Damage Cases
+        project.report.loading_conditions = Some(vec![]);
+        project.report.damage_cases = None;
+        let html_dc = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(!html_dc.contains("Loading Conditions"));
+        assert!(html_dc.contains("Damage Cases"));
+        assert!(!html_dc.contains("Seakeeping"));
+
+        // 5. Only Seakeeping
+        project.report.damage_cases = Some(vec![]);
+        project.report.seakeeping = Some(crate::project::ReportSeakeeping {
+            speed_kn: 5.0,
+            kg: Some(1.2),
+            sea: None,
+        });
+        let html_sk = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(!html_sk.contains("Loading Conditions"));
+        assert!(!html_sk.contains("Damage Cases"));
+        assert!(html_sk.contains("Seakeeping"));
+    }
+
+    #[test]
+    fn report_escapes_special_characters_in_condition_name_and_reports_missing() {
+        let (surface, opts, mut project) = demo_hull_project();
+        project.loading_conditions[0].name = "<b>&\"x\"".into();
+        project.report.loading_conditions =
+            Some(vec!["<b>&\"x\"".into(), "nonexistent_condition".into()]);
+        project.report.damage_cases = Some(vec!["nonexistent_case".into()]);
+
+        let html = design_report_with_project(&surface, &opts, &project).unwrap();
+
+        // Must escape special characters in condition name
+        assert!(
+            !html.contains("<b>&\"x\""),
+            "raw <b>&\"x\" must not appear in HTML"
+        );
+        assert!(
+            html.contains("&lt;b&gt;&amp;&quot;x&quot;"),
+            "escaped name must appear"
+        );
+
+        // Missing names produce warning paragraph, not panic
+        assert!(html.contains("Loading condition <strong>nonexistent_condition</strong> not found"));
+        assert!(html.contains("Damage case <strong>nonexistent_case</strong> not found"));
+
+        // No NaN or inf anywhere in output
+        assert!(!html.contains("NaN"), "report must contain no NaN");
+        assert!(!html.contains("inf"), "report must contain no inf");
+        assert!(
+            !html.contains("Infinity"),
+            "report must contain no Infinity"
+        );
+
+        // Deterministic on same input
+        let html2 = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert_eq!(html, html2, "repeated calls must be identical");
     }
 }

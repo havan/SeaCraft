@@ -2134,6 +2134,7 @@ impl McpServer {
         let path = PathBuf::from(path);
 
         let mut opts = seacraft_core::report::ReportOptions::from_surface(&self.surface);
+        opts = self.project.report.apply(opts);
         if let Some(d) = number_arg(a, "draft") {
             if d <= 0.0 {
                 return Err("design_report: `draft` must be positive".into());
@@ -2165,11 +2166,12 @@ impl McpServer {
         }
         opts.mode = self.opts.subdivision.mode;
 
-        let html = seacraft_core::report::design_report(&self.surface, &opts)
-            .map_err(|e| format!("design_report: {e}"))?;
+        let html =
+            seacraft_core::report::design_report_with_project(&self.surface, &opts, &self.project)
+                .map_err(|e| format!("design_report: {e}"))?;
         std::fs::write(&path, html.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
 
-        let sections = seacraft_core::report::report_sections(&opts);
+        let sections = seacraft_core::report::report_sections_with_project(&opts, &self.project);
 
         let subdiv = SubdivisionOptions {
             level: opts.level,

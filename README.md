@@ -424,6 +424,18 @@ intact-stability evaluation, and Holtrop–Mennen powering curves.
 seacraft report hull.fef -o report.html --kg 1.2
 ```
 
+With a project file the dossier also gets **Loading Conditions** (summary,
+IMO A.749, weather criterion, GZ curve per condition), **Damage Cases**
+(intact vs damaged equilibrium, flooded compartments, residual criteria and
+GZ) and **Seakeeping** (RAO table and, with a sea state, significant motions
+and MSI). The project's `report` settings choose them: `loading_conditions` /
+`damage_cases` (name lists, all when absent), `include_weather`, and
+`seakeeping {speed_kn, kg?, sea?}`, besides draft, KG, LCG, speeds and the
+resistance/planing switches. Precedence: defaults from the hull, then the
+project's settings, then explicit CLI flags (`--no-project` ignores the
+sidecar). In the GUI, File > Report options… edits these settings and File >
+Design report… writes the dossier on a worker thread.
+
 `raster` is a dependency-free CPU z-buffer renderer with 2× supersampling and a
 small PNG encoder, so those modes work per pixel with no GPU:
 
@@ -512,7 +524,7 @@ seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--sta
                             [--lambda-min 0.3] [--lambda-max 3.0] [--points 30] [--csv|--json]
                             [--hs M --tp S [--gamma G] [--point NAME:X]...]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
-seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]
+seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing] [--no-project]
 seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]
 seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]

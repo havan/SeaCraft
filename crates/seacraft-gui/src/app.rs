@@ -163,6 +163,8 @@ enum DialogKind {
     Open,
     SaveAs,
     Export(ExportKind),
+    /// The HTML design report, written with the project's report settings.
+    Report,
 }
 
 /// An action that may need to discard unsaved work first.
@@ -478,6 +480,10 @@ pub struct App {
     show_layers: bool,
     show_hydro: bool,
     design_dock: Option<DesignDock>,
+    /// The File > Report options window is open.
+    show_report_options: bool,
+    /// A design report being written on a worker thread: its path and result.
+    report_worker: Option<std::sync::mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
     loading_stale: bool,
@@ -571,6 +577,8 @@ impl App {
             show_layers: true,
             show_hydro: true,
             design_dock: None,
+            show_report_options: false,
+            report_worker: None,
             loading_selected: 0,
             loading_result: None,
             loading_stale: true,
@@ -1153,6 +1161,8 @@ impl App {
 
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         self.dialog_window(ui);
+        self.report_options_window(ui);
+        self.poll_report(ui.ctx());
         self.pending_window(ui);
         if self.close_requested {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1253,6 +1263,20 @@ impl App {
                         ui.close();
                     }
                     ui.separator();
+                    if ui
+                        .add_enabled(
+                            self.surface.is_some() && self.report_worker.is_none(),
+                            egui::Button::new("Design report…"),
+                        )
+                        .clicked()
+                    {
+                        self.open_dialog(DialogKind::Report);
+                        ui.close();
+                    }
+                    if ui.button("Report options…").clicked() {
+                        self.show_report_options = true;
+                        ui.close();
+                    }
                     ui.add_enabled_ui(self.surface.is_some(), |ui| {
                         ui.menu_button("Export", |ui| {
                             for kind in ExportKind::ALL {
@@ -1439,6 +1463,10 @@ impl App {
                 .join(format!("{clean}.{}", kind.extension()))
                 .to_string_lossy()
                 .to_string(),
+            DialogKind::Report => dir
+                .join(format!("{clean}-report.html"))
+                .to_string_lossy()
+                .to_string(),
         }
     }
 
@@ -1565,6 +1593,7 @@ impl App {
             DialogKind::Open => "Open .fef",
             DialogKind::SaveAs => "Save as",
             DialogKind::Export(k) => k.label(),
+            DialogKind::Report => "Design report",
         };
         let mut accept = false;
         let mut cancel = false;
@@ -1583,6 +1612,7 @@ impl App {
                 let wanted = match dialog.kind {
                     DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
                     DialogKind::Export(k) => format!(".{}", k.extension()),
+                    DialogKind::Report => ".html".to_owned(),
                 };
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
@@ -1619,6 +1649,7 @@ impl App {
             }
             DialogKind::SaveAs => self.save_to(&path),
             DialogKind::Export(kind) => self.export_to(kind, &path),
+            DialogKind::Report => self.start_report(&path),
         };
         if !ok {
             dialog.error = Some(self.status.clone());
@@ -2179,6 +2210,127 @@ impl App {
     }
 
     /// Show or hide the loading panel; showing it shows only it in the design dock.
+    /// Report options for the current model: defaults from the surface, the
+    /// project's saved settings, then the viewports' subdivision.
+    fn report_options(&self) -> Option<seacraft_core::report::ReportOptions> {
+        let surface = self.surface.as_ref()?;
+        let mut opts = self
+            .project
+            .report
+            .apply(seacraft_core::report::ReportOptions::from_surface(surface));
+        opts.level = self.level;
+        opts.mode = self.mode;
+        Some(opts)
+    }
+
+    /// Write the design report on this thread (tests and scripts).
+    pub fn write_report_blocking(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let opts = self.report_options().ok_or("no model loaded")?;
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        let html =
+            seacraft_core::report::design_report_with_project(surface, &opts, &self.project)?;
+        std::fs::write(path, html).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        self.status = format!("wrote report {}", path.display());
+        Ok(())
+    }
+
+    /// Start writing the design report on a worker thread; the status bar
+    /// reports when it is done. Returns false when nothing could be started.
+    fn start_report(&mut self, path: &std::path::Path) -> bool {
+        let (Some(opts), Some(surface)) = (self.report_options(), self.surface.clone()) else {
+            self.status = "No model loaded.".into();
+            return false;
+        };
+        let project = self.project.clone();
+        let path = path.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.report_worker = Some(rx);
+        self.status = format!("writing report {}…", path.display());
+        std::thread::spawn(move || {
+            let result =
+                seacraft_core::report::design_report_with_project(&surface, &opts, &project)
+                    .and_then(|html| {
+                        std::fs::write(&path, html)
+                            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+                    });
+            let _ = tx.send((path, result));
+        });
+        true
+    }
+
+    /// Collect a finished report worker, if any.
+    fn poll_report(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.report_worker else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((path, result)) => {
+                self.status = match result {
+                    Ok(()) => format!("wrote report {}", path.display()),
+                    Err(e) => format!("report failed: {e}"),
+                };
+                self.report_worker = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status = "report failed: the worker stopped".into();
+                self.report_worker = None;
+            }
+        }
+    }
+
+    /// The File > Report options window, editing the project's report settings.
+    fn report_options_window(&mut self, ui: &mut egui::Ui) {
+        if !self.show_report_options {
+            return;
+        }
+        let conditions: Vec<String> = self
+            .project
+            .loading_conditions
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let cases: Vec<String> = self
+            .project
+            .damage_cases
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let mut open = true;
+        let mut changed = false;
+        egui::Window::new("Report options")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(420.0)
+            .show(ui.ctx(), |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(560.0)
+                    .show(ui, |ui| {
+                        changed = panels::report_options(
+                            ui,
+                            &mut self.project.report,
+                            &conditions,
+                            &cases,
+                        );
+                    });
+            });
+        if changed {
+            self.dirty = true;
+        }
+        self.show_report_options = open;
+    }
+
+    /// Is the report options window open?
+    pub fn show_report_options(&self) -> bool {
+        self.show_report_options
+    }
+
+    pub fn set_show_report_options(&mut self, show: bool) {
+        self.show_report_options = show;
+    }
+
     pub fn set_show_loading(&mut self, show: bool) {
         if show {
             self.design_dock = Some(DesignDock::Loading);

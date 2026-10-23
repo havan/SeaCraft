@@ -2123,7 +2123,9 @@ fn handle_inner(
                 .surface()
                 .ok_or_else(|| "report.design: no model loaded".to_string())?;
 
+            let project = app.project();
             let mut opts = seacraft_core::report::ReportOptions::from_surface(surface);
+            opts = project.report.apply(opts);
             if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
                 opts.draft = d;
             }
@@ -2151,12 +2153,12 @@ fn handle_inner(
             }
             opts.mode = app.subdivision_mode();
 
-            let html = seacraft_core::report::design_report(surface, &opts)
+            let html = seacraft_core::report::design_report_with_project(surface, &opts, project)
                 .map_err(|e| format!("report.design: {e}"))?;
             std::fs::write(&validated, &html)
                 .map_err(|e| format!("report.design: cannot write {}: {e}", validated.display()))?;
 
-            let sections = seacraft_core::report::report_sections(&opts);
+            let sections = seacraft_core::report::report_sections_with_project(&opts, project);
 
             let hull = seacraft_core::hydro::Hull::new(
                 surface,

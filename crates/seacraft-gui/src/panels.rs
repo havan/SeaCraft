@@ -4,7 +4,8 @@ use eframe::egui;
 use seacraft_core::damage::{Compartment, CompartmentSpec, DamageCase, DamageResult};
 use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
 use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
-use seacraft_core::project::Project;
+use seacraft_core::project::{Project, ReportSeakeeping, ReportSettings};
+use seacraft_core::seastate::WaveSpectrum;
 use seacraft_core::stability::CrossCurve;
 use seacraft_core::weather::{WeatherResult, WindageItem, WindageRect};
 use seacraft_core::Surface;
@@ -405,6 +406,344 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         }
     }
     action
+}
+
+/// Draw the report options form. Returns true when any setting changed.
+pub fn report_options(
+    ui: &mut egui::Ui,
+    report: &mut ReportSettings,
+    loading_conditions: &[String],
+    damage_cases: &[String],
+) -> bool {
+    let mut changed = false;
+
+    ui.heading("General Hydrostatics");
+    egui::Grid::new("report_hydro_grid")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            // Draft override
+            ui.label("Draft override:");
+            let mut has_draft = report.draft.is_some();
+            if ui.checkbox(&mut has_draft, "Set").changed() {
+                report.draft = if has_draft { Some(1.0) } else { None };
+                changed = true;
+            }
+            if let Some(d) = &mut report.draft {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(d)
+                            .speed(0.01)
+                            .range(0.01..=50.0)
+                            .suffix(" m"),
+                    )
+                    .changed();
+            }
+            ui.end_row();
+
+            // KG override
+            ui.label("KG override:");
+            let mut has_kg = report.kg.is_some();
+            if ui.checkbox(&mut has_kg, "Set").changed() {
+                report.kg = if has_kg { Some(1.0) } else { None };
+                changed = true;
+            }
+            if let Some(kg) = &mut report.kg {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(kg)
+                            .speed(0.01)
+                            .range(0.0..=50.0)
+                            .suffix(" m"),
+                    )
+                    .changed();
+            }
+            ui.end_row();
+
+            // LCG override (optional)
+            ui.label("LCG (optional):");
+            let mut has_lcg = report.lcg_x.is_some();
+            if ui.checkbox(&mut has_lcg, "Set").changed() {
+                report.lcg_x = if has_lcg { Some(0.0) } else { None };
+                changed = true;
+            }
+            if let Some(lcg) = &mut report.lcg_x {
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(lcg)
+                            .speed(0.01)
+                            .range(-100.0..=100.0)
+                            .suffix(" m"),
+                    )
+                    .changed();
+            }
+            ui.end_row();
+
+            // Speeds (comma list)
+            ui.label("Speeds (knots):");
+            let mut speeds_text = report
+                .speeds_kn
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            if ui
+                .add(
+                    egui::TextEdit::singleline(&mut speeds_text)
+                        .hint_text("Default (e.g. 6, 8, 10, 12, 14)"),
+                )
+                .changed()
+            {
+                let parsed: Vec<f64> = speeds_text
+                    .split(',')
+                    .filter_map(|s| s.trim().parse::<f64>().ok())
+                    .filter(|x| x.is_finite() && *x > 0.0)
+                    .collect();
+                report.speeds_kn = if parsed.is_empty() {
+                    None
+                } else {
+                    Some(parsed)
+                };
+                changed = true;
+            }
+            ui.end_row();
+        });
+
+    ui.separator();
+    ui.heading("Resistance & Powering");
+    let mut inc_res = report.include_resistance.unwrap_or(true);
+    if ui
+        .checkbox(&mut inc_res, "Holtrop & Mennen resistance")
+        .changed()
+    {
+        report.include_resistance = Some(inc_res);
+        changed = true;
+    }
+    let mut inc_plan = report.include_planing.unwrap_or(false);
+    if ui
+        .checkbox(&mut inc_plan, "Savitsky planing analysis")
+        .changed()
+    {
+        report.include_planing = Some(inc_plan);
+        changed = true;
+    }
+
+    ui.separator();
+    ui.heading("Loading Conditions");
+    let mut inc_w = report.include_weather.unwrap_or(true);
+    if ui
+        .checkbox(&mut inc_w, "Include IMO weather criterion")
+        .changed()
+    {
+        report.include_weather = Some(inc_w);
+        changed = true;
+    }
+    if loading_conditions.is_empty() {
+        ui.label("No loading conditions in project.");
+    } else {
+        ui.label("Included conditions:");
+        let mut cur_selected = match &report.loading_conditions {
+            None => loading_conditions.to_vec(),
+            Some(names) => names.clone(),
+        };
+        let mut lc_changed = false;
+        for name in loading_conditions {
+            let mut checked = cur_selected.contains(name);
+            if ui.checkbox(&mut checked, name).changed() {
+                lc_changed = true;
+                if checked {
+                    if !cur_selected.contains(name) {
+                        cur_selected.push(name.clone());
+                    }
+                } else {
+                    cur_selected.retain(|n| n != name);
+                }
+            }
+        }
+        if lc_changed {
+            if cur_selected.len() == loading_conditions.len() {
+                report.loading_conditions = None; // all = None
+            } else {
+                report.loading_conditions = Some(cur_selected);
+            }
+            changed = true;
+        }
+    }
+
+    ui.separator();
+    ui.heading("Damage Cases");
+    if damage_cases.is_empty() {
+        ui.label("No damage cases in project.");
+    } else {
+        ui.label("Included damage cases:");
+        let mut cur_selected = match &report.damage_cases {
+            None => damage_cases.to_vec(),
+            Some(names) => names.clone(),
+        };
+        let mut dc_changed = false;
+        for name in damage_cases {
+            let mut checked = cur_selected.contains(name);
+            if ui.checkbox(&mut checked, name).changed() {
+                dc_changed = true;
+                if checked {
+                    if !cur_selected.contains(name) {
+                        cur_selected.push(name.clone());
+                    }
+                } else {
+                    cur_selected.retain(|n| n != name);
+                }
+            }
+        }
+        if dc_changed {
+            if cur_selected.len() == damage_cases.len() {
+                report.damage_cases = None; // all = None
+            } else {
+                report.damage_cases = Some(cur_selected);
+            }
+            changed = true;
+        }
+    }
+
+    ui.separator();
+    ui.heading("Seakeeping");
+    let mut has_seakeeping = report.seakeeping.is_some();
+    if ui
+        .checkbox(&mut has_seakeeping, "Include seakeeping analysis")
+        .changed()
+    {
+        if has_seakeeping {
+            report.seakeeping = Some(ReportSeakeeping {
+                speed_kn: 0.0,
+                kg: None,
+                sea: None,
+            });
+        } else {
+            report.seakeeping = None;
+        }
+        changed = true;
+    }
+    if let Some(sk) = &mut report.seakeeping {
+        egui::Grid::new("report_sk_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Speed:");
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut sk.speed_kn)
+                            .speed(0.5)
+                            .range(0.0..=100.0)
+                            .suffix(" kn"),
+                    )
+                    .changed();
+                ui.end_row();
+
+                ui.label("KG override (optional):");
+                let mut has_kg = sk.kg.is_some();
+                if ui.checkbox(&mut has_kg, "Set").changed() {
+                    sk.kg = if has_kg { Some(1.0) } else { None };
+                    changed = true;
+                }
+                if let Some(k) = &mut sk.kg {
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(k)
+                                .speed(0.01)
+                                .range(0.0..=50.0)
+                                .suffix(" m"),
+                        )
+                        .changed();
+                }
+                ui.end_row();
+            });
+
+        let mut has_sea = sk.sea.is_some();
+        if ui.checkbox(&mut has_sea, "Irregular sea state").changed() {
+            if has_sea {
+                sk.sea = Some(WaveSpectrum::Bretschneider { hs: 2.0, tp: 7.0 });
+            } else {
+                sk.sea = None;
+            }
+            changed = true;
+        }
+        if let Some(sea) = &mut sk.sea {
+            let is_jonswap = matches!(sea, WaveSpectrum::Jonswap { .. });
+            ui.horizontal(|ui| {
+                if ui.radio(!is_jonswap, "Bretschneider").clicked() && is_jonswap {
+                    *sea = WaveSpectrum::Bretschneider {
+                        hs: sea.hs(),
+                        tp: sea.tp(),
+                    };
+                    changed = true;
+                }
+                if ui.radio(is_jonswap, "JONSWAP").clicked() && !is_jonswap {
+                    *sea = WaveSpectrum::Jonswap {
+                        hs: sea.hs(),
+                        tp: sea.tp(),
+                        gamma: 3.3,
+                    };
+                    changed = true;
+                }
+            });
+
+            egui::Grid::new("report_sea_grid")
+                .num_columns(2)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Significant wave height Hs:");
+                    let mut hs = sea.hs();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut hs)
+                                .speed(0.1)
+                                .range(0.1..=30.0)
+                                .suffix(" m"),
+                        )
+                        .changed()
+                    {
+                        match sea {
+                            WaveSpectrum::Bretschneider { hs: h, .. } => *h = hs,
+                            WaveSpectrum::Jonswap { hs: h, .. } => *h = hs,
+                        }
+                        changed = true;
+                    }
+                    ui.end_row();
+
+                    ui.label("Peak period Tp:");
+                    let mut tp = sea.tp();
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut tp)
+                                .speed(0.1)
+                                .range(0.5..=30.0)
+                                .suffix(" s"),
+                        )
+                        .changed()
+                    {
+                        match sea {
+                            WaveSpectrum::Bretschneider { tp: t, .. } => *t = tp,
+                            WaveSpectrum::Jonswap { tp: t, .. } => *t = tp,
+                        }
+                        changed = true;
+                    }
+                    ui.end_row();
+
+                    if let WaveSpectrum::Jonswap { gamma, .. } = sea {
+                        ui.label("Peak enhancement γ:");
+                        changed |= ui
+                            .add(egui::DragValue::new(gamma).speed(0.1).range(1.0..=20.0))
+                            .changed();
+                        ui.end_row();
+                    }
+                });
+        }
+    }
+
+    changed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

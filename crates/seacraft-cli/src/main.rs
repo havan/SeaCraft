@@ -1184,6 +1184,9 @@ struct ReportArgs {
     /// Include Savitsky planing hull analysis
     #[arg(long)]
     planing: bool,
+    /// Ignore the model's .seacraft.json sidecar
+    #[arg(long)]
+    no_project: bool,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
 }
@@ -2822,7 +2825,15 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
 
 fn cmd_report(a: ReportArgs) -> Result<()> {
     let s = load(&a.file)?;
+    let project = if a.no_project {
+        seacraft_core::project::Project::default()
+    } else {
+        seacraft_core::project::Project::load_for_model(&a.file)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .unwrap_or_default()
+    };
     let mut opts = seacraft_core::report::ReportOptions::from_surface(&s);
+    opts = project.report.apply(opts);
     opts.level = a.subdiv.level;
     opts.mode = a.subdiv.mode.into();
     if let Some(d) = a.draft {
@@ -2849,8 +2860,8 @@ fn cmd_report(a: ReportArgs) -> Result<()> {
     if a.planing {
         opts.include_planing = true;
     }
-    let html =
-        seacraft_core::report::design_report(&s, &opts).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let html = seacraft_core::report::design_report_with_project(&s, &opts, &project)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     std::fs::write(&a.output, html)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());
