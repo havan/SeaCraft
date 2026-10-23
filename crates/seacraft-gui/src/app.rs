@@ -473,6 +473,9 @@ pub struct App {
     drag: Option<DragState>,
     /// Unsaved edits since the last save / load.
     dirty: bool,
+    /// The model (as `.fef` text) and project as last loaded or saved, so an
+    /// undo back to that state clears `dirty`. `None` for a model never saved.
+    saved_state: Option<(String, Project)>,
     dialog: Option<FileDialogState>,
     pending: Option<PendingAction>,
     /// A quit that has been confirmed (the window closes at the end of the frame).
@@ -571,6 +574,7 @@ impl App {
             next_mark_id: 1,
             drag: None,
             dirty: false,
+            saved_state: None,
             dialog: None,
             pending: None,
             close_requested: false,
@@ -643,6 +647,7 @@ impl App {
                 } else if !project.is_empty() {
                     self.status.push_str(" + project");
                 }
+                self.saved_state = Some((fef::write(&surface), project.clone()));
                 self.surface = Some(surface);
                 self.path = Some(path.to_path_buf());
                 self.project = project;
@@ -678,6 +683,7 @@ impl App {
         self.project = Project::default();
         self.project_error = None;
         self.dirty = true;
+        self.saved_state = None;
         self.adopt();
     }
 
@@ -694,6 +700,7 @@ impl App {
         self.project = Project::default();
         self.project_error = None;
         self.dirty = true;
+        self.saved_state = None;
         self.adopt();
     }
 
@@ -1495,7 +1502,7 @@ impl App {
             return false;
         };
         let text = fef::write(surface);
-        match std::fs::write(path, text) {
+        match std::fs::write(path, &text) {
             Ok(()) => {
                 self.path = Some(path.to_path_buf());
                 self.status = format!("saved {}", path.display());
@@ -1517,6 +1524,7 @@ impl App {
                     self.status.push_str(" + project");
                 }
                 self.dirty = false;
+                self.saved_state = Some((text, self.project.clone()));
                 true
             }
             Err(err) => {
@@ -1723,7 +1731,7 @@ impl App {
             let moved = previous.points.len();
             self.surface = Some(previous);
             self.revision += 1;
-            self.dirty = true;
+            self.refresh_dirty();
             self.touch_geometry();
             self.status = format!("undo — {moved} control points restored");
         }
@@ -1736,7 +1744,7 @@ impl App {
         if let Some(next) = self.history.redo(&current) {
             self.surface = Some(next);
             self.revision += 1;
-            self.dirty = true;
+            self.refresh_dirty();
             self.touch_geometry();
             self.status = "redo".to_owned();
         }
@@ -1765,6 +1773,7 @@ impl App {
         self.history.clear_redo();
         self.selected = None;
         self.mark_geometry_changed();
+        self.refresh_dirty();
         self.status = format!("restored to mark {id}");
         Ok(())
     }
@@ -2888,6 +2897,17 @@ impl App {
     /// [`App::mark_geometry_changed`] afterwards.
     pub fn surface_mut(&mut self) -> Option<&mut Surface> {
         self.surface.as_mut()
+    }
+
+    /// Recompute `dirty` against the last loaded or saved state: unsaved
+    /// unless both the model and the project are equal to it.
+    fn refresh_dirty(&mut self) {
+        self.dirty = match (&self.saved_state, &self.surface) {
+            (Some((fef_text, project)), Some(surface)) => {
+                *project != self.project || fef::write(surface) != *fef_text
+            }
+            _ => true,
+        };
     }
 
     pub fn mark_geometry_changed(&mut self) {

@@ -89,6 +89,43 @@ fn editing_marks_the_model_dirty_and_a_new_demo_does_too() {
 }
 
 #[test]
+fn undo_back_to_the_saved_state_is_clean_again() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    assert!(!app.is_dirty());
+    app.snapshot_undo();
+    app.surface_mut().unwrap().points[3].p.z += 0.1;
+    app.mark_geometry_changed();
+    assert!(app.is_dirty());
+    app.undo();
+    assert!(!app.is_dirty(), "undo returned to the opened model");
+    app.redo();
+    assert!(app.is_dirty(), "redo re-applies the edit");
+
+    // After a save the saved state moves: undo to the opened model is now
+    // an unsaved change, and redo back to the saved one is clean.
+    let path = scratch("undo-clean.fef");
+    assert!(app.save_to(&path), "{}", app.status());
+    app.undo();
+    assert!(app.is_dirty(), "the undone edit is no longer on disk");
+    app.redo();
+    assert!(!app.is_dirty(), "redo returned to the saved model");
+
+    // A project edit is not undone by the model history.
+    let mut project = app.project().clone();
+    project.compartments.clear();
+    project.windage.push(seacraft_core::weather::WindageItem {
+        name: "Mast".into(),
+        area_m2: 1.0,
+        z_centroid: 2.0,
+        profile: None,
+    });
+    app.set_project(project);
+    app.undo();
+    app.redo();
+    assert!(app.is_dirty(), "the project differs from the saved one");
+}
+
+#[test]
 fn the_project_sidecar_travels_with_the_model() {
     use seacraft_core::project::{sidecar_path, Project};
     let mut app = App::headless_for_test(Some(&demo_path()));
