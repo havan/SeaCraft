@@ -102,6 +102,47 @@ fn row(ui: &mut egui::Ui, label: &str, value: String) {
     });
 }
 
+
+/// The measurement rows the dock draws, in two columns.
+///
+/// Kept separate from the drawing so the numbers (and their formatting) can be
+/// tested without a frame: `TPC` and `MTC` are table quantities computed here
+/// from the measured waterplane, with the kilogram-to-tonne factor the core's
+/// kg/m³ density needs.
+pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<(&'static str, String)>; 2] {
+    let rho_t = h.water_density / 1000.0;
+    let tpc = h.waterplane_area_m2 * rho_t / 100.0;
+    let mtc = if h.lwl > 1e-9 {
+        rho_t * h.waterplane_inertia_longitudinal / (100.0 * h.lwl)
+    } else {
+        0.0
+    };
+    [
+        vec![
+            ("volume", format!("{:.3} m³", h.volume_m3)),
+            ("displacement", format!("{:.2} t", h.displacement_t)),
+            ("Cb", format!("{:.3}", h.block_coefficient)),
+            ("Cp", format!("{:.3}", h.prismatic_coefficient)),
+            ("Cm", format!("{:.3}", h.midship_coefficient)),
+            ("Cwp", format!("{:.3}", h.waterplane_coefficient)),
+            ("LCB", format!("{:.3} m", h.lcb.x)),
+            ("LCF", format!("{:.3} m", h.lcf.x)),
+            ("TPC", format!("{:.3} t/cm", tpc)),
+        ],
+        vec![
+            ("KB", format!("{:.3} m", h.kb)),
+            ("BM(t)", format!("{:.3} m", h.bm_transverse)),
+            ("KM(t)", format!("{:.3} m", h.km_transverse)),
+            ("GM", format!("{:+.3} m", h.gm(kg))),
+            ("wetted", format!("{:.2} m²", h.wetted_surface_m2)),
+            ("waterplane", format!("{:.2} m²", h.waterplane_area_m2)),
+            ("LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl)),
+            ("midship", format!("{:.3} m²", h.mainframe_area_m2)),
+            ("MTC", format!("{:.3} t·m/cm", mtc)),
+        ],
+    ]
+}
+
 /// Draft, trim, heel and KG controls plus the measurement readout.
 pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     let mut action = HydroAction::None;
@@ -218,26 +259,14 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
 
     match panel.result {
         Some(h) if h.volume_m3 > 0.0 => {
+            let columns = hydrostatic_rows(h, *panel.kg);
             ui.columns(2, |cols| {
-                cols[0].spacing_mut().item_spacing.y = 4.0;
-                row(&mut cols[0], "volume", format!("{:.3} m³", h.volume_m3));
-                row(&mut cols[0], "displacement", format!("{:.2} t", h.displacement_t));
-                row(&mut cols[0], "Cb", format!("{:.3}", h.block_coefficient));
-                row(&mut cols[0], "Cp", format!("{:.3}", h.prismatic_coefficient));
-                row(&mut cols[0], "Cm", format!("{:.3}", h.midship_coefficient));
-                row(&mut cols[0], "Cwp", format!("{:.3}", h.waterplane_coefficient));
-                row(&mut cols[0], "LCB", format!("{:.3} m", h.lcb.x));
-                row(&mut cols[0], "LCF", format!("{:.3} m", h.lcf.x));
-
-                cols[1].spacing_mut().item_spacing.y = 4.0;
-                row(&mut cols[1], "KB", format!("{:.3} m", h.kb));
-                row(&mut cols[1], "BM(t)", format!("{:.3} m", h.bm_transverse));
-                row(&mut cols[1], "KM(t)", format!("{:.3} m", h.km_transverse));
-                row(&mut cols[1], "GM", format!("{:+.3} m", h.gm(*panel.kg)));
-                row(&mut cols[1], "wetted", format!("{:.2} m²", h.wetted_surface_m2));
-                row(&mut cols[1], "waterplane", format!("{:.2} m²", h.waterplane_area_m2));
-                row(&mut cols[1], "LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl));
-                row(&mut cols[1], "midship", format!("{:.3} m²", h.mainframe_area_m2));
+                for (col, rows) in cols.iter_mut().zip(columns.iter()) {
+                    col.spacing_mut().item_spacing.y = 4.0;
+                    for (label, value) in rows {
+                        row(col, label, value.clone());
+                    }
+                }
             });
             for warning in &h.warnings {
                 ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), &warning.message);
@@ -345,4 +374,54 @@ fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve]) {
         egui::FontId::monospace(10.0),
         egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seacraft_core::demo;
+    use seacraft_core::hydro;
+    use seacraft_core::subdiv::SubdivisionOptions;
+
+    fn measured() -> Hydrostatics {
+        let s = demo::demo_hull(false);
+        let mut o = HydroOptions::from_surface(&s, SubdivisionOptions { level: 3, mode: Default::default() });
+        o.draft = 0.62;
+        hydro::compute(&s, &o)
+    }
+
+    #[test]
+    fn the_dock_shows_both_columns_with_the_table_quantities() {
+        let h = measured();
+        let [left, right] = hydrostatic_rows(&h, 1.5);
+        assert_eq!(left.len(), right.len(), "the two columns stay balanced");
+        let labels: Vec<&str> = left.iter().chain(right.iter()).map(|(l, _)| *l).collect();
+        for want in ["volume", "Cb", "LCB", "TPC", "KM(t)", "GM", "midship", "MTC"] {
+            assert!(labels.contains(&want), "{want} missing from {labels:?}");
+        }
+        // The table quantities are the measured waterplane in the right units.
+        let tpc: f64 = left
+            .iter()
+            .find(|(l, _)| *l == "TPC")
+            .and_then(|(_, v)| v.trim_end_matches(" t/cm").parse().ok())
+            .expect("TPC parses");
+        let want_tpc = h.waterplane_area_m2 * (h.water_density / 1000.0) / 100.0;
+        assert!((tpc - want_tpc).abs() < 0.001, "TPC {tpc} vs {want_tpc}");
+        assert!((0.05..1.5).contains(&tpc), "TPC {tpc} t/cm is not plausible");
+        let mtc: f64 = right
+            .iter()
+            .find(|(l, _)| *l == "MTC")
+            .and_then(|(_, v)| v.trim_end_matches(" t·m/cm").parse().ok())
+            .expect("MTC parses");
+        let want_mtc =
+            (h.water_density / 1000.0) * h.waterplane_inertia_longitudinal / (100.0 * h.lwl);
+        assert!((mtc - want_mtc).abs() < 0.001, "MTC {mtc} vs {want_mtc}");
+        // GM follows KG: 1.5 m lighter than the measured KM by exactly that.
+        let gm: f64 = right
+            .iter()
+            .find(|(l, _)| *l == "GM")
+            .and_then(|(_, v)| v.trim_end_matches(" m").parse().ok())
+            .expect("GM parses");
+        assert!((gm - (h.km_transverse - 1.5)).abs() < 0.002, "GM {gm}");
+    }
 }
