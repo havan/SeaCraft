@@ -179,6 +179,13 @@ struct FileDialogState {
     error: Option<String>,
 }
 
+/// Reference to a selected project tank or compartment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeRef {
+    Tank(usize),
+    Compartment(usize),
+}
+
 pub struct App {
     surface: Option<Surface>,
     path: Option<PathBuf>,
@@ -196,6 +203,9 @@ pub struct App {
     active: usize,
     cache: Option<RenderCache>,
     selected: Option<usize>,
+    selected_volume: Option<VolumeRef>,
+    last_highlighted_tank: Option<usize>,
+    last_highlighted_compartment: Option<usize>,
     history: History,
     marks: Vec<(u64, Option<Surface>, usize)>,
     next_mark_id: u64,
@@ -282,6 +292,9 @@ impl App {
             active: 0,
             cache: None,
             selected: None,
+            selected_volume: None,
+            last_highlighted_tank: None,
+            last_highlighted_compartment: None,
             history: History::new(64),
             marks: Vec::new(),
             next_mark_id: 1,
@@ -411,6 +424,9 @@ impl App {
     fn adopt(&mut self) {
         self.revision += 1;
         self.selected = None;
+        self.selected_volume = None;
+        self.last_highlighted_tank = None;
+        self.last_highlighted_compartment = None;
         self.drag = None;
         self.cache = None;
         self.history.clear();
@@ -576,6 +592,13 @@ impl App {
         self.refresh_hydro(false);
 
         if self.show_loading {
+            let (tank_highlight, scroll_to_tank) = match self.selected_volume {
+                Some(VolumeRef::Tank(idx)) => {
+                    let scroll = self.last_highlighted_tank != Some(idx);
+                    (Some(idx), scroll)
+                }
+                _ => (None, false),
+            };
             let action = egui::Panel::right("loading_panel")
                 .resizable(true)
                 .default_size(380.0)
@@ -590,12 +613,15 @@ impl App {
                                     result: self.loading_result.as_ref(),
                                     stale: self.loading_stale,
                                     busy: self.loading_worker.is_some(),
+                                    highlight: tank_highlight,
+                                    scroll_to: scroll_to_tank,
                                 },
                             )
                         })
                         .inner
                 })
                 .inner;
+            self.last_highlighted_tank = tank_highlight;
             match action {
                 panels::LoadingAction::Changed => {
                     self.dirty = true;
@@ -632,6 +658,13 @@ impl App {
         }
 
         if self.show_damage {
+            let (comp_highlight, scroll_to_comp) = match self.selected_volume {
+                Some(VolumeRef::Compartment(idx)) => {
+                    let scroll = self.last_highlighted_compartment != Some(idx);
+                    (Some(idx), scroll)
+                }
+                _ => (None, false),
+            };
             let action = egui::Panel::right("damage_panel")
                 .resizable(true)
                 .default_size(380.0)
@@ -646,12 +679,15 @@ impl App {
                                     result: self.damage_result.as_ref(),
                                     stale: self.damage_stale,
                                     busy: self.damage_worker.is_some(),
+                                    highlight: comp_highlight,
+                                    scroll_to: scroll_to_comp,
                                 },
                             )
                         })
                         .inner
                 })
                 .inner;
+            self.last_highlighted_compartment = comp_highlight;
             match action {
                 panels::DamageAction::Changed => {
                     self.dirty = true;
@@ -744,6 +780,7 @@ impl App {
         }
         if escape {
             self.selected = None;
+            self.selected_volume = None;
         }
         if frame {
             self.reset_cameras();
@@ -835,6 +872,7 @@ impl App {
                     ui.checkbox(&mut self.display.control_net, "Control net");
                     ui.checkbox(&mut self.display.points, "Control points");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
+                    ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
                     ui.checkbox(&mut self.display.grid, "Grid");
                     ui.checkbox(&mut self.display.combs, "Curvature combs");
                     ui.separator();
@@ -864,8 +902,16 @@ impl App {
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
-                    ui.checkbox(&mut self.show_loading, "Loading panel");
-                    ui.checkbox(&mut self.show_damage, "Damage panel");
+                    // The loading and damage panels share one dock: three
+                    // right-hand panels leave no room for the viewports.
+                    let mut loading = self.show_loading;
+                    if ui.checkbox(&mut loading, "Loading panel").changed() {
+                        self.set_show_loading(loading);
+                    }
+                    let mut damage = self.show_damage;
+                    if ui.checkbox(&mut damage, "Damage panel").changed() {
+                        self.set_show_damage(damage);
+                    }
                     ui.separator();
                     let mut level = self.level as u32;
                     if ui
@@ -1276,6 +1322,9 @@ impl App {
         }
         let cells = render::quad(rect);
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
+        let overlays = self.volume_overlays();
+        let mut volume_overlays: Vec<render::VolumeOverlay> =
+            overlays.iter().map(|(_, o)| o.clone()).collect();
 
         for (cell, index) in cells {
             self.viewport_rects[index] = cell;
@@ -1328,6 +1377,30 @@ impl App {
             if response.clicked() {
                 self.active = index;
                 self.selected = self.pick_at(ui, &view, cell);
+                if self.selected.is_none() && self.display.volumes {
+                    let cursor = ui.input(|i| i.pointer.interact_pos());
+                    if let Some(cursor) = cursor {
+                        if let Some(hit) =
+                            render::pick_volume(&view, cell, cursor, &volume_overlays)
+                        {
+                            let vref = overlays[hit].0;
+                            self.selected_volume = Some(vref);
+                            match vref {
+                                VolumeRef::Tank(_) => self.set_show_loading(true),
+                                VolumeRef::Compartment(_) => self.set_show_damage(true),
+                            }
+                        } else {
+                            self.selected_volume = None;
+                        }
+                    } else {
+                        self.selected_volume = None;
+                    }
+                } else {
+                    self.selected_volume = None;
+                }
+                for (vref, overlay) in overlays.iter().zip(volume_overlays.iter_mut()) {
+                    overlay.selected = self.selected_volume == Some(vref.0);
+                }
             }
             if self.active == index && response.hovered() {
                 if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
@@ -1347,6 +1420,7 @@ impl App {
                     surface,
                     mesh: &cache.mesh,
                     curves: cache.curves.as_ref(),
+                    volumes: &volume_overlays,
                     min: cache.min,
                     max: cache.max,
                     draft: self.hydro.options.draft,
@@ -1621,14 +1695,128 @@ impl App {
         self.project = project;
         self.project_error = None;
         self.dirty = true;
+        self.selected_volume = None;
+        self.last_highlighted_tank = None;
+        self.last_highlighted_compartment = None;
         self.loading_stale = true;
         self.loading_selected = 0;
         self.damage_stale = true;
         self.damage_selected = 0;
     }
 
+    /// Show or hide the loading panel; showing it hides the damage panel.
     pub fn set_show_loading(&mut self, show: bool) {
         self.show_loading = show;
+        if show {
+            self.show_damage = false;
+        }
+    }
+
+    pub fn show_loading(&self) -> bool {
+        self.show_loading
+    }
+
+    pub fn show_damage(&self) -> bool {
+        self.show_damage
+    }
+
+    pub fn selected_volume(&self) -> Option<VolumeRef> {
+        self.selected_volume
+    }
+
+    pub fn selected_volume_info(&self) -> Option<(&'static str, usize, String)> {
+        match self.selected_volume? {
+            VolumeRef::Tank(idx) => {
+                let name = if !self.project.loading_conditions.is_empty() {
+                    let cond_idx = self
+                        .loading_selected
+                        .min(self.project.loading_conditions.len() - 1);
+                    self.project.loading_conditions[cond_idx]
+                        .tanks
+                        .get(idx)
+                        .map(|t| t.name.clone())
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                Some(("tank", idx, name))
+            }
+            VolumeRef::Compartment(idx) => {
+                let name = self
+                    .project
+                    .compartments
+                    .get(idx)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_default();
+                Some(("compartment", idx, name))
+            }
+        }
+    }
+
+    pub fn volume_overlays(&self) -> Vec<(VolumeRef, render::VolumeOverlay)> {
+        let mut out = Vec::new();
+        if !self.project.loading_conditions.is_empty() {
+            let cond_idx = self
+                .loading_selected
+                .min(self.project.loading_conditions.len() - 1);
+            let cond = &self.project.loading_conditions[cond_idx];
+            for (t_idx, tank) in cond.tanks.iter().enumerate() {
+                let liquid_z = if !self.loading_stale {
+                    self.loading_result
+                        .as_ref()
+                        .and_then(|res| res.tanks.iter().find(|t| t.name == tank.name))
+                        .map(|t| t.surface_z)
+                } else {
+                    None
+                }
+                .unwrap_or(tank.z_min + tank.fill * (tank.z_max - tank.z_min));
+
+                let selected = self.selected_volume == Some(VolumeRef::Tank(t_idx));
+                out.push((
+                    VolumeRef::Tank(t_idx),
+                    render::VolumeOverlay {
+                        name: tank.name.clone(),
+                        min: Vec3::new(tank.x_min, tank.y_min, tank.z_min),
+                        max: Vec3::new(tank.x_max, tank.y_max, tank.z_max),
+                        kind: render::VolumeKind::Tank {
+                            liquid_z: Some(liquid_z),
+                        },
+                        selected,
+                    },
+                ));
+            }
+        }
+
+        let selected_case = if !self.project.damage_cases.is_empty() {
+            let case_idx = self
+                .damage_selected
+                .min(self.project.damage_cases.len() - 1);
+            Some(&self.project.damage_cases[case_idx])
+        } else {
+            None
+        };
+
+        for (c_idx, comp) in self.project.compartments.iter().enumerate() {
+            let flooded = selected_case.is_some_and(|case| {
+                case.compartments.iter().any(|spec| match spec {
+                    seacraft_core::damage::CompartmentSpec::Named(name) => name == &comp.name,
+                    seacraft_core::damage::CompartmentSpec::Inline(c) => c.name == comp.name,
+                })
+            });
+            let selected = self.selected_volume == Some(VolumeRef::Compartment(c_idx));
+            out.push((
+                VolumeRef::Compartment(c_idx),
+                render::VolumeOverlay {
+                    name: comp.name.clone(),
+                    min: Vec3::new(comp.x_min, comp.y_min, comp.z_min),
+                    max: Vec3::new(comp.x_max, comp.y_max, comp.z_max),
+                    kind: render::VolumeKind::Compartment { flooded },
+                    selected,
+                },
+            ));
+        }
+
+        out
     }
 
     pub fn loading_result(&self) -> Option<&LoadingResult> {
@@ -1701,8 +1889,12 @@ impl App {
         Ok(self.loading_result.as_ref().unwrap())
     }
 
+    /// Show or hide the damage panel; showing it hides the loading panel.
     pub fn set_show_damage(&mut self, show: bool) {
         self.show_damage = show;
+        if show {
+            self.show_loading = false;
+        }
     }
 
     pub fn damage_result(&self) -> Option<&DamageResult> {

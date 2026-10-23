@@ -319,6 +319,15 @@ compartment summary, indicative SOLAS II-1 Reg. 7-2 residual criteria with
 PASS/FAIL, and the residual GZ curve. Control: `damage.compute {name}`. MCP:
 `damage_stability {name}` evaluates cases from the sidecar.
 
+The four viewports render the project's tanks and compartments in 3D wireframe
+and translucent fill (View menu `Tanks & compartments` or control `ui.set
+{"volumes": true}`). Tanks appear in amber with a liquid-blue sub-volume up to
+the fluid surface height (or box-fill estimate); compartments appear in
+grey-blue, turning red when flooded in the selected damage case. Clicking a
+volume selects it, outlines it in bright accent, and opens and focuses the
+corresponding Loading or Damage dock with the volume highlighted and scrolled
+into view.
+
 ### Seakeeping (strip-theory heave & pitch motions)
 
 `seakeeping::head_sea_raos` (`seacraft seakeeping hull.fef --draft T` / MCP

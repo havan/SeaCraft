@@ -655,6 +655,10 @@ fn handle_inner(
                             .as_bool()
                             .ok_or("`waterplane` must be true or false")?
                     }
+                    "volumes" => {
+                        display.volumes =
+                            value.as_bool().ok_or("`volumes` must be true or false")?
+                    }
                     "grid" => {
                         display.grid = value.as_bool().ok_or("`grid` must be true or false")?
                     }
@@ -2107,6 +2111,14 @@ fn inspect(app: &App) -> Value {
         "mode": mode_name(app.subdivision_mode()),
         "active_view": app.active_view(),
         "selected_point": app.selected(),
+        "selected_volume": match app.selected_volume_info() {
+            Some((kind, index, name)) => json!({
+                "kind": kind,
+                "index": index,
+                "name": name,
+            }),
+            None => Value::Null,
+        },
         "undo_len": app.undo_len(),
         "points": app.control_point_count(),
         "faces": app.face_count(),
@@ -2117,6 +2129,7 @@ fn inspect(app: &App) -> Value {
             "control_net": d.control_net,
             "points": d.points,
             "waterplane": d.waterplane,
+            "volumes": d.volumes,
             "grid": d.grid,
             "combs": d.combs,
             "analysis": d.analysis.label(),
@@ -2244,6 +2257,7 @@ fn render_png(
         surface,
         mesh,
         curves: None,
+        volumes: &[],
         min,
         max,
         draft,

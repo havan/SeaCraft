@@ -419,6 +419,8 @@ pub struct DamagePanel<'a> {
     pub result: Option<&'a DamageResult>,
     pub stale: bool,
     pub busy: bool,
+    pub highlight: Option<usize>,
+    pub scroll_to: bool,
 }
 
 fn unique_case_name(base: &str, existing: &[DamageCase]) -> String {
@@ -490,7 +492,12 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     let mut remove_comp = None;
     for (c_idx, comp) in panel.project.compartments.iter_mut().enumerate() {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        let is_highlighted = panel.highlight == Some(c_idx);
+        let mut frame = egui::Frame::group(ui.style());
+        if is_highlighted {
+            frame = frame.stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(220, 60, 60)));
+        }
+        let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name:");
                 if ui.text_edit_singleline(&mut comp.name).changed() {
@@ -573,6 +580,9 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                         });
                 });
         });
+        if is_highlighted && panel.scroll_to {
+            frame_resp.response.scroll_to_me(Some(egui::Align::Center));
+        }
     }
     if let Some(i) = remove_comp {
         let removed_name = panel.project.compartments.remove(i).name;
@@ -1141,6 +1151,8 @@ pub struct LoadingPanel<'a> {
     pub result: Option<&'a LoadingResult>,
     pub stale: bool,
     pub busy: bool,
+    pub highlight: Option<usize>,
+    pub scroll_to: bool,
 }
 
 fn unique_condition_name(base: &str, existing: &[LoadingCondition]) -> String {
@@ -1518,7 +1530,15 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
 
     let mut remove_tank = None;
     for (t_idx, tank) in cond.tanks.iter_mut().enumerate() {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        let is_highlighted = panel.highlight == Some(t_idx);
+        let mut frame = egui::Frame::group(ui.style());
+        if is_highlighted {
+            frame = frame.stroke(egui::Stroke::new(
+                2.0,
+                egui::Color32::from_rgb(220, 150, 40),
+            ));
+        }
+        let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name:");
                 if ui.text_edit_singleline(&mut tank.name).changed() {
@@ -1623,6 +1643,9 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                         });
                 });
         });
+        if is_highlighted && panel.scroll_to {
+            frame_resp.response.scroll_to_me(Some(egui::Align::Center));
+        }
     }
     if let Some(i) = remove_tank {
         cond.tanks.remove(i);
@@ -1928,6 +1951,8 @@ mod tests {
                     result: None,
                     stale: false,
                     busy: false,
+                    highlight: None,
+                    scroll_to: false,
                 },
             );
             assert_eq!(action, LoadingAction::None);
@@ -1977,6 +2002,8 @@ mod tests {
                     result: None,
                     stale: true,
                     busy: false,
+                    highlight: None,
+                    scroll_to: false,
                 },
             );
             assert_eq!(action, LoadingAction::None);
@@ -2003,6 +2030,8 @@ mod tests {
                     result: None,
                     stale: false,
                     busy: false,
+                    highlight: None,
+                    scroll_to: false,
                 },
             );
             assert_eq!(action, DamageAction::None);
@@ -2042,6 +2071,8 @@ mod tests {
                     result: None,
                     stale: true,
                     busy: false,
+                    highlight: None,
+                    scroll_to: false,
                 },
             );
             assert_eq!(action, DamageAction::None);

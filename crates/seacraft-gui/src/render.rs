@@ -46,6 +46,8 @@ pub struct DisplayOptions {
     pub points: bool,
     /// Draw the waterplane at the current draft.
     pub waterplane: bool,
+    /// Draw project tanks and compartments.
+    pub volumes: bool,
     /// Draw the ground grid.
     pub grid: bool,
     /// Draw station/buttock/waterline section curves and curvature combs.
@@ -64,11 +66,29 @@ impl Default for DisplayOptions {
             control_net: true,
             points: true,
             waterplane: true,
+            volumes: true,
             grid: true,
             combs: false,
             analysis: AnalysisMode::Shaded,
         }
     }
+}
+
+/// The kind of volume overlay to render.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VolumeKind {
+    Tank { liquid_z: Option<f64> },
+    Compartment { flooded: bool },
+}
+
+/// An axis-aligned 3D box overlay representing a tank or compartment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VolumeOverlay {
+    pub name: String,
+    pub min: Vec3,
+    pub max: Vec3,
+    pub kind: VolumeKind,
+    pub selected: bool,
 }
 
 /// Everything a viewport draws.
@@ -78,6 +98,8 @@ pub struct Scene<'a> {
     pub mesh: &'a RenderMesh,
     /// Optional 3D stations/buttocks/waterlines and their curvature combs.
     pub curves: Option<&'a seacraft_core::linesplan::LinesplanCurves3d>,
+    /// Project tanks and compartments.
+    pub volumes: &'a [VolumeOverlay],
     pub min: Vec3,
     pub max: Vec3,
     /// Current floating condition, for the waterplane.
@@ -159,6 +181,9 @@ pub fn viewport_with_texture(
     }
     if opts.waterplane {
         draw_waterplane(&painter, &view, rect, scene, texture.is_none());
+    }
+    if opts.volumes {
+        draw_volumes(&painter, &view, rect, scene.volumes);
     }
     if opts.combs {
         if let Some(curves) = scene.curves {
@@ -665,4 +690,287 @@ pub fn quad(rect: Rect) -> [(Rect, usize); 4] {
     let (tl, tr) = top.split_left_right_at_fraction(0.5);
     let (bl, br) = bottom.split_left_right_at_fraction(0.5);
     [(tl, 0), (tr, 1), (bl, 2), (br, 3)]
+}
+
+const BOX_EDGES: [(usize, usize); 12] = [
+    (0, 1),
+    (1, 3),
+    (3, 2),
+    (2, 0),
+    (4, 5),
+    (5, 7),
+    (7, 6),
+    (6, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
+
+fn box_corners(min: Vec3, max: Vec3) -> [Vec3; 8] {
+    [
+        Vec3::new(min.x, min.y, min.z),
+        Vec3::new(max.x, min.y, min.z),
+        Vec3::new(min.x, max.y, min.z),
+        Vec3::new(max.x, max.y, min.z),
+        Vec3::new(min.x, min.y, max.z),
+        Vec3::new(max.x, min.y, max.z),
+        Vec3::new(min.x, max.y, max.z),
+        Vec3::new(max.x, max.y, max.z),
+    ]
+}
+
+/// Compute the 2-D convex hull of a slice of points using Andrew's monotone chain algorithm.
+pub fn convex_hull_2d(points: &[Pos2]) -> Vec<Pos2> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut pts = points.to_vec();
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then_with(|| a.y.total_cmp(&b.y)));
+    pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6);
+    if pts.len() <= 2 {
+        return pts;
+    }
+
+    fn cross(o: Pos2, a: Pos2, b: Pos2) -> f32 {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
+    }
+
+    let mut lower = Vec::new();
+    for &p in &pts {
+        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+            lower.pop();
+        }
+        lower.push(p);
+    }
+
+    let mut upper = Vec::new();
+    for &p in pts.iter().rev() {
+        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+            upper.pop();
+        }
+        upper.push(p);
+    }
+
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
+
+/// Test whether a 2-D point lies inside a polygon using ray casting.
+pub fn point_in_polygon(pt: Pos2, poly: &[Pos2]) -> bool {
+    if poly.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let pi = poly[i];
+        let pj = poly[j];
+        if ((pi.y > pt.y) != (pj.y > pt.y))
+            && (pt.x < (pj.x - pi.x) * (pt.y - pi.y) / (pj.y - pi.y) + pi.x)
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// Projected area of a 2-D polygon using the shoelace formula.
+pub fn polygon_area(poly: &[Pos2]) -> f32 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut a = 0.0f32;
+    for i in 0..poly.len() {
+        let j = (i + 1) % poly.len();
+        a += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
+    }
+    (a * 0.5).abs()
+}
+
+/// Pick the volume under `cursor` with the smallest projected area.
+pub fn pick_volume(
+    view: &ViewTransform,
+    rect: Rect,
+    cursor: Pos2,
+    volumes: &[VolumeOverlay],
+) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, vol) in volumes.iter().enumerate() {
+        let corners = box_corners(vol.min, vol.max);
+        let projected: Vec<Pos2> = corners
+            .iter()
+            .filter_map(|c| view.project(*c, rect))
+            .collect();
+        if projected.len() < 3 {
+            continue;
+        }
+        let hull = convex_hull_2d(&projected);
+        if hull.len() >= 3 && point_in_polygon(cursor, &hull) {
+            let area = polygon_area(&hull);
+            if best.as_ref().is_none_or(|(_, best_area)| area < *best_area) {
+                best = Some((i, area));
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+fn draw_volumes(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    rect: Rect,
+    volumes: &[VolumeOverlay],
+) {
+    for vol in volumes {
+        let corners = box_corners(vol.min, vol.max);
+        let projected: Vec<Option<Pos2>> = corners.iter().map(|c| view.project(*c, rect)).collect();
+        let valid_pts: Vec<Pos2> = projected.iter().filter_map(|p| *p).collect();
+        if valid_pts.len() < 3 {
+            continue;
+        }
+
+        // 1. Translucent fill of the projected 2-D convex hull of the 8 corners (alpha ~25)
+        let hull = convex_hull_2d(&valid_pts);
+        if hull.len() >= 3 {
+            let base_fill = match vol.kind {
+                VolumeKind::Tank { .. } => Color32::from_rgba_unmultiplied(235, 160, 40, 25),
+                VolumeKind::Compartment { flooded: false } => {
+                    Color32::from_rgba_unmultiplied(120, 160, 200, 25)
+                }
+                VolumeKind::Compartment { flooded: true } => {
+                    Color32::from_rgba_unmultiplied(230, 60, 60, 70)
+                }
+            };
+            painter.add(egui::Shape::convex_polygon(hull, base_fill, Stroke::NONE));
+        }
+
+        // 2. Translucent fill for liquid level in tanks (alpha ~70, liquid blue)
+        if let VolumeKind::Tank { liquid_z: Some(lz) } = vol.kind {
+            let top_z = lz.clamp(vol.min.z, vol.max.z);
+            if top_z > vol.min.z + 1e-6 {
+                let sub_corners = box_corners(vol.min, Vec3::new(vol.max.x, vol.max.y, top_z));
+                let sub_valid: Vec<Pos2> = sub_corners
+                    .iter()
+                    .filter_map(|c| view.project(*c, rect))
+                    .collect();
+                if sub_valid.len() >= 3 {
+                    let sub_hull = convex_hull_2d(&sub_valid);
+                    if sub_hull.len() >= 3 {
+                        let liquid_blue = Color32::from_rgba_unmultiplied(60, 140, 240, 70);
+                        painter.add(egui::Shape::convex_polygon(
+                            sub_hull,
+                            liquid_blue,
+                            Stroke::NONE,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 3. 12 box edges
+        let (edge_color, edge_width) = match (&vol.kind, vol.selected) {
+            (VolumeKind::Tank { .. }, false) => (Color32::from_rgb(220, 150, 40), 1.0),
+            (VolumeKind::Tank { .. }, true) => (Color32::from_rgb(255, 200, 70), 2.0),
+            (VolumeKind::Compartment { flooded: false }, false) => {
+                (Color32::from_rgb(120, 155, 190), 1.0)
+            }
+            (VolumeKind::Compartment { flooded: false }, true) => {
+                (Color32::from_rgb(170, 210, 250), 2.0)
+            }
+            (VolumeKind::Compartment { flooded: true }, false) => {
+                (Color32::from_rgb(220, 60, 60), 1.0)
+            }
+            (VolumeKind::Compartment { flooded: true }, true) => {
+                (Color32::from_rgb(255, 90, 90), 2.0)
+            }
+        };
+        let stroke = Stroke::new(edge_width, edge_color);
+        for &(i, j) in &BOX_EDGES {
+            if let (Some(p), Some(q)) = (projected[i], projected[j]) {
+                painter.line_segment([p, q], stroke);
+            }
+        }
+
+        // 4. Show name next to selected volume only
+        if vol.selected {
+            let mut label_pos = valid_pts[0];
+            for &p in &valid_pts[1..] {
+                if p.y < label_pos.y {
+                    label_pos = p;
+                }
+            }
+            painter.text(
+                label_pos + egui::vec2(4.0, -4.0),
+                Align2::LEFT_BOTTOM,
+                &vol.name,
+                FontId::proportional(12.0),
+                edge_color,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::{Camera, ViewKind};
+
+    #[test]
+    fn convex_hull_2d_square_and_interior_points() {
+        let pts = vec![
+            Pos2::new(0.0, 0.0),
+            Pos2::new(10.0, 0.0),
+            Pos2::new(10.0, 10.0),
+            Pos2::new(0.0, 10.0),
+            Pos2::new(5.0, 5.0),
+            Pos2::new(2.0, 3.0),
+        ];
+        let hull = convex_hull_2d(&pts);
+        assert_eq!(hull.len(), 4);
+        for p in [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(10.0, 0.0),
+            Pos2::new(10.0, 10.0),
+            Pos2::new(0.0, 10.0),
+        ] {
+            assert!(hull.contains(&p));
+        }
+    }
+
+    #[test]
+    fn pick_volume_nested_boxes_and_outside() {
+        let camera = Camera::ortho(ViewKind::Plan, Vec3::ZERO, 30.0);
+        let view = camera.transform();
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(200.0, 200.0));
+
+        let outer = VolumeOverlay {
+            name: "Outer".into(),
+            min: Vec3::new(-10.0, -10.0, -5.0),
+            max: Vec3::new(10.0, 10.0, 5.0),
+            kind: VolumeKind::Compartment { flooded: false },
+            selected: false,
+        };
+        let inner = VolumeOverlay {
+            name: "Inner".into(),
+            min: Vec3::new(-2.0, -2.0, -2.0),
+            max: Vec3::new(2.0, 2.0, 2.0),
+            kind: VolumeKind::Tank { liquid_z: None },
+            selected: false,
+        };
+        let volumes = vec![outer, inner];
+
+        // Cursor at the projected center (0, 0, 0)
+        let center_screen = view.project(Vec3::ZERO, rect).expect("project center");
+        let hit = pick_volume(&view, rect, center_screen, &volumes);
+        assert_eq!(hit, Some(1), "the inner box with smaller area is picked");
+
+        // Cursor outside both
+        let outside = Pos2::new(5.0, 5.0);
+        let miss = pick_volume(&view, rect, outside, &volumes);
+        assert_eq!(miss, None, "a cursor outside both yields None");
+    }
 }
