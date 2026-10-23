@@ -342,6 +342,19 @@ the windage item and opens the Windage tab. The panel displays totals ($\Sigma A
 and area-weighted $z$) and the IMO §2.3 severe wind and rolling (weather)
 criterion summary from the loading panel's last compute.
 
+The design dock also provides the **Performance** tab (View menu `Performance panel`,
+or control `ui.set {"performance_panel": true}`), evaluating still-water resistance
+curves and regular head-sea seakeeping RAOs at the design draft. Four resistance
+methods are supported: Holtrop & Mennen (1984), Delft Systematic Yacht Hull Series
+(DSYHS), Savitsky (1964) planing equilibrium, and Michell (1898) thin-ship wave
+resistance. Seakeeping computes heave ($z/\zeta$) and pitch ($\theta/k\zeta$) RAOs
+across wavelength ratios $\lambda/L$, deriving mass distribution from fluid $KG$
+(defaulting to the latest loading computation or hydro dock) and $k_{yy}/L_{wl}$,
+and reporting natural heave and pitch periods along with irregular frequency
+warnings. Both resistance and seakeeping run on background worker threads with
+generation counters, accompanied by interactive XY plots, tabular readouts, and
+validity warnings in amber.
+
 ### Seakeeping (strip-theory heave & pitch motions)
 
 `seakeeping::head_sea_raos` (`seacraft seakeeping hull.fef --draft T` / MCP

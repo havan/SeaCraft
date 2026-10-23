@@ -634,6 +634,7 @@ fn handle_inner(
             let mut loading_panel: Option<bool> = None;
             let mut damage_panel: Option<bool> = None;
             let mut windage_panel: Option<bool> = None;
+            let mut performance_panel: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -719,6 +720,13 @@ fn handle_inner(
                                 .ok_or("`windage_panel` must be true or false")?,
                         )
                     }
+                    "performance_panel" => {
+                        performance_panel = Some(
+                            value
+                                .as_bool()
+                                .ok_or("`performance_panel` must be true or false")?,
+                        )
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
@@ -731,6 +739,9 @@ fn handle_inner(
             }
             if let Some(show) = windage_panel {
                 app.set_show_windage(show);
+            }
+            if let Some(show) = performance_panel {
+                app.set_show_performance(show);
             }
             if let Some(mode) = analysis {
                 app.set_analysis(mode);
@@ -1639,6 +1650,104 @@ fn handle_inner(
                 "buttocks_m": table.buttocks_m,
                 "stations": table.stations,
                 "max_half_breadth_m": table.max_half_breadth(),
+            }))
+        }
+        "performance.compute" => {
+            let surface = app
+                .surface()
+                .ok_or_else(|| "performance.compute: no model is loaded".to_string())?;
+            let mut opts = app.hydro_options().clone();
+            if let Some(d) = number_in(p, "draft", 0.001..=1.0e4)? {
+                opts.draft = d;
+            }
+            opts.subdivision.level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=5.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            opts.subdivision.mode = app.subdivision_mode();
+
+            let method = match text(p, "method")? {
+                Some(m) if m.eq_ignore_ascii_case("dsyhs") => crate::app::ResistanceMethod::Dsyhs,
+                Some(m)
+                    if m.eq_ignore_ascii_case("savitsky") || m.eq_ignore_ascii_case("planing") =>
+                {
+                    crate::app::ResistanceMethod::Savitsky
+                }
+                Some(m) if m.eq_ignore_ascii_case("michell") => {
+                    crate::app::ResistanceMethod::Michell
+                }
+                Some(m) if m.eq_ignore_ascii_case("holtrop") => {
+                    crate::app::ResistanceMethod::Holtrop
+                }
+                Some(other) => return Err(format!("unknown resistance method `{other}`")),
+                None => app.performance_state().method,
+            };
+
+            let speeds = match numbers(p, "speeds")? {
+                Some(v) if !v.is_empty() => v,
+                _ => app.performance_speeds(),
+            };
+
+            let resistance = app.compute_resistance_for(method, &speeds, &opts)?;
+
+            let speed_kn = number(p, "speed_kn")?
+                .or(number(p, "speed")?)
+                .unwrap_or(app.performance_state().sk_speed_kn);
+            let kg = match number(p, "kg")? {
+                Some(k) => k,
+                None => app.effective_performance_kg(),
+            };
+            let kyy = number(p, "kyy")?;
+            let stations = number_in(p, "stations", 3.0..=200.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(21);
+            let lambda_min = number(p, "lambda_min")?;
+            let lambda_max = number(p, "lambda_max")?;
+            let points = number_in(p, "points", 1.0..=500.0)?
+                .map(|n| n.round() as usize)
+                .or(Some(app.performance_state().points));
+
+            let spec = seacraft_core::seakeeping::SeakeepingSpec {
+                draft: opts.draft,
+                speed_kn,
+                kg,
+                kyy,
+                stations,
+                lambda_min,
+                lambda_max,
+                points,
+                ..Default::default()
+            };
+
+            let rep = seacraft_core::seakeeping::head_sea_raos(surface, &spec)
+                .map_err(|e| format!("performance.compute: {e}"))?;
+
+            app.set_performance_results(resistance.clone(), rep.clone());
+
+            let resistance_json = json!({
+                "method": resistance.method,
+                "rows": resistance.rows.iter().map(|r| json!({
+                    "speed_kn": r.speed_kn,
+                    "fn_": r.fn_,
+                    "rt_kn": r.rt_kn,
+                    "pe_kw": r.pe_kw,
+                    "note": r.note,
+                })).collect::<Vec<_>>(),
+                "warnings": resistance.warnings,
+                "rt_label": resistance.rt_label,
+            });
+
+            let mut rep_json = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
+            if let Some(o) = rep_json.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+
+            Ok(json!({
+                "backend": "app",
+                "resistance": resistance_json,
+                "raos": rep_json,
             }))
         }
         "resistance.compute" => {
@@ -3366,6 +3475,7 @@ mod tests {
             "project.set",
             "loading.compute",
             "damage.compute",
+            "performance.compute",
             "point.move",
             "edge.crease",
             "hydro.compute",
@@ -3722,5 +3832,60 @@ mod tests {
         let restore = call(&mut app, &ctx, "history.restore", json!({"mark": mark}));
         assert_eq!(restore["ok"], true);
         assert!((app.surface().unwrap().points[0].p.z - original_z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn performance_compute_positive() {
+        let (mut app, ctx) = demo();
+        let set_res = call(
+            &mut app,
+            &ctx,
+            "ui.set",
+            json!({ "performance_panel": true }),
+        );
+        assert_eq!(set_res["ok"], true);
+        assert!(app.show_performance());
+
+        let res = call(
+            &mut app,
+            &ctx,
+            "performance.compute",
+            json!({
+                "speed_kn": 0.0,
+                "lambda_max": 10.0,
+            }),
+        );
+        assert_eq!(res["ok"], true, "{res}");
+        let r = &res["result"];
+        let rows = r["resistance"]["rows"].as_array().expect("rows array");
+        assert!(!rows.is_empty(), "resistance table must not be empty");
+        let row_6kn = rows
+            .iter()
+            .find(|row| (row["speed_kn"].as_f64().unwrap_or(0.0) - 6.0).abs() < 1e-3)
+            .expect("row at 6 kn");
+        let rt_6kn = row_6kn["rt_kn"].as_f64().expect("rt_kn at 6 kn");
+        assert!(
+            rt_6kn > 0.0 && rt_6kn.is_finite(),
+            "rt_kn must be finite positive: {rt_6kn}"
+        );
+
+        let freqs = r["raos"]["frequencies"]
+            .as_array()
+            .expect("raos frequencies");
+        assert!(!freqs.is_empty());
+        let longest = freqs
+            .iter()
+            .max_by(|a, b| {
+                let la = a["lambda_over_l"].as_f64().unwrap_or(0.0);
+                let lb = b["lambda_over_l"].as_f64().unwrap_or(0.0);
+                la.total_cmp(&lb)
+            })
+            .expect("longest wavelength point");
+        assert!(longest["lambda_over_l"].as_f64().unwrap() >= 10.0 - 1e-4);
+        let heave = longest["heave_amp"].as_f64().expect("heave_amp");
+        assert!(
+            (heave - 1.0).abs() <= 0.05,
+            "heave at longest wavelength must be ~1 (got {heave})"
+        );
     }
 }

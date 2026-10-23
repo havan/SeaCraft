@@ -14,6 +14,8 @@ use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
 use seacraft_core::loading::LoadingResult;
 use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::project::{self, Project};
+use seacraft_core::resistance::{self, HoltropInput};
+use seacraft_core::seakeeping::{SeakeepingReport, SeakeepingSpec};
 use seacraft_core::stability::{self, CrossCurve};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
@@ -192,6 +194,104 @@ pub enum DesignDock {
     Loading,
     Damage,
     Windage,
+    Performance,
+}
+
+/// Method used for resistance prediction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResistanceMethod {
+    #[default]
+    Holtrop,
+    Dsyhs,
+    Savitsky,
+    Michell,
+}
+
+impl ResistanceMethod {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Holtrop => "Holtrop & Mennen",
+            Self::Dsyhs => "Delft (DSYHS)",
+            Self::Savitsky => "Savitsky (Planing)",
+            Self::Michell => "Michell (Thin ship)",
+        }
+    }
+}
+
+/// A row in the GUI resistance prediction table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResistanceRow {
+    pub speed_kn: f64,
+    pub fn_: f64,
+    pub rt_kn: f64,
+    pub pe_kw: Option<f64>,
+    pub note: Option<String>,
+}
+
+/// Consolidated resistance prediction result for GUI display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResistanceResult {
+    pub method: String,
+    pub rows: Vec<ResistanceRow>,
+    pub warnings: Vec<String>,
+    pub rt_label: String,
+}
+
+impl ResistanceResult {
+    pub fn from_core(
+        method: &str,
+        rows: &[seacraft_core::resistance::Resistance],
+        warnings: Vec<String>,
+        rt_label: &str,
+    ) -> Self {
+        Self {
+            method: method.to_string(),
+            rows: rows
+                .iter()
+                .map(|r| ResistanceRow {
+                    speed_kn: r.speed_kn,
+                    fn_: r.fn_,
+                    rt_kn: r.rt_n / 1000.0,
+                    pe_kw: Some(r.pe_w / 1000.0),
+                    note: None,
+                })
+                .collect(),
+            warnings,
+            rt_label: rt_label.to_string(),
+        }
+    }
+}
+
+/// State for the performance tab (resistance prediction and seakeeping RAOs).
+#[derive(Debug, Clone)]
+pub struct PerformanceState {
+    pub method: ResistanceMethod,
+    pub speeds_kn: (f64, f64, f64),
+    pub sk_speed_kn: f64,
+    pub kg: Option<f64>,
+    pub kyy_frac: f64,
+    pub points: usize,
+    pub resistance: Option<ResistanceResult>,
+    pub raos: Option<SeakeepingReport>,
+    pub resistance_stale: bool,
+    pub raos_stale: bool,
+}
+
+impl Default for PerformanceState {
+    fn default() -> Self {
+        Self {
+            method: ResistanceMethod::Holtrop,
+            speeds_kn: (2.0, 12.0, 1.0),
+            sk_speed_kn: 6.0,
+            kg: None,
+            kyy_frac: 0.25,
+            points: 30,
+            resistance: None,
+            raos: None,
+            resistance_stale: true,
+            raos_stale: true,
+        }
+    }
 }
 
 pub struct App {
@@ -238,6 +338,12 @@ pub struct App {
     damage_stale: bool,
     damage_worker: Option<std::sync::mpsc::Receiver<(u64, Result<DamageResult, String>)>>,
     damage_generation: u64,
+    perf_state: PerformanceState,
+    perf_resistance_worker:
+        Option<std::sync::mpsc::Receiver<(u64, Result<ResistanceResult, String>)>>,
+    perf_resistance_generation: u64,
+    perf_raos_worker: Option<std::sync::mpsc::Receiver<(u64, Result<SeakeepingReport, String>)>>,
+    perf_raos_generation: u64,
     /// Cursor position on the active viewport's focal plane, for the status bar.
     cursor_world: Option<Vec3>,
     /// Geometry changed since the hydrostatics were last computed.
@@ -325,6 +431,11 @@ impl App {
             damage_stale: true,
             damage_worker: None,
             damage_generation: 0,
+            perf_state: PerformanceState::default(),
+            perf_resistance_worker: None,
+            perf_resistance_generation: 0,
+            perf_raos_worker: None,
+            perf_raos_generation: 0,
             cursor_world: None,
             hydro_dirty: true,
             hydro: HydroState::new(),
@@ -452,8 +563,20 @@ impl App {
         self.loading_worker = None;
         self.damage_stale = true;
         self.damage_selected = 0;
+        self.perf_state.resistance_stale = true;
+        self.perf_state.resistance = None;
+        self.perf_resistance_worker = None;
+        self.perf_state.raos_stale = true;
+        self.perf_state.raos = None;
+        self.perf_raos_worker = None;
         self.damage_result = None;
         self.damage_worker = None;
+        self.perf_state.resistance_stale = true;
+        self.perf_state.resistance = None;
+        self.perf_resistance_worker = None;
+        self.perf_state.raos_stale = true;
+        self.perf_state.raos = None;
+        self.perf_raos_worker = None;
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
         if let Some(s) = &self.surface {
@@ -639,6 +762,12 @@ impl App {
                         {
                             dock = DesignDock::Windage;
                         }
+                        if ui
+                            .selectable_label(dock == DesignDock::Performance, "Performance")
+                            .clicked()
+                        {
+                            dock = DesignDock::Performance;
+                        }
                     });
                     ui.separator();
 
@@ -712,6 +841,42 @@ impl App {
                                 panels::WindageAction::None => {}
                             }
                         }
+                        DesignDock::Performance => {
+                            let default_kg = if !self.loading_stale {
+                                self.loading_result
+                                    .as_ref()
+                                    .map_or(self.hydro.kg, |r| r.kg_fluid)
+                            } else {
+                                self.hydro.kg
+                            };
+                            let kg_source = if self.perf_state.kg.is_some() {
+                                "Manual"
+                            } else if !self.loading_stale && self.loading_result.is_some() {
+                                "Loading (KG_fluid)"
+                            } else {
+                                "Hydro dock"
+                            };
+                            let action = panels::performance(
+                                ui,
+                                panels::PerformancePanel {
+                                    state: &mut self.perf_state,
+                                    default_kg,
+                                    kg_source,
+                                    busy_resistance: self.perf_resistance_worker.is_some(),
+                                    busy_raos: self.perf_raos_worker.is_some(),
+                                },
+                            );
+                            match action {
+                                panels::PerformanceAction::Changed => {
+                                    self.perf_state.resistance_stale = true;
+                                    self.perf_state.raos_stale = true;
+                                }
+                                panels::PerformanceAction::Compute => {
+                                    self.start_performance_compute();
+                                }
+                                panels::PerformanceAction::None => {}
+                            }
+                        }
                     });
                 });
 
@@ -770,6 +935,66 @@ impl App {
             }
             if done {
                 self.damage_worker = None;
+            }
+        }
+
+        if let Some(rx) = &self.perf_resistance_worker {
+            let mut done = false;
+            match rx.try_recv() {
+                Ok((gen, res)) => {
+                    done = true;
+                    if gen == self.perf_resistance_generation {
+                        match res {
+                            Ok(r) => {
+                                self.perf_state.resistance = Some(r);
+                                self.perf_state.resistance_stale = false;
+                            }
+                            Err(e) => {
+                                self.status = format!("Resistance compute failed: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done = true;
+                }
+            }
+            if done {
+                self.perf_resistance_worker = None;
+            }
+        }
+
+        if let Some(rx) = &self.perf_raos_worker {
+            let mut done = false;
+            match rx.try_recv() {
+                Ok((gen, res)) => {
+                    done = true;
+                    if gen == self.perf_raos_generation {
+                        match res {
+                            Ok(r) => {
+                                self.perf_state.raos = Some(r);
+                                self.perf_state.raos_stale = false;
+                            }
+                            Err(e) => {
+                                self.status = format!("Seakeeping compute failed: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done = true;
+                }
+            }
+            if done {
+                self.perf_raos_worker = None;
             }
         }
 
@@ -960,6 +1185,10 @@ impl App {
                     let mut windage = self.show_windage();
                     if ui.checkbox(&mut windage, "Windage panel").changed() {
                         self.set_show_windage(windage);
+                    }
+                    let mut perf = self.show_performance();
+                    if ui.checkbox(&mut perf, "Performance panel").changed() {
+                        self.set_show_performance(perf);
                     }
                     ui.separator();
                     let mut level = self.level as u32;
@@ -1759,6 +1988,8 @@ impl App {
         self.hydro.last_edit = Some(std::time::Instant::now());
         self.loading_stale = true;
         self.damage_stale = true;
+        self.perf_state.resistance_stale = true;
+        self.perf_state.raos_stale = true;
     }
 
     // ---- accessors (tests and dock panels) -----------------------------
@@ -1785,6 +2016,12 @@ impl App {
         self.loading_selected = 0;
         self.damage_stale = true;
         self.damage_selected = 0;
+        self.perf_state.resistance_stale = true;
+        self.perf_state.resistance = None;
+        self.perf_resistance_worker = None;
+        self.perf_state.raos_stale = true;
+        self.perf_state.raos = None;
+        self.perf_raos_worker = None;
     }
 
     /// Show or hide the loading panel; showing it shows only it in the design dock.
@@ -1824,6 +2061,19 @@ impl App {
 
     pub fn show_windage(&self) -> bool {
         self.design_dock == Some(DesignDock::Windage)
+    }
+
+    /// Show or hide the performance panel; showing it shows only it in the design dock.
+    pub fn set_show_performance(&mut self, show: bool) {
+        if show {
+            self.design_dock = Some(DesignDock::Performance);
+        } else if self.design_dock == Some(DesignDock::Performance) {
+            self.design_dock = None;
+        }
+    }
+
+    pub fn show_performance(&self) -> bool {
+        self.design_dock == Some(DesignDock::Performance)
     }
 
     pub fn design_dock(&self) -> Option<DesignDock> {
@@ -2093,6 +2343,184 @@ impl App {
         self.damage_result = Some(res);
         self.damage_stale = false;
         Ok(self.damage_result.as_ref().unwrap())
+    }
+
+    pub fn performance_state(&self) -> &PerformanceState {
+        &self.perf_state
+    }
+
+    pub fn performance_state_mut(&mut self) -> &mut PerformanceState {
+        &mut self.perf_state
+    }
+
+    pub fn performance_speeds(&self) -> Vec<f64> {
+        let (min, max, step) = self.perf_state.speeds_kn;
+        let (min, max) = if min <= max { (min, max) } else { (max, min) };
+        let step = if step > 0.05 { step } else { 1.0 };
+        let mut speeds = Vec::new();
+        let mut s = min;
+        while s <= max + 1e-6 {
+            speeds.push(s);
+            s += step;
+        }
+        if speeds.is_empty() {
+            speeds.push(min);
+        }
+        speeds
+    }
+
+    pub fn effective_performance_kg(&self) -> f64 {
+        if let Some(kg) = self.perf_state.kg {
+            kg
+        } else if !self.loading_stale {
+            self.loading_result
+                .as_ref()
+                .map_or(self.hydro.kg, |r| r.kg_fluid)
+        } else {
+            self.hydro.kg
+        }
+    }
+
+    pub fn performance_kg_source(&self) -> &'static str {
+        if self.perf_state.kg.is_some() {
+            "Manual"
+        } else if !self.loading_stale && self.loading_result.is_some() {
+            "Loading (KG_fluid)"
+        } else {
+            "Hydro dock"
+        }
+    }
+
+    pub fn seakeeping_spec(&self) -> SeakeepingSpec {
+        let draft = self.hydro.options.draft;
+        let kg = self.effective_performance_kg();
+        let kyy = if (self.perf_state.kyy_frac - 0.25).abs() < 1e-6 {
+            None
+        } else {
+            let lwl = self
+                .surface
+                .as_ref()
+                .map(|s| {
+                    let hull = Hull::new(s, seacraft_core::SubdivisionOptions::default());
+                    let mut opts =
+                        HydroOptions::from_surface(s, seacraft_core::SubdivisionOptions::default());
+                    opts.draft = draft;
+                    hull.hydrostatics(&opts).lwl
+                })
+                .unwrap_or(0.0);
+            Some(self.perf_state.kyy_frac * lwl)
+        };
+        SeakeepingSpec {
+            draft,
+            speed_kn: self.perf_state.sk_speed_kn,
+            kg,
+            kyy,
+            points: Some(self.perf_state.points),
+            ..Default::default()
+        }
+    }
+
+    pub fn compute_resistance_for(
+        &self,
+        method: ResistanceMethod,
+        speeds: &[f64],
+        opts: &HydroOptions,
+    ) -> Result<ResistanceResult, String> {
+        let surface = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| "no model loaded".to_string())?;
+        compute_resistance_impl(surface, method, speeds, opts)
+    }
+
+    pub fn compute_resistance_blocking(&mut self) -> Result<&ResistanceResult, String> {
+        let speeds = self.performance_speeds();
+        let method = self.perf_state.method;
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision.level = self.level;
+        opts.subdivision.mode = self.mode;
+        let res = self.compute_resistance_for(method, &speeds, &opts)?;
+        self.perf_resistance_generation += 1;
+        self.perf_resistance_worker = None;
+        self.perf_state.resistance = Some(res);
+        self.perf_state.resistance_stale = false;
+        Ok(self.perf_state.resistance.as_ref().unwrap())
+    }
+
+    pub fn compute_raos_blocking(&mut self) -> Result<&SeakeepingReport, String> {
+        let surface = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| "no model loaded".to_string())?;
+        let spec = self.seakeeping_spec();
+        let rep = seacraft_core::seakeeping::head_sea_raos(surface, &spec)
+            .map_err(|e| format!("seakeeping compute: {e}"))?;
+        self.perf_raos_generation += 1;
+        self.perf_raos_worker = None;
+        self.perf_state.raos = Some(rep);
+        self.perf_state.raos_stale = false;
+        Ok(self.perf_state.raos.as_ref().unwrap())
+    }
+
+    pub fn start_resistance_compute(&mut self) {
+        let surface = match &self.surface {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let speeds = self.performance_speeds();
+        let method = self.perf_state.method;
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision.level = self.level;
+        opts.subdivision.mode = self.mode;
+
+        self.perf_resistance_generation += 1;
+        let gen = self.perf_resistance_generation;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.perf_resistance_worker = Some(rx);
+
+        std::thread::spawn(move || {
+            let res = compute_resistance_impl(&surface, method, &speeds, &opts);
+            let _ = tx.send((gen, res));
+        });
+    }
+
+    pub fn start_raos_compute(&mut self) {
+        let surface = match &self.surface {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        let spec = self.seakeeping_spec();
+
+        self.perf_raos_generation += 1;
+        let gen = self.perf_raos_generation;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.perf_raos_worker = Some(rx);
+
+        std::thread::spawn(move || {
+            let rep = seacraft_core::seakeeping::head_sea_raos(&surface, &spec)
+                .map_err(|e| format!("seakeeping compute: {e}"));
+            let _ = tx.send((gen, rep));
+        });
+    }
+
+    pub fn start_performance_compute(&mut self) {
+        self.start_resistance_compute();
+        self.start_raos_compute();
+    }
+
+    pub fn resistance_result(&self) -> Option<&ResistanceResult> {
+        self.perf_state.resistance.as_ref()
+    }
+
+    pub fn rao_result(&self) -> Option<&SeakeepingReport> {
+        self.perf_state.raos.as_ref()
+    }
+
+    pub fn set_performance_results(&mut self, res: ResistanceResult, raos: SeakeepingReport) {
+        self.perf_state.resistance = Some(res);
+        self.perf_state.resistance_stale = false;
+        self.perf_state.raos = Some(raos);
+        self.perf_state.raos_stale = false;
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {
@@ -2424,6 +2852,171 @@ fn listing(path: &str, wanted: &str) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+fn compute_resistance_impl(
+    surface: &Surface,
+    method: ResistanceMethod,
+    speeds: &[f64],
+    opts: &HydroOptions,
+) -> Result<ResistanceResult, String> {
+    let hull = Hull::new(surface, opts.subdivision);
+    match method {
+        ResistanceMethod::Holtrop => {
+            let input = HoltropInput::measure(&hull, opts)
+                .ok_or_else(|| "cannot measure the hull for Holtrop".to_string())?;
+            let core_rows = resistance::curve(&input, speeds);
+            let warnings = input.warnings();
+            let rows = core_rows
+                .into_iter()
+                .map(|r| ResistanceRow {
+                    speed_kn: r.speed_kn,
+                    fn_: r.fn_,
+                    rt_kn: r.rt_n / 1000.0,
+                    pe_kw: Some(r.pe_w / 1000.0),
+                    note: None,
+                })
+                .collect();
+            Ok(ResistanceResult {
+                method: "Holtrop & Mennen".to_string(),
+                rows,
+                warnings,
+                rt_label: "R_T (kN)".to_string(),
+            })
+        }
+        ResistanceMethod::Dsyhs => {
+            let dsyhs_in = resistance::DsyhsInput::measure(&hull, opts)
+                .ok_or_else(|| "cannot measure the hull for DSYHS".to_string())?;
+            let mut warnings = dsyhs_in.warnings();
+            let core_rows = resistance::dsyhs_curve(&dsyhs_in, speeds);
+            for r in &core_rows {
+                if !(0.15..=0.75).contains(&r.fn_) {
+                    warnings.push(format!(
+                        "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
+                        r.fn_, r.speed_kn
+                    ));
+                }
+            }
+            let rows = core_rows
+                .into_iter()
+                .map(|r| ResistanceRow {
+                    speed_kn: r.speed_kn,
+                    fn_: r.fn_,
+                    rt_kn: r.rt_n / 1000.0,
+                    pe_kw: Some(r.pe_w / 1000.0),
+                    note: None,
+                })
+                .collect();
+            Ok(ResistanceResult {
+                method: "Delft (DSYHS)".to_string(),
+                rows,
+                warnings,
+                rt_label: "R_T (kN)".to_string(),
+            })
+        }
+        ResistanceMethod::Savitsky => {
+            let setup =
+                seacraft_core::planing::setup(surface, opts.subdivision, opts, None, None, None)
+                    .map_err(|e| format!("planing setup: {e}"))?;
+            let core_rows = seacraft_core::planing::planing_curve(&setup.hull, speeds);
+            let mut warnings = Vec::new();
+            if core_rows.is_empty() {
+                warnings.push("No planing equilibrium found at these speeds".to_string());
+            }
+            let rows = core_rows
+                .into_iter()
+                .map(|p| ResistanceRow {
+                    speed_kn: p.speed_kn,
+                    fn_: p.cv,
+                    rt_kn: p.resistance_n / 1000.0,
+                    pe_kw: Some(p.pe_w / 1000.0),
+                    note: Some(format!("trim {:.1}°", p.trim_deg)),
+                })
+                .collect();
+            Ok(ResistanceResult {
+                method: "Savitsky (Planing)".to_string(),
+                rows,
+                warnings,
+                rt_label: "R_T (kN)".to_string(),
+            })
+        }
+        ResistanceMethod::Michell => {
+            let grid = seacraft_core::michell::michell_grid_from_surface(
+                surface,
+                opts.draft,
+                65,
+                25,
+                opts.subdivision,
+            )
+            .ok_or_else(|| "cannot extract Michell offsets grid from hull surface".to_string())?;
+            let holtrop_in = resistance::HoltropInput::measure(&hull, opts);
+            let form_factor = if let Some(ref h_in) = holtrop_in {
+                let r = resistance::holtrop(h_in, 1.0);
+                if h_in.warnings().is_empty() {
+                    r.form_factor
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+            let viscosity = if (opts.water_density - 1000.0).abs() < 25.0 {
+                resistance::VISCOSITY_FRESH_WATER
+            } else {
+                resistance::VISCOSITY_SEA_WATER
+            };
+            let mopts = seacraft_core::michell::MichellOptions {
+                nx: 65,
+                nz: 25,
+                ntheta: 128,
+                catamaran_spacing: None,
+            };
+            let core_rows = seacraft_core::michell::michell_resistance_curve(
+                &grid,
+                form_factor,
+                viscosity,
+                opts.water_density,
+                resistance::GRAVITY,
+                speeds,
+                &mopts,
+            );
+            let mut warnings = Vec::new();
+            let lb = if grid.beam_wl > 1e-6 {
+                grid.length_wl / grid.beam_wl
+            } else {
+                0.0
+            };
+            if lb < 6.0 {
+                warnings.push(format!(
+                    "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
+                ));
+            }
+            for r in &core_rows {
+                if !(0.20..=1.0).contains(&r.fn_) {
+                    warnings.push(format!(
+                        "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+                        r.fn_, r.speed_kn
+                    ));
+                }
+            }
+            let rows = core_rows
+                .into_iter()
+                .map(|r| ResistanceRow {
+                    speed_kn: r.speed_kn,
+                    fn_: r.fn_,
+                    rt_kn: r.rt_n / 1000.0,
+                    pe_kw: Some(r.pe_w / 1000.0),
+                    note: Some(format!("Rw {:.2} kN", r.rw_n / 1000.0)),
+                })
+                .collect();
+            Ok(ResistanceResult {
+                method: "Michell (Thin ship)".to_string(),
+                rows,
+                warnings,
+                rt_label: "R_T (kN)".to_string(),
+            })
+        }
+    }
 }
 
 impl eframe::App for App {

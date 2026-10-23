@@ -408,6 +408,240 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerformanceAction {
+    None,
+    Changed,
+    Compute,
+}
+
+pub struct PerformancePanel<'a> {
+    pub state: &'a mut crate::app::PerformanceState,
+    pub default_kg: f64,
+    pub kg_source: &'static str,
+    pub busy_resistance: bool,
+    pub busy_raos: bool,
+}
+
+pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
+    let mut action = PerformanceAction::None;
+    ui.heading("Performance");
+    ui.add_space(4.0);
+
+    let is_busy = panel.busy_resistance || panel.busy_raos;
+    let is_stale = panel.state.resistance_stale || panel.state.raos_stale;
+
+    ui.horizontal(|ui| {
+        let btn = ui.add_enabled(!is_busy, egui::Button::new("Compute"));
+        if btn.clicked() {
+            action = PerformanceAction::Compute;
+        }
+        if is_busy {
+            ui.spinner();
+            if panel.busy_resistance && panel.busy_raos {
+                ui.label("Computing resistance & RAOs…");
+            } else if panel.busy_resistance {
+                ui.label("Computing resistance…");
+            } else {
+                ui.label("Computing RAOs…");
+            }
+        } else if is_stale {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                "Results out of date",
+            );
+        }
+    });
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.strong("Resistance Prediction");
+    ui.add_space(2.0);
+
+    egui::ComboBox::from_label("Method")
+        .selected_text(panel.state.method.label())
+        .show_ui(ui, |ui| {
+            for m in [
+                crate::app::ResistanceMethod::Holtrop,
+                crate::app::ResistanceMethod::Dsyhs,
+                crate::app::ResistanceMethod::Savitsky,
+                crate::app::ResistanceMethod::Michell,
+            ] {
+                if ui
+                    .selectable_value(&mut panel.state.method, m, m.label())
+                    .clicked()
+                {
+                    action = PerformanceAction::Changed;
+                }
+            }
+        });
+
+    ui.horizontal(|ui| {
+        ui.label("Speeds (kn):");
+        let r1 = ui.add(
+            egui::DragValue::new(&mut panel.state.speeds_kn.0)
+                .speed(0.5)
+                .range(0.1..=100.0)
+                .prefix("min: "),
+        );
+        let r2 = ui.add(
+            egui::DragValue::new(&mut panel.state.speeds_kn.1)
+                .speed(0.5)
+                .range(0.1..=100.0)
+                .prefix("max: "),
+        );
+        let r3 = ui.add(
+            egui::DragValue::new(&mut panel.state.speeds_kn.2)
+                .speed(0.1)
+                .range(0.1..=20.0)
+                .prefix("step: "),
+        );
+        if r1.changed() || r2.changed() || r3.changed() {
+            action = PerformanceAction::Changed;
+        }
+    });
+
+    if let Some(res) = &panel.state.resistance {
+        for w in &res.warnings {
+            ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), format!("⚠ {w}"));
+        }
+
+        let series = vec![(
+            res.method.clone(),
+            res.rows.iter().map(|r| (r.speed_kn, r.rt_kn)).collect(),
+        )];
+        plot_xy(ui, "Resistance", "Speed (kn)", &res.rt_label, &series);
+
+        ui.add_space(2.0);
+        egui::Grid::new("resistance_table")
+            .striped(true)
+            .min_col_width(50.0)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("V (kn)").strong());
+                ui.label(egui::RichText::new("Fn").strong());
+                ui.label(egui::RichText::new(&res.rt_label).strong());
+                ui.label(egui::RichText::new("P_E (kW)").strong());
+                ui.end_row();
+                for r in &res.rows {
+                    ui.label(format!("{:.2}", r.speed_kn));
+                    ui.label(format!("{:.3}", r.fn_));
+                    ui.label(format!("{:.2}", r.rt_kn));
+                    match r.pe_kw {
+                        Some(pe) => ui.label(format!("{:.2}", pe)),
+                        None => ui.label("-"),
+                    };
+                    ui.end_row();
+                }
+            });
+    }
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.strong("Seakeeping (Head Sea RAOs)");
+    ui.add_space(2.0);
+
+    let speed_resp = ui.add(
+        egui::Slider::new(&mut panel.state.sk_speed_kn, 0.0..=20.0)
+            .text("Speed (kn)")
+            .step_by(0.5),
+    );
+    if speed_resp.changed() {
+        action = PerformanceAction::Changed;
+    }
+
+    ui.horizontal(|ui| {
+        let mut cur_kg = panel.state.kg.unwrap_or(panel.default_kg);
+        let kg_resp = ui.add(
+            egui::DragValue::new(&mut cur_kg)
+                .speed(0.01)
+                .range(0.0..=50.0)
+                .prefix("KG: ")
+                .suffix(" m"),
+        );
+        if kg_resp.changed() {
+            panel.state.kg = Some(cur_kg);
+            action = PerformanceAction::Changed;
+        }
+        if panel.state.kg.is_some() {
+            if ui.small_button("Reset").clicked() {
+                panel.state.kg = None;
+                action = PerformanceAction::Changed;
+            }
+            ui.label(format!(
+                "(default: {:.2} m, {})",
+                panel.default_kg, panel.kg_source
+            ));
+        } else {
+            ui.label(format!("({})", panel.kg_source));
+        }
+    });
+
+    ui.horizontal(|ui| {
+        let kyy_resp = ui.add(
+            egui::DragValue::new(&mut panel.state.kyy_frac)
+                .speed(0.01)
+                .range(0.05..=1.0)
+                .prefix("kyy / Lwl: "),
+        );
+        let pts_resp = ui.add(
+            egui::DragValue::new(&mut panel.state.points)
+                .range(5..=200)
+                .prefix("Points: "),
+        );
+        if kyy_resp.changed() || pts_resp.changed() {
+            action = PerformanceAction::Changed;
+        }
+    });
+
+    if let Some(rep) = &panel.state.raos {
+        let tn_heave = if rep.natural_heave_omega > 1e-4 {
+            format!(
+                "{:.2} s",
+                2.0 * std::f64::consts::PI / rep.natural_heave_omega
+            )
+        } else {
+            "-".to_string()
+        };
+        let tn_pitch = if rep.natural_pitch_omega > 1e-4 {
+            format!(
+                "{:.2} s",
+                2.0 * std::f64::consts::PI / rep.natural_pitch_omega
+            )
+        } else {
+            "-".to_string()
+        };
+        ui.label(format!(
+            "Natural periods: Heave T_n = {}, Pitch T_n = {}",
+            tn_heave, tn_pitch
+        ));
+
+        for w in &rep.warnings {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                format!("⚠ {}", w.message),
+            );
+        }
+
+        let heave_pts: Vec<(f64, f64)> = rep
+            .frequencies
+            .iter()
+            .map(|p| (p.lambda_over_l, p.heave_amp))
+            .collect();
+        let pitch_pts: Vec<(f64, f64)> = rep
+            .frequencies
+            .iter()
+            .map(|p| (p.lambda_over_l, p.pitch_amp))
+            .collect();
+        let series = vec![
+            ("Heave z/ζ".to_string(), heave_pts),
+            ("Pitch θ/kζ".to_string(), pitch_pts),
+        ];
+        plot_xy(ui, "Motion RAOs", "λ / L", "RAO", &series);
+    }
+
+    action
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DamageAction {
     None,
     Changed,
@@ -1176,8 +1410,14 @@ fn unique_condition_name(base: &str, existing: &[LoadingCondition]) -> String {
     }
 }
 
-/// A general GZ plot: heel (deg) across, righting lever GZ (m) up, with labelled curves.
-pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
+/// A general 2D XY plot with labelled series, axes, and header text.
+pub fn plot_xy(
+    ui: &mut egui::Ui,
+    title: &str,
+    x_label: &str,
+    y_label: &str,
+    series: &[(String, Vec<(f64, f64)>)],
+) {
     let height = 150.0;
     let (response, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width(), height),
@@ -1186,41 +1426,49 @@ pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
     let rect = response.rect;
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
 
-    let mut heel_max: f64 = 40.0;
-    let mut gz_max: f64 = 0.1;
-    let mut gz_min: f64 = 0.0;
+    let is_gz = title == "GZ";
+    let mut x_min: f64 = 0.0;
+    let mut x_max: f64 = if is_gz { 40.0 } else { 1.0 };
+    let mut y_min: f64 = 0.0;
+    let mut y_max: f64 = 0.1;
 
-    for (_, pts) in curves {
-        for &(h, g) in pts {
-            if h.is_finite() {
-                heel_max = heel_max.max(h);
+    for (_, pts) in series {
+        for &(x, y) in pts {
+            if x.is_finite() {
+                x_max = x_max.max(x);
+                if !is_gz {
+                    x_min = x_min.min(x);
+                }
             }
-            if g.is_finite() {
-                gz_max = gz_max.max(g);
-                gz_min = gz_min.min(g);
+            if y.is_finite() {
+                y_max = y_max.max(y);
+                y_min = y_min.min(y);
             }
         }
     }
-    let gz_range = (gz_max - gz_min).max(0.05) * 1.15;
-    let gz_base = gz_min - (gz_range - (gz_max - gz_min)) * 0.5;
+    let x_range = (x_max - x_min).max(1e-6);
+    let y_range = (y_max - y_min).max(0.05) * 1.15;
+    let y_base = y_min - (y_range - (y_max - y_min)) * 0.5;
 
-    let to_screen = |heel: f64, gz: f64| -> egui::Pos2 {
-        let x = rect.left() + (heel / heel_max) as f32 * rect.width();
-        let y = rect.bottom() - ((gz - gz_base) / gz_range) as f32 * rect.height();
-        egui::pos2(x, y)
+    let to_screen = |x: f64, y: f64| -> egui::Pos2 {
+        let sx = rect.left() + ((x - x_min) / x_range) as f32 * rect.width();
+        let sy = rect.bottom() - ((y - y_base) / y_range) as f32 * rect.height();
+        egui::pos2(sx, sy)
     };
 
     // Zero line and the axes.
-    if gz_base <= 0.0 && gz_base + gz_range >= 0.0 {
+    if y_base <= 0.0 && y_base + y_range >= 0.0 {
         painter.line_segment(
-            [to_screen(0.0, 0.0), to_screen(heel_max, 0.0)],
+            [to_screen(x_min, 0.0), to_screen(x_max, 0.0)],
             egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
         );
     }
-    painter.line_segment(
-        [to_screen(0.0, gz_base), to_screen(0.0, gz_base + gz_range)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
-    );
+    if x_min <= 0.0 && x_max >= 0.0 {
+        painter.line_segment(
+            [to_screen(0.0, y_base), to_screen(0.0, y_base + y_range)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
+        );
+    }
 
     let colours = [
         egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
@@ -1231,11 +1479,11 @@ pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
         egui::Color32::from_rgb(0x40, 0xd0, 0xd0),
     ];
 
-    for (i, (label, pts)) in curves.iter().enumerate() {
+    for (i, (label, pts)) in series.iter().enumerate() {
         let points: Vec<egui::Pos2> = pts
             .iter()
-            .filter(|(h, g)| h.is_finite() && g.is_finite())
-            .map(|&(h, g)| to_screen(h, g))
+            .filter(|(x, y)| x.is_finite() && y.is_finite())
+            .map(|&(x, y)| to_screen(x, y))
             .collect();
         if points.len() >= 2 {
             painter.add(egui::Shape::line(
@@ -1243,7 +1491,7 @@ pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
                 egui::Stroke::new(1.4, colours[i % colours.len()]),
             ));
         }
-        if curves.len() > 1 && !label.is_empty() {
+        if series.len() > 1 && !label.is_empty() {
             let legend_pos = rect.left_top() + egui::vec2(6.0, 16.0 + i as f32 * 14.0);
             painter.text(
                 legend_pos,
@@ -1254,13 +1502,23 @@ pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
             );
         }
     }
+    let header = if is_gz {
+        format!("GZ up to {y_max:.2} m · heel to {x_max:.0}°")
+    } else {
+        format!("{title}: {y_label} up to {y_max:.2} · {x_label} to {x_max:.1}")
+    };
     painter.text(
         rect.left_top() + egui::vec2(4.0, 2.0),
         egui::Align2::LEFT_TOP,
-        format!("GZ up to {gz_max:.2} m · heel to {heel_max:.0}°"),
+        header,
         egui::FontId::monospace(10.0),
         egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
     );
+}
+
+/// A general GZ plot: heel (deg) across, righting lever GZ (m) up, with labelled curves.
+pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
+    plot_xy(ui, "GZ", "heel", "GZ", curves);
 }
 
 pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
