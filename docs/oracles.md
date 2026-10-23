@@ -377,3 +377,28 @@ Prismatic coefficient $C_p = \nabla / (L \cdot A_m) = 1.0$.
 
 ### Provenance
 Exact cross-sectional geometry of rectangular prisms.
+
+---
+
+## 15. 2D Heave Added Mass and Damping of Lewis Sections (B7a)
+
+### Formula
+Deep-water radiation problem for a heaving section, `exp(-iωt)`, solved with Frank's close-fit source method:
+force = −iωρ∮φ n_z ds = iω a₃₃ − b₃₃, and b₃₃ = ρg²Ā²/ω³. Infinite-frequency limit (Lewis 1929):
+a₃₃∞ = ½ρπM_s²((1+a₁)² + 3a₃²).
+
+### Test Locations
+- [`crates/seacraft-core/src/seakeeping.rs::heave_coefficients_match_the_independent_python_solutions`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::infinite_frequency_added_mass_matches_lewis_closed_form`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::panel_count_has_converged_and_damping_is_positive`](../crates/seacraft-core/src/seakeeping.rs)
+
+### Numbers Used
+Semicircle (b = T = 1 m) and a Lewis section b = 1.5 m, T = 1 m, σ = 0.9, at ξ = ω²b/g ∈ {0.05, 0.25, 0.5, 0.75, 1.0, 1.5};
+tolerances 1.5 % (added mass, Ā) and 2 % (damping).
+
+### Provenance
+Computed by Claude with [`docs/oracles/heave_2d.py`](oracles/heave_2d.py) by two independent methods: Frank panels
+(60 vs 120 panels agree to 0.2 %; ∞-frequency semicircle 1.006 × ρπb²/2) and, for the semicircle, Ursell's wave
+source + wave-free multipoles. The two agree to 0.3 % in added mass and 0.6 % in damping for ξ ≤ 1.5. The wave-source
+kernel was checked against direct numerical principal-value integration. ξ = 2 is not used: it is near the panel
+method's first irregular frequency. Not published values.

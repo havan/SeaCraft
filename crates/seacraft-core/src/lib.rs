@@ -45,6 +45,8 @@ pub mod planing;
 pub mod raster;
 pub mod report;
 pub mod resistance;
+/// Lewis conformal mapping and Ursell–Tasai 2D heave radiation.
+pub mod seakeeping;
 pub mod stability;
 pub mod weather;
 pub mod subdiv;
@@ -58,6 +60,9 @@ pub use analysis::AnalysisMode;
 pub use hydro::{HydroOptions, Hydrostatics};
 pub use mesh::{Layer, ProjectSettings, Surface};
 pub use report::{design_report, ReportOptions};
+pub use seakeeping::{
+    heave_2d, heave_added_mass_infinite, lewis_contour, lewis_form, Heave2d, LewisForm,
+};
 pub use subdiv::{SubdivisionMode, SubdivisionOptions};
 
 /// Crate version.
