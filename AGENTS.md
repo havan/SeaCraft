@@ -76,6 +76,7 @@ crates/seacraft-gui/
   src/history.rs            snapshot undo/redo (64)
   src/panels.rs             layer dock, hydrostatics dock, GZ plot
   tests/                    drag, files, hydro, smoke (all headless)
+skills/                     agent skills for the MCP server (CI-checked tool names)
 examples/demo-hull.fef      generated demo model, safe to regenerate
 README.md                   user-facing docs + FREE!ship investigation notes
 ATTRIBUTION.md              provenance of code ported from ../resource/*

@@ -387,6 +387,9 @@ cursor position on the active viewport's focal plane and the crate version.
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
   `planing_curve`, `trim_scan`, `export_linesplan` and `render_png`.
+  Agent skills that teach an AI agent to use these tools well (hull design,
+  fairing, stability checks) are in [`skills/`](skills/README.md), with install
+  steps and the CI test that keeps them in step with the tools.
 * The hydrostatics table (`seacraft table`) runs the same measurement once per
   draft and adds two table quantities that `hydro` does not store: `TPC =
   A_w·ρ/100` tonnes per centimetre and `MTC = ρ·I_L/(100·L)` tonnes·metres per

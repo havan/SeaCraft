@@ -2218,6 +2218,49 @@ fn flatten_hydro(reply: &Value) -> Value {
 mod tests {
     use super::*;
 
+
+    /// Every `tool_name {…}` call in the agent skills names a real tool, and each skill's
+    /// frontmatter is well formed.
+    #[test]
+    fn skills_name_only_real_tools() {
+        let docs = [
+            ("seacraft-hull-design", include_str!("../../../skills/seacraft-hull-design/SKILL.md")),
+            ("seacraft-fairing", include_str!("../../../skills/seacraft-fairing/SKILL.md")),
+            ("seacraft-stability-check", include_str!("../../../skills/seacraft-stability-check/SKILL.md")),
+        ];
+        let tools: Vec<String> = tool_definitions()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect();
+        let mut checked = 0;
+        for (folder, doc) in docs {
+            let front = doc
+                .strip_prefix("---\n")
+                .and_then(|r| r.split_once("\n---\n"))
+                .unwrap_or_else(|| panic!("{folder}: no frontmatter"))
+                .0;
+            let keys: Vec<&str> = front.lines().filter_map(|l| l.split_once(':').map(|k| k.0)).collect();
+            assert_eq!(keys, ["name", "description"], "{folder}: frontmatter keys");
+            let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(k)).unwrap().trim();
+            assert_eq!(field("name:"), folder, "{folder}: name must equal the folder");
+            assert!(field("description:").starts_with("Use when "), "{folder}: description");
+            for span in doc.split('`').skip(1).step_by(2) {
+                let name: String = span
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                    .collect();
+                if name.is_empty() || !name.starts_with(|c: char| c.is_ascii_lowercase()) {
+                    continue;
+                }
+                if span[name.len()..].starts_with(" {") {
+                    assert!(tools.contains(&name), "{folder} calls `{name}`, which is not a tool");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 30, "only {checked} tool calls found in the skills");
+    }
+
     fn send(server: &mut McpServer, msg: Value) -> Value {
         let line = msg.to_string();
         match server.handle_line(&line) {
