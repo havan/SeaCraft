@@ -797,6 +797,7 @@ impl McpServer {
             "loading_condition" => self.loading_condition(a),
             "weather_criterion" => self.weather_criterion(a),
             "damage_stability" => self.damage_stability(a),
+            "seakeeping_raos" => self.seakeeping_raos(a),
             "bonjean_curves" => self.bonjean_curves(a),
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
@@ -1379,6 +1380,53 @@ impl McpServer {
         let res = seacraft_core::damage::evaluate(&self.surface, &opts, &case)
             .map_err(|e| format!("damage_stability: {e}"))?;
         let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn seakeeping_raos(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let draft = match a.get("draft").and_then(|v| v.as_f64()) {
+            Some(d) => d,
+            None if self.surface.settings.draft > 0.0 => self.surface.settings.draft,
+            None => {
+                return Err(
+                    "seakeeping_raos: draft must be specified or set in project settings".into(),
+                )
+            }
+        };
+        if draft <= 0.0 {
+            return Err("seakeeping_raos: draft must be positive".into());
+        }
+        let speed_kn = a.get("speed_kn").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let kg = a.get("kg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let kyy = a.get("kyy").and_then(|v| v.as_f64());
+        let stations = a
+            .get("stations")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .unwrap_or(21);
+        let lambda_min = a.get("lambda_min").and_then(|v| v.as_f64());
+        let lambda_max = a.get("lambda_max").and_then(|v| v.as_f64());
+        let points = a.get("points").and_then(|v| v.as_u64()).map(|n| n as usize);
+
+        let spec = seacraft_core::seakeeping::SeakeepingSpec {
+            draft,
+            speed_kn,
+            kg,
+            kyy,
+            stations,
+            lambda_min,
+            lambda_max,
+            points,
+            ..Default::default()
+        };
+
+        let rep = seacraft_core::seakeeping::head_sea_raos(&self.surface, &spec)
+            .map_err(|e| format!("seakeeping_raos: {e}"))?;
+
+        let mut v = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
             o.insert("backend".into(), json!("headless"));
         }
@@ -2487,6 +2535,29 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "seakeeping_raos",
+            "Seakeeping RAOs (heave and pitch in regular head seas)",
+            "Linear strip-theory heave and pitch motion Response Amplitude Operators (RAOs) in regular head seas \
+             following Salvesen, Tuck & Faltinsen (1970). Computes 2D heave added mass and damping per section via \
+             Frank close-fit panels, global radiation coefficients (A33..B55) with forward speed terms, hydrostatic \
+             restoring (C33..C55), and wave excitation forces (Froude-Krylov + diffraction). Returns RAO points across \
+             the lambda/L range, natural heave and pitch frequencies, and global coefficients.",
+            obj(
+                json!({
+                    "draft": number("Design draft in metres (defaults to model's design draft)"),
+                    "speed_kn": number("Ship forward speed in knots (default 0.0)"),
+                    "kg": number("Vertical centre of gravity KG in metres above keel (default 0.0)"),
+                    "kyy": number("Pitch radius of gyration in metres (default 0.25 * Lwl)"),
+                    "stations": integer("Number of transverse stations along waterline (default 21)"),
+                    "lambda_min": number("Minimum wavelength ratio lambda / L (default 0.3)"),
+                    "lambda_max": number("Maximum wavelength ratio lambda / L (default 3.0)"),
+                    "points": integer("Number of frequency points across lambda / L (default 30)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "bonjean_curves",
             "Bonjean curves",
             "Section area against draft at every longitudinal station, cut from the refined mesh at even keel: the \
@@ -3119,6 +3190,7 @@ impl Remote {
             "damage_stability" => {
                 self.request("stability.damage_stability", Value::Object(a.clone()))
             }
+            "seakeeping_raos" => self.request("seakeeping.compute", Value::Object(a.clone())),
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
@@ -3444,6 +3516,7 @@ mod tests {
                 "loading_condition",
                 "weather_criterion",
                 "damage_stability",
+                "seakeeping_raos",
                 "bonjean_curves",
                 "table_of_offsets",
                 "resistance_curve",
@@ -4614,6 +4687,29 @@ mod tests {
         let crit = &res["criteria"];
         assert_eq!(crit["passed"], true);
         fails(&mut s, 2, "damage_stability", json!({}));
+    }
+
+    #[test]
+    fn seakeeping_raos_tool_evaluates_demo_hull_motions() {
+        let mut s = McpServer::new();
+        let res = ok(
+            &mut s,
+            1,
+            "seakeeping_raos",
+            json!({
+                "draft": 0.62,
+                "speed_kn": 6.0,
+                "kg": 2.2,
+                "points": 5,
+                "stations": 11,
+            }),
+        );
+        assert_eq!(res["backend"], "headless");
+        let freqs = res["frequencies"].as_array().expect("frequencies array");
+        assert_eq!(freqs.len(), 5);
+        assert!(res["natural_heave_omega"].as_f64().unwrap() > 0.0);
+        assert!(res["natural_pitch_omega"].as_f64().unwrap() > 0.0);
+        fails(&mut s, 2, "seakeeping_raos", json!({ "draft": -1.0 }));
     }
 
     #[test]

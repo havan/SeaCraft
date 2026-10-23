@@ -1388,6 +1388,52 @@ fn handle_inner(
             }
             Ok(v)
         }
+        "seakeeping.compute" | "seakeeping_raos" => {
+            let surface = app
+                .surface()
+                .ok_or_else(|| "seakeeping.compute: no model is loaded".to_string())?;
+            let draft =
+                match number_in(p, "draft", 0.001..=1.0e4)? {
+                    Some(d) => d,
+                    None if surface.settings.draft > 0.0 => surface.settings.draft,
+                    None => return Err(
+                        "seakeeping.compute: draft must be specified or set in project settings"
+                            .into(),
+                    ),
+                };
+            let speed_kn = number(p, "speed_kn")?
+                .or(number(p, "speed")?)
+                .unwrap_or(0.0);
+            let kg = number(p, "kg")?.unwrap_or(0.0);
+            let kyy = number(p, "kyy")?;
+            let stations = number_in(p, "stations", 3.0..=200.0)?
+                .map(|n| n.round() as usize)
+                .unwrap_or(21);
+            let lambda_min = number(p, "lambda_min")?;
+            let lambda_max = number(p, "lambda_max")?;
+            let points = number_in(p, "points", 1.0..=500.0)?.map(|n| n.round() as usize);
+
+            let spec = seacraft_core::seakeeping::SeakeepingSpec {
+                draft,
+                speed_kn,
+                kg,
+                kyy,
+                stations,
+                lambda_min,
+                lambda_max,
+                points,
+                ..Default::default()
+            };
+
+            let rep = seacraft_core::seakeeping::head_sea_raos(surface, &spec)
+                .map_err(|e| format!("seakeeping.compute: {e}"))?;
+
+            let mut v = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        }
         "model.split_face" => {
             // A topology edit: snapshot first, so Ctrl+Z in the window undoes it
             // exactly like a drag does.
@@ -2699,6 +2745,34 @@ mod tests {
                 &ctx,
                 "resistance.compute",
                 json!({ "draft": 0.0 })
+            )["ok"],
+            false
+        );
+
+        // ---- seakeeping.compute: strip-theory motions ----------------------
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(
+            &mut app,
+            &ctx,
+            "seakeeping.compute",
+            json!({ "draft": 0.62, "speed_kn": 6.0, "kg": 2.2, "points": 5, "stations": 11 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["backend"], "app");
+        let freqs = r["result"]["frequencies"]
+            .as_array()
+            .expect("frequencies array");
+        assert_eq!(freqs.len(), 5);
+        assert!(r["result"]["natural_heave_omega"].as_f64().unwrap() > 0.0);
+        assert_eq!(app.is_dirty(), dirty_before);
+        assert_eq!(app.undo_len(), undo_before);
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "seakeeping.compute",
+                json!({ "draft": -1.0 })
             )["ok"],
             false
         );

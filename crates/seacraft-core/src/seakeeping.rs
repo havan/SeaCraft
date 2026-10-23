@@ -1,14 +1,53 @@
-//! Seakeeping, 2D part: Lewis conformal sections and the heave added mass and
-//! wave damping of a ship cross-section in deep water.
+//! Seakeeping: Lewis conformal sections, 2D heave added mass/damping by Frank close-fit panels,
+//! and linear strip-theory heave and pitch motion RAOs in regular head seas.
 //!
-//! The hydrodynamic coefficients come from Frank's close-fit source method on
+//! # 2D Radiation Problem (B7a)
+//!
+//! The 2D hydrodynamic coefficients come from Frank's close-fit source method on
 //! the section contour (a Lewis contour or any half section), so B7b's strip
 //! theory can use the real station shapes. Checked against two independent
 //! Python solutions (panels, and Ursell's multipoles for the semicircle); see
 //! `docs/oracles/heave_2d.py` and the tests.
 //!
+//! # Strip Theory Heave and Pitch Motions (B7b)
+//!
+//! Linear strip-theory heave and pitch motion Response Amplitude Operators (RAOs)
+//! in regular head seas, following:
+//!
+//! * N. Salvesen, E.O. Tuck, and O.M. Faltinsen, "Ship motions and sea loads",
+//!   Transactions SNAME 78, pp. 250–287 (1970).
+//!
+//! Transom boundary terms may be omitted and are omitted in this implementation.
+//!
+//! Speed terms in A35/A53/B35/B53 and the U/(iω_e)·H₃ moment term follow from the
+//! relative-motion sectional force −D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, by
+//! parts, for pitch positive bow up. Restoring C33/C35/C55 are integrated over the
+//! same stations as the excitation (plus ρg∇(KB − KG) in C55), so very long waves
+//! give heave → 1 and pitch → ∫2b·x² / (∫2b·x² + ∇(KB − KG)) at any speed
+//! (= 1 when KG = KB); see `very_long_waves_are_followed_at_any_speed`.
+//!
+//! # Sign Conventions
+//!
+//! * **Axes**: $x$ forward from the longitudinal centre of gravity (LCG = LCB at equilibrium),
+//!   $y$ to starboard, $z$ upwards.
+//! * **Heave $\eta_3$ (or $z$)**: positive upwards.
+//! * **Pitch $\eta_5$ (or $\theta$)**: positive **bow up** (SeaCraft's trim convention).
+//! * **Incident wave**: regular deep-water wave in head seas ($\beta = 180^\circ$) propagating
+//!   towards $-x$ (bow to stern), with elevation at LCG given by $\zeta(t) = \text{Re}\{\zeta_a e^{i \omega_e t}\}$.
+//! * **Encounter frequency**: $\omega_e = \omega + \omega^2 U / g$ where $U$ is forward speed.
+//!
+//! # Exciting Force Formulation
+//!
+//! Wave exciting heave force and pitch moment are evaluated using the STF strip-theory
+//! formulation combining Froude–Krylov restoring pressure with diffraction forces
+//! derived from the 2D sectional radiation coefficients $a_{33}(x)$ and $b_{33}(x)$,
+//! attenuated exponentially with mean sectional draft $T^*(x) = A(x) / (2 b(x))$
+//! through the depth attenuation factor $e^{-k T^*(x)}$ where $k = \omega^2 / g$.
+//!
 //! # References
 //!
+//! * N. Salvesen, E.O. Tuck, and O.M. Faltinsen, "Ship motions and sea loads",
+//!   Transactions SNAME 78, pp. 250–287 (1970).
 //! * J.M.J. Journée, "Theoretical Manual of SEAWAY" (TU Delft, Ship Hydromechanics
 //!   Laboratory report 1370) — Lewis mapping coefficients and the valid range of
 //!   the area coefficient ($\sigma_{\min}, \sigma_{\max}$) used for clamping.
@@ -20,7 +59,11 @@
 //! * F. Ursell, "On the heaving motion of a circular cylinder on the surface of a
 //!   fluid", Q. J. Mech. Appl. Math. 2 (1949) — used for the semicircle oracle.
 
-use serde::Serialize;
+use crate::curves;
+use crate::hydro::{self, Hull, HydroOptions, Warning};
+use crate::mesh::Surface;
+use crate::subdiv::SubdivisionOptions;
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
 /// A cross section represented as a two-parameter Lewis conformal form.
@@ -489,6 +532,760 @@ impl std::ops::Div for C {
     }
 }
 
+// ============================================================================
+// B7b: Linear Strip-Theory Heave & Pitch Motions in Regular Head Seas
+// ============================================================================
+
+/// Input specification for strip-theory heave and pitch motion calculations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeakeepingSpec {
+    /// Design draft in metres.
+    pub draft: f64,
+    /// Forward speed in knots (default 0.0).
+    #[serde(default)]
+    pub speed_kn: f64,
+    /// Vertical centre of gravity KG above the keel datum in metres (default 0.0).
+    #[serde(default)]
+    pub kg: f64,
+    /// Pitch radius of gyration in metres. Defaults to 0.25 * Lwl if None or <= 0.
+    #[serde(default)]
+    pub kyy: Option<f64>,
+    /// Number of transverse stations along the waterline (default 21).
+    #[serde(default = "default_stations")]
+    pub stations: usize,
+    /// Wave circular frequencies in rad/s. If empty, auto-generated from lambda/L range.
+    #[serde(default)]
+    pub omegas: Vec<f64>,
+    /// Minimum wavelength ratio lambda / Lwl (default 0.3) when omegas is empty.
+    #[serde(default)]
+    pub lambda_min: Option<f64>,
+    /// Maximum wavelength ratio lambda / Lwl (default 3.0) when omegas is empty.
+    #[serde(default)]
+    pub lambda_max: Option<f64>,
+    /// Number of points across lambda/L range (default 30) when omegas is empty.
+    #[serde(default)]
+    pub points: Option<usize>,
+    /// Water density in kg/m^3 (default 1025.0).
+    #[serde(default = "default_rho")]
+    pub rho: f64,
+    /// Acceleration of gravity in m/s^2 (default 9.81).
+    #[serde(default = "default_g")]
+    pub g: f64,
+}
+
+fn default_stations() -> usize {
+    21
+}
+
+fn default_rho() -> f64 {
+    1025.0
+}
+
+fn default_g() -> f64 {
+    9.81
+}
+
+impl Default for SeakeepingSpec {
+    fn default() -> Self {
+        Self {
+            draft: 0.0,
+            speed_kn: 0.0,
+            kg: 0.0,
+            kyy: None,
+            stations: 21,
+            omegas: Vec::new(),
+            lambda_min: None,
+            lambda_max: None,
+            points: None,
+            rho: 1025.0,
+            g: 9.81,
+        }
+    }
+}
+
+/// Motion response amplitude operator (RAO) and phase at one wave frequency.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RaoPoint {
+    /// Incident wave frequency in rad/s.
+    pub omega: f64,
+    /// Encounter frequency in rad/s: omega_e = omega + omega^2 * U / g.
+    pub omega_e: f64,
+    /// Deep-water incident wavelength in metres: lambda = 2 * pi * g / omega^2.
+    pub wavelength_m: f64,
+    /// Non-dimensional wavelength ratio lambda / Lwl.
+    pub lambda_over_l: f64,
+    /// Non-dimensional heave amplitude z_a / zeta_a (m/m).
+    pub heave_amp: f64,
+    /// Heave phase angle in degrees.
+    pub heave_phase_deg: f64,
+    /// Non-dimensional pitch amplitude theta_a / (k * zeta_a) (rad/rad).
+    pub pitch_amp: f64,
+    /// Pitch phase angle in degrees.
+    pub pitch_phase_deg: f64,
+}
+
+/// Global 3D hydrodynamic and hydrostatic coefficients at one encounter frequency.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GlobalCoefficients {
+    pub omega: f64,
+    pub omega_e: f64,
+    pub a33: f64,
+    pub b33: f64,
+    pub a35: f64,
+    pub b35: f64,
+    pub a53: f64,
+    pub b53: f64,
+    pub a55: f64,
+    pub b55: f64,
+    pub c33: f64,
+    pub c35: f64,
+    pub c53: f64,
+    pub c55: f64,
+}
+
+/// Report containing heave and pitch motion RAOs, natural frequencies and warnings.
+#[derive(Debug, Clone, Serialize)]
+pub struct SeakeepingReport {
+    pub frequencies: Vec<RaoPoint>,
+    pub natural_heave_omega: f64,
+    pub natural_pitch_omega: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coefficients: Option<Vec<GlobalCoefficients>>,
+    pub warnings: Vec<Warning>,
+}
+
+struct ExtractedSection {
+    contour: Vec<(f64, f64)>,
+    half_beam: f64,
+    draft: f64,
+    area: f64,
+    valid: bool,
+}
+
+fn clip_halfplane(pts: &[(f64, f64)], nx: f64, ny: f64, d: f64) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let n = pts.len();
+    if n < 3 {
+        return out;
+    }
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let p1 = pts[i];
+        let p2 = pts[j];
+        let s1 = nx * p1.0 + ny * p1.1 - d;
+        let s2 = nx * p2.0 + ny * p2.1 - d;
+        if s1 <= 1e-9 {
+            out.push(p1);
+        }
+        if (s1 < -1e-9 && s2 > 1e-9) || (s1 > 1e-9 && s2 < -1e-9) {
+            let t = s1 / (s1 - s2);
+            out.push((p1.0 + t * (p2.0 - p1.0), p1.1 + t * (p2.1 - p1.1)));
+        }
+    }
+    out
+}
+
+fn polygon_area_2d(pts: &[(f64, f64)]) -> f64 {
+    let mut a = 0.0;
+    let n = pts.len();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        a += pts[i].0 * pts[j].1 - pts[j].0 * pts[i].1;
+    }
+    0.5 * a
+}
+
+fn extract_submerged_starboard(polys: &[Vec<crate::math::Vec3>], zwl: f64) -> ExtractedSection {
+    let mut best_area = 0.0;
+    let mut best_poly: Vec<(f64, f64)> = Vec::new();
+    let mut best_b = 0.0;
+    let mut best_t = 0.0;
+
+    for poly in polys {
+        if poly.len() < 3 {
+            continue;
+        }
+        let pts2d: Vec<(f64, f64)> = poly.iter().map(|p| (p.y, p.z)).collect();
+        // Clip against z <= zwl
+        let c1 = clip_halfplane(&pts2d, 0.0, 1.0, zwl);
+        // Clip against y >= 0
+        let c2 = clip_halfplane(&c1, -1.0, 0.0, 0.0);
+        let area = polygon_area_2d(&c2).abs();
+        if area > best_area {
+            best_area = area;
+            let mut max_y = 0.0_f64;
+            let mut min_z = zwl;
+            for pt in &c2 {
+                max_y = max_y.max(pt.0);
+                min_z = min_z.min(pt.1);
+            }
+            best_poly = c2;
+            best_b = max_y;
+            best_t = (zwl - min_z).max(0.0);
+        }
+    }
+
+    if best_area < 1e-6 || best_b < 1e-4 || best_t < 1e-4 || best_poly.len() < 3 {
+        return ExtractedSection {
+            contour: Vec::new(),
+            half_beam: best_b,
+            draft: best_t,
+            area: 2.0 * best_area,
+            valid: false,
+        };
+    }
+
+    let n = best_poly.len();
+    let min_z = zwl - best_t;
+
+    let mut keel_idx = 0;
+    let mut min_keel_dist = f64::INFINITY;
+    for (i, p) in best_poly.iter().enumerate() {
+        let d = p.0.hypot(p.1 - min_z);
+        if d < min_keel_dist {
+            min_keel_dist = d;
+            keel_idx = i;
+        }
+    }
+
+    let mut wl_idx = 0;
+    let mut min_wl_dist = f64::INFINITY;
+    for (i, p) in best_poly.iter().enumerate() {
+        let d = (p.0 - best_b).hypot(p.1 - zwl);
+        if d < min_wl_dist {
+            min_wl_dist = d;
+            wl_idx = i;
+        }
+    }
+
+    if keel_idx == wl_idx {
+        return ExtractedSection {
+            contour: Vec::new(),
+            half_beam: best_b,
+            draft: best_t,
+            area: 2.0 * best_area,
+            valid: false,
+        };
+    }
+
+    let mut path_fwd = Vec::new();
+    let mut idx = keel_idx;
+    while idx != wl_idx {
+        path_fwd.push(best_poly[idx]);
+        idx = (idx + 1) % n;
+    }
+    path_fwd.push(best_poly[wl_idx]);
+
+    let mut path_bwd = Vec::new();
+    let mut idx2 = keel_idx;
+    while idx2 != wl_idx {
+        path_bwd.push(best_poly[idx2]);
+        idx2 = (idx2 + n - 1) % n;
+    }
+    path_bwd.push(best_poly[wl_idx]);
+
+    let dist_corner = |path: &[(f64, f64)]| -> f64 {
+        path.iter()
+            .map(|p| p.0.hypot(p.1 - zwl))
+            .fold(f64::INFINITY, |m, v| m.min(v))
+    };
+    let d_fwd = dist_corner(&path_fwd);
+    let d_bwd = dist_corner(&path_bwd);
+
+    let hull_path = if d_fwd > d_bwd { path_fwd } else { path_bwd };
+
+    if hull_path.len() < 2 {
+        return ExtractedSection {
+            contour: Vec::new(),
+            half_beam: best_b,
+            draft: best_t,
+            area: 2.0 * best_area,
+            valid: false,
+        };
+    }
+
+    let mut contour: Vec<(f64, f64)> = hull_path
+        .iter()
+        .map(|&(y, z)| (y.max(0.0), (z - zwl).min(0.0)))
+        .collect();
+    if let Some(first) = contour.first_mut() {
+        first.0 = 0.0;
+        first.1 = -best_t;
+    }
+    if let Some(last) = contour.last_mut() {
+        last.0 = best_b;
+        last.1 = 0.0;
+    }
+
+    let mut clean_contour: Vec<(f64, f64)> = Vec::with_capacity(contour.len());
+    for p in contour {
+        if let Some(prev) = clean_contour.last() {
+            if (p.0 - prev.0).hypot(p.1 - prev.1) > 1e-6 {
+                clean_contour.push(p);
+            }
+        } else {
+            clean_contour.push(p);
+        }
+    }
+
+    let valid = clean_contour.len() >= 2;
+    let final_contour = if valid {
+        resample_contour(&clean_contour, 31)
+    } else {
+        clean_contour
+    };
+    ExtractedSection {
+        contour: final_contour,
+        half_beam: best_b,
+        draft: best_t,
+        area: 2.0 * best_area,
+        valid,
+    }
+}
+
+fn resample_contour(pts: &[(f64, f64)], count: usize) -> Vec<(f64, f64)> {
+    if pts.len() <= 2 || count <= 2 {
+        return pts.to_vec();
+    }
+    let mut dists = Vec::with_capacity(pts.len());
+    dists.push(0.0);
+    let mut total_len = 0.0;
+    for w in pts.windows(2) {
+        total_len += (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1);
+        dists.push(total_len);
+    }
+    if total_len < 1e-9 {
+        return pts.to_vec();
+    }
+
+    let mut resampled = Vec::with_capacity(count);
+    resampled.push(pts[0]);
+
+    let mut seg = 0;
+    for k in 1..count - 1 {
+        let target_s = total_len * (k as f64) / ((count - 1) as f64);
+        while seg + 1 < dists.len() && dists[seg + 1] < target_s {
+            seg += 1;
+        }
+        let s0 = dists[seg];
+        let s1 = dists[seg + 1];
+        let ds = s1 - s0;
+        let t = if ds > 1e-12 {
+            (target_s - s0) / ds
+        } else {
+            0.0
+        };
+        let y = pts[seg].0 + t * (pts[seg + 1].0 - pts[seg].0);
+        let z = pts[seg].1 + t * (pts[seg + 1].1 - pts[seg].1);
+        resampled.push((y, z));
+    }
+    resampled.push(*pts.last().unwrap());
+    resampled
+}
+
+fn trapz(xs: &[f64], ys: &[f64]) -> f64 {
+    let mut sum = 0.0;
+    for i in 0..xs.len().saturating_sub(1) {
+        let dx = xs[i + 1] - xs[i];
+        sum += 0.5 * (ys[i] + ys[i + 1]) * dx;
+    }
+    sum
+}
+
+fn trapz_complex(xs: &[f64], ys: &[C]) -> C {
+    let mut sum = C::ZERO;
+    for i in 0..xs.len().saturating_sub(1) {
+        let dx = xs[i + 1] - xs[i];
+        sum = sum + (ys[i] + ys[i + 1]) * (0.5 * dx);
+    }
+    sum
+}
+
+/// Compute linear strip-theory heave and pitch motion RAOs in regular head seas.
+///
+/// Implements Salvesen, Tuck & Faltinsen (1970) strip theory (transom terms omitted).
+///
+/// # Sign Conventions
+///
+/// * Coordinate system: $x$ forward from LCG (where LCG = LCB at equilibrium), $y$ starboard, $z$ upwards.
+/// * Heave $z$ is positive upwards.
+/// * Pitch $\theta$ is positive **bow up** (SeaCraft's trim convention).
+///
+/// # References
+///
+/// * N. Salvesen, E.O. Tuck, and O.M. Faltinsen, "Ship motions and sea loads",
+///   Transactions SNAME 78, pp. 250–287 (1970).
+pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<SeakeepingReport, String> {
+    if spec.draft <= 0.0 || !spec.draft.is_finite() {
+        return Err("draft must be positive and finite".into());
+    }
+    if spec.rho <= 0.0 || !spec.rho.is_finite() {
+        return Err("rho must be positive and finite".into());
+    }
+    if spec.g <= 0.0 || !spec.g.is_finite() {
+        return Err("g must be positive and finite".into());
+    }
+
+    let u_speed = spec.speed_kn * 0.5144444444444445;
+    let subdiv = SubdivisionOptions::default();
+    let hull = Hull::new(surface, subdiv);
+    let mut hydro_opts = HydroOptions::from_surface(surface, subdiv);
+    hydro_opts.draft = spec.draft;
+    hydro_opts.water_density = spec.rho;
+    let hydro = hull.hydrostatics(&hydro_opts);
+
+    if hydro.volume_m3 <= 1e-6 || !hydro.volume_m3.is_finite() {
+        return Err(format!(
+            "hull displaces no volume at draft {:.3} m",
+            spec.draft
+        ));
+    }
+
+    let zwl = hull.keel + spec.draft;
+    let wp = hydro::waterplane_for(hull.keel, hull.length, spec.draft, 0.0, 0.0);
+    let segs = hydro::plane_segments(&hull.verts, &hull.tris, &wp);
+    let (mut wl_min, mut wl_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (a, b) in &segs {
+        wl_min = wl_min.min(a.x).min(b.x);
+        wl_max = wl_max.max(a.x).max(b.x);
+    }
+    if !wl_min.is_finite() || !wl_max.is_finite() || wl_max <= wl_min {
+        wl_min = hull.model_min.x;
+        wl_max = hull.model_max.x;
+    }
+    let lwl = if hydro.lwl > 0.0 {
+        hydro.lwl
+    } else {
+        wl_max - wl_min
+    };
+    let x_lcg = hydro.lcb.x;
+
+    let n_stations = spec.stations.max(5);
+    let mut station_xs = Vec::with_capacity(n_stations);
+    let mut station_x_models = Vec::with_capacity(n_stations);
+    for i in 0..n_stations {
+        let x_m = wl_min + (wl_max - wl_min) * (i as f64) / ((n_stations - 1) as f64);
+        station_x_models.push(x_m);
+        station_xs.push(x_m - x_lcg);
+    }
+
+    let mut warnings = Vec::new();
+    let mut station_contours = Vec::with_capacity(n_stations);
+
+    for &cut_x in &station_x_models {
+        let clamped_x = cut_x.clamp(wl_min + 1e-4 * lwl, wl_max - 1e-4 * lwl);
+        let (_, polys) = curves::station_polygons(&hull, clamped_x);
+        let sec = extract_submerged_starboard(&polys, zwl);
+        station_contours.push((cut_x, sec));
+    }
+
+    // Determine wave frequencies
+    let mut omegas = spec.omegas.clone();
+    if omegas.is_empty() {
+        let l_min = spec.lambda_min.unwrap_or(0.3).max(0.01);
+        let l_max = spec.lambda_max.unwrap_or(3.0).max(l_min);
+        let pts = spec.points.unwrap_or(30).max(1);
+        if pts <= 1 || (l_max - l_min).abs() < 1e-9 {
+            let wavelength = l_min * lwl;
+            if wavelength > 0.0 {
+                let w = (2.0 * PI * spec.g / wavelength).sqrt();
+                omegas.push(w);
+            }
+        } else {
+            for i in 0..pts {
+                let ratio = l_min + (l_max - l_min) * (i as f64) / ((pts - 1) as f64);
+                let wavelength = ratio * lwl;
+                if wavelength > 0.0 {
+                    let w = (2.0 * PI * spec.g / wavelength).sqrt();
+                    omegas.push(w);
+                }
+            }
+        }
+        omegas.sort_by(|a, b| a.total_cmp(b));
+    }
+
+    // Mass properties
+    let mass = spec.rho * hydro.volume_m3;
+    let kyy = match spec.kyy {
+        Some(k) if k > 0.0 => k,
+        _ => 0.25 * lwl,
+    };
+    let i55 = mass * kyy * kyy;
+
+    // Hydrostatic stiffness, integrated over the same stations as the wave
+    // excitation so that very long waves give heave → 1 and pitch → the
+    // wave slope (up to the ρg∇(KB − KG) term, which the 2-DOF model with
+    // surge held has no matching excitation for): C33 = ρg∫2b, C35 = C53 =
+    // ρg∫2b·x, C55 = ρg∫2b·x² + ρg∇(KB − KG), x from the LCG.
+    let bwl: Vec<f64> = station_contours
+        .iter()
+        .map(|(_, s)| 2.0 * s.half_beam)
+        .collect();
+    let moment = |p: i32| {
+        let ys: Vec<f64> = station_xs
+            .iter()
+            .zip(&bwl)
+            .map(|(x, b)| b * x.powi(p))
+            .collect();
+        spec.rho * spec.g * trapz(&station_xs, &ys)
+    };
+    let c33 = moment(0);
+    let c55 = moment(2) + spec.rho * spec.g * hydro.volume_m3 * (hydro.kb - spec.kg);
+    let c35 = moment(1);
+    let c53 = c35;
+
+    let mut raos = Vec::with_capacity(omegas.len());
+    let mut global_coeffs = Vec::with_capacity(omegas.len());
+    let mut irregular_freq_warned = false;
+
+    for &w in &omegas {
+        if w <= 0.0 {
+            continue;
+        }
+        let k_wave = w * w / spec.g;
+        let w_e = w + w * w * u_speed / spec.g;
+        let lambda_m = 2.0 * PI * spec.g / (w * w);
+        let lambda_over_l = lambda_m / lwl;
+
+        let mut a33_secs = Vec::with_capacity(n_stations);
+        let mut b33_secs = Vec::with_capacity(n_stations);
+        let mut xa33_secs = Vec::with_capacity(n_stations);
+        let mut xb33_secs = Vec::with_capacity(n_stations);
+        let mut x2a33_secs = Vec::with_capacity(n_stations);
+        let mut x2b33_secs = Vec::with_capacity(n_stations);
+        let mut f3_secs = Vec::with_capacity(n_stations);
+        let mut h3_secs = Vec::with_capacity(n_stations);
+
+        for (i, (cut_x, sec)) in station_contours.iter().enumerate() {
+            let x_rel = station_xs[i];
+            let b = sec.half_beam;
+            let t = sec.draft;
+            let a_sec = sec.area;
+
+            if !irregular_freq_warned && b > 0.0 {
+                let xi = w_e * w_e * b / spec.g;
+                if xi > 2.0 {
+                    irregular_freq_warned = true;
+                    warnings.push(Warning {
+                        code: "irregular_frequency_proximity",
+                        message: format!(
+                            "omega_e^2 * b / g = {:.2} > 2.0 at station x = {:.3} m; near panel irregular frequencies",
+                            xi, cut_x
+                        ),
+                    });
+                }
+            }
+
+            if a_sec < 1e-6 || b < 1e-4 || t < 1e-4 {
+                a33_secs.push(0.0);
+                b33_secs.push(0.0);
+                xa33_secs.push(0.0);
+                xb33_secs.push(0.0);
+                x2a33_secs.push(0.0);
+                x2b33_secs.push(0.0);
+                f3_secs.push(C::ZERO);
+                h3_secs.push(C::ZERO);
+                continue;
+            }
+
+            let mut h_res = if sec.valid {
+                heave_2d_section(&sec.contour, w_e, spec.rho, spec.g)
+            } else {
+                Heave2d {
+                    added_mass: f64::NAN,
+                    damping: f64::NAN,
+                    amplitude_ratio: f64::NAN,
+                }
+            };
+
+            if !h_res.added_mass.is_finite() || !h_res.damping.is_finite() {
+                let sigma = a_sec / (2.0 * b * t);
+                if let Ok(form) = lewis_form(b, t, sigma) {
+                    h_res = heave_2d(&form, w_e, spec.rho, spec.g);
+                    warnings.push(Warning {
+                        code: "station_lewis_fallback",
+                        message: format!(
+                            "station at x = {:.3} m could not be converted to polygon contour; fell back to Lewis form",
+                            cut_x
+                        ),
+                    });
+                }
+            }
+
+            let a33_i = if h_res.added_mass.is_finite() {
+                h_res.added_mass
+            } else {
+                0.0
+            };
+            let b33_i = if h_res.damping.is_finite() {
+                h_res.damping
+            } else {
+                0.0
+            };
+
+            a33_secs.push(a33_i);
+            b33_secs.push(b33_i);
+            xa33_secs.push(x_rel * a33_i);
+            xb33_secs.push(x_rel * b33_i);
+            x2a33_secs.push(x_rel * x_rel * a33_i);
+            x2b33_secs.push(x_rel * x_rel * b33_i);
+
+            // Exciting force per section (Froude-Krylov + Diffraction with depth attenuation e^{-k T*})
+            let t_star = a_sec / (2.0 * b);
+            let kappa = (-k_wave * t_star).exp();
+            let phase = C::new((k_wave * x_rel).cos(), (k_wave * x_rel).sin());
+
+            // Froude–Krylov ρg·2b plus diffraction h₃ = −ω(ω_e a₃₃ − i b₃₃) (STF).
+            let diffraction = C::new(-w * w_e * a33_i, w * b33_i) * C::real(kappa) * phase;
+            let froude_krylov = C::real(2.0 * spec.rho * spec.g * b * kappa) * phase;
+            f3_secs.push(froude_krylov + diffraction);
+            h3_secs.push(diffraction);
+        }
+
+        // Global integration
+        let a33_0 = trapz(&station_xs, &a33_secs);
+        let b33_0 = trapz(&station_xs, &b33_secs);
+        let a35_0 = trapz(&station_xs, &xa33_secs);
+        let b35_0 = trapz(&station_xs, &xb33_secs);
+        let a55_0 = trapz(&station_xs, &x2a33_secs);
+        let b55_0 = trapz(&station_xs, &x2b33_secs);
+
+        let a33 = a33_0;
+        let b33 = b33_0;
+        // STF speed terms for pitch positive bow up (x forward): derived from the
+        // relative-motion force −D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, by parts.
+        let a35 = a35_0 + (u_speed / (w_e * w_e)) * b33_0;
+        let b35 = b35_0 - u_speed * a33_0;
+        let a53 = a35_0 - (u_speed / (w_e * w_e)) * b33_0;
+        let b53 = b35_0 + u_speed * a33_0;
+        let a55 = a55_0 + (u_speed * u_speed / (w_e * w_e)) * a33_0;
+        let b55 = b55_0 + (u_speed * u_speed / (w_e * w_e)) * b33_0;
+
+        global_coeffs.push(GlobalCoefficients {
+            omega: w,
+            omega_e: w_e,
+            a33,
+            b33,
+            a35,
+            b35,
+            a53,
+            b53,
+            a55,
+            b55,
+            c33,
+            c35,
+            c53,
+            c55,
+        });
+
+        // Wave excitation forces
+        let f3_total = trapz_complex(&station_xs, &f3_secs);
+        let mut x_f3_secs = Vec::with_capacity(n_stations);
+        for (i, &x_rel) in station_xs.iter().enumerate() {
+            x_f3_secs.push(f3_secs[i] * x_rel);
+        }
+        let static_m5 = trapz_complex(&station_xs, &x_f3_secs);
+        // STF: the speed term U/(iω_e) applies to the diffraction part only.
+        let h3_total = trapz_complex(&station_xs, &h3_secs);
+        let f5_total = static_m5 + C::new(0.0, -u_speed / w_e) * h3_total;
+
+        // 2x2 complex motion equations
+        let k11 = C::new(c33 - w_e * w_e * (mass + a33), w_e * b33);
+        let k12 = C::new(c35 - w_e * w_e * a35, w_e * b35);
+        let k21 = C::new(c53 - w_e * w_e * a53, w_e * b53);
+        let k22 = C::new(c55 - w_e * w_e * (i55 + a55), w_e * b55);
+
+        let det = k11 * k22 - k12 * k21;
+        let (eta3, eta5) = if det.abs() > 1e-30 {
+            let e3 = (k22 * f3_total - k12 * f5_total) / det;
+            let e5 = (-k21 * f3_total + k11 * f5_total) / det;
+            (e3, e5)
+        } else {
+            (C::ZERO, C::ZERO)
+        };
+
+        let heave_amp = eta3.abs();
+        let heave_phase_deg = eta3.im.atan2(eta3.re) * 180.0 / PI;
+        let theta_amp = eta5.abs();
+        let pitch_amp = if k_wave > 1e-12 {
+            theta_amp / k_wave
+        } else {
+            0.0
+        };
+        let pitch_phase_deg = eta5.im.atan2(eta5.re) * 180.0 / PI;
+
+        raos.push(RaoPoint {
+            omega: w,
+            omega_e: w_e,
+            wavelength_m: lambda_m,
+            lambda_over_l,
+            heave_amp,
+            heave_phase_deg,
+            pitch_amp,
+            pitch_phase_deg,
+        });
+    }
+
+    let natural_heave_omega = find_natural_frequency(&global_coeffs, mass, c33, true);
+    let natural_pitch_omega = find_natural_frequency(&global_coeffs, i55, c55, false);
+
+    Ok(SeakeepingReport {
+        frequencies: raos,
+        natural_heave_omega,
+        natural_pitch_omega,
+        coefficients: Some(global_coeffs),
+        warnings,
+    })
+}
+
+fn find_natural_frequency(
+    coeffs: &[GlobalCoefficients],
+    inertia: f64,
+    stiffness: f64,
+    is_heave: bool,
+) -> f64 {
+    if coeffs.is_empty() {
+        return 0.0;
+    }
+    for i in 0..coeffs.len().saturating_sub(1) {
+        let w1 = coeffs[i].omega;
+        let a1 = if is_heave {
+            coeffs[i].a33
+        } else {
+            coeffs[i].a55
+        };
+        let g1 = stiffness - w1 * w1 * (inertia + a1);
+
+        let w2 = coeffs[i + 1].omega;
+        let a2 = if is_heave {
+            coeffs[i + 1].a33
+        } else {
+            coeffs[i + 1].a55
+        };
+        let g2 = stiffness - w2 * w2 * (inertia + a2);
+
+        if (g1 >= 0.0 && g2 <= 0.0) || (g1 <= 0.0 && g2 >= 0.0) {
+            let denom = g1 - g2;
+            if denom.abs() > 1e-15 {
+                let frac = g1 / denom;
+                return w1 + frac * (w2 - w1);
+            }
+        }
+    }
+    let mid = coeffs.len() / 2;
+    let a_mid = if is_heave {
+        coeffs[mid].a33
+    } else {
+        coeffs[mid].a55
+    };
+    let total_m = inertia + a_mid;
+    if total_m > 0.0 && stiffness > 0.0 {
+        (stiffness / total_m).sqrt()
+    } else {
+        0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,6 +1576,355 @@ mod tests {
                 "{:<10.2} {:<24.6} {:<24.6} {:<18.6}",
                 xi, nondim_m, nondim_d, res.amplitude_ratio
             );
+        }
+    }
+
+    fn test_box_barge(l: f64, b: f64, depth: f64) -> Surface {
+        let mut s = Surface::new();
+        s.layers = vec![crate::mesh::Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Default::default()
+        }];
+        s.settings = crate::mesh::ProjectSettings {
+            name: "box_barge".into(),
+            length: l,
+            beam: b,
+            draft: depth,
+            water_density: 1025.0,
+            appendage_coefficient: 1.0,
+            main_particulars_set: true,
+            ..Default::default()
+        };
+        let corners = [
+            (0.0, 0.0, 0.0),
+            (l, 0.0, 0.0),
+            (l, b, 0.0),
+            (0.0, b, 0.0),
+            (0.0, 0.0, depth),
+            (l, 0.0, depth),
+            (l, b, depth),
+            (0.0, b, depth),
+        ];
+        for (x, y, z) in corners {
+            s.add_point(crate::math::Vec3::new(x, y - b * 0.5, z));
+        }
+        for face in [
+            vec![0, 3, 2, 1],
+            vec![4, 5, 6, 7],
+            vec![0, 1, 5, 4],
+            vec![1, 2, 6, 5],
+            vec![2, 3, 7, 6],
+            vec![3, 0, 4, 7],
+        ] {
+            s.add_face(face, 0);
+        }
+        s.initialize_trace();
+        for edge in &mut s.edges {
+            edge.crease = true;
+        }
+        for point in &mut s.points {
+            point.kind = crate::mesh::VertexKind::Corner;
+        }
+        s
+    }
+
+    /// Test 7.a: long waves (λ/L = 20, U = 0): heave_amp -> 1 within 3 %, pitch_amp -> 1 within 5 %
+    #[test]
+    fn test_raos_long_waves_approach_unity() {
+        let (l, b, depth, t) = (10.0, 2.0, 2.0, 0.5);
+        let surface = test_box_barge(l, b, depth);
+        let spec = SeakeepingSpec {
+            draft: t,
+            speed_kn: 0.0,
+            kg: 0.25,
+            stations: 21,
+            lambda_min: Some(20.0),
+            lambda_max: Some(20.0),
+            points: Some(1),
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        assert_eq!(rep.frequencies.len(), 1);
+        let pt = &rep.frequencies[0];
+        assert!(
+            (pt.heave_amp - 1.0).abs() < 0.03,
+            "long wave heave amp must be within 3% of 1.0, got {:.4}",
+            pt.heave_amp
+        );
+        assert!(
+            (pt.pitch_amp - 1.0).abs() < 0.05,
+            "long wave pitch amp must be within 5% of 1.0, got {:.4}",
+            pt.pitch_amp
+        );
+    }
+
+    /// Test 7.b: short waves (λ/L = 0.2): heave_amp and pitch_amp < 0.1
+    #[test]
+    fn test_raos_short_waves_decay() {
+        let surface = crate::demo::demo_hull(true);
+        let spec = SeakeepingSpec {
+            draft: 0.62,
+            speed_kn: 0.0,
+            kg: 2.2,
+            stations: 21,
+            lambda_min: Some(0.2),
+            lambda_max: Some(0.2),
+            points: Some(1),
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        assert_eq!(rep.frequencies.len(), 1);
+        let pt = &rep.frequencies[0];
+        assert!(
+            pt.heave_amp < 0.1,
+            "short wave heave amp must be < 0.1, got {:.4}",
+            pt.heave_amp
+        );
+        assert!(
+            pt.pitch_amp < 0.1,
+            "short wave pitch amp must be < 0.1, got {:.4}",
+            pt.pitch_amp
+        );
+    }
+
+    /// Test 7.c: box barge (L = 10, B = 2, T = 0.5):
+    /// C33 = ρg·L·B within 1 %, C55 = ρg·B·L³/12 (+ the ρg∇(KB−KG) term) within 2 %
+    ///
+    /// Mathematical derivation:
+    /// 1. Submerged volume \nabla = L * B * T.
+    /// 2. Waterplane area Awp = L * B, so C33 = \rho * g * Awp = \rho * g * L * B.
+    /// 3. Waterplane second moment of area I_L = B * L^3 / 12.
+    /// 4. Metacentric radius BM_L = I_L / \nabla = (B * L^3 / 12) / \nabla.
+    /// 5. Vertical center of buoyancy KB = T / 2.
+    /// 6. Longitudinal metacentric height GM_L = KB + BM_L - KG = (B * L^3 / 12) / \nabla + (KB - KG).
+    /// 7. Restoring stiffness C55 = \rho * g * \nabla * GM_L
+    ///    = \rho * g * (B * L^3 / 12) + \rho * g * \nabla * (KB - KG).
+    #[test]
+    fn test_box_barge_hydrostatic_stiffness() {
+        let (l, b, depth, t) = (10.0, 2.0, 2.0, 0.5);
+        let surface = test_box_barge(l, b, depth);
+        let rho = 1025.0;
+        let g = 9.81;
+        let kg = 0.4;
+
+        let spec = SeakeepingSpec {
+            draft: t,
+            speed_kn: 0.0,
+            kg,
+            stations: 21,
+            rho,
+            g,
+            points: Some(2),
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        let coeffs = rep.coefficients.expect("coefficients must be present");
+        let c = &coeffs[0];
+
+        let expected_c33 = rho * g * l * b;
+        let c33_err = (c.c33 - expected_c33).abs() / expected_c33;
+        assert!(
+            c33_err < 0.01,
+            "C33 error must be < 1%, got {:.4} (got {}, expected {})",
+            c33_err,
+            c.c33,
+            expected_c33
+        );
+
+        let nabla = l * b * t;
+        let kb = t * 0.5;
+        let expected_c55 = rho * g * (b * l.powi(3) / 12.0) + rho * g * nabla * (kb - kg);
+        let c55_err = (c.c55 - expected_c55).abs() / expected_c55;
+        assert!(
+            c55_err < 0.02,
+            "C55 error must be < 2%, got {:.4} (got {}, expected {})",
+            c55_err,
+            c.c55,
+            expected_c55
+        );
+    }
+
+    /// Test 7.d: fore–aft symmetric box at U = 0 with LCG at midship:
+    /// |A35|, |B35|, |C35| < 1e-3 of corresponding sqrt(A33*A55), sqrt(B33*B55), sqrt(C33*C55)
+    #[test]
+    fn test_symmetric_box_cross_coupling_vanishes() {
+        let (l, b, depth, t) = (10.0, 2.0, 2.0, 0.5);
+        let surface = test_box_barge(l, b, depth);
+        let spec = SeakeepingSpec {
+            draft: t,
+            speed_kn: 0.0,
+            kg: 0.25,
+            stations: 21,
+            points: Some(3),
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        let coeffs = rep.coefficients.expect("coefficients must be present");
+        for c in coeffs {
+            let ref_a = (c.a33 * c.a55).sqrt();
+            let ref_b = (c.b33 * c.b55).sqrt();
+            let ref_c = (c.c33 * c.c55).sqrt();
+
+            assert!(
+                c.a35.abs() < 1e-3 * ref_a,
+                "|A35| must be < 1e-3 * sqrt(A33*A55), got {} vs 1e-3*{}",
+                c.a35.abs(),
+                ref_a
+            );
+            assert!(
+                c.b35.abs() < 1e-3 * ref_b,
+                "|B35| must be < 1e-3 * sqrt(B33*B55), got {} vs 1e-3*{}",
+                c.b35.abs(),
+                ref_b
+            );
+            assert!(
+                c.c35.abs() < 1e-3 * ref_c,
+                "|C35| must be < 1e-3 * sqrt(C33*C55), got {} vs 1e-3*{}",
+                c.c35.abs(),
+                ref_c
+            );
+        }
+    }
+
+    /// In very long waves the hull follows the surface whatever its speed. This
+    /// caught swapped speed terms in A35/A53, B35/B53 (pitch 9.9 at 6 kn instead
+    /// of 1.1). With KG = KB pitch must tend to the wave slope exactly; with G
+    /// above B it tends to ∫2b·x² / (∫2b·x² + ∇(KB − KG)), the 2-DOF model's
+    /// own limit (surge held, so no excitation matches the ∇(KB − KG) term).
+    #[test]
+    fn very_long_waves_are_followed_at_any_speed() {
+        let surface = crate::demo::demo_hull(true);
+        let run = |kg: f64, speed_kn: f64| {
+            let spec = SeakeepingSpec {
+                draft: 0.62,
+                speed_kn,
+                kg,
+                lambda_min: Some(100.0),
+                lambda_max: Some(100.0),
+                points: Some(1),
+                ..Default::default()
+            };
+            let rep = head_sea_raos(&surface, &spec).expect("raos");
+            (rep.frequencies[0].heave_amp, rep.frequencies[0].pitch_amp)
+        };
+        let kb = 0.392; // demo hull at T = 0.62 m (AGENTS.md reference)
+        for speed in [0.0, 3.0, 6.0] {
+            let (heave, pitch) = run(kb, speed);
+            assert!((heave - 1.0).abs() < 0.01, "{speed} kn: heave {heave}");
+            assert!((pitch - 1.0).abs() < 0.02, "{speed} kn: pitch {pitch}");
+        }
+        let (_, still) = run(2.2, 0.0);
+        let (_, moving) = run(2.2, 6.0);
+        assert!(
+            (still - 1.10).abs() < 0.02,
+            "KG 2.2 m: {still} (BM_L/GM_L ≈ 1.10)"
+        );
+        assert!((moving - still).abs() < 0.03 * still, "{moving} vs {still}");
+    }
+
+    /// STF speed structure for pitch positive bow up:
+    /// A35 − A53 = 2U/ωe²·B33 and B35 − B53 = −2U·A33 to 1e-9 relative
+    #[test]
+    fn test_stf_speed_structure() {
+        let surface = crate::demo::demo_hull(true);
+        let speed_kn = 6.0;
+        let u_speed = speed_kn * 0.5144444444444445;
+        let spec = SeakeepingSpec {
+            draft: 0.62,
+            speed_kn,
+            kg: 2.2,
+            stations: 21,
+            points: Some(5),
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        let coeffs = rep.coefficients.expect("coefficients must be present");
+        for c in coeffs {
+            let w_e = c.omega_e;
+            let diff_a = c.a35 - c.a53;
+            let expected_diff_a = 2.0 * u_speed / (w_e * w_e) * c.b33;
+            let scale_a = c.a35.abs().max(c.a53.abs()).max(1.0);
+            let rel_err_a = (diff_a - expected_diff_a).abs() / scale_a;
+            assert!(
+                rel_err_a < 1e-9,
+                "A35 - A53 error must be < 1e-9 relative, got {}",
+                rel_err_a
+            );
+
+            let diff_b = c.b35 - c.b53;
+            let expected_diff_b = -2.0 * u_speed * c.a33;
+            let scale_b = c.b35.abs().max(c.b53.abs()).max(1.0);
+            let rel_err_b = (diff_b - expected_diff_b).abs() / scale_b;
+            assert!(
+                rel_err_b < 1e-9,
+                "B35 - B53 error must be < 1e-9 relative, got {}",
+                rel_err_b
+            );
+        }
+    }
+
+    /// Test 7.f: heave RAO peak (U = 0, demo hull, fine ω grid) lies within 5 % of natural_heave_omega
+    #[test]
+    fn test_heave_rao_peak_near_natural_frequency() {
+        let surface = crate::demo::demo_hull(true);
+        // Fine omega grid from 1.5 to 3.5 rad/s with 60 points
+        // Fine omega grid around resonance (2.5 to 3.2 rad/s)
+        let omegas: Vec<f64> = (0..50)
+            .map(|i| 2.5 + (3.2 - 2.5) * (i as f64) / 49.0)
+            .collect();
+        let spec = SeakeepingSpec {
+            draft: 0.62,
+            speed_kn: 0.0,
+            kg: 2.2,
+            stations: 21,
+            omegas,
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        let mut max_amp = 0.0;
+        let mut peak_omega = 0.0;
+        for pt in &rep.frequencies {
+            if pt.heave_amp > max_amp {
+                max_amp = pt.heave_amp;
+                peak_omega = pt.omega;
+            }
+        }
+        let nat = rep.natural_heave_omega;
+        assert!(nat > 0.0, "natural heave omega must be positive");
+        let err = (peak_omega - nat).abs() / nat;
+        assert!(
+            err < 0.05,
+            "peak heave frequency {:.3} must be within 5% of natural_heave_omega {:.3} (got {:.2}%)",
+            peak_omega, nat, err * 100.0
+        );
+    }
+
+    /// Test 7.g: demo hull at 6 kn gives finite RAOs at all points, no panics
+    #[test]
+    fn test_demo_hull_at_6kn_finite_raos() {
+        let surface = crate::demo::demo_hull(true);
+        let spec = SeakeepingSpec {
+            draft: 0.62,
+            speed_kn: 6.0,
+            kg: 2.2,
+            stations: 21,
+            points: Some(20),
+            ..Default::default()
+        };
+        let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
+        assert_eq!(rep.frequencies.len(), 20);
+        for pt in &rep.frequencies {
+            assert!(pt.omega.is_finite());
+            assert!(pt.omega_e.is_finite());
+            assert!(pt.wavelength_m.is_finite());
+            assert!(pt.lambda_over_l.is_finite());
+            assert!(pt.heave_amp.is_finite(), "heave amp must be finite");
+            assert!(pt.heave_phase_deg.is_finite(), "heave phase must be finite");
+            assert!(pt.pitch_amp.is_finite(), "pitch amp must be finite");
+            assert!(pt.pitch_phase_deg.is_finite(), "pitch phase must be finite");
         }
     }
 }

@@ -402,3 +402,24 @@ Computed by Claude with [`docs/oracles/heave_2d.py`](oracles/heave_2d.py) by two
 source + wave-free multipoles. The two agree to 0.3 % in added mass and 0.6 % in damping for ξ ≤ 1.5. The wave-source
 kernel was checked against direct numerical principal-value integration. ξ = 2 is not used: it is near the panel
 method's first irregular frequency. Not published values.
+
+---
+
+## 16. Strip-Theory Heave/Pitch RAOs: Physical Limits (B7b)
+
+### Formula
+Coupled heave–pitch in head seas (STF 1970, pitch bow up). Checks that need no published data:
+very long waves are followed (heave → 1; pitch → ∫2b·x² / (∫2b·x² + ∇(KB − KG)), = 1 when KG = KB) at any speed;
+short waves give RAOs → 0; a box barge has C33 = ρgLB and C55 = ρgBL³/12 + ρg∇(KB − KG); a fore–aft symmetric box
+at U = 0 has no heave–pitch coupling; the speed terms satisfy A35 − A53 = 2U/ωe²·B33 and B35 − B53 = −2U·A33.
+
+### Test Locations
+- [`crates/seacraft-core/src/seakeeping.rs::very_long_waves_are_followed_at_any_speed`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::test_box_barge_hydrostatic_stiffness`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::test_stf_speed_structure`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::test_symmetric_box_cross_coupling_vanishes`](../crates/seacraft-core/src/seakeeping.rs)
+
+### Provenance
+Analytic limits. The speed-term signs were derived by Claude from the relative-motion sectional force
+−D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, integrated by parts; the long-wave test caught the original swapped signs.
+The demo hull's KG = 2.2 m limit (≈ 1.10) is BM_L/GM_L from `seacraft hydro`. Not published values.

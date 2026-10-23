@@ -78,6 +78,8 @@ enum Command {
     Loadcase(LoadcaseArgs),
     /// Deterministic damage stability by the lost-buoyancy method
     Damage(DamageArgs),
+    /// Strip-theory heave and pitch motion RAOs in regular head seas (Salvesen, Tuck & Faltinsen 1970)
+    Seakeeping(SeakeepingArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
     Linesplan(LinesplanArgs),
     /// Design dossier: self-contained HTML report with particulars, linesplan, hydrostatics, SAC, stability and resistance
@@ -1093,6 +1095,50 @@ struct DamageArgs {
 }
 
 #[derive(Args, Debug)]
+struct SeakeepingArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Draft in metres (required or defaults to project settings draft)
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Ship speed in knots
+    #[arg(long, aliases = ["speed-kn"], default_value_t = 0.0)]
+    speed: f64,
+    /// Vertical centre of gravity (KG) in metres above keel
+    #[arg(long)]
+    kg: Option<f64>,
+    /// Pitch radius of gyration (kyy) in metres (default: 0.25 * Lwl)
+    #[arg(long)]
+    kyy: Option<f64>,
+    /// Number of stations along the waterline
+    #[arg(long, default_value_t = 21)]
+    stations: usize,
+    /// Minimum wavelength ratio lambda / L
+    #[arg(long, default_value_t = 0.3)]
+    lambda_min: f64,
+    /// Maximum wavelength ratio lambda / L
+    #[arg(long, default_value_t = 3.0)]
+    lambda_max: f64,
+    /// Number of frequency points sampled across lambda / L
+    #[arg(long, default_value_t = 30)]
+    points: usize,
+    /// Water density in kg/m3
+    #[arg(long, default_value_t = 1025.0)]
+    rho: f64,
+    /// Acceleration due to gravity in m/s2
+    #[arg(long, default_value_t = 9.81)]
+    g: f64,
+    /// Write CSV to this path or emit to stdout if no path or '-' is given
+    #[arg(long, num_args = 0..=1, default_missing_value = "-")]
+    csv: Option<PathBuf>,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
 struct ReportArgs {
     /// Input .fef file
     file: PathBuf,
@@ -1190,6 +1236,7 @@ fn run() -> Result<()> {
         Command::Stability(a) => cmd_stability(a),
         Command::Loadcase(a) => cmd_loadcase(a),
         Command::Damage(a) => cmd_damage(a),
+        Command::Seakeeping(a) => cmd_seakeeping(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Report(a) => cmd_report(a),
         Command::Render(a) => cmd_render(a),
@@ -3278,6 +3325,127 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
     }
     for w in &res.warnings {
         println!("  warning: {w}");
+    }
+    Ok(())
+}
+
+fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let draft = if let Some(d) = a.draft {
+        d
+    } else if s.settings.draft > 0.0 {
+        s.settings.draft
+    } else {
+        bail!("draft must be specified via --draft or set in the project settings");
+    };
+    if draft <= 0.0 {
+        bail!("draft must be positive");
+    }
+    let kg = a.kg.unwrap_or(0.0);
+
+    let spec = seacraft_core::seakeeping::SeakeepingSpec {
+        draft,
+        speed_kn: a.speed,
+        kg,
+        kyy: a.kyy,
+        stations: a.stations,
+        lambda_min: Some(a.lambda_min),
+        lambda_max: Some(a.lambda_max),
+        points: Some(a.points),
+        rho: a.rho,
+        g: a.g,
+        ..Default::default()
+    };
+
+    let rep = seacraft_core::seakeeping::head_sea_raos(&s, &spec)
+        .map_err(|e| anyhow::anyhow!("seakeeping: {e}"))?;
+
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&rep)?);
+        return Ok(());
+    }
+
+    if let Some(ref csv_path) = a.csv {
+        let mut text = String::from(
+            "lambda_over_l,wavelength_m,omega_rad_s,omega_e_rad_s,heave_amp,heave_phase_deg,pitch_amp,pitch_phase_deg\n",
+        );
+        for pt in &rep.frequencies {
+            text.push_str(&format!(
+                "{:.4},{:.3},{:.4},{:.4},{:.4},{:.2},{:.4},{:.2}\n",
+                pt.lambda_over_l,
+                pt.wavelength_m,
+                pt.omega,
+                pt.omega_e,
+                pt.heave_amp,
+                pt.heave_phase_deg,
+                pt.pitch_amp,
+                pt.pitch_phase_deg
+            ));
+        }
+        if csv_path.as_os_str() == "-" || csv_path.as_os_str().is_empty() {
+            print!("{text}");
+        } else {
+            std::fs::write(csv_path, text)
+                .with_context(|| format!("cannot write {}", csv_path.display()))?;
+            println!(
+                "wrote {} ({} frequencies)",
+                csv_path.display(),
+                rep.frequencies.len()
+            );
+        }
+        return Ok(());
+    }
+
+    println!(
+        "{}  -  Seakeeping RAOs in regular head seas (Salvesen, Tuck & Faltinsen 1970)",
+        s.settings.name
+    );
+    println!(
+        "  draft: {:.3} m, speed: {:.1} kn, KG: {:.3} m{}",
+        spec.draft,
+        spec.speed_kn,
+        spec.kg,
+        if let Some(kyy) = spec.kyy {
+            format!(", kyy: {:.3} m", kyy)
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "  natural frequencies: heave w_n = {:.3} rad/s, pitch w_n = {:.3} rad/s",
+        rep.natural_heave_omega, rep.natural_pitch_omega
+    );
+    println!();
+    println!(
+        "  {:>8}   {:>10}   {:>13}   {:>15}   {:>10}   {:>11}   {:>18}   {:>11}",
+        "lambda/L",
+        "lambda (m)",
+        "omega (rad/s)",
+        "omega_e (rad/s)",
+        "z_a/zeta_a",
+        "phase (deg)",
+        "theta_a/(k*zeta_a)",
+        "phase (deg)"
+    );
+    for pt in &rep.frequencies {
+        println!(
+            "  {:>8.3}   {:>10.2}   {:>13.3}   {:>15.3}   {:>10.4}   {:>11.1}   {:>18.4}   {:>11.1}",
+            pt.lambda_over_l,
+            pt.wavelength_m,
+            pt.omega,
+            pt.omega_e,
+            pt.heave_amp,
+            pt.heave_phase_deg,
+            pt.pitch_amp,
+            pt.pitch_phase_deg
+        );
+    }
+    if !rep.warnings.is_empty() {
+        println!();
+        println!("warnings:");
+        for w in &rep.warnings {
+            println!("  [{}] {}", w.code, w.message);
+        }
     }
     Ok(())
 }

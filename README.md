@@ -285,6 +285,30 @@ curve from equilibrium (heels 0–60°, free trim), and evaluates indicative
 SOLAS-style residual criteria (SOLAS II-1 Reg. 7-2 spirit: range $\ge 15^\circ$,
 max $GZ \ge 0.10$ m, area $\ge 0.015$ m·rad).
 
+### Seakeeping (strip-theory heave & pitch motions)
+
+`seakeeping::head_sea_raos` (`seacraft seakeeping hull.fef --draft T` / MCP
+`seakeeping_raos` / GUI control `seakeeping.compute`) implements linear strip
+theory for heave and pitch motion Response Amplitude Operators (RAOs) in regular
+head seas, following Salvesen, Tuck & Faltinsen (1970, *Ship motions and sea
+loads*, SNAME Trans. 78):
+
+* Sectional 2D heave added mass and damping are evaluated across waterline
+  stations via Frank's pulsating close-fit source distribution method on the
+  actual submerged station contour (with Lewis conformal form fallback).
+* Forward speed terms follow the STF formulation: coupled radiation terms
+  $A_{35}, B_{35}, A_{53}, B_{53}$ satisfy the STF speed relationships
+  ($A_{35} - A_{53} = -2(U/\omega_e^2) B_{33}$, $B_{35} - B_{53} = 2 U A_{33}$).
+* Hydrostatic restoring couples heave ($C_{33} = \rho g A_{wp}$), waterplane
+  longitudinal moments ($C_{35} = C_{53} = \rho g \int x \cdot b_{wl} dx$), and
+  longitudinal metacentric stiffness ($C_{55} = \rho g \nabla GM_L$).
+* Wave excitation force ($F_3$) and pitch moment ($F_5$) combine Froude–Krylov
+  and diffraction components with sectional depth attenuation $e^{-k T^*}$.
+* Solves the coupled $2 \times 2$ complex motion system per encounter frequency
+  $\omega_e = \omega + \omega^2 U / g$, reporting non-dimensional heave
+  amplitude $z_a / \zeta_a$, pitch amplitude $\theta_a / (k \zeta_a)$, phases, and
+  natural heave/pitch frequencies.
+
 ### Fairing analysis
 
 Fairing a hull means looking at how light reflects off it. `analysis` computes
@@ -393,6 +417,8 @@ seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,..
                             [--windage name:area:z]... [--downflooding deg]] [--csv out.csv]
 seacraft loadcase  hull.fef case.json [--json]
 seacraft damage    hull.fef case.json [--json]
+seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--stations N]
+                            [--lambda-min 0.3] [--lambda-max 3.0] [--points 30] [--csv|--json]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]
 seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]
