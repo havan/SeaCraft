@@ -1055,6 +1055,76 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "undo_len": app.undo_len(),
             }))
         }
+        "curves.unfold" => {
+            // Read-only plate development: no snapshot, no dirty flag.
+            let axis = match text(p, "axis")? {
+                None => seacraft_core::develop::BandAxis::Z,
+                Some(name) => seacraft_core::develop::BandAxis::parse(name)
+                    .ok_or_else(|| format!("`axis` must be x, y or z (got `{name}`)"))?,
+            };
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            let lo = number(p, "from")?;
+            let hi = number(p, "to")?;
+            let x_lo = number(p, "x_from")?;
+            let x_hi = number(p, "x_to")?;
+            let both = boolean(p, "both_sides")?.unwrap_or(false);
+            let surface = app.surface().ok_or_else(|| "curves.unfold: no model is loaded".to_string())?;
+            let hull = seacraft_core::hydro::Hull::new(
+                surface,
+                seacraft_core::subdiv::SubdivisionOptions { level, mode: app.subdivision_mode() },
+            );
+            let pick = |axis: seacraft_core::develop::BandAxis, given: Option<f64>, low: bool| {
+                given.unwrap_or(match (axis, low) {
+                    (seacraft_core::develop::BandAxis::X, true) => hull.model_min.x,
+                    (seacraft_core::develop::BandAxis::X, false) => hull.model_max.x,
+                    (seacraft_core::develop::BandAxis::Y, true) => hull.model_min.y,
+                    (seacraft_core::develop::BandAxis::Y, false) => hull.model_max.y,
+                    (seacraft_core::develop::BandAxis::Z, true) => hull.keel,
+                    (seacraft_core::develop::BandAxis::Z, false) => hull.model_max.z,
+                })
+            };
+            let selection = seacraft_core::develop::PatchSelection {
+                slabs: vec![
+                    (axis, pick(axis, lo, true), pick(axis, hi, false)),
+                    (
+                        seacraft_core::develop::BandAxis::X,
+                        pick(seacraft_core::develop::BandAxis::X, x_lo, true),
+                        pick(seacraft_core::develop::BandAxis::X, x_hi, false),
+                    ),
+                ],
+                starboard_only: !both,
+            };
+            let faces = seacraft_core::develop::select(&hull.verts, &hull.tris, &selection);
+            if faces.is_empty() {
+                return Err("curves.unfold: the band selected no faces; widen the range".into());
+            }
+            let unfolded = seacraft_core::develop::unfold(&hull.verts, &faces);
+            let mut written = None;
+            if let Some(path) = text(p, "path")?.filter(|s| !s.trim().is_empty()) {
+                let title = format!(
+                    "{} - plate on {:?} {:.2}..{:.2} m",
+                    surface.settings.name,
+                    axis,
+                    selection.slabs[0].1,
+                    selection.slabs[0].2
+                );
+                std::fs::write(path, seacraft_core::develop::svg(&unfolded, &title))
+                    .map_err(|e| format!("curves.unfold: cannot write {path}: {e}"))?;
+                written = Some(path.to_string());
+            }
+            Ok(json!({
+                "backend": "app",
+                "level": level,
+                "faces": faces.len(),
+                "plate": unfolded,
+                "written": written,
+            }))
+        }
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -1559,6 +1629,19 @@ mod tests {
         assert_eq!(call(&mut app, &ctx, "model.transform", json!({ "mirror": "w" }))["ok"], false);
         assert_eq!(call(&mut app, &ctx, "model.transform", json!({}))["ok"], false);
         let _ = dirty_before;
+
+        // ---- curves.unfold: read-only plate development ---------------------
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(&mut app, &ctx, "curves.unfold", json!({ "axis": "z", "from": 0.2, "to": 0.45, "x_from": 3.0, "x_to": 6.0 }));
+        assert_eq!(r["ok"], true, "{r}");
+        let plate = &r["result"]["plate"];
+        assert!(plate["area_2d_m2"].as_f64().unwrap_or(0.0) > 0.0, "{r}");
+        assert!(plate["developable"].as_bool().unwrap_or(false), "{r}");
+        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
+        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        assert_eq!(call(&mut app, &ctx, "curves.unfold", json!({ "axis": "w" }))["ok"], false);
+        assert_eq!(call(&mut app, &ctx, "curves.unfold", json!({ "from": 50.0, "to": 60.0 }))["ok"], false);
 
         // ---- model.save / model.open / model.export ------------------------
         let fef_path = scratch("hull.fef");

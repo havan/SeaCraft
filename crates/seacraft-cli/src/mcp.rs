@@ -48,7 +48,7 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{curves, demo, export, fef, linesplan, offsets, planing, raster, resistance, topology, transform};
+use seacraft_core::{curves, demo, develop, export, fef, linesplan, offsets, planing, raster, resistance, topology, transform};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -83,7 +83,8 @@ net and its layers, extents and principal dimensions; `load_hull` {path} or {dem
 that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
 for the section area at each station against a range of drafts; `table_of_offsets` for the drawing-office \
 half-breadth and buttock tables; `resistance_curve` and `planing_curve` for power; `move_point` and \
-`set_crease`, `split_face`, `insert_edge` and `transform_hull` to edit; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
+`set_crease`, `split_face`, `insert_edge` and `transform_hull` to edit; `unfold_plate` for plate \
+development; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
 look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
 
 // ---------------------------------------------------------------- framing --
@@ -394,6 +395,7 @@ impl McpServer {
             "resistance_curve" => self.resistance_curve(a),
             "planing_curve" => self.planing_curve(a),
             "transform_hull" => self.transform_hull(a),
+            "unfold_plate" => self.unfold_plate(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -959,6 +961,68 @@ impl McpServer {
         }))
     }
 
+    fn unfold_plate(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let axis = match str_arg(a, "axis") {
+            None => develop::BandAxis::Z,
+            Some(name) => develop::BandAxis::parse(name)
+                .ok_or_else(|| format!("unfold_plate: `axis` must be x, y or z (got `{name}`)"))?,
+        };
+        let mut subdiv = self.opts.subdivision;
+        subdiv.level = level;
+        let hull = hydro::Hull::new(&self.surface, subdiv);
+        let pick = |axis: develop::BandAxis, given: Option<f64>, low: bool| {
+            given.unwrap_or(match (axis, low) {
+                (develop::BandAxis::X, true) => hull.model_min.x,
+                (develop::BandAxis::X, false) => hull.model_max.x,
+                (develop::BandAxis::Y, true) => hull.model_min.y,
+                (develop::BandAxis::Y, false) => hull.model_max.y,
+                (develop::BandAxis::Z, true) => hull.keel,
+                (develop::BandAxis::Z, false) => hull.model_max.z,
+            })
+        };
+        let selection = develop::PatchSelection {
+            slabs: vec![
+                (
+                    axis,
+                    pick(axis, number_arg(a, "from"), true),
+                    pick(axis, number_arg(a, "to"), false),
+                ),
+                (
+                    develop::BandAxis::X,
+                    pick(develop::BandAxis::X, number_arg(a, "x_from"), true),
+                    pick(develop::BandAxis::X, number_arg(a, "x_to"), false),
+                ),
+            ],
+            starboard_only: !bool_arg(a, "both_sides").unwrap_or(false),
+        };
+        let faces = develop::select(&hull.verts, &hull.tris, &selection);
+        if faces.is_empty() {
+            return Err("unfold_plate: the band selected no faces; widen the range".into());
+        }
+        let unfolded = develop::unfold(&hull.verts, &faces);
+        let mut written = None;
+        if let Some(path) = str_arg(a, "path").filter(|s| !s.trim().is_empty()) {
+            let title = format!(
+                "{} - plate on {:?} {:.2}..{:.2} m",
+                self.surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
+            );
+            std::fs::write(path, develop::svg(&unfolded, &title))
+                .map_err(|e| format!("unfold_plate: cannot write {path}: {e}"))?;
+            written = Some(path.to_string());
+        }
+        Ok(json!({
+            "backend": "headless",
+            "level": level,
+            "faces": faces.len(),
+            "plate": unfolded,
+            "written": written,
+        }))
+    }
+
     fn export_linesplan(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let path = str_arg(a, "path")
             .filter(|p| !p.trim().is_empty())
@@ -1484,6 +1548,30 @@ pub fn tool_definitions() -> Vec<Value> {
             false,
         ),
         tool(
+            "unfold_plate",
+            "Unfold a plate",
+            "Develop a hull patch into the flat sheet a plate would be cut from. The patch is a simply \
+             connected plate: a band across `axis` (x stations, y buttocks or z waterlines) between `from` and \
+             `to`, further limited to the run `x_from`..`x_to` along the hull, and to the starboard side unless \
+             `both_sides`. Returns the flat pattern size, the 3D and 2D areas, the seam gap (max, rms, and as a \
+             fraction of the diagonal), the mean Gaussian curvature and a developable verdict at 0.5 % of the \
+             diagonal. Give `path` to also write the pattern as SVG.",
+            obj(
+                json!({
+                    "axis": {"type": "string", "enum": ["x", "y", "z"], "description": "Axis the band is cut across (default z, waterlines)"},
+                    "from": number("Lower bound of the band in metres"),
+                    "to": number("Upper bound of the band in metres"),
+                    "x_from": number("Start of the plate's run along x (default: the model's minimum)"),
+                    "x_to": number("End of the plate's run along x (default: the model's maximum)"),
+                    "both_sides": boolean("Include the port side too (default false: one plate)"),
+                    "path": string("Write the flat pattern SVG here"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            true,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1617,7 +1705,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `stability_cross_curves` -> `stability.cross_curves`,
 /// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
 /// `resistance_curve` -> `resistance.compute`, `planing_curve` -> `planing.compute`,
-/// `transform_hull` -> `model.transform`,
+/// `transform_hull` -> `model.transform`, `unfold_plate` -> `curves.unfold`,
 /// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
@@ -1786,6 +1874,7 @@ impl Remote {
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
             "planing_curve" => self.request("planing.compute", Value::Object(a.clone())),
             "transform_hull" => self.request("model.transform", Value::Object(a.clone())),
+            "unfold_plate" => self.request("curves.unfold", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -1981,7 +2070,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the sixteen hull tools, each with a JSON Schema.
+        // tools/list: the seventeen hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -2002,6 +2091,7 @@ mod tests {
                 "resistance_curve",
                 "planing_curve",
                 "transform_hull",
+                "unfold_plate",
                 "export_linesplan",
                 "render_png",
             ]
@@ -2337,6 +2427,29 @@ mod tests {
         assert_eq!(m["report"]["mirror"], "x", "{m}");
         fails(&mut s, 85, "transform_hull", json!({}));
         fails(&mut s, 86, "transform_hull", json!({ "scale": [1.0, 1.0] }));
+
+        // unfold_plate: a strake develops with its areas preserved, and the SVG
+        // is written where asked.
+        let svg = temp_path("plate.svg");
+        let plate = ok(
+            &mut s,
+            87,
+            "unfold_plate",
+            json!({"axis": "z", "from": 0.2, "to": 0.45, "x_from": 3.0, "x_to": 6.0, "path": svg}),
+        );
+        let p = &plate["plate"];
+        let a2 = p["area_2d_m2"].as_f64().unwrap_or(0.0);
+        let a3 = p["area_3d_m2"].as_f64().unwrap_or(0.0);
+        assert!(a2 > 0.0, "{plate}");
+        assert!((a2 - a3).abs() / a3 < 1e-9, "areas {a2} vs {a3}");
+        assert!(p["developable"].as_bool().unwrap_or(false), "{plate}");
+        assert!(p["max_gap_m"].as_f64().unwrap_or(1.0) < 0.01, "{plate}");
+        assert_eq!(plate["written"], json!(svg.to_string_lossy()));
+        let text = std::fs::read_to_string(&svg).expect("the SVG was written");
+        assert!(text.contains("<svg") && text.contains("developable"), "an SVG");
+        let _ = std::fs::remove_file(&svg);
+        // A band that hits nothing is a tool error, not an empty plate.
+        fails(&mut s, 88, "unfold_plate", json!({"axis": "z", "from": 50.0, "to": 60.0}));
 
         // save_hull then load_hull round-trips the control net.
         let fef = temp_path("fef");
