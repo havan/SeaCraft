@@ -43,6 +43,7 @@ pub mod subdiv;
 pub mod table;
 pub mod threemf;
 pub mod topology;
+pub mod trimopt;
 pub mod transform;
 
 pub use analysis::AnalysisMode;

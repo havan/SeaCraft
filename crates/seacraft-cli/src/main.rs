@@ -8,7 +8,7 @@ use seacraft_core::stability::{
     StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{lackenby, table, 
+use seacraft_core::{lackenby, table, trimopt, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
     develop, offsets, planing, raster, resistance, topology, transform,
 };
@@ -53,6 +53,8 @@ enum Command {
     Lackenby(LackenbyArgs),
     /// Hydrostatics table: displacement, KB, BM, KM, LCB, LCF, TPC, MTC per draft
     Table(TableArgs),
+    /// Scan trim at a speed and report the cheapest, at constant displacement
+    Trim(TrimArgs),
     /// Still-water resistance and effective power (Holtrop-Mennen 1984)
     Resistance(ResistanceArgs),
     /// Developable plate expansion: flatten a strake or buttock band
@@ -328,6 +330,79 @@ struct OffsetsArgs {
     json: bool,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
+struct TrimArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Speed in knots
+    #[arg(long)]
+    speed: f64,
+    /// Aft limit of the trim range in metres (negative is bow down)
+    #[arg(long, default_value_t = -0.6, allow_hyphen_values = true)]
+    from: f64,
+    /// Forward limit of the trim range in metres
+    #[arg(long, default_value_t = 0.6, allow_hyphen_values = true)]
+    to: f64,
+    /// Number of trims to try
+    #[arg(long, default_value_t = 13)]
+    steps: usize,
+    /// Draft at which to hold the displacement, in metres
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Let the displacement change with trim instead of solving the draft
+    #[arg(long)]
+    no_hold_volume: bool,
+    /// Subdivision level (0 = control net, max 6)
+    #[arg(long, default_value_t = 3)]
+    level: u8,
+    /// Emit the scan as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+fn cmd_trim(a: TrimArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions { level: a.level, mode: SubdivisionMode::Loop };
+    let mut opts = HydroOptions::from_surface(&s, subdiv);
+    if let Some(d) = a.draft {
+        opts.draft = d;
+    }
+    let trims = trimopt::trim_range(a.from, a.to, a.steps);
+    let scan = trimopt::scan(&s, subdiv, &opts, a.speed, &trims, !a.no_hold_volume)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&scan)?);
+        return Ok(());
+    }
+    println!(
+        "trim scan at {:.2} kn, displacement held at {:.3} m3{}",
+        scan.speed_kn,
+        scan.target_volume_m3,
+        if a.no_hold_volume { " (NOT held: draft fixed)" } else { "" }
+    );
+    println!("   trim    draft     LWL      Fn     RT [kN]   PE [kW]");
+    for p in &scan.points {
+        println!(
+            "{:+7.3} {:7.3} {:8.3} {:6.3} {:10.3} {:10.2}",
+            p.trim_m, p.draft_m, p.lwl_m, p.froude, p.rt_n / 1000.0, p.pe_kw
+        );
+    }
+    if let Some(b) = scan.best {
+        println!(
+            "cheapest: trim {:+.3} m at draft {:.3} m - RT {:.3} kN, PE {:.2} kW{}",
+            b.trim_m,
+            b.draft_m,
+            b.rt_n / 1000.0,
+            b.pe_kw,
+            if scan.at_boundary { " (at the edge of the range)" } else { "" }
+        );
+    }
+    for w in &scan.warnings {
+        println!("  warning: {w}");
+    }
+    Ok(())
 }
 
 #[derive(Args, Debug)]
@@ -762,6 +837,7 @@ fn run() -> Result<()> {
         Command::Transform(a) => cmd_transform(a),
         Command::Lackenby(a) => cmd_lackenby(a),
         Command::Table(a) => cmd_table(a),
+        Command::Trim(a) => cmd_trim(a),
         Command::Resistance(a) => cmd_resistance(a),
         Command::Unfold(a) => cmd_unfold(a),
         Command::Edit(a) => cmd_edit(a),
