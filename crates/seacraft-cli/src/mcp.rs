@@ -50,7 +50,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::SubdivisionMode;
 use seacraft_core::{
     curves, demo, develop, export, fef, linesplan, offsets, planing, raster, resistance, table,
-    topology, transform,
+    topology, transform, trimopt,
 };
 use serde_json::{json, Map, Value};
 
@@ -400,6 +400,7 @@ impl McpServer {
             "transform_hull" => self.transform_hull(a),
             "unfold_plate" => self.unfold_plate(a),
             "hydro_table" => self.hydro_table(a),
+            "trim_scan" => self.trim_scan(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -962,6 +963,47 @@ impl McpServer {
             "draft": self.opts.draft,
             "faces": self.surface.faces.len(),
             "points": self.surface.points.len(),
+        }))
+    }
+
+    fn trim_scan(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let mut opts = self.opts.clone();
+        if let Some(d) = number_arg(a, "draft") {
+            if !(d.is_finite() && d > 0.0) {
+                return Err("trim_scan: `draft` must be positive".into());
+            }
+            opts.draft = d;
+        }
+        if a.contains_key("level") {
+            opts.subdivision.level = level_arg(a)?;
+        }
+        let speed = number_arg(a, "speed_kn")
+            .ok_or("trim_scan: give `speed_kn`")?;
+        let from = number_arg(a, "from").unwrap_or(-0.6);
+        let to = number_arg(a, "to").unwrap_or(0.6);
+        if !(to.is_finite() && from.is_finite() && to > from) {
+            return Err("trim_scan: `to` must be greater than `from`".into());
+        }
+        let steps = match a.get("steps") {
+            None | Some(Value::Null) => 13,
+            Some(_) => match number_arg(a, "steps") {
+                Some(n) if (2.0..=200.0).contains(&n) => n.round() as usize,
+                _ => return Err("trim_scan: `steps` must be from 2 to 200".into()),
+            },
+        };
+        let hold = bool_arg(a, "hold_volume").unwrap_or(true);
+        let trims = trimopt::trim_range(from, to, steps);
+        let scan = trimopt::scan(&self.surface, opts.subdivision, &opts, speed, &trims, hold)
+            .map_err(|e| format!("trim_scan: {e}"))?;
+        Ok(json!({
+            "backend": "headless",
+            "level": opts.subdivision.level,
+            "speed_kn": scan.speed_kn,
+            "target_volume_m3": scan.target_volume_m3,
+            "at_boundary": scan.at_boundary,
+            "best": scan.best,
+            "warnings": scan.warnings,
+            "points": scan.points,
         }))
     }
 
@@ -1645,6 +1687,28 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "trim_scan",
+            "Trim scan",
+            "Scan trim at a speed and report the cheapest, holding the displacement by solving the draft at each \
+             trim (trimming about the centre of flotation changes the immersed volume by itself). Returns every \
+             point (trim, draft, LWL, Fn, RT, PE), the cheapest one, whether that sits at the edge of the range \
+             rather than at an interior minimum, and the model's warnings. Pass `hold_volume: false` to keep the \
+             draft fixed instead and compare hulls of different weight.",
+            obj(
+                json!({
+                    "speed_kn": number("Speed in knots (required)"),
+                    "from": number("Aft limit of the trim range in metres (default -0.6)"),
+                    "to": number("Forward limit of the trim range in metres (default 0.6)"),
+                    "steps": integer("Number of trims to try (default 13)"),
+                    "draft": number("Draft at which to hold the displacement (default: the server's)"),
+                    "hold_volume": boolean("Solve the draft to hold the displacement (default true)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &["speed_kn"],
+            ),
+            true,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1779,7 +1843,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
 /// `resistance_curve` -> `resistance.compute`, `planing_curve` -> `planing.compute`,
 /// `transform_hull` -> `model.transform`, `unfold_plate` -> `curves.unfold`,
-/// `hydro_table` -> `hydro.table`,
+/// `hydro_table` -> `hydro.table`, `trim_scan` -> `hydro.trim`,
 /// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
@@ -1950,6 +2014,7 @@ impl Remote {
             "transform_hull" => self.request("model.transform", Value::Object(a.clone())),
             "unfold_plate" => self.request("curves.unfold", Value::Object(a.clone())),
             "hydro_table" => self.request("hydro.table", Value::Object(a.clone())),
+            "trim_scan" => self.request("hydro.trim", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -2145,7 +2210,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the eighteen hull tools, each with a JSON Schema.
+        // tools/list: the nineteen hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -2168,6 +2233,7 @@ mod tests {
                 "transform_hull",
                 "unfold_plate",
                 "hydro_table",
+                "trim_scan",
                 "export_linesplan",
                 "render_png",
             ]
@@ -2485,6 +2551,37 @@ mod tests {
         assert_eq!(two["drafts"], json!(2), "{two}");
         fails(&mut s, 95, "hydro_table", json!({"drafts": [0.0]}));
         fails(&mut s, 96, "hydro_table", json!({"steps": 0}));
+
+        // trim_scan: the even-keel point is the resistance at that speed, the
+        // displacement holds, and a range with no interior minimum says so.
+        let t = ok(&mut s, 97, "trim_scan", json!({"speed_kn": 10.0, "steps": 5}));
+        assert_eq!(t["backend"], "headless", "{t}");
+        let pts = t["points"].as_array().expect("points");
+        assert_eq!(pts.len(), 5, "{t}");
+        let zero = pts
+            .iter()
+            .find(|p| p["trim_m"].as_f64().unwrap_or(1.0).abs() < 1e-12)
+            .expect("an even-keel point");
+        let target = t["target_volume_m3"].as_f64().unwrap_or(0.0);
+        for p in pts {
+            let v = p["volume_m3"].as_f64().unwrap_or(0.0);
+            assert!((v - target).abs() / target < 1e-4, "volume {v} vs {target}");
+        }
+        // Same measurement path as `resistance_curve` at the same speed. (The
+        // model has been transformed by the earlier test, so the absolute
+        // numbers are not the demo's; the *agreement* is what is asserted.)
+        let rc = ok(&mut s, 98, "resistance_curve", json!({"speeds": [10.0]}));
+        let row = &rc["speeds"][0];
+        // The scan solves the draft, so it lands a fraction of a micrometre away
+        // from the command's 0.62 m and the resistances differ in the 6th digit;
+        // a relative tolerance is the honest comparison.
+        let a_rt = zero["rt_n"].as_f64().unwrap_or(0.0);
+        let b_rt = row["rt_n"].as_f64().unwrap_or(0.0);
+        assert!((a_rt - b_rt).abs() / b_rt < 1e-4, "trim scan {a_rt} vs resistance {b_rt}");
+        assert!(t["best"].is_object(), "{t}");
+        // Bad speed, empty range and a one-point scan are all refused.
+        fails(&mut s, 99, "trim_scan", json!({"speed_kn": 0.0}));
+        fails(&mut s, 100, "trim_scan", json!({"speed_kn": 10.0, "from": 0.4, "to": 0.2}));
 
         // resistance_curve: PE = RT·V, the branch is reported, and the power
         // chain closes when a propeller is given.

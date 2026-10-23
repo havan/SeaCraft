@@ -769,6 +769,50 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "result": result,
             }))
         }
+        "hydro.trim" => {
+            // Read-only: a scan is a report, not an edit.
+            let mut opts = app.hydro_options().clone();
+            if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
+                opts.draft = d;
+            }
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            let subdiv = seacraft_core::subdiv::SubdivisionOptions {
+                level,
+                mode: app.subdivision_mode(),
+            };
+            let speed = number(p, "speed_kn")?.ok_or("hydro.trim: give `speed_kn`")?;
+            let from = number_in(p, "from", -5.0..=5.0)?.unwrap_or(-0.6);
+            let to = number_in(p, "to", -5.0..=5.0)?.unwrap_or(0.6);
+            if to <= from {
+                return Err("hydro.trim: `to` must be greater than `from`".into());
+            }
+            let steps = match p.get("steps") {
+                None | Some(Value::Null) => 13,
+                Some(_) => number_in(p, "steps", 2.0..=200.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(13),
+            };
+            let hold = boolean(p, "hold_volume")?.unwrap_or(true);
+            let surface = app.surface().ok_or_else(|| "hydro.trim: no model is loaded".to_string())?;
+            let trims = seacraft_core::trimopt::trim_range(from, to, steps);
+            let scan = seacraft_core::trimopt::scan(surface, subdiv, &opts, speed, &trims, hold)
+                .map_err(|e| format!("hydro.trim: {e}"))?;
+            Ok(json!({
+                "backend": "app",
+                "level": level,
+                "speed_kn": scan.speed_kn,
+                "target_volume_m3": scan.target_volume_m3,
+                "at_boundary": scan.at_boundary,
+                "best": scan.best,
+                "warnings": scan.warnings,
+                "points": scan.points,
+            }))
+        }
         "hydro.table" => {
             // Read-only: a table is a report, not an edit.
             let mut opts = app.hydro_options().clone();
@@ -1656,6 +1700,26 @@ mod tests {
             assert_eq!(call(&mut app, &ctx, "ui.render", bad.clone())["ok"], false, "{bad}");
         }
         assert!(std::fs::metadata(&png_path).is_err(), "a refused render writes nothing");
+
+        // ---- hydro.trim: read-only trim scan --------------------------------
+        let dirty_before_r = app.is_dirty();
+        let undo_before_r = app.undo_len();
+        let r = call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 10.0, "steps": 5 }));
+        assert_eq!(r["ok"], true, "{r}");
+        let pts = r["result"]["points"].as_array().expect("points");
+        assert_eq!(pts.len(), 5, "{r}");
+        let zero = pts
+            .iter()
+            .find(|p| p["trim_m"].as_f64().unwrap_or(1.0).abs() < 1e-12)
+            .expect("an even-keel point");
+        assert!(zero["rt_n"].as_f64().unwrap_or(0.0) > 0.0, "{zero}");
+        assert_eq!(app.is_dirty(), dirty_before_r, "a scan must not dirty the model");
+        assert_eq!(app.undo_len(), undo_before_r, "a scan must not push undo");
+        assert_eq!(call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 0.0 }))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 10.0, "from": 0.4, "to": 0.2 }))["ok"],
+            false
+        );
 
         // ---- hydro.table: read-only, and the top row is the dock's number ---
         let dirty_before_t = app.is_dirty();
