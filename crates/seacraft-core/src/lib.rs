@@ -42,6 +42,7 @@ pub mod offsets;
 pub mod optimize;
 pub mod parametric;
 pub mod planing;
+pub mod project;
 pub mod raster;
 pub mod report;
 pub mod resistance;

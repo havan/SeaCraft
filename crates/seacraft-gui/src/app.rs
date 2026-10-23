@@ -11,6 +11,7 @@ use eframe::egui;
 use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
 use seacraft_core::math::{Plane, Vec3};
+use seacraft_core::project::{self, Project};
 use seacraft_core::stability::{self, CrossCurve};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
@@ -179,6 +180,10 @@ struct FileDialogState {
 pub struct App {
     surface: Option<Surface>,
     path: Option<PathBuf>,
+    /// Design data kept in the `<model>.seacraft.json` sidecar.
+    project: Project,
+    /// Why the sidecar could not be read; while set, saving leaves it alone.
+    project_error: Option<String>,
     status: String,
     /// Bumped by every edit; keys all derived state.
     revision: u64,
@@ -247,6 +252,8 @@ impl App {
         Self {
             surface: None,
             path: None,
+            project: Project::default(),
+            project_error: None,
             status: String::new(),
             revision: 0,
             level: 3,
@@ -298,6 +305,10 @@ impl App {
             });
         match parsed {
             Ok(surface) => {
+                let (project, project_error) = match Project::load_for_model(path) {
+                    Ok(p) => (p.unwrap_or_default(), None),
+                    Err(e) => (Project::default(), Some(e)),
+                };
                 let layers_word = if surface.layers.len() == 1 {
                     "layer"
                 } else {
@@ -311,8 +322,15 @@ impl App {
                     surface.layers.len(),
                     layers_word
                 );
+                if let Some(e) = &project_error {
+                    self.status = format!("{} — project file not loaded: {e}", self.status);
+                } else if !project.is_empty() {
+                    self.status.push_str(" + project");
+                }
                 self.surface = Some(surface);
                 self.path = Some(path.to_path_buf());
+                self.project = project;
+                self.project_error = project_error;
                 self.dirty = false;
                 self.adopt();
                 Ok(())
@@ -341,6 +359,8 @@ impl App {
         );
         self.surface = Some(surface);
         self.path = None;
+        self.project = Project::default();
+        self.project_error = None;
         self.dirty = true;
         self.adopt();
     }
@@ -355,6 +375,8 @@ impl App {
         );
         self.surface = Some(surface);
         self.path = None;
+        self.project = Project::default();
+        self.project_error = None;
         self.dirty = true;
         self.adopt();
     }
@@ -816,8 +838,21 @@ impl App {
         match std::fs::write(path, text) {
             Ok(()) => {
                 self.path = Some(path.to_path_buf());
-                self.dirty = false;
                 self.status = format!("saved {}", path.display());
+                let sidecar = project::sidecar_path(path);
+                if let Some(e) = &self.project_error {
+                    self.status = format!(
+                        "saved {}; project file left as it was ({e})",
+                        path.display()
+                    );
+                } else if !self.project.is_empty() || sidecar.exists() {
+                    if let Err(e) = self.project.save(&sidecar) {
+                        self.status = format!("saved {}, but {e}", path.display());
+                        return false;
+                    }
+                    self.status.push_str(" + project");
+                }
+                self.dirty = false;
                 true
             }
             Err(err) => {
@@ -1413,6 +1448,18 @@ impl App {
 
     pub fn surface(&self) -> Option<&Surface> {
         self.surface.as_ref()
+    }
+
+    /// The design data saved beside the model.
+    pub fn project(&self) -> &Project {
+        &self.project
+    }
+
+    /// Replace the design data; the model becomes unsaved.
+    pub fn set_project(&mut self, project: Project) {
+        self.project = project;
+        self.project_error = None;
+        self.dirty = true;
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {

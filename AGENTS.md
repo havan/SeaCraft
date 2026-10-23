@@ -72,6 +72,7 @@ crates/seacraft-core/
   src/parametric.rs         parametric hull generator (displacement/planing/yacht) from principal dims
   src/optimize.rs           Nelder–Mead + optimize_hull: reshape Cp/LCB/L-B for least R_T at a speed, displacement held
   src/seakeeping.rs         Lewis sections; 2D heave added mass/damping by Frank close-fit panels (B7a); STF strip-theory heave & pitch RAOs (B7b)
+  src/project.rs            <model>.seacraft.json sidecar: loading conditions, compartments, damage cases, windage, report settings
   src/control_auth.rs       control-channel token (0600 file, constant-time compare) + read/write roots (ported, see ATTRIBUTION)
 crates/seacraft-cli/
   src/main.rs               clap front end, table/JSON/CSV output

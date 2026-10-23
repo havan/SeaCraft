@@ -15,7 +15,7 @@ use seacraft_core::{
     mesh::Surface,
     michell, offsets,
     parametric::{self, HullKind, HullSpec},
-    planing, raster, resistance, table, topology, transform, trimopt,
+    planing, project, raster, resistance, table, topology, transform, trimopt,
 };
 use std::path::{Path, PathBuf};
 
@@ -1055,7 +1055,8 @@ struct StabilityArgs {
     /// Bilge configuration for the weather criterion: round, sharp, or keels:<Ak>
     #[arg(long, default_value = "round")]
     bilge: String,
-    /// Superstructure windage item name:area:z in m2 and m above keel (repeatable)
+    /// Superstructure windage item name:area:z in m2 and m above keel
+    /// (repeatable; defaults to the items in the model's project file)
     #[arg(long = "windage", value_name = "NAME:AREA:Z")]
     windage: Vec<String>,
     /// Downflooding angle in degrees for the weather criterion
@@ -1072,8 +1073,12 @@ struct StabilityArgs {
 struct LoadcaseArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Input loading condition JSON file
-    case: PathBuf,
+    /// Loading condition JSON, or a project file (defaults to the model's
+    /// `<model>.seacraft.json` sidecar)
+    case: Option<PathBuf>,
+    /// Which loading condition of a project file (defaults to the first)
+    #[arg(long)]
+    name: Option<String>,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
     /// Emit JSON instead of a table
@@ -1085,8 +1090,12 @@ struct LoadcaseArgs {
 struct DamageArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Input damage case JSON file
-    case: PathBuf,
+    /// Damage case JSON, or a project file (defaults to the model's
+    /// `<model>.seacraft.json` sidecar)
+    case: Option<PathBuf>,
+    /// Which damage case of a project file (defaults to the first)
+    #[arg(long)]
+    name: Option<String>,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
     /// Emit JSON instead of a table
@@ -3052,6 +3061,19 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("--windage: {e}"))?;
             windage_extra.push(item);
         }
+        if a.windage.is_empty() {
+            if let Some(p) =
+                project::Project::load_for_model(&a.file).map_err(|e| anyhow::anyhow!("{e}"))?
+            {
+                if !p.windage.is_empty() {
+                    println!(
+                        "  windage items from {}",
+                        project::sidecar_path(&a.file).display()
+                    );
+                    windage_extra = p.windage;
+                }
+            }
+        }
         if let Some(df) = a.downflooding {
             if !df.is_finite() || df <= 0.0 {
                 bail!("--downflooding must be positive and finite");
@@ -3071,13 +3093,63 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
     Ok(())
 }
 
+enum CaseSource {
+    /// A bare loading condition or damage case, still to be parsed.
+    Bare(String),
+    Project(Box<project::Project>),
+}
+
+/// Read `case`, or the model's sidecar when `case` is `None`. A file whose
+/// `format` is `seacraft-project` is a project; anything else is a bare case.
+fn read_case_or_project(model: &Path, case: Option<&Path>) -> Result<(CaseSource, PathBuf)> {
+    let path = match case {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let p = project::sidecar_path(model);
+            if !p.exists() {
+                bail!(
+                    "no case file given and no project file {} next to the model",
+                    p.display()
+                );
+            }
+            p
+        }
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let is_project = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("format")
+                .and_then(|f| f.as_str())
+                .map(|f| f == project::PROJECT_FORMAT)
+        })
+        .unwrap_or(false);
+    if is_project {
+        let p = project::Project::from_json(&text)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        Ok((CaseSource::Project(Box::new(p)), path))
+    } else {
+        Ok((CaseSource::Bare(text), path))
+    }
+}
+
 fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     let s = load(&a.file)?;
-    let case_text = std::fs::read_to_string(&a.case)
-        .with_context(|| format!("cannot read {}", a.case.display()))?;
-    let cond: loading::LoadingCondition = serde_json::from_str(&case_text)
-        .with_context(|| format!("cannot parse {}", a.case.display()))?;
-    loading::validate(&cond).map_err(|e| anyhow::anyhow!("{}: {e}", a.case.display()))?;
+    let (cond, from) = match read_case_or_project(&a.file, a.case.as_deref())? {
+        (CaseSource::Bare(text), path) => (
+            serde_json::from_str::<loading::LoadingCondition>(&text)
+                .with_context(|| format!("cannot parse {}", path.display()))?,
+            path,
+        ),
+        (CaseSource::Project(p), path) => {
+            let c = p
+                .loading_condition(a.name.as_deref())
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            (p.with_windage(c), path)
+        }
+    };
+    loading::validate(&cond).map_err(|e| anyhow::anyhow!("{}: {e}", from.display()))?;
 
     let opts = HydroOptions::from_surface(
         &s,
@@ -3183,11 +3255,20 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
 
 fn cmd_damage(a: DamageArgs) -> Result<()> {
     let s = load(&a.file)?;
-    let case_text = std::fs::read_to_string(&a.case)
-        .with_context(|| format!("cannot read {}", a.case.display()))?;
-    let case: damage::DamageCase = serde_json::from_str(&case_text)
-        .with_context(|| format!("cannot parse {}", a.case.display()))?;
-    damage::validate(&case).map_err(|e| anyhow::anyhow!("{}: {e}", a.case.display()))?;
+    let (case, from) = match read_case_or_project(&a.file, a.case.as_deref())? {
+        (CaseSource::Bare(text), path) => (
+            serde_json::from_str::<damage::DamageCase>(&text)
+                .with_context(|| format!("cannot parse {}", path.display()))?,
+            path,
+        ),
+        (CaseSource::Project(p), path) => {
+            let c = p
+                .damage_case(a.name.as_deref())
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            (p.resolve_damage_case(c), path)
+        }
+    };
+    damage::validate(&case).map_err(|e| anyhow::anyhow!("{}: {e}", from.display()))?;
 
     let opts = HydroOptions::from_surface(
         &s,

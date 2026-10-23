@@ -285,6 +285,21 @@ curve from equilibrium (heels 0–60°, free trim), and evaluates indicative
 SOLAS-style residual criteria (SOLAS II-1 Reg. 7-2 spirit: range $\ge 15^\circ$,
 max $GZ \ge 0.10$ m, area $\ge 0.015$ m·rad).
 
+### Project file (`hull.seacraft.json`)
+
+Design data that the `.fef` format has no place for lives in a sidecar next to
+the model: `hull.fef` → `hull.seacraft.json` (`project::Project`). It holds
+loading conditions, compartments, damage cases, superstructure windage and
+report settings, so the `.fef` stays readable by FREE!ship. The GUI reads it
+when it opens a model and writes it on save (only when it holds something, or
+already exists; a sidecar it could not read is left untouched). The file is
+tagged `"format": "seacraft-project"` with an integer `version`; a newer
+version is refused rather than half read, and unknown keys survive a round
+trip. `loadcase` and `damage` accept a project file in place of a bare case
+(`--name` picks one, otherwise the first) and fall back to the model's sidecar
+when no case file is given; `stability --weather` uses the sidecar's windage
+when no `--windage` is given. GUI control: `project.get`, `project.set`.
+
 ### Seakeeping (strip-theory heave & pitch motions)
 
 `seakeeping::head_sea_raos` (`seacraft seakeeping hull.fef --draft T` / MCP
@@ -415,8 +430,8 @@ seacraft lackenby  hull.fef -o out.fef [--cp 0.72] [--lcb -9.3] [--draft T] [--j
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--weather [--bilge round|sharp|keels:Ak]
                             [--windage name:area:z]... [--downflooding deg]] [--csv out.csv]
-seacraft loadcase  hull.fef case.json [--json]
-seacraft damage    hull.fef case.json [--json]
+seacraft loadcase  hull.fef [case.json|project.json] [--name NAME] [--json]
+seacraft damage    hull.fef [case.json|project.json] [--name NAME] [--json]
 seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--stations N]
                             [--lambda-min 0.3] [--lambda-max 3.0] [--points 30] [--csv|--json]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]

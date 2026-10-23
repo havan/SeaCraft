@@ -950,6 +950,13 @@ fn handle_inner(
             }
             Ok(json!({ "path": validated.to_string_lossy(), "dirty": app.is_dirty() }))
         }
+        "project.get" => serde_json::to_value(app.project()).map_err(|e| e.to_string()),
+        "project.set" => {
+            let value = p.get("project").ok_or("missing `project`")?;
+            let project = seacraft_core::project::Project::from_json(&value.to_string())?;
+            app.set_project(project);
+            Ok(json!({ "dirty": app.is_dirty(), "empty": app.project().is_empty() }))
+        }
         "model.export" => {
             let path = text(p, "path")?
                 .filter(|s| !s.trim().is_empty())
@@ -2244,6 +2251,29 @@ mod tests {
     }
 
     #[test]
+    fn project_get_and_set_over_control() {
+        let (mut app, ctx) = demo();
+        let r = call(&mut app, &ctx, "project.get", json!({}));
+        assert_eq!(r["result"]["format"], "seacraft-project", "{r}");
+        let windage = json!([{ "name": "Deckhouse", "area_m2": 3.5, "z_centroid": 2.4 }]);
+        let project = json!({ "format": "seacraft-project", "version": 1, "windage": windage });
+        let r = call(&mut app, &ctx, "project.set", json!({ "project": project }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["empty"], false);
+        let r = call(&mut app, &ctx, "project.get", json!({}));
+        assert_eq!(r["result"]["windage"], windage);
+        // A bare loading condition is not a project, and nothing changes.
+        let r = call(
+            &mut app,
+            &ctx,
+            "project.set",
+            json!({ "project": { "name": "x" } }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(app.project().windage.len(), 1);
+    }
+
+    #[test]
     fn inspect_set_move_hydro_and_render_over_control() {
         let (mut app, ctx) = demo();
 
@@ -3214,6 +3244,8 @@ mod tests {
             "model.open",
             "model.save",
             "model.export",
+            "project.get",
+            "project.set",
             "point.move",
             "edge.crease",
             "hydro.compute",

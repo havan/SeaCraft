@@ -87,3 +87,54 @@ fn editing_marks_the_model_dirty_and_a_new_demo_does_too() {
     app.load_demo();
     assert!(app.is_dirty(), "a new demo model is unsaved work");
 }
+
+#[test]
+fn the_project_sidecar_travels_with_the_model() {
+    use seacraft_core::project::{sidecar_path, Project};
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    assert!(app.project().is_empty(), "the demo has no sidecar");
+
+    // An empty project writes no sidecar.
+    let bare = scratch("bare.fef");
+    assert!(app.save_to(&bare), "{}", app.status());
+    assert!(!sidecar_path(&bare).exists());
+
+    let case = format!(
+        "{}/../../examples/demo-loadcase.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut project = Project::default();
+    project
+        .loading_conditions
+        .push(serde_json::from_str(&std::fs::read_to_string(case).unwrap()).unwrap());
+    app.set_project(project.clone());
+    assert!(app.is_dirty(), "a project edit is unsaved work");
+
+    let path = scratch("with-project.fef");
+    assert!(app.save_to(&path), "{}", app.status());
+    assert_eq!(Project::load(&sidecar_path(&path)).unwrap(), project);
+
+    let mut again = App::headless_for_test(None);
+    again.open_model(&path).unwrap();
+    assert_eq!(again.project(), &project);
+    assert!(again.status().ends_with("+ project"), "{}", again.status());
+
+    // A broken sidecar does not stop the model opening, and a save leaves it alone.
+    std::fs::write(sidecar_path(&path), "{ not json").unwrap();
+    again.open_model(&path).unwrap();
+    assert!(again.project().is_empty());
+    assert!(
+        again.status().contains("project file not loaded"),
+        "{}",
+        again.status()
+    );
+    assert!(again.save_to(&path), "{}", again.status());
+    assert_eq!(
+        std::fs::read_to_string(sidecar_path(&path)).unwrap(),
+        "{ not json"
+    );
+
+    // A new demo starts with an empty project.
+    app.load_demo();
+    assert!(app.project().is_empty());
+}
