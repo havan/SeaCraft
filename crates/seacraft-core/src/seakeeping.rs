@@ -1006,6 +1006,42 @@ fn resample_contour(pts: &[(f64, f64)], count: usize) -> Vec<(f64, f64)> {
     resampled
 }
 
+/// `items.iter().map(f).collect()` on every available core, order kept.
+/// Workers take one item at a time, so uneven costs still balance.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(items.len());
+    if threads <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let (next, f) = (&next, &f);
+    let mut tagged: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(k) else { break };
+                        out.push((k, f(item)));
+                    }
+                    out
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("seakeeping worker panicked"))
+            .collect()
+    });
+    tagged.sort_unstable_by_key(|(k, _)| *k);
+    tagged.into_iter().map(|(_, r)| r).collect()
+}
+
 fn trapz(xs: &[f64], ys: &[f64]) -> f64 {
     let mut sum = 0.0;
     for i in 0..xs.len().saturating_sub(1) {
@@ -1187,7 +1223,27 @@ pub(crate) fn head_sea_raos_detailed(
     let mut global_coeffs = Vec::with_capacity(omegas.len());
     let mut aft_stations = Vec::with_capacity(omegas.len());
 
-    for &w in &omegas {
+    // The panel solves dominate the cost and are independent, so do them all
+    // up front on every core; the loop below only looks them up.
+    let jobs: Vec<(usize, usize)> = (0..omegas.len())
+        .filter(|&j| omegas[j] > 0.0)
+        .flat_map(|j| (0..n_stations).map(move |i| (j, i)))
+        .filter(|&(_, i)| {
+            let sec = &station_contours[i].1;
+            sec.valid && sec.area >= 1e-6 && sec.half_beam >= 1e-4 && sec.draft >= 1e-4
+        })
+        .collect();
+    let solved = par_map(&jobs, |&(j, i)| {
+        let w = omegas[j];
+        let w_e = w + w * w * u_speed / spec.g;
+        heave_2d_section(&station_contours[i].1.contour, w_e, spec.rho, spec.g)
+    });
+    let mut panel_results: Vec<Option<Heave2d>> = vec![None; omegas.len() * n_stations];
+    for (&(j, i), h) in jobs.iter().zip(solved) {
+        panel_results[j * n_stations + i] = Some(h);
+    }
+
+    for (j, &w) in omegas.iter().enumerate() {
         if w <= 0.0 {
             continue;
         }
@@ -1225,8 +1281,8 @@ pub(crate) fn head_sea_raos_detailed(
                 continue;
             }
 
-            let mut h_res = if sec.valid {
-                heave_2d_section(&sec.contour, w_e, spec.rho, spec.g)
+            let mut h_res = if let Some(h) = panel_results[j * n_stations + i] {
+                h
             } else {
                 Heave2d {
                     added_mass: f64::NAN,
