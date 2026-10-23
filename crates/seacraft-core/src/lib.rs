@@ -30,6 +30,7 @@ pub mod export;
 pub mod fef;
 pub mod hydro;
 pub mod iges;
+pub mod lackenby;
 pub mod linesplan;
 pub mod math;
 pub mod mesh;

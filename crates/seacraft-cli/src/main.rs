@@ -8,7 +8,7 @@ use seacraft_core::stability::{
     StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{
+use seacraft_core::{lackenby, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
     develop, offsets, planing, raster, resistance, topology, transform,
 };
@@ -49,6 +49,8 @@ enum Command {
     Offsets(OffsetsArgs),
     /// Scale to target main dimensions, translate or mirror the control net
     Transform(TransformArgs),
+    /// Shift stations to nudge Cp and LCB (Lackenby-style, ends pinned)
+    Lackenby(LackenbyArgs),
     /// Still-water resistance and effective power (Holtrop-Mennen 1984)
     Resistance(ResistanceArgs),
     /// Developable plate expansion: flatten a strake or buttock band
@@ -327,6 +329,80 @@ struct OffsetsArgs {
 }
 
 #[derive(Args, Debug)]
+struct LackenbyArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output .fef path
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Target prismatic coefficient (omit to keep the current one)
+    #[arg(long)]
+    cp: Option<f64>,
+    /// Target LCB as a percentage of LWL, positive forward of midships
+    #[arg(long, allow_hyphen_values = true)]
+    lcb: Option<f64>,
+    /// Draft at which to measure, in metres
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Subdivision level (0 = control net, max 6)
+    #[arg(long, default_value_t = 3)]
+    level: u8,
+    /// Emit the report as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
+    let text = std::fs::read_to_string(&a.file)
+        .with_context(|| format!("cannot read {}", a.file.display()))?;
+    let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
+    let mut opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions { level: a.level, mode: SubdivisionMode::Loop },
+    );
+    if let Some(d) = a.draft {
+        opts.draft = d;
+    }
+    opts.stations = opts.stations.max(41);
+    let now = hydro::compute(&s, &opts);
+    let lcb_now = (now.lcb.x - now.model_min.x) / now.lwl * 100.0 - 50.0;
+    let target = lackenby::LackenbyTarget::new(
+        a.cp.unwrap_or(now.prismatic_coefficient),
+        a.lcb.unwrap_or(lcb_now),
+    );
+    let (out, report) = lackenby::fit(&s, target, &opts, 1e-3, 10).map_err(|e| anyhow::anyhow!(e))?;
+    std::fs::write(&a.output, fef::write(&out))
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("station shift (Lackenby-style, ends pinned)");
+    println!(
+        "  before  Cp {:.4}  LCB {:+.2} %  V {:.3} m3  LWL {:.3} m",
+        report.before.cp, report.before.lcb_pct, report.before.volume_m3, report.before.lwl
+    );
+    println!("  target  Cp {:.4}  LCB {:+.2} %", target.cp, target.lcb_pct);
+    println!(
+        "  after   Cp {:.4}  LCB {:+.2} %  V {:.3} m3  LWL {:.3} m",
+        report.after.cp, report.after.lcb_pct, report.after.volume_m3, report.after.lwl
+    );
+    println!(
+        "  error   dCp {:+.5}  dLCB {:+.4} %  ({} iterations)",
+        report.cp_error, report.lcb_error, report.iterations
+    );
+    println!(
+        "  shift   a {:+.4}  b {:+.4}  midships {:.3} m",
+        report.coefficients.0, report.coefficients.1, report.midship_shift_m
+    );
+    if !report.converged {
+        println!("  ! outside this method's authority: the file holds the closest hull found");
+    }
+    println!("  wrote {}", a.output.display());
+    Ok(())
+}
+
+#[derive(Args, Debug)]
 struct TransformArgs {
     /// Input .fef file
     file: PathBuf,
@@ -590,6 +666,7 @@ fn run() -> Result<()> {
         Command::Bonjean(a) => cmd_bonjean(a),
         Command::Offsets(a) => cmd_offsets(a),
         Command::Transform(a) => cmd_transform(a),
+        Command::Lackenby(a) => cmd_lackenby(a),
         Command::Resistance(a) => cmd_resistance(a),
         Command::Unfold(a) => cmd_unfold(a),
         Command::Edit(a) => cmd_edit(a),
