@@ -100,6 +100,7 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | `.fef` import/export | `fef.rs` |
 | Panel hydrostatics, coefficients, SAC | `hydro.rs` |
 | Cross curves, `KN`/`GZ`, draft/trim solving, IMO A.749 | `stability.rs` |
+| Loading conditions, tanks, free-surface correction (`FSC`) | `loading.rs` |
 | Stations / buttocks / waterlines (SVG, DXF, IGES, 3D combs) | `linesplan.rs` |
 | AutoCAD 2000 DXF writer | `dxf.rs` |
 | IGES 5.3 B-spline curve (126) & surface (128) writer | `iges.rs` |
@@ -219,6 +220,16 @@ longitudinal equilibrium at every heel; it costs a few more iterations and is
 what a real boat does. With no `--lcg`, the upright `LCB` at the design draft
 is used.
 
+`loading::evaluate` (`seacraft loadcase hull.fef case.json` / MCP
+`loading_condition`) evaluates a complete ship loading condition (lightship,
+deadweight items and partially filled tanks, optionally clipped to the hull's
+moulded volume): it sums displacement `Δ`, `LCG`, `TCG` and solid `KG`,
+computes each slack tank's liquid centroid and free-surface moment `FSM = ρ·i_t`
+(`0` when empty or pressed-up), applies the free-surface correction
+`FSC = FSM / Δ` to obtain `KG_fluid = KG + FSC` and `GM_fluid = KM − KG_fluid`,
+solves the free-trim equilibrium floating condition (`draft`, `trim`, `list`),
+and evaluates GZ cross curves and IMO A.749 criteria at `KG_fluid`.
+
 ### Fairing analysis
 
 Fairing a hull means looking at how light reflects off it. `analysis` computes
@@ -320,6 +331,7 @@ seacraft table     hull.fef [--to T] [--steps N] [--drafts a,b,c] [--csv f] [--h
 seacraft lackenby  hull.fef -o out.fef [--cp 0.72] [--lcb -9.3] [--draft T] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
+seacraft loadcase  hull.fef case.json [--json]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]
 seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]

@@ -925,6 +925,42 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "imo": imo,
             }))
         }
+        "stability.loading_condition" | "loading_condition" => {
+            let cond: seacraft_core::loading::LoadingCondition =
+                if let Some(case_val) = p.get("case").filter(|v| !v.is_null()) {
+                    serde_json::from_value(case_val.clone())
+                        .map_err(|e| format!("stability.loading_condition: invalid `case`: {e}"))?
+                } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
+                    let contents = std::fs::read_to_string(path)
+                        .map_err(|e| format!("stability.loading_condition: cannot read {path}: {e}"))?;
+                    serde_json::from_str(&contents)
+                        .map_err(|e| format!("stability.loading_condition: invalid JSON in {path}: {e}"))?
+                } else {
+                    return Err("stability.loading_condition: give `case` or `case_path`".into());
+                };
+            seacraft_core::loading::validate(&cond)
+                .map_err(|e| format!("stability.loading_condition: {e}"))?;
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            let surface = app
+                .surface()
+                .ok_or_else(|| "stability.loading_condition: no model is loaded".to_string())?;
+            let mut opts = app.hydro_options().clone();
+            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+                level,
+                mode: app.subdivision_mode(),
+            };
+            let res = seacraft_core::loading::evaluate(surface, &opts, &cond);
+            let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        }
         "model.split_face" => {
             // A topology edit: snapshot first, so Ctrl+Z in the window undoes it
             // exactly like a drag does.

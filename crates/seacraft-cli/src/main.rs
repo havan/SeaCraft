@@ -8,7 +8,7 @@ use seacraft_core::stability::{
     StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{lackenby, table, trimopt, 
+use seacraft_core::{lackenby, loading, table, trimopt, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
     develop, offsets, parametric::{self, HullKind, HullSpec}, planing, raster, resistance, topology, transform,
 };
@@ -67,6 +67,8 @@ enum Command {
     Planing(PlaningArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
+    /// Evaluate a ship loading condition (weights, tanks, FSM/FSC, floating equilibrium and IMO A.749)
+    Loadcase(LoadcaseArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
     Linesplan(LinesplanArgs),
     /// Design dossier: self-contained HTML report with particulars, linesplan, hydrostatics, SAC, stability and resistance
@@ -846,6 +848,19 @@ struct StabilityArgs {
 }
 
 #[derive(Args, Debug)]
+struct LoadcaseArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Input loading condition JSON file
+    case: PathBuf,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct ReportArgs {
     /// Input .fef file
     file: PathBuf,
@@ -937,6 +952,7 @@ fn run() -> Result<()> {
         Command::Edit(a) => cmd_edit(a),
         Command::Planing(a) => cmd_planing(a),
         Command::Stability(a) => cmd_stability(a),
+        Command::Loadcase(a) => cmd_loadcase(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Report(a) => cmd_report(a),
         Command::Render(a) => cmd_render(a),
@@ -2334,6 +2350,110 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
     }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;
+    Ok(())
+}
+
+fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let case_text = std::fs::read_to_string(&a.case)
+        .with_context(|| format!("cannot read {}", a.case.display()))?;
+    let cond: loading::LoadingCondition = serde_json::from_str(&case_text)
+        .with_context(|| format!("cannot parse {}", a.case.display()))?;
+    loading::validate(&cond).map_err(|e| anyhow::anyhow!("{}: {e}", a.case.display()))?;
+
+    let opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+    );
+    let res = loading::evaluate(&s, &opts, &cond);
+
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&res)?);
+        return Ok(());
+    }
+
+    println!("{}  -  loading condition: {}", s.settings.name, res.name);
+    println!();
+    println!(
+        "  {:<34} {:<10} {:>9} {:>9} {:>9} {:>9} {:>10}",
+        "item", "kind", "mass [t]", "x [m]", "y [m]", "z [m]", "FSM [t*m]"
+    );
+    println!("  {}", "-".repeat(96));
+    for r in &res.breakdown {
+        println!(
+            "  {:<34} {:<10} {:>9.3} {:>9.3} {:>+9.3} {:>9.3} {:>10.3}",
+            r.name, r.kind, r.mass_t, r.x, r.y, r.z, r.fsm_t_m
+        );
+    }
+    println!("  {}", "-".repeat(96));
+    println!(
+        "  {:<34} {:<10} {:>9.3} {:>9.3} {:>+9.3} {:>9.3} {:>10.3}",
+        "TOTAL / CG",
+        "",
+        res.displacement_t,
+        res.lcg,
+        res.tcg,
+        res.vcg_z,
+        res.fsm_t_m
+    );
+    println!();
+    let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
+    row(
+        "displacement",
+        format!("{:.3} t  ({:.3} m3)", res.displacement_t, res.volume_m3),
+    );
+    row("LCG / TCG", format!("{:.3} m / {:+.3} m", res.lcg, res.tcg));
+    row("KG (solid)", format!("{:.3} m above keel", res.kg_solid));
+    row(
+        "FSM / FSC",
+        format!("{:.3} t*m  ->  {:+.3} m", res.fsm_t_m, res.fsc_m),
+    );
+    row("KG (fluid)", format!("{:.3} m above keel", res.kg_fluid));
+    row(
+        "floating condition",
+        format!(
+            "draft {:.3} m, trim {:+.3} m, list {:+.2} deg",
+            res.draft, res.trim_m, res.list_deg
+        ),
+    );
+    row(
+        "LCB / LCF",
+        format!("{:.3} m / {:.3} m  (LWL {:.3} m)", res.lcb_x, res.lcf_x, res.lwl),
+    );
+    row(
+        "KB / BM / KM",
+        format!("{:.3} / {:.3} / {:.3} m", res.kb, res.bm_transverse, res.km_transverse),
+    );
+    row(
+        "GM (solid / fluid)",
+        format!("{:.3} m / {:.3} m", res.gm_solid, res.gm_fluid),
+    );
+
+    if let Some(c) = &res.imo_criteria {
+        println!("\n  IMO A.749 / 2008 IS Code Part A intact stability criteria (KG_fluid {:.3} m):", res.kg_fluid);
+        println!(
+            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
+            "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
+        );
+        println!(
+            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  ------",
+            "min req.", ">=0.055", ">=0.090", ">=0.030", ">=0.200 m", ">=25 deg", ">=0.15"
+        );
+        println!(
+            "    {:>8.2}  {:>9.4}  {:>9.4}  {:>10.4}  {:>10.3}  {:>9.1}  {:>7.3}  {}",
+            c.displacement_t,
+            c.area_0_30_m_rad,
+            c.area_0_40_m_rad,
+            c.area_30_40_m_rad,
+            c.max_gz_30_plus_m,
+            c.angle_of_max_gz_deg,
+            c.gm0_m,
+            if c.passed { "PASS" } else { "FAIL" }
+        );
+    }
     Ok(())
 }
 

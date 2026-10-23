@@ -32,6 +32,7 @@ pub mod hydro;
 pub mod iges;
 pub mod lackenby;
 pub mod linesplan;
+pub mod loading;
 pub mod math;
 pub mod mesh;
 pub mod offsets;

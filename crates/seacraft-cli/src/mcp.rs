@@ -49,7 +49,7 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
-    curves, demo, develop, export, fef, linesplan, offsets,
+    curves, demo, develop, export, fef, linesplan, loading, offsets,
     parametric::{self, HullKind, HullSpec},
     planing, raster, resistance, table, topology, transform, trimopt,
 };
@@ -447,6 +447,7 @@ impl McpServer {
             "insert_edge" => self.insert_edge(a),
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
+            "loading_condition" => self.loading_condition(a),
             "bonjean_curves" => self.bonjean_curves(a),
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
@@ -870,6 +871,32 @@ impl McpServer {
             "curves": serde_json::to_value(&curves).map_err(|e| e.to_string())?,
             "imo_criteria": imo,
         }))
+    }
+
+    fn loading_condition(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let cond: loading::LoadingCondition = if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
+            serde_json::from_value(case_val.clone())
+                .map_err(|e| format!("loading_condition: invalid `case`: {e}"))?
+        } else if let Some(path) = str_arg(a, "case_path").filter(|p| !p.trim().is_empty()) {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("loading_condition: cannot read {path}: {e}"))?;
+            serde_json::from_str(&text)
+                .map_err(|e| format!("loading_condition: invalid JSON in {path}: {e}"))?
+        } else {
+            return Err("loading_condition: give `case` (inline object) or `case_path` (JSON file path)".into());
+        };
+        loading::validate(&cond).map_err(|e| format!("loading_condition: {e}"))?;
+
+        let mut opts = self.opts.clone();
+        if a.contains_key("level") {
+            opts.subdivision.level = level_arg(a)?;
+        }
+        let res = loading::evaluate(&self.surface, &opts, &cond);
+        let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
     }
 
     fn bonjean_curves(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
@@ -1787,6 +1814,25 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "loading_condition",
+            "Loading condition",
+            "Evaluate a ship loading condition (lightship, deadweight weight items, and partially filled tanks with \
+             optional hull clipping): sums mass, LCG, TCG and solid KG, integrates each tank's liquid centroid and \
+             free-surface moment FSM = rho * i_t, applies the free-surface correction FSC = FSM / Delta to obtain \
+             KG_fluid, solves the free-trim floating condition (draft, trim, list angle), and evaluates GZ cross \
+             curves and IMO A.749 intact-stability criteria at KG_fluid. Pass either `case` (inline LoadingCondition \
+             JSON object) or `case_path` (path to a JSON file).",
+            obj(
+                json!({
+                    "case": {"type": "object", "description": "Inline LoadingCondition object {name, lightship, items, tanks}"},
+                    "case_path": string("Path to a LoadingCondition JSON file"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "bonjean_curves",
             "Bonjean curves",
             "Section area against draft at every longitudinal station, cut from the refined mesh at even keel: the \
@@ -2291,6 +2337,7 @@ impl Remote {
                     "backend": "app",
                 }))
             }
+            "loading_condition" => self.request("stability.loading_condition", Value::Object(a.clone())),
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
@@ -2582,6 +2629,7 @@ mod tests {
                 "insert_edge",
                 "hydro_compute",
                 "stability_cross_curves",
+                "loading_condition",
                 "bonjean_curves",
                 "table_of_offsets",
                 "resistance_curve",
@@ -3530,5 +3578,57 @@ mod tests {
             json!({"path": "/nonexistent/hull.fef"}),
         );
         assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn loading_condition_returns_gm_fluid_below_gm_solid_with_slack_tank() {
+        let mut s = McpServer::new();
+        let inline = ok(
+            &mut s,
+            1,
+            "loading_condition",
+            json!({
+                "case": {
+                    "name": "Slack tank check",
+                    "lightship": { "name": "Lightship", "mass_t": 8.2, "x": 4.2, "y": 0.0, "z": 1.1 },
+                    "items": [
+                        { "name": "Crew", "mass_t": 0.4, "x": 4.8, "y": 0.0, "z": 1.3 }
+                    ],
+                    "tanks": [
+                        {
+                            "name": "Fuel tank",
+                            "x_min": 2.8, "x_max": 5.3,
+                            "y_min": -0.8, "y_max": 0.8,
+                            "z_min": 0.12, "z_max": 0.72,
+                            "fill": 0.5,
+                            "density_t_m3": 0.85,
+                            "permeability": 0.98,
+                            "clip_to_hull": false
+                        }
+                    ]
+                }
+            }),
+        );
+        let gm_solid = inline["gm_solid"].as_f64().expect("gm_solid");
+        let gm_fluid = inline["gm_fluid"].as_f64().expect("gm_fluid");
+        let fsc = inline["fsc_m"].as_f64().expect("fsc_m");
+        assert!(fsc > 0.0, "slack tank must produce positive FSC: {inline}");
+        assert!(gm_fluid < gm_solid, "GM_fluid {gm_fluid} must be < GM_solid {gm_solid}");
+        assert!((gm_solid - gm_fluid - fsc).abs() < 1e-12);
+
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-loadcase.json");
+        let from_file = ok(
+            &mut s,
+            2,
+            "loading_condition",
+            json!({ "case_path": path.to_string_lossy() }),
+        );
+        assert!(
+            from_file["gm_fluid"].as_f64().unwrap() < from_file["gm_solid"].as_f64().unwrap(),
+            "{from_file}"
+        );
+        assert!(from_file["imo_criteria"]["passed"].is_boolean(), "{from_file}");
+
+        fails(&mut s, 3, "loading_condition", json!({}));
     }
 }

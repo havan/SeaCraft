@@ -55,6 +55,7 @@ crates/seacraft-core/
   src/hydro.rs              Hull, waterplane, clipping, integration, sections,
                             waterline chaining, coefficients
   src/stability.rs          draft/trim solving + KN/GZ cross curves + IMO A.749
+  src/loading.rs            loading conditions: weights, tanks (box/hull-clipped), FSM/FSC, equilibrium + IMO
   src/linesplan.rs          stations/buttocks/waterlines -> SVG/DXF/IGES + combs
   src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
   src/iges.rs               IGES 5.3 B-spline curve (126) + surface (128) writer
