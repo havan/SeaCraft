@@ -71,7 +71,9 @@ fn parse_f64(s: &str, line: usize, what: &str) -> Result<f64, FefError> {
     s.trim()
         .replace(',', ".")
         .parse::<f64>()
-        .map_err(|_| err(line, format!("invalid {} value '{}'", what, s)))
+        .ok()
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| err(line, format!("invalid {} value '{}'", what, s)))
 }
 
 fn parse_usize(s: &str, line: usize, what: &str) -> Result<usize, FefError> {
@@ -276,10 +278,11 @@ pub fn parse(text: &str) -> Result<Surface, FefError> {
 pub fn write(surface: &Surface) -> String {
     let mut out = String::with_capacity(64 * 1024);
     let s = &surface.settings;
-    let _ = writeln!(out, "{}", s.name);
-    let _ = writeln!(out, "{}", s.designer);
-    let _ = writeln!(out, "{}", s.created_by);
-    let _ = writeln!(out, "{}", s.comment);
+    // Each text field owns exactly one line of the header: a line break
+    // inside one would shift every line after it on reading.
+    for text in [&s.name, &s.designer, &s.created_by, &s.comment] {
+        let _ = writeln!(out, "{}", text.replace(['\r', '\n'], " "));
+    }
     let _ = writeln!(
         out,
         "{:.4} {:.4} {:.4} {:.5} {:.5} {} {} 0",
@@ -358,6 +361,25 @@ fn b(v: bool) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_breaks_in_text_fields_do_not_break_the_file() {
+        let mut s = crate::demo::demo_hull(false);
+        s.settings.comment = "first line\nsecond line\r\nthird".into();
+        s.settings.name = "two\nlines".into();
+        let back = parse(&write(&s)).expect("still parses");
+        assert_eq!(back.settings.name, "two lines");
+        assert_eq!(back.settings.comment, "first line second line  third");
+        assert_eq!(back.points.len(), s.points.len());
+    }
+
+    #[test]
+    fn non_finite_numbers_are_refused() {
+        for bad in ["NaN", "inf", "-Infinity"] {
+            assert!(parse_f64(bad, 1, "x").is_err(), "{bad}");
+        }
+        assert_eq!(parse_f64(" 1,5 ", 1, "x").unwrap(), 1.5);
+    }
 
     #[test]
     fn roundtrip() {

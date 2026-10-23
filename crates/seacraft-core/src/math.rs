@@ -136,12 +136,18 @@ pub struct Plane {
 impl Plane {
     pub fn new(n: Vec3, d: f64) -> Self {
         let len = n.length();
-        let n = if len < EPS {
-            Vec3::new(0.0, 0.0, 1.0)
-        } else {
-            n / len
-        };
-        Self { n, d: d / len }
+        if len < EPS {
+            // No direction to normalise by: fall back to a horizontal plane
+            // and keep `d` as given rather than dividing by ~0.
+            return Self {
+                n: Vec3::new(0.0, 0.0, 1.0),
+                d,
+            };
+        }
+        Self {
+            n: n / len,
+            d: d / len,
+        }
     }
 
     /// Plane through three points; normal follows the right-hand rule.
@@ -263,6 +269,69 @@ impl PolygonMoments {
         self.ix += other.ix;
         self.iy += other.iy;
     }
+
+    /// Every moment multiplied by `k` (`-1.0` reverses the orientation).
+    pub fn scaled(&self, k: f64) -> Self {
+        Self {
+            area: self.area * k,
+            mx: self.mx * k,
+            my: self.my * k,
+            ix: self.ix * k,
+            iy: self.iy * k,
+        }
+    }
+}
+
+/// Even-odd point-in-polygon test in 2D.
+pub fn point_in_polygon(p: (f64, f64), poly: &[(f64, f64)]) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a.1 > p.1) != (b.1 > p.1) {
+            let x = a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+            if p.0 < x {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// The sign each loop of a set of closed 2D loops should carry: `+1` for an
+/// outer boundary, `-1` for a hole (a loop inside an odd number of others).
+/// Chained cuts come out in arbitrary directions, so the sign is taken from
+/// the nesting, not from the winding.
+pub fn loop_signs(loops: &[Vec<(f64, f64)>]) -> Vec<f64> {
+    loops
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let Some(&probe) = l.first() else {
+                return 1.0;
+            };
+            let depth = loops
+                .iter()
+                .enumerate()
+                .filter(|&(j, other)| j != i && other.len() >= 3 && point_in_polygon(probe, other))
+                .count();
+            if depth % 2 == 0 {
+                1.0
+            } else {
+                -1.0
+            }
+        })
+        .collect()
+}
+
+/// Moments of one loop with the orientation `sign` asks for.
+pub fn oriented_moments(points: &[(f64, f64)], sign: f64) -> PolygonMoments {
+    let m = PolygonMoments::from_polygon(points);
+    if m.area * sign < 0.0 {
+        m.scaled(-1.0)
+    } else {
+        m
+    }
 }
 
 pub fn polygon_moments_2d(points: &[(f64, f64)]) -> PolygonMoments {
@@ -272,6 +341,40 @@ pub fn polygon_moments_2d(points: &[(f64, f64)]) -> PolygonMoments {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loop_signs_count_separate_loops_and_subtract_holes() {
+        let square = |x0: f64, y0: f64, s: f64, ccw: bool| {
+            let mut v = vec![(x0, y0), (x0 + s, y0), (x0 + s, y0 + s), (x0, y0 + s)];
+            if !ccw {
+                v.reverse();
+            }
+            v
+        };
+        // Two pontoons walked in opposite directions: the areas add.
+        let cat = vec![square(0.0, 0.0, 1.0, true), square(3.0, 0.0, 1.0, false)];
+        let total: f64 = cat
+            .iter()
+            .zip(loop_signs(&cat))
+            .map(|(l, s)| oriented_moments(l, s).area)
+            .sum();
+        assert!((total - 2.0).abs() < 1e-12, "{total}");
+        // A 4 m² plate with a 1 m² hole, both walked counter-clockwise.
+        let holed = vec![square(0.0, 0.0, 2.0, true), square(0.5, 0.5, 1.0, true)];
+        let total: f64 = holed
+            .iter()
+            .zip(loop_signs(&holed))
+            .map(|(l, s)| oriented_moments(l, s).area)
+            .sum();
+        assert!((total - 3.0).abs() < 1e-12, "{total}");
+    }
+
+    #[test]
+    fn a_plane_without_a_normal_keeps_a_finite_offset() {
+        let p = Plane::new(Vec3::ZERO, 5.0);
+        assert!(p.d.is_finite());
+        assert_eq!(p.n, Vec3::new(0.0, 0.0, 1.0));
+    }
 
     #[test]
     fn plane_basis_is_orthonormal() {

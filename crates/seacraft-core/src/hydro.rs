@@ -481,10 +481,13 @@ fn loop_moments(loops: &[Vec<Vec3>], plane: &Plane) -> Option<PolygonMoments> {
         return None;
     }
     let (u, v) = plane.basis();
+    let flat: Vec<Vec<(f64, f64)>> = loops
+        .iter()
+        .map(|poly| poly.iter().map(|p| (u.dot(*p), v.dot(*p))).collect())
+        .collect();
     let mut total = PolygonMoments::default();
-    for poly in loops {
-        let pts: Vec<(f64, f64)> = poly.iter().map(|p| (u.dot(*p), v.dot(*p))).collect();
-        total.accumulate(&PolygonMoments::from_polygon(&pts));
+    for (pts, sign) in flat.iter().zip(crate::math::loop_signs(&flat)) {
+        total.accumulate(&crate::math::oriented_moments(pts, sign));
     }
     if total.area.abs() < 1e-12 {
         return None;
@@ -503,9 +506,13 @@ pub fn clipped_loop_moments(
         return None;
     }
     let (u, v) = plane.basis();
+    let flat: Vec<Vec<(f64, f64)>> = loops
+        .iter()
+        .map(|poly| poly.iter().map(|p| (u.dot(*p), v.dot(*p))).collect())
+        .collect();
+    let signs = crate::math::loop_signs(&flat);
     let mut total = PolygonMoments::default();
-    for poly in loops {
-        let pts: Vec<(f64, f64)> = poly.iter().map(|p| (u.dot(*p), v.dot(*p))).collect();
+    for ((poly, pts), sign) in loops.iter().zip(&flat).zip(signs) {
         let n = pts.len();
         if n < 3 {
             continue;
@@ -527,7 +534,7 @@ pub fn clipped_loop_moments(
             }
         }
         if clipped.len() >= 3 {
-            total.accumulate(&crate::math::polygon_moments_2d(&clipped));
+            total.accumulate(&crate::math::oriented_moments(&clipped, sign));
         }
     }
     if total.area.abs() < 1e-12 {
@@ -542,9 +549,11 @@ pub fn clipped_loop_moments(
 pub fn section_area(verts: &[Vec3], tris: &[[usize; 3]], x: f64, wp: &Plane) -> f64 {
     let plane = Plane::new(Vec3::new(1.0, 0.0, 0.0), -x);
     let segs = plane_segments(verts, tris, &plane);
-    let scale = (wp.n.x.abs() + 1.0).max(1.0);
-    let _ = scale;
-    let paths = chain_paths(&segs, 1e-7);
+    let scale = segs
+        .iter()
+        .flat_map(|(a, b)| [a.y.abs(), a.z.abs(), b.y.abs(), b.z.abs()])
+        .fold(1.0, f64::max);
+    let paths = chain_paths(&segs, scale * 1e-7);
     let polys = close_along_waterplane(paths);
     clipped_loop_moments(&polys, &plane, wp)
         .map(|m| m.area.abs())
@@ -683,7 +692,9 @@ impl Hull {
             result.waterplane_area_m2 = area;
             let cx = m.mx / m.area;
             let cy = m.my / m.area;
-            result.lcf = u * cx + v * cy;
+            // (cx, cy) are in the plane's own basis; add the plane's offset
+            // along its normal so the point lies on the waterplane.
+            result.lcf = u * cx + v * cy - wp.n * wp.d;
             result.waterplane_inertia_transverse = (m.ix - cy * cy * m.area).abs();
             result.waterplane_inertia_longitudinal = (m.iy - cx * cx * m.area).abs();
 
@@ -794,6 +805,23 @@ pub fn compute(surface: &Surface, opts: &HydroOptions) -> Hydrostatics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lcf_lies_on_the_trimmed_waterplane() {
+        let surface = crate::demo::demo_hull(false);
+        let mut opts = HydroOptions::from_surface(&surface, Default::default());
+        opts.draft = 0.62;
+        opts.trim = 0.3;
+        let h = compute(&surface, &opts);
+        let wp = waterplane(&surface, 0.62, 0.3, 0.0);
+        assert!(h.waterplane_area_m2 > 1.0);
+        assert!(
+            wp.side(h.lcf).abs() < 1e-9,
+            "LCF off the plane by {}",
+            wp.side(h.lcf)
+        );
+        assert!(h.lcf.z > 0.3, "LCF height {}", h.lcf.z);
+    }
 
     /// The waterplane must make exactly the requested angle with the
     /// horizontal, and positive heel must put starboard deeper.

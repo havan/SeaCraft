@@ -256,10 +256,19 @@ impl Surface {
 
     /// Lowest point of the hydrostatic layers, the datum FREE!ship uses to
     /// place the waterline when a draft is specified.
+    /// Whether face `fi` counts for hydrostatics. A face whose layer is
+    /// missing (an unvalidated surface) counts, rather than panicking.
+    fn face_in_hydrostatics(&self, fi: usize) -> bool {
+        self.face_layer
+            .get(fi)
+            .and_then(|&l| self.layers.get(l))
+            .is_none_or(|l| l.use_in_hydrostatics)
+    }
+
     pub fn lowest_hydrostatics_point(&self) -> f64 {
         let mut z = f64::INFINITY;
         for (fi, f) in self.faces.iter().enumerate() {
-            if !self.layers[self.face_layer[fi]].use_in_hydrostatics {
+            if !self.face_in_hydrostatics(fi) {
                 continue;
             }
             for &pi in f {
@@ -277,7 +286,7 @@ impl Surface {
     pub fn highest_hydrostatics_point(&self) -> f64 {
         let mut z = f64::NEG_INFINITY;
         for (fi, f) in self.faces.iter().enumerate() {
-            if !self.layers[self.face_layer[fi]].use_in_hydrostatics {
+            if !self.face_in_hydrostatics(fi) {
                 continue;
             }
             for &pi in f {
@@ -305,6 +314,9 @@ impl Surface {
         }
         if self.faces.is_empty() {
             return Err("surface has no control faces".into());
+        }
+        if let Some(i) = self.points.iter().position(|p| !p.p.is_finite()) {
+            return Err(format!("control point {i} has a non-finite coordinate"));
         }
         for (fi, f) in self.faces.iter().enumerate() {
             if f.len() < 3 {

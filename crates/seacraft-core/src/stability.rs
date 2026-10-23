@@ -311,7 +311,10 @@ pub fn cross_curves(
     for &heel in heels_deg {
         let mut points = Vec::with_capacity(displacements_t.len());
         for &disp_t in displacements_t {
-            let target_volume = disp_t * 1000.0 / base.water_density;
+            // The hull's own volume carries Δ / appendage coefficient, as in
+            // `hydro::compute` and the loading-condition solve.
+            let target_volume =
+                disp_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6));
             let solved = match cond.lcg_x {
                 Some(lcg) => solve_floating(hull, target_volume, heel, lcg, cond.trim),
                 None => solve_draft(hull, target_volume, cond.trim, heel).map(|draft| {
@@ -585,6 +588,25 @@ impl ImoCriteria {
 mod tests {
     use super::*;
     use crate::hydro::Hull;
+
+    #[test]
+    fn cross_curves_float_the_hull_volume_without_the_appendages() {
+        // Δ at an appendage coefficient of 1.05 must sink the bare hull as far
+        // as Δ / 1.05 does with none, as in `hydro::compute` and loading.
+        let surface = crate::demo::demo_hull(false);
+        let hull = Hull::new(&surface, Default::default());
+        let mut base = HydroOptions::from_surface(&surface, Default::default());
+        let cond = StabilityCondition::fixed(1.0, 0.0);
+        base.appendage_coefficient = 1.05;
+        let with = cross_curves(&hull, &[0.0], &[12.0], &cond, &base);
+        base.appendage_coefficient = 1.0;
+        let bare = cross_curves(&hull, &[0.0], &[12.0 / 1.05], &cond, &base);
+        let (a, b) = (
+            with[0].points[0].draft.unwrap(),
+            bare[0].points[0].draft.unwrap(),
+        );
+        assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+    }
 
     #[test]
     fn a_metacentric_gm_replaces_the_secant_and_decides_the_gm0_criterion() {
