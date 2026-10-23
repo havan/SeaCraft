@@ -380,7 +380,8 @@ pub struct ImoCriteria {
     pub max_gz_30_plus_m: f64,
     /// Angle of maximum GZ (deg); IMO minimum 25.0.
     pub angle_of_max_gz_deg: f64,
-    /// Initial metacentric height GM0 estimated from the GZ curve slope at 0 deg (m); IMO minimum 0.15.
+    /// Initial metacentric height GM0 (m); IMO minimum 0.15. Estimated from the GZ slope
+    /// over the first heel step unless set by [`ImoCriteria::with_metacentric_gm`].
     pub gm0_m: f64,
     /// Whether all six criteria pass.
     pub passed: bool,
@@ -543,14 +544,7 @@ pub fn evaluate_imo_criteria(curves: &[CrossCurve], disp_index: usize) -> Option
         gm0 = (w[1].1 - w[0].1) / deg_to_rad(w[1].0 - w[0].0);
     }
 
-    let passed = area_0_30 >= 0.055
-        && area_0_40 >= 0.090
-        && area_30_40 >= 0.030
-        && max_gz_30 >= 0.20
-        && angle_of_max >= 25.0
-        && gm0 >= 0.15;
-
-    Some(ImoCriteria {
+    let mut c = ImoCriteria {
         displacement_t,
         area_0_30_m_rad: area_0_30,
         area_0_40_m_rad: area_0_40,
@@ -558,14 +552,59 @@ pub fn evaluate_imo_criteria(curves: &[CrossCurve], disp_index: usize) -> Option
         max_gz_30_plus_m: max_gz_30,
         angle_of_max_gz_deg: angle_of_max,
         gm0_m: gm0,
-        passed,
-    })
+        passed: false,
+    };
+    c.passed = c.all_pass();
+    Some(c)
+}
+
+impl ImoCriteria {
+    /// All six A.749 criteria.
+    fn all_pass(&self) -> bool {
+        self.area_0_30_m_rad >= 0.055
+            && self.area_0_40_m_rad >= 0.090
+            && self.area_30_40_m_rad >= 0.030
+            && self.max_gz_30_plus_m >= 0.20
+            && self.angle_of_max_gz_deg >= 25.0
+            && self.gm0_m >= 0.15
+    }
+
+    /// Use a known metacentric height (`KM − KG`, free-surface corrected)
+    /// for the GM0 criterion instead of the GZ secant over the first heel
+    /// step, which reads low on a curve that bends over early.
+    pub fn with_metacentric_gm(mut self, gm0_m: f64) -> Self {
+        if gm0_m.is_finite() {
+            self.gm0_m = gm0_m;
+            self.passed = self.all_pass();
+        }
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hydro::Hull;
+
+    #[test]
+    fn a_metacentric_gm_replaces_the_secant_and_decides_the_gm0_criterion() {
+        let c = ImoCriteria {
+            displacement_t: 10.0,
+            area_0_30_m_rad: 0.1,
+            area_0_40_m_rad: 0.2,
+            area_30_40_m_rad: 0.05,
+            max_gz_30_plus_m: 0.3,
+            angle_of_max_gz_deg: 30.0,
+            gm0_m: 0.10,
+            passed: false,
+        };
+        let ok = c.clone().with_metacentric_gm(0.40);
+        assert_eq!(ok.gm0_m, 0.40);
+        assert!(ok.passed);
+        let low = c.clone().with_metacentric_gm(0.12);
+        assert!(!low.passed);
+        assert_eq!(c.with_metacentric_gm(f64::NAN).gm0_m, 0.10);
+    }
     use crate::subdiv::SubdivisionOptions;
 
     fn point(heel_deg: f64, gz: f64) -> CrossCurve {

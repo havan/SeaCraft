@@ -37,7 +37,10 @@ submerged hull.
 stability, linesplan SVG and mesh export are implemented and verified. The
 desktop modeller (`seacraft-gui`) has four linked viewports, control-point
 dragging with undo, a layer dock, a live hydrostatics dock with GZ cross
-curves, and file/export actions.
+curves, file/export actions, and a tabbed design dock (Loading, Damage,
+Windage, Performance) over the `<model>.seacraft.json` project file, with
+tanks, compartments and windage drawn in the viewports and a design report
+with project sections. `0.1.0` was cut on 2026-10-24.
 
 The workspace is a **local-only** git repository: no remotes, no push.
 
@@ -73,6 +76,7 @@ crates/seacraft-core/
   src/optimize.rs           Nelder–Mead + optimize_hull: reshape Cp/LCB/L-B for least R_T at a speed, displacement held
   src/seakeeping.rs         Lewis sections; 2D heave added mass/damping by Frank close-fit panels (B7a); STF strip-theory heave & pitch RAOs (B7b)
   src/project.rs            <model>.seacraft.json sidecar: loading conditions, compartments, damage cases, windage, report settings
+  src/seastate.rs           irregular head seas: Bretschneider/JONSWAP spectra, significant motions, MSI (E2)
   src/control_auth.rs       control-channel token (0600 file, constant-time compare) + read/write roots (ported, see ATTRIBUTION)
 crates/seacraft-cli/
   src/main.rs               clap front end, table/JSON/CSV output
@@ -85,11 +89,13 @@ crates/seacraft-gui/
   src/render.rs             viewport painter: grid, shading, control net
   src/picking.rs            screen-space picking, drag plane
   src/history.rs            snapshot undo/redo (64)
-  src/panels.rs             layer dock, hydrostatics dock, GZ plot
+  src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
   tests/                    drag, files, hydro, smoke (all headless)
 xtask/                      cargo xtask ci: fmt, clippy, tests, version check, demo numbers
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs
+docs/oracles/heave_2d_lid.py  Frank panels with the irregular-frequency lid vs Ursell (E3)
+docs/oracles/irregular_seas.py  spectrum moments, response moments, MSI oracle for seastate.rs (E2)
 skills/                     agent skills for the MCP server (CI-checked tool names)
 examples/demo-hull.fef      generated demo model, safe to regenerate
 README.md                   user-facing docs + FREE!ship investigation notes
@@ -228,9 +234,11 @@ These were real failures in this codebase; the fixes are load-bearing.
 * Semver with a prerelease counter, shared through
   `[workspace.package] version`. History: `0.1.0-alpha.1` at import time,
   `alpha.2` … `alpha.10` per completed GUI task, `0.1.0-beta.1` when the
-  acceptance checklist passed, then `beta.N` per completed task. `0.1.0` only
-  when a user can open, edit and measure a hull without a known blocking
-  defect.
+  acceptance checklist passed, then `beta.N` per completed task, `0.1.0` on
+  2026-10-24 after the round-2 readiness review (open, edit, measure, load,
+  report, save and reopen with no known blocking defect). From here: `0.1.N`
+  for a fix-only task, `0.2.0-beta.N` per completed feature task until the
+  next readiness review (a default — the user may choose otherwise).
 * The version must be identical in `Cargo.toml`, `Cargo.lock`, the window title
   and `seacraft --version`.
 * **Local-only Git.** `git remote -v` must stay empty: no push, no publish, no

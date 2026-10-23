@@ -1529,7 +1529,12 @@ pub fn html_escape(s: &str) -> String {
 /// Format a finite float with fixed precision, or emit "—" if not finite.
 fn fmt_num(v: f64, decimals: usize) -> String {
     if v.is_finite() {
-        format!("{:.prec$}", v, prec = decimals)
+        let text = format!("{:.prec$}", v, prec = decimals);
+        // A tiny negative value rounds to "-0.000"; print it as zero.
+        if text.starts_with('-') && text[1..].chars().all(|c| c == '0' || c == '.') {
+            return text[1..].to_string();
+        }
+        text
     } else {
         "—".to_string()
     }
@@ -1538,8 +1543,8 @@ fn fmt_num(v: f64, decimals: usize) -> String {
 /// Format an optional finite float with fixed precision, or emit "—".
 fn fmt_opt(v: Option<f64>, decimals: usize) -> String {
     match v {
-        Some(x) if x.is_finite() => format!("{:.prec$}", x, prec = decimals),
-        _ => "—".to_string(),
+        Some(x) => fmt_num(x, decimals),
+        None => "—".to_string(),
     }
 }
 
@@ -1702,8 +1707,8 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
     for &(h, g) in &valid {
         let _ = writeln!(
             out,
-            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" fill=\"#1f5fa8\" stroke=\"#ffffff\" stroke-width=\"1.5\"><title>Heel: {:.1}&deg;, GZ: {:.3} m</title></circle>",
-            sx(h), sy(g), h, g
+            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" fill=\"#1f5fa8\" stroke=\"#ffffff\" stroke-width=\"1.5\"><title>Heel: {:.1}&deg;, GZ: {} m</title></circle>",
+            sx(h), sy(g), h, fmt_num(g, 3)
         );
     }
 
@@ -2080,6 +2085,16 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
 mod tests {
     use super::*;
     use crate::demo;
+
+    #[test]
+    fn tiny_negative_values_print_as_zero() {
+        assert_eq!(fmt_num(-0.0000004, 3), "0.000");
+        assert_eq!(fmt_num(-0.0, 2), "0.00");
+        assert_eq!(fmt_num(-0.0006, 3), "-0.001");
+        assert_eq!(fmt_num(-12.5, 1), "-12.5");
+        assert_eq!(fmt_num(f64::NAN, 1), "—");
+        assert_eq!(fmt_opt(Some(-0.0001), 3), "0.000");
+    }
 
     #[test]
     fn report_on_demo_hull_contains_every_section_id_and_is_well_formed() {

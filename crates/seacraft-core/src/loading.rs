@@ -687,7 +687,8 @@ pub fn evaluate(surface: &Surface, opts: &HydroOptions, cond: &LoadingCondition)
         };
         let heels = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 75.0, 90.0];
         let c = cross_curves(&hull, &heels, &[total_mass], &stab_cond, &solved_opts);
-        let imo = evaluate_imo_criteria(&c, 0);
+        // GM0 is the metacentric GM_fluid, known exactly here.
+        let imo = evaluate_imo_criteria(&c, 0).map(|i| i.with_metacentric_gm(gm_fluid));
 
         let wh = WeatherHydro::from_hydrostatics(&hydro, kg_fluid);
         let windage = hull_windage_on_hull(&hull, floating.draft, floating.trim);
@@ -973,5 +974,7 @@ mod tests {
         );
         assert!(res.gm_fluid < res.gm_solid);
         assert!(res.imo_criteria.is_some());
+        // The GM0 criterion uses the metacentric GM_fluid, not the GZ secant.
+        assert_eq!(res.imo_criteria.as_ref().unwrap().gm0_m, res.gm_fluid);
     }
 }
