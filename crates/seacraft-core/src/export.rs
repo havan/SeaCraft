@@ -276,7 +276,7 @@ fn station_grid(
         if x <= lo + tol || x >= hi - tol {
             continue;
         }
-        let branch = side_branch(&station.points, starboard);
+        let branch = side_branch(&station.points, station.closed, starboard);
         if branch.len() < 2 {
             continue;
         }
@@ -312,24 +312,54 @@ fn station_grid(
     out
 }
 
-/// The half of a station section on one side of the centreline, ordered from
-/// keel to deck.
+/// One side of a station cut, ordered from the keel to the sheer: starboard
+/// keeps every point with `y >= 0`, port every point with `y <= 0`, a
+/// micrometre of slack being what puts the centreline point into both (which
+/// is where the two patches meet).
 ///
-/// A cut of the mirrored hull runs around the whole girth, so the two halves
-/// are separated before they are lofted: starboard is every point with
-/// `y >= 0`, port every point with `y <= 0`, a micrometre of slack being what
-/// puts the centreline point into both (which is where the two patches meet).
-/// Ordering by height, rather than by the order the chain walk produced, which
-/// wraps around a closed section, puts the keel first and the sheer last on
-/// both sides.
-fn side_branch(points: &[Vec3], starboard: bool) -> Vec<Vec3> {
+/// The points keep the order the chain walk produced, so a flat bottom or a
+/// deck — many points at one height — stays in sequence. A closed section is
+/// a ring that wraps around: its side is the longest run of points on that
+/// side, taken cyclically. The run is then turned so it starts at its lower
+/// end. Should the cut cross the centreline more than twice, the longest run
+/// is the one used.
+fn side_branch(points: &[Vec3], closed: bool, starboard: bool) -> Vec<Vec3> {
     const EPS: f64 = 1e-6;
-    let mut branch: Vec<Vec3> = points
-        .iter()
-        .filter(|p| if starboard { p.y >= -EPS } else { p.y <= EPS })
-        .copied()
-        .collect();
-    branch.sort_by(|a, b| a.z.total_cmp(&b.z));
+    let on_side = |p: &Vec3| if starboard { p.y >= -EPS } else { p.y <= EPS };
+    let n = points.len();
+    let mut branch: Vec<Vec3> = match points.iter().position(|p| !on_side(p)) {
+        None => points.to_vec(),
+        Some(first_off) => {
+            // Walk once around (or along) the chain from a point off the side,
+            // so no run is split by the start.
+            let order: Vec<usize> = if closed {
+                (0..n).map(|k| (first_off + k) % n).collect()
+            } else {
+                (0..n).collect()
+            };
+            let mut best: Vec<Vec3> = Vec::new();
+            let mut run: Vec<Vec3> = Vec::new();
+            for i in order {
+                if on_side(&points[i]) {
+                    run.push(points[i]);
+                } else {
+                    if run.len() > best.len() {
+                        best = std::mem::take(&mut run);
+                    }
+                    run.clear();
+                }
+            }
+            if run.len() > best.len() {
+                best = run;
+            }
+            best
+        }
+    };
+    if let (Some(a), Some(b)) = (branch.first(), branch.last()) {
+        if a.z > b.z {
+            branch.reverse();
+        }
+    }
     branch.dedup_by(|a, b| a.dist(*b) < 1e-12);
     branch
 }
@@ -465,6 +495,39 @@ fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flat_bottomed_station_keeps_its_chain_order() {
+        // A barge section walked as a ring: deck centre, starboard deck edge,
+        // bilge, flat bottom to the keel, then the port half back up.
+        let ring: Vec<Vec3> = [
+            (0.0, 2.0),
+            (1.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 1.0),
+            (2.0, 0.0),
+            (1.5, 0.0),
+            (1.0, 0.0),
+            (0.5, 0.0),
+            (0.0, 0.0),
+            (-1.0, 0.0),
+            (-2.0, 0.0),
+            (-2.0, 2.0),
+            (-1.0, 2.0),
+        ]
+        .iter()
+        .map(|&(y, z)| Vec3::new(3.0, y, z))
+        .collect();
+        let star = side_branch(&ring, true, true);
+        let ys: Vec<f64> = star.iter().map(|p| p.y).collect();
+        let zs: Vec<f64> = star.iter().map(|p| p.z).collect();
+        // Keel first, out along the bottom, up the side, in along the deck.
+        assert_eq!(ys, vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.0, 2.0, 1.0, 0.0]);
+        assert_eq!(zs, vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0]);
+        let port = side_branch(&ring, true, false);
+        assert_eq!(port.first().map(|p| (p.y, p.z)), Some((0.0, 0.0)));
+        assert_eq!(port.last().map(|p| (p.y, p.z)), Some((0.0, 2.0)));
+    }
 
     /// The parameter data of every parameter record, joined the way a reader
     /// joins it: the 64 data columns of consecutive lines, concatenated.

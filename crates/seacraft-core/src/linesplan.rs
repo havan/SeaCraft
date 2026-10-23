@@ -190,6 +190,16 @@ fn cut(verts: &[Vec3], tris: &[[usize; 3]], plane: &Plane, tol: f64) -> Vec<Curv
 }
 
 /// Cut the hull once for every view.
+/// `points` with the first point repeated at the end when the curve is closed,
+/// so a polyline draws the closing segment (as the SVG `Z` and IGES do).
+fn closed_ring<T: Copy>(points: &[T], closed: bool) -> Vec<T> {
+    let mut out = points.to_vec();
+    if closed && points.len() > 2 {
+        out.push(points[0]);
+    }
+    out
+}
+
 fn cut_all(surface: &Surface, opts: LinesplanOptions) -> Cut {
     let subdiv = SubdivisionOptions {
         level: opts.level,
@@ -645,6 +655,9 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         DxfLayer::new("Grid", 8).dashed(),
         DxfLayer::new("Centerline", 8).dashed(),
         DxfLayer::new("Waterplane", 4).dashed(),
+        DxfLayer::new("Stations 3D", 7),
+        DxfLayer::new("Buttocks 3D", 1),
+        DxfLayer::new("Waterlines 3D", 5),
     ];
     if opts.combs {
         layers.push(DxfLayer::new("Combs", 2));
@@ -715,17 +728,20 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         entities.push(DxfEntity::new(
             "Stations",
             DxfShape::Polyline {
-                points: curve
-                    .points
-                    .iter()
-                    .map(|(u, v)| Vec2::new(body_x0 + (u - min.y), *v))
-                    .collect(),
+                points: closed_ring(
+                    &curve
+                        .points
+                        .iter()
+                        .map(|(u, v)| Vec2::new(body_x0 + (u - min.y), *v))
+                        .collect::<Vec<_>>(),
+                    curve.closed,
+                ),
             },
         ));
         entities.push(DxfEntity::new(
             "Stations 3D",
             DxfShape::Polyline3 {
-                points: curve.points3.clone(),
+                points: closed_ring(&curve.points3, curve.closed),
             },
         ));
     }
@@ -734,17 +750,20 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         entities.push(DxfEntity::new(
             "Buttocks",
             DxfShape::Polyline {
-                points: curve
-                    .points
-                    .iter()
-                    .map(|(u, v)| Vec2::new(*u, *v))
-                    .collect(),
+                points: closed_ring(
+                    &curve
+                        .points
+                        .iter()
+                        .map(|(u, v)| Vec2::new(*u, *v))
+                        .collect::<Vec<_>>(),
+                    curve.closed,
+                ),
             },
         ));
         entities.push(DxfEntity::new(
             "Buttocks 3D",
             DxfShape::Polyline3 {
-                points: curve.points3.clone(),
+                points: closed_ring(&curve.points3, curve.closed),
             },
         ));
     }
@@ -753,17 +772,20 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         entities.push(DxfEntity::new(
             "Waterlines",
             DxfShape::Polyline {
-                points: curve
-                    .points
-                    .iter()
-                    .map(|(u, v)| Vec2::new(*u, plan_y0 + (v - min.y)))
-                    .collect(),
+                points: closed_ring(
+                    &curve
+                        .points
+                        .iter()
+                        .map(|(u, v)| Vec2::new(*u, plan_y0 + (v - min.y)))
+                        .collect::<Vec<_>>(),
+                    curve.closed,
+                ),
             },
         ));
         entities.push(DxfEntity::new(
             "Waterlines 3D",
             DxfShape::Polyline3 {
-                points: curve.points3.clone(),
+                points: closed_ring(&curve.points3, curve.closed),
             },
         ));
     }
@@ -772,11 +794,14 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         entities.push(DxfEntity::new(
             "Waterplane",
             DxfShape::Polyline {
-                points: curve
-                    .points
-                    .iter()
-                    .map(|(u, v)| Vec2::new(*u, plan_y0 + (v - min.y)))
-                    .collect(),
+                points: closed_ring(
+                    &curve
+                        .points
+                        .iter()
+                        .map(|(u, v)| Vec2::new(*u, plan_y0 + (v - min.y)))
+                        .collect::<Vec<_>>(),
+                    curve.closed,
+                ),
             },
         ));
     }
@@ -874,6 +899,19 @@ fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dxf_declares_every_layer_and_closes_closed_curves() {
+        let s = crate::demo::demo_hull(false);
+        let text = dxf(&s, LinesplanOptions::default());
+        let (tables, entities) = text.split_at(text.find("ENTITIES").unwrap());
+        for layer in ["Stations 3D", "Buttocks 3D", "Waterlines 3D"] {
+            assert!(entities.contains(layer), "{layer} used");
+            assert!(tables.contains(layer), "{layer} declared in TABLES");
+        }
+        assert_eq!(closed_ring(&[1, 2, 3], true), vec![1, 2, 3, 1]);
+        assert_eq!(closed_ring(&[1, 2, 3], false), vec![1, 2, 3]);
+    }
 
     #[test]
     fn every_view_draws_its_curves_upright_inside_the_extents() {

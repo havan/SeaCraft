@@ -214,6 +214,11 @@ pub fn apply(surface: &mut Surface, scale: Vec3, translate: Vec3) -> Result<(), 
     if !(translate.x.is_finite() && translate.y.is_finite() && translate.z.is_finite()) {
         return Err("translate must be finite".into());
     }
+    // A symmetric layer is mirrored about y = 0; moving it sideways would open
+    // a gap (or an overlap) along the centreline.
+    if translate.y != 0.0 && surface.layers.iter().any(|l| l.symmetric) {
+        return Err("a model with symmetric layers cannot be moved sideways (translate y)".into());
+    }
     let a = anchor(surface);
     for p in &mut surface.points {
         p.p = Vec3::new(
@@ -360,6 +365,14 @@ pub fn fit_to_targets(
 mod tests {
     use super::*;
     use crate::mesh::VertexKind;
+
+    #[test]
+    fn a_symmetric_model_is_not_moved_sideways() {
+        let mut s = crate::demo::demo_hull(true);
+        let err = apply(&mut s, Vec3::new(1.0, 1.0, 1.0), Vec3::new(0.0, 0.5, 0.0)).unwrap_err();
+        assert!(err.contains("sideways"), "{err}");
+        apply(&mut s, Vec3::new(1.0, 1.0, 1.0), Vec3::new(1.0, 0.0, 0.0)).expect("x is fine");
+    }
     use crate::subdiv::SubdivisionMode;
 
     const LEVEL: SubdivisionOptions = SubdivisionOptions {

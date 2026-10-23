@@ -414,10 +414,8 @@ pub fn evaluate(surface: &Surface, opts: SubdivisionOptions) -> SubdivMesh {
 /// Refine `levels` times and mirror symmetric layers, giving the full hull.
 pub fn evaluate_full(surface: &Surface, opts: SubdivisionOptions) -> SubdivMesh {
     let mut mesh = evaluate(surface, opts);
-    if opts.level > 0 {
-        let sym: Vec<bool> = surface.layers.iter().map(|l| l.symmetric).collect();
-        mesh.mirror_symmetric(&sym);
-    }
+    let sym: Vec<bool> = surface.layers.iter().map(|l| l.symmetric).collect();
+    mesh.mirror_symmetric(&sym);
     mesh
 }
 
@@ -463,6 +461,20 @@ fn box_surface(crease_all: bool) -> Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn level_zero_mirrors_symmetric_layers_too() {
+        let s = crate::demo::demo_hull(true);
+        let mesh = evaluate_full(
+            &s,
+            SubdivisionOptions {
+                level: 0,
+                mode: Default::default(),
+            },
+        );
+        let min_y = mesh.verts.iter().map(|v| v.y).fold(f64::INFINITY, f64::min);
+        assert!(min_y < -0.5, "port side present at level 0: {min_y}");
+    }
 
     #[test]
     fn creased_box_is_preserved() {

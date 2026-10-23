@@ -202,7 +202,11 @@ fn canonicalize_write_target(path: &Path) -> Result<PathBuf> {
     while !curr.exists() {
         if let Some(file_name) = curr.file_name() {
             parts.push(file_name);
-            curr = curr.parent().unwrap_or(Path::new("."));
+            // A bare file name's parent is "", which is the working directory.
+            curr = curr
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
         } else {
             break;
         }
@@ -217,6 +221,14 @@ fn canonicalize_write_target(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_file_name_resolves_in_the_working_directory() {
+        let name = format!("seacraft-no-such-file-{}.obj", std::process::id());
+        let got = canonicalize_write_target(Path::new(&name)).expect("resolves");
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(got, cwd.join(&name));
+    }
 
     #[test]
     fn constant_time_tokens_match_compares_correctly() {

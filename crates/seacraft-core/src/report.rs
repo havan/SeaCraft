@@ -1737,6 +1737,20 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
     out
 }
 
+/// Lowest and highest finite speed, or `(0, fallback)` when there is none.
+fn speed_range(speeds: impl Iterator<Item = f64>, fallback: f64) -> (f64, f64) {
+    let (lo, hi) = speeds
+        .filter(|v| v.is_finite())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(v), hi.max(v))
+        });
+    if lo <= hi {
+        (lo, hi)
+    } else {
+        (0.0, fallback)
+    }
+}
+
 /// Generate an inline SVG dual-axis chart of Resistance (RT) and Effective Power (PE) vs Speed.
 fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
     let w = 900.0;
@@ -1774,8 +1788,8 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
         return out;
     }
 
-    let x0 = res.first().map(|r| r.speed_kn).unwrap_or(0.0);
-    let x1 = res.last().map(|r| r.speed_kn).unwrap_or(10.0);
+    // Speeds may come in any order: the axis spans their range.
+    let (x0, x1) = speed_range(res.iter().map(|r| r.speed_kn), 10.0);
     let x_span = (x1 - x0).max(1.0);
 
     let rt_max = res.iter().map(|r| r.rt_n / 1000.0).fold(0.0_f64, f64::max) * 1.15;
@@ -1952,8 +1966,7 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
         return out;
     }
 
-    let x0 = points.first().map(|p| p.speed_kn).unwrap_or(0.0);
-    let x1 = points.last().map(|p| p.speed_kn).unwrap_or(30.0);
+    let (x0, x1) = speed_range(points.iter().map(|p| p.speed_kn), 30.0);
     let x_span = (x1 - x0).max(1.0);
 
     let r_max = points
@@ -2085,6 +2098,15 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
 mod tests {
     use super::*;
     use crate::demo;
+
+    #[test]
+    fn chart_axes_span_speeds_given_in_any_order() {
+        assert_eq!(
+            speed_range([14.0, 12.0, 8.0].into_iter(), 10.0),
+            (8.0, 14.0)
+        );
+        assert_eq!(speed_range([f64::NAN].into_iter(), 10.0), (0.0, 10.0));
+    }
 
     #[test]
     fn tiny_negative_values_print_as_zero() {

@@ -244,7 +244,7 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
     }
 
     // Filled area under the curve.
-    let mut area_path = format!("M {:.2},{:.2} ", sx(sac[0].x), sy(top));
+    let mut area_path = format!("M {:.2},{:.2} ", sx(sac[0].x), sy(0.0));
     for p in sac {
         let _ = write!(area_path, "L {:.2},{:.2} ", sx(p.x), sy(p.area));
     }
@@ -252,7 +252,7 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
         area_path,
         "L {:.2},{:.2} Z",
         sx(sac[sac.len() - 1].x),
-        sy(top)
+        sy(0.0)
     );
     let _ = writeln!(out, "<path class=\"fill\" d=\"{area_path}\"/>");
 
@@ -417,6 +417,27 @@ pub fn bonjean_svg(bonjean: &Bonjean, title: &str) -> String {
 mod tests {
     use super::*;
     use crate::hydro::HydroOptions;
+
+    #[test]
+    fn the_sac_fill_lies_under_the_curve() {
+        let sac: Vec<SectionArea> = [(0.0, 0.0), (5.0, 1.0), (10.0, 0.2)]
+            .iter()
+            .map(|&(x, area)| SectionArea { x, area })
+            .collect();
+        let svg = sac_svg(&sac, "t");
+        let d = svg.split("class=\"fill\" d=\"").nth(1).unwrap();
+        let d = &d[..d.find('"').unwrap()];
+        let ys: Vec<f64> = d
+            .split(['M', 'L', 'Z'])
+            .filter_map(|t| t.trim().split(',').nth(1))
+            .map(|y| y.trim().parse().unwrap())
+            .collect();
+        // SVG y grows downwards: the closing corners sit on the zero line,
+        // the lowest point of the chart.
+        let base = ys[0];
+        assert_eq!(*ys.last().unwrap(), base);
+        assert!(ys.iter().all(|&y| y <= base + 1e-9), "{d}");
+    }
     use crate::subdiv::SubdivisionOptions;
     use crate::Surface;
 
