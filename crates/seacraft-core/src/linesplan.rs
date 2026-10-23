@@ -49,7 +49,7 @@ struct Curve {
     points3: Vec<Vec3>,
     closed: bool,
     /// The cutting plane the 2D view coordinates live in, so a 2D point can be
-    /// lifted back to 3D: `origin + u * pu + v * pv` with `(u, v) = plane.basis()`
+    /// lifted back to 3D: `origin + u * pu + v * pv` with `(u, v) = view_basis(plane)`
     /// and `origin = plane.n * (-plane.d)`.
     plane: Plane,
 }
@@ -97,7 +97,7 @@ pub fn curves_3d(surface: &Surface, opts: LinesplanOptions) -> LinesplanCurves3d
                     if raw.len() < 2 {
                         Vec::new()
                     } else {
-                        let (u, v) = c.plane.basis();
+                        let (u, v) = view_basis(&c.plane);
                         let origin = c.plane.n * (-c.plane.d);
                         let to3 = |(pu, pv): P2| origin + u * pu + v * pv;
                         raw.into_iter().map(|(base, tip)| (to3(base), to3(tip))).collect()
@@ -145,11 +145,25 @@ fn visible_triangles(surface: &Surface, subdiv: SubdivisionOptions) -> (Vec<Vec3
     (mesh.verts, tris)
 }
 
-/// Curves where `plane` cuts the mesh, projected into the plane's basis.
+/// The drawing basis of a cutting plane: `Plane::basis` with `v` turned to
+/// point up (or to starboard for a waterline). For a buttock plane (normal
+/// `+y`) `Plane::basis` gives `v = -z`, which drew the profile upside down
+/// below its frame; the hydrostatic moments rely on `Plane::basis` as it is,
+/// so the flip lives here.
+fn view_basis(plane: &Plane) -> (Vec3, Vec3) {
+    let (u, v) = plane.basis();
+    if v.z < -1e-9 || (v.z.abs() <= 1e-9 && v.y < 0.0) {
+        (u, v * -1.0)
+    } else {
+        (u, v)
+    }
+}
+
+/// Curves where `plane` cuts the mesh, projected into the plane's view basis.
 fn cut(verts: &[Vec3], tris: &[[usize; 3]], plane: &Plane, tol: f64) -> Vec<Curve> {
     let segs = crate::hydro::plane_segments(verts, tris, plane);
     let paths = crate::hydro::chain_paths(&segs, tol);
-    let (u, v) = plane.basis();
+    let (u, v) = view_basis(plane);
     paths
         .into_iter()
         .filter(|(p, _)| p.len() >= 2)
@@ -374,12 +388,14 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     // Panel geometry in millimetres (1 m = 1 unit here; scaled for print).
     let scale = 900.0 / l.max(2.0 * b);
     let margin = 40.0;
-    let bw = b * 2.0 * scale;
+    // `b` is the full (mirrored) beam. The plan and body frames share this
+    // height, so it must hold the beam and, in the body plan, the depth.
+    let bw = (b * 1.1).max(d * 1.05) * scale;
     let lw = l * scale;
     let dw = d * scale;
     let top = margin;
-    let profile_y = top + dw + 40.0;
-    let plan_y = profile_y + bw + 40.0;
+    // The plan and body plan sit under the profile, below its comb label.
+    let plan_y = top + dw + 60.0;
     let width = margin * 2.0 + lw + bw + 40.0;
     let height = plan_y + bw + margin + 20.0;
 
@@ -782,6 +798,38 @@ fn html_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_view_draws_its_curves_upright_inside_the_extents() {
+        // Profile (x, z), plan (x, y) and body plan (y, z): each 2D point must
+        // equal the matching coordinates of its 3D point. A flipped basis put
+        // the profile at (x, -z), below its frame.
+        let surface = crate::demo::demo_hull(false);
+        let cut = cut_all(&surface, LinesplanOptions::default());
+        type View<'a> = (&'a str, &'a [Curve], fn(Vec3) -> (f64, f64));
+        let views: [View; 3] = [
+            ("profile", &cut.buttocks, |p| (p.x, p.z)),
+            ("plan", &cut.waterlines, |p| (p.x, p.y)),
+            ("body", &cut.stations, |p| (p.y, p.z)),
+        ];
+        for (name, curves, expect) in views {
+            assert!(!curves.is_empty(), "{name}: no curves");
+            for c in curves {
+                for (p2, p3) in c.points.iter().zip(&c.points3) {
+                    let (eu, ev) = expect(*p3);
+                    assert!(
+                        (p2.0 - eu).abs() < 1e-9 && (p2.1 - ev).abs() < 1e-9,
+                        "{name}: 2D {p2:?} is not the view of {p3:?}"
+                    );
+                }
+            }
+        }
+        for c in &cut.buttocks {
+            for &(_, z) in &c.points {
+                assert!(z >= cut.min.z - 1e-9 && z <= cut.max.z + 1e-9, "profile z {z} outside the frame");
+            }
+        }
+    }
 
     #[test]
     fn the_svg_and_dxf_carry_the_same_views() {
