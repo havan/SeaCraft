@@ -2059,9 +2059,13 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         let mut text = String::from("heel_deg,displacement_t,draft_m,trim_m,kn_m,gz_m\n");
         for c in &curves {
             for p in &c.points {
+                let d = p.draft.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
+                let t = p.trim_m.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
+                let kn = p.kn.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
+                let gz = p.gz.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
                 text.push_str(&format!(
-                    "{:.2},{:.3},{:.4},{:.4},{:.4},{:.4}\n",
-                    c.heel_deg, p.displacement_t, p.draft, p.trim_m, p.kn, p.gz
+                    "{:.2},{:.3},{},{},{},{}\n",
+                    c.heel_deg, p.displacement_t, d, t, kn, gz
                 ));
             }
         }
@@ -2087,7 +2091,10 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
     for c in &curves {
         print!("  {:>4.0} |", c.heel_deg);
         for p in &c.points {
-            print!("    {:>7.3}", p.gz);
+            match p.gz {
+                Some(gz) => print!("    {:>7.3}", gz),
+                None => print!("    {:>7}", "—"),
+            }
         }
         println!();
     }
@@ -2096,7 +2103,10 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         let solved: Vec<String> = c
             .points
             .iter()
-            .map(|p| format!("{:.3} m / {:+.3} m", p.draft, p.trim_m))
+            .map(|p| match (p.draft, p.trim_m) {
+                (Some(d), Some(t)) => format!("{:.3} m / {:+.3} m", d, t),
+                _ => "—".to_string(),
+            })
             .collect();
         println!("    {:>4.0} deg: {}", c.heel_deg, solved.join(", "));
     }

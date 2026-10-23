@@ -188,14 +188,15 @@ pub fn waterplane_for(keel_z: f64, length: f64, draft: f64, trim: f64, heel_deg:
     let z1 = keel_z + draft + trim * 0.5;
     let z2 = keel_z + draft - trim * 0.5;
     let p1 = Vec3::new(0.0, 0.0, z1);
-    let p2 = Vec3::new(length, 0.0, z2);
     // Heel is positive to starboard. In ship-fixed coordinates that raises the
     // water surface towards +y (the ship turns, not the sea), so the starboard
-    // side goes deeper. The slope is `tan`, not `sin`: the surface must make
-    // exactly `heel_deg` with the horizontal, or the angle reported is not the
-    // angle floated and GZ is measured at the wrong heel.
-    let p3 = Vec3::new(0.0, 1.0, z1 + heel.tan());
-    Plane::through(p1, p2, p3)
+    // side goes deeper. Deriving the normal via (sin, cos) rather than tan avoids
+    // an infinite slope and numerical breakdown at 90 deg.
+    let (sin_h, cos_h) = (heel.sin(), heel.cos());
+    let v_trim = Vec3::new(length, 0.0, z2 - z1);
+    let v_heel = Vec3::new(0.0, cos_h, sin_h);
+    let n = v_trim.cross(v_heel).norm();
+    Plane::with_normal_point(n, p1)
 }
 
 /// Clip a triangle to the half space `side <= 0`.

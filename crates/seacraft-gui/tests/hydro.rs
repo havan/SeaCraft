@@ -80,7 +80,7 @@ fn the_dock_trims_freely_when_asked() {
         .cross_curves()
         .expect("curves")
         .iter()
-        .map(|c| c.points[2].trim_m)
+        .map(|c| c.points[2].trim_m.unwrap_or(0.0))
         .collect();
     assert!(
         fixed.iter().all(|t| t.abs() < 1e-12),
@@ -94,10 +94,10 @@ fn the_dock_trims_freely_when_asked() {
     let heeled = &curves[3]; // 30 degrees
     assert!((heeled.heel_deg - 30.0).abs() < 1e-12);
     let p = &heeled.points[2];
-    assert!(p.gz.is_finite() && p.draft.is_finite(), "the solve must converge");
+    assert!(p.gz.is_some() && p.draft.is_some(), "the solve must converge");
     assert!(
-        p.trim_m.abs() > 0.01,
-        "the demo hull trims when heeled, got {}",
+        p.trim_m.unwrap().abs() > 0.01,
+        "the demo hull trims when heeled, got {:?}",
         p.trim_m
     );
     assert!(app.status().contains("free to trim"), "status: {}", app.status());

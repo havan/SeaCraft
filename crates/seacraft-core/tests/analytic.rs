@@ -141,11 +141,14 @@ fn a_box_has_no_righting_lever_upright() {
         &base,
     );
     let upright = &curves[0].points[0];
-    assert!(upright.gz.abs() < 1e-9, "GZ at zero heel {}", upright.gz);
-    assert!(upright.kn.abs() < 1e-9, "KN at zero heel {}", upright.kn);
+    let gz0 = upright.gz.expect("gz upright");
+    let kn0 = upright.kn.expect("kn upright");
+    assert!(gz0.abs() < 1e-9, "GZ at zero heel {gz0}");
+    assert!(kn0.abs() < 1e-9, "KN at zero heel {kn0}");
     // Heeling a box puts the centre of buoyancy to leeward: positive GZ.
     let heeled = &curves[1].points[0];
-    assert!(heeled.gz > 0.0, "GZ at 10 degrees {}", heeled.gz);
+    let gz10 = heeled.gz.expect("gz 10 deg");
+    assert!(gz10 > 0.0, "GZ at 10 degrees {gz10}");
 }
 
 /// The numbers `AGENTS.md` quotes for the demo hull. They are the project's
@@ -261,8 +264,11 @@ fn free_trim_cross_curves_hold_the_lcb_on_the_lcg() {
 
     for (i, curve) in free.iter().enumerate() {
         let p = &curve.points[0];
-        assert!(p.gz.is_finite(), "heel {} did not solve", curve.heel_deg);
-        let (v, cb) = hull.buoyancy(p.draft, p.trim_m, curve.heel_deg);
+        let gz = p.gz.expect("gz must solve");
+        let draft = p.draft.expect("draft must solve");
+        let trim_m = p.trim_m.expect("trim must solve");
+        assert!(gz.is_finite(), "heel {} did not solve", curve.heel_deg);
+        let (v, cb) = hull.buoyancy(draft, trim_m, curve.heel_deg);
         assert!(
             (v - target).abs() < 1e-4 * target,
             "heel {}: volume {v} vs {target}",
@@ -276,20 +282,75 @@ fn free_trim_cross_curves_hold_the_lcb_on_the_lcg() {
         );
         if curve.heel_deg >= 20.0 {
             assert!(
-                p.trim_m.abs() > 0.005,
+                trim_m.abs() > 0.005,
                 "heel {}: a hull with a wide transom must trim, got {}",
                 curve.heel_deg,
-                p.trim_m
+                trim_m
             );
             // Holding the trim fixed leaves the hull out of equilibrium and
             // overstates the righting lever.
-            let fixed_gz = fixed[i].points[0].gz;
+            let fixed_gz = fixed[i].points[0].gz.expect("fixed gz");
             assert!(
-                p.gz < fixed_gz,
+                gz < fixed_gz,
                 "heel {}: free-trim GZ {} should not exceed the fixed-trim {fixed_gz}",
                 curve.heel_deg,
-                p.gz
+                gz
             );
         }
     }
+}
+
+#[test]
+fn closed_box_cross_curve_at_75_and_90_degrees_is_finite() {
+    let surface = barge(10.0, 4.0, 4.0);
+    let base = options(&surface, 2.0);
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = hull.buoyancy(base.draft, 0.0, 0.0).0;
+    let heels = [75.0, 90.0];
+    let curves = stability::cross_curves(
+        &hull,
+        &heels,
+        &[target * base.water_density / 1000.0],
+        &stability::StabilityCondition::fixed(1.0, 0.0),
+        &base,
+    );
+    for curve in &curves {
+        let p = &curve.points[0];
+        let gz = p.gz.expect("GZ must solve for closed box");
+        let kn = p.kn.expect("KN must solve for closed box");
+        assert!(gz.is_finite(), "heel {} GZ must be finite: {gz}", curve.heel_deg);
+        assert!(kn.is_finite(), "heel {} KN must be finite: {kn}", curve.heel_deg);
+    }
+}
+
+#[test]
+fn parabola_interpolated_angle_of_max_gz_on_synthetic_curve() {
+    // Parabola GZ(h) = 0.55 - 0.001 * (h - 33.5)^2
+    // Vertex is at angle = 33.5 deg, max GZ = 0.55 m.
+    let f = |h: f64| 0.55 - 0.001 * (h - 33.5).powi(2);
+    let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
+    let curves: Vec<stability::CrossCurve> = heels
+        .iter()
+        .map(|&h| stability::CrossCurve {
+            heel_deg: h,
+            points: vec![stability::CrossCurvePoint {
+                displacement_t: 20.0,
+                draft: Some(0.5),
+                trim_m: Some(0.0),
+                kn: Some(f(h) + 1.0 * seacraft_core::math::deg_to_rad(h).sin()),
+                gz: Some(f(h)),
+            }],
+        })
+        .collect();
+    let c = stability::evaluate_imo_criteria(&curves, 0).expect("criteria");
+    assert!(
+        (c.angle_of_max_gz_deg - 33.5).abs() < 1e-9,
+        "angle of max GZ {}, expected 33.5",
+        c.angle_of_max_gz_deg
+    );
+    assert!(
+        (c.max_gz_30_plus_m - 0.55).abs() < 1e-9,
+        "max GZ {}, expected 0.55",
+        c.max_gz_30_plus_m
+    );
 }

@@ -393,8 +393,10 @@ fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve]) {
     for curve in curves {
         heel_max = heel_max.max(curve.heel_deg);
         for p in &curve.points {
-            if p.gz.is_finite() {
-                gz_max = gz_max.max(p.gz.abs());
+            if let Some(gz) = p.gz {
+                if gz.is_finite() {
+                    gz_max = gz_max.max(gz.abs());
+                }
             }
         }
     }
@@ -418,8 +420,8 @@ fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve]) {
         let points: Vec<egui::Pos2> = curve
             .points
             .iter()
-            .filter(|p| p.gz.is_finite())
-            .map(|p| to_screen(curve.heel_deg, p.gz))
+            .filter_map(|p| p.gz.filter(|gz| gz.is_finite()))
+            .map(|gz| to_screen(curve.heel_deg, gz))
             .collect();
         if points.len() >= 2 {
             painter.add(egui::Shape::line(

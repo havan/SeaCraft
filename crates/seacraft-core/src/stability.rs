@@ -29,15 +29,15 @@ pub struct CrossCurvePoint {
     /// Displacement in tonnes.
     pub displacement_t: f64,
     /// Draft required to float at this displacement and heel.
-    pub draft: f64,
+    pub draft: Option<f64>,
     /// Trim required to float at this displacement and heel, in metres and
     /// positive bow-up. Equal to the requested trim unless the curve is free
     /// to trim.
-    pub trim_m: f64,
+    pub trim_m: Option<f64>,
     /// Righting lever from the keel, in metres.
-    pub kn: f64,
+    pub kn: Option<f64>,
     /// Righting lever from the centre of gravity, in metres.
-    pub gz: f64,
+    pub gz: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,10 +317,10 @@ pub fn cross_curves(
             let Some(fc) = solved else {
                 points.push(CrossCurvePoint {
                     displacement_t: disp_t,
-                    draft: f64::NAN,
-                    trim_m: f64::NAN,
-                    kn: f64::NAN,
-                    gz: f64::NAN,
+                    draft: None,
+                    trim_m: None,
+                    kn: None,
+                    gz: None,
                 });
                 continue;
             };
@@ -333,13 +333,23 @@ pub fn cross_curves(
             let g = Vec3::new(0.0, 0.0, hull.keel + cond.kg);
             let gz = (b - g).dot(t);
             let kn = gz + cond.kg * deg_to_rad(heel).sin();
-            points.push(CrossCurvePoint {
-                displacement_t: disp_t,
-                draft: fc.draft,
-                trim_m: fc.trim,
-                kn,
-                gz,
-            });
+            if gz.is_finite() && kn.is_finite() {
+                points.push(CrossCurvePoint {
+                    displacement_t: disp_t,
+                    draft: Some(fc.draft),
+                    trim_m: Some(fc.trim),
+                    kn: Some(kn),
+                    gz: Some(gz),
+                });
+            } else {
+                points.push(CrossCurvePoint {
+                    displacement_t: disp_t,
+                    draft: None,
+                    trim_m: None,
+                    kn: None,
+                    gz: None,
+                });
+            }
         }
         out.push(CrossCurve {
             heel_deg: heel,
@@ -423,6 +433,38 @@ fn area_between(pts: &[(f64, f64)], a_deg: f64, b_deg: f64) -> f64 {
     area * std::f64::consts::PI / 180.0
 }
 
+/// Fit a parabola through three points and return the vertex `(x, y)`.
+///
+/// Assumes `p1.0 < p2.0 < p3.0` and `p2.1 >= p1.1`, `p2.1 >= p3.1`. If the
+/// points do not form a downward parabola or the vertex falls outside
+/// `[p1.0, p3.0]`, falls back to `p2`.
+pub fn fit_parabola_vertex(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64)) -> (f64, f64) {
+    let (x1, y1) = p1;
+    let (x2, y2) = p2;
+    let (x3, y3) = p3;
+    let u1 = x1 - x2;
+    let u3 = x3 - x2;
+    if u1.abs() < 1e-12 || u3.abs() < 1e-12 {
+        return (x2, y2);
+    }
+    let d1 = (y1 - y2) / u1;
+    let d3 = (y3 - y2) / u3;
+    let denom = u3 - u1;
+    if denom.abs() < 1e-12 {
+        return (x2, y2);
+    }
+    let a = (d3 - d1) / denom;
+    let b = d3 - a * u3;
+    if a < -1e-12 {
+        let u_v = -b / (2.0 * a);
+        if u_v >= u1 && u_v <= u3 {
+            let y_v = y2 - b * b / (4.0 * a);
+            return (x2 + u_v, y_v);
+        }
+    }
+    (x2, y2)
+}
+
 /// Evaluate the IMO A.749 / 2008 IS Code Part A general intact stability
 /// criteria on the `disp_index`-th point of every heel curve.
 ///
@@ -436,13 +478,16 @@ pub fn evaluate_imo_criteria(curves: &[CrossCurve], disp_index: usize) -> Option
         let Some(p) = c.points.get(disp_index) else {
             continue;
         };
-        if !p.gz.is_finite() || !c.heel_deg.is_finite() || c.heel_deg < 0.0 {
+        let Some(gz) = p.gz else {
+            continue;
+        };
+        if !gz.is_finite() || !c.heel_deg.is_finite() || c.heel_deg < 0.0 {
             continue;
         }
         if pts.is_empty() {
             displacement_t = p.displacement_t;
         }
-        pts.push((c.heel_deg, p.gz));
+        pts.push((c.heel_deg, gz));
     }
     if pts.len() < 2 {
         return None;
@@ -452,6 +497,19 @@ pub fn evaluate_imo_criteria(curves: &[CrossCurve], disp_index: usize) -> Option
     let area_0_30 = area_between(&pts, 0.0, 30.0);
     let area_0_40 = area_between(&pts, 0.0, 40.0);
     let area_30_40 = area_between(&pts, 30.0, 40.0);
+
+    // Highest sample, earliest sample wins a tie (the conservative angle).
+    let mut best_idx = 0;
+    for (i, &(_, g)) in pts.iter().enumerate().skip(1) {
+        if g > pts[best_idx].1 {
+            best_idx = i;
+        }
+    }
+    let (angle_of_max, peak_gz) = if best_idx > 0 && best_idx + 1 < pts.len() {
+        fit_parabola_vertex(pts[best_idx - 1], pts[best_idx], pts[best_idx + 1])
+    } else {
+        pts[best_idx]
+    };
 
     let (h_min, h_max) = (pts[0].0, pts[pts.len() - 1].0);
     let mut max_gz_30 = f64::NEG_INFINITY;
@@ -463,20 +521,14 @@ pub fn evaluate_imo_criteria(curves: &[CrossCurve], disp_index: usize) -> Option
     if h_min <= 30.0 && h_max >= 30.0 {
         max_gz_30 = max_gz_30.max(gz_at(&pts, 30.0));
     }
+    if angle_of_max >= 30.0 {
+        max_gz_30 = max_gz_30.max(peak_gz);
+    }
     let max_gz_30 = if max_gz_30.is_finite() {
         max_gz_30
     } else {
         0.0
     };
-
-    // Highest sample, earliest sample wins a tie (the conservative angle).
-    let mut best = pts[0];
-    for &(h, g) in pts.iter().skip(1) {
-        if g > best.1 {
-            best = (h, g);
-        }
-    }
-    let angle_of_max = best.0;
 
     // Slope at the origin: the standard `GM0 ≈ dGZ/dheel` at zero heel.
     let mut gm0 = 0.0;
@@ -514,10 +566,10 @@ mod tests {
             heel_deg,
             points: vec![CrossCurvePoint {
                 displacement_t: 20.0,
-                draft: 0.5,
-                trim_m: 0.0,
-                kn: gz + 2.0 * deg_to_rad(heel_deg).sin(),
-                gz,
+                draft: Some(0.5),
+                trim_m: Some(0.0),
+                kn: Some(gz + 2.0 * deg_to_rad(heel_deg).sin()),
+                gz: Some(gz),
             }],
         }
     }
@@ -618,8 +670,8 @@ mod tests {
         // trapezoid between the interpolated endpoints.
         assert!((c.area_0_40_m_rad - trap(0.0, 0.0, 40.0, gz40)).abs() < 1e-12);
         assert!((c.area_30_40_m_rad - trap(30.0, gz30, 40.0, gz40)).abs() < 1e-12);
-        assert!((c.max_gz_30_plus_m - 0.40).abs() < 1e-12);
-        assert!((c.angle_of_max_gz_deg - 45.0).abs() < 1e-12);
+        assert!((c.max_gz_30_plus_m - (0.40 + 1.0 / 720.0)).abs() < 1e-12);
+        assert!((c.angle_of_max_gz_deg - 42.5).abs() < 1e-12);
         // GM0 from the first two samples: (0.40 - 0.0) / 45 deg in radians.
         assert!((c.gm0_m - 0.40 / deg_to_rad(45.0)).abs() < 1e-12);
         assert!(c.passed, "{c:?}");
