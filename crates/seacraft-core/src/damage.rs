@@ -57,7 +57,7 @@ pub enum CompartmentSpec {
 
 /// A complete damage case: name, compartments to flood, and loading particulars
 /// (`kg`, `displacement_t`, optional `lcg`/`tcg`, or derived from a [`LoadingCondition`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct DamageCase {
     pub name: String,
     #[serde(default)]
@@ -70,6 +70,11 @@ pub struct DamageCase {
     pub lcg: Option<f64>,
     #[serde(default)]
     pub tcg: Option<f64>,
+    /// A loading condition of the project, by name; [`crate::project::Project::resolve_damage_case`]
+    /// fills `loading_condition` from it. As with an inline condition, `displacement_t`
+    /// and `kg` set together override the condition's values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading_condition_name: Option<String>,
     #[serde(default)]
     pub loading_condition: Option<LoadingCondition>,
     #[serde(default)]
@@ -185,6 +190,14 @@ pub fn validate(case: &DamageCase) -> Result<(), String> {
     for spec in &case.compartments {
         if let CompartmentSpec::Inline(c) = spec {
             validate_compartment(c)?;
+        }
+    }
+    if let Some(ref lc_name) = case.loading_condition_name {
+        if case.loading_condition.is_none() {
+            return Err(format!(
+                "damage case `{}` refers to loading condition `{}` by name; evaluate it through a project file",
+                case.name, lc_name
+            ));
         }
     }
     if let Some(lc) = &case.loading_condition {
@@ -1265,6 +1278,7 @@ mod tests {
             displacement_t: Some(disp_t),
             lcg: Some(0.5 * l_barge),
             tcg: Some(0.0),
+            loading_condition_name: None,
             loading_condition: None,
             water_density: Some(1.0),
         };
@@ -1322,6 +1336,7 @@ mod tests {
             displacement_t: Some(disp_t),
             lcg: Some(6.0),
             tcg: Some(0.0),
+            loading_condition_name: None,
             loading_condition: None,
             water_density: Some(1.0),
         };
@@ -1370,6 +1385,7 @@ mod tests {
             displacement_t: Some(disp_t),
             lcg: Some(5.0),
             tcg: Some(0.0),
+            loading_condition_name: None,
             loading_condition: None,
             water_density: Some(1.0),
         };
@@ -1426,6 +1442,7 @@ mod tests {
             displacement_t: Some(10.0),
             lcg: Some(4.3),
             tcg: Some(0.0),
+            loading_condition_name: None,
             loading_condition: None,
             water_density: Some(1.025),
         };
@@ -1481,6 +1498,7 @@ mod tests {
             displacement_t: Some(12.147),
             lcg: Some(4.297),
             tcg: Some(0.0),
+            loading_condition_name: None,
             loading_condition: None,
             water_density: Some(1.025),
         };
@@ -1494,5 +1512,31 @@ mod tests {
         assert!(crit.positive_range_deg > 0.0, "finite positive range");
         assert!(crit.max_gz_m > 0.0, "finite max GZ");
         assert!(crit.area_m_rad > 0.0, "finite residual area");
+    }
+
+    #[test]
+    fn validate_rejects_unresolved_loading_condition_name() {
+        let case = DamageCase {
+            name: "Case 1".into(),
+            compartments: vec![CompartmentSpec::Inline(Compartment {
+                name: "Comp".into(),
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: -0.5,
+                y_max: 0.5,
+                z_min: 0.0,
+                z_max: 0.5,
+                permeability: 0.95,
+                clip_to_hull: false,
+            })],
+            loading_condition_name: Some("Departure".into()),
+            loading_condition: None,
+            ..Default::default()
+        };
+        let err = validate(&case).unwrap_err();
+        assert_eq!(
+            err,
+            "damage case `Case 1` refers to loading condition `Departure` by name; evaluate it through a project file"
+        );
     }
 }

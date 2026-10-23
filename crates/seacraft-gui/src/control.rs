@@ -632,6 +632,7 @@ fn handle_inner(
             let mut level: Option<usize> = None;
             let mut active: Option<usize> = None;
             let mut loading_panel: Option<bool> = None;
+            let mut damage_panel: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -695,12 +696,22 @@ fn handle_inner(
                                 .ok_or("`loading_panel` must be true or false")?,
                         )
                     }
+                    "damage_panel" => {
+                        damage_panel = Some(
+                            value
+                                .as_bool()
+                                .ok_or("`damage_panel` must be true or false")?,
+                        )
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
             *app.display_mut() = display;
             if let Some(show) = loading_panel {
                 app.set_show_loading(show);
+            }
+            if let Some(show) = damage_panel {
+                app.set_show_damage(show);
             }
             if let Some(mode) = analysis {
                 app.set_analysis(mode);
@@ -1266,6 +1277,11 @@ fn handle_inner(
         "loading.compute" => {
             let name = text(p, "name")?;
             let res = app.compute_loading_blocking(name)?;
+            serde_json::to_value(res).map_err(|e| e.to_string())
+        }
+        "damage.compute" => {
+            let name = text(p, "name")?;
+            let res = app.compute_damage_blocking(name)?;
             serde_json::to_value(res).map_err(|e| e.to_string())
         }
         "stability.weather" | "weather_criterion" => {
@@ -2316,6 +2332,28 @@ mod tests {
     }
 
     #[test]
+    fn damage_compute_over_control() {
+        let (mut app, ctx) = demo();
+        let dc_text = std::fs::read_to_string(format!(
+            "{}/../../examples/demo-damage.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let dc: seacraft_core::damage::DamageCase = serde_json::from_str(&dc_text).unwrap();
+        let project = seacraft_core::project::Project {
+            damage_cases: vec![dc],
+            ..Default::default()
+        };
+        app.set_project(project);
+
+        let r = call(&mut app, &ctx, "damage.compute", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["equilibrium_found"], true);
+        let draft = r["result"]["draft"].as_f64().expect("draft");
+        assert!(draft > 0.60, "draft {draft}");
+    }
+
+    #[test]
     fn inspect_set_move_hydro_and_render_over_control() {
         let (mut app, ctx) = demo();
 
@@ -3289,6 +3327,7 @@ mod tests {
             "project.get",
             "project.set",
             "loading.compute",
+            "damage.compute",
             "point.move",
             "edge.crease",
             "hydro.compute",

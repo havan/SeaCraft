@@ -3265,7 +3265,10 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
             let c = p
                 .damage_case(a.name.as_deref())
                 .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-            (p.resolve_damage_case(c), path)
+            let resolved = p
+                .resolve_damage_case(c)
+                .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+            (resolved, path)
         }
     };
     damage::validate(&case).map_err(|e| anyhow::anyhow!("{}: {e}", from.display()))?;

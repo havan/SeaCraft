@@ -205,6 +205,12 @@ impl Project {
             crate::loading::validate(c)
                 .map_err(|e| format!("loading condition `{}`: {e}", c.name))?;
         }
+        for c in &self.damage_cases {
+            if let Some(ref name) = c.loading_condition_name {
+                self.loading_condition(Some(name))
+                    .map_err(|e| format!("damage case `{}`: {e}", c.name))?;
+            }
+        }
         for w in &self.windage {
             if !(w.area_m2.is_finite() && w.area_m2 >= 0.0 && w.z_centroid.is_finite()) {
                 return Err(format!(
@@ -240,10 +246,9 @@ impl Project {
         out
     }
 
-    /// `case` with compartments named after a project compartment made inline.
-    /// Names that match no project compartment are left for
-    /// [`crate::damage::evaluate`] to find among the loading condition's tanks.
-    pub fn resolve_damage_case(&self, case: &DamageCase) -> DamageCase {
+    /// `case` with compartments named after a project compartment made inline,
+    /// and `loading_condition_name` resolved to a loading condition with windage.
+    pub fn resolve_damage_case(&self, case: &DamageCase) -> Result<DamageCase, String> {
         let mut out = case.clone();
         for spec in &mut out.compartments {
             if let CompartmentSpec::Named(name) = spec {
@@ -252,7 +257,13 @@ impl Project {
                 }
             }
         }
-        out
+        if let Some(ref name) = out.loading_condition_name {
+            if out.loading_condition.is_none() {
+                let cond = self.loading_condition(Some(name))?;
+                out.loading_condition = Some(self.with_windage(cond));
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -368,8 +379,48 @@ mod tests {
         assert_eq!(merged.windage_extra.len(), first.windage_extra.len() + 1);
         assert_eq!(merged.windage_extra[0].name, "Deckhouse");
 
-        let case = p.resolve_damage_case(p.damage_case(None).unwrap());
+        let case = p.resolve_damage_case(p.damage_case(None).unwrap()).unwrap();
         assert!(matches!(&case.compartments[0], CompartmentSpec::Inline(c) if c.x_min == 3.5));
+    }
+
+    #[test]
+    fn case_using_loading_condition_name_resolves_to_condition_inline() {
+        let p = demo_project();
+        let cond = p.loading_condition(None).unwrap();
+        let base_case = p.damage_case(None).unwrap();
+
+        let case_by_name = DamageCase {
+            name: "Damage by condition name".into(),
+            loading_condition_name: Some(cond.name.clone()),
+            loading_condition: None,
+            ..base_case.clone()
+        };
+
+        let case_inline = DamageCase {
+            name: "Damage by condition name".into(),
+            loading_condition_name: Some(cond.name.clone()),
+            loading_condition: Some(p.with_windage(cond)),
+            ..base_case.clone()
+        };
+
+        let resolved_by_name = p.resolve_damage_case(&case_by_name).unwrap();
+        let resolved_inline = p.resolve_damage_case(&case_inline).unwrap();
+
+        assert_eq!(resolved_by_name, resolved_inline);
+        assert!(resolved_by_name.loading_condition.is_some());
+    }
+
+    #[test]
+    fn validate_checks_damage_case_loading_condition_name_exists() {
+        let mut p = demo_project();
+        p.damage_cases.push(DamageCase {
+            name: "Missing cond case".into(),
+            loading_condition_name: Some("nonexistent_cond".into()),
+            ..Default::default()
+        });
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("damage case `Missing cond case`"));
+        assert!(err.contains("nonexistent_cond"));
     }
 
     #[test]

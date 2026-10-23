@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use eframe::egui;
+use seacraft_core::damage::DamageResult;
 use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
 use seacraft_core::loading::LoadingResult;
@@ -213,6 +214,12 @@ pub struct App {
     loading_stale: bool,
     loading_worker: Option<std::sync::mpsc::Receiver<(u64, LoadingResult)>>,
     loading_generation: u64,
+    show_damage: bool,
+    damage_selected: usize,
+    damage_result: Option<DamageResult>,
+    damage_stale: bool,
+    damage_worker: Option<std::sync::mpsc::Receiver<(u64, Result<DamageResult, String>)>>,
+    damage_generation: u64,
     /// Cursor position on the active viewport's focal plane, for the status bar.
     cursor_world: Option<Vec3>,
     /// Geometry changed since the hydrostatics were last computed.
@@ -291,6 +298,12 @@ impl App {
             loading_stale: true,
             loading_worker: None,
             loading_generation: 0,
+            show_damage: false,
+            damage_selected: 0,
+            damage_result: None,
+            damage_stale: true,
+            damage_worker: None,
+            damage_generation: 0,
             cursor_world: None,
             hydro_dirty: true,
             hydro: HydroState::new(),
@@ -412,6 +425,10 @@ impl App {
         self.loading_selected = 0;
         self.loading_result = None;
         self.loading_worker = None;
+        self.damage_stale = true;
+        self.damage_selected = 0;
+        self.damage_result = None;
+        self.damage_worker = None;
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
         if let Some(s) = &self.surface {
@@ -614,6 +631,69 @@ impl App {
             }
         }
 
+        if self.show_damage {
+            let action = egui::Panel::right("damage_panel")
+                .resizable(true)
+                .default_size(380.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| {
+                            panels::damage(
+                                ui,
+                                panels::DamagePanel {
+                                    project: &mut self.project,
+                                    selected: &mut self.damage_selected,
+                                    result: self.damage_result.as_ref(),
+                                    stale: self.damage_stale,
+                                    busy: self.damage_worker.is_some(),
+                                },
+                            )
+                        })
+                        .inner
+                })
+                .inner;
+            match action {
+                panels::DamageAction::Changed => {
+                    self.dirty = true;
+                    self.damage_stale = true;
+                }
+                panels::DamageAction::Compute => {
+                    self.start_damage_compute();
+                }
+                panels::DamageAction::None => {}
+            }
+        }
+
+        if let Some(rx) = &self.damage_worker {
+            let mut done = false;
+            match rx.try_recv() {
+                Ok((gen, res)) => {
+                    done = true;
+                    if gen == self.damage_generation {
+                        match res {
+                            Ok(r) => {
+                                self.damage_result = Some(r);
+                                self.damage_stale = false;
+                            }
+                            Err(e) => {
+                                self.status = format!("Damage compute failed: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done = true;
+                }
+            }
+            if done {
+                self.damage_worker = None;
+            }
+        }
+
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         self.dialog_window(ui);
         self.pending_window(ui);
@@ -785,6 +865,7 @@ impl App {
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
                     ui.checkbox(&mut self.show_loading, "Loading panel");
+                    ui.checkbox(&mut self.show_damage, "Damage panel");
                     ui.separator();
                     let mut level = self.level as u32;
                     if ui
@@ -1521,6 +1602,7 @@ impl App {
         self.hydro_dirty = true;
         self.hydro.last_edit = Some(std::time::Instant::now());
         self.loading_stale = true;
+        self.damage_stale = true;
     }
 
     // ---- accessors (tests and dock panels) -----------------------------
@@ -1541,6 +1623,8 @@ impl App {
         self.dirty = true;
         self.loading_stale = true;
         self.loading_selected = 0;
+        self.damage_stale = true;
+        self.damage_selected = 0;
     }
 
     pub fn set_show_loading(&mut self, show: bool) {
@@ -1615,6 +1699,77 @@ impl App {
         self.loading_result = Some(res);
         self.loading_stale = false;
         Ok(self.loading_result.as_ref().unwrap())
+    }
+
+    pub fn set_show_damage(&mut self, show: bool) {
+        self.show_damage = show;
+    }
+
+    pub fn damage_result(&self) -> Option<&DamageResult> {
+        self.damage_result.as_ref()
+    }
+
+    pub fn start_damage_compute(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            self.status = "No model loaded.".into();
+            return;
+        };
+        if self.project.damage_cases.is_empty() {
+            self.status = "No damage case in project.".into();
+            return;
+        }
+        let sel = self
+            .damage_selected
+            .min(self.project.damage_cases.len() - 1);
+        let raw_case = self.project.damage_cases[sel].clone();
+        let project = self.project.clone();
+
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision.level = self.level;
+        opts.subdivision.mode = self.mode;
+
+        self.damage_generation += 1;
+        let gen = self.damage_generation;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.damage_worker = Some(rx);
+
+        std::thread::spawn(move || {
+            let res: Result<DamageResult, String> = (|| {
+                let resolved = project.resolve_damage_case(&raw_case)?;
+                seacraft_core::damage::validate(&resolved)?;
+                seacraft_core::damage::evaluate(&surface, &opts, &resolved)
+            })();
+            let _ = tx.send((gen, res));
+        });
+    }
+
+    pub fn compute_damage_blocking(&mut self, name: Option<&str>) -> Result<&DamageResult, String> {
+        let surface = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| "no model loaded".to_string())?;
+        let raw_case = self.project.damage_case(name)?;
+        let case = self.project.resolve_damage_case(raw_case)?;
+        seacraft_core::damage::validate(&case)?;
+        if let Some(i) = self
+            .project
+            .damage_cases
+            .iter()
+            .position(|c| c.name == case.name)
+        {
+            self.damage_selected = i;
+        }
+        self.damage_generation += 1;
+        self.damage_worker = None;
+
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision.level = self.level;
+        opts.subdivision.mode = self.mode;
+
+        let res = seacraft_core::damage::evaluate(surface, &opts, &case)?;
+        self.damage_result = Some(res);
+        self.damage_stale = false;
+        Ok(self.damage_result.as_ref().unwrap())
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {

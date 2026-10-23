@@ -1,6 +1,7 @@
 //! Side docks: the layer manager and the hydrostatics report.
 
 use eframe::egui;
+use seacraft_core::damage::{Compartment, CompartmentSpec, DamageCase, DamageResult};
 use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
 use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
 use seacraft_core::project::Project;
@@ -402,6 +403,668 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             });
         }
     }
+    action
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DamageAction {
+    None,
+    Changed,
+    Compute,
+}
+
+pub struct DamagePanel<'a> {
+    pub project: &'a mut Project,
+    pub selected: &'a mut usize,
+    pub result: Option<&'a DamageResult>,
+    pub stale: bool,
+    pub busy: bool,
+}
+
+fn unique_case_name(base: &str, existing: &[DamageCase]) -> String {
+    let base_trimmed = base.trim();
+    let base_name = if base_trimmed.is_empty() {
+        "Damage case"
+    } else {
+        base_trimmed
+    };
+    if !existing.iter().any(|c| c.name == base_name) {
+        return base_name.to_string();
+    }
+    let mut counter = 2;
+    loop {
+        let name = format!("{base_name} ({counter})");
+        if !existing.iter().any(|c| c.name == name) {
+            return name;
+        }
+        counter += 1;
+    }
+}
+
+fn unique_compartment_name(base: &str, existing: &[Compartment]) -> String {
+    let base_trimmed = base.trim();
+    let base_name = if base_trimmed.is_empty() {
+        "Compartment"
+    } else {
+        base_trimmed
+    };
+    if !existing.iter().any(|c| c.name == base_name) {
+        return base_name.to_string();
+    }
+    let mut counter = 2;
+    loop {
+        let name = format!("{base_name} ({counter})");
+        if !existing.iter().any(|c| c.name == name) {
+            return name;
+        }
+        counter += 1;
+    }
+}
+
+pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
+    let mut action = DamageAction::None;
+    ui.heading("Damage Stability");
+    ui.add_space(4.0);
+
+    // Compartments section
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Compartments").strong());
+        if ui.button("+ Add compartment").clicked() {
+            let n = panel.project.compartments.len() + 1;
+            let name =
+                unique_compartment_name(&format!("Compartment {n}"), &panel.project.compartments);
+            panel.project.compartments.push(Compartment {
+                name,
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: -0.5,
+                y_max: 0.5,
+                z_min: 0.0,
+                z_max: 1.0,
+                permeability: 0.95,
+                clip_to_hull: true,
+            });
+            action = DamageAction::Changed;
+        }
+    });
+
+    let mut remove_comp = None;
+    for (c_idx, comp) in panel.project.compartments.iter_mut().enumerate() {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                if ui.text_edit_singleline(&mut comp.name).changed() {
+                    action = DamageAction::Changed;
+                }
+                if ui
+                    .checkbox(&mut comp.clip_to_hull, "Clip to hull")
+                    .changed()
+                {
+                    action = DamageAction::Changed;
+                }
+                if ui.button("🗑").on_hover_text("Remove compartment").clicked() {
+                    remove_comp = Some(c_idx);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Permeability:");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut comp.permeability)
+                            .speed(0.01)
+                            .range(0.0..=1.0),
+                    )
+                    .changed()
+                {
+                    action = DamageAction::Changed;
+                }
+            });
+            egui::CollapsingHeader::new("Bounds [x, y, z]")
+                .id_salt(("comp_bounds_header", c_idx))
+                .default_open(false)
+                .show(ui, |ui| {
+                    egui::Grid::new(format!("comp_bounds_{c_idx}"))
+                        .num_columns(3)
+                        .show(ui, |ui| {
+                            ui.label("X range (m):");
+                            if ui
+                                .add(egui::DragValue::new(&mut comp.x_min).speed(0.01))
+                                .changed()
+                            {
+                                action = DamageAction::Changed;
+                            }
+                            if ui
+                                .add(egui::DragValue::new(&mut comp.x_max).speed(0.01))
+                                .changed()
+                            {
+                                action = DamageAction::Changed;
+                            }
+                            ui.end_row();
+
+                            ui.label("Y range (m):");
+                            if ui
+                                .add(egui::DragValue::new(&mut comp.y_min).speed(0.01))
+                                .changed()
+                            {
+                                action = DamageAction::Changed;
+                            }
+                            if ui
+                                .add(egui::DragValue::new(&mut comp.y_max).speed(0.01))
+                                .changed()
+                            {
+                                action = DamageAction::Changed;
+                            }
+                            ui.end_row();
+
+                            ui.label("Z range (m):");
+                            if ui
+                                .add(egui::DragValue::new(&mut comp.z_min).speed(0.01))
+                                .changed()
+                            {
+                                action = DamageAction::Changed;
+                            }
+                            if ui
+                                .add(egui::DragValue::new(&mut comp.z_max).speed(0.01))
+                                .changed()
+                            {
+                                action = DamageAction::Changed;
+                            }
+                            ui.end_row();
+                        });
+                });
+        });
+    }
+    if let Some(i) = remove_comp {
+        let removed_name = panel.project.compartments.remove(i).name;
+        for case in &mut panel.project.damage_cases {
+            case.compartments.retain(|spec| match spec {
+                CompartmentSpec::Named(n) => n != &removed_name,
+                CompartmentSpec::Inline(_) => true,
+            });
+        }
+        action = DamageAction::Changed;
+    }
+
+    // Damage case picker and New / Duplicate / Delete buttons
+    ui.separator();
+    ui.heading("Damage Cases");
+    ui.add_space(4.0);
+
+    let mut delete_case = false;
+    let mut duplicate_case = false;
+    let mut new_case = false;
+
+    if panel.project.damage_cases.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("No damage cases in project.");
+            if ui.button("New").clicked() {
+                new_case = true;
+            }
+        });
+    } else {
+        if *panel.selected >= panel.project.damage_cases.len() {
+            *panel.selected = panel.project.damage_cases.len() - 1;
+        }
+        let current_name = panel.project.damage_cases[*panel.selected].name.clone();
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("damage_case_picker")
+                .selected_text(&current_name)
+                .show_ui(ui, |ui| {
+                    for (idx, case) in panel.project.damage_cases.iter().enumerate() {
+                        if ui
+                            .selectable_label(*panel.selected == idx, &case.name)
+                            .clicked()
+                        {
+                            *panel.selected = idx;
+                            action = DamageAction::Changed;
+                        }
+                    }
+                });
+            if ui.button("New").clicked() {
+                new_case = true;
+            }
+            if ui.button("Duplicate").clicked() {
+                duplicate_case = true;
+            }
+            if ui.button("Delete").clicked() {
+                delete_case = true;
+            }
+        });
+    }
+
+    if new_case {
+        let name = unique_case_name("Damage case 1", &panel.project.damage_cases);
+        panel.project.damage_cases.push(DamageCase {
+            name,
+            compartments: Vec::new(),
+            kg: Some(1.0),
+            displacement_t: Some(10.0),
+            lcg: Some(0.0),
+            tcg: Some(0.0),
+            loading_condition_name: None,
+            loading_condition: None,
+            water_density: None,
+        });
+        *panel.selected = panel.project.damage_cases.len() - 1;
+        return DamageAction::Changed;
+    }
+
+    if duplicate_case && !panel.project.damage_cases.is_empty() {
+        let orig = &panel.project.damage_cases[*panel.selected];
+        let mut dup = orig.clone();
+        dup.name = unique_case_name(&orig.name, &panel.project.damage_cases);
+        panel.project.damage_cases.push(dup);
+        *panel.selected = panel.project.damage_cases.len() - 1;
+        return DamageAction::Changed;
+    }
+
+    if delete_case && !panel.project.damage_cases.is_empty() {
+        panel.project.damage_cases.remove(*panel.selected);
+        if *panel.selected >= panel.project.damage_cases.len() && *panel.selected > 0 {
+            *panel.selected -= 1;
+        }
+        return DamageAction::Changed;
+    }
+
+    if panel.project.damage_cases.is_empty() {
+        return action;
+    }
+
+    let case = &mut panel.project.damage_cases[*panel.selected];
+
+    // Editable name
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        if ui.text_edit_singleline(&mut case.name).changed() {
+            action = DamageAction::Changed;
+        }
+    });
+    let name = case.name.clone();
+    if panel
+        .project
+        .damage_cases
+        .iter()
+        .filter(|c| c.name == name)
+        .count()
+        > 1
+    {
+        ui.colored_label(
+            egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+            "Another damage case has this name; rename it before saving.",
+        );
+    }
+    let case = &mut panel.project.damage_cases[*panel.selected];
+
+    // Flooded compartments checkboxes
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new("Flooded Compartments").strong());
+    if panel.project.compartments.is_empty() {
+        ui.label("No compartments defined above.");
+    } else {
+        for comp in &panel.project.compartments {
+            let is_flooded = case.compartments.iter().any(|s| match s {
+                CompartmentSpec::Named(n) => n == &comp.name,
+                _ => false,
+            });
+            let mut checked = is_flooded;
+            if ui.checkbox(&mut checked, &comp.name).changed() {
+                if checked {
+                    if !is_flooded {
+                        case.compartments
+                            .push(CompartmentSpec::Named(comp.name.clone()));
+                        action = DamageAction::Changed;
+                    }
+                } else {
+                    case.compartments.retain(|s| match s {
+                        CompartmentSpec::Named(n) => n != &comp.name,
+                        CompartmentSpec::Inline(_) => true,
+                    });
+                    action = DamageAction::Changed;
+                }
+            }
+        }
+    }
+
+    // Keep any Inline specs read-only
+    let inlines: Vec<Compartment> = case
+        .compartments
+        .iter()
+        .filter_map(|s| match s {
+            CompartmentSpec::Inline(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect();
+    if !inlines.is_empty() {
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new("Inline Compartments (read-only):").italics());
+        for inc in &inlines {
+            ui.label(format!(
+                "• {} [x: {:.2}..{:.2}, y: {:.2}..{:.2}, z: {:.2}..{:.2}, μ: {:.2}]",
+                inc.name,
+                inc.x_min,
+                inc.x_max,
+                inc.y_min,
+                inc.y_max,
+                inc.z_min,
+                inc.z_max,
+                inc.permeability
+            ));
+        }
+    }
+
+    // Intact condition
+    ui.separator();
+    ui.label(egui::RichText::new("Intact Condition").strong());
+
+    let is_by_cond = case.loading_condition_name.is_some()
+        || (case.loading_condition.is_some() && case.displacement_t.is_none());
+    let mut mode_cond = is_by_cond;
+
+    ui.horizontal(|ui| {
+        if ui
+            .radio_value(&mut mode_cond, true, "Loading condition")
+            .clicked()
+            && !is_by_cond
+        {
+            let default_name = panel
+                .project
+                .loading_conditions
+                .first()
+                .map(|c| c.name.clone());
+            case.loading_condition_name = default_name;
+            case.loading_condition = None;
+            // Manual particulars would override the condition in
+            // `damage::evaluate`, so they go when the condition takes over.
+            case.displacement_t = None;
+            case.kg = None;
+            case.lcg = None;
+            case.tcg = None;
+            action = DamageAction::Changed;
+        }
+        if ui.radio_value(&mut mode_cond, false, "Manual").clicked() && is_by_cond {
+            case.loading_condition_name = None;
+            case.loading_condition = None;
+            if case.displacement_t.is_none() {
+                case.displacement_t = Some(10.0);
+            }
+            if case.kg.is_none() {
+                case.kg = Some(1.0);
+            }
+            if case.lcg.is_none() {
+                case.lcg = Some(0.0);
+            }
+            action = DamageAction::Changed;
+        }
+    });
+
+    if mode_cond {
+        if panel.project.loading_conditions.is_empty() {
+            ui.label("No loading conditions in project.");
+        } else {
+            let current_cond_name = case
+                .loading_condition_name
+                .clone()
+                .unwrap_or_else(|| panel.project.loading_conditions[0].name.clone());
+            if case.loading_condition_name.is_none() {
+                case.loading_condition_name = Some(current_cond_name.clone());
+                case.loading_condition = None;
+                action = DamageAction::Changed;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Condition:");
+                egui::ComboBox::from_id_salt("damage_loading_condition_picker")
+                    .selected_text(&current_cond_name)
+                    .show_ui(ui, |ui| {
+                        for cond in &panel.project.loading_conditions {
+                            let is_sel = case.loading_condition_name.as_deref() == Some(&cond.name);
+                            if ui.selectable_label(is_sel, &cond.name).clicked() {
+                                case.loading_condition_name = Some(cond.name.clone());
+                                case.loading_condition = None;
+                                action = DamageAction::Changed;
+                            }
+                        }
+                    });
+            });
+        }
+    } else {
+        ui.columns(2, |cols| {
+            cols[0].spacing_mut().item_spacing.y = 2.0;
+            cols[0].horizontal(|ui| {
+                ui.label("Δ (t):");
+                let mut disp = case.displacement_t.unwrap_or(10.0);
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut disp)
+                            .speed(0.01)
+                            .range(0.001..=f64::INFINITY),
+                    )
+                    .changed()
+                {
+                    case.displacement_t = Some(disp);
+                    case.loading_condition_name = None;
+                    action = DamageAction::Changed;
+                }
+            });
+            cols[0].horizontal(|ui| {
+                ui.label("KG (m):");
+                let mut kg = case.kg.unwrap_or(1.0);
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut kg)
+                            .speed(0.01)
+                            .range(0.0..=f64::INFINITY),
+                    )
+                    .changed()
+                {
+                    case.kg = Some(kg);
+                    case.loading_condition_name = None;
+                    action = DamageAction::Changed;
+                }
+            });
+            cols[1].spacing_mut().item_spacing.y = 2.0;
+            cols[1].horizontal(|ui| {
+                ui.label("LCG (m):");
+                let mut lcg = case.lcg.unwrap_or(0.0);
+                if ui.add(egui::DragValue::new(&mut lcg).speed(0.01)).changed() {
+                    case.lcg = Some(lcg);
+                    case.loading_condition_name = None;
+                    action = DamageAction::Changed;
+                }
+            });
+            cols[1].horizontal(|ui| {
+                ui.label("TCG (m):");
+                let mut tcg = case.tcg.unwrap_or(0.0);
+                if ui.add(egui::DragValue::new(&mut tcg).speed(0.01)).changed() {
+                    case.tcg = Some(tcg);
+                    case.loading_condition_name = None;
+                    action = DamageAction::Changed;
+                }
+            });
+        });
+    }
+
+    // Compute button
+    ui.separator();
+    ui.horizontal(|ui| {
+        let btn = ui.add_enabled(!panel.busy, egui::Button::new("Compute"));
+        if btn.clicked() {
+            action = DamageAction::Compute;
+        }
+        if panel.busy {
+            ui.spinner();
+            ui.label("computing…");
+        } else if panel.stale {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                "stale — press Compute",
+            );
+        }
+    });
+
+    // Results
+    if let Some(r) = panel.result {
+        ui.separator();
+        ui.heading("Damaged Equilibrium");
+        if !r.equilibrium_found {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+                "Equilibrium NOT found (lost buoyancy exceeds reserve buoyancy or capsized)",
+            );
+        } else {
+            ui.colored_label(
+                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
+                "Equilibrium found",
+            );
+        }
+
+        ui.columns(2, |cols| {
+            cols[0].spacing_mut().item_spacing.y = 2.0;
+            row(
+                &mut cols[0],
+                "Δ (mass)",
+                format!("{:.3} t", r.displacement_t),
+            );
+            row(
+                &mut cols[0],
+                "Intact draft",
+                format!("{:.3} m", r.intact_draft),
+            );
+            row(&mut cols[0], "Damaged draft", format!("{:.3} m", r.draft));
+            row(&mut cols[0], "Sinkage", format!("{:.3} m", r.sinkage_m));
+            row(&mut cols[0], "Damaged heel", format!("{:.1}°", r.heel_deg));
+            row(
+                &mut cols[0],
+                "Net buoyant vol.",
+                format!("{:.3} m³", r.net_volume_m3),
+            );
+
+            cols[1].spacing_mut().item_spacing.y = 2.0;
+            row(&mut cols[1], "KG", format!("{:.3} m", r.kg));
+            row(
+                &mut cols[1],
+                "Intact trim",
+                format!("{:.3} m", r.intact_trim_m),
+            );
+            row(&mut cols[1], "Damaged trim", format!("{:.3} m", r.trim_m));
+            if let Some(fb) = r.freeboard_m {
+                row(&mut cols[1], "Min freeboard", format!("{:.3} m", fb));
+            } else {
+                row(&mut cols[1], "Min freeboard", "-".to_string());
+            }
+            row(
+                &mut cols[1],
+                "Lost buoyancy",
+                format!("{:.3} m³", r.lost_volume_m3),
+            );
+            row(&mut cols[1], "KB", format!("{:.3} m", r.kb));
+        });
+
+        if !r.compartments.is_empty() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Flooded Compartment Summary").strong());
+            egui::Grid::new("result_damage_compartments_table")
+                .num_columns(5)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("Compartment");
+                    ui.label("μ");
+                    ui.label("Submerged (m³)");
+                    ui.label("Lost (m³)");
+                    ui.label("Centroid (x, y, z)");
+                    ui.end_row();
+                    for c in &r.compartments {
+                        ui.label(&c.name);
+                        ui.label(format!("{:.2}", c.permeability));
+                        ui.label(format!("{:.3}", c.submerged_volume_m3));
+                        ui.label(format!("{:.3}", c.lost_volume_m3));
+                        ui.label(format!(
+                            "{:.2}, {:.2}, {:.2}",
+                            c.centroid.x, c.centroid.y, c.centroid.z
+                        ));
+                        ui.end_row();
+                    }
+                });
+        }
+
+        if let Some(crit) = &r.criteria {
+            ui.add_space(4.0);
+            let badge_color = if crit.passed {
+                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
+            } else {
+                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
+            };
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Residual Stability Criteria:").strong());
+                ui.colored_label(badge_color, if crit.passed { "PASS" } else { "FAIL" });
+            });
+            let pass_fail = |ok: bool| {
+                if ok {
+                    (egui::Color32::from_rgb(0x5a, 0xd0, 0x6a), "PASS")
+                } else {
+                    (egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), "FAIL")
+                }
+            };
+            egui::Grid::new("damage_criteria_grid")
+                .num_columns(3)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("Criterion");
+                    ui.label("Value");
+                    ui.label("Status");
+                    ui.end_row();
+
+                    let rows = [
+                        (
+                            "Positive range ≥ 15°",
+                            format!("{:.1}°", crit.positive_range_deg),
+                            crit.positive_range_deg >= 15.0,
+                        ),
+                        (
+                            "Max GZ ≥ 0.10 m",
+                            format!("{:.3} m", crit.max_gz_m),
+                            crit.max_gz_m >= 0.10,
+                        ),
+                        (
+                            "Area ≥ 0.015 m·rad",
+                            format!("{:.4} m·rad", crit.area_m_rad),
+                            crit.area_m_rad >= 0.015,
+                        ),
+                    ];
+                    for (name, val, ok) in rows {
+                        let (col, text) = pass_fail(ok);
+                        ui.label(name);
+                        ui.label(val);
+                        ui.colored_label(col, text);
+                        ui.end_row();
+                    }
+                });
+        }
+
+        ui.add_space(4.0);
+        let pts: Vec<(f64, f64)> = r
+            .residual_gz
+            .iter()
+            .filter_map(|p| {
+                p.gz.filter(|gz| gz.is_finite())
+                    .map(|gz| (p.relative_heel_deg, gz))
+            })
+            .collect();
+        if !pts.is_empty() {
+            ui.label(egui::RichText::new("Residual Righting Lever GZ").strong());
+            plot_gz(ui, &[(r.case_name.clone(), pts)]);
+        }
+
+        if !r.warnings.is_empty() {
+            ui.add_space(4.0);
+            for w in &r.warnings {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                    format!("Warning: {w}"),
+                );
+            }
+        }
+    }
+
     action
 }
 
@@ -1321,6 +1984,67 @@ mod tests {
                 ui,
                 &[("Test".into(), vec![(0.0, 0.0), (10.0, 0.2), (20.0, 0.35)])],
             );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn damage_panel_and_plot_gz_run_headlessly() {
+        let ctx = egui::Context::default();
+        let mut project = Project::default();
+        let mut selected = 0;
+        let input = egui::RawInput::default();
+        let mut out = ctx.run_ui(input.clone(), |ui| {
+            let action = damage(
+                ui,
+                DamagePanel {
+                    project: &mut project,
+                    selected: &mut selected,
+                    result: None,
+                    stale: false,
+                    busy: false,
+                },
+            );
+            assert_eq!(action, DamageAction::None);
+        });
+        out.textures_delta.clear();
+
+        project.compartments.push(Compartment {
+            name: "Midship".into(),
+            x_min: 3.5,
+            x_max: 5.0,
+            y_min: -1.0,
+            y_max: 1.0,
+            z_min: 0.0,
+            z_max: 1.5,
+            permeability: 0.95,
+            clip_to_hull: true,
+        });
+
+        project.damage_cases.push(DamageCase {
+            name: "Midship flood".into(),
+            compartments: vec![CompartmentSpec::Named("Midship".into())],
+            kg: Some(1.1),
+            displacement_t: Some(12.0),
+            lcg: Some(4.3),
+            tcg: Some(0.0),
+            loading_condition_name: None,
+            loading_condition: None,
+            water_density: None,
+        });
+
+        let mut out = ctx.run_ui(input, |ui| {
+            let action = damage(
+                ui,
+                DamagePanel {
+                    project: &mut project,
+                    selected: &mut selected,
+                    result: None,
+                    stale: true,
+                    busy: false,
+                },
+            );
+            assert_eq!(action, DamageAction::None);
         });
         out.textures_delta.clear();
     }

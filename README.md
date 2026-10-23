@@ -309,6 +309,16 @@ on a worker thread (Compute): Δ, LCG/TCG, KG solid/fluid, FSM/FSC, draft,
 trim, list, GM, the tank table, IMO A.749 and weather criteria with
 PASS/FAIL, and the GZ curve. Control: `loading.compute {name}`.
 
+The GUI's **Damage panel** (View menu, or control `ui.set {"damage_panel":
+true}`) edits the project's shared compartments (permeability, hull clipping,
+box bounds) and damage cases — selecting flooded compartments and setting the
+intact condition either manually (Δ, KG, LCG, TCG) or from a project loading
+condition via `loading_condition_name`. A worker thread computes damaged
+equilibrium (lost buoyancy, draft, trim, heel, sinkage, freeboard), the flooded
+compartment summary, indicative SOLAS II-1 Reg. 7-2 residual criteria with
+PASS/FAIL, and the residual GZ curve. Control: `damage.compute {name}`. MCP:
+`damage_stability {name}` evaluates cases from the sidecar.
+
 ### Seakeeping (strip-theory heave & pitch motions)
 
 `seakeeping::head_sea_raos` (`seacraft seakeeping hull.fef --draft T` / MCP

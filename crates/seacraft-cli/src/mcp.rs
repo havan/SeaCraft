@@ -107,6 +107,7 @@ optimize_hull {speed_kn} reshapes the hull (Cp, LCB, L/B) to cut resistance at a
 Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
 Project data: project_get and project_set read and write the design sidecar (loading conditions, compartments, damage cases, windage).
 Evaluate loading conditions with loading_condition {name} (or inline case / case_path).
+Evaluate damage stability with damage_stability {name} (or inline case / case_path).
 Tool failures come back as a normal result with isError true and a message; protocol errors are JSON-RPC errors.
 Resources: seacraft://hull (summary of the loaded hull) and seacraft://tools (catalogue with each tool's effect).";
 
@@ -1448,10 +1449,14 @@ impl McpServer {
                 serde_json::from_str(&contents)
                     .map_err(|e| format!("damage_stability: invalid JSON in {path}: {e}"))?
             } else {
-                return Err(
-                    "damage_stability: give `case` (inline object) or `case_path` (JSON file path)"
-                        .into(),
-                );
+                let name = str_arg(a, "name");
+                let c = self
+                    .project
+                    .damage_case(name)
+                    .map_err(|e| format!("damage_stability: {e}"))?;
+                self.project
+                    .resolve_damage_case(c)
+                    .map_err(|e| format!("damage_stability: {e}"))?
             };
         seacraft_core::damage::validate(&case).map_err(|e| format!("damage_stability: {e}"))?;
 
@@ -2629,9 +2634,11 @@ pub fn tool_definitions() -> Vec<Value> {
              Flooded compartment volume is deducted from the buoyant hull, holding displacement and KG constant. \
              Solves damaged equilibrium (draft, trim, heel/list), checks freeboard to the deck edge, samples the \
              residual GZ curve (heels 0-60 deg, free trim), and evaluates SOLAS II-1 Reg. 7-2 indicative criteria \
-             (positive range >= 15 deg, max GZ >= 0.10 m, area >= 0.015 m*rad). Pass either inline `case` or `case_path`.",
+             (positive range >= 15 deg, max GZ >= 0.10 m, area >= 0.015 m*rad). \
+             Evaluate a case by `name` from the project sidecar, or pass an inline `case` or `case_path`.",
             obj(
                 json!({
+                    "name": string("Name of a damage case in the project (defaults to the first case when neither case nor case_path is given)"),
                     "case": {"type": "object", "description": "Inline DamageCase object {name, compartments, kg, displacement_t}"},
                     "case_path": string("Path to a DamageCase JSON file"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
@@ -3305,8 +3312,15 @@ impl Remote {
                 self.request("project.set", json!({ "project": p }))
             }
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
-            "damage_stability" => {
+            "damage_stability" if a.contains_key("case") || a.contains_key("case_path") => {
                 self.request("stability.damage_stability", Value::Object(a.clone()))
+            }
+            "damage_stability" => {
+                let mut p = json!({});
+                if let Some(name) = str_arg(a, "name") {
+                    p["name"] = json!(name);
+                }
+                self.request("damage.compute", p)
             }
             "seakeeping_raos" => self.request("seakeeping.compute", Value::Object(a.clone())),
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
@@ -4898,6 +4912,52 @@ mod tests {
         let crit = &res["criteria"];
         assert_eq!(crit["passed"], true);
         fails(&mut s, 2, "damage_stability", json!({}));
+    }
+
+    #[test]
+    fn damage_stability_by_name_equals_inline_case() {
+        let mut s = McpServer::new();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-damage.json");
+        let text = std::fs::read_to_string(&path).expect("demo-damage.json");
+        let case: seacraft_core::damage::DamageCase =
+            serde_json::from_str(&text).expect("parse demo-damage.json");
+
+        let inline_res = ok(
+            &mut s,
+            1,
+            "damage_stability",
+            json!({ "case": serde_json::to_value(&case).unwrap(), "level": 2 }),
+        );
+
+        let project_json = json!({
+            "format": "seacraft-project",
+            "version": 1,
+            "loading_conditions": [],
+            "compartments": [],
+            "damage_cases": [serde_json::to_value(&case).unwrap()],
+            "windage": [],
+        });
+        ok(&mut s, 2, "project_set", json!({ "project": project_json }));
+
+        let name_res = ok(
+            &mut s,
+            3,
+            "damage_stability",
+            json!({ "name": case.name, "level": 2 }),
+        );
+
+        assert_eq!(inline_res["displacement_t"], name_res["displacement_t"]);
+        assert_eq!(inline_res["draft"], name_res["draft"]);
+        assert_eq!(inline_res["trim_m"], name_res["trim_m"]);
+        assert_eq!(inline_res["heel_deg"], name_res["heel_deg"]);
+        assert_eq!(
+            inline_res["equilibrium_found"],
+            name_res["equilibrium_found"]
+        );
+
+        let default_res = ok(&mut s, 4, "damage_stability", json!({ "level": 2 }));
+        assert_eq!(inline_res["displacement_t"], default_res["displacement_t"]);
+        assert_eq!(inline_res["draft"], default_res["draft"]);
     }
 
     #[test]
