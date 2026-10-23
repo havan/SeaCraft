@@ -23,6 +23,7 @@
 
 pub mod analysis;
 pub mod curves;
+pub mod damage;
 pub mod demo;
 pub mod develop;
 pub mod dxf;

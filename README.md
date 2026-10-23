@@ -264,6 +264,16 @@ Part A §2.3 severe wind and rolling (weather) criterion at `KG_fluid`.
 configurable bilge type (`round`, `sharp`, `keels:<Ak>`), superstructure
 windage items (`--windage name:area:z`) and downflooding angle.
 
+`damage::evaluate` (`seacraft damage hull.fef case.json` / MCP
+`damage_stability`) evaluates deterministic damage stability by the
+lost-buoyancy method: the flooded compartment volume below the waterplane is
+deducted from the buoyant hull with permeability $\mu$, holding ship displacement
+and KG constant. It solves damaged equilibrium (`draft`, `trim`, `heel`/list),
+checks freeboard to the deck edge at the lowest point, samples the residual GZ
+curve from equilibrium (heels 0–60°, free trim), and evaluates indicative
+SOLAS-style residual criteria (SOLAS II-1 Reg. 7-2 spirit: range $\ge 15^\circ$,
+max $GZ \ge 0.10$ m, area $\ge 0.015$ m·rad).
+
 ### Fairing analysis
 
 Fairing a hull means looking at how light reflects off it. `analysis` computes
@@ -371,6 +381,7 @@ seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,..
                             [--trim m | --free-trim [--lcg x]] [--weather [--bilge round|sharp|keels:Ak]
                             [--windage name:area:z]... [--downflooding deg]] [--csv out.csv]
 seacraft loadcase  hull.fef case.json [--json]
+seacraft damage    hull.fef case.json [--json]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]
 seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]

@@ -749,6 +749,7 @@ impl McpServer {
             "stability_cross_curves" => self.stability_curves(a),
             "loading_condition" => self.loading_condition(a),
             "weather_criterion" => self.weather_criterion(a),
+            "damage_stability" => self.damage_stability(a),
             "bonjean_curves" => self.bonjean_curves(a),
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
@@ -1290,6 +1291,36 @@ impl McpServer {
             wind_pressure_pa,
         };
         let res = seacraft_core::weather::evaluate_hull_weather(&hull, &base, &cond, &w_input);
+        let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn damage_stability(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let case: seacraft_core::damage::DamageCase = if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
+            serde_json::from_value(case_val.clone())
+                .map_err(|e| format!("damage_stability: invalid `case`: {e}"))?
+        } else if let Some(path) = a.get("case_path").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+            let contents = std::fs::read_to_string(path)
+                .map_err(|e| format!("damage_stability: cannot read {path}: {e}"))?;
+            serde_json::from_str(&contents)
+                .map_err(|e| format!("damage_stability: invalid JSON in {path}: {e}"))?
+        } else {
+            return Err("damage_stability: give `case` (inline object) or `case_path` (JSON file path)".into());
+        };
+        seacraft_core::damage::validate(&case).map_err(|e| format!("damage_stability: {e}"))?;
+
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let mut opts = self.opts.clone();
+        opts.subdivision.level = level;
+
+        let res = seacraft_core::damage::evaluate(&self.surface, &opts, &case)
+            .map_err(|e| format!("damage_stability: {e}"))?;
         let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
             o.insert("backend".into(), json!("headless"));
@@ -2347,6 +2378,24 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "damage_stability",
+            "Damage stability (lost-buoyancy method)",
+            "Evaluate deterministic damage stability by the lost-buoyancy method for a damaged ship condition. \
+             Flooded compartment volume is deducted from the buoyant hull, holding displacement and KG constant. \
+             Solves damaged equilibrium (draft, trim, heel/list), checks freeboard to the deck edge, samples the \
+             residual GZ curve (heels 0-60 deg, free trim), and evaluates SOLAS II-1 Reg. 7-2 indicative criteria \
+             (positive range >= 15 deg, max GZ >= 0.10 m, area >= 0.015 m*rad). Pass either inline `case` or `case_path`.",
+            obj(
+                json!({
+                    "case": {"type": "object", "description": "Inline DamageCase object {name, compartments, kg, displacement_t}"},
+                    "case_path": string("Path to a DamageCase JSON file"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "bonjean_curves",
             "Bonjean curves",
             "Section area against draft at every longitudinal station, cut from the refined mesh at even keel: the \
@@ -2927,6 +2976,7 @@ impl Remote {
             }
             "loading_condition" => self.request("stability.loading_condition", Value::Object(a.clone())),
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
+            "damage_stability" => self.request("stability.damage_stability", Value::Object(a.clone())),
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
@@ -3221,6 +3271,7 @@ mod tests {
                 "stability_cross_curves",
                 "loading_condition",
                 "weather_criterion",
+                "damage_stability",
                 "bonjean_curves",
                 "table_of_offsets",
                 "resistance_curve",
@@ -4317,6 +4368,24 @@ mod tests {
         assert!(from_file["imo_criteria"]["passed"].is_boolean(), "{from_file}");
 
         fails(&mut s, 3, "loading_condition", json!({}));
+    }
+
+    #[test]
+    fn damage_stability_tool_finds_equilibrium_and_measures_residual_gz() {
+        let mut s = McpServer::new();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-damage.json");
+        let res = ok(
+            &mut s,
+            1,
+            "damage_stability",
+            json!({ "case_path": path.to_string_lossy() }),
+        );
+        assert_eq!(res["backend"], "headless");
+        assert_eq!(res["equilibrium_found"], true);
+        assert!(res["sinkage_m"].as_f64().unwrap() > 0.0);
+        let crit = &res["criteria"];
+        assert_eq!(crit["passed"], true);
+        fails(&mut s, 2, "damage_stability", json!({}));
     }
 
     #[test]

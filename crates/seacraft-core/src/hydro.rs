@@ -220,7 +220,7 @@ fn clip_below(tri: [Vec3; 3], plane: &Plane) -> Vec<Vec3> {
 }
 
 /// Integrate volume, moments and wetted surface of the submerged hull.
-fn integrate(
+pub fn integrate(
     verts: &[Vec3],
     tris: &[[usize; 3]],
     plane: &Plane,

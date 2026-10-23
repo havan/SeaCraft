@@ -8,7 +8,7 @@ use seacraft_core::stability::{
     StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{lackenby, loading, table, trimopt, 
+use seacraft_core::{damage, lackenby, loading, table, trimopt, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
     develop, michell, offsets, parametric::{self, HullKind, HullSpec}, planing, raster, resistance, topology, transform,
 };
@@ -71,6 +71,8 @@ enum Command {
     Stability(StabilityArgs),
     /// Evaluate a ship loading condition (weights, tanks, FSM/FSC, floating equilibrium and IMO A.749)
     Loadcase(LoadcaseArgs),
+    /// Deterministic damage stability by the lost-buoyancy method
+    Damage(DamageArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
     Linesplan(LinesplanArgs),
     /// Design dossier: self-contained HTML report with particulars, linesplan, hydrostatics, SAC, stability and resistance
@@ -1027,6 +1029,19 @@ struct LoadcaseArgs {
 }
 
 #[derive(Args, Debug)]
+struct DamageArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Input damage case JSON file
+    case: PathBuf,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct ReportArgs {
     /// Input .fef file
     file: PathBuf,
@@ -1120,6 +1135,7 @@ fn run() -> Result<()> {
         Command::Planing(a) => cmd_planing(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Loadcase(a) => cmd_loadcase(a),
+        Command::Damage(a) => cmd_damage(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Report(a) => cmd_report(a),
         Command::Render(a) => cmd_render(a),
@@ -2768,6 +2784,136 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     }
     if let Some(w) = &res.weather {
         print_weather_summary(w);
+    }
+    Ok(())
+}
+
+fn cmd_damage(a: DamageArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let case_text = std::fs::read_to_string(&a.case)
+        .with_context(|| format!("cannot read {}", a.case.display()))?;
+    let case: damage::DamageCase = serde_json::from_str(&case_text)
+        .with_context(|| format!("cannot parse {}", a.case.display()))?;
+    damage::validate(&case).map_err(|e| anyhow::anyhow!("{}: {e}", a.case.display()))?;
+
+    let opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+    );
+    let res = damage::evaluate(&s, &opts, &case).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&res)?);
+        return Ok(());
+    }
+
+    println!("{}  -  damage case: {}", s.settings.name, res.case_name);
+    println!();
+    let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
+    row(
+        "displacement",
+        format!(
+            "{:.3} t  (net {:.3} m3, rho {:.3} t/m3)",
+            res.displacement_t, res.net_volume_m3, res.water_density
+        ),
+    );
+    row(
+        "LCG / TCG / KG",
+        format!("{:.3} m / {:+.3} m / {:.3} m above keel", res.lcg, res.tcg, res.kg),
+    );
+    row(
+        "intact equilibrium",
+        format!("draft {:.3} m, trim {:+.3} m", res.intact_draft, res.intact_trim_m),
+    );
+    row(
+        "damaged equilibrium",
+        format!(
+            "draft {:.3} m, trim {:+.3} m, heel {:+.2} deg{}",
+            res.draft,
+            res.trim_m,
+            res.heel_deg,
+            if res.equilibrium_found { " [FOUND]" } else { " [UNREACHED]" }
+        ),
+    );
+    row("sinkage", format!("{:+.3} m", res.sinkage_m));
+    row(
+        "freeboard to deck edge",
+        match res.freeboard_m {
+            Some(fb) if fb < 0.0 => format!("{:+.3} m  [IMMERSED]", fb),
+            Some(fb) => format!("{:.3} m", fb),
+            None => "—".to_string(),
+        },
+    );
+    row(
+        "net buoyancy centroid",
+        format!("LCB {:.3} m, TCB {:+.3} m, KB {:.3} m", res.lcb_x, res.tcb_y, res.kb),
+    );
+    println!();
+    println!("  flooded compartments:");
+    println!(
+        "    {:<30} {:>6} {:>8} {:>10} {:>10}",
+        "name", "perm", "clipped", "subm [m3]", "lost [m3]"
+    );
+    println!("    {}", "-".repeat(68));
+    for c in &res.compartments {
+        println!(
+            "    {:<30} {:>6.2} {:>8} {:>10.3} {:>10.3}",
+            c.name,
+            c.permeability,
+            if c.clip_to_hull { "yes" } else { "no" },
+            c.submerged_volume_m3,
+            c.lost_volume_m3
+        );
+    }
+    println!("    {}", "-".repeat(68));
+    println!(
+        "    {:<30} {:>6} {:>8} {:>10} {:>10.3}",
+        "TOTAL LOST BUOYANCY", "", "", "", res.lost_volume_m3
+    );
+    println!();
+    println!("  residual GZ curve from damaged equilibrium (free trim):");
+    println!(
+        "    {:>8}  {:>8}  {:>10}  {:>10}  {:>10}",
+        "rel deg", "abs deg", "draft [m]", "trim [m]", "GZ [m]"
+    );
+    for p in &res.residual_gz {
+        let rel_int = (p.relative_heel_deg.round()) as i64;
+        if rel_int % 5 == 0 || p.relative_heel_deg <= 10.0 {
+            println!(
+                "    {:>8.1}  {:>8.1}  {:>10}  {:>10}  {:>10}",
+                p.relative_heel_deg,
+                p.heel_deg,
+                p.draft.map(|d| format!("{:.3}", d)).unwrap_or_else(|| "—".to_string()),
+                p.trim_m.map(|t| format!("{:+.3}", t)).unwrap_or_else(|| "—".to_string()),
+                p.gz.map(|g| format!("{:+.4}", g)).unwrap_or_else(|| "—".to_string()),
+            );
+        }
+    }
+    if let Some(c) = &res.criteria {
+        println!();
+        println!("  residual stability criteria (indicative, SOLAS-style):");
+        println!(
+            "    {:>12}  {:>10}  {:>12}  status",
+            "pos range", "max GZ", "area(range)"
+        );
+        println!(
+            "    {:>12}  {:>10}  {:>12}  ------",
+            ">=15.0 deg", ">=0.100 m", ">=0.015 m*rad"
+        );
+        println!(
+            "    {:>10.1} deg  {:>8.3} m  {:>10.4} m*r  {}",
+            c.positive_range_deg,
+            c.max_gz_m,
+            c.area_m_rad,
+            if c.passed { "PASS" } else { "FAIL" }
+        );
+        println!("    note: {}", c.label);
+    }
+    for w in &res.warnings {
+        println!("  warning: {w}");
     }
     Ok(())
 }

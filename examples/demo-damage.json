@@ -1,0 +1,19 @@
+{
+  "name": "Midship hold flooding",
+  "displacement_t": 12.147,
+  "kg": 1.10,
+  "lcg": 4.297,
+  "compartments": [
+    {
+      "name": "Midship compartment",
+      "x_min": 3.5,
+      "x_max": 5.0,
+      "y_min": -1.2,
+      "y_max": 1.2,
+      "z_min": 0.0,
+      "z_max": 1.5,
+      "permeability": 0.95,
+      "clip_to_hull": true
+    }
+  ]
+}
