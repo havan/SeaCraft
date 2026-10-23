@@ -1353,6 +1353,50 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "undo_len": app.undo_len(),
             }))
         }
+        "model.optimize" => {
+            // Reshape the hull for lower resistance at a speed. It is an edit:
+            // one undo snapshot, the whole optimised hull replaces the model.
+            let params = p.as_object().cloned().unwrap_or_default();
+            let spec = seacraft_core::optimize::OptimizeSpec::from_params(&params, Some(app.kg()))
+                .map_err(|e| format!("model.optimize: {e}"))?;
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            let mut opts = app.hydro_options().clone();
+            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+                level,
+                mode: app.subdivision_mode(),
+            };
+            let surface = app.surface().ok_or_else(|| "model.optimize: no model is loaded".to_string())?;
+            let (out, report) = seacraft_core::optimize::optimize_hull(surface, &opts, &spec)
+                .map_err(|e| format!("model.optimize: {e}"))?;
+            app.snapshot_undo();
+            if let Some(surface) = app.surface_mut() {
+                *surface = out;
+            }
+            app.select_point(None);
+            // The optimised hull is measured at the draft that holds the
+            // original displacement; the app must read it there too.
+            app.hydro_options_mut().draft = report.optimised.draft_m;
+            app.mark_geometry_changed();
+            app.status_note(format!(
+                "hull optimised at {:.1} kn: RT {:+.1} %",
+                report.speed_kn, report.rt_change_pct
+            ));
+            Ok(json!({
+                "backend": "app",
+                "level": level,
+                "kg": spec.kg,
+                "report": report,
+                "faces": app.face_count(),
+                "points": app.control_point_count(),
+                "draft": app.hydro_options().draft,
+                "undo_len": app.undo_len(),
+            }))
+        }
         "curves.unfold" => {
             // Read-only plate development: no snapshot, no dirty flag.
             let axis = match text(p, "axis")? {
@@ -2027,6 +2071,39 @@ mod tests {
         let two = call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.4, 0.62] }));
         assert_eq!(two["result"]["drafts"], json!(2), "{two}");
         assert_eq!(call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.0] }))["ok"], false);
+
+        // ---- model.optimize: an edit, one undo step, the draft follows ------
+        let undo_before = app.undo_len();
+        let draft_before = app.hydro_options().draft;
+        let points_before = app.control_point_count();
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.optimize",
+            json!({ "speed_kn": 8.0, "vars": ["lb"], "max_evaluations": 6, "level": 1 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let rep = &r["result"]["report"];
+        assert!(
+            rep["optimised"]["rt_kn"].as_f64().unwrap_or(f64::MAX)
+                <= rep["baseline"]["rt_kn"].as_f64().unwrap_or(0.0) + 1e-12,
+            "{r}"
+        );
+        assert_eq!(app.undo_len(), undo_before + 1, "an optimisation is one snapshot");
+        assert!(app.is_dirty(), "the model changed");
+        assert_eq!(app.control_point_count(), points_before, "the topology is kept");
+        let opt_draft = rep["optimised"]["draft_m"].as_f64().unwrap_or(0.0);
+        assert!((app.hydro_options().draft - opt_draft).abs() < 1e-12, "the app measures at the new draft");
+        // Undo puts the hull back (the draft is the app's own setting).
+        assert_eq!(call(&mut app, &ctx, "history.undo", json!({}))["ok"], true);
+        assert_eq!(app.undo_len(), undo_before);
+        let _ = draft_before;
+        assert_eq!(call(&mut app, &ctx, "model.optimize", json!({}))["ok"], false, "speed_kn is required");
+        assert_eq!(
+            call(&mut app, &ctx, "model.optimize", json!({ "speed_kn": 8.0, "vars": ["wibble"] }))["ok"],
+            false
+        );
+        assert_eq!(app.undo_len(), undo_before, "a refused optimisation leaves no snapshot");
 
         // ---- model.transform: a real edit, with undo ------------------------
         let dirty_before = app.is_dirty();

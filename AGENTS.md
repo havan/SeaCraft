@@ -67,6 +67,7 @@ crates/seacraft-core/
   src/export.rs             OBJ (y- or z-up), binary STL, 3MF, PLY, IGES, HTML viewer
   src/demo.rs               parametric 12 m demo hull, full and half model
   src/parametric.rs         parametric hull generator (displacement/planing/yacht) from principal dims
+  src/optimize.rs           Nelder–Mead + optimize_hull: reshape Cp/LCB/L-B for least R_T at a speed, displacement held
 crates/seacraft-cli/
   src/main.rs               clap front end, table/JSON/CSV output
   src/mcp.rs                JSON-RPC 2.0 MCP server over stdio (headless + --connect)

@@ -110,6 +110,7 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | OBJ / STL / 3MF / PLY / IGES / HTML viewer | `export.rs` |
 | Parametric demo hull | `demo.rs` |
 | Parametric hull generator (`displacement`, `planing`, `yacht`) | `parametric.rs` |
+| Resistance optimiser (Nelder–Mead over Cp, LCB, L/B) | `optimize.rs` |
 | Command-line front end + MCP stdio server (`seacraft mcp`) | `crates/seacraft-cli` |
 | Desktop modeller (4 viewports, drag, docks, `--control`) | `crates/seacraft-gui` |
 
@@ -196,6 +197,23 @@ hard-chine V and understates a round-bilge hull; `--deadrise` overrides it.
 at stations x waterlines and buttock heights at stations x buttocks — as a
 terminal table, long-format CSV, JSON or a standalone HTML page
 (`seacraft offsets`). A cell the section cannot reach is empty (`-`), not zero.
+
+`optimize` closes the design loop (`seacraft optimize hull.fef --speed 8 -o better.fef`,
+MCP tool `optimize_hull`, app method `model.optimize`): a dependency-free
+Nelder–Mead search (`optimize.rs`) over up to three shape variables — a change in
+`Cp` and in `LCB` by the Lackenby station shift, and an `L/B` stretch (`x` scaled by
+`s`, `y` by `1/s`, so `L/B` becomes `s²` times larger) — with the draft re-solved
+after every candidate so the displacement is held. Each candidate is measured on
+the refined mesh and scored by `R_T` at the design speed (Holtrop–Mennen, or
+Savitsky for a planing hull) plus quadratic penalties for displacement error,
+`GM` below `--min-gm` (with `--kg`), `LCB` outside `--lcb-band` and new
+validity warnings. The answer is the cheapest *evaluated* hull that meets those
+constraints, so it is never worse than the starting hull when that is itself
+feasible. It is a local search of a few smooth parameters, not a form optimiser:
+the sections, ends and topology do not change, the station shift has limited
+authority (the report says when a target was out of reach), and a variable that
+ends on its bound is flagged. In the MCP server it **edits the model**; `batch`
+rolls it back on a later failure and the app records it in its undo history.
 
 ### Parametric hull generation
 
@@ -332,7 +350,10 @@ seacraft planing   hull.fef [--speeds 20,25,30] [--draft T] [--beam B] [--lcg-x 
                               [--deadrise deg] [--csv out.csv] [--json]
 seacraft trim      hull.fef --speed kn [--from -0.6] [--to 0.6] [--steps 13]
                               [--draft T] [--no-hold-volume] [--json]
-seacraft table     hull.fef [--to T] [--steps N] [--drafts a,b,c] [--csv f] [--html f] [--json]
+seacraft optimize  hull.fef --speed kn -o better.fef [--vars cp,lcb,lb] [--bound cp=-0.02:0.02]...
+                               [--min-gm m --kg m] [--lcb-band lo,hi] [--tol 0.01] [--max-evals 60]
+                               [--method auto|holtrop|savitsky] [--draft T] [--json]
+ seacraft table     hull.fef [--to T] [--steps N] [--drafts a,b,c] [--csv f] [--html f] [--json]
 seacraft lackenby  hull.fef -o out.fef [--cp 0.72] [--lcb -9.3] [--draft T] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--weather [--bilge round|sharp|keels:Ak]
@@ -425,11 +446,11 @@ cursor position on the active viewport's focal plane and the crate version.
 * Programmatic automation is supported via `seacraft-gui --control 127.0.0.1:PORT`
   (JSON lines over TCP, executed on the next frame) and `seacraft mcp` (JSON-RPC
   2.0 Model Context Protocol over stdio, either headless or connected via
-  `--connect 127.0.0.1:PORT`). Nineteen tools: `hull_info`, `load_hull`,
+  `--connect 127.0.0.1:PORT`). Tools include `hull_info`, `load_hull`,
   `save_hull`, `move_point`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
-  `planing_curve`, `trim_scan`, `export_linesplan` and `render_png`.
+  `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install
   steps and the CI test that keeps them in step with the tools.

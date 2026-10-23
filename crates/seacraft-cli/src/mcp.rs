@@ -52,6 +52,7 @@ use seacraft_core::{
     curves, demo, develop, export, fef, linesplan, loading, offsets,
     parametric::{self, HullKind, HullSpec},
     planing, raster, resistance, table, topology, transform, trimopt,
+    optimize,
 };
 use serde_json::{json, Map, Value};
 
@@ -103,6 +104,7 @@ hydro_compute {draft, trim, heel_deg, kg} for one floating condition (free_trim 
 stability_cross_curves for KN/GZ and the IMO A.749 criteria -> render_png to look at the result.
 Other measurements: bonjean_curves, table_of_offsets, hydro_table, trim_scan, resistance_curve, planing_curve,
 unfold_plate. Edit with move_point, set_crease, split_face, insert_edge and transform_hull.
+optimize_hull {speed_kn} reshapes the hull (Cp, LCB, L/B) to cut resistance at a speed, holding displacement; it edits the model.
 Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
 Tool failures come back as a normal result with isError true and a message; protocol errors are JSON-RPC errors.
 Resources: seacraft://hull (summary of the loaded hull) and seacraft://tools (catalogue with each tool's effect).";
@@ -755,6 +757,7 @@ impl McpServer {
             "unfold_plate" => self.unfold_plate(a),
             "hydro_table" => self.hydro_table(a),
             "trim_scan" => self.trim_scan(a),
+            "optimize_hull" => self.optimize_hull(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             "design_report" => self.design_report(a),
@@ -1499,6 +1502,31 @@ impl McpServer {
         }
         Ok(json!({
             "backend": "headless",
+            "report": report,
+            "draft": self.opts.draft,
+            "faces": self.surface.faces.len(),
+            "points": self.surface.points.len(),
+        }))
+    }
+
+    fn optimize_hull(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let spec = optimize::OptimizeSpec::from_params(a, Some(self.kg))
+            .map_err(|e| format!("optimize_hull: {e}"))?;
+        let mut opts = self.opts.clone();
+        if a.contains_key("level") {
+            opts.subdivision.level = level_arg(a)?;
+        }
+        let (out, report) = optimize::optimize_hull(&self.surface, &opts, &spec)
+            .map_err(|e| format!("optimize_hull: {e}"))?;
+        // The optimised hull is measured at the draft that holds the original
+        // displacement; carry it across or every number after this would be
+        // read at the old waterline.
+        self.opts.draft = report.optimised.draft_m;
+        self.surface = out;
+        Ok(json!({
+            "backend": "headless",
+            "level": opts.subdivision.level,
+            "kg": spec.kg,
             "report": report,
             "draft": self.opts.draft,
             "faces": self.surface.faces.len(),
@@ -2425,6 +2453,39 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "optimize_hull",
+            "Optimise the hull for a speed",
+            "Reshape the hull to cut calm-water resistance at `speed_kn` while holding displacement (and, with `kg` \
+             and `min_gm`, stability). A Nelder-Mead search over up to three variables: `cp` (prismatic coefficient \
+             change by a Lackenby station shift), `lcb` (LCB shift as a fraction of LWL, same shift) and `lb` (x \
+             scaled by s and y by 1/s, so L/B changes by s squared); after each change the draft is re-solved so the \
+             displacement holds. Scored by Holtrop-Mennen, or Savitsky for a planing hull (`method` auto picks \
+             Savitsky at Fn_L >= 1), with penalties for displacement error, GM below `min_gm`, LCB outside \
+             `lcb_band` and new validity warnings. EDITS THE MODEL: the session hull is replaced by the optimised \
+             one and the measurement draft becomes the draft that holds the displacement; wrap the call in `batch` \
+             to roll it back if a later step fails, or use the app's undo history when connected. Returns the \
+             baseline and optimised R_T, P_E, displacement, Cp, Cb, LCB, L/B, GM and draft, the variables, \
+             iterations and evaluations, why it stopped, warnings and the evaluation trajectory. `kg` defaults to \
+             the session's.",
+            obj(
+                json!({
+                    "speed_kn": number("Design speed in knots (required)"),
+                    "method": {"type": "string", "enum": ["auto", "holtrop", "savitsky"], "description": "Resistance method (default auto)"},
+                    "vars": {"type": "array", "items": {"type": "string", "enum": ["cp", "lcb", "lb"]}, "description": "Variables to optimise (default [\"cp\", \"lcb\"]; \"lb\" changes the length)"},
+                    "bounds": {"type": "object", "description": "Bounds per variable as {\"cp\": [lo, hi]}; defaults cp +/-0.03, lcb +/-0.02, lb 0.92..1.08"},
+                    "min_gm": number("Minimum GM = KM - KG in metres"),
+                    "kg": number("KG above the keel in metres (default: the session's)"),
+                    "lcb_band": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "Allowed LCB [lo, hi] as fractions of LWL from the aft end (0.5 is midships)"},
+                    "hold_displacement_tol": number("Allowed relative displacement change (default 0.01)"),
+                    "max_evaluations": integer("Cap on objective evaluations (default 60)"),
+                    "draft": number("Draft the baseline is measured at (default: the server's)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &["speed_kn"],
+            ),
+            Effect::Edits,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -2633,6 +2694,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `resistance_curve` -> `resistance.compute`, `planing_curve` -> `planing.compute`,
 /// `transform_hull` -> `model.transform`, `unfold_plate` -> `curves.unfold`,
 /// `hydro_table` -> `hydro.table`, `trim_scan` -> `hydro.trim`,
+/// `optimize_hull` -> `model.optimize`,
 /// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
@@ -2807,6 +2869,7 @@ impl Remote {
             "unfold_plate" => self.request("curves.unfold", Value::Object(a.clone())),
             "hydro_table" => self.request("hydro.table", Value::Object(a.clone())),
             "trim_scan" => self.request("hydro.trim", Value::Object(a.clone())),
+            "optimize_hull" => self.request("model.optimize", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -3100,6 +3163,7 @@ mod tests {
                 "unfold_plate",
                 "hydro_table",
                 "trim_scan",
+                "optimize_hull",
                 "export_linesplan",
                 "render_png",
                 "design_report",
@@ -3926,11 +3990,21 @@ mod tests {
             "save_hull",
             "move_point",
             "transform_hull",
+            "optimize_hull",
             "export_linesplan",
             "render_png",
         ] {
             assert!(!read_only.contains(&n), "{n} is not read-only");
         }
+        let optimise = tools
+            .iter()
+            .find(|t| t["name"] == "optimize_hull")
+            .expect("optimize_hull");
+        assert_eq!(Effect::of(optimise), Effect::Edits, "it replaces the session hull in place");
+        assert!(
+            optimise["description"].as_str().unwrap_or_default().contains("EDITS THE MODEL"),
+            "the description must say it edits the model"
+        );
         let load = tools
             .iter()
             .find(|t| t["name"] == "load_hull")
@@ -3944,6 +4018,50 @@ mod tests {
             .expect("generate_hull");
         assert_eq!(gen["annotations"]["destructiveHint"], true);
         assert_eq!(Effect::of(gen), Effect::Replaces);
+    }
+
+    #[test]
+    fn optimize_hull_edits_the_session_hull_and_batch_rolls_it_back() {
+        let mut s = McpServer::new();
+        let v0 = ok(&mut s, 1, "hydro_compute", json!({}))["volume_m3"].as_f64().expect("volume");
+        let args = json!({
+            "speed_kn": 8.0, "vars": ["lb"], "kg": 1.0, "min_gm": 0.5,
+            "max_evaluations": 8, "level": 2,
+        });
+
+        // A failing batch step rolls the optimisation back with it.
+        let before = ok(&mut s, 2, "hull_info", json!({}));
+        let msg = fails(
+            &mut s,
+            3,
+            "batch",
+            json!({"calls": [
+                {"name": "optimize_hull", "arguments": args.clone()},
+                {"name": "hull_info", "arguments": {"bogus": 1}},
+            ]}),
+        );
+        assert!(msg.contains("bogus") || msg.contains("unknown argument"), "{msg}");
+        assert_eq!(ok(&mut s, 4, "hull_info", json!({}))["extents"], before["extents"]);
+
+        // On its own it succeeds and the session hull is the optimised one.
+        let r = ok(&mut s, 5, "optimize_hull", args);
+        let rep = &r["report"];
+        let (b, o) = (&rep["baseline"], &rep["optimised"]);
+        assert!(o["rt_kn"].as_f64().unwrap_or(f64::MAX) <= b["rt_kn"].as_f64().unwrap_or(0.0) + 1e-12, "{r}");
+        assert_eq!(rep["variables"].as_array().map(Vec::len), Some(1), "{r}");
+        assert_eq!(rep["constraints_met"], true, "{r}");
+        assert!(rep["trajectory"].as_array().is_some_and(|t| !t.is_empty() && t.len() <= 8), "{r}");
+        assert_eq!(r["backend"], "headless");
+        // The measurement draft followed the optimised hull, and the same
+        // displacement floats at it.
+        let h = ok(&mut s, 6, "hydro_compute", json!({}));
+        assert!((h["draft"].as_f64().unwrap_or(0.0) - r["draft"].as_f64().unwrap_or(-1.0)).abs() < 1e-12, "{h}");
+        let v = h["volume_m3"].as_f64().expect("volume");
+        assert!((v - v0).abs() / v0 < 0.011, "{v} against {v0}");
+
+        // Bad arguments are tool errors, not panics.
+        fails(&mut s, 7, "optimize_hull", json!({"speed_kn": 0.0}));
+        fails(&mut s, 8, "optimize_hull", json!({"speed_kn": 8.0, "vars": ["wibble"]}));
     }
 
     #[test]

@@ -7,7 +7,7 @@ description: Use when you load a SeaCraft hull (.fef or the demo) and must reach
 
 ## Overview
 
-SeaCraft holds a hull as a subdivision control net and measures the refined surface. Design is a loop: measure, change one thing, measure again. Edits are in memory until `save_hull`. There is no Lackenby or prismatic-shift tool: `transform_hull` scales the whole model, and shape changes are `move_point` moves you plan as numbers.
+SeaCraft holds a hull as a subdivision control net and measures the refined surface. Design is a loop: measure, change one thing, measure again. Edits are in memory until `save_hull`. There is no direct Lackenby or prismatic-shift tool: `transform_hull` scales the whole model, shape changes are `move_point` moves you plan as numbers, and `optimize_hull` searches Cp, LCB and L/B for you when the goal is lower resistance at a speed.
 
 ## Before the first call
 
@@ -31,8 +31,9 @@ Write the targets down with units and tolerances (for example 1 % on volume) bef
 3. LCB and Cp: move control points of the affected stations fore or aft with `move_point {"index": 50, "xyz": [7.9, 1.5, 0.54]}`. The reply gives `before` and `after`: read `before` first with a harmless move to the same place, or take coordinates from the `.fef`. Move one point by at most 2 to 3 % of length per step, then re-measure. On a symmetric layer y below 0 is clamped, and `clamped` in the reply says so. Multiple actions can be chained atomically with `batch {"calls": [{"name": "move_point", "arguments": {"index": 50, "xyz": [7.9, 1.5, 0.54]}}, {"name": "hydro_compute", "arguments": {"draft": 0.62, "kg": 2.2}}]}`: any failure rolls back earlier steps.
 4. Hard edges: `set_crease {"a": 4, "b": 5, "crease": true}` for chines and transoms. `split_face` and `insert_edge` add control detail where a face is too coarse.
 5. Trim at a speed: `trim_scan {"speed_kn": 8, "from": -0.4, "to": 0.4, "steps": 9}` holds displacement by solving the draft at each trim and reports the cheapest. `at_boundary: true` means widen the range.
-6. Look: `render_png {"path": "/tmp/shaded.png", "view": "perspective"}`, then `"view": "body"` for sections.
-7. Save: `save_hull {"path": "design-v2.fef"}`. Without `path` it overwrites the file it came from, so save under a new name first.
+6. Cut resistance at a design speed: `optimize_hull {"speed_kn": 8}` runs a bounded search over Cp, LCB and L/B (station shift and an x/y stretch), re-solves the draft so displacement holds, and scores each candidate with Holtrop-Mennen (Savitsky for a planing hull). Add `"kg": 1.0, "min_gm": 0.5` to hold stability, `"vars": ["cp", "lcb"]` to leave the beam alone, `"lcb_band": [0.4, 0.55]` to keep LCB (fraction of LWL from aft) in range. **It edits the model**: the session hull becomes the optimised one and the draft moves to the one that holds the displacement. Save the original first, or wrap the call in `batch` so a later failure rolls it back. Read `report.baseline` against `report.optimised`, `constraints_met`, `variables[].at_bound` (a bound hit means widen it with `bounds`) and `warnings`; it is a local search of a few smooth parameters, not a form optimiser.
+7. Look: `render_png {"path": "/tmp/shaded.png", "view": "perspective"}`, then `"view": "body"` for sections.
+8. Save: `save_hull {"path": "design-v2.fef"}`. Without `path` it overwrites the file it came from, so save under a new name first.
 
 ## Verify
 

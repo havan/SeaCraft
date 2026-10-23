@@ -57,6 +57,8 @@ enum Command {
     Table(TableArgs),
     /// Scan trim at a speed and report the cheapest, at constant displacement
     Trim(TrimArgs),
+    /// Reshape the hull to cut resistance at a speed, holding displacement and stability
+    Optimize(OptimizeArgs),
     /// Still-water resistance and effective power (Holtrop-Mennen 1984)
     Resistance(ResistanceArgs),
     /// Developable plate expansion: flatten a strake or buttock band
@@ -468,6 +470,145 @@ fn cmd_trim(a: TrimArgs) -> Result<()> {
     for w in &scan.warnings {
         println!("  warning: {w}");
     }
+    Ok(())
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum OptimizeMethodArg {
+    /// Savitsky at Fn >= 1 when the hull planes there, Holtrop-Mennen otherwise
+    Auto,
+    Holtrop,
+    Savitsky,
+}
+
+#[derive(Args, Debug)]
+struct OptimizeArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Design speed in knots
+    #[arg(long)]
+    speed: f64,
+    /// Output .fef path for the optimised hull
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Resistance method that scores a candidate
+    #[arg(long, value_enum, default_value_t = OptimizeMethodArg::Auto)]
+    method: OptimizeMethodArg,
+    /// Variables to optimise, comma separated: cp (prismatic coefficient), lcb
+    /// (longitudinal centre of buoyancy), lb (L/B, x scaled by s and y by 1/s;
+    /// opt-in because it changes the length)
+    #[arg(long, default_value = "cp,lcb")]
+    vars: String,
+    /// Override a variable's bounds, e.g. --bound cp=-0.02:0.02 (repeatable)
+    #[arg(long = "bound", allow_hyphen_values = true)]
+    bounds: Vec<String>,
+    /// Minimum GM = KM - KG in metres (needs --kg)
+    #[arg(long, allow_hyphen_values = true)]
+    min_gm: Option<f64>,
+    /// KG above the keel in metres (reports GM; with --min-gm also constrains it)
+    #[arg(long, allow_hyphen_values = true)]
+    kg: Option<f64>,
+    /// Allowed LCB as a fraction of LWL from the aft end, LO,HI (0.5 is midships)
+    #[arg(long)]
+    lcb_band: Option<String>,
+    /// Displacement may change by this fraction
+    #[arg(long, default_value_t = 0.01)]
+    tol: f64,
+    /// Maximum objective evaluations
+    #[arg(long, default_value_t = 60)]
+    max_evals: usize,
+    /// Draft the baseline is measured at (default: the model's design draft)
+    #[arg(long)]
+    draft: Option<f64>,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+    /// Emit the report as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
+    use seacraft_core::optimize::{self, Method, OptimizeSpec};
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() };
+    let opts = HydroOptions::from_surface(&s, subdiv);
+    let mut spec = OptimizeSpec::new(a.speed);
+    spec.method = match a.method {
+        OptimizeMethodArg::Auto => Method::Auto,
+        OptimizeMethodArg::Holtrop => Method::Holtrop,
+        OptimizeMethodArg::Savitsky => Method::Savitsky,
+    };
+    spec.vars = OptimizeSpec::parse_vars(&a.vars).map_err(|e| anyhow::anyhow!(e))?;
+    OptimizeSpec::apply_bound_strings(&mut spec.vars, &a.bounds).map_err(|e| anyhow::anyhow!(e))?;
+    spec.min_gm = a.min_gm;
+    spec.kg = a.kg;
+    if let Some(band) = &a.lcb_band {
+        let v = parse_ordinates(band, "lcb-band")?;
+        if v.len() != 2 {
+            bail!("--lcb-band takes two numbers, LO,HI");
+        }
+        spec.lcb_band = Some((v[0], v[1]));
+    }
+    spec.hold_displacement_tol = a.tol;
+    spec.max_evaluations = a.max_evals;
+    spec.draft = a.draft;
+    let (out, report) = optimize::optimize_hull(&s, &opts, &spec).map_err(|e| anyhow::anyhow!(e))?;
+    std::fs::write(&a.output, fef::write(&out))
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    let (b, o) = (&report.baseline, &report.optimised);
+    println!(
+        "{}  -  resistance optimisation at {:.2} kn ({:?}, Fn {:.3})",
+        s.settings.name, report.speed_kn, report.method, b.froude
+    );
+    println!("  {:<14} {:>12} {:>12} {:>10}", "", "baseline", "optimised", "change");
+    let row = |name: &str, x: f64, y: f64, prec: usize| {
+        println!("  {:<14} {:>12.prec$} {:>12.prec$} {:>+10.prec$}", name, x, y, y - x, prec = prec);
+    };
+    row("RT [kN]", b.rt_kn, o.rt_kn, 3);
+    row("PE [kW]", b.pe_kw, o.pe_kw, 2);
+    row("displ. [t]", b.displacement_t, o.displacement_t, 3);
+    row("volume [m3]", b.volume_m3, o.volume_m3, 3);
+    row("draft [m]", b.draft_m, o.draft_m, 4);
+    row("Cp", b.cp, o.cp, 4);
+    row("Cb", b.cb, o.cb, 4);
+    row("LCB [% LWL]", b.lcb_pct, o.lcb_pct, 2);
+    row("LWL [m]", b.lwl_m, o.lwl_m, 3);
+    row("BWL [m]", b.bwl_m, o.bwl_m, 3);
+    row("L/B", b.lb, o.lb, 3);
+    row("B/T", b.bt, o.bt, 3);
+    row("KM [m]", b.km_m, o.km_m, 3);
+    if let (Some(gb), Some(go)) = (b.gm_m, o.gm_m) {
+        row("GM [m]", gb, go, 3);
+    }
+    println!(
+        "  RT {:+.2} %   displacement error {:.3} %   constraints {}",
+        report.rt_change_pct,
+        report.displacement_error_pct,
+        if report.constraints_met { "met" } else { "NOT met" }
+    );
+    println!("  variables:");
+    for v in &report.variables {
+        println!(
+            "    {:<16} {:>9.5}  (range {:.4} .. {:.4}{})",
+            v.name,
+            v.value,
+            v.lo,
+            v.hi,
+            if v.at_bound { ", on a bound" } else { "" }
+        );
+    }
+    println!(
+        "  {} iterations, {} evaluations ({} distinct); {}",
+        report.iterations, report.evaluations, report.unique_evaluations, report.convergence_reason
+    );
+    for w in &report.warnings {
+        println!("  warning: {w}");
+    }
+    println!("  wrote {}", a.output.display());
     Ok(())
 }
 
@@ -959,6 +1100,7 @@ fn run() -> Result<()> {
         Command::Lackenby(a) => cmd_lackenby(a),
         Command::Table(a) => cmd_table(a),
         Command::Trim(a) => cmd_trim(a),
+        Command::Optimize(a) => cmd_optimize(a),
         Command::Resistance(a) => cmd_resistance(a),
         Command::Unfold(a) => cmd_unfold(a),
         Command::Edit(a) => cmd_edit(a),
