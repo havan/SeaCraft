@@ -1,7 +1,7 @@
 //! Side docks: the layer manager and the hydrostatics report.
 
 use eframe::egui;
-use seacraft_core::hydro::{HydroOptions, Hydrostatics};
+use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
 use seacraft_core::stability::CrossCurve;
 use seacraft_core::Surface;
 
@@ -143,6 +143,65 @@ pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<(&'static str, String
     ]
 }
 
+
+/// The sectional area curve as screen coordinates, inside `rect`.
+///
+/// Pure so the plot can be checked without a frame: the polyline must run
+/// left to right, stay inside the rectangle, and put zero area on the baseline
+/// and the maximum area at the top.
+pub fn sac_polyline(sac: &[SectionArea], rect: egui::Rect) -> Vec<egui::Pos2> {
+    let x0 = sac.first().map(|s| s.x).unwrap_or(0.0);
+    let x1 = sac.last().map(|s| s.x).unwrap_or(1.0);
+    let a_max = sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
+    let (x0, x1, a_max) = if (x1 - x0).abs() < 1e-9 || a_max <= 0.0 {
+        return Vec::new();
+    } else {
+        (x0, x1, a_max)
+    };
+    sac.iter()
+        .filter(|s| s.area.is_finite())
+        .map(|s| {
+            let tx = ((s.x - x0) / (x1 - x0)) as f32;
+            let ty = (s.area / a_max).clamp(0.0, 1.0) as f32;
+            egui::pos2(
+                rect.left() + tx.clamp(0.0, 1.0) * rect.width(),
+                rect.bottom() - ty * rect.height(),
+            )
+        })
+        .collect()
+}
+
+/// The sectional area curve, drawn small under the readout.
+fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics) {
+    let height = 96.0;
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let rect = response.rect.shrink2(egui::vec2(2.0, 6.0));
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
+    let points = sac_polyline(&h.sac, rect);
+    if points.len() < 2 {
+        return;
+    }
+    painter.line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
+    );
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.4, egui::Color32::from_rgb(0x5c, 0xa8, 0xf0)),
+    ));
+    let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 2.0),
+        egui::Align2::LEFT_TOP,
+        format!("SAC · A max {a_max:.2} m² · x {:.2}..{:.2} m", h.model_min.x, h.model_max.x),
+        egui::FontId::monospace(10.0),
+        egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
+    );
+}
+
 /// Draft, trim, heel and KG controls plus the measurement readout.
 pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     let mut action = HydroAction::None;
@@ -268,6 +327,8 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     }
                 }
             });
+            ui.add_space(2.0);
+            plot_sac(ui, h);
             for warning in &h.warnings {
                 ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), &warning.message);
             }
@@ -423,5 +484,37 @@ mod tests {
             .and_then(|(_, v)| v.trim_end_matches(" m").parse().ok())
             .expect("GM parses");
         assert!((gm - (h.km_transverse - 1.5)).abs() < 0.002, "GM {gm}");
+    }
+
+    #[test]
+    fn the_sac_plot_runs_left_to_right_inside_the_rect() {
+        let h = measured();
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(120.0, 60.0));
+        let pts = sac_polyline(&h.sac, rect);
+        assert_eq!(pts.len(), h.sac.len(), "one point per station");
+        assert!(pts.windows(2).all(|w| w[1].x >= w[0].x), "x must not go backwards");
+        for p in &pts {
+            assert!(rect.x_range().contains(p.x) && rect.y_range().contains(p.y), "{p:?}");
+        }
+        // The height is the area: the fullest station touches the top and every
+        // other point maps linearly from its own area.
+        let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
+        for (point, station) in pts.iter().zip(h.sac.iter()) {
+            let want = rect.bottom() - (station.area / a_max) as f32 * rect.height();
+            assert!((point.y - want).abs() < 1e-2, "{station:?} drew at {point:?}, wanted y {want}");
+        }
+        let peak = pts
+            .iter()
+            .zip(h.sac.iter())
+            .max_by(|a, b| a.1.area.partial_cmp(&b.1.area).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(p, _)| p.y)
+            .expect("a peak");
+        assert!((peak - rect.top()).abs() < 1e-2, "peak {peak}");
+        let lowest = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(lowest < rect.top() + 1.0, "the peak reaches the top: {lowest}");
+        // Degenerate input draws nothing rather than dividing by zero.
+        assert!(sac_polyline(&[], rect).is_empty());
+        let flat = [SectionArea { x: 1.0, area: 0.0 }];
+        assert!(sac_polyline(&flat, rect).is_empty());
     }
 }

@@ -335,8 +335,9 @@ Plan        | Body plan
   orbits, the wheel zooms.
 * The left dock manages layers (colour, name, visible, symmetric, use in
   hydrostatics). The right dock is the live hydrostatics report: draft, trim,
-  heel and KG, the full coefficient set, and GZ cross curves drawn in place.
-  It recomputes 120 ms after the last geometry change, never mid-drag.
+  heel and KG, the full coefficient set (with TPC and MTC), the sectional area
+  curve of the current draft, and GZ cross curves drawn in place. It recomputes
+  120 ms after the last geometry change, never mid-drag.
 * File menu: new demo hull, open/save `.fef` (with an in-app path dialog, so
   no desktop portal is needed), export OBJ / STL / PLY / HTML viewer /
   linesplan SVG. Unsaved work is flagged in the status bar and confirmed
