@@ -190,6 +190,8 @@ pub struct App {
     cache: Option<RenderCache>,
     selected: Option<usize>,
     history: History,
+    marks: Vec<(u64, Option<Surface>, usize)>,
+    next_mark_id: u64,
     drag: Option<DragState>,
     /// Unsaved edits since the last save / load.
     dirty: bool,
@@ -256,6 +258,8 @@ impl App {
             cache: None,
             selected: None,
             history: History::new(64),
+            marks: Vec::new(),
+            next_mark_id: 1,
             drag: None,
             dirty: false,
             dialog: None,
@@ -352,6 +356,7 @@ impl App {
         self.drag = None;
         self.cache = None;
         self.history.clear();
+        self.marks.clear();
         self.hydro.result = None;
         self.hydro.curves = None;
         self.hydro.hull = None;
@@ -903,7 +908,15 @@ impl App {
         }
     }
 
-    fn undo(&mut self) {
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    pub fn undo(&mut self) {
         let Some(current) = self.surface.clone() else { return };
         if let Some(previous) = self.history.undo(&current) {
             let moved = previous.points.len();
@@ -915,7 +928,7 @@ impl App {
         }
     }
 
-    fn redo(&mut self) {
+    pub fn redo(&mut self) {
         let Some(current) = self.surface.clone() else { return };
         if let Some(next) = self.history.redo(&current) {
             self.surface = Some(next);
@@ -923,6 +936,39 @@ impl App {
             self.dirty = true;
             self.touch_geometry();
             self.status = "redo".to_owned();
+        }
+    }
+
+    /// Snapshot the current state as a mark for rollback, returning a mark ID.
+    pub fn mark(&mut self) -> u64 {
+        let id = self.next_mark_id;
+        self.next_mark_id += 1;
+        self.marks.push((id, self.surface.clone(), self.history.undo_len()));
+        id
+    }
+
+    /// Restore the state to the given mark ID, dropping all marks taken after it.
+    pub fn restore_mark(&mut self, id: u64) -> Result<(), String> {
+        let pos = self
+            .marks
+            .iter()
+            .position(|(m, _, _)| *m == id)
+            .ok_or_else(|| format!("unknown mark {id}"))?;
+        let (_, surface, undo_len) = self.marks[pos].clone();
+        self.marks.truncate(pos);
+        self.surface = surface;
+        self.history.truncate_undo(undo_len);
+        self.history.clear_redo();
+        self.selected = None;
+        self.mark_geometry_changed();
+        self.status = format!("restored to mark {id}");
+        Ok(())
+    }
+
+    /// Drop a mark without restoring.
+    pub fn forget_mark(&mut self, id: u64) {
+        if let Some(pos) = self.marks.iter().position(|(m, _, _)| *m == id) {
+            self.marks.truncate(pos);
         }
     }
 

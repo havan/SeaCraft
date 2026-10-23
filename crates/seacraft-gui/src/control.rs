@@ -300,6 +300,21 @@ fn index_at(p: &Value, key: &str, max: usize) -> Result<Option<usize>, String> {
     }
 }
 
+fn u64_arg(p: &Value, key: &str) -> Result<Option<u64>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .or_else(|| {
+                v.as_f64()
+                    .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0)
+                    .map(|x| x as u64)
+            })
+            .map(Some)
+            .ok_or_else(|| format!("`{key}` must be an unsigned integer")),
+    }
+}
+
 /// Exactly three finite numbers.
 fn triple(v: &Value, key: &str) -> Result<Vec3, String> {
     let bad = || format!("`{key}` must be three finite numbers [x, y, z]");
@@ -413,6 +428,16 @@ fn mode_name(mode: SubdivisionMode) -> &'static str {
     }
 }
 
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 // ---- the methods -------------------------------------------------------
 
 /// Answer one request. Every arm validates its input before touching the app,
@@ -423,9 +448,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value
     if !p.is_object() {
         return error("`params` must be a JSON object");
     }
-    match handle_inner(app, ctx, req, p) {
-        Ok(v) => json!({ "ok": true, "result": v }),
-        Err(e) => error(e),
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        handle_inner(app, ctx, req, p)
+    }));
+    match res {
+        Ok(Ok(v)) => json!({ "ok": true, "result": v }),
+        Ok(Err(e)) => error(e),
+        Err(payload) => {
+            let msg = panic_message(&*payload);
+            error(format!("internal error: {msg}"))
+        }
     }
 }
 
@@ -1450,6 +1482,31 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "imo_passed": imo_pass,
             }))
         }
+        "history.mark" => {
+            let mark = app.mark();
+            Ok(json!({ "mark": mark }))
+        }
+        "history.restore" => {
+            let mark = u64_arg(p, "mark")?.ok_or("missing `mark`")?;
+            app.restore_mark(mark)?;
+            Ok(json!({ "mark": mark, "restored": true }))
+        }
+        "history.forget" => {
+            if let Some(mark) = u64_arg(p, "mark")? {
+                app.forget_mark(mark);
+            }
+            Ok(json!({ "forgotten": true }))
+        }
+        "history.undo" => {
+            app.undo();
+            Ok(json!({ "undo_len": app.undo_len(), "can_undo": app.can_undo(), "can_redo": app.can_redo() }))
+        }
+        "history.redo" => {
+            app.redo();
+            Ok(json!({ "undo_len": app.undo_len(), "can_undo": app.can_undo(), "can_redo": app.can_redo() }))
+        }
+        #[cfg(test)]
+        "test.panic" => panic!("deliberate control panic"),
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -2180,5 +2237,30 @@ mod tests {
         let again = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"ui.inspect\",\"params\":{}}");
         assert_eq!(again["ok"], true, "{again}");
         assert_eq!(again["result"]["version"], first["result"]["version"]);
+    }
+
+    #[test]
+    fn control_catches_panics_and_history_mark_restore_works() {
+        let (mut app, ctx) = demo();
+        let r = call(&mut app, &ctx, "test.panic", json!({}));
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("internal error: deliberate control panic"));
+        // GUI is still running
+        let insp = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(insp["ok"], true);
+
+        // Test history mark and restore
+        let mark_res = call(&mut app, &ctx, "history.mark", json!({}));
+        assert_eq!(mark_res["ok"], true);
+        let mark = mark_res["result"]["mark"].as_u64().unwrap();
+
+        let original_z = app.surface().unwrap().points[0].p.z;
+        let mv = call(&mut app, &ctx, "point.move", json!({"index": 0, "xyz": [0.0, 0.0, original_z + 1.0]}));
+        assert_eq!(mv["ok"], true);
+        assert!((app.surface().unwrap().points[0].p.z - (original_z + 1.0)).abs() < 1e-9);
+
+        let restore = call(&mut app, &ctx, "history.restore", json!({"mark": mark}));
+        assert_eq!(restore["ok"], true);
+        assert!((app.surface().unwrap().points[0].p.z - original_z).abs() < 1e-9);
     }
 }

@@ -71,6 +71,14 @@ impl History {
     pub fn redo_len(&self) -> usize {
         self.redo.len()
     }
+
+    pub fn truncate_undo(&mut self, len: usize) {
+        self.undo.truncate(len);
+    }
+
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
 }
 
 #[cfg(test)]

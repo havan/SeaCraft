@@ -107,6 +107,16 @@ Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
 Tool failures come back as a normal result with isError true and a message; protocol errors are JSON-RPC errors.
 Resources: seacraft://hull (summary of the loaded hull) and seacraft://tools (catalogue with each tool's effect).";
 
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
 // ---------------------------------------------------------------- framing --
 
 fn response(id: Value, result: Value) -> Value {
@@ -175,6 +185,14 @@ pub struct McpServer {
     initialized: bool,
 }
 
+#[derive(Clone)]
+struct ServerSnapshot {
+    surface: Surface,
+    opts: HydroOptions,
+    kg: f64,
+    source: Option<PathBuf>,
+}
+
 impl Default for McpServer {
     fn default() -> Self {
         Self::new()
@@ -182,6 +200,21 @@ impl Default for McpServer {
 }
 
 impl McpServer {
+    fn snapshot(&self) -> ServerSnapshot {
+        ServerSnapshot {
+            surface: self.surface.clone(),
+            opts: self.opts.clone(),
+            kg: self.kg,
+            source: self.source.clone(),
+        }
+    }
+
+    fn restore_snapshot(&mut self, snap: ServerSnapshot) {
+        self.surface = snap.surface;
+        self.opts = snap.opts;
+        self.kg = snap.kg;
+        self.source = snap.source;
+    }
     /// The demo hull (a full model), measured at its design draft.
     pub fn new() -> Self {
         Self::from_surface(demo::demo_hull(false))
@@ -415,14 +448,279 @@ impl McpServer {
     pub fn call_tool(&mut self, name: &str, args: &Value) -> Value {
         let empty = Map::new();
         let a = args.as_object().unwrap_or(&empty);
-        let result = match &mut self.remote {
-            Some(remote) => remote.tool(name, a),
-            None => self.run_tool(name, a),
-        };
-        match result {
-            Ok(v) => text_result(&v, false),
-            Err(e) => text_result(&Value::String(e), true),
+        if self.remote.is_some() {
+            if name == "batch" {
+                self.batch_remote(a)
+            } else {
+                let Some(remote) = &mut self.remote else { unreachable!() };
+                match remote.tool(name, a) {
+                    Ok(v) => text_result(&v, false),
+                    Err(e) => text_result(&Value::String(e), true),
+                }
+            }
+        } else {
+            let snapshot = self.snapshot();
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if name == "batch" {
+                    self.batch(a)
+                } else {
+                    #[cfg(test)]
+                    if name == "__test_panic" {
+                        panic!("deliberate test panic");
+                    }
+                    match self.run_tool(name, a) {
+                        Ok(v) => text_result(&v, false),
+                        Err(e) => text_result(&Value::String(e), true),
+                    }
+                }
+            }));
+            match res {
+                Ok(v) => v,
+                Err(payload) => {
+                    self.restore_snapshot(snapshot);
+                    let msg = panic_message(&*payload);
+                    text_result(&Value::String(format!("internal error: {msg}")), true)
+                }
+            }
         }
+    }
+
+    fn batch(&mut self, a: &Map<String, Value>) -> Value {
+        let Some(calls) = a.get("calls").and_then(Value::as_array) else {
+            return text_result(
+                &json!({
+                    "failed": {"index": 0, "name": "batch", "error": "`calls` must be an array"},
+                    "completed": 0,
+                }),
+                true,
+            );
+        };
+        if calls.len() > 100 {
+            return text_result(
+                &json!({
+                    "failed": {"index": 0, "name": "batch", "error": "batch too long (at most 100 calls)"},
+                    "completed": 0,
+                }),
+                true,
+            );
+        }
+
+        let snapshot = self.snapshot();
+        let mut results = Vec::with_capacity(calls.len());
+
+        for (i, call) in calls.iter().enumerate() {
+            let Some(call_obj) = call.as_object() else {
+                self.restore_snapshot(snapshot);
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": "", "error": "each call must be an object"},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            };
+
+            let Some(name) = call_obj.get("name").and_then(Value::as_str) else {
+                self.restore_snapshot(snapshot);
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": "", "error": "missing call `name`"},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            };
+
+            if name == "batch" {
+                self.restore_snapshot(snapshot);
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": "batch", "error": "nested batch is rejected"},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            }
+
+            let args = match call_obj.get("arguments") {
+                None | Some(Value::Null) => json!({}),
+                Some(a) => a.clone(),
+            };
+
+            if let Err(e) = check_arguments(name, &args) {
+                self.restore_snapshot(snapshot);
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": name, "error": e},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            }
+
+            let empty_map = Map::new();
+            let args_map = args.as_object().unwrap_or(&empty_map);
+            let run_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                if name == "__test_panic" {
+                    panic!("deliberate test panic");
+                }
+                self.run_tool(name, args_map)
+            }));
+
+            let tool_res = match run_res {
+                Ok(Ok(val)) => text_result(&val, false),
+                Ok(Err(err)) => text_result(&Value::String(err), true),
+                Err(payload) => {
+                    let msg = panic_message(&*payload);
+                    text_result(&Value::String(format!("internal error: {msg}")), true)
+                }
+            };
+
+            if tool_res.get("isError").and_then(Value::as_bool).unwrap_or(false) {
+                self.restore_snapshot(snapshot);
+                let err_text = tool_res["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or("error")
+                    .to_string();
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": name, "error": err_text},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            }
+
+            let content_text = tool_res["content"][0]["text"].as_str().unwrap_or_default();
+            let parsed = serde_json::from_str::<Value>(content_text)
+                .unwrap_or_else(|_| Value::String(content_text.to_string()));
+            results.push(parsed);
+        }
+
+        text_result(&json!({"results": results}), false)
+    }
+
+    fn batch_remote(&mut self, a: &Map<String, Value>) -> Value {
+        let Some(calls) = a.get("calls").and_then(Value::as_array) else {
+            return text_result(
+                &json!({
+                    "failed": {"index": 0, "name": "batch", "error": "`calls` must be an array"},
+                    "completed": 0,
+                }),
+                true,
+            );
+        };
+        if calls.len() > 100 {
+            return text_result(
+                &json!({
+                    "failed": {"index": 0, "name": "batch", "error": "batch too long (at most 100 calls)"},
+                    "completed": 0,
+                }),
+                true,
+            );
+        }
+
+        let Some(remote) = &mut self.remote else {
+            return text_result(&Value::String("not connected".into()), true);
+        };
+
+        let mark_id = match remote.request("history.mark", json!({})) {
+            Ok(v) => v.get("mark").and_then(Value::as_u64),
+            Err(e) => {
+                return text_result(
+                    &Value::String(format!("failed to snapshot GUI history: {e}")),
+                    true,
+                );
+            }
+        };
+
+        let mut results = Vec::with_capacity(calls.len());
+
+        for (i, call) in calls.iter().enumerate() {
+            let Some(call_obj) = call.as_object() else {
+                if let Some(mark) = mark_id {
+                    let _ = remote.request("history.restore", json!({"mark": mark}));
+                }
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": "", "error": "each call must be an object"},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            };
+
+            let Some(name) = call_obj.get("name").and_then(Value::as_str) else {
+                if let Some(mark) = mark_id {
+                    let _ = remote.request("history.restore", json!({"mark": mark}));
+                }
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": "", "error": "missing call `name`"},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            };
+
+            if name == "batch" {
+                if let Some(mark) = mark_id {
+                    let _ = remote.request("history.restore", json!({"mark": mark}));
+                }
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": "batch", "error": "nested batch is rejected"},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            }
+
+            let args = match call_obj.get("arguments") {
+                None | Some(Value::Null) => json!({}),
+                Some(a) => a.clone(),
+            };
+
+            if let Err(e) = check_arguments(name, &args) {
+                if let Some(mark) = mark_id {
+                    let _ = remote.request("history.restore", json!({"mark": mark}));
+                }
+                return text_result(
+                    &json!({
+                        "failed": {"index": i, "name": name, "error": e},
+                        "completed": i,
+                    }),
+                    true,
+                );
+            }
+
+            let empty_map = Map::new();
+            let args_map = args.as_object().unwrap_or(&empty_map);
+            match remote.tool(name, args_map) {
+                Ok(val) => {
+                    results.push(val);
+                }
+                Err(e) => {
+                    if let Some(mark) = mark_id {
+                        let _ = remote.request("history.restore", json!({"mark": mark}));
+                    }
+                    return text_result(
+                        &json!({
+                            "failed": {"index": i, "name": name, "error": e},
+                            "completed": i,
+                        }),
+                        true,
+                    );
+                }
+            }
+        }
+
+        if let Some(mark) = mark_id {
+            let _ = remote.request("history.forget", json!({"mark": mark}));
+        }
+
+        text_result(&json!({"results": results}), false)
     }
 
     fn describe(&self) -> String {
@@ -2181,6 +2479,33 @@ pub fn tool_definitions() -> Vec<Value> {
             ),
             Effect::Files,
         ),
+        tool(
+            "batch",
+            "Run several tool calls atomically",
+            "Run tool calls in order, stopping at the first error. Each step is {name, arguments}. On an error earlier steps \
+             are rolled back, so the batch is all-or-nothing (both headless and when connected to the GUI). Returns each \
+             call's result on success, or {failed: {index, name, error}, completed: N} on failure. At most 100 calls; \
+             nested batch is rejected.",
+            obj(
+                json!({
+                    "calls": {
+                        "type": "array",
+                        "description": "Steps: [{\"name\": string, \"arguments\": {...}}, ...]",
+                        "maxItems": 100,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Tool name"},
+                                "arguments": {"type": "object", "description": "Tool arguments"},
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                }),
+                &["calls"],
+            ),
+            Effect::Edits,
+        ),
     ]
 }
 
@@ -2216,6 +2541,10 @@ fn type_matches(t: &str, v: &Value) -> bool {
 /// Check `args` against `name`'s schema: required keys present, no unknown
 /// keys, each value of the declared type and inside its `enum`.
 pub fn check_arguments(name: &str, args: &Value) -> Result<(), String> {
+    #[cfg(test)]
+    if name == "__test_panic" {
+        return Ok(());
+    }
     let defs = tool_definitions();
     let shown = clip(name, 100);
     let def = defs
@@ -2264,6 +2593,13 @@ pub fn check_arguments(name: &str, args: &Value) -> Result<(), String> {
                     "{name}: `{k}` must be one of {}",
                     Value::Array(allowed.clone())
                 ));
+            }
+        }
+    }
+    if name == "batch" {
+        if let Some(calls) = a.get("calls").and_then(Value::as_array) {
+            if calls.len() > 100 {
+                return Err("batch: `calls` has too many items (at most 100)".to_string());
             }
         }
     }
@@ -2767,6 +3103,7 @@ mod tests {
                 "export_linesplan",
                 "render_png",
                 "design_report",
+                "batch",
             ]
         );
         for t in tools {
@@ -3777,5 +4114,181 @@ mod tests {
         assert!(from_file["imo_criteria"]["passed"].is_boolean(), "{from_file}");
 
         fails(&mut s, 3, "loading_condition", json!({}));
+    }
+
+    #[test]
+    fn batch_tool_and_panic_safety_tests() {
+        let mut s = McpServer::new();
+
+        // 1. batch success (two calls -> two results)
+        let success = ok(
+            &mut s,
+            1,
+            "batch",
+            json!({
+                "calls": [
+                    {
+                        "name": "move_point",
+                        "arguments": {"index": 0, "xyz": [0.0, 0.0, 0.5]}
+                    },
+                    {
+                        "name": "hull_info",
+                        "arguments": {}
+                    }
+                ]
+            }),
+        );
+        let results = success["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["index"], 0);
+        assert_eq!(results[1]["name"], "SeaCraft 12");
+
+        // 2. batch rollback (move_point then a failing call -> hull_info shows the point unmoved)
+        let before_info = ok(&mut s, 2, "hull_info", json!({}));
+        let err_text = fails(
+            &mut s,
+            3,
+            "batch",
+            json!({
+                "calls": [
+                    {
+                        "name": "move_point",
+                        "arguments": {"index": 0, "xyz": [0.0, 0.0, 5.0]}
+                    },
+                    {
+                        "name": "move_point",
+                        "arguments": {"index": 999999, "xyz": [0.0, 0.0, 0.0]}
+                    }
+                ]
+            }),
+        );
+        let fail_json: Value = serde_json::from_str(&err_text).expect("fail json");
+        assert_eq!(fail_json["completed"], 1);
+        assert_eq!(fail_json["failed"]["index"], 1);
+        assert_eq!(fail_json["failed"]["name"], "move_point");
+        assert!(fail_json["failed"]["error"].as_str().unwrap().contains("out of range"));
+
+        // Verify point 0 was rolled back: z is still 0.5, not 5.0
+        let after_info = ok(&mut s, 4, "hull_info", json!({}));
+        assert_eq!(after_info["points"], before_info["points"]);
+        let check_pt = ok(&mut s, 5, "move_point", json!({"index": 0, "xyz": [0.0, 0.0, 0.5]}));
+        assert!((check_pt["before"]["z"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+
+        // 3. nested batch rejected
+        let nested_err = fails(
+            &mut s,
+            6,
+            "batch",
+            json!({
+                "calls": [
+                    {
+                        "name": "batch",
+                        "arguments": {"calls": []}
+                    }
+                ]
+            }),
+        );
+        let nested_json: Value = serde_json::from_str(&nested_err).expect("nested fail json");
+        assert_eq!(nested_json["failed"]["name"], "batch");
+        assert!(nested_json["failed"]["error"].as_str().unwrap().contains("nested batch"));
+
+        // 4. >100 calls rejected with -32602
+        let calls_101: Vec<Value> = (0..101)
+            .map(|_| json!({"name": "hull_info", "arguments": {}}))
+            .collect();
+        let too_many = request(
+            &mut s,
+            7,
+            "tools/call",
+            json!({"name": "batch", "arguments": {"calls": calls_101}}),
+        );
+        assert_eq!(too_many["error"]["code"], -32602);
+        assert!(too_many["error"]["message"].as_str().unwrap().contains("too many items"));
+
+        // 5. deliberately panicking path does not kill the server — assert next ping still answers
+        let panic_res = request(
+            &mut s,
+            8,
+            "tools/call",
+            json!({"name": "__test_panic", "arguments": {}}),
+        );
+        assert_eq!(panic_res["result"]["isError"], true);
+        assert!(panic_res["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("internal error: deliberate test panic"));
+
+        let ping = request(&mut s, 9, "ping", json!({}));
+        assert_eq!(ping["result"], json!({}));
+    }
+
+    #[test]
+    fn connected_batch_rollback_with_history_mark_restore() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut line = String::new();
+
+            // 1. Expect history.mark
+            line.clear();
+            reader.read_line(&mut line).expect("read");
+            let v: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v["method"], "history.mark");
+            stream.write_all(b"{\"ok\":true,\"result\":{\"mark\":42}}\n").expect("write");
+
+            // 2. Expect first tool call (point.move)
+            line.clear();
+            reader.read_line(&mut line).expect("read");
+            let v: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v["method"], "point.move");
+            stream.write_all(b"{\"ok\":true,\"result\":{\"index\":0}}\n").expect("write");
+
+            // 3. Expect second tool call (model.split_face which fails)
+            line.clear();
+            reader.read_line(&mut line).expect("read");
+            let v: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v["method"], "model.split_face");
+            stream.write_all(b"{\"ok\":false,\"error\":\"split error\"}\n").expect("write");
+
+            // 4. Expect history.restore with mark 42
+            line.clear();
+            reader.read_line(&mut line).expect("read");
+            let v: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v["method"], "history.restore");
+            assert_eq!(v["params"]["mark"], 42);
+            stream.write_all(b"{\"ok\":true,\"result\":{\"restored\":true}}\n").expect("write");
+        });
+
+        let mut s = McpServer::connect(&addr.to_string()).expect("connect");
+        assert!(s.is_remote());
+
+        let err_text = fails(
+            &mut s,
+            1,
+            "batch",
+            json!({
+                "calls": [
+                    {
+                        "name": "move_point",
+                        "arguments": {"index": 0, "xyz": [0.0, 0.0, 1.0]}
+                    },
+                    {
+                        "name": "split_face",
+                        "arguments": {"face": 0}
+                    }
+                ]
+            }),
+        );
+        let fail_json: Value = serde_json::from_str(&err_text).expect("fail json");
+        assert_eq!(fail_json["completed"], 1);
+        assert_eq!(fail_json["failed"]["index"], 1);
+        assert_eq!(fail_json["failed"]["name"], "split_face");
+        assert!(fail_json["failed"]["error"].as_str().unwrap().contains("split error"));
+
+        handle.join().expect("server thread finished");
     }
 }
