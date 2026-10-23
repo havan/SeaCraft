@@ -48,7 +48,10 @@ use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
 use seacraft_core::subdiv::SubdivisionMode;
-use seacraft_core::{curves, demo, develop, export, fef, linesplan, offsets, planing, raster, resistance, topology, transform};
+use seacraft_core::{
+    curves, demo, develop, export, fef, linesplan, offsets, planing, raster, resistance, table,
+    topology, transform,
+};
 use serde_json::{json, Map, Value};
 
 /// The protocol revision this server speaks (`initialize` answers with it).
@@ -396,6 +399,7 @@ impl McpServer {
             "planing_curve" => self.planing_curve(a),
             "transform_hull" => self.transform_hull(a),
             "unfold_plate" => self.unfold_plate(a),
+            "hydro_table" => self.hydro_table(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -958,6 +962,50 @@ impl McpServer {
             "draft": self.opts.draft,
             "faces": self.surface.faces.len(),
             "points": self.surface.points.len(),
+        }))
+    }
+
+    fn hydro_table(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let mut opts = self.opts.clone();
+        if let Some(to) = number_arg(a, "to") {
+            if !(to.is_finite() && to > 0.0) {
+                return Err("hydro_table: `to` must be a positive draft".into());
+            }
+            opts.draft = to;
+        }
+        if a.contains_key("level") {
+            opts.subdivision.level = level_arg(a)?;
+        }
+        let drafts = match a.get("drafts") {
+            None | Some(Value::Null) => {
+                let steps = match a.get("steps") {
+                    None | Some(Value::Null) => 10,
+                    Some(_) => match number_arg(a, "steps") {
+                        Some(n) if (1.0..=200.0).contains(&n) => n.round() as usize,
+                        _ => return Err("hydro_table: `steps` must be from 1 to 200".into()),
+                    },
+                };
+                table::draft_range(opts.draft, steps)
+            }
+            Some(v) => {
+                let list = numbers(v, "drafts")?;
+                if list.is_empty() {
+                    return Err("hydro_table: `drafts` is empty".into());
+                }
+                if list.iter().any(|d| *d <= 0.0) {
+                    return Err("hydro_table: `drafts` must be positive".into());
+                }
+                list
+            }
+        };
+        let t = table::table(&self.surface, &opts, &drafts);
+        Ok(json!({
+            "backend": "headless",
+            "level": opts.subdivision.level,
+            "name": t.name,
+            "water_density": t.water_density,
+            "drafts": t.rows.len(),
+            "rows": t.rows,
         }))
     }
 
@@ -1578,6 +1626,25 @@ pub fn tool_definitions() -> Vec<Value> {
             true,
         ),
         tool(
+            "hydro_table",
+            "Hydrostatics table",
+            "Measure the hull once per draft and return the classic hydrostatics table: displacement, KB, BM, \
+             BM_L, KM, LCB, LCF, the coefficients, tonnes per centimetre of immersion (TPC = A_w*rho/100) and \
+             the moment to change trim one centimetre (MTC = rho*I_L/(100*L)). Rows are spread from just above \
+             zero to `to` (default: the model's design draft) in `steps` equal increments, or at exactly the \
+             drafts listed in `drafts`. The top row equals what `hydro_compute` reports at that draft.",
+            obj(
+                json!({
+                    "to": number("Top draft in metres (default: the project draft)"),
+                    "steps": integer("Number of drafts from just above zero to the top one (default 10)"),
+                    "drafts": {"type": "array", "items": {"type": "number"}, "description": "Explicit drafts in metres (overrides `to` and `steps`)"},
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            true,
+        ),
+        tool(
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
@@ -1712,6 +1779,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `bonjean_curves` -> `curves.bonjean`, `table_of_offsets` -> `curves.offsets`,
 /// `resistance_curve` -> `resistance.compute`, `planing_curve` -> `planing.compute`,
 /// `transform_hull` -> `model.transform`, `unfold_plate` -> `curves.unfold`,
+/// `hydro_table` -> `hydro.table`,
 /// `export_linesplan`
 /// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
@@ -1881,6 +1949,7 @@ impl Remote {
             "planing_curve" => self.request("planing.compute", Value::Object(a.clone())),
             "transform_hull" => self.request("model.transform", Value::Object(a.clone())),
             "unfold_plate" => self.request("curves.unfold", Value::Object(a.clone())),
+            "hydro_table" => self.request("hydro.table", Value::Object(a.clone())),
             "export_linesplan" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -2076,7 +2145,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the seventeen hull tools, each with a JSON Schema.
+        // tools/list: the eighteen hull tools, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -2098,6 +2167,7 @@ mod tests {
                 "planing_curve",
                 "transform_hull",
                 "unfold_plate",
+                "hydro_table",
                 "export_linesplan",
                 "render_png",
             ]
@@ -2395,6 +2465,26 @@ mod tests {
             (moved["midship_coefficient"].as_f64().unwrap_or(0.0) - 0.6561).abs() < 0.005,
             "Cm at 5.2 m: {moved}"
         );
+
+        // hydro_table: the top row must be the single-point measurement, and an
+        // explicit draft list must be honoured exactly.
+        let tbl = ok(&mut s, 92, "hydro_table", json!({"steps": 5}));
+        assert_eq!(tbl["drafts"], json!(5), "{tbl}");
+        let rows = tbl["rows"].as_array().expect("rows");
+        let top = rows.last().expect("a top row");
+        assert!((top["draft"].as_f64().unwrap_or(0.0) - 0.62).abs() < 1e-9, "{top}");
+        let single = ok(&mut s, 93, "hydro_compute", json!({"draft": 0.62}));
+        assert!(
+            (top["volume_m3"].as_f64().unwrap_or(0.0) - single["volume_m3"].as_f64().unwrap_or(0.0)).abs() < 1e-9,
+            "table row {top} vs single point {single}"
+        );
+        // Physical magnitudes: a 12 m hull is ~0.3 t/cm, not 300.
+        let tpc = top["tpc"].as_f64().unwrap_or(0.0);
+        assert!((0.05..1.5).contains(&tpc), "TPC {tpc} t/cm");
+        let two = ok(&mut s, 94, "hydro_table", json!({"drafts": [0.3, 0.62]}));
+        assert_eq!(two["drafts"], json!(2), "{two}");
+        fails(&mut s, 95, "hydro_table", json!({"drafts": [0.0]}));
+        fails(&mut s, 96, "hydro_table", json!({"steps": 0}));
 
         // resistance_curve: PE = RT·V, the branch is reported, and the power
         // chain closes when a propeller is given.

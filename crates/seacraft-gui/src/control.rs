@@ -769,6 +769,53 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "result": result,
             }))
         }
+        "hydro.table" => {
+            // Read-only: a table is a report, not an edit.
+            let mut opts = app.hydro_options().clone();
+            if let Some(to) = number_in(p, "to", 0.001..=1.0e3)? {
+                opts.draft = to;
+            }
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+                level,
+                mode: app.subdivision_mode(),
+            };
+            let drafts = match numbers(p, "drafts")? {
+                Some(list) => {
+                    if list.is_empty() {
+                        return Err("hydro.table: `drafts` is empty".into());
+                    }
+                    if list.iter().any(|d| *d <= 0.0) {
+                        return Err("hydro.table: `drafts` must be positive".into());
+                    }
+                    list
+                }
+                None => {
+                    let steps = match p.get("steps") {
+                        None | Some(Value::Null) => 10,
+                        Some(_) => number_in(p, "steps", 1.0..=200.0)?
+                            .map(|n| n.round() as usize)
+                            .unwrap_or(10),
+                    };
+                    seacraft_core::table::draft_range(opts.draft, steps)
+                }
+            };
+            let surface = app.surface().ok_or_else(|| "hydro.table: no model is loaded".to_string())?;
+            let t = seacraft_core::table::table(surface, &opts, &drafts);
+            Ok(json!({
+                "backend": "app",
+                "level": level,
+                "name": t.name,
+                "water_density": t.water_density,
+                "drafts": t.rows.len(),
+                "rows": serde_json::to_value(&t.rows).unwrap_or(Value::Null),
+            }))
+        }
         "stability.cross_curves" => {
             apply_stability_inputs(app, p)?;
             app.compute_cross_curves();
@@ -1609,6 +1656,22 @@ mod tests {
             assert_eq!(call(&mut app, &ctx, "ui.render", bad.clone())["ok"], false, "{bad}");
         }
         assert!(std::fs::metadata(&png_path).is_err(), "a refused render writes nothing");
+
+        // ---- hydro.table: read-only, and the top row is the dock's number ---
+        let dirty_before_t = app.is_dirty();
+        let undo_before_t = app.undo_len();
+        let r = call(&mut app, &ctx, "hydro.table", json!({ "steps": 4 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["drafts"], json!(4), "{r}");
+        let rows = r["result"]["rows"].as_array().expect("rows");
+        let top = rows.last().expect("a top row");
+        assert!((top["draft"].as_f64().unwrap_or(0.0) - app.hydro_options().draft).abs() < 1e-9, "{top}");
+        assert!(top["volume_m3"].as_f64().unwrap_or(0.0) > 0.0, "{top}");
+        assert_eq!(app.is_dirty(), dirty_before_t, "a table must not dirty the model");
+        assert_eq!(app.undo_len(), undo_before_t, "a table must not push undo");
+        let two = call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.4, 0.62] }));
+        assert_eq!(two["result"]["drafts"], json!(2), "{two}");
+        assert_eq!(call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.0] }))["ok"], false);
 
         // ---- model.transform: a real edit, with undo ------------------------
         let dirty_before = app.is_dirty();

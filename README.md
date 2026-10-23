@@ -377,11 +377,11 @@ cursor position on the active viewport's focal plane and the crate version.
 * Programmatic automation is supported via `seacraft-gui --control 127.0.0.1:PORT`
   (JSON lines over TCP, executed on the next frame) and `seacraft mcp` (JSON-RPC
   2.0 Model Context Protocol over stdio, either headless or connected via
-  `--connect 127.0.0.1:PORT`). Seventeen tools: `hull_info`, `load_hull`,
+  `--connect 127.0.0.1:PORT`). Eighteen tools: `hull_info`, `load_hull`,
   `save_hull`, `move_point`, `set_crease`, `split_face`, `insert_edge`,
-  `transform_hull`, `hydro_compute`, `stability_cross_curves`, `bonjean_curves`,
-  `table_of_offsets`, `unfold_plate`, `resistance_curve`, `planing_curve`,
-  `export_linesplan` and `render_png`.
+  `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
+  `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
+  `planing_curve`, `export_linesplan` and `render_png`.
 * The hydrostatics table (`seacraft table`) runs the same measurement once per
   draft and adds two table quantities that `hydro` does not store: `TPC =
   A_w·ρ/100` tonnes per centimetre and `MTC = ρ·I_L/(100·L)` tonnes·metres per
