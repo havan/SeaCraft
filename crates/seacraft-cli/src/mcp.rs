@@ -54,8 +54,12 @@ use seacraft_core::{
 };
 use serde_json::{json, Map, Value};
 
-/// The protocol revision this server speaks (`initialize` answers with it).
-pub const PROTOCOL_VERSION: &str = "2024-11-05";
+/// The newest protocol revision this server speaks (`initialize` answers with
+/// it unless the client asks for an older one in [`SUPPORTED_VERSIONS`]).
+pub const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Every revision the server answers to, newest first.
+pub const SUPPORTED_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 /// Longest message line accepted, in bytes. Past it the server answers with an
 /// error and drops the rest of the line instead of buffering it.
@@ -77,18 +81,30 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
+/// MCP: a `resources/read` for a URI the server does not serve.
+const RESOURCE_NOT_FOUND: i64 = -32002;
 
-const INSTRUCTIONS: &str = "SeaCraft models a hull as a subdivision surface and measures it. Axes: x forward, \
-y to starboard, z up, metres and kg; the keel is the lowest hydrostatics point, so KB/BM/KM/KG are above it. \
-A symmetric layer models only y >= 0 and is mirrored on evaluation. Typical use: `hull_info` for the control \
-net and its layers, extents and principal dimensions; `load_hull` {path} or {demo: true, symmetric}; \
-`hydro_compute` {draft, trim, heel_deg, kg, free_trim, lcg} for one floating condition (free_trim solves the trim \
-that puts the LCB on the LCG); `stability_cross_curves` for KN/GZ with the IMO A.749 criteria; `bonjean_curves` \
-for the section area at each station against a range of drafts; `table_of_offsets` for the drawing-office \
-half-breadth and buttock tables; `resistance_curve` and `planing_curve` for power; `move_point` and \
-`set_crease`, `split_face`, `insert_edge` and `transform_hull` to edit; `unfold_plate` for plate \
-development; `export_linesplan` (.svg/.dxf/.igs) and `render_png` (shaded, zebra, curvature, draft) to \
-look at the result; `save_hull` to keep it. All measurement happens on the refined mesh.";
+const HULL_URI: &str = "seacraft://hull";
+const TOOLS_URI: &str = "seacraft://tools";
+
+const INSTRUCTIONS: &str = "SeaCraft models a ship hull as a subdivision surface and measures it.
+Axes: x forward, y to starboard, z up. Units: metres, kg and tonnes (displacement in t, volume in m3).
+A .fef file is FREE!ship's text exchange format: control points, edges, faces and layers of the control net.
+The net is refined (Loop / Catmull-Clark hybrid, FREE!ship's weights) before anything is measured, so
+hydrostatics, sections and linesplans all use the refined mesh, never the control polygon.
+A symmetric layer models only y >= 0 (the starboard half) and is mirrored on evaluation; a half model needs a
+transom face or its waterplane never closes.
+KB, BM, KM and KG are heights above the keel (the lowest hydrostatic point); LCB and LCF are in model x.
+Heel is positive to starboard (degrees). Trim is a length in metres, positive when the bow is higher than the stern.
+Workflow: load_hull {path} (or {demo: true}) -> hull_info for extents, layers and validity ->
+hydro_compute {draft, trim, heel_deg, kg} for one floating condition (free_trim solves trim so LCB meets LCG) ->
+stability_cross_curves for KN/GZ and the IMO A.749 criteria -> render_png to look at the result.
+Other measurements: bonjean_curves, table_of_offsets, hydro_table, trim_scan, resistance_curve, planing_curve,
+unfold_plate. Edit with move_point, set_crease, split_face, insert_edge and transform_hull.
+Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
+Tool failures come back as a normal result with isError true and a message; protocol errors are JSON-RPC errors.
+Resources: seacraft://hull (summary of the loaded hull) and seacraft://tools (catalogue with each tool's effect).";
 
 // ---------------------------------------------------------------- framing --
 
@@ -320,24 +336,60 @@ impl McpServer {
     fn request(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         match method {
             "initialize" => {
-                let asked = params
-                    .get("protocolVersion")
-                    .and_then(Value::as_str)
+                let asked = params.get("protocolVersion").and_then(Value::as_str);
+                let version = asked
+                    .and_then(|v| SUPPORTED_VERSIONS.iter().find(|s| **s == v))
+                    .copied()
                     .unwrap_or(PROTOCOL_VERSION);
-                let version = if asked == PROTOCOL_VERSION {
-                    asked
-                } else {
-                    PROTOCOL_VERSION
-                };
                 Ok(json!({
                     "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
+                    "capabilities": {
+                        "tools": {"listChanged": false},
+                        "resources": {"listChanged": false},
+                    },
                     "serverInfo": {"name": "seacraft-mcp", "title": "SeaCraft", "version": seacraft_core::VERSION},
-                    "instructions": format!("{INSTRUCTIONS} Backend: {}.", self.describe()),
+                    "instructions": format!("{INSTRUCTIONS}\nBackend: {}.", self.describe()),
                 }))
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_definitions()})),
+            "resources/list" => Ok(json!({"resources": [
+                {"uri": HULL_URI, "name": "hull", "title": "Loaded hull",
+                 "description": "Summary of the loaded hull: dimensions, counts, layers, validity.",
+                 "mimeType": "application/json"},
+                {"uri": TOOLS_URI, "name": "tools", "title": "Tool catalogue",
+                 "description": "Every tool with its title, one-line description and effect.",
+                 "mimeType": "text/markdown"},
+            ]})),
+            "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
+            "prompts/list" => Ok(json!({"prompts": []})),
+            "resources/read" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .ok_or((INVALID_PARAMS, "missing resource `uri`".to_string()))?;
+                let (mime, text) = match uri {
+                    HULL_URI => {
+                        let v = match &mut self.remote {
+                            Some(r) => r.tool("hull_info", &Map::new()),
+                            None => Ok(self.hull_info()),
+                        }
+                        .map_err(|e| (INTERNAL_ERROR, e))?;
+                        (
+                            "application/json",
+                            serde_json::to_string_pretty(&v).unwrap_or_default(),
+                        )
+                    }
+                    TOOLS_URI => ("text/markdown", tool_catalogue()),
+                    other => {
+                        return Err((
+                            RESOURCE_NOT_FOUND,
+                            format!("resource `{}` not found", clip(other, 100)),
+                        ))
+                    }
+                };
+                Ok(json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
+            }
             "tools/call" => {
                 let name = params
                     .get("name")
@@ -626,9 +678,12 @@ impl McpServer {
 
     fn split_face(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let faces = self.surface.faces.len();
-        let face = usize_arg(a, "face")
-            .filter(|f| *f < faces)
-            .ok_or_else(|| format!("split_face: `face` must be from 0 to {}", faces.saturating_sub(1)))?;
+        let face = usize_arg(a, "face").filter(|f| *f < faces).ok_or_else(|| {
+            format!(
+                "split_face: `face` must be from 0 to {}",
+                faces.saturating_sub(1)
+            )
+        })?;
         let report = topology::split_face(&mut self.surface, face)
             .map_err(|e| format!("split_face: {e}"))?;
         Ok(json!({
@@ -645,13 +700,19 @@ impl McpServer {
     fn insert_edge(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let faces = self.surface.faces.len();
         let points = self.surface.points.len();
-        let face = usize_arg(a, "face")
-            .filter(|f| *f < faces)
-            .ok_or_else(|| format!("insert_edge: `face` must be from 0 to {}", faces.saturating_sub(1)))?;
+        let face = usize_arg(a, "face").filter(|f| *f < faces).ok_or_else(|| {
+            format!(
+                "insert_edge: `face` must be from 0 to {}",
+                faces.saturating_sub(1)
+            )
+        })?;
         let pick = |key: &str| -> Result<usize, String> {
-            usize_arg(a, key)
-                .filter(|v| *v < points)
-                .ok_or_else(|| format!("insert_edge: `{key}` must be from 0 to {}", points.saturating_sub(1)))
+            usize_arg(a, key).filter(|v| *v < points).ok_or_else(|| {
+                format!(
+                    "insert_edge: `{key}` must be from 0 to {}",
+                    points.saturating_sub(1)
+                )
+            })
         };
         let (x, y) = (pick("a")?, pick("b")?);
         let before = self.surface.faces.len();
@@ -767,7 +828,8 @@ impl McpServer {
         let depth = hull.model_max.z - hull.keel;
         if depth <= 0.0 {
             return Err(
-                "bonjean_curves: the hull has no height above the keel (is a layer hidden?)".to_string(),
+                "bonjean_curves: the hull has no height above the keel (is a layer hidden?)"
+                    .to_string(),
             );
         }
         let drafts = match a.get("drafts") {
@@ -925,10 +987,9 @@ impl McpServer {
         let subdiv = self.opts.subdivision;
         let mirror = match str_arg(a, "mirror") {
             None => None,
-            Some(name) => Some(
-                transform::Axis::parse(name)
-                    .ok_or_else(|| format!("transform_hull: `mirror` must be x, y or z (got `{name}`)"))?,
-            ),
+            Some(name) => Some(transform::Axis::parse(name).ok_or_else(|| {
+                format!("transform_hull: `mirror` must be x, y or z (got `{name}`)")
+            })?),
         };
         let vec3 = |key: &str| -> Result<Option<Vec3>, String> {
             match a.get(key) {
@@ -950,8 +1011,8 @@ impl McpServer {
             translate: vec3("translate")?.unwrap_or(Vec3::ZERO),
             mirror,
         };
-        let (out, report) =
-            transform::run(&self.surface, &request, subdiv).map_err(|e| format!("transform_hull: {e}"))?;
+        let (out, report) = transform::run(&self.surface, &request, subdiv)
+            .map_err(|e| format!("transform_hull: {e}"))?;
         let new_draft = out.settings.draft;
         self.surface = out;
         if new_draft > 0.0 {
@@ -977,8 +1038,7 @@ impl McpServer {
         if a.contains_key("level") {
             opts.subdivision.level = level_arg(a)?;
         }
-        let speed = number_arg(a, "speed_kn")
-            .ok_or("trim_scan: give `speed_kn`")?;
+        let speed = number_arg(a, "speed_kn").ok_or("trim_scan: give `speed_kn`")?;
         let from = number_arg(a, "from").unwrap_or(-0.6);
         let to = number_arg(a, "to").unwrap_or(0.6);
         if !(to.is_finite() && from.is_finite() && to > from) {
@@ -1387,7 +1447,46 @@ fn obj(props: Value, required: &[&str]) -> Value {
     o
 }
 
-fn tool(name: &str, title: &str, desc: &str, schema: Value, read_only: bool) -> Value {
+/// What a tool does to the world, which fixes its MCP annotation hints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    /// Measures or reports; changes nothing (`unfold_plate` writes a file only
+    /// when asked, as a side product of the answer).
+    ReadOnly,
+    /// Changes the loaded model in place, additively or by small moves.
+    Edits,
+    /// Throws the loaded model away and substitutes another.
+    Replaces,
+    /// Writes a file on disk and leaves the model alone.
+    Files,
+}
+
+impl Effect {
+    /// Recover the effect from a tool definition's annotations.
+    fn of(def: &Value) -> Effect {
+        let a = &def["annotations"];
+        if a["readOnlyHint"] == true {
+            Effect::ReadOnly
+        } else if a["destructiveHint"] == true {
+            Effect::Replaces
+        } else if a["idempotentHint"] == true {
+            Effect::Files
+        } else {
+            Effect::Edits
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Effect::ReadOnly => "read-only",
+            Effect::Edits => "edits the model",
+            Effect::Replaces => "replaces the model",
+            Effect::Files => "writes files",
+        }
+    }
+}
+
+fn tool(name: &str, title: &str, desc: &str, schema: Value, effect: Effect) -> Value {
     json!({
         "name": name,
         "title": title,
@@ -1395,9 +1494,9 @@ fn tool(name: &str, title: &str, desc: &str, schema: Value, read_only: bool) -> 
         "inputSchema": schema,
         "annotations": {
             "title": title,
-            "readOnlyHint": read_only,
-            "destructiveHint": !read_only,
-            "idempotentHint": read_only,
+            "readOnlyHint": effect == Effect::ReadOnly,
+            "destructiveHint": effect == Effect::Replaces,
+            "idempotentHint": matches!(effect, Effect::ReadOnly | Effect::Replaces | Effect::Files),
             "openWorldHint": false,
         },
     })
@@ -1413,7 +1512,7 @@ pub fn tool_definitions() -> Vec<Value> {
              face and edge counts (crease, boundary, non-manifold), the face mix, the control-net area, every \
              layer with its symmetric and hydrostatics flags, and whether the model validates.",
             obj(json!({}), &[]),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "load_hull",
@@ -1428,7 +1527,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            false,
+            Effect::Replaces,
         ),
         tool(
             "save_hull",
@@ -1436,7 +1535,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "Write the control net as a FREE!ship `.fef` file. Without `path` the model is written back to the \
              file it came from.",
             obj(json!({"path": string("Output .fef path")}), &[]),
-            false,
+            Effect::Files,
         ),
         tool(
             "move_point",
@@ -1451,7 +1550,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &["index", "xyz"],
             ),
-            false,
+            Effect::Edits,
         ),
         tool(
             "set_crease",
@@ -1466,7 +1565,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &["a", "b"],
             ),
-            false,
+            Effect::Edits,
         ),
         tool(
             "split_face",
@@ -1476,7 +1575,7 @@ pub fn tool_definitions() -> Vec<Value> {
              fan. Every new edge is interior to the face, so the net stays closed and manifold; on a planar face \
              the geometry is untouched, on a curved one the fan refines to a slightly different surface.",
             obj(json!({"face": integer("Control face index (see hull_info for the count)")}), &["face"]),
-            false,
+            Effect::Edits,
         ),
         tool(
             "insert_edge",
@@ -1492,7 +1591,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &["face", "a", "b"],
             ),
-            false,
+            Effect::Edits,
         ),
         tool(
             "hydro_compute",
@@ -1516,7 +1615,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "stability_cross_curves",
@@ -1536,7 +1635,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "bonjean_curves",
@@ -1555,7 +1654,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "table_of_offsets",
@@ -1577,7 +1676,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "resistance_curve",
@@ -1600,7 +1699,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "planing_curve",
@@ -1620,7 +1719,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "transform_hull",
@@ -1641,7 +1740,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            false,
+            Effect::Edits,
         ),
         tool(
             "unfold_plate",
@@ -1665,7 +1764,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "hydro_table",
@@ -1684,7 +1783,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &[],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "trim_scan",
@@ -1706,7 +1805,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &["speed_kn"],
             ),
-            true,
+            Effect::ReadOnly,
         ),
         tool(
             "export_linesplan",
@@ -1724,7 +1823,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &["path"],
             ),
-            false,
+            Effect::Files,
         ),
         tool(
             "render_png",
@@ -1743,9 +1842,26 @@ pub fn tool_definitions() -> Vec<Value> {
                 }),
                 &["path"],
             ),
-            false,
+            Effect::Files,
         ),
     ]
+}
+
+/// The tools as a markdown list: name, title, first sentence, effect.
+fn tool_catalogue() -> String {
+    let mut out = String::from("# SeaCraft tools\n\n");
+    for d in tool_definitions() {
+        let desc = d["description"].as_str().unwrap_or_default();
+        let first = desc.split_once(". ").map_or(desc, |(h, _)| h);
+        out.push_str(&format!(
+            "- `{}` ({}): {}. Effect: {}.\n",
+            d["name"].as_str().unwrap_or_default(),
+            d["title"].as_str().unwrap_or_default(),
+            first.trim_end_matches('.'),
+            Effect::of(&d).label(),
+        ));
+    }
+    out
 }
 
 fn type_matches(t: &str, v: &Value) -> bool {
@@ -2298,7 +2414,10 @@ mod tests {
         let sections = bj["sections"].as_array().expect("sections");
         assert_eq!(sections.len(), 21, "{bj}");
         let mid = &sections[10];
-        assert!((mid["x"].as_f64().unwrap_or(0.0) - 6.0).abs() < 0.6, "{mid}");
+        assert!(
+            (mid["x"].as_f64().unwrap_or(0.0) - 6.0).abs() < 0.6,
+            "{mid}"
+        );
         let a: Vec<f64> = mid["areas_m2"]
             .as_array()
             .expect("areas")
@@ -2344,10 +2463,22 @@ mod tests {
         );
         // A cell the section cannot reach is null, never zero.
         let bow = rows.last().expect("a bow station");
-        assert!(rows.iter().any(|r| r["waterline_half_breadths"][0].is_null()), "{ofs}");
-        assert!(bow["buttock_heights"][0].is_null() || bow["buttock_heights"][0].as_f64().unwrap_or(0.0) > 0.0);
+        assert!(
+            rows.iter()
+                .any(|r| r["waterline_half_breadths"][0].is_null()),
+            "{ofs}"
+        );
+        assert!(
+            bow["buttock_heights"][0].is_null()
+                || bow["buttock_heights"][0].as_f64().unwrap_or(0.0) > 0.0
+        );
         // Defaults cover the depth and the half beam.
-        let dflt = ok(&mut s, 63, "table_of_offsets", json!({"waterline_steps": 3, "buttock_steps": 2}));
+        let dflt = ok(
+            &mut s,
+            63,
+            "table_of_offsets",
+            json!({"waterline_steps": 3, "buttock_steps": 2}),
+        );
         let wls = dflt["waterlines_m"].as_array().expect("waterlines");
         assert_eq!(wls.len(), 3, "{dflt}");
         let top = wls[2].as_f64().unwrap_or(0.0);
@@ -2438,7 +2569,10 @@ mod tests {
             .as_f64()
             .unwrap_or(0.0);
         let split = ok(&mut s, 72, "split_face", json!({"face": 0}));
-        assert_eq!(split["pieces"], 4, "a quad fans into four triangles: {split}");
+        assert_eq!(
+            split["pieces"], 4,
+            "a quad fans into four triangles: {split}"
+        );
         assert_eq!(split["faces"].as_u64(), Some(faces_before + 3), "{split}");
         let after = ok(&mut s, 73, "hull_info", json!({}));
         assert_eq!(after["validation"]["ok"], true, "{after}");
@@ -2459,7 +2593,12 @@ mod tests {
         );
         assert_eq!(crease["crease"], true, "{crease}");
         // An edge cannot be inserted between neighbours that are already joined.
-        fails(&mut s, 76, "insert_edge", json!({"face": 0, "a": new_point, "b": 0}));
+        fails(
+            &mut s,
+            76,
+            "insert_edge",
+            json!({"face": 0, "a": new_point, "b": 0}),
+        );
         // The edited net is what the file round-trip below has to reproduce.
         let edited = ok(&mut s, 77, "hull_info", json!({}));
 
@@ -2521,7 +2660,10 @@ mod tests {
             "hydro_compute",
             json!({"draft": 0.62, "mainframe_x": 5.2}),
         );
-        assert!((moved["mainframe_x"].as_f64().unwrap_or(0.0) - 5.2).abs() < 1e-9, "{moved}");
+        assert!(
+            (moved["mainframe_x"].as_f64().unwrap_or(0.0) - 5.2).abs() < 1e-9,
+            "{moved}"
+        );
         let at_52 = moved["mainframe_area_m2"].as_f64().unwrap_or(0.0);
         assert!(
             (at_lcf - 1.467).abs() < 0.01 && (at_52 - 1.441).abs() < 0.02,
@@ -2538,10 +2680,16 @@ mod tests {
         assert_eq!(tbl["drafts"], json!(5), "{tbl}");
         let rows = tbl["rows"].as_array().expect("rows");
         let top = rows.last().expect("a top row");
-        assert!((top["draft"].as_f64().unwrap_or(0.0) - 0.62).abs() < 1e-9, "{top}");
+        assert!(
+            (top["draft"].as_f64().unwrap_or(0.0) - 0.62).abs() < 1e-9,
+            "{top}"
+        );
         let single = ok(&mut s, 93, "hydro_compute", json!({"draft": 0.62}));
         assert!(
-            (top["volume_m3"].as_f64().unwrap_or(0.0) - single["volume_m3"].as_f64().unwrap_or(0.0)).abs() < 1e-9,
+            (top["volume_m3"].as_f64().unwrap_or(0.0)
+                - single["volume_m3"].as_f64().unwrap_or(0.0))
+            .abs()
+                < 1e-9,
             "table row {top} vs single point {single}"
         );
         // Physical magnitudes: a 12 m hull is ~0.3 t/cm, not 300.
@@ -2554,7 +2702,12 @@ mod tests {
 
         // trim_scan: the even-keel point is the resistance at that speed, the
         // displacement holds, and a range with no interior minimum says so.
-        let t = ok(&mut s, 97, "trim_scan", json!({"speed_kn": 10.0, "steps": 5}));
+        let t = ok(
+            &mut s,
+            97,
+            "trim_scan",
+            json!({"speed_kn": 10.0, "steps": 5}),
+        );
         assert_eq!(t["backend"], "headless", "{t}");
         let pts = t["points"].as_array().expect("points");
         assert_eq!(pts.len(), 5, "{t}");
@@ -2577,11 +2730,19 @@ mod tests {
         // a relative tolerance is the honest comparison.
         let a_rt = zero["rt_n"].as_f64().unwrap_or(0.0);
         let b_rt = row["rt_n"].as_f64().unwrap_or(0.0);
-        assert!((a_rt - b_rt).abs() / b_rt < 1e-4, "trim scan {a_rt} vs resistance {b_rt}");
+        assert!(
+            (a_rt - b_rt).abs() / b_rt < 1e-4,
+            "trim scan {a_rt} vs resistance {b_rt}"
+        );
         assert!(t["best"].is_object(), "{t}");
         // Bad speed, empty range and a one-point scan are all refused.
         fails(&mut s, 99, "trim_scan", json!({"speed_kn": 0.0}));
-        fails(&mut s, 100, "trim_scan", json!({"speed_kn": 10.0, "from": 0.4, "to": 0.2}));
+        fails(
+            &mut s,
+            100,
+            "trim_scan",
+            json!({"speed_kn": 10.0, "from": 0.4, "to": 0.2}),
+        );
 
         // resistance_curve: PE = RT·V, the branch is reported, and the power
         // chain closes when a propeller is given.
@@ -2600,8 +2761,15 @@ mod tests {
             assert!((pe - rt * v).abs() < 1e-6, "{p}");
             assert!(rt > 0.0 && p["wave_branch"].is_string(), "{p}");
         }
-        assert_eq!(curve["propulsion"].as_array().map(Vec::len), Some(2), "{curve}");
-        assert!(curve["propulsion"][0]["wake_fraction"].as_f64().is_some(), "{curve}");
+        assert_eq!(
+            curve["propulsion"].as_array().map(Vec::len),
+            Some(2),
+            "{curve}"
+        );
+        assert!(
+            curve["propulsion"][0]["wake_fraction"].as_f64().is_some(),
+            "{curve}"
+        );
         // planing_curve: the trim equilibrium is pinned by the pressure centre.
         let plan = ok(
             &mut s,
@@ -2613,9 +2781,14 @@ mod tests {
         assert_eq!(rows.len(), 2, "{plan}");
         for r in rows {
             let lcp = r["lcp_over_b"].as_f64().unwrap_or(0.0);
-            let lcg = plan["setup"]["hull"]["lcg_from_transom_m"].as_f64().unwrap_or(0.0)
+            let lcg = plan["setup"]["hull"]["lcg_from_transom_m"]
+                .as_f64()
+                .unwrap_or(0.0)
                 / plan["setup"]["hull"]["beam_m"].as_f64().unwrap_or(1.0);
-            assert!((lcp - lcg).abs() < 1e-3, "LCP/b {lcp} against LCG/b {lcg}: {r}");
+            assert!(
+                (lcp - lcg).abs() < 1e-3,
+                "LCP/b {lcp} against LCG/b {lcg}: {r}"
+            );
             assert!(r["trim_deg"].as_f64().unwrap_or(0.0) > 1.0, "{r}");
             assert!(r["resistance_n"].as_f64().unwrap_or(0.0) > 0.0);
         }
@@ -2630,14 +2803,21 @@ mod tests {
             (t["report"]["after"]["lwl"].as_f64().unwrap_or(0.0) - 18.0).abs() < 0.02,
             "{t}"
         );
-        assert_eq!(t["faces"].as_u64(), Some(faces_before_t), "a transform keeps the topology");
+        assert_eq!(
+            t["faces"].as_u64(),
+            Some(faces_before_t),
+            "a transform keeps the topology"
+        );
         // A draft target scales z (and with it the measurement draft).
         let d = ok(&mut s, 82, "transform_hull", json!({ "draft": 0.9 }));
         assert!(
             (d["report"]["after"]["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3,
             "{d}"
         );
-        assert!((d["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3, "{d}");
+        assert!(
+            (d["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3,
+            "{d}"
+        );
         // A mirror keeps the model valid; bad input is refused.
         let m = ok(&mut s, 83, "transform_hull", json!({ "mirror": "x" }));
         assert_eq!(m["report"]["mirror"], "x", "{m}");
@@ -2662,10 +2842,18 @@ mod tests {
         assert!(p["max_gap_m"].as_f64().unwrap_or(1.0) < 0.01, "{plate}");
         assert_eq!(plate["written"], json!(svg.to_string_lossy()));
         let text = std::fs::read_to_string(&svg).expect("the SVG was written");
-        assert!(text.contains("<svg") && text.contains("developable"), "an SVG");
+        assert!(
+            text.contains("<svg") && text.contains("developable"),
+            "an SVG"
+        );
         let _ = std::fs::remove_file(&svg);
         // A band that hits nothing is a tool error, not an empty plate.
-        fails(&mut s, 88, "unfold_plate", json!({"axis": "z", "from": 50.0, "to": 60.0}));
+        fails(
+            &mut s,
+            88,
+            "unfold_plate",
+            json!({"axis": "z", "from": 50.0, "to": 60.0}),
+        );
 
         // save_hull then load_hull round-trips the control net.
         let fef = temp_path("fef");
@@ -2892,5 +3080,165 @@ mod tests {
         let third: Value = serde_json::from_str(lines[2]).expect("JSON");
         assert_eq!(third["id"], 2, "the stream stayed in step");
         assert!(out.ends_with(b"\n"), "every reply is one line");
+    }
+
+    #[test]
+    fn initialize_negotiates_the_protocol_version() {
+        let mut s = McpServer::new();
+        for v in SUPPORTED_VERSIONS {
+            let r = request(&mut s, 1, "initialize", json!({"protocolVersion": v}));
+            assert_eq!(r["result"]["protocolVersion"], v);
+        }
+        for v in [json!("1999-01-01"), json!(7), json!(null)] {
+            let r = request(&mut s, 2, "initialize", json!({"protocolVersion": v}));
+            assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
+        }
+        let r = request(&mut s, 3, "initialize", json!({}));
+        let res = &r["result"];
+        assert_eq!(res["capabilities"]["resources"]["listChanged"], false);
+        assert_eq!(res["serverInfo"]["title"], "SeaCraft");
+        let text = res["instructions"].as_str().expect("instructions");
+        assert!(text.contains("x forward"));
+        assert!(text
+            .trim_end()
+            .ends_with("Backend: a headless in-process SeaCraft session."));
+    }
+
+    #[test]
+    fn every_tool_carries_annotations_matching_its_effect() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tools = list["result"]["tools"].as_array().expect("tools");
+        let mut read_only = Vec::new();
+        for t in tools {
+            let name = t["name"].as_str().expect("name");
+            assert!(t["title"].is_string(), "{name}: title");
+            let a = &t["annotations"];
+            assert_eq!(a["title"], t["title"], "{name}");
+            assert_eq!(a["openWorldHint"], false, "{name}");
+            for k in ["readOnlyHint", "destructiveHint", "idempotentHint"] {
+                assert!(a[k].is_boolean(), "{name}: {k}");
+            }
+            if a["readOnlyHint"] == true {
+                assert_eq!(a["destructiveHint"], false, "{name}");
+                read_only.push(name);
+            }
+        }
+        for n in [
+            "hull_info",
+            "hydro_compute",
+            "stability_cross_curves",
+            "trim_scan",
+        ] {
+            assert!(read_only.contains(&n), "{n} is read-only");
+        }
+        for n in [
+            "load_hull",
+            "save_hull",
+            "move_point",
+            "transform_hull",
+            "export_linesplan",
+            "render_png",
+        ] {
+            assert!(!read_only.contains(&n), "{n} is not read-only");
+        }
+        let load = tools
+            .iter()
+            .find(|t| t["name"] == "load_hull")
+            .expect("load_hull");
+        assert_eq!(load["annotations"]["destructiveHint"], true);
+        assert_eq!(Effect::of(load), Effect::Replaces);
+    }
+
+    #[test]
+    fn resources_list_and_read() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "resources/list", json!({}));
+        let uris: Vec<&str> = list["result"]["resources"]
+            .as_array()
+            .expect("resources")
+            .iter()
+            .filter_map(|r| r["uri"].as_str())
+            .collect();
+        assert_eq!(uris, vec!["seacraft://hull", "seacraft://tools"]);
+
+        let hull = request(
+            &mut s,
+            2,
+            "resources/read",
+            json!({"uri": "seacraft://hull"}),
+        );
+        let c = &hull["result"]["contents"][0];
+        assert_eq!(c["uri"], "seacraft://hull");
+        assert_eq!(c["mimeType"], "application/json");
+        let parsed: Value = serde_json::from_str(c["text"].as_str().expect("text")).expect("JSON");
+        assert!(parsed.is_object());
+
+        let cat = request(
+            &mut s,
+            3,
+            "resources/read",
+            json!({"uri": "seacraft://tools"}),
+        );
+        let text = cat["result"]["contents"][0]["text"].as_str().expect("text");
+        for d in tool_definitions() {
+            assert!(text.contains(d["name"].as_str().expect("name")));
+        }
+        assert!(text.contains("replaces the model"));
+
+        let bad = request(
+            &mut s,
+            4,
+            "resources/read",
+            json!({"uri": "seacraft://nope"}),
+        );
+        assert_eq!(bad["error"]["code"], -32002);
+        let none = request(&mut s, 5, "resources/read", json!({}));
+        assert_eq!(none["error"]["code"], INVALID_PARAMS);
+
+        let t = request(&mut s, 6, "resources/templates/list", json!({}));
+        assert_eq!(t["result"]["resourceTemplates"], json!([]));
+        let p = request(&mut s, 7, "prompts/list", json!({}));
+        assert_eq!(p["result"]["prompts"], json!([]));
+    }
+
+    #[test]
+    fn argument_validation_errors_name_the_field_and_failures_are_results() {
+        let mut s = McpServer::new();
+        let missing = request(
+            &mut s,
+            1,
+            "tools/call",
+            json!({"name": "move_point", "arguments": {"index": 0}}),
+        );
+        assert_eq!(missing["error"]["code"], INVALID_PARAMS);
+        assert!(missing["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("xyz"));
+
+        let wrong = request(
+            &mut s,
+            2,
+            "tools/call",
+            json!({"name": "move_point", "arguments": {"index": "zero", "xyz": [0, 0, 0]}}),
+        );
+        assert_eq!(wrong["error"]["code"], INVALID_PARAMS);
+        assert!(wrong["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("index"));
+
+        let unknown = request(&mut s, 3, "tools/call", json!({"name": "no_such_tool"}));
+        assert_eq!(unknown["error"]["code"], INVALID_PARAMS);
+
+        // A missing file is an execution failure: a result, not a protocol error.
+        let msg = fails(
+            &mut s,
+            4,
+            "load_hull",
+            json!({"path": "/nonexistent/hull.fef"}),
+        );
+        assert!(!msg.is_empty());
     }
 }
