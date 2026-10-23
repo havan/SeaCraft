@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{lackenby, loading, table, trimopt, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    develop, offsets, parametric::{self, HullKind, HullSpec}, planing, raster, resistance, topology, transform,
+    develop, michell, offsets, parametric::{self, HullKind, HullSpec}, planing, raster, resistance, topology, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -821,10 +821,23 @@ enum MirrorArg {
     Z,
 }
 
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum ResistanceMethodArg {
+    #[default]
+    Holtrop,
+    Michell,
+}
+
 #[derive(Args, Debug)]
 struct ResistanceArgs {
     /// Input .fef file
     file: PathBuf,
+    /// Resistance method (holtrop or michell)
+    #[arg(long, value_enum, default_value_t = ResistanceMethodArg::Holtrop)]
+    method: ResistanceMethodArg,
+    /// Catamaran demihull centreline spacing in metres (Michell method only)
+    #[arg(long)]
+    cat_spacing: Option<f64>,
     /// Speeds in knots, comma separated
     #[arg(long, default_value = "6,8,10,12,14")]
     speeds: String,
@@ -1821,6 +1834,128 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         opts.draft = d;
     }
     let hull = seacraft_core::hydro::Hull::new(&s, subdiv);
+
+    if a.method == ResistanceMethodArg::Michell {
+        let grid = michell::michell_grid_from_surface(&s, opts.draft, 65, 25, subdiv)
+            .context("cannot extract Michell offsets grid: positive draft and waterline needed")?;
+        let speeds = parse_ordinates(&a.speeds, "speeds")?;
+        let holtrop_in = resistance::HoltropInput::measure(&hull, &opts);
+        let form_factor = if let Some(ref h_in) = holtrop_in {
+            let r = resistance::holtrop(h_in, 1.0);
+            if h_in.warnings().is_empty() {
+                r.form_factor
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+        let viscosity = if (opts.water_density - 1000.0).abs() < 25.0 {
+            resistance::VISCOSITY_FRESH_WATER
+        } else {
+            resistance::VISCOSITY_SEA_WATER
+        };
+        let mopts = michell::MichellOptions {
+            nx: 65,
+            nz: 25,
+            ntheta: 128,
+            catamaran_spacing: a.cat_spacing,
+        };
+        let rows = michell::michell_resistance_curve(
+            &grid,
+            form_factor,
+            viscosity,
+            opts.water_density,
+            resistance::GRAVITY,
+            &speeds,
+            &mopts,
+        );
+
+        let mut warnings = Vec::new();
+        let lb = if grid.beam_wl > 1e-6 { grid.length_wl / grid.beam_wl } else { 0.0 };
+        if lb < 6.0 {
+            warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+        }
+        for r in &rows {
+            if !(0.20..=1.0).contains(&r.fn_) {
+                warnings.push(format!(
+                    "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+                    r.fn_, r.speed_kn
+                ));
+            }
+        }
+
+        if let Some(path) = &a.csv {
+            let mut text = String::from(
+                "speed_kn,speed_m_s,fn,re,cf,form_factor,rf_n,rapp_n,rw_n,rb_n,rtr_n,ra_n,rt_n,pe_w\n",
+            );
+            for r in &rows {
+                text.push_str(&format!(
+                    "{:.3},{:.4},{:.5},{:.0},{:.6},{:.4},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}\n",
+                    r.speed_kn, r.speed_m_s, r.fn_, r.reynolds, r.cf, r.form_factor, r.rf_n,
+                    r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
+                ));
+            }
+            std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+            println!("wrote {} ({} speeds)", path.display(), rows.len());
+        }
+
+        if a.json {
+            let body = serde_json::json!({
+                "method": "michell",
+                "cat_spacing": a.cat_spacing,
+                "length_wl": grid.length_wl,
+                "beam_wl": grid.beam_wl,
+                "draft": grid.draft,
+                "wetted_surface_m2": grid.wetted_surface_m2,
+                "form_factor": form_factor,
+                "warnings": warnings,
+                "speeds": rows,
+            });
+            println!("{}", serde_json::to_string_pretty(&body)?);
+            return Ok(());
+        }
+        if a.csv.is_some() {
+            return Ok(());
+        }
+
+        println!(
+            "{}  -  Michell wave resistance (thin-ship theory), T {:.3} m{}",
+            s.settings.name,
+            grid.draft,
+            if let Some(sp) = a.cat_spacing {
+                format!("  [Catamaran spacing: {sp:.2} m]")
+            } else {
+                String::new()
+            }
+        );
+        println!(
+            "  LWL {:.3}  BWL {:.3}  S {:.2} m2  L/B {:.2}  1+k {:.3}",
+            grid.length_wl, grid.beam_wl, grid.wetted_surface_m2, lb, form_factor
+        );
+        for w in &warnings {
+            println!("  warning: {w}");
+        }
+        println!();
+        println!(
+            "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
+            "kn", "Fn", "1+k1", "RT [kN]", "PE [kW]", "RF [kN]", "RW [kN]"
+        );
+        for r in &rows {
+            println!(
+                "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}",
+                r.speed_kn,
+                r.fn_,
+                r.form_factor,
+                r.rt_n / 1000.0,
+                r.pe_w / 1000.0,
+                r.rf_n / 1000.0,
+                r.rw_n / 1000.0
+            );
+        }
+        return Ok(());
+    }
+
     let mut input = resistance::HoltropInput::measure(&hull, &opts)
         .context("cannot measure the hull: it needs a positive draft and a waterline")?;
     input.c_stern = a.cstern;

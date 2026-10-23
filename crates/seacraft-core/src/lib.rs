@@ -35,6 +35,7 @@ pub mod linesplan;
 pub mod loading;
 pub mod math;
 pub mod mesh;
+pub mod michell;
 pub mod offsets;
 pub mod optimize;
 pub mod parametric;

@@ -49,7 +49,7 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
-    curves, demo, develop, export, fef, linesplan, loading, offsets,
+    curves, demo, develop, export, fef, linesplan, loading, michell, offsets,
     parametric::{self, HullKind, HullSpec},
     planing, raster, resistance, table, topology, transform, trimopt,
     optimize,
@@ -1383,6 +1383,74 @@ impl McpServer {
             opts.draft = d;
         }
         let hull = hydro::Hull::new(&self.surface, opts.subdivision);
+        let speeds = match a.get("speeds") {
+            Some(v) => positives(v, "speeds")?,
+            None => vec![6.0, 8.0, 10.0, 12.0, 14.0],
+        };
+
+        let method = str_arg(a, "method").unwrap_or("holtrop").to_lowercase();
+        let cat_spacing = number_arg(a, "cat_spacing");
+        if method == "michell" {
+            let grid = michell::michell_grid_from_surface(&self.surface, opts.draft, 65, 25, opts.subdivision)
+                .ok_or("resistance_curve: cannot extract Michell offsets grid from hull surface (positive draft and waterline needed)")?;
+            let holtrop_in = resistance::HoltropInput::measure(&hull, &opts);
+            let form_factor = if let Some(ref h_in) = holtrop_in {
+                let r = resistance::holtrop(h_in, 1.0);
+                if h_in.warnings().is_empty() {
+                    r.form_factor
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            };
+            let viscosity = if (opts.water_density - 1000.0).abs() < 25.0 {
+                resistance::VISCOSITY_FRESH_WATER
+            } else {
+                resistance::VISCOSITY_SEA_WATER
+            };
+            let mopts = michell::MichellOptions {
+                nx: 65,
+                nz: 25,
+                ntheta: 128,
+                catamaran_spacing: cat_spacing,
+            };
+            let rows = michell::michell_resistance_curve(
+                &grid,
+                form_factor,
+                viscosity,
+                opts.water_density,
+                resistance::GRAVITY,
+                &speeds,
+                &mopts,
+            );
+            let mut warnings = Vec::new();
+            let lb = if grid.beam_wl > 1e-6 { grid.length_wl / grid.beam_wl } else { 0.0 };
+            if lb < 6.0 {
+                warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+            }
+            for r in &rows {
+                if !(0.20..=1.0).contains(&r.fn_) {
+                    warnings.push(format!(
+                        "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+                        r.fn_, r.speed_kn
+                    ));
+                }
+            }
+            return Ok(json!({
+                "backend": "headless",
+                "method": "michell",
+                "cat_spacing": cat_spacing,
+                "length_wl": grid.length_wl,
+                "beam_wl": grid.beam_wl,
+                "draft": grid.draft,
+                "wetted_surface_m2": grid.wetted_surface_m2,
+                "form_factor": form_factor,
+                "warnings": warnings,
+                "speeds": rows,
+            }));
+        }
+
         let mut input = resistance::HoltropInput::measure(&hull, &opts)
             .ok_or("resistance_curve: cannot measure the hull (a positive draft and a waterline are needed)")?;
         if let Some(v) = number_arg(a, "cstern") {
@@ -1393,10 +1461,6 @@ impl McpServer {
         }
         input.bulb_area_m2 = number_arg(a, "bulb_area").unwrap_or(0.0).max(0.0);
         input.bulb_centre_z = number_arg(a, "bulb_z").unwrap_or(0.0).max(0.0);
-        let speeds = match a.get("speeds") {
-            Some(v) => positives(v, "speeds")?,
-            None => vec![6.0, 8.0, 10.0, 12.0, 14.0],
-        };
         let rows = resistance::curve(&input, &speeds);
         let diameter = number_arg(a, "propeller_diameter").unwrap_or(0.0).max(0.0);
         let propulsion: Vec<resistance::Propulsion> = if diameter > 0.0 {
@@ -2326,12 +2390,14 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "resistance_curve",
             "Resistance curve",
-            "Holtrop-Mennen still-water resistance over a speed sweep: RT, its components, the whole \
-             resistance coefficient set and the wave branch used at each speed. Give `propeller_diameter` to \
-             also get the wake fraction, thrust deduction and the power chain to shaft power. Everything is \
-             measured on the refined mesh; the method's own ranges are reported as `warnings`.",
+            "Still-water resistance over a speed sweep: Holtrop-Mennen empirical method or Michell thin-ship \
+             wave resistance. Returns RT, components (RF, RW, 1+k), effective power PE, and warnings. Supports \
+             catamarans via `cat_spacing` when `method: michell`. Give `propeller_diameter` to also get \
+             propulsion factors.",
             obj(
                 json!({
+                    "method": string("Resistance method: 'holtrop' (default) or 'michell'"),
+                    "cat_spacing": number("Demihull centreline separation in metres for catamarans (Michell method only)"),
                     "draft": number("Draft in metres (default: the model's design draft)"),
                     "speeds": {"type": "array", "items": {"type": "number"}, "description": "Speeds in knots (default 6,8,10,12,14)"},
                     "cstern": number("Holtrop stern parameter, -10 to +10 (default 0)"),
@@ -3607,6 +3673,25 @@ mod tests {
             curve["propulsion"][0]["wake_fraction"].as_f64().is_some(),
             "{curve}"
         );
+
+        // resistance_curve with Michell thin-ship method and catamaran spacing
+        let michell_curve = ok(
+            &mut s,
+            79,
+            "resistance_curve",
+            json!({"draft": 0.62, "speeds": [8.0, 12.0], "method": "michell", "cat_spacing": 10.0}),
+        );
+        assert_eq!(michell_curve["method"], "michell");
+        assert_eq!(michell_curve["cat_spacing"], 10.0);
+        let m_points = michell_curve["speeds"].as_array().expect("speeds");
+        assert_eq!(m_points.len(), 2, "{michell_curve}");
+        for p in m_points {
+            let rt = p["rt_n"].as_f64().unwrap_or(0.0);
+            let pe = p["pe_w"].as_f64().unwrap_or(0.0);
+            let v = p["speed_m_s"].as_f64().unwrap_or(0.0);
+            assert!((pe - rt * v).abs() < 1e-6, "{p}");
+            assert!(rt > 0.0 && p["wave_branch"] == "michell", "{p}");
+        }
         // planing_curve: the trim equilibrium is pinned by the pressure centre.
         let plan = ok(
             &mut s,

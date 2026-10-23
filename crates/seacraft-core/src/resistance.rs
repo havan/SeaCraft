@@ -363,6 +363,8 @@ pub enum WaveBranch {
     Interpolated,
     /// `Fn >= 0.55`: the `c17` / `m3` high-speed fit of the 1984 re-analysis.
     High,
+    /// Michell thin-ship wave resistance theory (1898).
+    Michell,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -510,6 +512,7 @@ pub fn wave_resistance(input: &HoltropInput, fn_: f64) -> f64 {
             let high = wave_high(input, &w55, 0.55);
             low + (10.0 * fn_ - 4.0) * (high - low) / 1.5
         }
+        WaveBranch::Michell => 0.0,
     }
 }
 

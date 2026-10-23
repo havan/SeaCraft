@@ -1239,15 +1239,78 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }
             let surface = app.surface().ok_or_else(|| "resistance.compute: no model is loaded".to_string())?;
             let hull = seacraft_core::hydro::Hull::new(surface, opts.subdivision);
+            let speeds = match numbers(p, "speeds")? {
+                Some(v) if !v.is_empty() => v,
+                _ => vec![6.0, 8.0, 10.0, 12.0, 14.0],
+            };
+            let method = text(p, "method")?.unwrap_or("holtrop");
+            let cat_spacing = number(p, "cat_spacing")?;
+            if method.eq_ignore_ascii_case("michell") {
+                let grid = seacraft_core::michell::michell_grid_from_surface(surface, opts.draft, 65, 25, opts.subdivision)
+                    .ok_or("resistance.compute: cannot extract Michell offsets grid from hull surface")?;
+                let holtrop_in = seacraft_core::resistance::HoltropInput::measure(&hull, &opts);
+                let form_factor = if let Some(ref h_in) = holtrop_in {
+                    let r = seacraft_core::resistance::holtrop(h_in, 1.0);
+                    if h_in.warnings().is_empty() {
+                        r.form_factor
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+                let viscosity = if (opts.water_density - 1000.0).abs() < 25.0 {
+                    seacraft_core::resistance::VISCOSITY_FRESH_WATER
+                } else {
+                    seacraft_core::resistance::VISCOSITY_SEA_WATER
+                };
+                let mopts = seacraft_core::michell::MichellOptions {
+                    nx: 65,
+                    nz: 25,
+                    ntheta: 128,
+                    catamaran_spacing: cat_spacing,
+                };
+                let rows = seacraft_core::michell::michell_resistance_curve(
+                    &grid,
+                    form_factor,
+                    viscosity,
+                    opts.water_density,
+                    seacraft_core::resistance::GRAVITY,
+                    &speeds,
+                    &mopts,
+                );
+                let mut warnings = Vec::new();
+                let lb = if grid.beam_wl > 1e-6 { grid.length_wl / grid.beam_wl } else { 0.0 };
+                if lb < 6.0 {
+                    warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+                }
+                for r in &rows {
+                    if !(0.20..=1.0).contains(&r.fn_) {
+                        warnings.push(format!(
+                            "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+                            r.fn_, r.speed_kn
+                        ));
+                    }
+                }
+                return Ok(json!({
+                    "backend": "app",
+                    "method": "michell",
+                    "cat_spacing": cat_spacing,
+                    "length_wl": grid.length_wl,
+                    "beam_wl": grid.beam_wl,
+                    "draft": grid.draft,
+                    "wetted_surface_m2": grid.wetted_surface_m2,
+                    "form_factor": form_factor,
+                    "warnings": warnings,
+                    "speeds": rows,
+                }));
+            }
+
             let mut input = seacraft_core::resistance::HoltropInput::measure(&hull, &opts)
                 .ok_or("resistance.compute: cannot measure the hull")?;
             input.c_stern = number(p, "cstern")?.unwrap_or(0.0);
             input.bulb_area_m2 = number(p, "bulb_area")?.unwrap_or(0.0).max(0.0);
             input.bulb_centre_z = number(p, "bulb_z")?.unwrap_or(0.0).max(0.0);
-            let speeds = match numbers(p, "speeds")? {
-                Some(v) if !v.is_empty() => v,
-                _ => vec![6.0, 8.0, 10.0, 12.0, 14.0],
-            };
             let rows = seacraft_core::resistance::curve(&input, &speeds);
             let diameter = number(p, "propeller_diameter")?.unwrap_or(0.0).max(0.0);
             let propulsion: Vec<seacraft_core::resistance::Propulsion> = if diameter > 0.0 {
@@ -1977,6 +2040,10 @@ mod tests {
         assert_eq!(pts.len(), 2, "{r}");
         assert!((pts[0]["pe_w"].as_f64().unwrap_or(0.0) - pts[0]["rt_n"].as_f64().unwrap_or(0.0) * pts[0]["speed_m_s"].as_f64().unwrap_or(0.0)).abs() < 1e-6);
         assert_eq!(r["result"]["propulsion"].as_array().map(Vec::len), Some(2), "{r}");
+        let rm = call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.62, "speeds": [8.0, 12.0], "method": "michell", "cat_spacing": 15.0 }));
+        assert_eq!(rm["ok"], true, "{rm}");
+        assert_eq!(rm["result"]["method"], "michell");
+        assert_eq!(rm["result"]["speeds"].as_array().map(Vec::len), Some(2));
         let p = call(&mut app, &ctx, "planing.compute", json!({ "speeds": [20.0], "deadrise": 15.0 }));
         assert_eq!(p["ok"], true, "{p}");
         let row = &p["result"]["speeds"][0];

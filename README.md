@@ -164,6 +164,17 @@ implementation is checked against the worked example the paper prints for a
 205 m ship: every coefficient and the wave, friction, correlation and appendage
 terms reproduce to better than 1 %.
 
+`michell` implements Michell's thin-ship wave resistance theory (1898) — the
+theoretical foundation of Michlet — for slender displacement hulls and
+catamarans (`Fn` 0.2–1.0, `L/B` ≥ 6). It samples half-breadths on a regular
+centreplane grid `y = f(x, z) >= 0` directly from the refined mesh, evaluates
+closed-form Filon/panel Fourier integrals in `x` and `z`, and integrates the
+directional wave energy spectrum over wave angles `theta` in `[0, pi/2)`. For
+catamarans, the demihull interference factor `2 * (1 + cos(k0 * s * sec(theta) * tan(theta)))`
+superimposes the twin wave patterns at centreline separation `s`, which converges
+to `2 * R_W(monohull)` as separation grows. Total resistance pairs Michell wave
+resistance with the ITTC-57 friction line and form factor `1+k` (`seacraft resistance --method michell`).
+
 `topology` edits the control net without moving the surface (`seacraft edit`):
 `split_face` fans a face around its centroid, `insert_edge` joins two
 non-adjacent points of a face, and `set_crease` makes an edge hard through
@@ -339,7 +350,8 @@ seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks 
                               [--csv out.csv] [--html offsets.html] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
-seacraft resistance hull.fef [--speeds 6,8,10,12] [--draft T] [--cstern X]
+seacraft resistance hull.fef [--method holtrop|michell] [--cat-spacing S]
+                              [--speeds 6,8,10,12] [--draft T] [--cstern X]
                               [--propeller-diameter D] [--expanded-area 0.7] [--eta-o 0.6]
                               [--shaft-efficiency 0.98] [--appendage-area m2] [--csv out.csv] [--json]
 seacraft unfold    hull.fef [--axis x|y|z] [--from a] [--to b] [--x-from a] [--x-to b]
