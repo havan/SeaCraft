@@ -1,4 +1,4 @@
-//! `cargo xtask ci`: the full local gate (clippy, tests, versions, demo reference numbers, no git remotes).
+//! `cargo xtask ci`: the full local gate (fmt, clippy, tests, versions, demo reference numbers, no git remotes).
 
 use std::fs;
 use std::io::Write;
@@ -94,6 +94,8 @@ fn main() {
 fn run_ci(skip_tests: bool) {
     let root = workspace_root();
 
+    step_fmt(&root);
+
     // Step a: cargo clippy --all-targets --release -- -D warnings
     step_clippy(&root);
 
@@ -128,9 +130,31 @@ fn fail(step: &str, msg: &str) -> ! {
     std::process::exit(1);
 }
 
+fn step_fmt(root: &Path) {
+    let status = Command::new("cargo")
+        .args(["fmt", "--all", "--check"])
+        .current_dir(root)
+        .status()
+        .expect("failed to execute cargo fmt");
+    if !status.success() {
+        fail(
+            "fmt",
+            "cargo fmt --check found unformatted code; run `cargo fmt`",
+        );
+    }
+    println!("[ci] fmt: pass");
+}
+
 fn step_clippy(root: &Path) {
     let status = Command::new("cargo")
-        .args(["clippy", "--all-targets", "--release", "--", "-D", "warnings"])
+        .args([
+            "clippy",
+            "--all-targets",
+            "--release",
+            "--",
+            "-D",
+            "warnings",
+        ])
         .current_dir(root)
         .status()
         .expect("failed to execute cargo clippy");
@@ -180,15 +204,24 @@ fn step_versions(root: &Path) {
     let cargo_toml = fs::read_to_string(&cargo_toml_path)
         .unwrap_or_else(|e| fail("versions", &format!("cannot read Cargo.toml: {e}")));
 
-    let ws_version = parse_workspace_version(&cargo_toml)
-        .unwrap_or_else(|| fail("versions", "cannot find [workspace.package] version in Cargo.toml"));
+    let ws_version = parse_workspace_version(&cargo_toml).unwrap_or_else(|| {
+        fail(
+            "versions",
+            "cannot find [workspace.package] version in Cargo.toml",
+        )
+    });
 
     // Ensure release binaries are built and Cargo.lock is updated
     let build_status = Command::new("cargo")
         .args(["build", "--release", "--bins"])
         .current_dir(root)
         .status()
-        .unwrap_or_else(|e| fail("versions", &format!("cannot run cargo build --release --bins: {e}")));
+        .unwrap_or_else(|e| {
+            fail(
+                "versions",
+                &format!("cannot run cargo build --release --bins: {e}"),
+            )
+        });
     if !build_status.success() {
         fail("versions", "cargo build --release --bins failed");
     }
@@ -199,12 +232,18 @@ fn step_versions(root: &Path) {
         .unwrap_or_else(|e| fail("versions", &format!("cannot read Cargo.lock: {e}")));
 
     for pkg in &["seacraft-core", "seacraft-cli", "seacraft-gui"] {
-        let lock_ver = parse_lock_package_version(&cargo_lock, pkg)
-            .unwrap_or_else(|| fail("versions", &format!("cannot find package '{pkg}' in Cargo.lock")));
+        let lock_ver = parse_lock_package_version(&cargo_lock, pkg).unwrap_or_else(|| {
+            fail(
+                "versions",
+                &format!("cannot find package '{pkg}' in Cargo.lock"),
+            )
+        });
         if lock_ver != ws_version {
             fail(
                 "versions",
-                &format!("Cargo.lock '{pkg}' version '{lock_ver}' != workspace version '{ws_version}'"),
+                &format!(
+                    "Cargo.lock '{pkg}' version '{lock_ver}' != workspace version '{ws_version}'"
+                ),
             );
         }
     }
@@ -214,7 +253,10 @@ fn step_versions(root: &Path) {
     if !seacraft_bin.exists() {
         fail(
             "versions",
-            &format!("binary not found at {}: run cargo build --release first", seacraft_bin.display()),
+            &format!(
+                "binary not found at {}: run cargo build --release first",
+                seacraft_bin.display()
+            ),
         );
     }
     let sc_out = Command::new(&seacraft_bin)
@@ -238,26 +280,40 @@ fn step_versions(root: &Path) {
     if !seacraft_gui_bin.exists() {
         fail(
             "versions",
-            &format!("binary not found at {}: run cargo build --release first", seacraft_gui_bin.display()),
+            &format!(
+                "binary not found at {}: run cargo build --release first",
+                seacraft_gui_bin.display()
+            ),
         );
     }
     let sc_gui_out = Command::new(&seacraft_gui_bin)
         .arg("--version")
         .output()
-        .unwrap_or_else(|e| fail("versions", &format!("cannot run seacraft-gui --version: {e}")));
+        .unwrap_or_else(|e| {
+            fail(
+                "versions",
+                &format!("cannot run seacraft-gui --version: {e}"),
+            )
+        });
     if !sc_gui_out.status.success() {
         fail("versions", "seacraft-gui --version failed");
     }
-    let sc_gui_ver_str = String::from_utf8_lossy(&sc_gui_out.stdout).trim().to_string();
+    let sc_gui_ver_str = String::from_utf8_lossy(&sc_gui_out.stdout)
+        .trim()
+        .to_string();
     let sc_gui_ver = sc_gui_ver_str.split_whitespace().last().unwrap_or("");
     if sc_gui_ver != ws_version {
         fail(
             "versions",
-            &format!("seacraft-gui binary version '{sc_gui_ver}' != workspace version '{ws_version}'"),
+            &format!(
+                "seacraft-gui binary version '{sc_gui_ver}' != workspace version '{ws_version}'"
+            ),
         );
     }
 
-    println!("[ci] versions: pass ({ws_version} in Cargo.toml, Cargo.lock, seacraft, seacraft-gui)");
+    println!(
+        "[ci] versions: pass ({ws_version} in Cargo.toml, Cargo.lock, seacraft, seacraft-gui)"
+    );
 }
 
 fn parse_workspace_version(toml: &str) -> Option<String> {
@@ -296,7 +352,8 @@ fn parse_lock_package_version(lock: &str, pkg_name: &str) -> Option<String> {
 
 fn step_demo_reference(root: &Path) {
     let seacraft_bin = root.join("target/release/seacraft");
-    let tmp_demo = std::env::temp_dir().join(format!("seacraft-ci-demo-{}.fef", std::process::id()));
+    let tmp_demo =
+        std::env::temp_dir().join(format!("seacraft-ci-demo-{}.fef", std::process::id()));
 
     // 1. target/release/seacraft demo -o <tmp>/demo.fef
     let demo_status: ExitStatus = Command::new(&seacraft_bin)
@@ -325,10 +382,18 @@ fn step_demo_reference(root: &Path) {
         fail("demo reference", "seacraft hydro command failed");
     }
 
-    let json_val: serde_json::Value = serde_json::from_slice(&hydro_out.stdout)
-        .unwrap_or_else(|e| fail("demo reference", &format!("failed to parse hydro JSON: {e}")));
+    let json_val: serde_json::Value =
+        serde_json::from_slice(&hydro_out.stdout).unwrap_or_else(|e| {
+            fail(
+                "demo reference",
+                &format!("failed to parse hydro JSON: {e}"),
+            )
+        });
 
-    println!("  {:<24} {:>14} {:>14} {:>12}", "Metric", "Actual", "Reference", "Deviation");
+    println!(
+        "  {:<24} {:>14} {:>14} {:>12}",
+        "Metric", "Actual", "Reference", "Deviation"
+    );
     println!("  {}", "-".repeat(68));
 
     let mut any_deviation_exceeded = false;
@@ -336,7 +401,12 @@ fn step_demo_reference(root: &Path) {
         let actual = json_val
             .get(metric.key)
             .and_then(|v| v.as_f64())
-            .unwrap_or_else(|| fail("demo reference", &format!("key '{}' missing in hydro JSON", metric.key)));
+            .unwrap_or_else(|| {
+                fail(
+                    "demo reference",
+                    &format!("key '{}' missing in hydro JSON", metric.key),
+                )
+            });
 
         let diff_rel = (actual - metric.reference).abs() / metric.reference;
         let pct = (actual - metric.reference) / metric.reference * 100.0;
@@ -370,7 +440,10 @@ fn step_demo_reference(root: &Path) {
     }
 
     if any_deviation_exceeded {
-        fail("demo reference", "one or more demo metrics deviated by > 1.0%");
+        fail(
+            "demo reference",
+            "one or more demo metrics deviated by > 1.0%",
+        );
     }
 
     println!("[ci] demo reference: pass (all metrics within 1.0 %)");

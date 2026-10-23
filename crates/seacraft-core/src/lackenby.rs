@@ -93,7 +93,11 @@ impl HullState {
     fn measure(h: &hydro::Hydrostatics, x0: f64, lwl: f64) -> Self {
         Self {
             cp: h.prismatic_coefficient,
-            lcb_pct: if lwl > 1e-9 { (h.lcb.x - x0) / lwl * 100.0 - 50.0 } else { 0.0 },
+            lcb_pct: if lwl > 1e-9 {
+                (h.lcb.x - x0) / lwl * 100.0 - 50.0
+            } else {
+                0.0
+            },
             volume_m3: h.volume_m3,
             lwl,
             lcb_x: h.lcb.x,
@@ -158,7 +162,11 @@ pub fn fit(
         if h.volume_m3.abs() < 1e-9 {
             return Err("Lackenby: the hull displaces nothing at this draft".into());
         }
-        Ok((HullState::measure(&h, h.model_min.x, h.lwl), h.model_min.x, h.lwl))
+        Ok((
+            HullState::measure(&h, h.model_min.x, h.lwl),
+            h.model_min.x,
+            h.lwl,
+        ))
     };
 
     let (before, x0, lwl) = measure(surface)?;
@@ -176,7 +184,11 @@ pub fn fit(
     let mut iterations = 0;
     let mut converged = false;
     let mut after = before;
-    let mut best = (residual(&before).0.abs().max(residual(&before).1.abs()), 0.0, 0.0);
+    let mut best = (
+        residual(&before).0.abs().max(residual(&before).1.abs()),
+        0.0,
+        0.0,
+    );
 
     for pass in 0..max_iter {
         iterations = pass + 1;
@@ -270,7 +282,13 @@ mod tests {
 
     fn opts() -> HydroOptions {
         let s = demo::demo_hull(false);
-        let mut o = HydroOptions::from_surface(&s, SubdivisionOptions { level: 3, mode: Default::default() });
+        let mut o = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 3,
+                mode: Default::default(),
+            },
+        );
         o.stations = 41;
         o
     }
@@ -317,8 +335,16 @@ mod tests {
         let target = LackenbyTarget::new(target.cp, lcb_pct);
         let (_, report) = fit(&s, target, &o, 1e-3, 4).expect("fits");
         assert!(report.converged);
-        assert!(report.coefficients.0.abs() < 1e-3, "{:?}", report.coefficients);
-        assert!(report.coefficients.1.abs() < 1e-3, "{:?}", report.coefficients);
+        assert!(
+            report.coefficients.0.abs() < 1e-3,
+            "{:?}",
+            report.coefficients
+        );
+        assert!(
+            report.coefficients.1.abs() < 1e-3,
+            "{:?}",
+            report.coefficients
+        );
     }
 
     #[test]
@@ -357,7 +383,11 @@ mod tests {
         assert!(report.cp_error.abs() > 5e-3, "{report:?}");
         // Whatever it did produce is still a hull: positive volume, sane LWL.
         let h2 = hydro::compute(&out, &o);
-        assert!(h2.volume_m3 > 0.5 * h.volume_m3, "volume {:.3}", h2.volume_m3);
+        assert!(
+            h2.volume_m3 > 0.5 * h.volume_m3,
+            "volume {:.3}",
+            h2.volume_m3
+        );
         assert!((h2.lwl - h.lwl).abs() / h.lwl < 0.05);
     }
 

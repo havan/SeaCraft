@@ -155,7 +155,8 @@ pub fn wigley_grid(length: f64, beam: f64, draft: f64, nx: usize, nz: usize) -> 
         for j in 0..nz - 1 {
             let dz = zs[j + 1] - zs[j];
             let z_mid = 0.5 * (zs[j] + zs[j + 1]);
-            let fz = -2.0 * half_b * (1.0 - (2.0 * x_mid / length).powi(2)) * z_mid / (draft * draft);
+            let fz =
+                -2.0 * half_b * (1.0 - (2.0 * x_mid / length).powi(2)) * z_mid / (draft * draft);
             let ds = (1.0 + fx * fx + fz * fz).sqrt() * dx * dz;
             wetted_surface += 2.0 * ds;
         }
@@ -482,12 +483,23 @@ pub fn michell_wave_resistance<'a>(
     match geom.into() {
         MichellGeometry::Grid(grid) => {
             grid.validate()?;
-            Ok(michell_wave_resistance_from_grid(grid, speed_m_s, rho, g, opts))
+            Ok(michell_wave_resistance_from_grid(
+                grid, speed_m_s, rho, g, opts,
+            ))
         }
-        MichellGeometry::Surface { surface, draft, subdiv } => {
+        MichellGeometry::Surface {
+            surface,
+            draft,
+            subdiv,
+        } => {
             let grid = michell_grid_from_surface(surface, draft, opts.nx, opts.nz, subdiv)
-                .ok_or_else(|| "cannot extract Michell offsets grid from hull surface at given draft".to_string())?;
-            Ok(michell_wave_resistance_from_grid(&grid, speed_m_s, rho, g, opts))
+                .ok_or_else(|| {
+                    "cannot extract Michell offsets grid from hull surface at given draft"
+                        .to_string()
+                })?;
+            Ok(michell_wave_resistance_from_grid(
+                &grid, speed_m_s, rho, g, opts,
+            ))
         }
     }
 }
@@ -495,12 +507,20 @@ pub fn michell_wave_resistance<'a>(
 /// Check thin-ship validity warnings: Fn outside 0.2..=1.0 or L/B < 6.0.
 pub fn michell_warnings(length_wl: f64, beam_wl: f64, fn_: f64) -> Vec<String> {
     let mut warnings = Vec::new();
-    let lb = if beam_wl > 1e-6 { length_wl / beam_wl } else { 0.0 };
+    let lb = if beam_wl > 1e-6 {
+        length_wl / beam_wl
+    } else {
+        0.0
+    };
     if lb < 6.0 {
-        warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+        warnings.push(format!(
+            "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
+        ));
     }
     if !(0.20..=1.0).contains(&fn_) {
-        warnings.push(format!("Fn {fn_:.3} is outside typical Michell applicability range (0.20..=1.0)"));
+        warnings.push(format!(
+            "Fn {fn_:.3} is outside typical Michell applicability range (0.20..=1.0)"
+        ));
     }
     warnings
 }
@@ -736,7 +756,10 @@ mod tests {
     fn test_parametric_slender_hull_michell_rw_vs_holtrop() {
         // Test (d): The parametric slender hull's Michell R_W is within a factor
         // of 2 of Holtrop's R_W at Fn 0.35 (sanity check, not accuracy).
-        for kind in [crate::parametric::HullKind::Displacement, crate::parametric::HullKind::Yacht] {
+        for kind in [
+            crate::parametric::HullKind::Displacement,
+            crate::parametric::HullKind::Yacht,
+        ] {
             let mut spec = crate::parametric::HullSpec::default_for(kind);
             spec.lwl = 25.0;
             spec.beam = 2.5; // L/B = 10.0 (very slender)
@@ -753,7 +776,8 @@ mod tests {
             let mut opts = HydroOptions::from_surface(&surface, subdiv);
             opts.draft = spec.draft;
 
-            let holtrop_in = resistance::HoltropInput::measure(&hull, &opts).expect("Holtrop input");
+            let holtrop_in =
+                resistance::HoltropInput::measure(&hull, &opts).expect("Holtrop input");
             let holtrop_rw = resistance::wave_resistance(&holtrop_in, 0.35);
 
             let michell_opts = MichellOptions {

@@ -43,7 +43,10 @@ pub struct SubdivisionOptions {
 
 impl Default for SubdivisionOptions {
     fn default() -> Self {
-        Self { level: 3, mode: SubdivisionMode::Loop }
+        Self {
+            level: 3,
+            mode: SubdivisionMode::Loop,
+        }
     }
 }
 
@@ -128,7 +131,11 @@ impl SubdivMesh {
         // edge points: midpoints
         for k in &edge_keys {
             new_verts.push((self.verts[k.0] + self.verts[k.1]) * 0.5);
-            new_hints.push(if hard_edge(k) { VertexKind::Crease } else { VertexKind::Regular });
+            new_hints.push(if hard_edge(k) {
+                VertexKind::Crease
+            } else {
+                VertexKind::Regular
+            });
         }
         // face points
         let mut face_point: Vec<Option<usize>> = vec![None; self.faces.len()];
@@ -228,9 +235,7 @@ impl SubdivMesh {
         for i in 0..n {
             let kind = if is_boundary[i] || self.hints.get(i) == Some(&VertexKind::Corner) {
                 VertexKind::Corner
-            } else if self.hints.get(i) == Some(&VertexKind::Crease)
-                || crease_nbrs[i].len() == 2
-            {
+            } else if self.hints.get(i) == Some(&VertexKind::Crease) || crease_nbrs[i].len() == 2 {
                 VertexKind::Crease
             } else {
                 VertexKind::Regular
@@ -294,8 +299,7 @@ impl SubdivMesh {
                     centre = centre / total_w;
                     let nf = faces.len() as f64;
                     let a = if nq == 0 {
-                        5.0 / 3.0
-                            - 8.0 / 3.0 * (3.0 / 8.0 + 0.25 * (2.0 * PI / nf).cos()).powi(2)
+                        5.0 / 3.0 - 8.0 / 3.0 * (3.0 / 8.0 + 0.25 * (2.0 * PI / nf).cos()).powi(2)
                     } else if nt == 0 {
                         4.0 / nf
                     } else if nq == 0 && nt == 3 {
@@ -383,7 +387,12 @@ impl SubdivMesh {
     /// Largest deviation from the control net extents, used by the tests to
     /// check that refinement does not blow up.
     pub fn surface_area(&self) -> f64 {
-        self.faces.iter().map(|f| crate::math::polygon_area3(&f.iter().map(|&i| self.verts[i]).collect::<Vec<_>>())).sum()
+        self.faces
+            .iter()
+            .map(|f| {
+                crate::math::polygon_area3(&f.iter().map(|&i| self.verts[i]).collect::<Vec<_>>())
+            })
+            .sum()
     }
 
     /// True when every interior edge has exactly two adjacent faces.
@@ -460,11 +469,22 @@ mod tests {
         let s = box_surface(true);
         let m = evaluate(
             &s,
-            SubdivisionOptions { level: 3, mode: SubdivisionMode::Loop },
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
         );
         let (min, max) = m.extents();
-        assert!((min - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-9, "min {:?}", min);
-        assert!((max - Vec3::new(2.0, 1.0, 1.0)).length() < 1e-9, "max {:?}", max);
+        assert!(
+            (min - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-9,
+            "min {:?}",
+            min
+        );
+        assert!(
+            (max - Vec3::new(2.0, 1.0, 1.0)).length() < 1e-9,
+            "max {:?}",
+            max
+        );
         // Volume of the refined mesh must stay that of the box.
         let mut vol = 0.0;
         for t in m.triangles() {
@@ -479,7 +499,10 @@ mod tests {
         let s = box_surface(false);
         let m = evaluate(
             &s,
-            SubdivisionOptions { level: 3, mode: SubdivisionMode::Loop },
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
         );
         let (min, max) = m.extents();
         // Every original corner is a boundary vertex, so it stays pinned; the
@@ -502,9 +525,21 @@ mod tests {
         }
         s.add_face(vec![0, 1, 2], 0);
         s.initialize_trace();
-        let m = evaluate(&s, SubdivisionOptions { level: 2, mode: SubdivisionMode::Loop });
+        let m = evaluate(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
         assert_eq!(m.faces.len(), 16);
-        let mc = evaluate(&s, SubdivisionOptions { level: 2, mode: SubdivisionMode::CatmullClark });
+        let mc = evaluate(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::CatmullClark,
+            },
+        );
         assert_eq!(mc.faces.len(), 12);
     }
 
@@ -514,7 +549,13 @@ mod tests {
         // a 2x2x1 block, so the volume doubles and the mesh stays watertight.
         let mut s = box_surface(true);
         s.layers[0].symmetric = true;
-        let m = evaluate_full(&s, SubdivisionOptions { level: 2, mode: SubdivisionMode::Loop });
+        let m = evaluate_full(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
         let (min, max) = m.extents();
         assert!((min.y + max.y).abs() < 1e-12, "min {:?} max {:?}", min, max);
         assert!(min.y < -0.999 && max.y > 0.999);
@@ -532,6 +573,10 @@ mod tests {
                 *counts.entry(key).or_insert(0usize) += 1;
             }
         }
-        assert!(counts.values().all(|&c| c == 2), "open edges: {}", counts.values().filter(|&&c| c != 2).count());
+        assert!(
+            counts.values().all(|&c| c == 2),
+            "open edges: {}",
+            counts.values().filter(|&&c| c != 2).count()
+        );
     }
 }

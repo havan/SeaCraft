@@ -83,7 +83,6 @@ pub struct PlaningPoint {
     pub trim_residual: f64,
 }
 
-
 /// A planing hull derived from the model, plus where its numbers came from.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct PlaningSetup {
@@ -113,7 +112,10 @@ pub fn setup(
     let hull = crate::hydro::Hull::new(surface, subdiv);
     let h = hull.hydrostatics(opts);
     if h.volume_m3 <= 0.0 || !h.volume_m3.is_finite() {
-        return Err(format!("the hull displaces nothing at T = {:.3} m", opts.draft));
+        return Err(format!(
+            "the hull displaces nothing at T = {:.3} m",
+            opts.draft
+        ));
     }
     let weight_n = h.displacement_kg * G;
     let beam_m = beam.unwrap_or(h.bwl);
@@ -271,7 +273,11 @@ pub fn planing_point(hull: &PlaningHull, speed_m_s: f64) -> Option<PlaningPoint>
     let cos_beta = beta.to_radians().cos().max(1e-3);
     let wetted_length = lambda * hull.beam_m / cos_beta;
     let re = v * wetted_length / hull.viscosity;
-    let cf = if re > 1.0 { 0.075 / (re.log10() - 2.0).powi(2) } else { 0.0 };
+    let cf = if re > 1.0 {
+        0.075 / (re.log10() - 2.0).powi(2)
+    } else {
+        0.0
+    };
     let trim_rad = trim_deg.to_radians();
     let friction = 0.5 * hull.water_density * v * v * lambda * hull.beam_m * hull.beam_m / cos_beta
         * (cf + ROUGHNESS_CF);
@@ -329,7 +335,11 @@ pub fn deadrise_from_section(points: &[(f64, f64)]) -> Option<f64> {
         .iter()
         .copied()
         .filter(|p| p.1 > keel.1 + 1e-9 && p.0.abs() > keel.0.abs())
-        .min_by(|a, b| (a.1 - keel.1).partial_cmp(&(b.1 - keel.1)).unwrap_or(std::cmp::Ordering::Equal))?;
+        .min_by(|a, b| {
+            (a.1 - keel.1)
+                .partial_cmp(&(b.1 - keel.1))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })?;
     let dy = next.0.abs() - keel.0.abs();
     let dz = next.1 - keel.1;
     if dy <= 1e-9 {
@@ -359,7 +369,8 @@ mod tests {
     fn the_lift_equation_balances_at_the_solution() {
         let h = hull();
         for kn in [20.0, 30.0, 40.0] {
-            let p = planing_point(&h, kn * 0.514444).unwrap_or_else(|| panic!("no planing at {kn} kn"));
+            let p =
+                planing_point(&h, kn * 0.514444).unwrap_or_else(|| panic!("no planing at {kn} kn"));
             // CL0 = τ^1.1 (0.012 λ^0.5 + 0.0055 λ^2.5/CV²) must hold at the
             // reported trim and wetted length, to the solver's tolerance.
             let cl0 = p.cl_beta - 0.0065 * h.deadrise_deg * p.cl_beta.powf(0.6);
@@ -370,16 +381,28 @@ mod tests {
                 "{kn} kn: lift {lhs} against {cl0}"
             );
             // And the trim condition is met.
-            assert!(p.trim_residual < 0.02, "{kn} kn: trim residual {}", p.trim_residual);
+            assert!(
+                p.trim_residual < 0.02,
+                "{kn} kn: trim residual {}",
+                p.trim_residual
+            );
             assert!(
                 p.trim_deg > 1.0 && p.trim_deg < 25.0,
                 "{kn} kn trim {}",
                 p.trim_deg
             );
-            assert!(p.lambda > 0.5 && p.lambda < 12.0, "{kn} kn lambda {}", p.lambda);
+            assert!(
+                p.lambda > 0.5 && p.lambda < 12.0,
+                "{kn} kn lambda {}",
+                p.lambda
+            );
             // LCP/b is the pressure centre in beams from the transom; for a long
             // wetted patch it is well forward of one beam.
-            assert!(p.lcp_over_b > 0.2 && p.lcp_over_b < 5.0, "lcp {}", p.lcp_over_b);
+            assert!(
+                p.lcp_over_b > 0.2 && p.lcp_over_b < 5.0,
+                "lcp {}",
+                p.lcp_over_b
+            );
             assert!(p.resistance_n > 0.0 && p.resistance_n.is_finite());
             assert!((p.pe_w - p.resistance_n * p.speed_m_s).abs() < 1e-6);
         }
@@ -395,7 +418,10 @@ mod tests {
         let cl0 = cl_beta - 0.0065 * h.deadrise_deg * cl_beta.powf(0.6);
         let low = lambda_for_trim(&h, cv, cl0, 3.0).expect("3 deg");
         let high = lambda_for_trim(&h, cv, cl0, 9.0).expect("9 deg");
-        assert!(low > high, "lambda {low} at 3 deg must exceed {high} at 9 deg");
+        assert!(
+            low > high,
+            "lambda {low} at 3 deg must exceed {high} at 9 deg"
+        );
     }
 
     #[test]
@@ -417,10 +443,21 @@ mod tests {
                 .map(|p| p.resistance_n)
                 .expect("a point")
         };
-        assert!(at(20.0) > at(30.0), "no hump: {} then {}", at(20.0), at(30.0));
-        assert!(at(40.0) >= at(35.0) * 0.9, "the drag must level out, not vanish");
+        assert!(
+            at(20.0) > at(30.0),
+            "no hump: {} then {}",
+            at(20.0),
+            at(30.0)
+        );
+        assert!(
+            at(40.0) >= at(35.0) * 0.9,
+            "the drag must level out, not vanish"
+        );
         // A 5 t sport boat at 30 kn needs something like 60-200 kW effective.
-        let at30 = curve.iter().find(|p| (p.speed_kn - 30.0).abs() < 1.0).expect("30 kn");
+        let at30 = curve
+            .iter()
+            .find(|p| (p.speed_kn - 30.0).abs() < 1.0)
+            .expect("30 kn");
         assert!(
             at30.pe_w > 40_000.0 && at30.pe_w < 400_000.0,
             "PE at 30 kn = {:.0} W",

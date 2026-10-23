@@ -92,7 +92,11 @@ pub fn curves_3d(surface: &Surface, opts: LinesplanOptions) -> LinesplanCurves3d
             .map(|c| {
                 let spikes = if opts.combs {
                     let len = arc_length(&c.points);
-                    let step = if len > 0.0 { spacing.min(len / 8.0) } else { spacing };
+                    let step = if len > 0.0 {
+                        spacing.min(len / 8.0)
+                    } else {
+                        spacing
+                    };
                     let raw = comb_spikes(&c.points, opts.comb_scale, max_len, step);
                     if raw.len() < 2 {
                         Vec::new()
@@ -100,12 +104,18 @@ pub fn curves_3d(surface: &Surface, opts: LinesplanOptions) -> LinesplanCurves3d
                         let (u, v) = view_basis(&c.plane);
                         let origin = c.plane.n * (-c.plane.d);
                         let to3 = |(pu, pv): P2| origin + u * pu + v * pv;
-                        raw.into_iter().map(|(base, tip)| (to3(base), to3(tip))).collect()
+                        raw.into_iter()
+                            .map(|(base, tip)| (to3(base), to3(tip)))
+                            .collect()
                     }
                 } else {
                     Vec::new()
                 };
-                CurveWithCombs { points: c.points3.clone(), closed: c.closed, spikes }
+                CurveWithCombs {
+                    points: c.points3.clone(),
+                    closed: c.closed,
+                    spikes,
+                }
             })
             .collect()
     };
@@ -129,7 +139,10 @@ struct Cut {
 }
 
 /// Triangles of every visible layer, mirrored where the layer is symmetric.
-fn visible_triangles(surface: &Surface, subdiv: SubdivisionOptions) -> (Vec<Vec3>, Vec<[usize; 3]>) {
+fn visible_triangles(
+    surface: &Surface,
+    subdiv: SubdivisionOptions,
+) -> (Vec<Vec3>, Vec<[usize; 3]>) {
     let mut mesh = evaluate(surface, subdiv);
     let sym: Vec<bool> = surface.layers.iter().map(|l| l.symmetric).collect();
     mesh.mirror_symmetric(&sym);
@@ -178,7 +191,10 @@ fn cut(verts: &[Vec3], tris: &[[usize; 3]], plane: &Plane, tol: f64) -> Vec<Curv
 
 /// Cut the hull once for every view.
 fn cut_all(surface: &Surface, opts: LinesplanOptions) -> Cut {
-    let subdiv = SubdivisionOptions { level: opts.level, mode: opts.mode };
+    let subdiv = SubdivisionOptions {
+        level: opts.level,
+        mode: opts.mode,
+    };
     let (verts, tris) = visible_triangles(surface, subdiv);
     let (min, max) = surface.extents();
     let l = (max.x - min.x).max(0.1);
@@ -213,12 +229,21 @@ fn cut_all(surface: &Surface, opts: LinesplanOptions) -> Cut {
     let waterplane = if surface.settings.draft > 0.0 {
         let z = surface.lowest_hydrostatics_point() + surface.settings.draft;
         let plane = Plane::new(Vec3::new(0.0, 0.0, 1.0), -z);
-        cut(&verts, &tris, &plane, tol).into_iter().max_by_key(|c| c.points.len())
+        cut(&verts, &tris, &plane, tol)
+            .into_iter()
+            .max_by_key(|c| c.points.len())
     } else {
         None
     };
 
-    Cut { stations, buttocks, waterlines, waterplane, min, max }
+    Cut {
+        stations,
+        buttocks,
+        waterlines,
+        waterplane,
+        min,
+        max,
+    }
 }
 
 /// A point in a view's own 2D coordinates.
@@ -329,7 +354,11 @@ fn view_combs(curves: &[Curve], scale: f64, extent: f64) -> Vec<Vec<Spike>> {
         .iter()
         .map(|c| {
             let len = arc_length(&c.points);
-            let step = if len > 0.0 { spacing.min(len / 8.0) } else { spacing };
+            let step = if len > 0.0 {
+                spacing.min(len / 8.0)
+            } else {
+                spacing
+            };
             comb_spikes(&c.points, scale, max_len, step)
         })
         .filter(|s| s.len() >= 2)
@@ -405,7 +434,11 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         out,
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.0}\" height=\"{height:.0}\" viewBox=\"0 0 {width:.0} {height:.0}\">"
     );
-    let _ = writeln!(out, "<title>{} - linesplan</title>", html_escape(&surface.settings.name));
+    let _ = writeln!(
+        out,
+        "<title>{} - linesplan</title>",
+        html_escape(&surface.settings.name)
+    );
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     out.push_str("<style>\n");
     out.push_str(".frame{fill:none;stroke:#111;stroke-width:0.8}\n");
@@ -421,7 +454,11 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
 
     // ---- profile (buttocks) ------------------------------------------
     let _ = writeln!(out, "<g id=\"profile\">");
-    let _ = writeln!(out, "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">Profile - buttocks</text>", top - 12.0);
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">Profile - buttocks</text>",
+        top - 12.0
+    );
     let _ = writeln!(
         out,
         "<rect class=\"frame\" x=\"{margin:.1}\" y=\"{top:.1}\" width=\"{lw:.1}\" height=\"{dw:.1}\"/>"
@@ -471,7 +508,11 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
 
     // ---- plan (waterlines) -------------------------------------------
     let _ = writeln!(out, "<g id=\"plan\">");
-    let _ = writeln!(out, "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">Plan - waterlines</text>", plan_y - 12.0);
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">Plan - waterlines</text>",
+        plan_y - 12.0
+    );
     let _ = writeln!(
         out,
         "<rect class=\"frame\" x=\"{margin:.1}\" y=\"{plan_y:.1}\" width=\"{lw:.1}\" height=\"{bw:.1}\"/>"
@@ -522,7 +563,11 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     // ---- body plan (stations) ----------------------------------------
     let body_x = margin + lw + 40.0;
     let _ = writeln!(out, "<g id=\"bodyplan\">");
-    let _ = writeln!(out, "<text class=\"title\" x=\"{body_x:.1}\" y=\"{:.1}\">Body plan - stations</text>", plan_y - 12.0);
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{body_x:.1}\" y=\"{:.1}\">Body plan - stations</text>",
+        plan_y - 12.0
+    );
     let _ = writeln!(
         out,
         "<rect class=\"frame\" x=\"{body_x:.1}\" y=\"{plan_y:.1}\" width=\"{bw:.1}\" height=\"{bw:.1}\"/>"
@@ -535,7 +580,10 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         plan_y + bw
     );
     let map_body = |y: f64, z: f64| -> (f64, f64) {
-        (body_x + bw / 2.0 + y * scale, plan_y + bw - (z - min.z) * scale)
+        (
+            body_x + bw / 2.0 + y * scale,
+            plan_y + bw - (z - min.z) * scale,
+        )
     };
     for c in &cut.stations {
         let d = svg_path(c, &map_body);
@@ -613,8 +661,14 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         ],
     };
     entities.push(DxfEntity::new("Grid", frame(min.x, min.z, max.x, max.z)));
-    entities.push(DxfEntity::new("Grid", frame(min.x, plan_y0, max.x, plan_y0 + b)));
-    entities.push(DxfEntity::new("Grid", frame(body_x0, min.z, body_x0 + b, max.z)));
+    entities.push(DxfEntity::new(
+        "Grid",
+        frame(min.x, plan_y0, max.x, plan_y0 + b),
+    ));
+    entities.push(DxfEntity::new(
+        "Grid",
+        frame(body_x0, min.z, body_x0 + b, max.z),
+    ));
 
     // Labels above each view.
     let text_height = 0.03 * l;
@@ -639,11 +693,17 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
     // The two centrelines (ship y = 0) and the keel line.
     entities.push(DxfEntity::new(
         "Centerline",
-        DxfShape::Line(Vec2::new(min.x, plan_y0 - min.y), Vec2::new(max.x, plan_y0 - min.y)),
+        DxfShape::Line(
+            Vec2::new(min.x, plan_y0 - min.y),
+            Vec2::new(max.x, plan_y0 - min.y),
+        ),
     ));
     entities.push(DxfEntity::new(
         "Centerline",
-        DxfShape::Line(Vec2::new(body_x0 - min.y, min.z), Vec2::new(body_x0 - min.y, max.z)),
+        DxfShape::Line(
+            Vec2::new(body_x0 - min.y, min.z),
+            Vec2::new(body_x0 - min.y, max.z),
+        ),
     ));
     entities.push(DxfEntity::new(
         "Centerline",
@@ -664,7 +724,9 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         ));
         entities.push(DxfEntity::new(
             "Stations 3D",
-            DxfShape::Polyline3 { points: curve.points3.clone() },
+            DxfShape::Polyline3 {
+                points: curve.points3.clone(),
+            },
         ));
     }
     // Profile: buttocks in (x, z).
@@ -672,12 +734,18 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         entities.push(DxfEntity::new(
             "Buttocks",
             DxfShape::Polyline {
-                points: curve.points.iter().map(|(u, v)| Vec2::new(*u, *v)).collect(),
+                points: curve
+                    .points
+                    .iter()
+                    .map(|(u, v)| Vec2::new(*u, *v))
+                    .collect(),
             },
         ));
         entities.push(DxfEntity::new(
             "Buttocks 3D",
-            DxfShape::Polyline3 { points: curve.points3.clone() },
+            DxfShape::Polyline3 {
+                points: curve.points3.clone(),
+            },
         ));
     }
     // Plan: waterlines in (x, y), below the profile.
@@ -694,7 +762,9 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         ));
         entities.push(DxfEntity::new(
             "Waterlines 3D",
-            DxfShape::Polyline3 { points: curve.points3.clone() },
+            DxfShape::Polyline3 {
+                points: curve.points3.clone(),
+            },
         ));
     }
     // The design waterline, highlighted in the plan.
@@ -785,14 +855,20 @@ pub fn iges(surface: &Surface, opts: LinesplanOptions) -> String {
     let name = format!("{}.igs", surface.settings.name.replace(' ', "_"));
     let file = crate::iges::IgesFile {
         name: &name,
-        curves: fitted.iter().map(|(label, curve)| (label.as_str(), curve)).collect(),
+        curves: fitted
+            .iter()
+            .map(|(label, curve)| (label.as_str(), curve))
+            .collect(),
         units: 6, // metres
     };
     crate::iges::write_iges(&file)
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -826,7 +902,10 @@ mod tests {
         }
         for c in &cut.buttocks {
             for &(_, z) in &c.points {
-                assert!(z >= cut.min.z - 1e-9 && z <= cut.max.z + 1e-9, "profile z {z} outside the frame");
+                assert!(
+                    z >= cut.min.z - 1e-9 && z <= cut.max.z + 1e-9,
+                    "profile z {z} outside the frame"
+                );
             }
         }
     }
@@ -848,7 +927,10 @@ mod tests {
             "Stations 3D",
             "Waterlines 3D",
         ] {
-            assert!(drawing.contains(&format!("\n{layer}\n")), "layer {layer} missing");
+            assert!(
+                drawing.contains(&format!("\n{layer}\n")),
+                "layer {layer} missing"
+            );
         }
         // Entities: three frames + three labels + three centrelines, then every
         // curve twice (2D view and 3D copy), plus the design waterline.
@@ -856,7 +938,11 @@ mod tests {
         let poly3d = drawing.matches("\nPOLYLINE\n").count();
         assert!(polylines > 30, "2D polylines: {polylines}");
         // Three frames and the design waterline have no 3D twin.
-        assert_eq!(polylines - poly3d, 4, "every curve but the frames has a 3D twin");
+        assert_eq!(
+            polylines - poly3d,
+            4,
+            "every curve but the frames has a 3D twin"
+        );
         // The SVG still renders.
         let svg = svg(&surface, opts);
         assert!(svg.contains("<svg") && svg.contains("bodyplan"));
@@ -877,11 +963,19 @@ mod tests {
             .collect();
         for i in 1..points.len() - 1 {
             let k = curvature_at(&points, i);
-            assert!((k - 1.0 / r).abs() < 1e-6, "curvature {k} at {i}, want {}", 1.0 / r);
+            assert!(
+                (k - 1.0 / r).abs() < 1e-6,
+                "curvature {k} at {i}, want {}",
+                1.0 / r
+            );
         }
         // Spikes point away from the centre of curvature, i.e. outside the arc.
         let spikes = comb_spikes(&points, 2.0, 10.0, 0.05);
-        assert!(spikes.len() > 120, "one spike per 5 cm of a 7.9 m arc, got {}", spikes.len());
+        assert!(
+            spikes.len() > 120,
+            "one spike per 5 cm of a 7.9 m arc, got {}",
+            spikes.len()
+        );
         // |k| = 1/5 and the scale is 2, so every spike is 0.4 long; the
         // resampled points sit on chords, which flattens the first and last few
         // by ~5 %.
@@ -904,7 +998,10 @@ mod tests {
         );
 
         let line: Vec<(f64, f64)> = (0..=5).map(|i| (i as f64, 0.0)).collect();
-        assert!(comb_spikes(&line, 2.0, 10.0, 0.5).is_empty(), "a straight line has no comb");
+        assert!(
+            comb_spikes(&line, 2.0, 10.0, 0.5).is_empty(),
+            "a straight line has no comb"
+        );
         assert_eq!(curvature_at(&line, 2), 0.0);
     }
 
@@ -914,7 +1011,10 @@ mod tests {
     fn combs_are_drawn_only_when_asked() {
         let surface = crate::demo::demo_hull(false);
         let plain = LinesplanOptions::default();
-        let with = LinesplanOptions { combs: true, ..plain };
+        let with = LinesplanOptions {
+            combs: true,
+            ..plain
+        };
 
         let svg_plain = svg(&surface, plain);
         let svg_combs = svg(&surface, with);
@@ -943,13 +1043,20 @@ mod tests {
     #[test]
     fn curves_3d_emits_3d_comb_spikes_in_section_planes() {
         let surface = crate::demo::demo_hull(false);
-        let curves = curves_3d(&surface, LinesplanOptions { combs: true, ..Default::default() });
+        let curves = curves_3d(
+            &surface,
+            LinesplanOptions {
+                combs: true,
+                ..Default::default()
+            },
+        );
 
         assert!(!curves.stations.is_empty(), "no stations");
         assert!(!curves.buttocks.is_empty(), "no buttocks");
         assert!(!curves.waterlines.is_empty(), "no waterlines");
 
-        let with_spikes = |cs: &[CurveWithCombs]| cs.iter().filter(|c| !c.spikes.is_empty()).count();
+        let with_spikes =
+            |cs: &[CurveWithCombs]| cs.iter().filter(|c| !c.spikes.is_empty()).count();
         for (name, cs) in [
             ("stations", &curves.stations),
             ("buttocks", &curves.buttocks),
@@ -958,7 +1065,10 @@ mod tests {
             assert!(with_spikes(cs) > 0, "{name} carry no 3D combs");
             for c in cs {
                 assert!(!c.points.is_empty(), "{name} curve with no 3D points");
-                assert!(c.points.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()));
+                assert!(c
+                    .points
+                    .iter()
+                    .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite()));
             }
         }
 
@@ -966,7 +1076,10 @@ mod tests {
         let mut checked = 0;
         for c in &curves.stations {
             for (base, tip) in &c.spikes {
-                assert!((base.x - tip.x).abs() < 1e-9, "station spike leaves x=const: {base:?} {tip:?}");
+                assert!(
+                    (base.x - tip.x).abs() < 1e-9,
+                    "station spike leaves x=const: {base:?} {tip:?}"
+                );
                 // Both ends sit on the station's plane, and so do the curve's
                 // own points.
                 assert!(base.x.is_finite() && tip.x.is_finite());
@@ -978,12 +1091,18 @@ mod tests {
         // Buttocks are cut at y = const, waterlines at z = const.
         for c in &curves.buttocks {
             for (base, tip) in &c.spikes {
-                assert!((base.y - tip.y).abs() < 1e-9, "buttock spike leaves y=const");
+                assert!(
+                    (base.y - tip.y).abs() < 1e-9,
+                    "buttock spike leaves y=const"
+                );
             }
         }
         for c in &curves.waterlines {
             for (base, tip) in &c.spikes {
-                assert!((base.z - tip.z).abs() < 1e-9, "waterline spike leaves z=const");
+                assert!(
+                    (base.z - tip.z).abs() < 1e-9,
+                    "waterline spike leaves z=const"
+                );
             }
         }
 

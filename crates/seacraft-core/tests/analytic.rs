@@ -83,7 +83,10 @@ fn options(surface: &Surface, draft: f64) -> HydroOptions {
         appendage_coefficient: 1.0,
         mainframe_x: Some(surface.settings.length * 0.5),
         stations: 5,
-        subdivision: SubdivisionOptions { level: 2, mode: Default::default() },
+        subdivision: SubdivisionOptions {
+            level: 2,
+            mode: Default::default(),
+        },
     }
 }
 
@@ -95,21 +98,61 @@ fn a_closed_barge_has_exact_hydrostatics() {
     let h = hydro::compute(&surface, &opts);
 
     let volume = l * b * t;
-    assert!((h.volume_m3 - volume).abs() < 1e-6 * volume, "volume {} vs {volume}", h.volume_m3);
-    assert!((h.displacement_t - volume).abs() < 1e-6 * volume, "rho 1000: {} t", h.displacement_t);
+    assert!(
+        (h.volume_m3 - volume).abs() < 1e-6 * volume,
+        "volume {} vs {volume}",
+        h.volume_m3
+    );
+    assert!(
+        (h.displacement_t - volume).abs() < 1e-6 * volume,
+        "rho 1000: {} t",
+        h.displacement_t
+    );
 
     // Coefficients are exactly one for a box at its own depth.
-    assert!((h.block_coefficient - 1.0).abs() < 1e-9, "Cb {}", h.block_coefficient);
-    assert!((h.waterplane_coefficient - 1.0).abs() < 1e-9, "Cwp {}", h.waterplane_coefficient);
-    assert!((h.midship_coefficient - 1.0).abs() < 1e-9, "Cm {}", h.midship_coefficient);
-    assert!((h.prismatic_coefficient - 1.0).abs() < 1e-9, "Cp {}", h.prismatic_coefficient);
+    assert!(
+        (h.block_coefficient - 1.0).abs() < 1e-9,
+        "Cb {}",
+        h.block_coefficient
+    );
+    assert!(
+        (h.waterplane_coefficient - 1.0).abs() < 1e-9,
+        "Cwp {}",
+        h.waterplane_coefficient
+    );
+    assert!(
+        (h.midship_coefficient - 1.0).abs() < 1e-9,
+        "Cm {}",
+        h.midship_coefficient
+    );
+    assert!(
+        (h.prismatic_coefficient - 1.0).abs() < 1e-9,
+        "Cp {}",
+        h.prismatic_coefficient
+    );
 
     // Buoyancy at half depth, metacentres from the waterplane second moments.
     assert!((h.kb - t / 2.0).abs() < 1e-9, "KB {}", h.kb);
-    assert!((h.waterplane_area_m2 - l * b).abs() < 1e-9, "Awp {}", h.waterplane_area_m2);
-    assert!((h.bm_transverse - b * b / (12.0 * t)).abs() < 1e-9, "BMt {}", h.bm_transverse);
-    assert!((h.bm_longitudinal - l * l / (12.0 * t)).abs() < 1e-6, "BMl {}", h.bm_longitudinal);
-    assert!((h.km_transverse - (t / 2.0 + b * b / (12.0 * t))).abs() < 1e-9, "KM {}", h.km_transverse);
+    assert!(
+        (h.waterplane_area_m2 - l * b).abs() < 1e-9,
+        "Awp {}",
+        h.waterplane_area_m2
+    );
+    assert!(
+        (h.bm_transverse - b * b / (12.0 * t)).abs() < 1e-9,
+        "BMt {}",
+        h.bm_transverse
+    );
+    assert!(
+        (h.bm_longitudinal - l * l / (12.0 * t)).abs() < 1e-6,
+        "BMl {}",
+        h.bm_longitudinal
+    );
+    assert!(
+        (h.km_transverse - (t / 2.0 + b * b / (12.0 * t))).abs() < 1e-9,
+        "KM {}",
+        h.km_transverse
+    );
 
     // Centre of buoyancy and flotation sit amidships, on the centreline.
     assert!((h.lcb.x - l / 2.0).abs() < 1e-9, "LCB x {}", h.lcb.x);
@@ -118,8 +161,16 @@ fn a_closed_barge_has_exact_hydrostatics() {
 
     // Half the box is wetted: bottom + four sides up to the waterline.
     let wetted = l * b + 2.0 * l * t + 2.0 * b * t;
-    assert!((h.wetted_surface_m2 - wetted).abs() < 1e-6 * wetted, "wetted {}", h.wetted_surface_m2);
-    assert!((h.mainframe_area_m2 - b * t).abs() < 1e-9, "midship {}", h.mainframe_area_m2);
+    assert!(
+        (h.wetted_surface_m2 - wetted).abs() < 1e-6 * wetted,
+        "wetted {}",
+        h.wetted_surface_m2
+    );
+    assert!(
+        (h.mainframe_area_m2 - b * t).abs() < 1e-9,
+        "midship {}",
+        h.mainframe_area_m2
+    );
 }
 
 #[test]
@@ -164,7 +215,10 @@ fn demo_hull_matches_the_reference_numbers() {
         appendage_coefficient: 1.0,
         mainframe_x: None,
         stations: 11,
-        subdivision: SubdivisionOptions { level: 3, mode: Default::default() },
+        subdivision: SubdivisionOptions {
+            level: 3,
+            mode: Default::default(),
+        },
     };
     let h = hydro::compute(&surface, &opts);
     let check = |label: &str, got: f64, want: f64, tol: f64| {
@@ -222,7 +276,11 @@ fn free_trim_moves_the_lcb_to_the_requested_station() {
 
     // A box is symmetric fore and aft, so heeling must not make it trim.
     let fc = stability::solve_floating(&hull, target, 20.0, l / 2.0, 0.0).expect("heeled box");
-    assert!(fc.trim.abs() < 1e-3, "a symmetric box should not trim: {}", fc.trim);
+    assert!(
+        fc.trim.abs() < 1e-3,
+        "a symmetric box should not trim: {}",
+        fc.trim
+    );
 }
 
 /// Free-to-trim cross curves must stay in longitudinal equilibrium at every
@@ -240,7 +298,10 @@ fn free_trim_cross_curves_hold_the_lcb_on_the_lcg() {
         appendage_coefficient: 1.0,
         mainframe_x: None,
         stations: 0,
-        subdivision: SubdivisionOptions { level: 3, mode: Default::default() },
+        subdivision: SubdivisionOptions {
+            level: 3,
+            mode: Default::default(),
+        },
     };
     let hull = Hull::new(&surface, base.subdivision);
     let target = hull.buoyancy(base.draft, 0.0, 0.0).0;
@@ -318,8 +379,16 @@ fn closed_box_cross_curve_at_75_and_90_degrees_is_finite() {
         let p = &curve.points[0];
         let gz = p.gz.expect("GZ must solve for closed box");
         let kn = p.kn.expect("KN must solve for closed box");
-        assert!(gz.is_finite(), "heel {} GZ must be finite: {gz}", curve.heel_deg);
-        assert!(kn.is_finite(), "heel {} KN must be finite: {kn}", curve.heel_deg);
+        assert!(
+            gz.is_finite(),
+            "heel {} GZ must be finite: {gz}",
+            curve.heel_deg
+        );
+        assert!(
+            kn.is_finite(),
+            "heel {} KN must be finite: {kn}",
+            curve.heel_deg
+        );
     }
 }
 

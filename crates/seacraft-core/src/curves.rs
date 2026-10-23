@@ -23,7 +23,7 @@
 //! the area-curve value as a design check, and the hydrostatic one as the
 //! published coefficient.
 
-use crate::hydro::{chain_paths, close_along_waterplane, clipped_loop_moments, plane_segments};
+use crate::hydro::{chain_paths, clipped_loop_moments, close_along_waterplane, plane_segments};
 use crate::hydro::{Hull, SectionArea};
 use crate::math::{Plane, Vec3};
 use serde::Serialize;
@@ -191,10 +191,17 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
     let (ml, mr, mt, mb) = (72.0, 24.0, 42.0, 56.0);
     let mut out = String::with_capacity(4096);
     chart_frame(&mut out, title, w, h);
-    let _ = writeln!(out, "<text class=\"title\" x=\"{ml:.0}\" y=\"26\">{}</text>", esc(title));
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{ml:.0}\" y=\"26\">{}</text>",
+        esc(title)
+    );
 
     if sac.len() < 2 {
-        let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">no section areas</text>");
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">no section areas</text>"
+        );
         out.push_str("</svg>\n");
         return out;
     }
@@ -202,7 +209,11 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
     let x0 = sac.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
     let x1 = sac.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
     let amax = sac.iter().map(|p| p.area).fold(0.0, f64::max).max(1e-6);
-    let (x0, x1) = if (x1 - x0).abs() < 1e-9 { (x0 - 0.5, x0 + 0.5) } else { (x0, x1) };
+    let (x0, x1) = if (x1 - x0).abs() < 1e-9 {
+        (x0 - 0.5, x0 + 0.5)
+    } else {
+        (x0, x1)
+    };
     let top = amax * 1.08;
 
     let sx = |x: f64| ml + (x - x0) / (x1 - x0) * (w - ml - mr);
@@ -237,7 +248,12 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
     for p in sac {
         let _ = write!(area_path, "L {:.2},{:.2} ", sx(p.x), sy(p.area));
     }
-    let _ = write!(area_path, "L {:.2},{:.2} Z", sx(sac[sac.len() - 1].x), sy(top));
+    let _ = write!(
+        area_path,
+        "L {:.2},{:.2} Z",
+        sx(sac[sac.len() - 1].x),
+        sy(top)
+    );
     let _ = writeln!(out, "<path class=\"fill\" d=\"{area_path}\"/>");
 
     let mut line = String::from("M ");
@@ -276,7 +292,11 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
     if let Some(cp) = prismatic_from_sac(sac) {
         let _ = write!(caption, "   Cp (area curve) {cp:.4}");
     }
-    let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"{:.1}\">{caption}</text>", h - 6.0);
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{ml:.0}\" y=\"{:.1}\">{caption}</text>",
+        h - 6.0
+    );
 
     out.push_str("</svg>\n");
     out
@@ -290,10 +310,17 @@ pub fn bonjean_svg(bonjean: &Bonjean, title: &str) -> String {
     let (ml, mr, mt, mb) = (72.0, 120.0, 42.0, 56.0);
     let mut out = String::with_capacity(4096);
     chart_frame(&mut out, title, w, h);
-    let _ = writeln!(out, "<text class=\"title\" x=\"{ml:.0}\" y=\"26\">{}</text>", esc(title));
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{ml:.0}\" y=\"26\">{}</text>",
+        esc(title)
+    );
 
     if bonjean.drafts_m.len() < 2 || bonjean.sections.is_empty() {
-        let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">no Bonjean data</text>");
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">no Bonjean data</text>"
+        );
         out.push_str("</svg>\n");
         return out;
     }
@@ -483,7 +510,13 @@ mod tests {
     #[test]
     fn bonjean_matches_the_hydrostatic_section_area() {
         let s = crate::demo::demo_hull(false);
-        let opts = HydroOptions::from_surface(&s, SubdivisionOptions { level: 3, mode: crate::SubdivisionMode::Loop });
+        let opts = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 3,
+                mode: crate::SubdivisionMode::Loop,
+            },
+        );
         let hull = Hull::new(&s, opts.subdivision);
         let wp = crate::hydro::waterplane_for(hull.keel, hull.length, opts.draft, 0.0, 0.0);
         let bj = bonjean(&hull, 21, &[opts.draft]);
@@ -505,7 +538,10 @@ mod tests {
         let hull = Hull::new(&s, LEVEL);
         // A flat-topped area curve: A = B*T for every interior station.
         let sac: Vec<SectionArea> = (1..=9)
-            .map(|i| SectionArea { x: i as f64, area: 4.0 * 1.5 })
+            .map(|i| SectionArea {
+                x: i as f64,
+                area: 4.0 * 1.5,
+            })
             .collect();
         let cp = prismatic_from_sac(&sac).expect("curve is not flat");
         assert!((cp - 1.0).abs() < 1e-9, "Cp {cp}");
@@ -513,7 +549,10 @@ mod tests {
         let parabola: Vec<SectionArea> = (0..=10)
             .map(|i| {
                 let t = i as f64 / 10.0;
-                SectionArea { x: t * 10.0, area: 4.0 * 1.5 * t }
+                SectionArea {
+                    x: t * 10.0,
+                    area: 4.0 * 1.5 * t,
+                }
             })
             .collect();
         let cp = prismatic_from_sac(&parabola).expect("curve is not flat");
@@ -523,7 +562,10 @@ mod tests {
         let sac: Vec<SectionArea> = bj
             .sections
             .iter()
-            .map(|s| SectionArea { x: s.x, area: s.areas_m2[0] })
+            .map(|s| SectionArea {
+                x: s.x,
+                area: s.areas_m2[0],
+            })
             .collect();
         let cp = prismatic_from_sac(&sac).expect("curve is not flat");
         assert!(cp > 0.9 && cp <= 1.01, "box area-curve Cp {cp}");
@@ -539,7 +581,10 @@ mod tests {
             sac_svg(
                 &bj.sections
                     .iter()
-                    .map(|s| SectionArea { x: s.x, area: s.areas_m2[2] })
+                    .map(|s| SectionArea {
+                        x: s.x,
+                        area: s.areas_m2[2],
+                    })
                     .collect::<Vec<_>>(),
                 "barge SAC",
             ),
@@ -555,8 +600,13 @@ mod tests {
     #[test]
     fn area_curve_integrates_to_the_displacement() {
         let s = crate::demo::demo_hull(false);
-        let mut opts =
-            HydroOptions::from_surface(&s, SubdivisionOptions { level: 3, mode: crate::SubdivisionMode::Loop });
+        let mut opts = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 3,
+                mode: crate::SubdivisionMode::Loop,
+            },
+        );
         opts.stations = 0; // this test drives the stations itself
         let result = crate::hydro::compute(&s, &opts);
         // Rebuild the area curve from the same refined hull at a finer spacing

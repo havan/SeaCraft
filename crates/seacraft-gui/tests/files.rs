@@ -5,7 +5,10 @@ use seacraft_gui::app::ExportKind;
 use seacraft_gui::App;
 
 fn demo_path() -> String {
-    format!("{}/../../examples/demo-hull.fef", env!("CARGO_MANIFEST_DIR"))
+    format!(
+        "{}/../../examples/demo-hull.fef",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
 fn scratch(name: &str) -> std::path::PathBuf {
@@ -41,7 +44,9 @@ fn every_export_format_writes_a_plausible_file() {
         match kind {
             ExportKind::Obj => assert!(head.starts_with("# SeaCraft"), "{head}"),
             ExportKind::Ply => assert!(head.starts_with("ply\n"), "{head}"),
-            ExportKind::Html => assert!(head.to_lowercase().starts_with("<!doctype html"), "{head}"),
+            ExportKind::Html => {
+                assert!(head.to_lowercase().starts_with("<!doctype html"), "{head}")
+            }
             ExportKind::Linesplan => assert!(head.starts_with("<?xml"), "{head}"),
             ExportKind::LinesplanDxf => assert!(head.starts_with("  0\nSECTION"), "{head}"),
             // The Start section is free text; the Global section follows.
@@ -52,12 +57,16 @@ fn every_export_format_writes_a_plausible_file() {
             ExportKind::Stl => {
                 // 80-byte header, then a u32 triangle count that matches the size.
                 assert!(bytes.len() > 84);
-                let tris = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+                let tris =
+                    u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
                 assert_eq!(bytes.len(), 84 + tris * 50, "binary STL size");
                 assert!(tris > 1000, "the refined hull has faces: {tris}");
             }
             ExportKind::ThreeMf => {
-                assert!(bytes.starts_with(b"PK\x03\x04"), "3MF must be a ZIP archive");
+                assert!(
+                    bytes.starts_with(b"PK\x03\x04"),
+                    "3MF must be a ZIP archive"
+                );
                 assert!(
                     bytes.windows(16).any(|w| w == b"3D/3dmodel.model"),
                     "3MF must contain 3D/3dmodel.model"

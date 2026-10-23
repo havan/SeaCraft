@@ -101,7 +101,11 @@ impl Camera {
                     self.pitch.cos() * self.yaw.sin(),
                     self.pitch.sin(),
                 );
-                (self.target + dir * self.distance, -dir, Vec3::new(0.0, 0.0, 1.0))
+                (
+                    self.target + dir * self.distance,
+                    -dir,
+                    Vec3::new(0.0, 0.0, 1.0),
+                )
             }
             // Far eye points keep the orthographic views depth-independent.
             ViewKind::Profile => (
@@ -158,8 +162,8 @@ impl Camera {
         } else {
             self.ortho_height / height
         };
-        self.target += view.right * (-dx as f64 * world_per_px)
-            + view.up * (dy as f64 * world_per_px);
+        self.target +=
+            view.right * (-dx as f64 * world_per_px) + view.up * (dy as f64 * world_per_px);
     }
 
     /// Zoom by a multiplicative factor; values below 1.0 move closer.
@@ -271,7 +275,9 @@ mod tests {
         for kind in ViewKind::ALL {
             let camera = Camera::new(kind, Vec3::new(6.0, 0.0, 0.9), Vec3::new(12.0, 4.0, 1.7));
             let view = camera.transform();
-            let p = view.project(camera.target, rect).expect("target must be visible");
+            let p = view
+                .project(camera.target, rect)
+                .expect("target must be visible");
             assert!(
                 (p.x - rect.center().x).abs() < 0.5 && (p.y - rect.center().y).abs() < 0.5,
                 "{kind:?} target projected to {p:?}, centre {:?}",
@@ -290,9 +296,15 @@ mod tests {
         let up = view.project(Vec3::new(0.0, 0.0, 1.0), rect).unwrap();
 
         assert!(right.x > origin.x + 1.0, "+x must point right");
-        assert!((right.y - origin.y).abs() < 0.5, "+x must not move vertically");
+        assert!(
+            (right.y - origin.y).abs() < 0.5,
+            "+x must not move vertically"
+        );
         assert!(up.y < origin.y - 1.0, "+z must point up the screen");
-        assert!((up.x - origin.x).abs() < 0.5, "+z must not move horizontally");
+        assert!(
+            (up.x - origin.x).abs() < 0.5,
+            "+z must not move horizontally"
+        );
     }
 
     #[test]

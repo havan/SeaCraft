@@ -74,7 +74,9 @@ fn main() -> eframe::Result {
                     "curvature" => seacraft_core::AnalysisMode::Curvature { radius: 1.0 },
                     "draft" => seacraft_core::AnalysisMode::Draft { angle_deg: 3.0 },
                     other => {
-                        eprintln!("unknown analysis mode: {other} (shaded, zebra, curvature, draft)");
+                        eprintln!(
+                            "unknown analysis mode: {other} (shaded, zebra, curvature, draft)"
+                        );
                         std::process::exit(2);
                     }
                 };
@@ -102,7 +104,10 @@ fn main() -> eframe::Result {
             };
             match seacraft_gui::control::spawn_listener(&addr, opts) {
                 Ok(listener) => {
-                    println!("seacraft-gui: control socket listening on {}", listener.addr);
+                    println!(
+                        "seacraft-gui: control socket listening on {}",
+                        listener.addr
+                    );
                     (Some(listener.receiver), listener.token_file)
                 }
                 Err(err) => {
@@ -114,10 +119,8 @@ fn main() -> eframe::Result {
         None => (None, None),
     };
 
-    let control_roots = seacraft_core::control_auth::ControlRoots::new(
-        control_read_roots,
-        control_write_roots,
-    );
+    let control_roots =
+        seacraft_core::control_auth::ControlRoots::new(control_read_roots, control_write_roots);
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

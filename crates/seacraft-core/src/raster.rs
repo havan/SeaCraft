@@ -63,7 +63,11 @@ impl View {
     /// A three-quarter perspective view of a model of the given centre and
     /// size, from yaw/pitch in radians.
     pub fn perspective(centre: Vec3, size: f64, yaw: f64, pitch: f64, fov_deg: f64) -> Self {
-        let dir = Vec3::new(pitch.cos() * yaw.cos(), pitch.cos() * yaw.sin(), pitch.sin());
+        let dir = Vec3::new(
+            pitch.cos() * yaw.cos(),
+            pitch.cos() * yaw.sin(),
+            pitch.sin(),
+        );
         let forward = -dir.norm();
         let mut right = forward.cross(Vec3::new(0.0, 0.0, 1.0));
         if right.length() < 1e-6 {
@@ -141,12 +145,7 @@ impl Default for RenderOptions {
 const MAX_DIM: usize = 8192;
 
 /// Render `verts`/`faces` with `view` into an RGBA canvas.
-pub fn render(
-    verts: &[Vec3],
-    faces: &[Vec<usize>],
-    view: &View,
-    opts: &RenderOptions,
-) -> Canvas {
+pub fn render(verts: &[Vec3], faces: &[Vec<usize>], view: &View, opts: &RenderOptions) -> Canvas {
     let w = opts.width.clamp(1, MAX_DIM);
     let h = opts.height.clamp(1, MAX_DIM);
     let ss = opts.supersample.clamp(1, 4);
@@ -188,7 +187,8 @@ pub fn render(
         }
         for k in 1..face.len() - 1 {
             let idx = [face[0], face[k], face[k + 1]];
-            let (Some(a), Some(b), Some(c)) = (projected[idx[0]], projected[idx[1]], projected[idx[2]])
+            let (Some(a), Some(b), Some(c)) =
+                (projected[idx[0]], projected[idx[1]], projected[idx[2]])
             else {
                 continue;
             };
@@ -212,12 +212,30 @@ pub fn render(
                 continue;
             }
 
-            let x0 = screen.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
-            let x1 = (screen.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max).ceil() as i64)
+            let x0 = screen
+                .iter()
+                .map(|p| p[0])
+                .fold(f64::INFINITY, f64::min)
+                .floor()
+                .max(0.0) as usize;
+            let x1 = (screen
+                .iter()
+                .map(|p| p[0])
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil() as i64)
                 .min(sw as i64 - 1)
                 .max(0) as usize;
-            let y0 = screen.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
-            let y1 = (screen.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max).ceil() as i64)
+            let y0 = screen
+                .iter()
+                .map(|p| p[1])
+                .fold(f64::INFINITY, f64::min)
+                .floor()
+                .max(0.0) as usize;
+            let y1 = (screen
+                .iter()
+                .map(|p| p[1])
+                .fold(f64::NEG_INFINITY, f64::max)
+                .ceil() as i64)
                 .min(sh as i64 - 1)
                 .max(0) as usize;
             if x0 > x1 || y0 > y1 {
@@ -248,7 +266,8 @@ pub fn render(
                     let k = if curvature.is_empty() {
                         Curvature::default()
                     } else {
-                        let (c0, c1, c2) = (curvature[idx[0]], curvature[idx[1]], curvature[idx[2]]);
+                        let (c0, c1, c2) =
+                            (curvature[idx[0]], curvature[idx[1]], curvature[idx[2]]);
                         Curvature {
                             gaussian: c0.gaussian * w0 + c1.gaussian * w1 + c2.gaussian * w2,
                             mean: c0.mean * w0 + c1.mean * w1 + c2.mean * w2,
@@ -284,7 +303,8 @@ pub fn render(
         let stroke = [0.10, 0.12, 0.16];
         for face in faces {
             for i in 0..face.len() {
-                let (Some(a), Some(b)) = (projected[face[i]], projected[face[(i + 1) % face.len()]])
+                let (Some(a), Some(b)) =
+                    (projected[face[i]], projected[face[(i + 1) % face.len()]])
                 else {
                     continue;
                 };
@@ -357,12 +377,26 @@ pub fn render(
                 if area.abs() < 1e-12 {
                     continue;
                 }
-                let x0 = [a[0], b[0], c[0]].into_iter().fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
-                let x1 = ([a[0], b[0], c[0]].into_iter().fold(f64::NEG_INFINITY, f64::max).ceil() as i64)
+                let x0 = [a[0], b[0], c[0]]
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min)
+                    .floor()
+                    .max(0.0) as usize;
+                let x1 = ([a[0], b[0], c[0]]
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .ceil() as i64)
                     .min(sw as i64 - 1)
                     .max(0) as usize;
-                let y0 = [a[1], b[1], c[1]].into_iter().fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
-                let y1 = ([a[1], b[1], c[1]].into_iter().fold(f64::NEG_INFINITY, f64::max).ceil() as i64)
+                let y0 = [a[1], b[1], c[1]]
+                    .into_iter()
+                    .fold(f64::INFINITY, f64::min)
+                    .floor()
+                    .max(0.0) as usize;
+                let y1 = ([a[1], b[1], c[1]]
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max)
+                    .ceil() as i64)
                     .min(sh as i64 - 1)
                     .max(0) as usize;
                 if x0 > x1 || y0 > y1 {
@@ -388,9 +422,12 @@ pub fn render(
                             } else {
                                 ([48.0, 108.0, 184.0], 0.22)
                             };
-                            rgba[o] = ((rgba[o] as f64 * (1.0 - alpha) + tint[0] * alpha).round()) as u8;
-                            rgba[o + 1] = ((rgba[o + 1] as f64 * (1.0 - alpha) + tint[1] * alpha).round()) as u8;
-                            rgba[o + 2] = ((rgba[o + 2] as f64 * (1.0 - alpha) + tint[2] * alpha).round()) as u8;
+                            rgba[o] =
+                                ((rgba[o] as f64 * (1.0 - alpha) + tint[0] * alpha).round()) as u8;
+                            rgba[o + 1] = ((rgba[o + 1] as f64 * (1.0 - alpha) + tint[1] * alpha)
+                                .round()) as u8;
+                            rgba[o + 2] = ((rgba[o + 2] as f64 * (1.0 - alpha) + tint[2] * alpha)
+                                .round()) as u8;
                         }
                     }
                 }
@@ -429,7 +466,11 @@ const CRC_TABLE: [u32; 256] = {
         let mut c = n as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         table[n] = c;
@@ -522,7 +563,12 @@ mod tests {
     fn a_panel_fills_the_middle_and_leaves_the_corners_background() {
         let (verts, faces) = panel();
         let view = View::ortho(Vec3::new(0.0, 0.0, -1.0), Vec3::ZERO, 20.0);
-        let opts = RenderOptions { width: 64, height: 64, supersample: 1, ..Default::default() };
+        let opts = RenderOptions {
+            width: 64,
+            height: 64,
+            supersample: 1,
+            ..Default::default()
+        };
         let canvas = render(&verts, &faces, &view, &opts);
         let at = |x: usize, y: usize| {
             let i = (y * canvas.w + x) * 4;
@@ -530,8 +576,14 @@ mod tests {
         };
         let middle = at(32, 32);
         let corner = at(1, 1);
-        assert!(middle[2] > 120 && middle[2] > middle[0], "the panel is drawn: {middle:?}");
-        assert!(corner[0] > 180 && corner[1] > 180, "corner is background: {corner:?}");
+        assert!(
+            middle[2] > 120 && middle[2] > middle[0],
+            "the panel is drawn: {middle:?}"
+        );
+        assert!(
+            corner[0] > 180 && corner[1] > 180,
+            "corner is background: {corner:?}"
+        );
     }
 
     #[test]
@@ -550,7 +602,12 @@ mod tests {
         }
         // Looking down -z from above, the z = +5 panel is nearer.
         let view = View::ortho(Vec3::new(0.0, 0.0, -1.0), Vec3::ZERO, 20.0);
-        let opts = RenderOptions { width: 16, height: 16, supersample: 1, ..Default::default() };
+        let opts = RenderOptions {
+            width: 16,
+            height: 16,
+            supersample: 1,
+            ..Default::default()
+        };
         let canvas = render(&verts, &faces, &view, &opts);
         // The far panel is dark (its normal points away from the light), so the
         // pixel's brightness tells which one won.
@@ -570,24 +627,48 @@ mod tests {
     fn supersampling_smooths_the_edge() {
         let (verts, faces) = panel();
         let view = View::ortho(Vec3::new(0.0, 0.0, -1.0), Vec3::ZERO, 20.0);
-        let one = RenderOptions { width: 40, height: 40, supersample: 1, ..Default::default() };
-        let four = RenderOptions { width: 40, height: 40, supersample: 2, ..Default::default() };
+        let one = RenderOptions {
+            width: 40,
+            height: 40,
+            supersample: 1,
+            ..Default::default()
+        };
+        let four = RenderOptions {
+            width: 40,
+            height: 40,
+            supersample: 2,
+            ..Default::default()
+        };
         let a = render(&verts, &faces, &view, &one);
         let b = render(&verts, &faces, &view, &four);
         let distinct = |c: &Canvas| {
-            c.rgba.chunks(4).map(|p| p[0]).collect::<std::collections::HashSet<_>>().len()
+            c.rgba
+                .chunks(4)
+                .map(|p| p[0])
+                .collect::<std::collections::HashSet<_>>()
+                .len()
         };
-        assert!(distinct(&b) > distinct(&a), "AA produces intermediate values");
+        assert!(
+            distinct(&b) > distinct(&a),
+            "AA produces intermediate values"
+        );
     }
 
     #[test]
     fn png_has_the_right_skeleton() {
         let pixels: Vec<u8> = (0..16 * 16 * 4).map(|i| (i % 251) as u8).collect();
         let bytes = png(16, 16, &pixels).expect("png");
-        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+        );
         assert_eq!(&bytes[12..16], b"IHDR");
         assert_eq!(&bytes[16..24], &[0, 0, 0, 16, 0, 0, 0, 16]);
-        assert!(bytes.ends_with(&[0xAE, 0x42, 0x60, 0x82]), "IEND crc: {:?}", &bytes[bytes.len() - 4..]);
+        assert!(
+            bytes.ends_with(&[0xAE, 0x42, 0x60, 0x82]),
+            "IEND crc: {:?}",
+            &bytes[bytes.len() - 4..]
+        );
         assert!(png(0, 0, &[]).is_none());
         assert!(png(4, 4, &[0; 3]).is_none());
     }
@@ -611,7 +692,12 @@ mod tests {
             &verts,
             &faces,
             &view,
-            &RenderOptions { width: 32, height: 32, supersample: 1, ..Default::default() },
+            &RenderOptions {
+                width: 32,
+                height: 32,
+                supersample: 1,
+                ..Default::default()
+            },
         );
         // Waterplane at z = 0 is behind the z = +2 panel, so the centre pixel must stay dry.
         let wp_behind = render(

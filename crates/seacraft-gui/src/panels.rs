@@ -66,7 +66,10 @@ pub fn layers(ui: &mut egui::Ui, surface: &mut Surface) -> bool {
     }
     if !surface.layers.iter().any(|l| l.visible) {
         ui.separator();
-        ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), "no visible layers");
+        ui.colored_label(
+            egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+            "no visible layers",
+        );
     }
     changed
 }
@@ -101,7 +104,6 @@ fn row(ui: &mut egui::Ui, label: &str, value: String) {
         });
     });
 }
-
 
 /// The measurement rows the dock draws, in two columns.
 ///
@@ -142,7 +144,6 @@ pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<(&'static str, String
         ],
     ]
 }
-
 
 /// The sectional area curve as screen coordinates, inside `rect`.
 ///
@@ -196,7 +197,10 @@ fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics) {
     painter.text(
         rect.left_top() + egui::vec2(4.0, 2.0),
         egui::Align2::LEFT_TOP,
-        format!("SAC · A max {a_max:.2} m² · x {:.2}..{:.2} m", h.model_min.x, h.model_max.x),
+        format!(
+            "SAC · A max {a_max:.2} m² · x {:.2}..{:.2} m",
+            h.model_min.x, h.model_max.x
+        ),
         egui::FontId::monospace(10.0),
         egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
     );
@@ -366,12 +370,32 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             });
             ui.columns(2, |cols| {
                 cols[0].spacing_mut().item_spacing.y = 2.0;
-                row(&mut cols[0], "A(0–30°)", format!("{:.3} m·rad", imo.area_0_30_m_rad));
-                row(&mut cols[0], "A(0–40°)", format!("{:.3} m·rad", imo.area_0_40_m_rad));
-                row(&mut cols[0], "A(30–40°)", format!("{:.3} m·rad", imo.area_30_40_m_rad));
+                row(
+                    &mut cols[0],
+                    "A(0–30°)",
+                    format!("{:.3} m·rad", imo.area_0_30_m_rad),
+                );
+                row(
+                    &mut cols[0],
+                    "A(0–40°)",
+                    format!("{:.3} m·rad", imo.area_0_40_m_rad),
+                );
+                row(
+                    &mut cols[0],
+                    "A(30–40°)",
+                    format!("{:.3} m·rad", imo.area_30_40_m_rad),
+                );
                 cols[1].spacing_mut().item_spacing.y = 2.0;
-                row(&mut cols[1], "GZ(≥30°)", format!("{:.3} m", imo.max_gz_30_plus_m));
-                row(&mut cols[1], "φ(GZmax)", format!("{:.0}°", imo.angle_of_max_gz_deg));
+                row(
+                    &mut cols[1],
+                    "GZ(≥30°)",
+                    format!("{:.3} m", imo.max_gz_30_plus_m),
+                );
+                row(
+                    &mut cols[1],
+                    "φ(GZmax)",
+                    format!("{:.0}°", imo.angle_of_max_gz_deg),
+                );
                 row(&mut cols[1], "GM0", format!("{:.3} m", imo.gm0_m));
             });
         }
@@ -448,7 +472,13 @@ mod tests {
 
     fn measured() -> Hydrostatics {
         let s = demo::demo_hull(false);
-        let mut o = HydroOptions::from_surface(&s, SubdivisionOptions { level: 3, mode: Default::default() });
+        let mut o = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 3,
+                mode: Default::default(),
+            },
+        );
         o.draft = 0.62;
         hydro::compute(&s, &o)
     }
@@ -459,7 +489,9 @@ mod tests {
         let [left, right] = hydrostatic_rows(&h, 1.5);
         assert_eq!(left.len(), right.len(), "the two columns stay balanced");
         let labels: Vec<&str> = left.iter().chain(right.iter()).map(|(l, _)| *l).collect();
-        for want in ["volume", "Cb", "LCB", "TPC", "KM(t)", "GM", "midship", "MTC"] {
+        for want in [
+            "volume", "Cb", "LCB", "TPC", "KM(t)", "GM", "midship", "MTC",
+        ] {
             assert!(labels.contains(&want), "{want} missing from {labels:?}");
         }
         // The table quantities are the measured waterplane in the right units.
@@ -470,7 +502,10 @@ mod tests {
             .expect("TPC parses");
         let want_tpc = h.waterplane_area_m2 * (h.water_density / 1000.0) / 100.0;
         assert!((tpc - want_tpc).abs() < 0.001, "TPC {tpc} vs {want_tpc}");
-        assert!((0.05..1.5).contains(&tpc), "TPC {tpc} t/cm is not plausible");
+        assert!(
+            (0.05..1.5).contains(&tpc),
+            "TPC {tpc} t/cm is not plausible"
+        );
         let mtc: f64 = right
             .iter()
             .find(|(l, _)| *l == "MTC")
@@ -494,26 +529,42 @@ mod tests {
         let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(120.0, 60.0));
         let pts = sac_polyline(&h.sac, rect);
         assert_eq!(pts.len(), h.sac.len(), "one point per station");
-        assert!(pts.windows(2).all(|w| w[1].x >= w[0].x), "x must not go backwards");
+        assert!(
+            pts.windows(2).all(|w| w[1].x >= w[0].x),
+            "x must not go backwards"
+        );
         for p in &pts {
-            assert!(rect.x_range().contains(p.x) && rect.y_range().contains(p.y), "{p:?}");
+            assert!(
+                rect.x_range().contains(p.x) && rect.y_range().contains(p.y),
+                "{p:?}"
+            );
         }
         // The height is the area: the fullest station touches the top and every
         // other point maps linearly from its own area.
         let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
         for (point, station) in pts.iter().zip(h.sac.iter()) {
             let want = rect.bottom() - (station.area / a_max) as f32 * rect.height();
-            assert!((point.y - want).abs() < 1e-2, "{station:?} drew at {point:?}, wanted y {want}");
+            assert!(
+                (point.y - want).abs() < 1e-2,
+                "{station:?} drew at {point:?}, wanted y {want}"
+            );
         }
         let peak = pts
             .iter()
             .zip(h.sac.iter())
-            .max_by(|a, b| a.1.area.partial_cmp(&b.1.area).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|a, b| {
+                a.1.area
+                    .partial_cmp(&b.1.area)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .map(|(p, _)| p.y)
             .expect("a peak");
         assert!((peak - rect.top()).abs() < 1e-2, "peak {peak}");
         let lowest = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
-        assert!(lowest < rect.top() + 1.0, "the peak reaches the top: {lowest}");
+        assert!(
+            lowest < rect.top() + 1.0,
+            "the peak reaches the top: {lowest}"
+        );
         // Degenerate input draws nothing rather than dividing by zero.
         assert!(sac_polyline(&[], rect).is_empty());
         let flat = [SectionArea { x: 1.0, area: 0.0 }];

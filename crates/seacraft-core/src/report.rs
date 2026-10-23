@@ -336,47 +336,127 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
     let _ = writeln!(out, "        <dt>LOA</dt><dd>{} m</dd>", fmt_num(loa, 3));
     let _ = writeln!(out, "        <dt>LWL</dt><dd>{} m</dd>", fmt_num(h.lwl, 3));
     let _ = writeln!(out, "        <dt>BWL</dt><dd>{} m</dd>", fmt_num(h.bwl, 3));
-    let _ = writeln!(out, "        <dt>Beam Max</dt><dd>{} m</dd>", fmt_num(boa, 3));
-    let _ = writeln!(out, "        <dt>Draft T</dt><dd>{} m</dd>", fmt_num(h.draft, 3));
-    let _ = writeln!(out, "        <dt>Depth</dt><dd>{} m</dd>", fmt_num(depth, 3));
+    let _ = writeln!(
+        out,
+        "        <dt>Beam Max</dt><dd>{} m</dd>",
+        fmt_num(boa, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Draft T</dt><dd>{} m</dd>",
+        fmt_num(h.draft, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Depth</dt><dd>{} m</dd>",
+        fmt_num(depth, 3)
+    );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
     out.push_str("    <div class=\"card\">\n");
     out.push_str("      <h3>Displacement & Areas</h3>\n");
     out.push_str("      <dl>\n");
-    let _ = writeln!(out, "        <dt>Volume &nabla;</dt><dd>{} m&sup3;</dd>", fmt_num(h.volume_m3, 3));
-    let _ = writeln!(out, "        <dt>Displacement &Delta;</dt><dd>{} t</dd>", fmt_num(h.displacement_t, 3));
-    let _ = writeln!(out, "        <dt>Mass</dt><dd>{} kg</dd>", fmt_num(h.displacement_kg, 0));
-    let _ = writeln!(out, "        <dt>Wetted Surface</dt><dd>{} m&sup2;</dd>", fmt_num(h.wetted_surface_m2, 2));
-    let _ = writeln!(out, "        <dt>Waterplane Area</dt><dd>{} m&sup2;</dd>", fmt_num(h.waterplane_area_m2, 2));
-    let _ = writeln!(out, "        <dt>Density &rho;</dt><dd>{} kg/m&sup3;</dd>", fmt_num(h.water_density, 1));
+    let _ = writeln!(
+        out,
+        "        <dt>Volume &nabla;</dt><dd>{} m&sup3;</dd>",
+        fmt_num(h.volume_m3, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Displacement &Delta;</dt><dd>{} t</dd>",
+        fmt_num(h.displacement_t, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Mass</dt><dd>{} kg</dd>",
+        fmt_num(h.displacement_kg, 0)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Wetted Surface</dt><dd>{} m&sup2;</dd>",
+        fmt_num(h.wetted_surface_m2, 2)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Waterplane Area</dt><dd>{} m&sup2;</dd>",
+        fmt_num(h.waterplane_area_m2, 2)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Density &rho;</dt><dd>{} kg/m&sup3;</dd>",
+        fmt_num(h.water_density, 1)
+    );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
     out.push_str("    <div class=\"card\">\n");
     out.push_str("      <h3>Form Coefficients</h3>\n");
     out.push_str("      <dl>\n");
-    let _ = writeln!(out, "        <dt>Block Cb</dt><dd>{}</dd>", fmt_num(h.block_coefficient, 4));
-    let _ = writeln!(out, "        <dt>Prismatic Cp</dt><dd>{}</dd>", fmt_num(h.prismatic_coefficient, 4));
-    let _ = writeln!(out, "        <dt>Midship Cm</dt><dd>{}</dd>", fmt_num(h.midship_coefficient, 4));
-    let _ = writeln!(out, "        <dt>Waterplane Cwp</dt><dd>{}</dd>", fmt_num(h.waterplane_coefficient, 4));
-    let _ = writeln!(out, "        <dt>Vertical Prismatic Cvp</dt><dd>{}</dd>", fmt_num(h.vertical_prismatic_coefficient, 4));
+    let _ = writeln!(
+        out,
+        "        <dt>Block Cb</dt><dd>{}</dd>",
+        fmt_num(h.block_coefficient, 4)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Prismatic Cp</dt><dd>{}</dd>",
+        fmt_num(h.prismatic_coefficient, 4)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Midship Cm</dt><dd>{}</dd>",
+        fmt_num(h.midship_coefficient, 4)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Waterplane Cwp</dt><dd>{}</dd>",
+        fmt_num(h.waterplane_coefficient, 4)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>Vertical Prismatic Cvp</dt><dd>{}</dd>",
+        fmt_num(h.vertical_prismatic_coefficient, 4)
+    );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
     out.push_str("    <div class=\"card\">\n");
     out.push_str("      <h3>Centroids & Stability</h3>\n");
     out.push_str("      <dl>\n");
-    let _ = writeln!(out, "        <dt>LCB</dt><dd>{} m</dd>", fmt_num(h.lcb.x, 3));
-    let _ = writeln!(out, "        <dt>LCF</dt><dd>{} m</dd>", fmt_num(h.lcf.x, 3));
+    let _ = writeln!(
+        out,
+        "        <dt>LCB</dt><dd>{} m</dd>",
+        fmt_num(h.lcb.x, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>LCF</dt><dd>{} m</dd>",
+        fmt_num(h.lcf.x, 3)
+    );
     let _ = writeln!(out, "        <dt>KB</dt><dd>{} m</dd>", fmt_num(h.kb, 3));
     let _ = writeln!(out, "        <dt>KG</dt><dd>{} m</dd>", fmt_num(opts.kg, 3));
-    let _ = writeln!(out, "        <dt>BM Transverse</dt><dd>{} m</dd>", fmt_num(h.bm_transverse, 3));
-    let _ = writeln!(out, "        <dt>KM Transverse</dt><dd>{} m</dd>", fmt_num(h.km_transverse, 3));
-    let _ = writeln!(out, "        <dt>GM Transverse</dt><dd>{} m</dd>", fmt_num(gmt, 3));
+    let _ = writeln!(
+        out,
+        "        <dt>BM Transverse</dt><dd>{} m</dd>",
+        fmt_num(h.bm_transverse, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>KM Transverse</dt><dd>{} m</dd>",
+        fmt_num(h.km_transverse, 3)
+    );
+    let _ = writeln!(
+        out,
+        "        <dt>GM Transverse</dt><dd>{} m</dd>",
+        fmt_num(gmt, 3)
+    );
     let _ = writeln!(out, "        <dt>TPC</dt><dd>{} t/cm</dd>", fmt_num(tpc, 3));
-    let _ = writeln!(out, "        <dt>MTC</dt><dd>{} t&middot;m/cm</dd>", fmt_num(mtc, 3));
+    let _ = writeln!(
+        out,
+        "        <dt>MTC</dt><dd>{} t&middot;m/cm</dd>",
+        fmt_num(mtc, 3)
+    );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
@@ -385,7 +465,11 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
     if !esc_comment.is_empty() || !esc_created.is_empty() {
         out.push_str("  <div class=\"note-box\">\n");
         if !esc_created.is_empty() {
-            let _ = writeln!(out, "    <p><strong>Created by:</strong> {}</p>", esc_created);
+            let _ = writeln!(
+                out,
+                "    <p><strong>Created by:</strong> {}</p>",
+                esc_created
+            );
         }
         if !esc_comment.is_empty() {
             let _ = writeln!(out, "    <p><strong>Comments:</strong> {}</p>", esc_comment);
@@ -420,7 +504,9 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
     out.push_str("    <thead>\n");
     out.push_str("      <tr>\n");
     out.push_str("        <th>Draft [m]</th><th>Volume [m&sup3;]</th><th>Displ [&Delta; t]</th>\n");
-    out.push_str("        <th>KB [m]</th><th>BM [m]</th><th>KM [m]</th><th>LCB [m]</th><th>LCF [m]</th>\n");
+    out.push_str(
+        "        <th>KB [m]</th><th>BM [m]</th><th>KM [m]</th><th>LCB [m]</th><th>LCF [m]</th>\n",
+    );
     out.push_str("        <th>Cb</th><th>Cp</th><th>Cwp</th><th>Aw [m&sup2;]</th><th>TPC [t/cm]</th><th>MTC [t&middot;m]</th>\n");
     out.push_str("      </tr>\n");
     out.push_str("    </thead>\n");
@@ -438,7 +524,11 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
     }
 
     for (i, r) in hyd_table.rows.iter().enumerate() {
-        let row_class = if i == closest_idx { " class=\"active-row\"" } else { "" };
+        let row_class = if i == closest_idx {
+            " class=\"active-row\""
+        } else {
+            ""
+        };
         let _ = writeln!(
             out,
             "      <tr{}><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -466,7 +556,11 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
     // ------------------------------------------------------------- 4. Sectional Area Curve
     out.push_str("<section id=\"sac\">\n");
     out.push_str("  <h2>Sectional Area Curve</h2>\n");
-    let sac_title = format!("{} - Sectional Area Curve (T = {} m)", esc_name, fmt_num(opts.draft, 3));
+    let sac_title = format!(
+        "{} - Sectional Area Curve (T = {} m)",
+        esc_name,
+        fmt_num(opts.draft, 3)
+    );
     let sac_svg = curves::sac_svg(&h.sac, &sac_title);
     out.push_str("  <div class=\"svg-frame\">\n");
     out.push_str(strip_xml_header(&sac_svg));
@@ -502,7 +596,12 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
         gz_points.push((c.heel_deg, gz));
     }
 
-    let gz_title = format!("{} - Righting Lever GZ (Displ. {} t, KG {} m)", esc_name, fmt_num(design_disp, 3), fmt_num(opts.kg, 3));
+    let gz_title = format!(
+        "{} - Righting Lever GZ (Displ. {} t, KG {} m)",
+        esc_name,
+        fmt_num(design_disp, 3),
+        fmt_num(opts.kg, 3)
+    );
     let gz_svg = gz_chart_svg(&gz_points, imo.as_ref(), &gz_title);
     out.push_str("  <div class=\"svg-frame\">\n");
     out.push_str(&gz_svg);
@@ -713,7 +812,8 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
                 }
 
                 let curve = resistance::curve(&input, &opts.speeds_kn);
-                let res_title = format!("{} - Total Resistance RT and Effective Power PE", esc_name);
+                let res_title =
+                    format!("{} - Total Resistance RT and Effective Power PE", esc_name);
                 let res_svg = resistance_chart_svg(&curve, &res_title);
                 out.push_str("  <div class=\"svg-frame\">\n");
                 out.push_str(&res_svg);
@@ -752,7 +852,11 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
 
         match planing::setup(surface, subdiv, &h_opts, None, opts.lcg_x, None) {
             Err(e) => {
-                let _ = writeln!(out, "  <div class=\"note-box\">Planing prediction unavailable: {}</div>", html_escape(&e));
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"note-box\">Planing prediction unavailable: {}</div>",
+                    html_escape(&e)
+                );
             }
             Ok(setup) => {
                 if let Some(dead) = setup.deadrise_measured {
@@ -871,16 +975,24 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     out.push_str("<style>\n");
     out.push_str(".axis { stroke: #111; stroke-width: 0.9; fill: none; }\n");
-    out.push_str(".grid { stroke: #e0e0e0; stroke-width: 0.6; stroke-dasharray: 4 4; fill: none; }\n");
+    out.push_str(
+        ".grid { stroke: #e0e0e0; stroke-width: 0.6; stroke-dasharray: 4 4; fill: none; }\n",
+    );
     out.push_str(".zero-line { stroke: #666; stroke-width: 1.0; fill: none; }\n");
-    out.push_str(".crit-line { stroke: #cf222e; stroke-width: 0.8; stroke-dasharray: 2 3; fill: none; }\n");
+    out.push_str(
+        ".crit-line { stroke: #cf222e; stroke-width: 0.8; stroke-dasharray: 2 3; fill: none; }\n",
+    );
     out.push_str(".curve { fill: none; stroke: #1f5fa8; stroke-width: 2.2; }\n");
     out.push_str(".curve-fill { fill: #1f5fa8; fill-opacity: 0.12; stroke: none; }\n");
     out.push_str(".label { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #444; }\n");
     out.push_str(".title { font: 14px ui-sans-serif, system-ui, sans-serif; font-weight: 600; fill: #111; }\n");
     out.push_str("</style>\n");
 
-    let _ = writeln!(out, "<text class=\"title\" x=\"{ml:.0}\" y=\"24\">{}</text>", html_escape(title));
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{ml:.0}\" y=\"24\">{}</text>",
+        html_escape(title)
+    );
 
     let valid: Vec<(f64, f64)> = points
         .iter()
@@ -892,7 +1004,11 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
         return out;
     }
 
-    let x_max = points.iter().map(|&(h, _)| h).fold(60.0_f64, f64::max).max(60.0);
+    let x_max = points
+        .iter()
+        .map(|&(h, _)| h)
+        .fold(60.0_f64, f64::max)
+        .max(60.0);
     let max_gz = valid.iter().map(|&(_, g)| g).fold(0.0_f64, f64::max);
     let min_gz = valid.iter().map(|&(_, g)| g).fold(0.0_f64, f64::min);
 
@@ -915,21 +1031,38 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
     for k in 0..=y_ticks {
         let val = y_min + (y_max - y_min) * k as f64 / y_ticks as f64;
         let y = sy(val);
-        let _ = writeln!(out, "<line class=\"grid\" x1=\"{ml:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\"/>", w - mr);
-        let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\">{val:.2}</text>", ml - 8.0, y + 4.0);
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{ml:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\"/>",
+            w - mr
+        );
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\">{val:.2}</text>",
+            ml - 8.0,
+            y + 4.0
+        );
     }
 
     // Baseline GZ = 0
     if (y_min..=y_max).contains(&0.0) {
         let y0 = sy(0.0);
-        let _ = writeln!(out, "<line class=\"zero-line\" x1=\"{ml:.1}\" y1=\"{y0:.1}\" x2=\"{:.1}\" y2=\"{y0:.1}\"/>", w - mr);
+        let _ = writeln!(
+            out,
+            "<line class=\"zero-line\" x1=\"{ml:.1}\" y1=\"{y0:.1}\" x2=\"{:.1}\" y2=\"{y0:.1}\"/>",
+            w - mr
+        );
     }
 
     // Vertical grid & ticks (every 15 deg)
     let mut heel_tick = 0.0;
     while heel_tick <= x_max + 1e-6 {
         let x = sx(heel_tick);
-        let _ = writeln!(out, "<line class=\"grid\" x1=\"{x:.1}\" y1=\"{mt:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\"/>", h - mb);
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{x:.1}\" y1=\"{mt:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\"/>",
+            h - mb
+        );
         let _ = writeln!(out, "<text class=\"label\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{:.0}&deg;</text>", h - mb + 18.0, heel_tick);
         heel_tick += 15.0;
     }
@@ -958,7 +1091,12 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
         }
         let _ = write!(fill_path, "L {:.1},{:.1} ", sx(h), sy(g.max(0.0)));
     }
-    let _ = write!(fill_path, "L {:.1},{:.1} Z", sx(valid.last().unwrap().0), y0);
+    let _ = write!(
+        fill_path,
+        "L {:.1},{:.1} Z",
+        sx(valid.last().unwrap().0),
+        y0
+    );
     let _ = writeln!(out, "<path class=\"curve-fill\" d=\"{}\"/>", fill_path);
 
     // GZ curve polyline
@@ -1017,14 +1155,22 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     out.push_str("<style>\n");
     out.push_str(".axis { stroke: #111; stroke-width: 0.9; fill: none; }\n");
-    out.push_str(".grid { stroke: #e0e0e0; stroke-width: 0.6; stroke-dasharray: 4 4; fill: none; }\n");
+    out.push_str(
+        ".grid { stroke: #e0e0e0; stroke-width: 0.6; stroke-dasharray: 4 4; fill: none; }\n",
+    );
     out.push_str(".rt-curve { fill: none; stroke: #0969da; stroke-width: 2.2; }\n");
-    out.push_str(".pe-curve { fill: none; stroke: #cf222e; stroke-width: 2.2; stroke-dasharray: 5 3; }\n");
+    out.push_str(
+        ".pe-curve { fill: none; stroke: #cf222e; stroke-width: 2.2; stroke-dasharray: 5 3; }\n",
+    );
     out.push_str(".label { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #444; }\n");
     out.push_str(".title { font: 14px ui-sans-serif, system-ui, sans-serif; font-weight: 600; fill: #111; }\n");
     out.push_str("</style>\n");
 
-    let _ = writeln!(out, "<text class=\"title\" x=\"{ml:.0}\" y=\"24\">{}</text>", html_escape(title));
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{ml:.0}\" y=\"24\">{}</text>",
+        html_escape(title)
+    );
 
     if res.len() < 2 {
         let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">Insufficient speed points to draw curve</text></svg>\n");
@@ -1060,7 +1206,11 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
         let pe_val = pe_max * frac;
         let y = mt + (1.0 - frac) * (h - mt - mb);
 
-        let _ = writeln!(out, "<line class=\"grid\" x1=\"{ml:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\"/>", w - mr);
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{ml:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\"/>",
+            w - mr
+        );
         let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" fill=\"#0969da\">{rt_val:.1}</text>", ml - 8.0, y + 4.0);
         let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"start\" fill=\"#cf222e\">{pe_val:.1}</text>", w - mr + 8.0, y + 4.0);
     }
@@ -1068,21 +1218,48 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
     // X Ticks
     for r in res {
         let x = sx(r.speed_kn);
-        let _ = writeln!(out, "<line class=\"grid\" x1=\"{x:.1}\" y1=\"{mt:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\"/>", h - mb);
-        let _ = writeln!(out, "<text class=\"label\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{:.1}</text>", h - mb + 18.0, r.speed_kn);
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{x:.1}\" y1=\"{mt:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\"/>",
+            h - mb
+        );
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{:.1}</text>",
+            h - mb + 18.0,
+            r.speed_kn
+        );
     }
 
     // RT polyline
-    let mut rt_path = format!("M {:.1},{:.1} ", sx(res[0].speed_kn), sy_rt(res[0].rt_n / 1000.0));
+    let mut rt_path = format!(
+        "M {:.1},{:.1} ",
+        sx(res[0].speed_kn),
+        sy_rt(res[0].rt_n / 1000.0)
+    );
     for r in &res[1..] {
-        let _ = write!(rt_path, "L {:.1},{:.1} ", sx(r.speed_kn), sy_rt(r.rt_n / 1000.0));
+        let _ = write!(
+            rt_path,
+            "L {:.1},{:.1} ",
+            sx(r.speed_kn),
+            sy_rt(r.rt_n / 1000.0)
+        );
     }
     let _ = writeln!(out, "<path class=\"rt-curve\" d=\"{}\"/>", rt_path);
 
     // PE polyline
-    let mut pe_path = format!("M {:.1},{:.1} ", sx(res[0].speed_kn), sy_pe(res[0].pe_w / 1000.0));
+    let mut pe_path = format!(
+        "M {:.1},{:.1} ",
+        sx(res[0].speed_kn),
+        sy_pe(res[0].pe_w / 1000.0)
+    );
     for r in &res[1..] {
-        let _ = write!(pe_path, "L {:.1},{:.1} ", sx(r.speed_kn), sy_pe(r.pe_w / 1000.0));
+        let _ = write!(
+            pe_path,
+            "L {:.1},{:.1} ",
+            sx(r.speed_kn),
+            sy_pe(r.pe_w / 1000.0)
+        );
     }
     let _ = writeln!(out, "<path class=\"pe-curve\" d=\"{}\"/>", pe_path);
 
@@ -1107,12 +1284,20 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
     let leg_x = w - mr - 200.0;
     let leg_y = mt + 15.0;
     let _ = writeln!(out, "<line x1=\"{leg_x:.1}\" y1=\"{leg_y:.1}\" x2=\"{:.1}\" y2=\"{leg_y:.1}\" stroke=\"#0969da\" stroke-width=\"2.5\"/>", leg_x + 24.0);
-    let _ = writeln!(out, "<circle cx=\"{:.1}\" cy=\"{leg_y:.1}\" r=\"3.5\" fill=\"#0969da\"/>", leg_x + 12.0);
+    let _ = writeln!(
+        out,
+        "<circle cx=\"{:.1}\" cy=\"{leg_y:.1}\" r=\"3.5\" fill=\"#0969da\"/>",
+        leg_x + 12.0
+    );
     let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#0969da\" font-weight=\"bold\">RT Total Resistance [kN]</text>", leg_x + 30.0, leg_y + 4.0);
 
     let leg_y2 = leg_y + 20.0;
     let _ = writeln!(out, "<line x1=\"{leg_x:.1}\" y1=\"{leg_y2:.1}\" x2=\"{:.1}\" y2=\"{leg_y2:.1}\" stroke=\"#cf222e\" stroke-width=\"2.5\" stroke-dasharray=\"5 3\"/>", leg_x + 24.0);
-    let _ = writeln!(out, "<circle cx=\"{:.1}\" cy=\"{leg_y2:.1}\" r=\"3.5\" fill=\"#cf222e\"/>", leg_x + 12.0);
+    let _ = writeln!(
+        out,
+        "<circle cx=\"{:.1}\" cy=\"{leg_y2:.1}\" r=\"3.5\" fill=\"#cf222e\"/>",
+        leg_x + 12.0
+    );
     let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#cf222e\" font-weight=\"bold\">PE Effective Power [kW]</text>", leg_x + 30.0, leg_y2 + 4.0);
 
     // Axis labels
@@ -1148,14 +1333,22 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     out.push_str("<style>\n");
     out.push_str(".axis { stroke: #111; stroke-width: 0.9; fill: none; }\n");
-    out.push_str(".grid { stroke: #e0e0e0; stroke-width: 0.6; stroke-dasharray: 4 4; fill: none; }\n");
+    out.push_str(
+        ".grid { stroke: #e0e0e0; stroke-width: 0.6; stroke-dasharray: 4 4; fill: none; }\n",
+    );
     out.push_str(".res-curve { fill: none; stroke: #0969da; stroke-width: 2.2; }\n");
-    out.push_str(".trim-curve { fill: none; stroke: #d97706; stroke-width: 2.2; stroke-dasharray: 5 3; }\n");
+    out.push_str(
+        ".trim-curve { fill: none; stroke: #d97706; stroke-width: 2.2; stroke-dasharray: 5 3; }\n",
+    );
     out.push_str(".label { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #444; }\n");
     out.push_str(".title { font: 14px ui-sans-serif, system-ui, sans-serif; font-weight: 600; fill: #111; }\n");
     out.push_str("</style>\n");
 
-    let _ = writeln!(out, "<text class=\"title\" x=\"{ml:.0}\" y=\"24\">{}</text>", html_escape(title));
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{ml:.0}\" y=\"24\">{}</text>",
+        html_escape(title)
+    );
 
     if points.len() < 2 {
         let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">Insufficient speed points to draw curve</text></svg>\n");
@@ -1166,7 +1359,11 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
     let x1 = points.last().map(|p| p.speed_kn).unwrap_or(30.0);
     let x_span = (x1 - x0).max(1.0);
 
-    let r_max = points.iter().map(|p| p.resistance_n / 1000.0).fold(0.0_f64, f64::max) * 1.15;
+    let r_max = points
+        .iter()
+        .map(|p| p.resistance_n / 1000.0)
+        .fold(0.0_f64, f64::max)
+        * 1.15;
     let r_max = r_max.max(0.1);
     let trim_max = points.iter().map(|p| p.trim_deg).fold(0.0_f64, f64::max) * 1.25;
     let trim_max = trim_max.max(1.0);
@@ -1189,26 +1386,52 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
         let t_val = trim_max * frac;
         let y = mt + (1.0 - frac) * (h - mt - mb);
 
-        let _ = writeln!(out, "<line class=\"grid\" x1=\"{ml:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\"/>", w - mr);
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{ml:.1}\" y1=\"{y:.1}\" x2=\"{:.1}\" y2=\"{y:.1}\"/>",
+            w - mr
+        );
         let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" fill=\"#0969da\">{r_val:.1}</text>", ml - 8.0, y + 4.0);
         let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"start\" fill=\"#d97706\">{t_val:.1}&deg;</text>", w - mr + 8.0, y + 4.0);
     }
 
     for p in points {
         let x = sx(p.speed_kn);
-        let _ = writeln!(out, "<line class=\"grid\" x1=\"{x:.1}\" y1=\"{mt:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\"/>", h - mb);
-        let _ = writeln!(out, "<text class=\"label\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{:.0}</text>", h - mb + 18.0, p.speed_kn);
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{x:.1}\" y1=\"{mt:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\"/>",
+            h - mb
+        );
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\">{:.0}</text>",
+            h - mb + 18.0,
+            p.speed_kn
+        );
     }
 
     // Resistance path
-    let mut r_path = format!("M {:.1},{:.1} ", sx(points[0].speed_kn), sy_r(points[0].resistance_n / 1000.0));
+    let mut r_path = format!(
+        "M {:.1},{:.1} ",
+        sx(points[0].speed_kn),
+        sy_r(points[0].resistance_n / 1000.0)
+    );
     for p in &points[1..] {
-        let _ = write!(r_path, "L {:.1},{:.1} ", sx(p.speed_kn), sy_r(p.resistance_n / 1000.0));
+        let _ = write!(
+            r_path,
+            "L {:.1},{:.1} ",
+            sx(p.speed_kn),
+            sy_r(p.resistance_n / 1000.0)
+        );
     }
     let _ = writeln!(out, "<path class=\"res-curve\" d=\"{}\"/>", r_path);
 
     // Trim path
-    let mut t_path = format!("M {:.1},{:.1} ", sx(points[0].speed_kn), sy_t(points[0].trim_deg));
+    let mut t_path = format!(
+        "M {:.1},{:.1} ",
+        sx(points[0].speed_kn),
+        sy_t(points[0].trim_deg)
+    );
     for p in &points[1..] {
         let _ = write!(t_path, "L {:.1},{:.1} ", sx(p.speed_kn), sy_t(p.trim_deg));
     }
@@ -1227,12 +1450,20 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
     let leg_x = w - mr - 200.0;
     let leg_y = mt + 15.0;
     let _ = writeln!(out, "<line x1=\"{leg_x:.1}\" y1=\"{leg_y:.1}\" x2=\"{:.1}\" y2=\"{leg_y:.1}\" stroke=\"#0969da\" stroke-width=\"2.5\"/>", leg_x + 24.0);
-    let _ = writeln!(out, "<circle cx=\"{:.1}\" cy=\"{leg_y:.1}\" r=\"3.5\" fill=\"#0969da\"/>", leg_x + 12.0);
+    let _ = writeln!(
+        out,
+        "<circle cx=\"{:.1}\" cy=\"{leg_y:.1}\" r=\"3.5\" fill=\"#0969da\"/>",
+        leg_x + 12.0
+    );
     let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#0969da\" font-weight=\"bold\">Resistance [kN]</text>", leg_x + 30.0, leg_y + 4.0);
 
     let leg_y2 = leg_y + 20.0;
     let _ = writeln!(out, "<line x1=\"{leg_x:.1}\" y1=\"{leg_y2:.1}\" x2=\"{:.1}\" y2=\"{leg_y2:.1}\" stroke=\"#d97706\" stroke-width=\"2.5\" stroke-dasharray=\"5 3\"/>", leg_x + 24.0);
-    let _ = writeln!(out, "<circle cx=\"{:.1}\" cy=\"{leg_y2:.1}\" r=\"3.5\" fill=\"#d97706\"/>", leg_x + 12.0);
+    let _ = writeln!(
+        out,
+        "<circle cx=\"{:.1}\" cy=\"{leg_y2:.1}\" r=\"3.5\" fill=\"#d97706\"/>",
+        leg_x + 12.0
+    );
     let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#d97706\" font-weight=\"bold\">Trim [&deg;]</text>", leg_x + 30.0, leg_y2 + 4.0);
 
     // Axis labels
@@ -1283,15 +1514,27 @@ mod tests {
 
         let svg_open = html.matches("<svg").count();
         let svg_close = html.matches("</svg>").count();
-        assert_eq!(svg_open, svg_close, "unbalanced <svg> tags: {svg_open} vs {svg_close}");
-        assert!(svg_open >= 4, "expected at least 4 SVGs (lines, sac, stability, resistance, planing)");
+        assert_eq!(
+            svg_open, svg_close,
+            "unbalanced <svg> tags: {svg_open} vs {svg_close}"
+        );
+        assert!(
+            svg_open >= 4,
+            "expected at least 4 SVGs (lines, sac, stability, resistance, planing)"
+        );
 
         let sec_open = html.matches("<section").count();
         let sec_close = html.matches("</section>").count();
-        assert_eq!(sec_open, sec_close, "unbalanced <section> tags: {sec_open} vs {sec_close}");
+        assert_eq!(
+            sec_open, sec_close,
+            "unbalanced <section> tags: {sec_open} vs {sec_close}"
+        );
         assert_eq!(sec_open, 7, "expected 7 sections with planing enabled");
 
-        assert!(!html.contains("NaN"), "HTML report must contain no NaN values");
+        assert!(
+            !html.contains("NaN"),
+            "HTML report must contain no NaN values"
+        );
         assert!(
             html.contains("Severe Wind and Rolling (Weather) Criterion"),
             "HTML report must include the IMO weather criterion table"
@@ -1308,7 +1551,8 @@ mod tests {
         let html = design_report(&surface, &opts).expect("report succeeds");
 
         assert!(!html.contains("<script>"), "raw <script> must be escaped");
-        assert!(html.contains("&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;&amp;&quot;Special&quot;"));
+        assert!(html
+            .contains("&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;&amp;&quot;Special&quot;"));
         assert!(html.contains("O&#39;Connor &amp; Sons &lt;designer&gt;"));
     }
 
@@ -1319,6 +1563,9 @@ mod tests {
 
         let h1 = design_report(&surface, &opts).expect("first call");
         let h2 = design_report(&surface, &opts).expect("second call");
-        assert_eq!(h1, h2, "two calls on identical inputs must produce identical output");
+        assert_eq!(
+            h1, h2,
+            "two calls on identical inputs must produce identical output"
+        );
     }
 }

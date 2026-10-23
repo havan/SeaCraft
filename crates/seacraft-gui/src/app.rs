@@ -298,7 +298,11 @@ impl App {
             });
         match parsed {
             Ok(surface) => {
-                let layers_word = if surface.layers.len() == 1 { "layer" } else { "layers" };
+                let layers_word = if surface.layers.len() == 1 {
+                    "layer"
+                } else {
+                    "layers"
+                };
                 self.status = format!(
                     "{} — {} points, {} faces, {} {}",
                     surface.settings.name,
@@ -372,7 +376,10 @@ impl App {
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
         if let Some(s) = &self.surface {
-            let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
+            let subdiv = seacraft_core::SubdivisionOptions {
+                level: self.level,
+                mode: self.mode,
+            };
             self.hydro.options = HydroOptions::from_surface(s, subdiv);
             let (min, max) = s.extents();
             for cam in &mut self.cameras {
@@ -389,7 +396,11 @@ impl App {
             self.cache = None;
             return;
         };
-        let level = if self.drag.is_some() { self.level.min(2) } else { self.level };
+        let level = if self.drag.is_some() {
+            self.level.min(2)
+        } else {
+            self.level
+        };
         let stale = match &self.cache {
             Some(c) => c.revision != self.revision || c.level != level || c.mode != self.mode,
             None => true,
@@ -475,21 +486,22 @@ impl App {
                 .resizable(true)
                 .default_size(340.0)
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        panels::hydrostatics(
-                            ui,
-                            panels::HydroPanel {
-                                options: &mut self.hydro.options,
-                                kg: &mut self.hydro.kg,
-                                free_trim: &mut self.hydro.free_trim,
-                                lcg: &mut self.hydro.lcg,
-                                result: self.hydro.result.as_ref(),
-                                stale: self.hydro_dirty,
-                                curves: self.hydro.curves.as_deref(),
-                            },
-                        )
-                    })
-                    .inner
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| {
+                            panels::hydrostatics(
+                                ui,
+                                panels::HydroPanel {
+                                    options: &mut self.hydro.options,
+                                    kg: &mut self.hydro.kg,
+                                    free_trim: &mut self.hydro.free_trim,
+                                    lcg: &mut self.hydro.lcg,
+                                    result: self.hydro.result.as_ref(),
+                                    stale: self.hydro_dirty,
+                                    curves: self.hydro.curves.as_deref(),
+                                },
+                            )
+                        })
+                        .inner
                 })
                 .inner;
             match action {
@@ -501,7 +513,8 @@ impl App {
                 panels::HydroAction::None => {}
             }
             if self.hydro_dirty {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(120));
             }
         }
         self.refresh_hydro(false);
@@ -522,7 +535,13 @@ impl App {
             let mut undo = false;
             let mut redo = false;
             for event in &i.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = event
+                {
                     match key {
                         egui::Key::Z if modifiers.command || modifiers.ctrl => {
                             if modifiers.shift {
@@ -557,9 +576,14 @@ impl App {
         if ui.input(|i| i.key_pressed(egui::Key::Space)) {
             self.display.shaded = !self.display.shaded;
         }
-        for (i, key) in [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4]
-            .into_iter()
-            .enumerate()
+        for (i, key) in [
+            egui::Key::Num1,
+            egui::Key::Num2,
+            egui::Key::Num3,
+            egui::Key::Num4,
+        ]
+        .into_iter()
+        .enumerate()
         {
             if ui.input(|i| i.key_pressed(key)) {
                 self.active = i;
@@ -580,11 +604,17 @@ impl App {
                         ui.close();
                     }
                     ui.separator();
-                    if ui.add_enabled(self.surface.is_some(), egui::Button::new("Save")).clicked() {
+                    if ui
+                        .add_enabled(self.surface.is_some(), egui::Button::new("Save"))
+                        .clicked()
+                    {
                         self.save();
                         ui.close();
                     }
-                    if ui.add_enabled(self.surface.is_some(), egui::Button::new("Save as…")).clicked() {
+                    if ui
+                        .add_enabled(self.surface.is_some(), egui::Button::new("Save as…"))
+                        .clicked()
+                    {
                         self.open_dialog(DialogKind::SaveAs);
                         ui.close();
                     }
@@ -606,11 +636,20 @@ impl App {
                     }
                 });
                 ui.menu_button("Edit", |ui| {
-                    if ui.add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)")).clicked() {
+                    if ui
+                        .add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)"))
+                        .clicked()
+                    {
                         self.undo();
                         ui.close();
                     }
-                    if ui.add_enabled(self.history.can_redo(), egui::Button::new("Redo  (Ctrl+Shift+Z)")).clicked() {
+                    if ui
+                        .add_enabled(
+                            self.history.can_redo(),
+                            egui::Button::new("Redo  (Ctrl+Shift+Z)"),
+                        )
+                        .clicked()
+                    {
                         self.redo();
                         ui.close();
                     }
@@ -629,9 +668,18 @@ impl App {
                         let current = self.display.analysis;
                         for (mode, label) in [
                             (seacraft_core::AnalysisMode::Shaded, "Shaded"),
-                            (seacraft_core::AnalysisMode::Zebra { stripes: 14.0 }, "Zebra"),
-                            (seacraft_core::AnalysisMode::Curvature { radius: 1.0 }, "Curvature"),
-                            (seacraft_core::AnalysisMode::Draft { angle_deg: 3.0 }, "Draft"),
+                            (
+                                seacraft_core::AnalysisMode::Zebra { stripes: 14.0 },
+                                "Zebra",
+                            ),
+                            (
+                                seacraft_core::AnalysisMode::Curvature { radius: 1.0 },
+                                "Curvature",
+                            ),
+                            (
+                                seacraft_core::AnalysisMode::Draft { angle_deg: 3.0 },
+                                "Draft",
+                            ),
                         ] {
                             if ui.selectable_label(current == mode, label).clicked() {
                                 self.display.analysis = mode;
@@ -643,7 +691,10 @@ impl App {
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
                     ui.separator();
                     let mut level = self.level as u32;
-                    if ui.add(egui::Slider::new(&mut level, 0..=5).text("subdivision level")).changed() {
+                    if ui
+                        .add(egui::Slider::new(&mut level, 0..=5).text("subdivision level"))
+                        .changed()
+                    {
                         self.level = level as u8;
                     }
                     egui::ComboBox::from_label("mode")
@@ -653,7 +704,11 @@ impl App {
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.mode, SubdivisionMode::Loop, "Loop");
-                            ui.selectable_value(&mut self.mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
+                            ui.selectable_value(
+                                &mut self.mode,
+                                SubdivisionMode::CatmullClark,
+                                "Catmull-Clark",
+                            );
                         });
                     ui.separator();
                     if ui.button("Reset cameras (F)").clicked() {
@@ -698,7 +753,13 @@ impl App {
             .unwrap_or_else(|| "hull".to_owned());
         let clean: String = stem
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let dir = self
             .path
@@ -716,7 +777,10 @@ impl App {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| demo.to_string_lossy().to_string())
             }
-            DialogKind::SaveAs => dir.join(format!("{clean}.fef")).to_string_lossy().to_string(),
+            DialogKind::SaveAs => dir
+                .join(format!("{clean}.fef"))
+                .to_string_lossy()
+                .to_string(),
             DialogKind::Export(kind) => dir
                 .join(format!("{clean}.{}", kind.extension()))
                 .to_string_lossy()
@@ -726,7 +790,11 @@ impl App {
 
     fn open_dialog(&mut self, kind: DialogKind) {
         let path = self.suggested_path(kind);
-        self.dialog = Some(FileDialogState { kind, path, error: None });
+        self.dialog = Some(FileDialogState {
+            kind,
+            path,
+            error: None,
+        });
     }
 
     /// Save to the model's path, or ask for one.
@@ -741,7 +809,9 @@ impl App {
 
     /// Write the model as `.fef`. Returns whether it was written.
     pub fn save_to(&mut self, path: &std::path::Path) -> bool {
-        let Some(surface) = &self.surface else { return false };
+        let Some(surface) = &self.surface else {
+            return false;
+        };
         let text = fef::write(surface);
         match std::fs::write(path, text) {
             Ok(()) => {
@@ -759,7 +829,9 @@ impl App {
 
     /// Write one of the export formats. Returns whether it was written.
     pub fn export_to(&mut self, kind: ExportKind, path: &std::path::Path) -> bool {
-        let Some(surface) = &self.surface else { return false };
+        let Some(surface) = &self.surface else {
+            return false;
+        };
         let written = match kind {
             ExportKind::Obj => std::fs::write(
                 path,
@@ -773,23 +845,38 @@ impl App {
             ExportKind::HullIges => {
                 std::fs::write(path, export::iges_surface(surface, self.level, self.mode))
             }
-            ExportKind::Html => std::fs::write(path, export::viewer_html(surface, self.level, self.mode)),
+            ExportKind::Html => {
+                std::fs::write(path, export::viewer_html(surface, self.level, self.mode))
+            }
             ExportKind::Linesplan => std::fs::write(
                 path,
-                seacraft_core::linesplan::svg(surface, seacraft_core::linesplan::LinesplanOptions::default()),
+                seacraft_core::linesplan::svg(
+                    surface,
+                    seacraft_core::linesplan::LinesplanOptions::default(),
+                ),
             ),
             ExportKind::LinesplanDxf => std::fs::write(
                 path,
-                seacraft_core::linesplan::dxf(surface, seacraft_core::linesplan::LinesplanOptions::default()),
+                seacraft_core::linesplan::dxf(
+                    surface,
+                    seacraft_core::linesplan::LinesplanOptions::default(),
+                ),
             ),
             ExportKind::LinesplanIges => std::fs::write(
                 path,
-                seacraft_core::linesplan::iges(surface, seacraft_core::linesplan::LinesplanOptions::default()),
+                seacraft_core::linesplan::iges(
+                    surface,
+                    seacraft_core::linesplan::LinesplanOptions::default(),
+                ),
             ),
         };
         match written {
             Ok(()) => {
-                self.status = format!("exported {} ({})", path.display(), kind.label().trim_end_matches('…'));
+                self.status = format!(
+                    "exported {} ({})",
+                    path.display(),
+                    kind.label().trim_end_matches('…')
+                );
                 true
             }
             Err(err) => {
@@ -800,7 +887,9 @@ impl App {
     }
 
     fn dialog_window(&mut self, ui: &mut egui::Ui) {
-        let Some(mut dialog) = self.dialog.take() else { return };
+        let Some(mut dialog) = self.dialog.take() else {
+            return;
+        };
         let title = match dialog.kind {
             DialogKind::Open => "Open .fef",
             DialogKind::SaveAs => "Save as",
@@ -824,13 +913,15 @@ impl App {
                     DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
                     DialogKind::Export(k) => format!(".{}", k.extension()),
                 };
-                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                    for (label, path) in listing(&dialog.path, &wanted) {
-                        if ui.selectable_label(false, label).clicked() {
-                            dialog.path = path;
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for (label, path) in listing(&dialog.path, &wanted) {
+                            if ui.selectable_label(false, label).clicked() {
+                                dialog.path = path;
+                            }
                         }
-                    }
-                });
+                    });
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
@@ -923,7 +1014,9 @@ impl App {
     }
 
     pub fn undo(&mut self) {
-        let Some(current) = self.surface.clone() else { return };
+        let Some(current) = self.surface.clone() else {
+            return;
+        };
         if let Some(previous) = self.history.undo(&current) {
             let moved = previous.points.len();
             self.surface = Some(previous);
@@ -935,7 +1028,9 @@ impl App {
     }
 
     pub fn redo(&mut self) {
-        let Some(current) = self.surface.clone() else { return };
+        let Some(current) = self.surface.clone() else {
+            return;
+        };
         if let Some(next) = self.history.redo(&current) {
             self.surface = Some(next);
             self.revision += 1;
@@ -949,7 +1044,8 @@ impl App {
     pub fn mark(&mut self) -> u64 {
         let id = self.next_mark_id;
         self.next_mark_id += 1;
-        self.marks.push((id, self.surface.clone(), self.history.undo_len()));
+        self.marks
+            .push((id, self.surface.clone(), self.history.undo_len()));
         id
     }
 
@@ -1041,7 +1137,10 @@ impl App {
             }
             if self.active == index && response.hovered() {
                 if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
-                    let center = self.cache.as_ref().map_or(Vec3::ZERO, |c| (c.min + c.max) * 0.5);
+                    let center = self
+                        .cache
+                        .as_ref()
+                        .map_or(Vec3::ZERO, |c| (c.min + c.max) * 0.5);
                     let plane = picking::drag_plane(&view, center);
                     self.cursor_world = picking::ray_plane(&view.ray(cursor, cell), &plane);
                 }
@@ -1074,7 +1173,9 @@ impl App {
                         &scene,
                         &self.display,
                     );
-                    if let Some(frame) = self.analysis_frames[index].as_ref().filter(|f| f.key == key)
+                    if let Some(frame) = self.analysis_frames[index]
+                        .as_ref()
+                        .filter(|f| f.key == key)
                     {
                         Some(frame.texture.clone())
                     } else {
@@ -1096,7 +1197,13 @@ impl App {
                             image,
                             egui::TextureOptions::LINEAR,
                         );
-                        fresh.push((index, AnalysisFrame { key, texture: texture.clone() }));
+                        fresh.push((
+                            index,
+                            AnalysisFrame {
+                                key,
+                                texture: texture.clone(),
+                            },
+                        ));
                         Some(texture)
                     }
                 };
@@ -1148,9 +1255,15 @@ impl App {
         cell: egui::Rect,
         index: usize,
     ) {
-        let Some(point) = self.pick_at(ui, view, cell) else { return };
-        let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else { return };
-        let Some(surface) = self.surface.as_ref() else { return };
+        let Some(point) = self.pick_at(ui, view, cell) else {
+            return;
+        };
+        let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else {
+            return;
+        };
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
         let center = surface.points[point].p;
         let plane = picking::drag_plane(view, center);
         let offset = picking::ray_plane(&view.ray(cursor, cell), &plane)
@@ -1160,13 +1273,25 @@ impl App {
         self.selected = Some(point);
         self.active = index;
         self.status = format!("dragging control point {point}");
-        self.drag = Some(DragState { point, plane, offset, view: index, original: center });
+        self.drag = Some(DragState {
+            point,
+            plane,
+            offset,
+            view: index,
+            original: center,
+        });
     }
 
     fn drag_to(&mut self, ui: &egui::Ui, view: &crate::camera::ViewTransform, cell: egui::Rect) {
-        let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else { return };
-        let Some(drag) = self.drag.as_ref() else { return };
-        let Some(hit) = picking::ray_plane(&view.ray(cursor, cell), &drag.plane) else { return };
+        let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else {
+            return;
+        };
+        let Some(drag) = self.drag.as_ref() else {
+            return;
+        };
+        let Some(hit) = picking::ray_plane(&view.ray(cursor, cell), &drag.plane) else {
+            return;
+        };
         let mut target = hit + drag.offset;
         let point = drag.point;
         if let Some(surface) = self.surface.as_mut() {
@@ -1205,7 +1330,10 @@ impl App {
             }
         }
         let Some(surface) = &self.surface else { return };
-        let subdiv = seacraft_core::SubdivisionOptions { level: self.level, mode: self.mode };
+        let subdiv = seacraft_core::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
         let hull = Hull::new(surface, subdiv);
         let result = if self.hydro.free_trim {
             let (res, fc) =
@@ -1233,7 +1361,9 @@ impl App {
         {
             self.refresh_hydro(true);
         }
-        let Some(hull) = self.hydro.hull.take() else { return };
+        let Some(hull) = self.hydro.hull.take() else {
+            return;
+        };
         let displacement_t = self.hydro.result.as_ref().map_or(0.0, |r| r.displacement_t);
         if displacement_t > 0.0 {
             let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
@@ -1242,10 +1372,7 @@ impl App {
             // Free trim needs a longitudinal centre of gravity. A bare model
             // carries none, so the upright LCB is the natural stand-in.
             if self.hydro.free_trim && self.hydro.lcg.is_none() {
-                self.hydro.lcg = Some(stability::upright_lcb(
-                    &hull,
-                    self.hydro.options.draft,
-                ));
+                self.hydro.lcg = Some(stability::upright_lcb(&hull, self.hydro.options.draft));
             }
             let cond = stability::StabilityCondition {
                 kg: self.hydro.kg,
@@ -1477,7 +1604,10 @@ impl App {
     // ---- control socket ------------------------------------------------
 
     /// Serve `rx` from the next frame on (`--control`).
-    pub fn attach_control(&mut self, rx: std::sync::mpsc::Receiver<crate::control::ControlRequest>) {
+    pub fn attach_control(
+        &mut self,
+        rx: std::sync::mpsc::Receiver<crate::control::ControlRequest>,
+    ) {
         self.control = Some(rx);
     }
 
@@ -1526,7 +1656,10 @@ impl App {
 
     /// Queue synthetic input for the next frame. Returns how many events were
     /// queued; a full queue is an error rather than unbounded memory.
-    pub fn queue_events(&mut self, events: impl IntoIterator<Item = egui::Event>) -> Result<usize, String> {
+    pub fn queue_events(
+        &mut self,
+        events: impl IntoIterator<Item = egui::Event>,
+    ) -> Result<usize, String> {
         let events: Vec<egui::Event> = events.into_iter().collect();
         if self.synthetic.len() + events.len() > crate::control::MAX_SYNTHETIC {
             return Err(format!(
@@ -1559,12 +1692,18 @@ impl App {
     }
 
     /// Check that `path` resolves inside an allowed read root.
-    pub fn check_control_read_path(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    pub fn check_control_read_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<std::path::PathBuf, String> {
         seacraft_core::control_auth::check_read_path(path, &self.control_roots.read_roots)
     }
 
     /// Check that `path` resolves inside an allowed write root.
-    pub fn check_control_write_path(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    pub fn check_control_write_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<std::path::PathBuf, String> {
         seacraft_core::control_auth::check_write_path(path, &self.control_roots.write_roots)
     }
 
@@ -1580,7 +1719,9 @@ fn listing(path: &str, wanted: &str) -> Vec<(String, String)> {
     let dir = if path.is_dir() {
         path.to_path_buf()
     } else {
-        path.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
+        path.parent()
+            .map(|d| d.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
     };
     let wanted = wanted.to_ascii_lowercase();
     let mut out = Vec::new();
@@ -1593,7 +1734,10 @@ fn listing(path: &str, wanted: &str) -> Vec<(String, String)> {
                 continue;
             }
             if entry.path().is_dir() {
-                out.push((format!("{name}/"), entry.path().to_string_lossy().to_string()));
+                out.push((
+                    format!("{name}/"),
+                    entry.path().to_string_lossy().to_string(),
+                ));
             } else if name.to_ascii_lowercase().ends_with(&wanted) {
                 out.push((name, entry.path().to_string_lossy().to_string()));
             }

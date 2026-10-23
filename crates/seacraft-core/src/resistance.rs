@@ -177,12 +177,7 @@ impl HoltropInput {
 /// agree closely; a pram bow makes the chord steeper and therefore reports a
 /// larger `iE` (a larger `c1`, i.e. more wave resistance), which is the safe
 /// direction for an estimate.
-fn half_entrance_deg(
-    hull: &Hull,
-    wp: &crate::math::Plane,
-    x_bow: f64,
-    lwl: f64,
-) -> f64 {
+fn half_entrance_deg(hull: &Hull, wp: &crate::math::Plane, x_bow: f64, lwl: f64) -> f64 {
     let span = (0.02 * lwl).max(1e-6);
     let segs = hydro::plane_segments(&hull.verts, &hull.tris, wp);
     let mut best: Option<(f64, f64)> = None; // (chord dx, y)
@@ -206,7 +201,6 @@ fn half_entrance_deg(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Propulsion: wake fraction, thrust deduction, and the power chain
 // ---------------------------------------------------------------------------
@@ -225,7 +219,11 @@ pub struct Propeller {
 
 impl Default for Propeller {
     fn default() -> Self {
-        Self { diameter_m: 0.0, expanded_area_ratio: 0.70, open_water_efficiency: 0.60 }
+        Self {
+            diameter_m: 0.0,
+            expanded_area_ratio: 0.70,
+            open_water_efficiency: 0.60,
+        }
     }
 }
 
@@ -277,7 +275,11 @@ impl HoltropInput {
         } else {
             s.max(1e-6) * (7.0 * bta - 25.0) / (self.length_wl * d * (bta - 3.0))
         };
-        let c9 = if c8 < 28.0 { c8 } else { 32.0 - 16.0 / (c8 - 24.0) };
+        let c9 = if c8 < 28.0 {
+            c8
+        } else {
+            32.0 - 16.0 / (c8 - 24.0)
+        };
         let tadover = ta / d;
         let c11 = if tadover < 2.0 {
             tadover
@@ -294,21 +296,21 @@ impl HoltropInput {
         // high Cp pushes Cp1 towards 1 and the unguarded formula to absurd
         // wake fractions (the demo hull, lcb −9.9 %, returned w = 525).
         let cp1 = (1.45 * cp - 0.315 - 0.0225 * lcb).clamp(-1.0, 0.95);
-        let wake = (c9 * cv * (cv * self.length_wl / ta).sqrt()
+        let wake = (c9
+            * cv
+            * (cv * self.length_wl / ta).sqrt()
             * (0.050776 + 0.93405 * c11 * cv / (1.0 - cp1)).max(0.0)
             + 0.27915 * c20 * (b / (self.length_wl * (1.0 - cp1)).max(1e-6)).sqrt()
             + c19 * c20)
             .max(0.0);
-        let thrust = 0.25014 * (b / self.length_wl).powf(0.28956)
-            * ((b * ta).sqrt() / d).powf(0.2624)
-            / (1.0 - cp + 0.0225 * lcb).max(1e-6).powf(0.01762)
-            + 0.0015 * self.c_stern;
-        let etar = 0.9922 - 0.05908 * propeller.expanded_area_ratio
-            + 0.07424 * (cp - 0.0225 * lcb);
+        let thrust =
+            0.25014 * (b / self.length_wl).powf(0.28956) * ((b * ta).sqrt() / d).powf(0.2624)
+                / (1.0 - cp + 0.0225 * lcb).max(1e-6).powf(0.01762)
+                + 0.0015 * self.c_stern;
+        let etar = 0.9922 - 0.05908 * propeller.expanded_area_ratio + 0.07424 * (cp - 0.0225 * lcb);
         let eta_h = (1.0 - thrust) / (1.0 - wake).max(1e-6);
-        let plausible = (0.02..=0.60).contains(&wake)
-            && (0.0..=0.60).contains(&thrust)
-            && lcb.abs() <= 6.0;
+        let plausible =
+            (0.02..=0.60).contains(&wake) && (0.0..=0.60).contains(&thrust) && lcb.abs() <= 6.0;
         Propulsion {
             plausible,
             wake_fraction: wake,
@@ -449,15 +451,15 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
     let l_over_vol13 = l / vol.cbrt();
     let c15 = c15_of(l_over_vol13);
     let lambda = lambda_of(input.cp, l / b);
-    let c1 = 2223105.0 * c7.powf(3.78613) * (t / b).powf(1.07961)
+    let c1 = 2223105.0
+        * c7.powf(3.78613)
+        * (t / b).powf(1.07961)
         * (90.0 - input.half_entrance_deg).max(1.0).powf(-1.37565);
     // Bulb swell term: no bulb in the model means c2 = 1.
     let c3 = if input.bulb_area_m2 > 0.0 {
-        0.56
-            * input.bulb_area_m2.powf(1.5)
+        0.56 * input.bulb_area_m2.powf(1.5)
             / (b * t
-                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z)
-                    .max(1e-6))
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z).max(1e-6))
     } else {
         0.0
     };
@@ -477,7 +479,9 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
     let m2 = c15 * input.cp * input.cp * (-0.1 / (fn_ * fn_)).exp();
     // High-speed fit (1984 re-analysis): c17 and m3 replace c1 and m1 above
     // Fn 0.55, where the low-speed fit was never valid.
-    let c17 = 6919.3 * input.cm.max(1e-6).powf(-1.3346) * (vol / l.powi(3)).powf(2.00977)
+    let c17 = 6919.3
+        * input.cm.max(1e-6).powf(-1.3346)
+        * (vol / l.powi(3)).powf(2.00977)
         * (l / b - 2.0).max(1e-6).powf(1.40692);
     let m3 = -7.2035 * (b / l).powf(0.326869) * (t / b).powf(0.605375);
     let branch = if fn_ <= 0.40 {
@@ -487,20 +491,41 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
     } else {
         WaveBranch::Interpolated
     };
-    WaveCoefficients { c1, c2, c5, c7, lambda, m1, m2, c16, c17, m3, branch }
+    WaveCoefficients {
+        c1,
+        c2,
+        c5,
+        c7,
+        lambda,
+        m1,
+        m2,
+        c16,
+        c17,
+        m3,
+        branch,
+    }
 }
 
 /// The low-speed wave resistance at a Froude number, `c1`/`m1` fit.
 fn wave_low(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
     let d = -0.9;
-    w.c1 * w.c2 * w.c5 * input.volume_m3 * input.water_density * GRAVITY
+    w.c1 * w.c2
+        * w.c5
+        * input.volume_m3
+        * input.water_density
+        * GRAVITY
         * (w.m1 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
 }
 
 /// The high-speed wave resistance at a Froude number, `c17`/`m3` fit.
 fn wave_high(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
     let d = -0.9;
-    w.c17 * w.c2 * w.c5 * input.volume_m3 * input.water_density * GRAVITY
+    w.c17
+        * w.c2
+        * w.c5
+        * input.volume_m3
+        * input.water_density
+        * GRAVITY
         * (w.m3 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
 }
 
@@ -536,7 +561,11 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     let v = speed_m_s.max(0.0);
     let l = input.length_wl;
     let re = v * l / input.viscosity;
-    let cf = if re > 1.0 { 0.075 / (re.log10() - 2.0).powi(2) } else { 0.0 };
+    let cf = if re > 1.0 {
+        0.075 / (re.log10() - 2.0).powi(2)
+    } else {
+        0.0
+    };
     let fn_ = v / (GRAVITY * l).sqrt();
     let q = 0.5 * input.water_density * v * v;
 
@@ -571,12 +600,15 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         // reproduces it: ABT^1.5 (not ABT), and the 0.15 V² term *inside* the
         // square root of Fni. With either one different the bulb term is out by
         // orders of magnitude.
-        let pb = 0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * input.bulb_centre_z).max(1e-6);
+        let pb =
+            0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * input.bulb_centre_z).max(1e-6);
         let inside = GRAVITY
             * (input.draft - input.bulb_centre_z - 0.25 * input.bulb_area_m2.sqrt()).max(1e-6)
             + 0.15 * v * v;
         let fni = v / inside.sqrt();
-        0.11 * (-3.0 / (pb * pb)).exp() * fni.powi(3) * input.bulb_area_m2.powf(1.5)
+        0.11 * (-3.0 / (pb * pb)).exp()
+            * fni.powi(3)
+            * input.bulb_area_m2.powf(1.5)
             * input.water_density
             * GRAVITY
             / (1.0 + fni * fni)
@@ -592,8 +624,15 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     // 48 kN of transom drag appears in a case the paper says is 0.00 kN.
     let rtr = if input.transom_area_m2 > 0.0 {
         let denom = (input.beam_wl + input.beam_wl * input.cwp).max(1e-6);
-        let fnt = v / (2.0 * GRAVITY * input.transom_area_m2 / denom).max(1e-6).sqrt();
-        let c6 = if fnt < 5.0 { 0.2 * (1.0 - 0.2 * fnt) } else { 0.0 };
+        let fnt = v
+            / (2.0 * GRAVITY * input.transom_area_m2 / denom)
+                .max(1e-6)
+                .sqrt();
+        let c6 = if fnt < 5.0 {
+            0.2 * (1.0 - 0.2 * fnt)
+        } else {
+            0.0
+        };
         q * input.transom_area_m2 * c6
     } else {
         0.0
@@ -606,9 +645,9 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     // any hull with T/L >= 0.04, and c2 = 1 when c3 = 0).
     let c3 = if input.bulb_area_m2 > 0.0 {
         0.56 * input.bulb_area_m2.powf(1.5)
-            / (input.beam_wl * input.draft
-                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z)
-                    .max(1e-6))
+            / (input.beam_wl
+                * input.draft
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z).max(1e-6))
     } else {
         0.0
     };
@@ -756,23 +795,47 @@ impl DsyhsInput {
     /// - LCB from FPP: 0.50 to 0.56 · LWL
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
-        let lb = if self.beam_wl > 1e-6 { self.length_wl / self.beam_wl } else { 0.0 };
-        let bt = if self.draft_canoe > 1e-6 { self.beam_wl / self.draft_canoe } else { 0.0 };
-        let l_vol = if self.volume_m3 > 1e-6 { self.length_wl / self.volume_m3.cbrt() } else { 0.0 };
+        let lb = if self.beam_wl > 1e-6 {
+            self.length_wl / self.beam_wl
+        } else {
+            0.0
+        };
+        let bt = if self.draft_canoe > 1e-6 {
+            self.beam_wl / self.draft_canoe
+        } else {
+            0.0
+        };
+        let l_vol = if self.volume_m3 > 1e-6 {
+            self.length_wl / self.volume_m3.cbrt()
+        } else {
+            0.0
+        };
         if !(0.52..=0.60).contains(&self.cp) {
-            out.push(format!("Cp {:.3} is outside DSYHS valid range 0.52-0.60", self.cp));
+            out.push(format!(
+                "Cp {:.3} is outside DSYHS valid range 0.52-0.60",
+                self.cp
+            ));
         }
         if !(0.65..=0.78).contains(&self.cm) {
-            out.push(format!("Cm {:.3} is outside DSYHS valid range 0.65-0.78", self.cm));
+            out.push(format!(
+                "Cm {:.3} is outside DSYHS valid range 0.65-0.78",
+                self.cm
+            ));
         }
         if !(2.73..=5.00).contains(&lb) {
-            out.push(format!("L/B {lb:.2} is outside DSYHS valid range 2.73-5.00"));
+            out.push(format!(
+                "L/B {lb:.2} is outside DSYHS valid range 2.73-5.00"
+            ));
         }
         if !(2.46..=19.38).contains(&bt) {
-            out.push(format!("B/T {bt:.2} is outside DSYHS valid range 2.46-19.38"));
+            out.push(format!(
+                "B/T {bt:.2} is outside DSYHS valid range 2.46-19.38"
+            ));
         }
         if !(4.34..=8.50).contains(&l_vol) {
-            out.push(format!("L/∇^(1/3) {l_vol:.2} is outside DSYHS valid range 4.34-8.50"));
+            out.push(format!(
+                "L/∇^(1/3) {l_vol:.2} is outside DSYHS valid range 4.34-8.50"
+            ));
         }
         if !(0.50..=0.56).contains(&self.lcb_fpp_ratio) {
             out.push(format!(
@@ -896,12 +959,24 @@ pub fn dsyhs_residuary_resistance(input: &DsyhsInput, fn_: f64) -> f64 {
 pub fn dsyhs(input: &DsyhsInput, speed_m_s: f64) -> Resistance {
     let v = speed_m_s.max(0.0);
     let l = input.length_wl;
-    let fn_ = if l > 1e-6 { v / (GRAVITY * l).sqrt() } else { 0.0 };
+    let fn_ = if l > 1e-6 {
+        v / (GRAVITY * l).sqrt()
+    } else {
+        0.0
+    };
 
     // Frictional resistance: ITTC-57 with L_ref = 0.7 * LWL per Delft series definition.
     let l_ref = 0.7 * l;
-    let re = if input.viscosity > 1e-9 { v * l_ref / input.viscosity } else { 0.0 };
-    let cf = if re > 1.0 { 0.075 / (re.log10() - 2.0).powi(2) } else { 0.0 };
+    let re = if input.viscosity > 1e-9 {
+        v * l_ref / input.viscosity
+    } else {
+        0.0
+    };
+    let cf = if re > 1.0 {
+        0.075 / (re.log10() - 2.0).powi(2)
+    } else {
+        0.0
+    };
     let q = 0.5 * input.water_density * v * v;
     let rf = q * input.wetted_surface_m2 * cf;
 
@@ -1027,7 +1102,11 @@ mod tests {
         b.water_density = 2.0 * a.water_density;
         let ra = holtrop(&a, 12.0 * KNOT);
         let rb = holtrop(&b, 12.0 * KNOT);
-        assert!((rb.rt_n / ra.rt_n - 2.0).abs() < 1e-9, "{}", rb.rt_n / ra.rt_n);
+        assert!(
+            (rb.rt_n / ra.rt_n - 2.0).abs() < 1e-9,
+            "{}",
+            rb.rt_n / ra.rt_n
+        );
         a.water_density = 0.0;
         assert_eq!(holtrop(&a, 10.0).rt_n, 0.0);
     }
@@ -1083,13 +1162,20 @@ mod tests {
         let rw_low = wave_resistance(&i, 0.10);
         let rw_mid = wave_resistance(&i, 0.20);
         let rw_high = wave_resistance(&i, 0.30);
-        assert!(rw_low < rw_mid && rw_mid < rw_high, "{rw_low} {rw_mid} {rw_high}");
+        assert!(
+            rw_low < rw_mid && rw_mid < rw_high,
+            "{rw_low} {rw_mid} {rw_high}"
+        );
         // At Fn = 0.10 the wave term is a small part of the total.
         let r = holtrop(&i, 0.10 * (GRAVITY * i.length_wl).sqrt());
         assert!(r.rw_n / r.rt_n < 0.15, "wave share {}", r.rw_n / r.rt_n);
         // By Fn = 0.30 it dominates the friction term's growth.
         let r30 = holtrop(&i, 0.30 * (GRAVITY * i.length_wl).sqrt());
-        assert!(r30.rw_n > 0.3 * r30.rt_n, "wave share {}", r30.rw_n / r30.rt_n);
+        assert!(
+            r30.rw_n > 0.3 * r30.rt_n,
+            "wave share {}",
+            r30.rw_n / r30.rt_n
+        );
     }
 
     #[test]
@@ -1110,9 +1196,12 @@ mod tests {
         );
         // Friction dominates at this speed: the wave term is a tenth of it.
         assert!(r.rw_n < 0.5 * r.rf_n, "RW {} vs RF {}", r.rw_n, r.rf_n);
-        assert!(r.form_factor > 1.2 && r.form_factor < 1.4, "{}", r.form_factor);
+        assert!(
+            r.form_factor > 1.2 && r.form_factor < 1.4,
+            "{}",
+            r.form_factor
+        );
     }
-
 
     /// The worked example printed in Holtrop & Mennen (1982), p. 170.
     ///
@@ -1186,7 +1275,6 @@ mod tests {
         assert!(r.rb_n < 100.0, "RB {} N", r.rb_n);
     }
 
-
     #[test]
     fn bulb_resistance_matches_the_paper() {
         // The published example: ABT 20 m2, hB 4.0 m, T 10 m, 25 kn, prints
@@ -1223,8 +1311,14 @@ mod tests {
         let i = sample();
         // Branch selection.
         assert_eq!(wave_coefficients(&i, 0.40).branch, WaveBranch::Low);
-        assert_eq!(wave_coefficients(&i, 0.4001).branch, WaveBranch::Interpolated);
-        assert_eq!(wave_coefficients(&i, 0.5499).branch, WaveBranch::Interpolated);
+        assert_eq!(
+            wave_coefficients(&i, 0.4001).branch,
+            WaveBranch::Interpolated
+        );
+        assert_eq!(
+            wave_coefficients(&i, 0.5499).branch,
+            WaveBranch::Interpolated
+        );
         assert_eq!(wave_coefficients(&i, 0.55).branch, WaveBranch::High);
 
         // Continuity at both anchors. Exact at 0.55 by construction (the
@@ -1257,7 +1351,6 @@ mod tests {
         assert!(wave_resistance(&i, 0.60).is_finite());
     }
 
-
     #[test]
     fn relative_rotative_efficiency_matches_the_paper() {
         // The paper's example prints ηR = 0.9931 for a 4-blade propeller; its
@@ -1271,7 +1364,11 @@ mod tests {
         i.cp = 0.5833;
         i.cm = 0.98;
         i.lcb_pct = -2.02;
-        let prop = Propeller { diameter_m: 8.0, expanded_area_ratio: 0.775, open_water_efficiency: 0.60 };
+        let prop = Propeller {
+            diameter_m: 8.0,
+            expanded_area_ratio: 0.775,
+            open_water_efficiency: 0.60,
+        };
         let p = i.propulsion(&prop);
         assert!(
             (p.relative_rotative - 0.9931).abs() < 5e-4,
@@ -1279,15 +1376,25 @@ mod tests {
             p.relative_rotative
         );
         // And the chain closes: ηD = ηH · ηR · ηO with ηH = (1−t)/(1−w).
-        assert!((p.hull_efficiency - (1.0 - p.thrust_deduction) / (1.0 - p.wake_fraction)).abs() < 1e-12);
-        assert!((p.propulsive_coefficient - p.hull_efficiency * p.relative_rotative * 0.60).abs() < 1e-12);
+        assert!(
+            (p.hull_efficiency - (1.0 - p.thrust_deduction) / (1.0 - p.wake_fraction)).abs()
+                < 1e-12
+        );
+        assert!(
+            (p.propulsive_coefficient - p.hull_efficiency * p.relative_rotative * 0.60).abs()
+                < 1e-12
+        );
     }
 
     #[test]
     fn propulsion_factors_stay_physical_and_move_the_right_way() {
         let mut i = sample();
         i.viscous_coefficient = 0.0021;
-        let prop = Propeller { diameter_m: 5.0, expanded_area_ratio: 0.70, open_water_efficiency: 0.55 };
+        let prop = Propeller {
+            diameter_m: 5.0,
+            expanded_area_ratio: 0.70,
+            open_water_efficiency: 0.55,
+        };
         let base = i.propulsion(&prop);
         assert!(
             base.wake_fraction > 0.10 && base.wake_fraction < 0.45,
@@ -1299,7 +1406,11 @@ mod tests {
             "t {}",
             base.thrust_deduction
         );
-        assert!(base.hull_efficiency > 0.8 && base.hull_efficiency < 1.5, "ηH {}", base.hull_efficiency);
+        assert!(
+            base.hull_efficiency > 0.8 && base.hull_efficiency < 1.5,
+            "ηH {}",
+            base.hull_efficiency
+        );
 
         // A beamier hull at the same length drags more water: more wake.
         let mut wide = i.clone();
@@ -1320,12 +1431,24 @@ mod tests {
             base.thrust_deduction
         );
         // A degenerate propeller must not produce infinities.
-        let tiny = Propeller { diameter_m: 0.0, expanded_area_ratio: 0.0, open_water_efficiency: 0.0 };
+        let tiny = Propeller {
+            diameter_m: 0.0,
+            expanded_area_ratio: 0.0,
+            open_water_efficiency: 0.0,
+        };
         let p = i.propulsion(&tiny);
-        for v in [p.wake_fraction, p.thrust_deduction, p.hull_efficiency, p.propulsive_coefficient] {
+        for v in [
+            p.wake_fraction,
+            p.thrust_deduction,
+            p.hull_efficiency,
+            p.propulsive_coefficient,
+        ] {
             assert!(v.is_finite(), "{p:?}");
         }
-        assert_eq!(p.propulsive_coefficient, 0.0, "no open-water efficiency, no power");
+        assert_eq!(
+            p.propulsive_coefficient, 0.0,
+            "no open-water efficiency, no power"
+        );
     }
 
     #[test]
@@ -1448,7 +1571,10 @@ mod tests {
         use crate::subdiv::SubdivisionOptions;
 
         let spec = HullSpec::default_for(HullKind::Yacht);
-        let subdiv = SubdivisionOptions { level: 2, ..Default::default() };
+        let subdiv = SubdivisionOptions {
+            level: 2,
+            ..Default::default()
+        };
         let (surface, _report) = parametric::generate(&spec).expect("generate yacht surface");
         let dsyhs_in = dsyhs_input_for(&surface, subdiv).expect("dsyhs input for yacht");
 
@@ -1460,20 +1586,37 @@ mod tests {
             assert!(
                 w[1].rt_n > w[0].rt_n,
                 "Rt must increase with speed: {} kn ({:.1} N) vs {} kn ({:.1} N)",
-                w[0].speed_kn, w[0].rt_n, w[1].speed_kn, w[1].rt_n
+                w[0].speed_kn,
+                w[0].rt_n,
+                w[1].speed_kn,
+                w[1].rt_n
             );
             assert!(w[1].pe_w > w[0].pe_w, "Pe must increase with speed");
         }
 
         for r in &curve {
-            assert!(r.rt_n > 0.0 && r.rt_n.is_finite(), "Rt must be finite and positive: {}", r.rt_n);
-            assert!(r.rf_n > 0.0 && r.rf_n.is_finite(), "Rf must be finite and positive: {}", r.rf_n);
-            assert!(r.rw_n >= 0.0 && r.rw_n.is_finite(), "Rr must be finite and non-negative: {}", r.rw_n);
+            assert!(
+                r.rt_n > 0.0 && r.rt_n.is_finite(),
+                "Rt must be finite and positive: {}",
+                r.rt_n
+            );
+            assert!(
+                r.rf_n > 0.0 && r.rf_n.is_finite(),
+                "Rf must be finite and positive: {}",
+                r.rf_n
+            );
+            assert!(
+                r.rw_n >= 0.0 && r.rw_n.is_finite(),
+                "Rr must be finite and non-negative: {}",
+                r.rw_n
+            );
             assert_eq!(r.wave_branch, WaveBranch::Dsyhs);
         }
 
         let warnings = dsyhs_in.warnings();
-        assert!(!warnings.is_empty(), "expected warnings for out-of-range yacht parameters, got none");
+        assert!(
+            !warnings.is_empty(),
+            "expected warnings for out-of-range yacht parameters, got none"
+        );
     }
 }
-

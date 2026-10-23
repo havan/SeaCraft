@@ -156,10 +156,16 @@ impl HullSpec {
             return Err(format!("beam must be a positive number, got {}", self.beam));
         }
         if !self.draft.is_finite() || self.draft <= 0.0 {
-            return Err(format!("draft must be a positive number, got {}", self.draft));
+            return Err(format!(
+                "draft must be a positive number, got {}",
+                self.draft
+            ));
         }
         if !self.depth.is_finite() || self.depth <= 0.0 {
-            return Err(format!("depth must be a positive number, got {}", self.depth));
+            return Err(format!(
+                "depth must be a positive number, got {}",
+                self.depth
+            ));
         }
         if self.depth <= self.draft {
             return Err(format!(
@@ -190,10 +196,7 @@ impl HullSpec {
             ));
         }
         if !(5..=65).contains(&self.stations) {
-            return Err(format!(
-                "stations must be in 5..=65, got {}",
-                self.stations
-            ));
+            return Err(format!("stations must be in 5..=65, got {}", self.stations));
         }
         if !(3..=33).contains(&self.points_per_station) {
             return Err(format!(
@@ -254,7 +257,11 @@ fn measure_hull(surface: &Surface, draft: f64) -> Measured {
         stations: 0,
         subdivision: subdiv,
     });
-    let lwl = if h.lwl > 0.0 { h.lwl } else { h.submerged_length };
+    let lwl = if h.lwl > 0.0 {
+        h.lwl
+    } else {
+        h.submerged_length
+    };
     let bwl = if h.bwl > 0.0 { h.bwl } else { h.submerged_beam };
     let t = if h.absolute_draft > 0.0 {
         h.absolute_draft
@@ -384,23 +391,20 @@ fn build_raw_hull(spec: &HullSpec, fullness: f64) -> Surface {
             let s_aft = (u_keel_min - u) / u_keel_min;
             match spec.kind {
                 HullKind::Displacement => {
-                    let stern_rise =
-                        (0.45 * (1.0 - 0.50 * spec.transom_frac) * (1.0 - 0.90 * f))
-                            .clamp(0.01, 0.58);
+                    let stern_rise = (0.45 * (1.0 - 0.50 * spec.transom_frac) * (1.0 - 0.90 * f))
+                        .clamp(0.01, 0.58);
                     spec.draft * stern_rise * s_aft.powf(2.1)
                 }
                 HullKind::Planing => {
-                    let stern_rise =
-                        (0.07 * (1.0 - 0.65 * spec.transom_frac) * (1.0 - 0.85 * f))
-                            .clamp(0.0, 0.10);
+                    let stern_rise = (0.07 * (1.0 - 0.65 * spec.transom_frac) * (1.0 - 0.85 * f))
+                        .clamp(0.0, 0.10);
                     spec.draft * stern_rise * s_aft.powi(2)
                 }
                 HullKind::Yacht => {
                     // Canoe-body counter stern: rises to just touch the design
                     // waterline at the transom when fullness is moderate/low.
-                    let stern_rise =
-                        (0.92 * (1.0 - 0.30 * spec.transom_frac) * (1.0 - 0.88 * f))
-                            .clamp(0.02, 0.92);
+                    let stern_rise = (0.92 * (1.0 - 0.30 * spec.transom_frac) * (1.0 - 0.88 * f))
+                        .clamp(0.02, 0.92);
                     spec.draft * stern_rise * s_aft.powf(1.85)
                 }
             }
@@ -561,10 +565,7 @@ fn build_raw_hull(spec: &HullSpec, fullness: f64) -> Surface {
                         0.024 * spec.lwl * (1.0 - 0.60 * f),
                     ),
                     // Yacht: ~0.08 * LWL bow overhang above the waterline + canoe forefoot.
-                    HullKind::Yacht => (
-                        0.08 * spec.lwl,
-                        0.038 * spec.lwl * (1.0 - 0.65 * f),
-                    ),
+                    HullKind::Yacht => (0.08 * spec.lwl, 0.038 * spec.lwl * (1.0 - 0.65 * f)),
                 };
                 let rake_slope = bow_overhang / (z_sheer - spec.draft).max(0.05);
                 let stem_dx =
@@ -1094,9 +1095,8 @@ mod tests {
                 "target_lcb={target_lcb} got lcb_frac={}",
                 rep.lcb_frac
             );
-            let disp_diff = ((rep.displacement_t - base_rep.displacement_t)
-                / base_rep.displacement_t)
-                .abs();
+            let disp_diff =
+                ((rep.displacement_t - base_rep.displacement_t) / base_rep.displacement_t).abs();
             assert!(
                 disp_diff <= 0.01,
                 "displacement drifted by {:.2}% (base={}, shifted={})",
@@ -1110,14 +1110,47 @@ mod tests {
     #[test]
     fn invalid_specs_are_rejected_with_descriptive_errors() {
         let base = HullSpec::default();
-        assert!(generate(&HullSpec { lwl: 0.0, ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { beam: -1.0, ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { draft: 0.0, ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { depth: 0.5, draft: 0.8, ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { cb: Some(0.25), ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { cb: Some(0.90), ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { lcb_frac: Some(0.30), ..base.clone() }).is_err());
-        assert!(generate(&HullSpec { lcb_frac: Some(0.65), ..base.clone() }).is_err());
+        assert!(generate(&HullSpec {
+            lwl: 0.0,
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            beam: -1.0,
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            draft: 0.0,
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            depth: 0.5,
+            draft: 0.8,
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            cb: Some(0.25),
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            cb: Some(0.90),
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            lcb_frac: Some(0.30),
+            ..base.clone()
+        })
+        .is_err());
+        assert!(generate(&HullSpec {
+            lcb_frac: Some(0.65),
+            ..base.clone()
+        })
+        .is_err());
     }
 
     #[test]

@@ -114,7 +114,10 @@ pub struct PatchSelection {
 impl PatchSelection {
     /// One slab across `axis`.
     pub fn band(axis: BandAxis, lo: f64, hi: f64) -> Self {
-        Self { slabs: vec![(axis, lo, hi)], starboard_only: false }
+        Self {
+            slabs: vec![(axis, lo, hi)],
+            starboard_only: false,
+        }
     }
 
     /// Two slabs, the usual plate: a strake between two waterlines over a run
@@ -151,7 +154,13 @@ pub fn select(verts: &[Vec3], faces: &[[usize; 3]], sel: &PatchSelection) -> Vec
 /// A strake between two waterlines is `BandAxis::Z`; a plate between two
 /// buttocks is `BandAxis::Y`. Triangles are returned with their original vertex
 /// indices, so the caller keeps the mesh they came from.
-pub fn band(verts: &[Vec3], faces: &[[usize; 3]], axis: BandAxis, lo: f64, hi: f64) -> Vec<[usize; 3]> {
+pub fn band(
+    verts: &[Vec3],
+    faces: &[[usize; 3]],
+    axis: BandAxis,
+    lo: f64,
+    hi: f64,
+) -> Vec<[usize; 3]> {
     let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
     faces
         .iter()
@@ -201,7 +210,10 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
     let mut seed = 0usize;
     let mut seed_area = -1.0;
     for (i, f) in faces.iter().enumerate() {
-        let a = 0.5 * (verts[f[1]] - verts[f[0]]).cross(verts[f[2]] - verts[f[0]]).length();
+        let a = 0.5
+            * (verts[f[1]] - verts[f[0]])
+                .cross(verts[f[2]] - verts[f[0]])
+                .length();
         if a > seed_area {
             seed_area = a;
             seed = i;
@@ -220,16 +232,23 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
             .iter()
             .map(|p| ((*p - a).dot(e), (*p - a).dot(g)))
             .collect();
-        placed[seed] = Some(FlatFace { verts: f.to_vec(), xy });
+        placed[seed] = Some(FlatFace {
+            verts: f.to_vec(),
+            xy,
+        });
         queue.push_back(seed);
     }
 
     while let Some(parent) = queue.pop_front() {
-        let Some(parent_face) = placed[parent].clone() else { continue };
+        let Some(parent_face) = placed[parent].clone() else {
+            continue;
+        };
         let pf = faces[parent];
         for k in 0..3 {
             let (ia, ib) = (pf[k], pf[(k + 1) % 3]);
-            let Some(neighbours) = edge_faces.get(&ordered(ia, ib)) else { continue };
+            let Some(neighbours) = edge_faces.get(&ordered(ia, ib)) else {
+                continue;
+            };
             for &child in neighbours {
                 if child == parent || placed[child].is_some() {
                     continue;
@@ -245,7 +264,9 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
                     .iter()
                     .position(|v| *v == ib)
                     .map(|i| parent_face.xy[i]);
-                let (Some(pa), Some(pb)) = (pa, pb) else { continue };
+                let (Some(pa), Some(pb)) = (pa, pb) else {
+                    continue;
+                };
 
                 let cf = faces[child];
                 let (a3, b3) = (verts[ia], verts[ib]);
@@ -270,9 +291,7 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
                 }
                 // The child must land on the far side of the shared edge from
                 // the parent's centroid, or the plate folds back over itself.
-                let side = |p: (f64, f64)| {
-                    e2.0 * (p.1 - pa.1) - e2.1 * (p.0 - pa.0)
-                };
+                let side = |p: (f64, f64)| e2.0 * (p.1 - pa.1) - e2.1 * (p.0 - pa.0);
                 let parent_side = side(parent_face_centroid(&parent_face));
                 let child_side = side(centroid2(&xy));
                 if parent_side * child_side > 0.0 {
@@ -281,11 +300,16 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
                         let dx = p.0 - pa.0;
                         let dy = p.1 - pa.1;
                         let along = dx * e2.0 + dy * e2.1;
-                        *p = (pa.0 + e2.0 * along - g2.0 * (dx * g2.0 + dy * g2.1),
-                              pa.1 + e2.1 * along - g2.1 * (dx * g2.0 + dy * g2.1));
+                        *p = (
+                            pa.0 + e2.0 * along - g2.0 * (dx * g2.0 + dy * g2.1),
+                            pa.1 + e2.1 * along - g2.1 * (dx * g2.0 + dy * g2.1),
+                        );
                     }
                 }
-                placed[child] = Some(FlatFace { verts: cf.to_vec(), xy });
+                placed[child] = Some(FlatFace {
+                    verts: cf.to_vec(),
+                    xy,
+                });
                 queue.push_back(child);
             }
         }
@@ -294,7 +318,9 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
     // ---- metrics --------------------------------------------------------
     let mut per_vertex: HashMap<usize, Vec<(f64, f64)>> = HashMap::new();
     for (i, face) in faces.iter().enumerate() {
-        let Some(f) = placed[i].as_ref() else { continue };
+        let Some(f) = placed[i].as_ref() else {
+            continue;
+        };
         for (k, &vi) in face.iter().enumerate() {
             per_vertex.entry(vi).or_default().push(f.xy[k]);
         }
@@ -303,9 +329,8 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
         let c = verts[face[2]];
         out.area_3d_m2 += 0.5 * (b - a).cross(c - a).length();
         let p = &f.xy;
-        out.area_2d_m2 += 0.5 * ((p[1].0 - p[0].0) * (p[2].1 - p[0].1)
-            - (p[2].0 - p[0].0) * (p[1].1 - p[0].1))
-            .abs();
+        out.area_2d_m2 += 0.5
+            * ((p[1].0 - p[0].0) * (p[2].1 - p[0].1) - (p[2].0 - p[0].0) * (p[1].1 - p[0].1)).abs();
         out.faces.push(f.clone());
     }
 
@@ -327,7 +352,11 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
         gap_sum_sq += worst * worst;
         gap_count += 1;
     }
-    out.rms_gap_m = if gap_count > 0 { (gap_sum_sq / gap_count as f64).sqrt() } else { 0.0 };
+    out.rms_gap_m = if gap_count > 0 {
+        (gap_sum_sq / gap_count as f64).sqrt()
+    } else {
+        0.0
+    };
 
     let (mut minx, mut miny) = (f64::INFINITY, f64::INFINITY);
     let (mut maxx, mut maxy) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
@@ -342,7 +371,11 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
     out.width_m = (maxx - minx).max(0.0);
     out.height_m = (maxy - miny).max(0.0);
     let diagonal = (out.width_m * out.width_m + out.height_m * out.height_m).sqrt();
-    out.gap_ratio = if diagonal > 1e-9 { out.max_gap_m / diagonal } else { 0.0 };
+    out.gap_ratio = if diagonal > 1e-9 {
+        out.max_gap_m / diagonal
+    } else {
+        0.0
+    };
 
     // Gaussian curvature over the patch's own vertices.
     let mut used: Vec<usize> = per_vertex.keys().copied().collect();
@@ -353,7 +386,12 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
         let sub_faces: Vec<Vec<usize>> = out
             .faces
             .iter()
-            .map(|f| f.verts.iter().filter_map(|v| remap.get(v).copied()).collect())
+            .map(|f| {
+                f.verts
+                    .iter()
+                    .filter_map(|v| remap.get(v).copied())
+                    .collect()
+            })
             .filter(|f: &Vec<usize>| f.len() == 3)
             .collect();
         // Boundary vertices are excluded: their angle deficit is a property of
@@ -384,7 +422,10 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
             .filter(|k| k.is_finite())
             .collect();
         let sample = if interior.is_empty() {
-            all.iter().map(|c| c.gaussian.abs()).filter(|k| k.is_finite()).collect::<Vec<f64>>()
+            all.iter()
+                .map(|c| c.gaussian.abs())
+                .filter(|k| k.is_finite())
+                .collect::<Vec<f64>>()
         } else {
             interior
         };
@@ -398,12 +439,19 @@ pub fn unfold(verts: &[Vec3], faces: &[[usize; 3]]) -> Unfolded {
 }
 
 fn ordered(a: usize, b: usize) -> (usize, usize) {
-    if a < b { (a, b) } else { (b, a) }
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 fn centroid2(xy: &[(f64, f64)]) -> (f64, f64) {
     let n = xy.len().max(1) as f64;
-    (xy.iter().map(|p| p.0).sum::<f64>() / n, xy.iter().map(|p| p.1).sum::<f64>() / n)
+    (
+        xy.iter().map(|p| p.0).sum::<f64>() / n,
+        xy.iter().map(|p| p.1).sum::<f64>() / n,
+    )
 }
 
 fn parent_face_centroid(f: &FlatFace) -> (f64, f64) {
@@ -422,7 +470,9 @@ pub fn svg(unfolded: &Unfolded, title: &str) -> String {
     // The caption is longer than most plates are wide, so the canvas has to fit
     // both the drawing and the text (11 px per character, roughly).
     let caption_chars = title.chars().count().max(96) as f64;
-    let w = (unfolded.width_m * scale + 2.0 * pad).max(24.0 + caption_chars * 6.6).min(1600.0);
+    let w = (unfolded.width_m * scale + 2.0 * pad)
+        .max(24.0 + caption_chars * 6.6)
+        .min(1600.0);
     let h = unfolded.height_m * scale + 2.0 * pad + 56.0;
     let _ = writeln!(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
     let _ = writeln!(
@@ -431,7 +481,9 @@ pub fn svg(unfolded: &Unfolded, title: &str) -> String {
     );
     let _ = writeln!(out, "<title>{}</title>", esc(title));
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
-    out.push_str("<style>\n.face{fill:#cfe3f7;fill-opacity:0.55;stroke:#7aa7d0;stroke-width:0.4}\n");
+    out.push_str(
+        "<style>\n.face{fill:#cfe3f7;fill-opacity:0.55;stroke:#7aa7d0;stroke-width:0.4}\n",
+    );
     out.push_str(".outline{fill:none;stroke:#123f66;stroke-width:1.2}\n");
     out.push_str(".label{font:12px ui-sans-serif,system-ui,sans-serif;fill:#222}\n</style>\n");
 
@@ -467,15 +519,18 @@ pub fn svg(unfolded: &Unfolded, title: &str) -> String {
         }
     }
     for f in &unfolded.faces {
-        let pts: Vec<String> = f
-            .xy
-            .iter()
-            .map(|p| {
-                let (x, y) = map(*p);
-                format!("{x:.2},{y:.2}")
-            })
-            .collect();
-        let _ = writeln!(out, "<polygon class=\"face\" points=\"{}\"/>", pts.join(" "));
+        let pts: Vec<String> =
+            f.xy.iter()
+                .map(|p| {
+                    let (x, y) = map(*p);
+                    format!("{x:.2},{y:.2}")
+                })
+                .collect();
+        let _ = writeln!(
+            out,
+            "<polygon class=\"face\" points=\"{}\"/>",
+            pts.join(" ")
+        );
     }
     for f in &unfolded.faces {
         for k in 0..f.verts.len() {
@@ -491,7 +546,11 @@ pub fn svg(unfolded: &Unfolded, title: &str) -> String {
             );
         }
     }
-    let _ = writeln!(out, "<text class=\"label\" x=\"{pad:.0}\" y=\"24\">{}</text>", esc(title));
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{pad:.0}\" y=\"24\">{}</text>",
+        esc(title)
+    );
     let _ = writeln!(
         out,
         "<text class=\"label\" x=\"{pad:.0}\" y=\"{:.0}\">{:.3} x {:.3} m   gap {:.1} mm ({:.3} %)   |K| {:.4} 1/m2   {}</text>",
@@ -604,13 +663,25 @@ mod tests {
         // A cylinder is developable: K = 0, so the flattened strip must close.
         let (v, f) = cylinder(1.0, 3.0, 24, 6);
         let u = unfold(&v, &f);
-        assert!(u.max_gap_m < 1e-9, "gap {} m on a developable surface", u.max_gap_m);
+        assert!(
+            u.max_gap_m < 1e-9,
+            "gap {} m on a developable surface",
+            u.max_gap_m
+        );
         assert!(u.developable, "gap ratio {}", u.gap_ratio);
         // The flat pattern is the arc length by the axial length.
         let arc = std::f64::consts::PI * 1.0;
-        assert!((u.width_m - arc).abs() < 0.02 || (u.height_m - arc).abs() < 0.02,
-            "extents {} x {} for an arc of {arc:.3}", u.width_m, u.height_m);
-        assert!(u.mean_abs_gaussian < 0.05, "|K| {} on a cylinder", u.mean_abs_gaussian);
+        assert!(
+            (u.width_m - arc).abs() < 0.02 || (u.height_m - arc).abs() < 0.02,
+            "extents {} x {} for an arc of {arc:.3}",
+            u.width_m,
+            u.height_m
+        );
+        assert!(
+            u.mean_abs_gaussian < 0.05,
+            "|K| {} on a cylinder",
+            u.mean_abs_gaussian
+        );
     }
 
     #[test]
@@ -618,8 +689,16 @@ mod tests {
         let r = 1.0;
         let (v, f) = sphere(r, 8, 16);
         let u = unfold(&v, &f);
-        assert!(!u.developable, "a sphere cap reported as developable: {}", u.gap_ratio);
-        assert!(u.max_gap_m > 0.02, "gap {} m is too small for a sphere cap", u.max_gap_m);
+        assert!(
+            !u.developable,
+            "a sphere cap reported as developable: {}",
+            u.gap_ratio
+        );
+        assert!(
+            u.max_gap_m > 0.02,
+            "gap {} m is too small for a sphere cap",
+            u.max_gap_m
+        );
         // Areas are still preserved: the strain is in the seams, not the faces.
         assert!((u.area_2d_m2 - u.area_3d_m2).abs() < 1e-9);
         // Discrete Gaussian curvature of a unit sphere is about 1 (1/m²) — the
@@ -636,7 +715,12 @@ mod tests {
         let (v, f) = cylinder(1.0, 3.0, 16, 8);
         // Radial band: z between 0.3 and 0.9 keeps the upper strake.
         let b = band(&v, &f, BandAxis::Z, 0.3, 0.9);
-        assert!(!b.is_empty() && b.len() < f.len(), "{} of {}", b.len(), f.len());
+        assert!(
+            !b.is_empty() && b.len() < f.len(),
+            "{} of {}",
+            b.len(),
+            f.len()
+        );
         for face in &b {
             let c = (v[face[0]] + v[face[1]] + v[face[2]]) / 3.0;
             assert!(c.z >= 0.3 - 1e-9 && c.z <= 0.9 + 1e-9, "{c:?}");
@@ -674,7 +758,11 @@ mod tests {
             plate.gap_ratio,
             wrap.gap_ratio
         );
-        assert!(plate.developable, "a cylinder strake must be developable: {}", plate.gap_ratio);
+        assert!(
+            plate.developable,
+            "a cylinder strake must be developable: {}",
+            plate.gap_ratio
+        );
     }
 
     #[test]

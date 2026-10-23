@@ -18,8 +18,8 @@
 //! [`Surface::rebuild_edges`], which preserves crease flags on the edges that
 //! survive and leaves the new interior edges uncreased.
 
-use crate::mesh::{ordered, Surface, VertexKind};
 use crate::math::Vec3;
+use crate::mesh::{ordered, Surface, VertexKind};
 use serde::Serialize;
 
 /// What [`split_face`] did.
@@ -52,7 +52,10 @@ pub fn split_face(surface: &mut Surface, face: usize) -> Result<SplitFace, Strin
         .cloned()
         .ok_or_else(|| format!("no face {face}: the model has {faces_before}"))?;
     if verts.len() < 3 {
-        return Err(format!("face {face} has {} points, a face needs at least 3", verts.len()));
+        return Err(format!(
+            "face {face} has {} points, a face needs at least 3",
+            verts.len()
+        ));
     }
     let layer = surface.face_layer.get(face).copied().unwrap_or(0);
     if layer >= surface.layers.len() {
@@ -116,7 +119,9 @@ pub fn insert_edge(surface: &mut Surface, face: usize, a: usize, b: usize) -> Re
     }
     let steps = (j + n - i) % n;
     if steps == 1 || steps == n - 1 {
-        return Err(format!("points {a} and {b} are already neighbours on face {face}"));
+        return Err(format!(
+            "points {a} and {b} are already neighbours on face {face}"
+        ));
     }
     // Half one: a .. b going forward. Half two: b .. a going forward.
     let mut first: Vec<usize> = Vec::with_capacity(steps + 1);
@@ -243,7 +248,10 @@ mod tests {
         assert!(s.validate().is_ok(), "{:?}", s.validate());
         // Every new edge is interior: exactly two faces, no leaks.
         let counts = s.edge_face_counts();
-        assert!(counts.iter().all(|c| *c == 2), "non-manifold edge: {counts:?}");
+        assert!(
+            counts.iter().all(|c| *c == 2),
+            "non-manifold edge: {counts:?}"
+        );
         // The box stays the box: the poke point is in the face plane.
         let after = volume(&s);
         assert!(
@@ -313,7 +321,10 @@ mod tests {
         set_crease(&mut s, 0, 3, true).expect("set");
         assert!(s.edges.iter().any(|e| e.key() == ordered(0, 3) && e.crease));
         set_crease(&mut s, 3, 0, false).expect("clear, argument order irrelevant");
-        assert!(s.edges.iter().all(|e| !e.crease || e.key() != ordered(0, 3)));
+        assert!(s
+            .edges
+            .iter()
+            .all(|e| !e.crease || e.key() != ordered(0, 3)));
     }
 
     #[test]
@@ -321,9 +332,14 @@ mod tests {
         let s = crate::demo::demo_hull(false);
         let opts = HydroOptions::from_surface(
             &s,
-            SubdivisionOptions { level: 3, mode: SubdivisionMode::Loop },
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
         );
-        let before = Hull::new(&s, opts.subdivision).hydrostatics(&opts).volume_m3;
+        let before = Hull::new(&s, opts.subdivision)
+            .hydrostatics(&opts)
+            .volume_m3;
         let mut edited = s.clone();
         // Split a face on the bilge, where the quad is not planar.
         let mut best = 0usize;
@@ -336,7 +352,9 @@ mod tests {
             }
         }
         split_face(&mut edited, best).expect("split");
-        let after = Hull::new(&edited, opts.subdivision).hydrostatics(&opts).volume_m3;
+        let after = Hull::new(&edited, opts.subdivision)
+            .hydrostatics(&opts)
+            .volume_m3;
         assert!(
             (after - before).abs() / before < 5e-3,
             "a fan through a curved quad moved the displacement {before:.4} -> {after:.4}"

@@ -62,7 +62,9 @@ pub struct TableOfOffsets {
 impl TableOfOffsets {
     /// Widest half-breadth anywhere in the table.
     pub fn max_half_breadth(&self) -> f64 {
-        self.stations.iter().fold(0.0_f64, |m, s| m.max(s.half_beam))
+        self.stations
+            .iter()
+            .fold(0.0_f64, |m, s| m.max(s.half_beam))
     }
 }
 
@@ -138,23 +140,15 @@ fn buttock_height_at(polys: &[Vec<Vec3>], y: f64) -> Option<f64> {
 pub fn default_waterlines(hull: &Hull, count: usize) -> Vec<f64> {
     let n = count.max(2);
     let depth = (hull.model_max.z - hull.keel).max(0.0);
-    (1..=n)
-        .map(|i| depth * i as f64 / n as f64)
-        .collect()
+    (1..=n).map(|i| depth * i as f64 / n as f64).collect()
 }
 
 /// Default buttock ordinates: `count` offsets spread over the model's widest
 /// half-breadth.
 pub fn default_buttocks(hull: &Hull, count: usize) -> Vec<f64> {
     let n = count.max(2);
-    let half = hull
-        .verts
-        .iter()
-        .map(|v| v.y.abs())
-        .fold(0.0_f64, f64::max);
-    (1..=n)
-        .map(|i| half * i as f64 / n as f64)
-        .collect()
+    let half = hull.verts.iter().map(|v| v.y.abs()).fold(0.0_f64, f64::max);
+    (1..=n).map(|i| half * i as f64 / n as f64).collect()
 }
 
 /// Build the table for `stations` stations (midpoint sampled, see
@@ -195,8 +189,16 @@ pub fn table_of_offsets(
             .collect();
         rows.push(OffsetStation {
             x,
-            keel_z: if keel_z.is_finite() { keel_z } else { hull.keel },
-            deck_z: if deck_z.is_finite() { deck_z } else { hull.keel },
+            keel_z: if keel_z.is_finite() {
+                keel_z
+            } else {
+                hull.keel
+            },
+            deck_z: if deck_z.is_finite() {
+                deck_z
+            } else {
+                hull.keel
+            },
             half_beam: half_beam.max(0.0),
             waterline_half_breadths,
             buttock_heights,
@@ -255,7 +257,9 @@ pub fn html(table: &TableOfOffsets, title: &str) -> String {
     );
 
     // ---- waterline table ------------------------------------------------
-    out.push_str("<h2>Half-breadths at waterlines</h2>\n<table>\n<thead><tr><th class=\"x\">x [m]</th>");
+    out.push_str(
+        "<h2>Half-breadths at waterlines</h2>\n<table>\n<thead><tr><th class=\"x\">x [m]</th>",
+    );
     for wl in &table.waterlines_m {
         let _ = write!(out, "<th>WL {wl:.2}</th>");
     }
@@ -356,11 +360,21 @@ mod tests {
     #[test]
     fn box_offsets_are_the_box() {
         let s = barge(10.0, 4.0, 3.0);
-        let hull = Hull::new(&s, SubdivisionOptions { level: 2, mode: SubdivisionMode::Loop });
+        let hull = Hull::new(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
         let table = table_of_offsets(&hull, 9, &[0.5, 1.5, 2.5, 3.5], &[0.5, 1.9, 2.5]);
         assert_eq!(table.stations.len(), 9);
         for st in &table.stations {
-            assert!((st.half_beam - 2.0).abs() < 1e-9, "half beam {}", st.half_beam);
+            assert!(
+                (st.half_beam - 2.0).abs() < 1e-9,
+                "half beam {}",
+                st.half_beam
+            );
             assert!((st.keel_z - 0.0).abs() < 1e-9);
             assert!((st.deck_z - 3.0).abs() < 1e-9);
             // Inside the box the side is vertical, so every waterline below the
@@ -378,8 +392,16 @@ mod tests {
             }
             // A box has a flat bottom: every buttock inside the half beam reads
             // z = 0 (the buttock curve lies on the keel), the wider one is empty.
-            assert!(st.buttock_heights[0].unwrap().abs() < 1e-9, "{:?}", st.buttock_heights);
-            assert!(st.buttock_heights[1].unwrap().abs() < 1e-9, "{:?}", st.buttock_heights);
+            assert!(
+                st.buttock_heights[0].unwrap().abs() < 1e-9,
+                "{:?}",
+                st.buttock_heights
+            );
+            assert!(
+                st.buttock_heights[1].unwrap().abs() < 1e-9,
+                "{:?}",
+                st.buttock_heights
+            );
             assert_eq!(st.buttock_heights[2], None);
         }
     }
@@ -389,7 +411,10 @@ mod tests {
         let s = crate::demo::demo_hull(false);
         let opts = HydroOptions::from_surface(
             &s,
-            SubdivisionOptions { level: 3, mode: SubdivisionMode::Loop },
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
         );
         let hull = Hull::new(&s, opts.subdivision);
         let hydro = crate::hydro::compute(&s, &opts);
@@ -435,22 +460,44 @@ mod tests {
             .iter()
             .map(|s| s.waterline_half_breadths[table.waterlines_m.len() - 2].is_some())
             .collect();
-        assert!(deep.iter().any(|x| *x), "a deep waterline is reached somewhere");
-        assert!(deep.iter().any(|x| !*x), "a deep waterline is not reached at the ends");
+        assert!(
+            deep.iter().any(|x| *x),
+            "a deep waterline is reached somewhere"
+        );
+        assert!(
+            deep.iter().any(|x| !*x),
+            "a deep waterline is not reached at the ends"
+        );
     }
 
     #[test]
     fn html_table_is_well_formed() {
         let s = barge(10.0, 4.0, 3.0);
-        let hull = Hull::new(&s, SubdivisionOptions { level: 2, mode: SubdivisionMode::Loop });
+        let hull = Hull::new(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
         // The second waterline is above the deck, so half its cells are empty.
         let table = table_of_offsets(&hull, 5, &[1.0, 4.0], &[1.0]);
         let page = html(&table, "barge <offsets>");
         assert!(page.starts_with("<!DOCTYPE html>"));
         assert!(page.trim_end().ends_with("</html>"));
-        assert_eq!(page.matches("<tr>").count(), 2 + 5 + 5, "two headers, ten rows");
-        assert!(page.contains("barge &lt;offsets&gt;"), "the title is escaped");
-        assert!(!page.contains("NaN") && !page.contains("inf"), "no invalid numbers");
+        assert_eq!(
+            page.matches("<tr>").count(),
+            2 + 5 + 5,
+            "two headers, ten rows"
+        );
+        assert!(
+            page.contains("barge &lt;offsets&gt;"),
+            "the title is escaped"
+        );
+        assert!(
+            !page.contains("NaN") && !page.contains("inf"),
+            "no invalid numbers"
+        );
         // An empty cell is a dash, not a zero.
         assert!(page.contains("<td>-</td>"));
     }

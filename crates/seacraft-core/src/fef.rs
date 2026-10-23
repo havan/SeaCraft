@@ -53,7 +53,10 @@ impl std::fmt::Display for FefError {
 impl std::error::Error for FefError {}
 
 fn err(line: usize, msg: impl Into<String>) -> FefError {
-    FefError { line, message: msg.into() }
+    FefError {
+        line,
+        message: msg.into(),
+    }
 }
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -256,7 +259,14 @@ pub fn parse(text: &str) -> Result<Surface, FefError> {
         face_layer.push(layer);
     }
 
-    let mut surface = Surface { points, edges, faces, face_layer, layers, settings };
+    let mut surface = Surface {
+        points,
+        edges,
+        faces,
+        face_layer,
+        layers,
+        settings,
+    };
     surface.rebuild_edges();
     surface.validate().map_err(|m| err(nfaces_line, m))?;
     Ok(surface)
@@ -354,7 +364,12 @@ mod tests {
         let mut s = Surface::new();
         s.settings.name = "Test".into();
         s.settings.length = 10.0;
-        for p in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.5), (0.0, 1.0, 0.5)] {
+        for p in [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.5),
+            (0.0, 1.0, 0.5),
+        ] {
             s.add_point(Vec3::new(p.0, p.1, p.2));
         }
         s.add_face(vec![0, 1, 2, 3], 0);

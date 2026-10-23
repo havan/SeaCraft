@@ -86,7 +86,7 @@ crates/seacraft-gui/
   src/history.rs            snapshot undo/redo (64)
   src/panels.rs             layer dock, hydrostatics dock, GZ plot
   tests/                    drag, files, hydro, smoke (all headless)
-xtask/                      cargo xtask ci: clippy, tests, version check, demo numbers
+xtask/                      cargo xtask ci: fmt, clippy, tests, version check, demo numbers
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs
 skills/                     agent skills for the MCP server (CI-checked tool names)
@@ -99,7 +99,7 @@ ATTRIBUTION.md              provenance of code ported from ../resource/*
 
 ```console
 cargo build --release
-cargo xtask ci   # the full gate: clippy, tests, versions, demo numbers, no remotes
+cargo xtask ci   # the full gate: fmt, clippy, tests, versions, demo numbers, no remotes
 cargo test                       # core + gui unit + 5 integration suites
 cargo clippy --all-targets       # must stay silent
 cargo run --release --bin seacraft -- demo -o /tmp/demo.fef

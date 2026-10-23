@@ -203,10 +203,16 @@ pub struct LoadingResult {
 pub fn validate(cond: &LoadingCondition) -> Result<(), String> {
     let check_item = |w: &WeightItem, label: &str| -> Result<(), String> {
         if !w.mass_t.is_finite() || w.mass_t < 0.0 {
-            return Err(format!("{label} `{}`: `mass_t` must be finite and non-negative", w.name));
+            return Err(format!(
+                "{label} `{}`: `mass_t` must be finite and non-negative",
+                w.name
+            ));
         }
         if !w.x.is_finite() || !w.y.is_finite() || !w.z.is_finite() {
-            return Err(format!("{label} `{}`: centroid coordinates must be finite", w.name));
+            return Err(format!(
+                "{label} `{}`: centroid coordinates must be finite",
+                w.name
+            ));
         }
         Ok(())
     };
@@ -220,21 +226,33 @@ pub fn validate(cond: &LoadingCondition) -> Result<(), String> {
             return Err(format!("tank `{}`: box bounds must be finite", t.name));
         }
         if t.x_max < t.x_min || t.y_max < t.y_min || t.z_max < t.z_min {
-            return Err(format!("tank `{}`: max bounds must be >= min bounds", t.name));
+            return Err(format!(
+                "tank `{}`: max bounds must be >= min bounds",
+                t.name
+            ));
         }
         if !t.fill.is_finite() || !(0.0..=1.0).contains(&t.fill) {
             return Err(format!("tank `{}`: `fill` must be in 0..=1", t.name));
         }
         if !t.density_t_m3.is_finite() || t.density_t_m3 < 0.0 {
-            return Err(format!("tank `{}`: `density_t_m3` must be finite and non-negative", t.name));
+            return Err(format!(
+                "tank `{}`: `density_t_m3` must be finite and non-negative",
+                t.name
+            ));
         }
         if !t.permeability.is_finite() || !(0.0..=1.0).contains(&t.permeability) {
-            return Err(format!("tank `{}`: `permeability` must be in 0..=1", t.name));
+            return Err(format!(
+                "tank `{}`: `permeability` must be in 0..=1",
+                t.name
+            ));
         }
     }
     for w in &cond.windage_extra {
         if !w.area_m2.is_finite() || w.area_m2 < 0.0 {
-            return Err(format!("windage `{}`: `area_m2` must be finite and non-negative", w.name));
+            return Err(format!(
+                "windage `{}`: `area_m2` must be finite and non-negative",
+                w.name
+            ));
         }
         if !w.z_centroid.is_finite() {
             return Err(format!("windage `{}`: `z_centroid` must be finite", w.name));
@@ -541,11 +559,7 @@ pub fn evaluate_tank(tank: &Tank, hull: Option<&Hull>) -> TankSummary {
 }
 
 /// Evaluate a [`LoadingCondition`] on `surface` with hydrostatic options `opts`.
-pub fn evaluate(
-    surface: &Surface,
-    opts: &HydroOptions,
-    cond: &LoadingCondition,
-) -> LoadingResult {
+pub fn evaluate(surface: &Surface, opts: &HydroOptions, cond: &LoadingCondition) -> LoadingResult {
     let hull = Hull::new(surface, opts.subdivision);
 
     let mut breakdown = Vec::with_capacity(1 + cond.items.len() + cond.tanks.len());
@@ -557,23 +571,24 @@ pub fn evaluate(
     let mut mz = 0.0;
     let mut total_fsm = 0.0;
 
-    let mut add_weight = |name: String, kind: &str, mass_t: f64, x: f64, y: f64, z: f64, fsm: f64| {
-        let m = mass_t.max(0.0);
-        total_mass += m;
-        mx += m * x;
-        my += m * y;
-        mz += m * z;
-        total_fsm += fsm;
-        breakdown.push(BreakdownRow {
-            name,
-            kind: kind.to_string(),
-            mass_t: m,
-            x,
-            y,
-            z,
-            fsm_t_m: fsm,
-        });
-    };
+    let mut add_weight =
+        |name: String, kind: &str, mass_t: f64, x: f64, y: f64, z: f64, fsm: f64| {
+            let m = mass_t.max(0.0);
+            total_mass += m;
+            mx += m * x;
+            my += m * y;
+            mz += m * z;
+            total_fsm += fsm;
+            breakdown.push(BreakdownRow {
+                name,
+                kind: kind.to_string(),
+                mass_t: m,
+                x,
+                y,
+                z,
+                fsm_t_m: fsm,
+            });
+        };
 
     add_weight(
         cond.lightship.name.clone(),
@@ -775,8 +790,16 @@ mod tests {
 
         for fill in [0.1, 0.5, 0.9] {
             let e = evaluate_tank(&make(fill), None);
-            assert!((e.it_m4 - want_it).abs() < 1e-12, "fill {fill}: it {}", e.it_m4);
-            assert!((e.fsm_t_m - want_fsm).abs() < 1e-12, "fill {fill}: fsm {}", e.fsm_t_m);
+            assert!(
+                (e.it_m4 - want_it).abs() < 1e-12,
+                "fill {fill}: it {}",
+                e.it_m4
+            );
+            assert!(
+                (e.fsm_t_m - want_fsm).abs() < 1e-12,
+                "fill {fill}: fsm {}",
+                e.fsm_t_m
+            );
         }
 
         // Empty (fill == 0) and pressed-up (fill == 1) tanks have zero free-surface moment.
@@ -920,11 +943,13 @@ mod tests {
             },
         );
         let json_text = include_str!("../../../examples/demo-loadcase.json");
-        let cond: LoadingCondition = serde_json::from_str(json_text).expect("valid demo-loadcase.json");
+        let cond: LoadingCondition =
+            serde_json::from_str(json_text).expect("valid demo-loadcase.json");
         validate(&cond).expect("valid condition");
 
         let res = evaluate(&surface, &opts, &cond);
-        let rel_disp_err = (res.hydro_displacement_t - res.displacement_t).abs() / res.displacement_t;
+        let rel_disp_err =
+            (res.hydro_displacement_t - res.displacement_t).abs() / res.displacement_t;
         assert!(
             rel_disp_err < 0.005,
             "hydro displacement {} vs summed mass {} (rel err {})",
@@ -941,7 +966,11 @@ mod tests {
             res.lwl,
             lcb_err_over_lwl
         );
-        assert!((res.draft - 0.62).abs() < 0.02, "draft {} near 0.62 m", res.draft);
+        assert!(
+            (res.draft - 0.62).abs() < 0.02,
+            "draft {} near 0.62 m",
+            res.draft
+        );
         assert!(res.gm_fluid < res.gm_solid);
         assert!(res.imo_criteria.is_some());
     }

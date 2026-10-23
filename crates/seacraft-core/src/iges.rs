@@ -74,12 +74,18 @@ fn de_boor(degree: usize, knots: &[f64], control: &[Vec3], u: f64) -> Vec3 {
     while k < n - 1 && knots[k + 1] <= u {
         k += 1;
     }
-    let mut d: Vec<Vec3> = (0..=p).map(|j| control[(k + j).saturating_sub(p).min(n - 1)]).collect();
+    let mut d: Vec<Vec3> = (0..=p)
+        .map(|j| control[(k + j).saturating_sub(p).min(n - 1)])
+        .collect();
     for r in 1..=p {
         for j in (r..=p).rev() {
             let i = k + j - p;
             let denom = knots[i + p + 1 - r] - knots[i];
-            let alpha = if denom.abs() < 1e-12 { 0.0 } else { (u - knots[i]) / denom };
+            let alpha = if denom.abs() < 1e-12 {
+                0.0
+            } else {
+                (u - knots[i]) / denom
+            };
             d[j] = d[j - 1] * (1.0 - alpha) + d[j] * alpha;
         }
     }
@@ -110,7 +116,10 @@ pub struct BsplineSurface {
 impl BsplineSurface {
     /// Whether any weight is not one, i.e. the surface is rational.
     pub fn is_rational(&self) -> bool {
-        self.weights.iter().flatten().any(|w| (*w - 1.0).abs() > 1e-12)
+        self.weights
+            .iter()
+            .flatten()
+            .any(|w| (*w - 1.0).abs() > 1e-12)
     }
 
     /// Evaluate at `(u, v)` with de Boor's algorithm.
@@ -144,7 +153,11 @@ impl BsplineSurface {
             if rational {
                 // Split the row into numerator `sum N_j w_ij P_ij` and
                 // denominator `sum N_j w_ij`, each a plain B-spline curve.
-                let ws = self.weights.get(i).cloned().unwrap_or_else(|| vec![1.0; nv]);
+                let ws = self
+                    .weights
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| vec![1.0; nv]);
                 let scaled: Vec<Vec3> = row.iter().zip(&ws).map(|(point, w)| *point * *w).collect();
                 let wrow: Vec<Vec3> = ws.iter().map(|w| Vec3::new(*w, *w, *w)).collect();
                 num += de_boor(q, &self.knots_v, &scaled, v) * weight_i;
@@ -171,7 +184,11 @@ fn basis(i: usize, p: usize, u: f64, knots: &[f64]) -> f64 {
     let last = knots[knots.len() - 1];
     let u = if u >= last { last - 1e-12 } else { u };
     if p == 0 {
-        return if knots[i] <= u && u < knots[i + 1] { 1.0 } else { 0.0 };
+        return if knots[i] <= u && u < knots[i + 1] {
+            1.0
+        } else {
+            0.0
+        };
     }
     let mut sum = 0.0;
     let d1 = knots[i + p] - knots[i];
@@ -231,7 +248,7 @@ pub fn fit_curve(points: &[Vec3], degree: usize) -> Option<BsplineCurve> {
                 1 => point.y,
                 _ => point.z,
             }
-        };
+        }
         let solved = solve(&mut m)?;
         for (i, value) in solved.iter().enumerate() {
             match axis {
@@ -241,7 +258,12 @@ pub fn fit_curve(points: &[Vec3], degree: usize) -> Option<BsplineCurve> {
             }
         }
     }
-    Some(BsplineCurve { degree: p, knots, control, weights: vec![1.0; n] })
+    Some(BsplineCurve {
+        degree: p,
+        knots,
+        control,
+        weights: vec![1.0; n],
+    })
 }
 
 /// Averaging knot vector for the parameters `t` and degree `p`: `p + 1` zeros,
@@ -275,7 +297,11 @@ fn collocation(t: &[f64], p: usize, knots: &[f64]) -> Vec<Vec<f64>> {
 /// indexing). `None` when a direction has fewer than two points or every
 /// sequence in it is degenerate — the same cases that leave the collocation
 /// system without a solution.
-fn averaged_params(count: usize, lines: usize, point: impl Fn(usize, usize) -> Vec3) -> Option<Vec<f64>> {
+fn averaged_params(
+    count: usize,
+    lines: usize,
+    point: impl Fn(usize, usize) -> Vec3,
+) -> Option<Vec<f64>> {
     if count < 2 || lines == 0 {
         return None;
     }
@@ -509,8 +535,11 @@ impl Entity<'_> {
 
 /// Write an IGES 5.3 file of B-spline curves (entity 126).
 pub fn write_iges(file: &IgesFile<'_>) -> String {
-    let entities: Vec<(&str, Entity<'_>)> =
-        file.curves.iter().map(|(label, curve)| (*label, Entity::Curve(curve))).collect();
+    let entities: Vec<(&str, Entity<'_>)> = file
+        .curves
+        .iter()
+        .map(|(label, curve)| (*label, Entity::Curve(curve)))
+        .collect();
     let summary = format!("{} B-spline curves, entity 126", file.curves.len());
     write_entities(file.name, &entities, file.units, &summary)
 }
@@ -523,8 +552,10 @@ pub fn write_iges(file: &IgesFile<'_>) -> String {
 /// codes). An empty slice still writes a structurally valid file, just with no
 /// geometry in it.
 pub fn write_iges_surfaces(name: &str, surfaces: &[(&str, &BsplineSurface)], units: u8) -> String {
-    let entities: Vec<(&str, Entity<'_>)> =
-        surfaces.iter().map(|(label, surface)| (*label, Entity::Surface(surface))).collect();
+    let entities: Vec<(&str, Entity<'_>)> = surfaces
+        .iter()
+        .map(|(label, surface)| (*label, Entity::Surface(surface)))
+        .collect();
     let summary = format!("{} B-spline surfaces, entity 128", surfaces.len());
     write_entities(name, &entities, units, &summary)
 }
@@ -569,7 +600,10 @@ fn write_entities(name: &str, entities: &[(&str, Entity<'_>)], units: u8, summar
             // field on each line, and a block whose earlier lines leave it
             // blank transfers as nothing at all, without an error.
             data.push_str(&format!(" {:07}", de_seq + 1));
-            debug_assert!(data.chars().count() <= 72, "parameter line overflows its 72 columns");
+            debug_assert!(
+                data.chars().count() <= 72,
+                "parameter line overflows its 72 columns"
+            );
             record(&mut pd, 'P', pd_seq, &data);
         }
 
@@ -610,11 +644,15 @@ fn write_entities(name: &str, entities: &[(&str, Entity<'_>)], units: u8, summar
         .concat();
         de_seq += 1;
         record(&mut de, 'D', de_seq, &second);
-
     }
 
     let mut out = String::new();
-    let start = format!("SeaCraft {} - {} ({})", env!("CARGO_PKG_VERSION"), name, summary);
+    let start = format!(
+        "SeaCraft {} - {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        name,
+        summary
+    );
     for (letter, text) in [('S', start.as_str()), ('G', global.as_str())] {
         let lines = if letter == 'G' {
             split_global(text)
@@ -629,7 +667,11 @@ fn write_entities(name: &str, entities: &[(&str, Entity<'_>)], units: u8, summar
     out.push_str(&pd);
 
     // Terminate: the record counts of the four sections and the total.
-    let counts = |letter: char| out.lines().filter(|l| l.chars().nth(72) == Some(letter)).count();
+    let counts = |letter: char| {
+        out.lines()
+            .filter(|l| l.chars().nth(72) == Some(letter))
+            .count()
+    };
     let (s, g, d, p) = (counts('S'), counts('G'), counts('D'), counts('P'));
     let total = s + g + d + p + 1;
     // Each count is an eight-character field holding the section letter and a
@@ -700,7 +742,6 @@ fn split_global(text: &str) -> Vec<String> {
     lines
 }
 
-
 fn hollerith(text: &str) -> String {
     format!("{}H{}", text.chars().count(), text)
 }
@@ -720,7 +761,10 @@ fn unit_name(units: u8) -> &'static str {
 /// decimal point dropped, which is what every reference writer emits and what
 /// keeps the records compact.
 fn number(value: f64) -> String {
-    format!("{value:.12}").trim_end_matches('0').trim_end_matches('.').to_string()
+    format!("{value:.12}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 /// Entity 126 parameter data: count, degree, flags, knots, weights, points.
@@ -792,9 +836,9 @@ fn surface_parameters(srf: &BsplineSurface) -> String {
     fields.push(srf.degree_v.to_string());
     fields.push("0".to_owned()); // open in u
     fields.push("0".to_owned()); // open in v
-    // PROP3: 1 means polynomial (non-rational). As for entity 126, the flags
-    // say polynomial while the weight list is written anyway, which is what
-    // Open Cascade's own writer does and what its reader expects.
+                                 // PROP3: 1 means polynomial (non-rational). As for entity 126, the flags
+                                 // say polynomial while the weight list is written anyway, which is what
+                                 // Open Cascade's own writer does and what its reader expects.
     fields.push(if rational { "0" } else { "1" }.to_owned());
     fields.push("0".to_owned()); // non-periodic in u
     fields.push("0".to_owned()); // non-periodic in v
@@ -805,7 +849,11 @@ fn surface_parameters(srf: &BsplineSurface) -> String {
     // running fastest (the order the spec defines), so `W(i,j)` precedes
     // `W(i+1,j)`.
     let weight = |i: usize, j: usize| {
-        srf.weights.get(i).and_then(|row| row.get(j)).copied().unwrap_or(1.0)
+        srf.weights
+            .get(i)
+            .and_then(|row| row.get(j))
+            .copied()
+            .unwrap_or(1.0)
     };
     for j in 0..=k2 {
         for i in 0..=k1 {
@@ -822,9 +870,17 @@ fn surface_parameters(srf: &BsplineSurface) -> String {
     }
     // The parameter range is the surface's own domain, taken from the knot
     // vectors as they were written (which are normalised to 0..1 here).
-    let u0 = srf.knots_u.get(srf.degree_u.min(nu - 1)).copied().unwrap_or(0.0);
+    let u0 = srf
+        .knots_u
+        .get(srf.degree_u.min(nu - 1))
+        .copied()
+        .unwrap_or(0.0);
     let u1 = srf.knots_u.get(nu).copied().unwrap_or(1.0);
-    let v0 = srf.knots_v.get(srf.degree_v.min(nv - 1)).copied().unwrap_or(0.0);
+    let v0 = srf
+        .knots_v
+        .get(srf.degree_v.min(nv - 1))
+        .copied()
+        .unwrap_or(0.0);
     let v1 = srf.knots_v.get(nv).copied().unwrap_or(1.0);
     for value in [u0, u1, v0, v1] {
         fields.push(number(value));
@@ -863,7 +919,11 @@ mod tests {
         }
         for (p, u) in points.iter().zip(&params) {
             let got = curve.eval(u / total);
-            assert!(got.dist(*p) < 1e-9, "curve misses {p:?} by {}", got.dist(*p));
+            assert!(
+                got.dist(*p) < 1e-9,
+                "curve misses {p:?} by {}",
+                got.dist(*p)
+            );
         }
         // Degenerate input is refused, not panicked on.
         assert!(fit_curve(&[Vec3::ZERO; 4], 3).is_none());
@@ -891,21 +951,34 @@ mod tests {
         // The terminate record counts every section.
         let last = text.lines().last().unwrap();
         assert_eq!(last.chars().nth(72), Some('T'));
-        let counts = |letter: char| text.lines().filter(|l| l.chars().nth(72) == Some(letter)).count();
+        let counts = |letter: char| {
+            text.lines()
+                .filter(|l| l.chars().nth(72) == Some(letter))
+                .count()
+        };
         assert!(counts('S') == 1 && counts('G') >= 1 && counts('D') == 2);
         assert!(counts('P') >= 4, "20 points need several parameter lines");
         let terminate: usize = last[73..].trim().parse().unwrap();
-        assert_eq!(terminate, counts('S') + counts('G') + counts('D') + counts('P') + 1);
+        assert_eq!(
+            terminate,
+            counts('S') + counts('G') + counts('D') + counts('P') + 1
+        );
 
         // The directory entry points at the first parameter line and says how
         // many there are.
-        let d: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('D')).collect();
+        let d: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('D'))
+            .collect();
         // Nine eight-character fields per record: the parameter pointer is the
         // second field of the first, the parameter count the fourth of the
         // second.
         let first_pd: usize = d[0][8..16].trim().parse().unwrap();
         let pd_count: usize = d[1][24..32].trim().parse().unwrap();
-        let p_lines: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('P')).collect();
+        let p_lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('P'))
+            .collect();
         assert_eq!(first_pd, 1);
         assert_eq!(pd_count, p_lines.len());
         // Entity type 126 is declared on both directory records.
@@ -959,11 +1032,20 @@ mod tests {
             joined.contains("32,38,6,308,15"),
             "integer fields must survive the record break intact: {joined:?}"
         );
-        assert!(!joined.contains("6308"), "fields were glued together: {joined:?}");
+        assert!(
+            !joined.contains("6308"),
+            "fields were glued together: {joined:?}"
+        );
         // The unit code and its name are distinct fields, and the code is
         // the one that was asked for.
-        assert!(tokens.iter().any(|t| t == "6"), "unit code missing from {tokens:?}");
-        assert!(tokens.iter().any(|t| t == "1HM"), "unit name missing from {tokens:?}");
+        assert!(
+            tokens.iter().any(|t| t == "6"),
+            "unit code missing from {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| t == "1HM"),
+            "unit name missing from {tokens:?}"
+        );
     }
 
     #[test]
@@ -1002,7 +1084,10 @@ mod tests {
             curves: vec![("STATION1", &curve)],
             units: 6,
         });
-        let p_lines: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('P')).collect();
+        let p_lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('P'))
+            .collect();
         for (i, line) in p_lines.iter().enumerate() {
             // Columns 74-80: seven digits, zero filled.
             assert_eq!(&line[73..], &format!("{:07}", i + 1), "bad sequence field");
@@ -1047,12 +1132,22 @@ mod tests {
         let params_v = averaged_params(5, 6, |i, j| grid[i][j]).expect("v parameters");
         assert_eq!(params_u.first(), Some(&0.0));
         assert_eq!(params_u.last(), Some(&1.0));
-        assert!(params_u.windows(2).all(|w| w[0] < w[1]), "u parameters must advance");
-        assert!(params_v.windows(2).all(|w| w[0] < w[1]), "v parameters must advance");
+        assert!(
+            params_u.windows(2).all(|w| w[0] < w[1]),
+            "u parameters must advance"
+        );
+        assert!(
+            params_v.windows(2).all(|w| w[0] < w[1]),
+            "v parameters must advance"
+        );
         for (i, row) in grid.iter().enumerate() {
             for (j, point) in row.iter().enumerate() {
                 let got = srf.eval(params_u[i], params_v[j]);
-                assert!(got.dist(*point) < 1e-9, "surface misses {point:?} by {}", got.dist(*point));
+                assert!(
+                    got.dist(*point) < 1e-9,
+                    "surface misses {point:?} by {}",
+                    got.dist(*point)
+                );
             }
         }
 
@@ -1081,13 +1176,19 @@ mod tests {
 
         // The directory entries declare entity 128 and point at the parameter
         // data they describe.
-        let d: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('D')).collect();
+        let d: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('D'))
+            .collect();
         assert_eq!(d.len(), 2, "one surface is two directory records");
         assert_eq!(&d[0][0..8].trim(), &"128");
         assert_eq!(&d[1][0..8].trim(), &"128");
         let first_pd: usize = d[0][8..16].trim().parse().unwrap();
         let pd_count: usize = d[1][24..32].trim().parse().unwrap();
-        let p_lines: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('P')).collect();
+        let p_lines: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('P'))
+            .collect();
         assert_eq!(first_pd, 1);
         assert_eq!(pd_count, p_lines.len());
         assert!(p_lines[0].starts_with("128,"), "{:?}", &p_lines[0][..24]);
@@ -1116,9 +1217,16 @@ mod tests {
         assert_eq!(tokens[7], "1", "PROP3 declares a polynomial surface");
         // Every weight, then every pole, with the i index running fastest.
         let weights = &tokens[10 + nku + nkv..10 + nku + nkv + n];
-        assert!(weights.iter().all(|w| *w == "1"), "unit weights expected: {weights:?}");
+        assert!(
+            weights.iter().all(|w| *w == "1"),
+            "unit weights expected: {weights:?}"
+        );
         let coords = &tokens[10 + nku + nkv + n..];
-        assert_eq!(coords.len(), 3 * n + 4, "3 coordinates per pole plus the range");
+        assert_eq!(
+            coords.len(),
+            3 * n + 4,
+            "3 coordinates per pole plus the range"
+        );
         // The first pole written is the pole at (i = 0, j = 0).
         assert_eq!(coords[0], number(srf.control[0][0].x));
         assert_eq!(coords[1], number(srf.control[0][0].y));

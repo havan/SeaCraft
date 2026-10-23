@@ -60,7 +60,11 @@ impl ControlRequest {
     /// A request whose reply goes to `reply`. The socket thread makes the
     /// channel and waits on it, so the window never blocks on a client.
     pub fn new(method: impl Into<String>, params: Value, reply: Sender<Value>) -> Self {
-        Self { method: method.into(), params, reply }
+        Self {
+            method: method.into(),
+            params,
+            reply,
+        }
     }
 }
 
@@ -92,7 +96,9 @@ pub fn spawn_listener(addr: &str, opts: ControlOptions) -> std::io::Result<Contr
     let (tx, rx) = mpsc::channel();
 
     let (token, token_file) = if opts.no_auth {
-        eprintln!("seacraft-gui: warning: control channel authentication is disabled (--control-no-auth)");
+        eprintln!(
+            "seacraft-gui: warning: control channel authentication is disabled (--control-no-auth)"
+        );
         (None, None)
     } else {
         let token = match opts.explicit_token {
@@ -103,7 +109,10 @@ pub fn spawn_listener(addr: &str, opts: ControlOptions) -> std::io::Result<Contr
             .token_file
             .unwrap_or_else(|| seacraft_core::control_auth::default_token_path(local.port()));
         seacraft_core::control_auth::write_token_file(&token_path, &token)?;
-        eprintln!("seacraft-gui: control token written to {}", token_path.display());
+        eprintln!(
+            "seacraft-gui: control token written to {}",
+            token_path.display()
+        );
         let token_file = Some(seacraft_core::control_auth::TokenFile(token_path));
         (Some(token), token_file)
     };
@@ -192,7 +201,9 @@ fn error(message: impl std::fmt::Display) -> Value {
 
 fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<String>) {
     let _ = stream.set_nodelay(true);
-    let Ok(read_half) = stream.try_clone() else { return };
+    let Ok(read_half) = stream.try_clone() else {
+        return;
+    };
     let mut writer = stream;
     let mut reader = BufReader::new(read_half);
     let mut authenticated = expected_token.is_none();
@@ -204,7 +215,10 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
         };
         let text = match line {
             Line::TooLong => {
-                let _ = write_reply(&mut writer, &error(format!("line longer than {} KiB", MAX_LINE / 1024)));
+                let _ = write_reply(
+                    &mut writer,
+                    &error(format!("line longer than {} KiB", MAX_LINE / 1024)),
+                );
                 if !authenticated {
                     break;
                 }
@@ -237,7 +251,10 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
                 let expected = expected_token.as_deref().unwrap_or("");
                 if seacraft_core::control_auth::tokens_match(token_param, expected) {
                     authenticated = true;
-                    if !write_reply(&mut writer, &json!({ "ok": true, "result": { "authenticated": true } })) {
+                    if !write_reply(
+                        &mut writer,
+                        &json!({ "ok": true, "result": { "authenticated": true } }),
+                    ) {
                         break;
                     }
                     continue;
@@ -246,7 +263,10 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
                     break;
                 }
             } else {
-                let _ = write_reply(&mut writer, &error("unauthorized: first request must be auth"));
+                let _ = write_reply(
+                    &mut writer,
+                    &error("unauthorized: first request must be auth"),
+                );
                 break;
             }
         }
@@ -254,8 +274,13 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
         if method == "auth" {
             let token_param = params.get("token").and_then(Value::as_str).unwrap_or("");
             let expected = expected_token.as_deref().unwrap_or("");
-            if expected_token.is_none() || seacraft_core::control_auth::tokens_match(token_param, expected) {
-                if !write_reply(&mut writer, &json!({ "ok": true, "result": { "authenticated": true } })) {
+            if expected_token.is_none()
+                || seacraft_core::control_auth::tokens_match(token_param, expected)
+            {
+                if !write_reply(
+                    &mut writer,
+                    &json!({ "ok": true, "result": { "authenticated": true } }),
+                ) {
                     break;
                 }
             } else {
@@ -266,7 +291,10 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
         }
 
         let (reply_tx, reply_rx) = mpsc::channel();
-        if tx.send(ControlRequest::new(method, params, reply_tx)).is_err() {
+        if tx
+            .send(ControlRequest::new(method, params, reply_tx))
+            .is_err()
+        {
             break; // the window is gone
         }
         let reply = match reply_rx.recv_timeout(REPLY_TIMEOUT) {
@@ -301,8 +329,12 @@ fn parse_request(text: &str) -> Result<(String, Value), String> {
 /// Write one reply line. A value serde_json cannot render (it cannot happen for
 /// the replies produced here) still gets an answer rather than silence.
 fn write_reply(stream: &mut TcpStream, reply: &Value) -> bool {
-    let text = serde_json::to_string(reply).unwrap_or_else(|_| "{\"ok\":false,\"error\":\"the reply could not be encoded\"}".to_string());
-    stream.write_all(text.as_bytes()).is_ok() && stream.write_all(b"\n").is_ok() && stream.flush().is_ok()
+    let text = serde_json::to_string(reply).unwrap_or_else(|_| {
+        "{\"ok\":false,\"error\":\"the reply could not be encoded\"}".to_string()
+    });
+    stream.write_all(text.as_bytes()).is_ok()
+        && stream.write_all(b"\n").is_ok()
+        && stream.flush().is_ok()
 }
 
 // ---- parameter helpers -------------------------------------------------
@@ -343,7 +375,9 @@ fn numbers(p: &Value, key: &str) -> Result<Option<Vec<f64>>, String> {
 /// A non-empty list of positive ordinates, sorted ascending.
 fn positive_ordinates(mut v: Vec<f64>, key: &str) -> Result<Vec<f64>, String> {
     if v.is_empty() {
-        return Err(format!("curves.offsets: `{key}` needs at least one ordinate"));
+        return Err(format!(
+            "curves.offsets: `{key}` needs at least one ordinate"
+        ));
     }
     if v.iter().any(|x| *x <= 0.0) {
         return Err(format!("curves.offsets: `{key}` must be positive"));
@@ -353,11 +387,19 @@ fn positive_ordinates(mut v: Vec<f64>, key: &str) -> Result<Vec<f64>, String> {
 }
 
 /// A finite `f64` from `key` inside `range`.
-fn number_in(p: &Value, key: &str, range: std::ops::RangeInclusive<f64>) -> Result<Option<f64>, String> {
+fn number_in(
+    p: &Value,
+    key: &str,
+    range: std::ops::RangeInclusive<f64>,
+) -> Result<Option<f64>, String> {
     match number(p, key)? {
         None => Ok(None),
         Some(x) if range.contains(&x) => Ok(Some(x)),
-        Some(_) => Err(format!("`{key}` must be from {} to {}", range.start(), range.end())),
+        Some(_) => Err(format!(
+            "`{key}` must be from {} to {}",
+            range.start(),
+            range.end()
+        )),
     }
 }
 
@@ -472,7 +514,9 @@ fn pointer_button(name: Option<&str>) -> Result<egui::PointerButton, String> {
         None | Some("left") | Some("primary") => Ok(egui::PointerButton::Primary),
         Some("right") | Some("secondary") => Ok(egui::PointerButton::Secondary),
         Some("middle") => Ok(egui::PointerButton::Middle),
-        Some(other) => Err(format!("`button` must be left, right or middle, not `{other}`")),
+        Some(other) => Err(format!(
+            "`button` must be left, right or middle, not `{other}`"
+        )),
     }
 }
 
@@ -503,8 +547,18 @@ fn analysis_from(name: &str) -> Option<AnalysisMode> {
     })
 }
 
-fn button_event(pos: egui::Pos2, button: egui::PointerButton, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
-    egui::Event::PointerButton { pos, button, pressed, modifiers }
+fn button_event(
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+    pressed: bool,
+    modifiers: egui::Modifiers,
+) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers,
+    }
 }
 
 fn key_event(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
@@ -540,7 +594,11 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// so a bad request leaves the window exactly as it was.
 pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value {
     let empty = Value::Object(serde_json::Map::new());
-    let p = if req.params.is_null() { &empty } else { &req.params };
+    let p = if req.params.is_null() {
+        &empty
+    } else {
+        &req.params
+    };
     if !p.is_object() {
         return error("`params` must be a JSON object");
     }
@@ -557,7 +615,12 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value
     }
 }
 
-fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Value) -> Result<Value, String> {
+fn handle_inner(
+    app: &mut App,
+    ctx: &egui::Context,
+    req: &ControlRequest,
+    p: &Value,
+) -> Result<Value, String> {
     match req.method.as_str() {
         "ui.inspect" => Ok(inspect(app)),
         "ui.set" => {
@@ -570,13 +633,32 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let mut active: Option<usize> = None;
             for (key, value) in object {
                 match key.as_str() {
-                    "shaded" => display.shaded = value.as_bool().ok_or("`shaded` must be true or false")?,
-                    "wireframe" => display.wireframe = value.as_bool().ok_or("`wireframe` must be true or false")?,
-                    "control_net" => display.control_net = value.as_bool().ok_or("`control_net` must be true or false")?,
-                    "points" => display.points = value.as_bool().ok_or("`points` must be true or false")?,
-                    "waterplane" => display.waterplane = value.as_bool().ok_or("`waterplane` must be true or false")?,
-                    "grid" => display.grid = value.as_bool().ok_or("`grid` must be true or false")?,
-                    "combs" => display.combs = value.as_bool().ok_or("`combs` must be true or false")?,
+                    "shaded" => {
+                        display.shaded = value.as_bool().ok_or("`shaded` must be true or false")?
+                    }
+                    "wireframe" => {
+                        display.wireframe =
+                            value.as_bool().ok_or("`wireframe` must be true or false")?
+                    }
+                    "control_net" => {
+                        display.control_net = value
+                            .as_bool()
+                            .ok_or("`control_net` must be true or false")?
+                    }
+                    "points" => {
+                        display.points = value.as_bool().ok_or("`points` must be true or false")?
+                    }
+                    "waterplane" => {
+                        display.waterplane = value
+                            .as_bool()
+                            .ok_or("`waterplane` must be true or false")?
+                    }
+                    "grid" => {
+                        display.grid = value.as_bool().ok_or("`grid` must be true or false")?
+                    }
+                    "combs" => {
+                        display.combs = value.as_bool().ok_or("`combs` must be true or false")?
+                    }
                     "analysis" => {
                         let name = value.as_str().ok_or("`analysis` must be a string")?;
                         analysis = Some(analysis_from(name).ok_or_else(|| {
@@ -587,7 +669,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                         level = Some(
                             value
                                 .as_f64()
-                                .filter(|x| x.is_finite() && x.fract() == 0.0 && (0.0..=5.0).contains(x))
+                                .filter(|x| {
+                                    x.is_finite() && x.fract() == 0.0 && (0.0..=5.0).contains(x)
+                                })
                                 .ok_or("`level` must be a whole number from 0 to 5")?
                                 as usize,
                         );
@@ -596,7 +680,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                         active = Some(
                             value
                                 .as_f64()
-                                .filter(|x| x.is_finite() && x.fract() == 0.0 && (0.0..=3.0).contains(x))
+                                .filter(|x| {
+                                    x.is_finite() && x.fract() == 0.0 && (0.0..=3.0).contains(x)
+                                })
                                 .ok_or("`active_view` must be a whole number from 0 to 3")?
                                 as usize,
                         );
@@ -677,7 +763,11 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let pos = position(p)?;
             let button = pointer_button(text(p, "button")?)?;
             let modifiers = modifiers(p);
-            let clicks = if boolean(p, "double")?.unwrap_or(false) { 2 } else { 1 };
+            let clicks = if boolean(p, "double")?.unwrap_or(false) {
+                2
+            } else {
+                1
+            };
             let mut events = vec![egui::Event::PointerMoved(pos)];
             for _ in 0..clicks {
                 events.push(button_event(pos, button, true, modifiers));
@@ -698,14 +788,20 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                         .and_then(Value::as_f64)
                         .filter(|v| v.is_finite() && v.abs() <= MAX_POINT)
                 };
-                Ok(egui::pos2(get(x).ok_or_else(bad)? as f32, get(y).ok_or_else(bad)? as f32))
+                Ok(egui::pos2(
+                    get(x).ok_or_else(bad)? as f32,
+                    get(y).ok_or_else(bad)? as f32,
+                ))
             };
             let from = pair(p, "from", "x0", "y0")?;
             let to = pair(p, "to", "x1", "y1")?;
             let button = pointer_button(text(p, "button")?)?;
             let modifiers = modifiers(p);
             let steps = number_in(p, "steps", 1.0..=64.0)?.unwrap_or(8.0) as usize;
-            let mut events = vec![egui::Event::PointerMoved(from), button_event(from, button, true, modifiers)];
+            let mut events = vec![
+                egui::Event::PointerMoved(from),
+                button_event(from, button, true, modifiers),
+            ];
             for step in 1..=steps {
                 let t = step as f32 / steps as f32;
                 events.push(egui::Event::PointerMoved(from + (to - from) * t));
@@ -744,24 +840,35 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             Ok(json!({ "queued": queued, "pending": app.synthetic_len() }))
         }
         "ui.render" => {
-            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let path = text(p, "path")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("missing `path`")?;
             let validated = app.check_control_write_path(std::path::Path::new(path.trim()))?;
             let width = index_at(p, "width", MAX_RENDER + 1)?.unwrap_or(RENDER_DEFAULT[0]);
             let height = index_at(p, "height", MAX_RENDER + 1)?.unwrap_or(RENDER_DEFAULT[1]);
             if width == 0 || height == 0 {
-                return Err(format!("`width` and `height` must be from 1 to {MAX_RENDER}"));
+                return Err(format!(
+                    "`width` and `height` must be from 1 to {MAX_RENDER}"
+                ));
             }
             let view = index_at(p, "view", 4)?.unwrap_or_else(|| app.active_view());
             let mode = match text(p, "mode")? {
                 None => app.display().analysis,
-                Some(name) => analysis_from(name)
-                    .ok_or_else(|| format!("`mode` must be shaded, zebra, curvature or draft, not `{name}`"))?,
+                Some(name) => analysis_from(name).ok_or_else(|| {
+                    format!("`mode` must be shaded, zebra, curvature or draft, not `{name}`")
+                })?,
             };
             let png = render_png(app, width, height, view, mode)?;
             let bytes = png.len();
-            std::fs::write(&validated, &png).map_err(|e| format!("{}: {e}", validated.display()))?;
-            app.status_note(format!("rendered {view} to {} ({width}×{height})", validated.display()));
-            Ok(json!({ "path": validated.to_string_lossy(), "width": width, "height": height, "bytes": bytes }))
+            std::fs::write(&validated, &png)
+                .map_err(|e| format!("{}: {e}", validated.display()))?;
+            app.status_note(format!(
+                "rendered {view} to {} ({width}×{height})",
+                validated.display()
+            ));
+            Ok(
+                json!({ "path": validated.to_string_lossy(), "width": width, "height": height, "bytes": bytes }),
+            )
         }
         "model.load_demo" => {
             let symmetric = boolean(p, "symmetric")?.unwrap_or(false);
@@ -821,7 +928,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             Ok(out)
         }
         "model.open" => {
-            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let path = text(p, "path")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("missing `path`")?;
             let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
             app.open_model(&validated)?;
             Ok(json!({
@@ -831,7 +940,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }))
         }
         "model.save" => {
-            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let path = text(p, "path")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("missing `path`")?;
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
             if !app.save_to(&validated) {
@@ -840,10 +951,14 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             Ok(json!({ "path": validated.to_string_lossy(), "dirty": app.is_dirty() }))
         }
         "model.export" => {
-            let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
+            let path = text(p, "path")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("missing `path`")?;
             let format = text(p, "format")?.ok_or("missing `format`")?;
             let kind = export_kind(format).ok_or_else(|| {
-                format!("`format` must be obj, stl, 3mf, ply, html, svg, dxf or igs, not `{format}`")
+                format!(
+                    "`format` must be obj, stl, 3mf, ply, html, svg, dxf or igs, not `{format}`"
+                )
             })?;
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
@@ -864,12 +979,20 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let count = app.control_point_count();
             let index = index_at(p, "index", count.max(1))?.ok_or("missing `index`")?;
             if index >= count {
-                return Err(format!("`index` must be from 0 to {}", count.saturating_sub(1)));
+                return Err(format!(
+                    "`index` must be from 0 to {}",
+                    count.saturating_sub(1)
+                ));
             }
-            let current = app.surface().map(|s| s.points[index].p).unwrap_or(Vec3::ZERO);
+            let current = app
+                .surface()
+                .map(|s| s.points[index].p)
+                .unwrap_or(Vec3::ZERO);
             let target = match (p.get("xyz"), p.get("delta")) {
                 (Some(v), None) if !v.is_null() => triple(v, "xyz")?,
-                (None | Some(Value::Null), Some(v)) if !v.is_null() => current + triple(v, "delta")?,
+                (None | Some(Value::Null), Some(v)) if !v.is_null() => {
+                    current + triple(v, "delta")?
+                }
                 _ => return Err("give `xyz` [x, y, z] or `delta` [dx, dy, dz]".into()),
             };
             if !target.is_finite() {
@@ -877,7 +1000,10 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }
             // A symmetric layer models only y >= 0: the mirror supplies the
             // other half, so a point dragged across the centreline is clamped.
-            let symmetric = app.surface().map(|s| on_symmetric_layer(s, index)).unwrap_or(false);
+            let symmetric = app
+                .surface()
+                .map(|s| on_symmetric_layer(s, index))
+                .unwrap_or(false);
             let target = if symmetric && target.y < 0.0 {
                 Vec3::new(target.x, 0.0, target.z)
             } else {
@@ -910,8 +1036,12 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 *slot = value
                     .as_f64()
                     .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
-                    .ok_or_else(|| format!("an `edge` index must be from 0 to {}", count.saturating_sub(1)))?
-                    as usize;
+                    .ok_or_else(|| {
+                        format!(
+                            "an `edge` index must be from 0 to {}",
+                            count.saturating_sub(1)
+                        )
+                    })? as usize;
             }
             let edge = seacraft_core::mesh::ordered(ends[0], ends[1]);
             if !surface.edges.iter().any(|e| e.key() == edge) {
@@ -977,7 +1107,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     .unwrap_or(13),
             };
             let hold = boolean(p, "hold_volume")?.unwrap_or(true);
-            let surface = app.surface().ok_or_else(|| "hydro.trim: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "hydro.trim: no model is loaded".to_string())?;
             let trims = seacraft_core::trimopt::trim_range(from, to, steps);
             let scan = seacraft_core::trimopt::scan(surface, subdiv, &opts, speed, &trims, hold)
                 .map_err(|e| format!("hydro.trim: {e}"))?;
@@ -1028,7 +1160,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     seacraft_core::table::draft_range(opts.draft, steps)
                 }
             };
-            let surface = app.surface().ok_or_else(|| "hydro.table: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "hydro.table: no model is loaded".to_string())?;
             let t = seacraft_core::table::table(surface, &opts, &drafts);
             Ok(json!({
                 "backend": "app",
@@ -1042,11 +1176,19 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
         "stability.cross_curves" => {
             apply_stability_inputs(app, p)?;
             app.compute_cross_curves();
-            let curves = app.cross_curves().map(|c| serde_json::to_value(c).unwrap_or(Value::Null)).unwrap_or(Value::Null);
-            let longest = app.cross_curves().map(|c| c.iter().map(|x| x.points.len()).max().unwrap_or(0)).unwrap_or(0);
+            let curves = app
+                .cross_curves()
+                .map(|c| serde_json::to_value(c).unwrap_or(Value::Null))
+                .unwrap_or(Value::Null);
+            let longest = app
+                .cross_curves()
+                .map(|c| c.iter().map(|x| x.points.len()).max().unwrap_or(0))
+                .unwrap_or(0);
             let imo = match app.cross_curves() {
-                Some(c) if longest > 0 => serde_json::to_value(seacraft_core::stability::evaluate_imo_criteria(c, 2.min(longest - 1)))
-                    .unwrap_or(Value::Null),
+                Some(c) if longest > 0 => serde_json::to_value(
+                    seacraft_core::stability::evaluate_imo_criteria(c, 2.min(longest - 1)),
+                )
+                .unwrap_or(Value::Null),
                 _ => Value::Null,
             };
             Ok(json!({
@@ -1058,19 +1200,28 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }))
         }
         "stability.loading_condition" | "loading_condition" => {
-            let cond: seacraft_core::loading::LoadingCondition =
-                if let Some(case_val) = p.get("case").filter(|v| !v.is_null()) {
-                    serde_json::from_value(case_val.clone())
-                        .map_err(|e| format!("stability.loading_condition: invalid `case`: {e}"))?
-                } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
-                    let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
-                    let contents = std::fs::read_to_string(&validated)
-                        .map_err(|e| format!("stability.loading_condition: cannot read {}: {e}", validated.display()))?;
-                    serde_json::from_str(&contents)
-                        .map_err(|e| format!("stability.loading_condition: invalid JSON in {}: {e}", validated.display()))?
-                } else {
-                    return Err("stability.loading_condition: give `case` or `case_path`".into());
-                };
+            let cond: seacraft_core::loading::LoadingCondition = if let Some(case_val) =
+                p.get("case").filter(|v| !v.is_null())
+            {
+                serde_json::from_value(case_val.clone())
+                    .map_err(|e| format!("stability.loading_condition: invalid `case`: {e}"))?
+            } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
+                let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
+                let contents = std::fs::read_to_string(&validated).map_err(|e| {
+                    format!(
+                        "stability.loading_condition: cannot read {}: {e}",
+                        validated.display()
+                    )
+                })?;
+                serde_json::from_str(&contents).map_err(|e| {
+                    format!(
+                        "stability.loading_condition: invalid JSON in {}: {e}",
+                        validated.display()
+                    )
+                })?
+            } else {
+                return Err("stability.loading_condition: give `case` or `case_path`".into());
+            };
             seacraft_core::loading::validate(&cond)
                 .map_err(|e| format!("stability.loading_condition: {e}"))?;
             let level = match p.get("level") {
@@ -1134,11 +1285,12 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 Some(s) => seacraft_core::weather::BilgeKind::parse(s)
                     .map_err(|e| format!("stability.weather: {e}"))?,
             };
-            let windage_extra: Vec<seacraft_core::weather::WindageItem> = match p.get("windage_extra") {
-                None | Some(Value::Null) => Vec::new(),
-                Some(v) => serde_json::from_value(v.clone())
-                    .map_err(|e| format!("stability.weather: invalid `windage_extra`: {e}"))?,
-            };
+            let windage_extra: Vec<seacraft_core::weather::WindageItem> =
+                match p.get("windage_extra") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(v) => serde_json::from_value(v.clone())
+                        .map_err(|e| format!("stability.weather: invalid `windage_extra`: {e}"))?,
+                };
             for w in &windage_extra {
                 if !w.area_m2.is_finite() || w.area_m2 < 0.0 || !w.z_centroid.is_finite() {
                     return Err(format!(
@@ -1149,25 +1301,28 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }
             let downflooding_deg = match p.get("downflooding_deg") {
                 None | Some(Value::Null) => None,
-                Some(_) => Some(
-                    number_in(p, "downflooding_deg", 0.001..=180.0)?
-                        .ok_or_else(|| "stability.weather: `downflooding_deg` must be in (0, 180]".to_string())?,
-                ),
+                Some(_) => Some(number_in(p, "downflooding_deg", 0.001..=180.0)?.ok_or_else(
+                    || "stability.weather: `downflooding_deg` must be in (0, 180]".to_string(),
+                )?),
             };
             let wind_pressure_pa = match p.get("wind_pressure_pa") {
                 None | Some(Value::Null) => seacraft_core::weather::DEFAULT_WIND_PRESSURE_PA,
-                Some(_) => number_in(p, "wind_pressure_pa", 0.0..=1.0e5)?
-                    .ok_or_else(|| "stability.weather: `wind_pressure_pa` must be >= 0".to_string())?,
+                Some(_) => number_in(p, "wind_pressure_pa", 0.0..=1.0e5)?.ok_or_else(|| {
+                    "stability.weather: `wind_pressure_pa` must be >= 0".to_string()
+                })?,
             };
             let surface = app
                 .surface()
                 .ok_or_else(|| "stability.weather: no model is loaded".to_string())?;
             let hull = seacraft_core::hydro::Hull::new(surface, opts.subdivision);
-            let lcg_x = if free {
-                Some(lcg.or_else(|| app.lcg()).unwrap_or_else(|| seacraft_core::stability::upright_lcb(&hull, opts.draft)))
-            } else {
-                None
-            };
+            let lcg_x =
+                if free {
+                    Some(lcg.or_else(|| app.lcg()).unwrap_or_else(|| {
+                        seacraft_core::stability::upright_lcb(&hull, opts.draft)
+                    }))
+                } else {
+                    None
+                };
             let cond = seacraft_core::stability::StabilityCondition {
                 kg,
                 trim: opts.trim,
@@ -1187,19 +1342,28 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             Ok(v)
         }
         "stability.damage_stability" | "damage_stability" => {
-            let case: seacraft_core::damage::DamageCase =
-                if let Some(case_val) = p.get("case").filter(|v| !v.is_null()) {
-                    serde_json::from_value(case_val.clone())
-                        .map_err(|e| format!("stability.damage_stability: invalid `case`: {e}"))?
-                } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
-                    let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
-                    let contents = std::fs::read_to_string(&validated)
-                        .map_err(|e| format!("stability.damage_stability: cannot read {}: {e}", validated.display()))?;
-                    serde_json::from_str(&contents)
-                        .map_err(|e| format!("stability.damage_stability: invalid JSON in {}: {e}", validated.display()))?
-                } else {
-                    return Err("stability.damage_stability: give `case` or `case_path`".into());
-                };
+            let case: seacraft_core::damage::DamageCase = if let Some(case_val) =
+                p.get("case").filter(|v| !v.is_null())
+            {
+                serde_json::from_value(case_val.clone())
+                    .map_err(|e| format!("stability.damage_stability: invalid `case`: {e}"))?
+            } else if let Some(path) = text(p, "case_path")?.filter(|s| !s.trim().is_empty()) {
+                let validated = app.check_control_read_path(std::path::Path::new(path.trim()))?;
+                let contents = std::fs::read_to_string(&validated).map_err(|e| {
+                    format!(
+                        "stability.damage_stability: cannot read {}: {e}",
+                        validated.display()
+                    )
+                })?;
+                serde_json::from_str(&contents).map_err(|e| {
+                    format!(
+                        "stability.damage_stability: invalid JSON in {}: {e}",
+                        validated.display()
+                    )
+                })?
+            } else {
+                return Err("stability.damage_stability: give `case` or `case_path`".into());
+            };
             seacraft_core::damage::validate(&case)
                 .map_err(|e| format!("stability.damage_stability: {e}"))?;
             let level = match p.get("level") {
@@ -1236,7 +1400,10 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     .map_err(|e| format!("model.split_face: {e}"))?
             };
             app.mark_geometry_changed();
-            app.status_note(format!("face {face} split into {} triangles", report.pieces));
+            app.status_note(format!(
+                "face {face} split into {} triangles",
+                report.pieces
+            ));
             Ok(json!({
                 "face": report.face,
                 "point": report.point,
@@ -1376,7 +1543,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
                 opts.draft = d;
             }
-            let surface = app.surface().ok_or_else(|| "resistance.compute: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "resistance.compute: no model is loaded".to_string())?;
             let hull = seacraft_core::hydro::Hull::new(surface, opts.subdivision);
             let speeds = match numbers(p, "speeds")? {
                 Some(v) if !v.is_empty() => v,
@@ -1385,8 +1554,16 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let method = text(p, "method")?.unwrap_or("holtrop");
             let cat_spacing = number(p, "cat_spacing")?;
             if method.eq_ignore_ascii_case("michell") {
-                let grid = seacraft_core::michell::michell_grid_from_surface(surface, opts.draft, 65, 25, opts.subdivision)
-                    .ok_or("resistance.compute: cannot extract Michell offsets grid from hull surface")?;
+                let grid = seacraft_core::michell::michell_grid_from_surface(
+                    surface,
+                    opts.draft,
+                    65,
+                    25,
+                    opts.subdivision,
+                )
+                .ok_or(
+                    "resistance.compute: cannot extract Michell offsets grid from hull surface",
+                )?;
                 let holtrop_in = seacraft_core::resistance::HoltropInput::measure(&hull, &opts);
                 let form_factor = if let Some(ref h_in) = holtrop_in {
                     let r = seacraft_core::resistance::holtrop(h_in, 1.0);
@@ -1419,9 +1596,15 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                     &mopts,
                 );
                 let mut warnings = Vec::new();
-                let lb = if grid.beam_wl > 1e-6 { grid.length_wl / grid.beam_wl } else { 0.0 };
+                let lb = if grid.beam_wl > 1e-6 {
+                    grid.length_wl / grid.beam_wl
+                } else {
+                    0.0
+                };
                 if lb < 6.0 {
-                    warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+                    warnings.push(format!(
+                        "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
+                    ));
                 }
                 for r in &rows {
                     if !(0.20..=1.0).contains(&r.fn_) {
@@ -1503,7 +1686,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
                 opts.draft = d;
             }
-            let surface = app.surface().ok_or_else(|| "planing.compute: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "planing.compute: no model is loaded".to_string())?;
             let setup = seacraft_core::planing::setup(
                 surface,
                 opts.subdivision,
@@ -1549,7 +1734,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 translate: vec3("translate")?.unwrap_or(Vec3::ZERO),
                 mirror,
             };
-            let surface = app.surface().ok_or_else(|| "model.transform: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "model.transform: no model is loaded".to_string())?;
             let (out, report) = seacraft_core::transform::run(surface, &request, subdiv)
                 .map_err(|e| format!("model.transform: {e}"))?;
             app.snapshot_undo();
@@ -1594,7 +1781,9 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 level,
                 mode: app.subdivision_mode(),
             };
-            let surface = app.surface().ok_or_else(|| "model.optimize: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "model.optimize: no model is loaded".to_string())?;
             let (out, report) = seacraft_core::optimize::optimize_hull(surface, &opts, &spec)
                 .map_err(|e| format!("model.optimize: {e}"))?;
             app.snapshot_undo();
@@ -1639,10 +1828,15 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             let x_lo = number(p, "x_from")?;
             let x_hi = number(p, "x_to")?;
             let both = boolean(p, "both_sides")?.unwrap_or(false);
-            let surface = app.surface().ok_or_else(|| "curves.unfold: no model is loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "curves.unfold: no model is loaded".to_string())?;
             let hull = seacraft_core::hydro::Hull::new(
                 surface,
-                seacraft_core::subdiv::SubdivisionOptions { level, mode: app.subdivision_mode() },
+                seacraft_core::subdiv::SubdivisionOptions {
+                    level,
+                    mode: app.subdivision_mode(),
+                },
             );
             let pick = |axis: seacraft_core::develop::BandAxis, given: Option<f64>, low: bool| {
                 given.unwrap_or(match (axis, low) {
@@ -1675,13 +1869,12 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 let validated = app.check_control_write_path(std::path::Path::new(path.trim()))?;
                 let title = format!(
                     "{} - plate on {:?} {:.2}..{:.2} m",
-                    surface.settings.name,
-                    axis,
-                    selection.slabs[0].1,
-                    selection.slabs[0].2
+                    surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
                 );
                 std::fs::write(&validated, seacraft_core::develop::svg(&unfolded, &title))
-                    .map_err(|e| format!("curves.unfold: cannot write {}: {e}", validated.display()))?;
+                    .map_err(|e| {
+                        format!("curves.unfold: cannot write {}: {e}", validated.display())
+                    })?;
                 written = Some(validated.to_string_lossy().to_string());
             }
             Ok(json!({
@@ -1693,10 +1886,14 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }))
         }
         "report.design" => {
-            let path_str = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("report.design: `path` is required")?;
+            let path_str = text(p, "path")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("report.design: `path` is required")?;
             let path = std::path::PathBuf::from(path_str.trim());
             let validated = app.check_control_write_path(&path)?;
-            let surface = app.surface().ok_or_else(|| "report.design: no model loaded".to_string())?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "report.design: no model loaded".to_string())?;
 
             let mut opts = seacraft_core::report::ReportOptions::from_surface(surface);
             if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
@@ -1733,16 +1930,39 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
 
             let sections = seacraft_core::report::report_sections(&opts);
 
-            let hull = seacraft_core::hydro::Hull::new(surface, seacraft_core::subdiv::SubdivisionOptions { level: opts.level, mode: opts.mode });
-            let h_opts = seacraft_core::hydro::HydroOptions::from_surface(surface, seacraft_core::subdiv::SubdivisionOptions { level: opts.level, mode: opts.mode });
+            let hull = seacraft_core::hydro::Hull::new(
+                surface,
+                seacraft_core::subdiv::SubdivisionOptions {
+                    level: opts.level,
+                    mode: opts.mode,
+                },
+            );
+            let h_opts = seacraft_core::hydro::HydroOptions::from_surface(
+                surface,
+                seacraft_core::subdiv::SubdivisionOptions {
+                    level: opts.level,
+                    mode: opts.mode,
+                },
+            );
             let cond = seacraft_core::stability::StabilityCondition {
                 kg: opts.kg,
                 trim: 0.0,
-                lcg_x: opts.lcg_x.or(Some(seacraft_core::stability::upright_lcb(&hull, opts.draft))),
+                lcg_x: opts.lcg_x.or(Some(seacraft_core::stability::upright_lcb(
+                    &hull, opts.draft,
+                ))),
             };
-            let target_disp = hull.displaced_volume(opts.draft, 0.0, 0.0) * h_opts.water_density / 1000.0;
-            let curves = seacraft_core::stability::cross_curves(&hull, &opts.heels, &[target_disp], &cond, &h_opts);
-            let imo_pass = seacraft_core::stability::evaluate_imo_criteria(&curves, 0).map(|c| c.passed).unwrap_or(false);
+            let target_disp =
+                hull.displaced_volume(opts.draft, 0.0, 0.0) * h_opts.water_density / 1000.0;
+            let curves = seacraft_core::stability::cross_curves(
+                &hull,
+                &opts.heels,
+                &[target_disp],
+                &cond,
+                &h_opts,
+            );
+            let imo_pass = seacraft_core::stability::evaluate_imo_criteria(&curves, 0)
+                .map(|c| c.passed)
+                .unwrap_or(false);
 
             Ok(json!({
                 "path": validated.to_string_lossy(),
@@ -1769,11 +1989,15 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
         }
         "history.undo" => {
             app.undo();
-            Ok(json!({ "undo_len": app.undo_len(), "can_undo": app.can_undo(), "can_redo": app.can_redo() }))
+            Ok(
+                json!({ "undo_len": app.undo_len(), "can_undo": app.can_undo(), "can_redo": app.can_redo() }),
+            )
         }
         "history.redo" => {
             app.redo();
-            Ok(json!({ "undo_len": app.undo_len(), "can_undo": app.can_undo(), "can_redo": app.can_redo() }))
+            Ok(
+                json!({ "undo_len": app.undo_len(), "can_undo": app.can_undo(), "can_redo": app.can_redo() }),
+            )
         }
         #[cfg(test)]
         "test.panic" => panic!("deliberate control panic"),
@@ -1916,7 +2140,13 @@ fn export_kind(format: &str) -> Option<crate::app::ExportKind> {
 }
 
 /// Render one viewport to PNG pixels with the CPU rasterizer.
-fn render_png(app: &mut App, width: usize, height: usize, view: usize, mode: AnalysisMode) -> Result<Vec<u8>, String> {
+fn render_png(
+    app: &mut App,
+    width: usize,
+    height: usize,
+    view: usize,
+    mode: AnalysisMode,
+) -> Result<Vec<u8>, String> {
     app.refresh_cache();
     let surface = app.surface().ok_or("no model loaded")?;
     let mesh = app.render_cache().ok_or("the model could not be refined")?;
@@ -1961,7 +2191,10 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("seacraft-control-{name}-{}.bin", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "seacraft-control-{name}-{}.bin",
+            std::process::id()
+        ))
     }
 
     #[test]
@@ -2001,7 +2234,10 @@ mod tests {
         assert_eq!(r["result"]["display"]["analysis"], "zebra");
         assert_eq!(r["result"]["level"], 1);
         assert_eq!(r["result"]["active_view"], 2);
-        assert_eq!(app.display().analysis, AnalysisMode::Zebra { stripes: 14.0 });
+        assert_eq!(
+            app.display().analysis,
+            AnalysisMode::Zebra { stripes: 14.0 }
+        );
         for bad in [
             json!({ "nope": 1 }),
             json!({ "level": 9 }),
@@ -2024,13 +2260,27 @@ mod tests {
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(app.active_view(), 3);
         assert_eq!(r["result"]["camera"]["kind"], "Body plan");
-        assert_eq!(call(&mut app, &ctx, "ui.view", json!({ "view": "fit" }))["ok"], true);
-        assert_eq!(call(&mut app, &ctx, "ui.view", json!({ "view": "sideways" }))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "ui.view", json!({ "view": "fit" }))["ok"],
+            true
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "ui.view", json!({ "view": "sideways" }))["ok"],
+            false
+        );
         assert_eq!(call(&mut app, &ctx, "ui.view", json!({}))["ok"], false);
 
-        let r = call(&mut app, &ctx, "ui.camera", json!({ "view": 1, "yaw": 90, "pitch": 10, "ortho_height": 6.0 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.camera",
+            json!({ "view": 1, "yaw": 90, "pitch": 10, "ortho_height": 6.0 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
-        assert!((app.cameras()[1].yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-9, "{r}");
+        assert!(
+            (app.cameras()[1].yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-9,
+            "{r}"
+        );
         assert!((app.cameras()[1].pitch - 10f64.to_radians()).abs() < 1e-9);
         assert_eq!(r["result"]["ortho_height"], 6.0);
         // A perspective camera can be aimed and moved; the pitch stops short
@@ -2054,38 +2304,94 @@ mod tests {
             json!({ "target": [1, 2, "x"] }),
             json!({ "yaw": "left" }),
         ] {
-            assert_eq!(call(&mut app, &ctx, "ui.camera", bad.clone())["ok"], false, "{bad}");
+            assert_eq!(
+                call(&mut app, &ctx, "ui.camera", bad.clone())["ok"],
+                false,
+                "{bad}"
+            );
         }
 
         // ---- point.move: undoable, and the next frame sees it -----------
         let before = app.surface().unwrap().points[3].p;
-        let r = call(&mut app, &ctx, "point.move", json!({ "index": 3, "delta": [0.25, 0.0, 0.1] }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({ "index": 3, "delta": [0.25, 0.0, 0.1] }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let after = app.surface().unwrap().points[3].p;
-        assert!((after - before - Vec3::new(0.25, 0.0, 0.1)).length() < 1e-12, "{after:?} vs {before:?}");
+        assert!(
+            (after - before - Vec3::new(0.25, 0.0, 0.1)).length() < 1e-12,
+            "{after:?} vs {before:?}"
+        );
         assert_eq!(app.undo_len(), 1, "the move is undoable");
         assert_eq!(app.selected(), Some(3));
         assert_eq!(r["result"]["undo_len"], 1);
-        let r = call(&mut app, &ctx, "point.move", json!({ "index": 3, "xyz": [-1.0, -2.0, 0.5] }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({ "index": 3, "xyz": [-1.0, -2.0, 0.5] }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let moved = app.surface().unwrap().points[3].p;
         assert!((moved - Vec3::new(-1.0, -2.0, 0.5)).length() < 1e-12, "{r}");
         assert_eq!(app.undo_len(), 2);
-        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": 99999, "xyz": [0, 0, 0] }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": -3, "xyz": [0, 0, 0] }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": 3 }))["ok"], false, "needs xyz or delta");
-        assert_eq!(call(&mut app, &ctx, "point.move", json!({ "index": 3, "xyz": [1, 2] }))["ok"], false);
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "point.move",
+                json!({ "index": 99999, "xyz": [0, 0, 0] })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "point.move",
+                json!({ "index": -3, "xyz": [0, 0, 0] })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "point.move", json!({ "index": 3 }))["ok"],
+            false,
+            "needs xyz or delta"
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "point.move",
+                json!({ "index": 3, "xyz": [1, 2] })
+            )["ok"],
+            false
+        );
         let r = call(&mut app, &ctx, "ui.inspect", json!({}));
         assert_eq!(r["result"]["selected_point"], 3);
         assert_eq!(r["result"]["undo_len"], 2);
 
         // ---- edge.crease -------------------------------------------------
         let edge = app.surface().unwrap().edges[0].key();
-        let r = call(&mut app, &ctx, "edge.crease", json!({ "edge": [edge.0, edge.1], "crease": true }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "edge.crease",
+            json!({ "edge": [edge.0, edge.1], "crease": true }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert!(app.surface().unwrap().edges[0].crease);
-        assert_eq!(call(&mut app, &ctx, "edge.crease", json!({ "edge": [0, 99999] }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "edge.crease", json!({ "edge": [0] }))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "edge.crease", json!({ "edge": [0, 99999] }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "edge.crease", json!({ "edge": [0] }))["ok"],
+            false
+        );
 
         // ---- synthetic input waits for the next frame --------------------
         let r = call(&mut app, &ctx, "ui.click", json!({ "x": 700, "y": 400 }));
@@ -2095,39 +2401,103 @@ mod tests {
         app.raw_input_hook(&mut raw);
         assert_eq!(raw.events.len(), 3);
         assert_eq!(app.synthetic_len(), 0, "the queue is drained by the frame");
-        assert_eq!(call(&mut app, &ctx, "ui.key", json!({ "key": "Escape" }))["ok"], true);
-        assert_eq!(call(&mut app, &ctx, "ui.key", json!({ "key": "Num2" }))["ok"], true, "num aliases name the number keys");
-        assert_eq!(call(&mut app, &ctx, "ui.key", json!({ "key": "NoSuchKey" }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "ui.drag", json!({ "from": [10, 10], "to": [80, 60], "steps": 4 }))["ok"], true);
-        assert_eq!(call(&mut app, &ctx, "ui.drag", json!({ "from": [10] }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "ui.scroll", json!({ "x": 700, "y": 400, "delta": -2 }))["ok"], true);
+        assert_eq!(
+            call(&mut app, &ctx, "ui.key", json!({ "key": "Escape" }))["ok"],
+            true
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "ui.key", json!({ "key": "Num2" }))["ok"],
+            true,
+            "num aliases name the number keys"
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "ui.key", json!({ "key": "NoSuchKey" }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "ui.drag",
+                json!({ "from": [10, 10], "to": [80, 60], "steps": 4 })
+            )["ok"],
+            true
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "ui.drag", json!({ "from": [10] }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "ui.scroll",
+                json!({ "x": 700, "y": 400, "delta": -2 })
+            )["ok"],
+            true
+        );
         assert_eq!(call(&mut app, &ctx, "ui.scroll", json!({}))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "ui.move", json!({ "x": 5, "y": 5 }))["ok"], true);
+        assert_eq!(
+            call(&mut app, &ctx, "ui.move", json!({ "x": 5, "y": 5 }))["ok"],
+            true
+        );
 
         // ---- hydro.compute reports the measurement -----------------------
-        let r = call(&mut app, &ctx, "hydro.compute", json!({ "draft": 0.5, "kg": 2.0 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "hydro.compute",
+            json!({ "draft": 0.5, "kg": 2.0 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["draft"], 0.5);
         assert_eq!(r["result"]["kg"], 2.0);
         let volume = r["result"]["result"]["volume_m3"].as_f64().expect("volume");
         assert!(volume > 5.0 && volume < 30.0, "volume {volume}");
         assert_eq!(r["result"]["result"]["draft"], 0.5);
-        assert_eq!(call(&mut app, &ctx, "hydro.compute", json!({ "draft": 1e9 }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "hydro.compute", json!({ "heel_deg": 400 }))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "hydro.compute", json!({ "draft": 1e9 }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "hydro.compute", json!({ "heel_deg": 400 }))["ok"],
+            false
+        );
 
         // ---- stability.cross_curves --------------------------------------
-        let r = call(&mut app, &ctx, "stability.cross_curves", json!({ "kg": 2.2, "free_trim": false }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "stability.cross_curves",
+            json!({ "kg": 2.2, "free_trim": false }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let curves = r["result"]["curves"].as_array().expect("curves");
         assert_eq!(curves.len(), 9, "0..80 deg in 10 deg steps");
         assert_eq!(curves[0]["points"].as_array().unwrap().len(), 5);
-        assert!(r["result"]["imo"].is_object(), "IMO criteria for the design displacement: {r}");
-        assert_eq!(call(&mut app, &ctx, "stability.cross_curves", json!({ "lcg": "forward" }))["ok"], false);
+        assert!(
+            r["result"]["imo"].is_object(),
+            "IMO criteria for the design displacement: {r}"
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "stability.cross_curves",
+                json!({ "lcg": "forward" })
+            )["ok"],
+            false
+        );
 
         // ---- curves.bonjean: read-only, and it does not dirty the model ---
         let dirty_before = app.is_dirty();
         let undo_before = app.undo_len();
-        let r = call(&mut app, &ctx, "curves.bonjean", json!({ "stations": 11, "drafts": [0.3, 0.6, 1.2] }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "curves.bonjean",
+            json!({ "stations": 11, "drafts": [0.3, 0.6, 1.2] }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["drafts_m"], json!([0.3, 0.6, 1.2]));
         let sections = r["result"]["sections"].as_array().expect("sections");
@@ -2138,13 +2508,29 @@ mod tests {
             r["result"]["area_max_m2"].as_f64().unwrap_or(0.0) >= area,
             "the family maximum covers the mid station: {r}"
         );
-        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
-        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        assert_eq!(
+            app.is_dirty(),
+            dirty_before,
+            "a measurement must not dirty the model"
+        );
+        assert_eq!(
+            app.undo_len(),
+            undo_before,
+            "a measurement must not push undo"
+        );
         // The default draft range comes from the hull's own depth.
-        let d = call(&mut app, &ctx, "curves.bonjean", json!({ "draft_steps": 3 }));
+        let d = call(
+            &mut app,
+            &ctx,
+            "curves.bonjean",
+            json!({ "draft_steps": 3 }),
+        );
         assert_eq!(d["ok"], true, "{d}");
         let top = d["result"]["drafts_m"][2].as_f64().unwrap_or(0.0);
-        assert!((top - d["result"]["depth_m"].as_f64().unwrap_or(-1.0)).abs() < 1e-9, "{d}");
+        assert!(
+            (top - d["result"]["depth_m"].as_f64().unwrap_or(-1.0)).abs() < 1e-9,
+            "{d}"
+        );
         for bad in [
             json!({ "drafts": [0.5] }),
             json!({ "drafts": [0.0, 0.5] }),
@@ -2152,7 +2538,11 @@ mod tests {
             json!({ "stations": 500 }),
             json!({ "level": 9 }),
         ] {
-            assert_eq!(call(&mut app, &ctx, "curves.bonjean", bad.clone())["ok"], false, "{bad}");
+            assert_eq!(
+                call(&mut app, &ctx, "curves.bonjean", bad.clone())["ok"],
+                false,
+                "{bad}"
+            );
         }
 
         // ---- model.split_face / model.insert_edge: edits with undo ----------
@@ -2162,7 +2552,11 @@ mod tests {
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["pieces"], 4, "a quad fans into four: {r}");
         assert_eq!(app.face_count(), faces_before + 3, "{r}");
-        assert_eq!(app.undo_len(), undo_before + 1, "a topology edit is undoable");
+        assert_eq!(
+            app.undo_len(),
+            undo_before + 1,
+            "a topology edit is undoable"
+        );
         assert_eq!(r["result"]["undo_len"], json!(app.undo_len()));
         // The fan's point is a real control point and the fan edges exist.
         let new_point = r["result"]["point"].as_u64().unwrap_or(u64::MAX);
@@ -2178,56 +2572,146 @@ mod tests {
         // `ui.key` only queues synthetic input; the frame applies it, so the
         // count is checked through the queue length here instead.
         assert!(app.undo_len() > undo_before, "no snapshot was taken");
-        let r = call(&mut app, &ctx, "ui.key", json!({ "key": "Z", "ctrl": true }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.key",
+            json!({ "key": "Z", "ctrl": true }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert!(app.synthetic_len() >= 2, "press and release are queued");
         // insert_edge shares the same validation path as the core and CLI tests
         // (which exercise the positive case); here it is the refusals and the
         // snapshot that matter for the control channel.
-        assert_eq!(call(&mut app, &ctx, "model.insert_edge", json!({ "face": 0, "a": 0, "b": 1 }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "model.insert_edge", json!({ "face": 0, "a": 0, "b": 100_000 }))["ok"], false);
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.insert_edge",
+                json!({ "face": 0, "a": 0, "b": 1 })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.insert_edge",
+                json!({ "face": 0, "a": 0, "b": 100_000 })
+            )["ok"],
+            false
+        );
         assert_eq!(
             app.face_count(),
             faces_before + 3,
             "a refused insert_edge changes nothing (the split above stands)"
         );
-        assert_eq!(call(&mut app, &ctx, "model.split_face", json!({ "face": 10_000 }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "model.split_face", json!({}))["ok"], false);
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.split_face",
+                json!({ "face": 10_000 })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "model.split_face", json!({}))["ok"],
+            false
+        );
 
         // ---- resistance.compute / planing.compute: read-only power ---------
         let dirty_before = app.is_dirty();
         let undo_before = app.undo_len();
-        let r = call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.62, "speeds": [8.0, 12.0], "propeller_diameter": 0.45 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "resistance.compute",
+            json!({ "draft": 0.62, "speeds": [8.0, 12.0], "propeller_diameter": 0.45 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let pts = r["result"]["speeds"].as_array().expect("speeds");
         assert_eq!(pts.len(), 2, "{r}");
-        assert!((pts[0]["pe_w"].as_f64().unwrap_or(0.0) - pts[0]["rt_n"].as_f64().unwrap_or(0.0) * pts[0]["speed_m_s"].as_f64().unwrap_or(0.0)).abs() < 1e-6);
-        assert_eq!(r["result"]["propulsion"].as_array().map(Vec::len), Some(2), "{r}");
-        let rm = call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.62, "speeds": [8.0, 12.0], "method": "michell", "cat_spacing": 15.0 }));
+        assert!(
+            (pts[0]["pe_w"].as_f64().unwrap_or(0.0)
+                - pts[0]["rt_n"].as_f64().unwrap_or(0.0)
+                    * pts[0]["speed_m_s"].as_f64().unwrap_or(0.0))
+            .abs()
+                < 1e-6
+        );
+        assert_eq!(
+            r["result"]["propulsion"].as_array().map(Vec::len),
+            Some(2),
+            "{r}"
+        );
+        let rm = call(
+            &mut app,
+            &ctx,
+            "resistance.compute",
+            json!({ "draft": 0.62, "speeds": [8.0, 12.0], "method": "michell", "cat_spacing": 15.0 }),
+        );
         assert_eq!(rm["ok"], true, "{rm}");
         assert_eq!(rm["result"]["method"], "michell");
         assert_eq!(rm["result"]["speeds"].as_array().map(Vec::len), Some(2));
-        let rd = call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.62, "speeds": [6.0, 8.0], "method": "dsyhs" }));
+        let rd = call(
+            &mut app,
+            &ctx,
+            "resistance.compute",
+            json!({ "draft": 0.62, "speeds": [6.0, 8.0], "method": "dsyhs" }),
+        );
         assert_eq!(rd["ok"], true, "{rd}");
         assert_eq!(rd["result"]["method"], "dsyhs");
         assert_eq!(rd["result"]["speeds"].as_array().map(Vec::len), Some(2));
-        let p = call(&mut app, &ctx, "planing.compute", json!({ "speeds": [20.0], "deadrise": 15.0 }));
+        let p = call(
+            &mut app,
+            &ctx,
+            "planing.compute",
+            json!({ "speeds": [20.0], "deadrise": 15.0 }),
+        );
         assert_eq!(p["ok"], true, "{p}");
         let row = &p["result"]["speeds"][0];
         let lcp = row["lcp_over_b"].as_f64().unwrap_or(0.0);
-        let lcg = p["result"]["setup"]["hull"]["lcg_from_transom_m"].as_f64().unwrap_or(0.0)
-            / p["result"]["setup"]["hull"]["beam_m"].as_f64().unwrap_or(1.0);
+        let lcg = p["result"]["setup"]["hull"]["lcg_from_transom_m"]
+            .as_f64()
+            .unwrap_or(0.0)
+            / p["result"]["setup"]["hull"]["beam_m"]
+                .as_f64()
+                .unwrap_or(1.0);
         assert!((lcp - lcg).abs() < 1e-3, "LCP/b {lcp} against LCG/b {lcg}");
-        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
-        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        assert_eq!(
+            app.is_dirty(),
+            dirty_before,
+            "a measurement must not dirty the model"
+        );
+        assert_eq!(
+            app.undo_len(),
+            undo_before,
+            "a measurement must not push undo"
+        );
         // Unknown keys are ignored by the control channel; a bad *value* is not.
-        assert_eq!(call(&mut app, &ctx, "planing.compute", json!({ "draft": -1.0 }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.0 }))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "planing.compute", json!({ "draft": -1.0 }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "resistance.compute",
+                json!({ "draft": 0.0 })
+            )["ok"],
+            false
+        );
 
         // ---- curves.offsets: the same table from the app's model ----------
         let dirty_before = app.is_dirty();
         let undo_before = app.undo_len();
-        let r = call(&mut app, &ctx, "curves.offsets", json!({ "stations": 9, "waterlines": [0.62], "buttocks": [1.0] }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "curves.offsets",
+            json!({ "stations": 9, "waterlines": [0.62], "buttocks": [1.0] }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["waterlines_m"], json!([0.62]));
         let rows = r["result"]["stations"].as_array().expect("stations");
@@ -2236,21 +2720,41 @@ mod tests {
             .iter()
             .filter_map(|row| row["waterline_half_breadths"][0].as_f64())
             .fold(0.0_f64, f64::max);
-        assert!((widest - 1.771).abs() < 0.04, "half-breadth at T = 0.62: {widest}");
-        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
-        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
+        assert!(
+            (widest - 1.771).abs() < 0.04,
+            "half-breadth at T = 0.62: {widest}"
+        );
+        assert_eq!(
+            app.is_dirty(),
+            dirty_before,
+            "a measurement must not dirty the model"
+        );
+        assert_eq!(
+            app.undo_len(),
+            undo_before,
+            "a measurement must not push undo"
+        );
         for bad in [
             json!({ "waterlines": [] }),
             json!({ "buttocks": [0.0] }),
             json!({ "stations": 1e9 }),
         ] {
-            assert_eq!(call(&mut app, &ctx, "curves.offsets", bad.clone())["ok"], false, "{bad}");
+            assert_eq!(
+                call(&mut app, &ctx, "curves.offsets", bad.clone())["ok"],
+                false,
+                "{bad}"
+            );
         }
 
         // ---- ui.render writes a PNG ---------------------------------------
         let png_path = scratch("render.png");
         let path_text = png_path.to_string_lossy().to_string();
-        let r = call(&mut app, &ctx, "ui.render", json!({ "path": path_text, "width": 64, "height": 48, "view": 1, "mode": "zebra" }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.render",
+            json!({ "path": path_text, "width": 64, "height": 48, "view": 1, "mode": "zebra" }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["width"], 64);
         assert_eq!(r["result"]["height"], 48);
@@ -2266,14 +2770,26 @@ mod tests {
             json!({ "path": path_text, "mode": "hologram" }),
             json!({ "path": path_text, "view": 4 }),
         ] {
-            assert_eq!(call(&mut app, &ctx, "ui.render", bad.clone())["ok"], false, "{bad}");
+            assert_eq!(
+                call(&mut app, &ctx, "ui.render", bad.clone())["ok"],
+                false,
+                "{bad}"
+            );
         }
-        assert!(std::fs::metadata(&png_path).is_err(), "a refused render writes nothing");
+        assert!(
+            std::fs::metadata(&png_path).is_err(),
+            "a refused render writes nothing"
+        );
 
         // ---- hydro.trim: read-only trim scan --------------------------------
         let dirty_before_r = app.is_dirty();
         let undo_before_r = app.undo_len();
-        let r = call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 10.0, "steps": 5 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "hydro.trim",
+            json!({ "speed_kn": 10.0, "steps": 5 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let pts = r["result"]["points"].as_array().expect("points");
         assert_eq!(pts.len(), 5, "{r}");
@@ -2282,11 +2798,23 @@ mod tests {
             .find(|p| p["trim_m"].as_f64().unwrap_or(1.0).abs() < 1e-12)
             .expect("an even-keel point");
         assert!(zero["rt_n"].as_f64().unwrap_or(0.0) > 0.0, "{zero}");
-        assert_eq!(app.is_dirty(), dirty_before_r, "a scan must not dirty the model");
-        assert_eq!(app.undo_len(), undo_before_r, "a scan must not push undo");
-        assert_eq!(call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 0.0 }))["ok"], false);
         assert_eq!(
-            call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 10.0, "from": 0.4, "to": 0.2 }))["ok"],
+            app.is_dirty(),
+            dirty_before_r,
+            "a scan must not dirty the model"
+        );
+        assert_eq!(app.undo_len(), undo_before_r, "a scan must not push undo");
+        assert_eq!(
+            call(&mut app, &ctx, "hydro.trim", json!({ "speed_kn": 0.0 }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "hydro.trim",
+                json!({ "speed_kn": 10.0, "from": 0.4, "to": 0.2 })
+            )["ok"],
             false
         );
 
@@ -2298,13 +2826,28 @@ mod tests {
         assert_eq!(r["result"]["drafts"], json!(4), "{r}");
         let rows = r["result"]["rows"].as_array().expect("rows");
         let top = rows.last().expect("a top row");
-        assert!((top["draft"].as_f64().unwrap_or(0.0) - app.hydro_options().draft).abs() < 1e-9, "{top}");
+        assert!(
+            (top["draft"].as_f64().unwrap_or(0.0) - app.hydro_options().draft).abs() < 1e-9,
+            "{top}"
+        );
         assert!(top["volume_m3"].as_f64().unwrap_or(0.0) > 0.0, "{top}");
-        assert_eq!(app.is_dirty(), dirty_before_t, "a table must not dirty the model");
+        assert_eq!(
+            app.is_dirty(),
+            dirty_before_t,
+            "a table must not dirty the model"
+        );
         assert_eq!(app.undo_len(), undo_before_t, "a table must not push undo");
-        let two = call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.4, 0.62] }));
+        let two = call(
+            &mut app,
+            &ctx,
+            "hydro.table",
+            json!({ "drafts": [0.4, 0.62] }),
+        );
         assert_eq!(two["result"]["drafts"], json!(2), "{two}");
-        assert_eq!(call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.0] }))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "hydro.table", json!({ "drafts": [0.0] }))["ok"],
+            false
+        );
 
         // ---- model.optimize: an edit, one undo step, the draft follows ------
         let undo_before = app.undo_len();
@@ -2323,54 +2866,134 @@ mod tests {
                 <= rep["baseline"]["rt_kn"].as_f64().unwrap_or(0.0) + 1e-12,
             "{r}"
         );
-        assert_eq!(app.undo_len(), undo_before + 1, "an optimisation is one snapshot");
+        assert_eq!(
+            app.undo_len(),
+            undo_before + 1,
+            "an optimisation is one snapshot"
+        );
         assert!(app.is_dirty(), "the model changed");
-        assert_eq!(app.control_point_count(), points_before, "the topology is kept");
+        assert_eq!(
+            app.control_point_count(),
+            points_before,
+            "the topology is kept"
+        );
         let opt_draft = rep["optimised"]["draft_m"].as_f64().unwrap_or(0.0);
-        assert!((app.hydro_options().draft - opt_draft).abs() < 1e-12, "the app measures at the new draft");
+        assert!(
+            (app.hydro_options().draft - opt_draft).abs() < 1e-12,
+            "the app measures at the new draft"
+        );
         // Undo puts the hull back (the draft is the app's own setting).
         assert_eq!(call(&mut app, &ctx, "history.undo", json!({}))["ok"], true);
         assert_eq!(app.undo_len(), undo_before);
         let _ = draft_before;
-        assert_eq!(call(&mut app, &ctx, "model.optimize", json!({}))["ok"], false, "speed_kn is required");
         assert_eq!(
-            call(&mut app, &ctx, "model.optimize", json!({ "speed_kn": 8.0, "vars": ["wibble"] }))["ok"],
+            call(&mut app, &ctx, "model.optimize", json!({}))["ok"],
+            false,
+            "speed_kn is required"
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.optimize",
+                json!({ "speed_kn": 8.0, "vars": ["wibble"] })
+            )["ok"],
             false
         );
-        assert_eq!(app.undo_len(), undo_before, "a refused optimisation leaves no snapshot");
+        assert_eq!(
+            app.undo_len(),
+            undo_before,
+            "a refused optimisation leaves no snapshot"
+        );
 
         // ---- model.transform: a real edit, with undo ------------------------
         let dirty_before = app.is_dirty();
         let undo_before = app.undo_len();
-        let r = call(&mut app, &ctx, "model.transform", json!({ "lwl": 13.0, "draft": 0.9 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.transform",
+            json!({ "lwl": 13.0, "draft": 0.9 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let rep = &r["result"]["report"];
-        assert!((rep["after"]["lwl"].as_f64().unwrap_or(0.0) - 13.0).abs() < 0.05, "{r}");
-        assert!((rep["after"]["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3, "{r}");
+        assert!(
+            (rep["after"]["lwl"].as_f64().unwrap_or(0.0) - 13.0).abs() < 0.05,
+            "{r}"
+        );
+        assert!(
+            (rep["after"]["draft"].as_f64().unwrap_or(0.0) - 0.9).abs() < 1e-3,
+            "{r}"
+        );
         // The app measures at the new draft, and the edit is undoable.
-        assert!((app.hydro_options().draft - 0.9).abs() < 1e-3, "{}", app.hydro_options().draft);
-        assert_eq!(app.undo_len(), undo_before + 1, "a transform is one snapshot");
+        assert!(
+            (app.hydro_options().draft - 0.9).abs() < 1e-3,
+            "{}",
+            app.hydro_options().draft
+        );
+        assert_eq!(
+            app.undo_len(),
+            undo_before + 1,
+            "a transform is one snapshot"
+        );
         assert!(app.is_dirty(), "the model changed");
         let faces_after = app.face_count();
-        assert_eq!(faces_after, faces_before + 3, "a transform keeps the topology: {r}");
+        assert_eq!(
+            faces_after,
+            faces_before + 3,
+            "a transform keeps the topology: {r}"
+        );
         // A mirror is a valid transform; a bad axis and an empty request are not.
-        assert_eq!(call(&mut app, &ctx, "model.transform", json!({ "mirror": "x" }))["ok"], true);
-        assert_eq!(call(&mut app, &ctx, "model.transform", json!({ "mirror": "w" }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "model.transform", json!({}))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "model.transform", json!({ "mirror": "x" }))["ok"],
+            true
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "model.transform", json!({ "mirror": "w" }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "model.transform", json!({}))["ok"],
+            false
+        );
         let _ = dirty_before;
 
         // ---- curves.unfold: read-only plate development ---------------------
         let dirty_before = app.is_dirty();
         let undo_before = app.undo_len();
-        let r = call(&mut app, &ctx, "curves.unfold", json!({ "axis": "z", "from": 0.2, "to": 0.45, "x_from": 3.0, "x_to": 6.0 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "curves.unfold",
+            json!({ "axis": "z", "from": 0.2, "to": 0.45, "x_from": 3.0, "x_to": 6.0 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         let plate = &r["result"]["plate"];
         assert!(plate["area_2d_m2"].as_f64().unwrap_or(0.0) > 0.0, "{r}");
         assert!(plate["developable"].as_bool().unwrap_or(false), "{r}");
-        assert_eq!(app.is_dirty(), dirty_before, "a measurement must not dirty the model");
-        assert_eq!(app.undo_len(), undo_before, "a measurement must not push undo");
-        assert_eq!(call(&mut app, &ctx, "curves.unfold", json!({ "axis": "w" }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "curves.unfold", json!({ "from": 50.0, "to": 60.0 }))["ok"], false);
+        assert_eq!(
+            app.is_dirty(),
+            dirty_before,
+            "a measurement must not dirty the model"
+        );
+        assert_eq!(
+            app.undo_len(),
+            undo_before,
+            "a measurement must not push undo"
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "curves.unfold", json!({ "axis": "w" }))["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "curves.unfold",
+                json!({ "from": 50.0, "to": 60.0 })
+            )["ok"],
+            false
+        );
 
         // ---- model.save / model.open / model.export ------------------------
         let fef_path = scratch("hull.fef");
@@ -2383,38 +3006,89 @@ mod tests {
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["points"], points);
         assert_eq!(app.path().map(|p| p.to_path_buf()), Some(fef_path.clone()));
-        assert_eq!(call(&mut app, &ctx, "model.open", json!({ "path": "/nonexistent/hull.fef" }))["ok"], false);
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.open",
+                json!({ "path": "/nonexistent/hull.fef" })
+            )["ok"],
+            false
+        );
         assert_eq!(call(&mut app, &ctx, "model.open", json!({}))["ok"], false);
         let _ = std::fs::remove_file(&fef_path);
 
         let obj_path = scratch("hull.obj");
         let obj_text = obj_path.to_string_lossy().to_string();
-        let r = call(&mut app, &ctx, "model.export", json!({ "path": obj_text, "format": "obj" }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": obj_text, "format": "obj" }),
+        );
         assert_eq!(r["ok"], true, "{r}");
-        assert!(std::fs::read_to_string(&obj_path).unwrap().contains("v "), "an OBJ with vertices");
+        assert!(
+            std::fs::read_to_string(&obj_path).unwrap().contains("v "),
+            "an OBJ with vertices"
+        );
         let _ = std::fs::remove_file(&obj_path);
-        assert_eq!(call(&mut app, &ctx, "model.export", json!({ "path": obj_text, "format": "tiff" }))["ok"], false);
-        assert_eq!(call(&mut app, &ctx, "model.export", json!({ "path": obj_text }))["ok"], false);
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.export",
+                json!({ "path": obj_text, "format": "tiff" })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(&mut app, &ctx, "model.export", json!({ "path": obj_text }))["ok"],
+            false
+        );
 
         // ---- report.design ------------------------------------------------
         let report_path = scratch("dossier.html");
         let report_text = report_path.to_string_lossy().to_string();
-        let r = call(&mut app, &ctx, "report.design", json!({ "path": report_text, "draft": 0.62, "kg": 2.2 }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "report.design",
+            json!({ "path": report_text, "draft": 0.62, "kg": 2.2 }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert!(report_path.exists());
         assert!(r["result"]["bytes"].as_u64().unwrap_or(0) > 1000);
         let _ = std::fs::remove_file(&report_path);
-        assert_eq!(call(&mut app, &ctx, "report.design", json!({}))["ok"], false);
+        assert_eq!(
+            call(&mut app, &ctx, "report.design", json!({}))["ok"],
+            false
+        );
 
         // ---- model.load_demo ----------------------------------------------
         let r = call(&mut app, &ctx, "model.load_demo", json!({}));
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["symmetric"], false);
-        let r = call(&mut app, &ctx, "model.load_demo", json!({ "symmetric": true }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.load_demo",
+            json!({ "symmetric": true }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["symmetric"], true);
-        assert!(app.surface().unwrap().layers.iter().any(|l| l.symmetric), "a half model");
-        assert_eq!(call(&mut app, &ctx, "model.load_demo", json!({ "symmetric": "yes" }))["ok"], false);
+        assert!(
+            app.surface().unwrap().layers.iter().any(|l| l.symmetric),
+            "a half model"
+        );
+        assert_eq!(
+            call(
+                &mut app,
+                &ctx,
+                "model.load_demo",
+                json!({ "symmetric": "yes" })
+            )["ok"],
+            false
+        );
 
         // A symmetric layer models only y >= 0, so a move across the
         // centreline is clamped instead of producing an unmirrorable half.
@@ -2425,7 +3099,12 @@ mod tests {
             .iter()
             .position(|p| p.p.y > 0.1)
             .expect("a point off the centreline");
-        let r = call(&mut app, &ctx, "point.move", json!({ "index": off_centre, "xyz": [3.0, -2.0, 0.4] }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({ "index": off_centre, "xyz": [3.0, -2.0, 0.4] }),
+        );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["clamped"], true, "{r}");
         assert_eq!(r["result"]["point"][1], 0.0, "{r}");
@@ -2487,12 +3166,16 @@ mod tests {
         // The refusal is clean: the model and the queues are untouched.
         assert!(app.control_point_count() > 0);
         assert!(app.synthetic_len() <= MAX_SYNTHETIC);
-        assert_eq!(call(&mut app, &ctx, "app.quit", json!({}))["result"]["quitting"], true);
+        assert_eq!(
+            call(&mut app, &ctx, "app.quit", json!({}))["result"]["quitting"],
+            true
+        );
     }
 
     #[test]
     fn tcp_listener_serves_json_lines_round_trip() {
-        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("bind an ephemeral port");
+        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default())
+            .expect("bind an ephemeral port");
         let addr = listener.addr;
         let rx = listener.receiver;
         let token = listener.token.expect("token");
@@ -2500,35 +3183,56 @@ mod tests {
         let (mut app, ctx) = demo();
 
         let stream = TcpStream::connect(addr).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
         let mut writer = stream;
 
         fn read_reply(reader: &mut BufReader<TcpStream>) -> Value {
             let mut line = String::new();
             reader.read_line(&mut line).expect("a reply line");
-            serde_json::from_str(line.trim()).unwrap_or_else(|e| panic!("the reply is not JSON: {line:?} ({e})"))
+            serde_json::from_str(line.trim())
+                .unwrap_or_else(|e| panic!("the reply is not JSON: {line:?} ({e})"))
         }
 
         // Authenticate first
-        writer.write_all(format!("{{\"method\":\"auth\",\"params\":{{\"token\":\"{token}\"}}}}\n").as_bytes()).unwrap();
+        writer
+            .write_all(
+                format!("{{\"method\":\"auth\",\"params\":{{\"token\":\"{token}\"}}}}\n")
+                    .as_bytes(),
+            )
+            .unwrap();
         writer.flush().unwrap();
         let auth_reply = read_reply(&mut reader);
         assert_eq!(auth_reply["ok"], true, "{auth_reply}");
 
         // Send one request and answer it as the window's frame would.
-        let exchange =
-            |writer: &mut TcpStream, reader: &mut BufReader<TcpStream>, app: &mut App, request: &str| -> Value {
-                writer.write_all(request.as_bytes()).unwrap();
-                writer.write_all(b"\n").unwrap();
-                writer.flush().unwrap();
-                let request = rx.recv_timeout(Duration::from_secs(5)).expect("the request reached the app");
-                let reply = handle(app, &ctx, &request);
-                request.reply.send(reply).expect("the app is still listening");
-                read_reply(reader)
-            };
+        let exchange = |writer: &mut TcpStream,
+                        reader: &mut BufReader<TcpStream>,
+                        app: &mut App,
+                        request: &str|
+         -> Value {
+            writer.write_all(request.as_bytes()).unwrap();
+            writer.write_all(b"\n").unwrap();
+            writer.flush().unwrap();
+            let request = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the request reached the app");
+            let reply = handle(app, &ctx, &request);
+            request
+                .reply
+                .send(reply)
+                .expect("the app is still listening");
+            read_reply(reader)
+        };
 
-        let first = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"ui.inspect\",\"params\":{}}");
+        let first = exchange(
+            &mut writer,
+            &mut reader,
+            &mut app,
+            "{\"method\":\"ui.inspect\",\"params\":{}}",
+        );
         assert_eq!(first["ok"], true, "{first}");
         assert_eq!(first["result"]["version"], seacraft_core::VERSION);
         assert_eq!(first["result"]["points"], app.control_point_count());
@@ -2538,12 +3242,26 @@ mod tests {
         writer.flush().unwrap();
         let bad = read_reply(&mut reader);
         assert_eq!(bad["ok"], false, "{bad}");
-        assert!(bad["error"].as_str().unwrap().contains("invalid JSON"), "{bad}");
+        assert!(
+            bad["error"].as_str().unwrap().contains("invalid JSON"),
+            "{bad}"
+        );
 
         // An unknown method is a clean error from `handle`.
-        let unknown = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"no.such.method\",\"params\":{}}");
+        let unknown = exchange(
+            &mut writer,
+            &mut reader,
+            &mut app,
+            "{\"method\":\"no.such.method\",\"params\":{}}",
+        );
         assert_eq!(unknown["ok"], false, "{unknown}");
-        assert!(unknown["error"].as_str().unwrap().contains("unknown method"), "{unknown}");
+        assert!(
+            unknown["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown method"),
+            "{unknown}"
+        );
 
         // A line past the cap is refused and the rest of it discarded, so the
         // next request on the same connection still works.
@@ -2554,19 +3272,27 @@ mod tests {
         let long = read_reply(&mut reader);
         assert_eq!(long["ok"], false, "{long}");
         assert!(long["error"].as_str().unwrap().contains("KiB"), "{long}");
-        let again = exchange(&mut writer, &mut reader, &mut app, "{\"method\":\"ui.inspect\",\"params\":{}}");
+        let again = exchange(
+            &mut writer,
+            &mut reader,
+            &mut app,
+            "{\"method\":\"ui.inspect\",\"params\":{}}",
+        );
         assert_eq!(again["ok"], true, "{again}");
         assert_eq!(again["result"]["version"], first["result"]["version"]);
     }
 
     #[test]
     fn wrong_token_rejected_and_connection_closed() {
-        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
+        let listener =
+            spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
         let stream = TcpStream::connect(listener.addr).expect("connect");
         let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
         let mut writer = stream;
 
-        writer.write_all(b"{\"method\":\"auth\",\"params\":{\"token\":\"wrong_token_hex\"}}\n").unwrap();
+        writer
+            .write_all(b"{\"method\":\"auth\",\"params\":{\"token\":\"wrong_token_hex\"}}\n")
+            .unwrap();
         writer.flush().unwrap();
 
         let mut line = String::new();
@@ -2584,7 +3310,8 @@ mod tests {
 
     #[test]
     fn right_token_authenticates_and_methods_work() {
-        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
+        let listener =
+            spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
         let token = listener.token.expect("token");
         let rx = listener.receiver;
         let (mut app, ctx) = demo();
@@ -2594,7 +3321,12 @@ mod tests {
         let mut writer = stream;
 
         // 1. Auth succeeds
-        writer.write_all(format!("{{\"method\":\"auth\",\"params\":{{\"token\":\"{token}\"}}}}\n").as_bytes()).unwrap();
+        writer
+            .write_all(
+                format!("{{\"method\":\"auth\",\"params\":{{\"token\":\"{token}\"}}}}\n")
+                    .as_bytes(),
+            )
+            .unwrap();
         writer.flush().unwrap();
 
         let mut line = String::new();
@@ -2604,10 +3336,14 @@ mod tests {
         assert_eq!(reply["result"]["authenticated"], true);
 
         // 2. Next method works
-        writer.write_all(b"{\"method\":\"ui.inspect\",\"params\":{}}\n").unwrap();
+        writer
+            .write_all(b"{\"method\":\"ui.inspect\",\"params\":{}}\n")
+            .unwrap();
         writer.flush().unwrap();
 
-        let req = rx.recv_timeout(Duration::from_secs(5)).expect("receive request");
+        let req = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receive request");
         let res = handle(&mut app, &ctx, &req);
         req.reply.send(res).unwrap();
 
@@ -2620,12 +3356,15 @@ mod tests {
 
     #[test]
     fn method_before_auth_is_rejected_and_connection_closed() {
-        let listener = spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
+        let listener =
+            spawn_listener("127.0.0.1:0", ControlOptions::default()).expect("spawn listener");
         let stream = TcpStream::connect(listener.addr).expect("connect");
         let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
         let mut writer = stream;
 
-        writer.write_all(b"{\"method\":\"ui.inspect\",\"params\":{}}\n").unwrap();
+        writer
+            .write_all(b"{\"method\":\"ui.inspect\",\"params\":{}}\n")
+            .unwrap();
         writer.flush().unwrap();
 
         let mut line = String::new();
@@ -2633,7 +3372,10 @@ mod tests {
         assert!(n > 0);
         let reply: Value = serde_json::from_str(line.trim()).expect("json reply");
         assert_eq!(reply["ok"], false);
-        assert!(reply["error"].as_str().unwrap().contains("first request must be auth"));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("first request must be auth"));
 
         // Connection must be closed
         line.clear();
@@ -2656,10 +3398,20 @@ mod tests {
         // Reading /etc/passwd or /etc/hosts outside the root is rejected
         #[cfg(unix)]
         {
-            let target = if std::path::Path::new("/etc/passwd").exists() { "/etc/passwd" } else { "/etc/hosts" };
+            let target = if std::path::Path::new("/etc/passwd").exists() {
+                "/etc/passwd"
+            } else {
+                "/etc/hosts"
+            };
             let r = call(&mut app, &ctx, "model.open", json!({ "path": target }));
             assert_eq!(r["ok"], false);
-            assert!(r["error"].as_str().unwrap().contains("read-root rule violation"), "{r}");
+            assert!(
+                r["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("read-root rule violation"),
+                "{r}"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2679,14 +3431,36 @@ mod tests {
 
         // Writing with .. traversal outside root is rejected
         let traversal_path = dir.join("../evil_traversal.fef");
-        let r = call(&mut app, &ctx, "model.save", json!({ "path": traversal_path.to_string_lossy().to_string() }));
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.save",
+            json!({ "path": traversal_path.to_string_lossy().to_string() }),
+        );
         assert_eq!(r["ok"], false);
-        assert!(r["error"].as_str().unwrap().contains("write-root rule violation"), "{r}");
+        assert!(
+            r["error"]
+                .as_str()
+                .unwrap()
+                .contains("write-root rule violation"),
+            "{r}"
+        );
 
         let traversal_render = dir.join("../evil_traversal.png");
-        let r2 = call(&mut app, &ctx, "ui.render", json!({ "path": traversal_render.to_string_lossy().to_string() }));
+        let r2 = call(
+            &mut app,
+            &ctx,
+            "ui.render",
+            json!({ "path": traversal_render.to_string_lossy().to_string() }),
+        );
         assert_eq!(r2["ok"], false);
-        assert!(r2["error"].as_str().unwrap().contains("write-root rule violation"), "{r2}");
+        assert!(
+            r2["error"]
+                .as_str()
+                .unwrap()
+                .contains("write-root rule violation"),
+            "{r2}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2696,7 +3470,10 @@ mod tests {
         let (mut app, ctx) = demo();
         let r = call(&mut app, &ctx, "test.panic", json!({}));
         assert_eq!(r["ok"], false);
-        assert!(r["error"].as_str().unwrap().contains("internal error: deliberate control panic"));
+        assert!(r["error"]
+            .as_str()
+            .unwrap()
+            .contains("internal error: deliberate control panic"));
         // GUI is still running
         let insp = call(&mut app, &ctx, "ui.inspect", json!({}));
         assert_eq!(insp["ok"], true);
@@ -2707,7 +3484,12 @@ mod tests {
         let mark = mark_res["result"]["mark"].as_u64().unwrap();
 
         let original_z = app.surface().unwrap().points[0].p.z;
-        let mv = call(&mut app, &ctx, "point.move", json!({"index": 0, "xyz": [0.0, 0.0, original_z + 1.0]}));
+        let mv = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({"index": 0, "xyz": [0.0, 0.0, original_z + 1.0]}),
+        );
         assert_eq!(mv["ok"], true);
         assert!((app.surface().unwrap().points[0].p.z - (original_z + 1.0)).abs() < 1e-9);
 

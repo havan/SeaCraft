@@ -151,13 +151,9 @@ impl<'de> Deserialize<'de> for BilgeKind {
                         "round" => Ok(BilgeKind::Round),
                         "sharp" => Ok(BilgeKind::Sharp),
                         "keels" => {
-                            let area = map
-                                .get("area_m2")
-                                .and_then(|x| x.as_f64())
-                                .ok_or_else(|| {
-                                    serde::de::Error::custom(
-                                        "`keels` bilge requires `area_m2`",
-                                    )
+                            let area =
+                                map.get("area_m2").and_then(|x| x.as_f64()).ok_or_else(|| {
+                                    serde::de::Error::custom("`keels` bilge requires `area_m2`")
                                 })?;
                             Ok(BilgeKind::Keels { area_m2: area })
                         }
@@ -228,11 +224,7 @@ pub struct WeatherHydro {
 impl WeatherHydro {
     /// Build [`WeatherHydro`] from a [`Hydrostatics`] measurement and `kg_m` above the keel.
     pub fn from_hydrostatics(h: &Hydrostatics, kg_m: f64) -> Self {
-        let beam_m = if h.bwl > 0.0 {
-            h.bwl
-        } else {
-            h.submerged_beam
-        };
+        let beam_m = if h.bwl > 0.0 { h.bwl } else { h.submerged_beam };
         let lwl_m = if h.lwl > 0.0 {
             h.lwl
         } else {
@@ -607,10 +599,7 @@ fn profile_loops(hull: &Hull) -> (Plane, Vec<Vec<Vec3>>) {
 pub fn hull_windage_on_hull(hull: &Hull, draft: f64, trim: f64) -> (f64, f64, f64, f64) {
     let (centre, loops) = profile_loops(hull);
     let wp = waterplane_for(hull.keel, hull.length, draft, trim, 0.0);
-    let above_wp = Plane {
-        n: -wp.n,
-        d: -wp.d,
-    };
+    let above_wp = Plane { n: -wp.n, d: -wp.d };
     let (u, v) = centre.basis();
 
     let (underwater_area_m2, underwater_z) =
@@ -747,12 +736,7 @@ fn find_downward_intercept(pts: &[(f64, f64)], level: f64, after_heel: f64) -> O
 }
 
 /// Trapezoidal integral of `max(0, f(φ))` on `[a_deg, b_deg]` in `m·rad`.
-fn integrate_positive<F: Fn(f64) -> f64>(
-    pts: &[(f64, f64)],
-    a_deg: f64,
-    b_deg: f64,
-    f: F,
-) -> f64 {
+fn integrate_positive<F: Fn(f64) -> f64>(pts: &[(f64, f64)], a_deg: f64, b_deg: f64, f: F) -> f64 {
     if pts.len() < 2 || !a_deg.is_finite() || !b_deg.is_finite() || b_deg <= a_deg {
         return 0.0;
     }
@@ -1023,7 +1007,7 @@ pub fn evaluate_hull_weather(
     } else {
         (
             hull.hydrostatics(opts),
-             crate::stability::FloatingCondition {
+            crate::stability::FloatingCondition {
                 draft: opts.draft,
                 trim: opts.trim,
             },
@@ -1126,7 +1110,10 @@ mod tests {
 
         let want_phi1 = 109.0 * 1.0 * 0.98 * 0.89 * (0.79_f64 * 0.09174).sqrt();
         let got_phi1 = rollback_angle_deg(k, x1, x2, r, s);
-        assert!((got_phi1 - want_phi1).abs() < 1e-12, "{got_phi1} vs {want_phi1}");
+        assert!(
+            (got_phi1 - want_phi1).abs() < 1e-12,
+            "{got_phi1} vs {want_phi1}"
+        );
     }
 
     #[test]
@@ -1194,7 +1181,11 @@ mod tests {
         );
         let want_lw1 = 504.0 * 18.0 * 1.5 / (1000.0 * 9.81 * disp_t);
         assert!((res.z_m - 1.5).abs() < 1e-6, "Z = {}", res.z_m);
-        assert!((res.lw1_m - want_lw1).abs() < 1e-9, "lw1 = {} vs {want_lw1}", res.lw1_m);
+        assert!(
+            (res.lw1_m - want_lw1).abs() < 1e-9,
+            "lw1 = {} vs {want_lw1}",
+            res.lw1_m
+        );
         assert!((res.lw2_m - 1.5 * want_lw1).abs() < 1e-9);
     }
 
@@ -1214,7 +1205,8 @@ mod tests {
         let target_lw1 = 0.08;
         // lw1 = P * A * Z / (1000 * g * disp_t); with Z = 2.0 m, P = 504 Pa:
         let z_m = 2.0;
-        let area_m2 = target_lw1 * 1000.0 * GRAVITY_M_S2 * disp_t / (DEFAULT_WIND_PRESSURE_PA * z_m);
+        let area_m2 =
+            target_lw1 * 1000.0 * GRAVITY_M_S2 * disp_t / (DEFAULT_WIND_PRESSURE_PA * z_m);
 
         let wh = WeatherHydro {
             displacement_t: disp_t,
@@ -1278,16 +1270,30 @@ mod tests {
         let cond: crate::loading::LoadingCondition =
             serde_json::from_str(json_text).expect("valid demo-loadcase.json");
         let res = crate::loading::evaluate(&surface, &opts, &cond);
-        let w = res.weather.expect("weather result present in LoadingResult");
+        let w = res
+            .weather
+            .expect("weather result present in LoadingResult");
         assert!(w.area_m2.is_finite() && w.area_m2 > 0.0, "{w:?}");
         assert!(w.z_m.is_finite() && w.z_m > 0.0, "{w:?}");
         assert!(w.lw1_m.is_finite() && w.lw1_m > 0.0, "{w:?}");
         assert!(w.lw2_m.is_finite() && w.lw2_m > w.lw1_m, "{w:?}");
-        assert!(w.phi0_deg.is_some_and(|p| p.is_finite() && p >= 0.0), "{w:?}");
+        assert!(
+            w.phi0_deg.is_some_and(|p| p.is_finite() && p >= 0.0),
+            "{w:?}"
+        );
         assert!(w.phi1_deg.is_finite() && w.phi1_deg > 0.0, "{w:?}");
-        assert!(w.phic_deg.is_some_and(|p| p.is_finite() && p > 0.0), "{w:?}");
-        assert!(w.phi2_deg.is_some_and(|p| p.is_finite() && p > 0.0), "{w:?}");
-        assert!(w.roll_period_s.is_finite() && w.roll_period_s > 0.0, "{w:?}");
+        assert!(
+            w.phic_deg.is_some_and(|p| p.is_finite() && p > 0.0),
+            "{w:?}"
+        );
+        assert!(
+            w.phi2_deg.is_some_and(|p| p.is_finite() && p > 0.0),
+            "{w:?}"
+        );
+        assert!(
+            w.roll_period_s.is_finite() && w.roll_period_s > 0.0,
+            "{w:?}"
+        );
         assert!(w.area_a_m_rad.is_finite() && w.area_a_m_rad > 0.0, "{w:?}");
         assert!(w.area_b_m_rad.is_finite() && w.area_b_m_rad > 0.0, "{w:?}");
     }

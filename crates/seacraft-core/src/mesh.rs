@@ -159,7 +159,10 @@ impl Surface {
     }
 
     pub fn add_point(&mut self, p: Vec3) -> usize {
-        self.points.push(ControlPoint { p, kind: VertexKind::Regular });
+        self.points.push(ControlPoint {
+            p,
+            kind: VertexKind::Regular,
+        });
         self.points.len() - 1
     }
 

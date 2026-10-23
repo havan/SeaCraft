@@ -151,7 +151,11 @@ pub fn curvatures(verts: &[Vec3], faces: &[Vec<usize>]) -> Vec<Curvature> {
             if area[i] < 1e-18 {
                 return Curvature::default();
             }
-            let full = if on_boundary[i] { std::f64::consts::PI } else { std::f64::consts::TAU };
+            let full = if on_boundary[i] {
+                std::f64::consts::PI
+            } else {
+                std::f64::consts::TAU
+            };
             Curvature {
                 gaussian: (full - angle[i]) / area[i],
                 mean: laplacian[i].length() / (2.0 * area[i]),
@@ -163,11 +167,7 @@ pub fn curvatures(verts: &[Vec3], faces: &[Vec<usize>]) -> Vec<Curvature> {
 /// Curvature a rendered pixel is asked about: interpolated from the vertices.
 pub fn colour_stops() -> [[f64; 3]; 3] {
     // Flat (blue), mid (green), tight (red) — the false-colour convention.
-    [
-        [0.15, 0.35, 0.95],
-        [0.10, 0.80, 0.25],
-        [0.90, 0.15, 0.10],
-    ]
+    [[0.15, 0.35, 0.95], [0.10, 0.80, 0.25], [0.90, 0.15, 0.10]]
 }
 
 /// The colour of one shaded point under `mode`.
@@ -185,7 +185,11 @@ pub fn analysis_color(
     // must use the surface's true orientation, or an undercut would read as a
     // pullable face.
     let true_normal = normal.norm();
-    let n = if normal.dot(view_dir) < 0.0 { -normal } else { normal };
+    let n = if normal.dot(view_dir) < 0.0 {
+        -normal
+    } else {
+        normal
+    };
     let lit = 0.55 + 0.45 * n.dot(view_dir).max(0.0);
     match mode {
         AnalysisMode::Shaded => [lit, lit, lit],
@@ -312,7 +316,10 @@ mod tests {
         let mean = inside.iter().map(|c| c.mean).sum::<f64>() / inside.len() as f64;
         // H = 1/(2r) for a cylinder: only one principal curvature is non-zero.
         let want = 1.0 / (2.0 * r);
-        assert!((mean - want).abs() < 0.02 * want, "mean curvature {mean}, expected {want}");
+        assert!(
+            (mean - want).abs() < 0.02 * want,
+            "mean curvature {mean}, expected {want}"
+        );
         let gaussian = inside.iter().map(|c| c.gaussian.abs()).fold(0.0, f64::max);
         assert!(gaussian < 0.01, "a cylinder is developable: K = {gaussian}");
     }
@@ -343,21 +350,46 @@ mod tests {
             .collect();
         let dark = shades.iter().cloned().fold(f64::INFINITY, f64::min);
         let bright = shades.iter().cloned().fold(0.0f64, f64::max);
-        assert!(bright - dark > 0.5, "stripes must alternate: {dark} .. {bright}");
+        assert!(
+            bright - dark > 0.5,
+            "stripes must alternate: {dark} .. {bright}"
+        );
 
         // An upward face passes a 3 degree draft; a downward one is an undercut.
         let up = analysis_color(AnalysisMode::Draft { angle_deg: 3.0 }, n, view, flat);
         let down = analysis_color(AnalysisMode::Draft { angle_deg: 3.0 }, -n, view, flat);
-        assert!(up[1] > up[0] && up[1] > up[2], "upward face is green: {up:?}");
-        assert!(down[0] > down[1] && down[0] > down[2], "undercut is red: {down:?}");
+        assert!(
+            up[1] > up[0] && up[1] > up[2],
+            "upward face is green: {up:?}"
+        );
+        assert!(
+            down[0] > down[1] && down[0] > down[2],
+            "undercut is red: {down:?}"
+        );
     }
 
     #[test]
     fn the_curvature_ramp_runs_blue_to_red() {
         let n = Vec3::new(0.0, 0.0, 1.0);
         let view = n;
-        let flat = analysis_color(AnalysisMode::Curvature { radius: 1.0 }, n, view, Curvature { mean: 0.0, gaussian: 0.0 });
-        let tight = analysis_color(AnalysisMode::Curvature { radius: 1.0 }, n, view, Curvature { mean: 5.0, gaussian: 0.0 });
+        let flat = analysis_color(
+            AnalysisMode::Curvature { radius: 1.0 },
+            n,
+            view,
+            Curvature {
+                mean: 0.0,
+                gaussian: 0.0,
+            },
+        );
+        let tight = analysis_color(
+            AnalysisMode::Curvature { radius: 1.0 },
+            n,
+            view,
+            Curvature {
+                mean: 5.0,
+                gaussian: 0.0,
+            },
+        );
         assert!(flat[2] > flat[0], "flat is blue: {flat:?}");
         assert!(tight[0] > tight[2], "tight is red: {tight:?}");
     }

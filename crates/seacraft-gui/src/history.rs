@@ -16,7 +16,11 @@ pub struct History {
 impl History {
     /// A history that keeps at most `limit` snapshots.
     pub fn new(limit: usize) -> Self {
-        Self { undo: Vec::new(), redo: Vec::new(), limit: limit.max(1) }
+        Self {
+            undo: Vec::new(),
+            redo: Vec::new(),
+            limit: limit.max(1),
+        }
     }
 
     /// Record the state *before* a mutation.

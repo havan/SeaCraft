@@ -72,12 +72,19 @@ pub struct DxfLayer {
 impl DxfLayer {
     /// A continuous layer.
     pub fn new(name: impl Into<String>, color: i16) -> DxfLayer {
-        DxfLayer { name: name.into(), color, linetype: DxfLinetype::Continuous }
+        DxfLayer {
+            name: name.into(),
+            color,
+            linetype: DxfLinetype::Continuous,
+        }
     }
 
     /// The same layer with a dashed line.
     pub fn dashed(self) -> DxfLayer {
-        DxfLayer { linetype: DxfLinetype::Dashed, ..self }
+        DxfLayer {
+            linetype: DxfLinetype::Dashed,
+            ..self
+        }
     }
 }
 
@@ -87,15 +94,32 @@ pub enum DxfShape {
     Line(Vec2, Vec2),
     /// Connected straight segments with continuous linetype generation, so a
     /// dash pattern runs through the vertices instead of restarting at each.
-    Polyline { points: Vec<Vec2> },
+    Polyline {
+        points: Vec<Vec2>,
+    },
     /// A 3D polyline (`POLYLINE` with 3D vertices), for hull curves in place.
-    Polyline3 { points: Vec<Vec3> },
-    Circle { c: Vec2, r: f64 },
+    Polyline3 {
+        points: Vec<Vec3>,
+    },
+    Circle {
+        c: Vec2,
+        r: f64,
+    },
     /// Counter-clockwise from `a0` to `a1` (degrees).
-    Arc { c: Vec2, r: f64, a0: f64, a1: f64 },
+    Arc {
+        c: Vec2,
+        r: f64,
+        a0: f64,
+        a1: f64,
+    },
     /// One line of text, centred on `at` (its baseline) and turned
     /// `angle_deg` counter-clockwise.
-    Text { at: Vec2, height: f64, angle_deg: f64, text: String },
+    Text {
+        at: Vec2,
+        height: f64,
+        angle_deg: f64,
+        text: String,
+    },
 }
 
 impl DxfShape {
@@ -107,10 +131,9 @@ impl DxfShape {
             DxfShape::Polyline3 { points } => {
                 out.extend(points.iter().map(|p| Vec2::new(p.x, p.y)))
             }
-            DxfShape::Circle { c, r } => out.extend([
-                Vec2::new(c.x - r, c.y - r),
-                Vec2::new(c.x + r, c.y + r),
-            ]),
+            DxfShape::Circle { c, r } => {
+                out.extend([Vec2::new(c.x - r, c.y - r), Vec2::new(c.x + r, c.y + r)])
+            }
             DxfShape::Arc { c, r, a0, a1 } => {
                 let sweep = (a1 - a0).rem_euclid(360.0);
                 out.extend((0..=32).map(|i| {
@@ -118,11 +141,13 @@ impl DxfShape {
                     Vec2::new(c.x + a.cos() * r, c.y + a.sin() * r)
                 }));
             }
-            DxfShape::Text { at, height, angle_deg, text } => {
-                let (c, s) = (
-                    angle_deg.to_radians().cos(),
-                    angle_deg.to_radians().sin(),
-                );
+            DxfShape::Text {
+                at,
+                height,
+                angle_deg,
+                text,
+            } => {
+                let (c, s) = (angle_deg.to_radians().cos(), angle_deg.to_radians().sin());
                 let half = 0.4 * height * text.chars().count() as f64;
                 for along in [-half, half] {
                     for up in [0.0, *height] {
@@ -146,7 +171,10 @@ pub struct DxfEntity {
 
 impl DxfEntity {
     pub fn new(layer: impl Into<String>, shape: DxfShape) -> Self {
-        Self { layer: layer.into(), shape }
+        Self {
+            layer: layer.into(),
+            shape,
+        }
     }
 }
 
@@ -165,7 +193,11 @@ impl Out {
     fn num(&mut self, c: i32, v: f64) {
         let text = format!("{:.12}", if v.is_finite() { v } else { 0.0 });
         let text = text.trim_end_matches('0');
-        let text = if text.ends_with('.') { format!("{text}0") } else { text.to_string() };
+        let text = if text.ends_with('.') {
+            format!("{text}0")
+        } else {
+            text.to_string()
+        };
         self.code(c, if text == "-0.0" { "0.0" } else { text.as_str() });
     }
 
@@ -250,15 +282,17 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
         e.shape.sample(&mut pts);
     }
     pts.retain(|p| p.x.is_finite() && p.y.is_finite());
-    let (lo, hi) = pts.iter().fold(None, |acc: Option<(Vec2, Vec2)>, p| {
-        Some(acc.map_or((*p, *p), |(lo, hi)| {
-            (
-                Vec2::new(lo.x.min(p.x), lo.y.min(p.y)),
-                Vec2::new(hi.x.max(p.x), hi.y.max(p.y)),
-            )
-        }))
-    })
-    .unwrap_or((Vec2::ZERO, Vec2::ZERO));
+    let (lo, hi) = pts
+        .iter()
+        .fold(None, |acc: Option<(Vec2, Vec2)>, p| {
+            Some(acc.map_or((*p, *p), |(lo, hi)| {
+                (
+                    Vec2::new(lo.x.min(p.x), lo.y.min(p.y)),
+                    Vec2::new(hi.x.max(p.x), hi.y.max(p.y)),
+                )
+            }))
+        })
+        .unwrap_or((Vec2::ZERO, Vec2::ZERO));
 
     let mut layer_list = vec![DxfLayer::new("0", 7)];
     for l in layers {
@@ -268,7 +302,10 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
     }
 
     // Everything but the header, which needs the handle seed.
-    let mut o = Out { s: String::new(), next: 0x20 };
+    let mut o = Out {
+        s: String::new(),
+        next: 0x20,
+    };
     let (model, paper) = (o.handle(), o.handle());
     let root = o.handle();
 
@@ -280,7 +317,11 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
         ("ByBlock", "", &[]),
         ("ByLayer", "", &[]),
         ("Continuous", "Solid line", &[]),
-        ("DASHED", "Dashed __ __ __ __ __ __ __ __ __ __", &[12.7, -6.35]),
+        (
+            "DASHED",
+            "Dashed __ __ __ __ __ __ __ __ __ __",
+            &[12.7, -6.35],
+        ),
     ];
     if layer_list.iter().any(|l| l.linetype == DxfLinetype::Hidden) {
         linetypes.push(("HIDDEN", "Hidden edges", &[2.0, -1.0]));
@@ -356,7 +397,14 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
         o.code(5, h);
         o.code(330, &model);
         o.code(100, "AcDbEntity");
-        o.code(8, if e.layer.trim().is_empty() { "0" } else { e.layer.as_str() });
+        o.code(
+            8,
+            if e.layer.trim().is_empty() {
+                "0"
+            } else {
+                e.layer.as_str()
+            },
+        );
         match &e.shape {
             DxfShape::Polyline { points } => {
                 o.code(100, "AcDbPolyline");
@@ -380,7 +428,14 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
                     o.code(5, vh);
                     o.code(330, &model);
                     o.code(100, "AcDbEntity");
-                    o.code(8, if e.layer.trim().is_empty() { "0" } else { e.layer.as_str() });
+                    o.code(
+                        8,
+                        if e.layer.trim().is_empty() {
+                            "0"
+                        } else {
+                            e.layer.as_str()
+                        },
+                    );
                     o.code(100, "AcDbVertex");
                     o.code(100, "AcDb3dPolylineVertex");
                     o.num(10, p.x);
@@ -394,7 +449,14 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
                 o.code(5, sh);
                 o.code(330, &model);
                 o.code(100, "AcDbEntity");
-                o.code(8, if e.layer.trim().is_empty() { "0" } else { e.layer.as_str() });
+                o.code(
+                    8,
+                    if e.layer.trim().is_empty() {
+                        "0"
+                    } else {
+                        e.layer.as_str()
+                    },
+                );
             }
             DxfShape::Line(a, b) => {
                 o.code(100, "AcDbLine");
@@ -414,7 +476,12 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
                 o.num(50, *a0);
                 o.num(51, *a1);
             }
-            DxfShape::Text { at, height, angle_deg, text } => {
+            DxfShape::Text {
+                at,
+                height,
+                angle_deg,
+                text,
+            } => {
                 o.code(100, "AcDbText");
                 o.point(10, *at);
                 o.num(40, *height);
@@ -442,7 +509,10 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
     o.code(0, "ENDSEC");
     o.code(0, "EOF");
 
-    let mut head = Out { s: String::new(), next: 0 };
+    let mut head = Out {
+        s: String::new(),
+        next: 0,
+    };
     head.code(0, "SECTION");
     head.code(2, "HEADER");
     head.code(9, "$ACADVER");
@@ -472,14 +542,22 @@ mod tests {
         let lines: Vec<&str> = dxf.lines().collect();
         lines
             .chunks(2)
-            .map(|c| (c[0].trim().parse().unwrap(), c.get(1).unwrap_or(&"").trim().to_string()))
+            .map(|c| {
+                (
+                    c[0].trim().parse().unwrap(),
+                    c.get(1).unwrap_or(&"").trim().to_string(),
+                )
+            })
             .collect()
     }
 
     /// (kind, group codes) of each entity in the ENTITIES section.
     fn entities(dxf: &str) -> Vec<(String, Vec<(i32, String)>)> {
         let p = pairs(dxf);
-        let start = p.iter().position(|(c, v)| (*c, v.as_str()) == (2, "ENTITIES")).unwrap();
+        let start = p
+            .iter()
+            .position(|(c, v)| (*c, v.as_str()) == (2, "ENTITIES"))
+            .unwrap();
         let mut out: Vec<(String, Vec<(i32, String)>)> = Vec::new();
         for (c, v) in &p[start + 1..] {
             match (*c, v.as_str()) {
@@ -492,19 +570,34 @@ mod tests {
     }
 
     fn values(e: &(String, Vec<(i32, String)>), code: i32) -> Vec<f64> {
-        e.1.iter().filter(|(c, _)| *c == code).map(|(_, v)| v.parse().unwrap()).collect()
+        e.1.iter()
+            .filter(|(c, _)| *c == code)
+            .map(|(_, v)| v.parse().unwrap())
+            .collect()
     }
 
     #[test]
     fn drawings_carry_version_units_extents_and_handles() {
         let items = vec![
-            DxfEntity::new("OUTLINE", DxfShape::Line(Vec2::new(-1.0, 2.0), Vec2::new(10.0, 2.0))),
-            DxfEntity::new("OUTLINE", DxfShape::Circle { c: Vec2::new(5.0, 5.0), r: 4.0 }),
+            DxfEntity::new(
+                "OUTLINE",
+                DxfShape::Line(Vec2::new(-1.0, 2.0), Vec2::new(10.0, 2.0)),
+            ),
+            DxfEntity::new(
+                "OUTLINE",
+                DxfShape::Circle {
+                    c: Vec2::new(5.0, 5.0),
+                    r: 4.0,
+                },
+            ),
         ];
         let dxf = write_dxf(&[DxfLayer::new("OUTLINE", 7)], &items);
         let p = pairs(&dxf);
         let after = |var: &str| {
-            &p[p.iter().position(|(c, v)| (*c, v.as_str()) == (9, var)).unwrap() + 1..]
+            &p[p.iter()
+                .position(|(c, v)| (*c, v.as_str()) == (9, var))
+                .unwrap()
+                + 1..]
         };
         assert_eq!(after("$ACADVER")[0], (1, "AC1015".to_string()));
         assert_eq!(after("$INSUNITS")[0], (70, "6".to_string()));
@@ -512,7 +605,11 @@ mod tests {
         assert_eq!(after("$EXTMAX")[1], (20, "9.0".to_string()));
 
         // Handles are unique and the seed is above all of them.
-        let seed_at = p.iter().position(|(c, v)| (*c, v.as_str()) == (9, "$HANDSEED")).unwrap() + 1;
+        let seed_at = p
+            .iter()
+            .position(|(c, v)| (*c, v.as_str()) == (9, "$HANDSEED"))
+            .unwrap()
+            + 1;
         let handles: Vec<u64> = p
             .iter()
             .enumerate()
@@ -523,11 +620,16 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), handles.len());
-        assert!(handles.iter().all(|h| *h < u64::from_str_radix(&p[seed_at].1, 16).unwrap()));
+        assert!(handles
+            .iter()
+            .all(|h| *h < u64::from_str_radix(&p[seed_at].1, 16).unwrap()));
         assert!(dxf.ends_with("  0\nEOF\n"));
 
         // Layers, linetypes and the entities' owner.
-        let layer_table = p.iter().position(|(c, v)| (*c, v.as_str()) == (2, "LAYER")).unwrap();
+        let layer_table = p
+            .iter()
+            .position(|(c, v)| (*c, v.as_str()) == (2, "LAYER"))
+            .unwrap();
         let names: Vec<&str> = p[layer_table..]
             .iter()
             .take_while(|(c, v)| (*c, v.as_str()) != (0, "ENDTAB"))
@@ -535,7 +637,10 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .collect();
         assert_eq!(names, ["LAYER", "0", "OUTLINE"]);
-        let model_at = p.iter().position(|(c, v)| (*c, v.as_str()) == (2, "*Model_Space")).unwrap();
+        let model_at = p
+            .iter()
+            .position(|(c, v)| (*c, v.as_str()) == (2, "*Model_Space"))
+            .unwrap();
         let model = p[model_at - 4].1.clone();
         for e in entities(&dxf) {
             assert!(e.1.contains(&(330, model.clone())), "{e:?}");
@@ -558,7 +663,10 @@ mod tests {
             Vec3::new(1.0, 0.5, 0.2),
             Vec3::new(2.0, 0.0, 0.4),
         ];
-        let layer = DxfLayer { linetype: DxfLinetype::Hidden, ..DxfLayer::new("HIDDEN", 8) };
+        let layer = DxfLayer {
+            linetype: DxfLinetype::Hidden,
+            ..DxfLayer::new("HIDDEN", 8)
+        };
         let dxf = write_dxf(
             &[layer],
             &[
@@ -568,7 +676,17 @@ mod tests {
         );
         let e = entities(&dxf);
         let kinds: Vec<&str> = e.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(kinds, ["LWPOLYLINE", "POLYLINE", "VERTEX", "VERTEX", "VERTEX", "SEQEND"]);
+        assert_eq!(
+            kinds,
+            [
+                "LWPOLYLINE",
+                "POLYLINE",
+                "VERTEX",
+                "VERTEX",
+                "VERTEX",
+                "SEQEND"
+            ]
+        );
         assert_eq!(values(&e[0], 90), [4.0]);
         assert_eq!(values(&e[0], 70), [128.0]);
         assert_eq!(values(&e[1], 70), [8.0]);
@@ -617,11 +735,17 @@ mod tests {
             )],
         );
         assert!(dxf.contains("\n0.0\n"), "negative zero is normalised");
-        assert!(dxf.contains("\n0.333333333333\n"), "twelve decimals, trailing zeros trimmed");
-        let counts: HashMap<i32, usize> = pairs(&dxf).into_iter().fold(HashMap::new(), |mut m, (c, _)| {
-            *m.entry(c).or_default() += 1;
-            m
-        });
+        assert!(
+            dxf.contains("\n0.333333333333\n"),
+            "twelve decimals, trailing zeros trimmed"
+        );
+        let counts: HashMap<i32, usize> =
+            pairs(&dxf)
+                .into_iter()
+                .fold(HashMap::new(), |mut m, (c, _)| {
+                    *m.entry(c).or_default() += 1;
+                    m
+                });
         assert!(counts.get(&0).copied().unwrap_or(0) > 10);
     }
 }

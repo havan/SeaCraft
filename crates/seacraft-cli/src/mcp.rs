@@ -49,10 +49,9 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
-    curves, demo, develop, export, fef, linesplan, loading, michell, offsets,
+    curves, demo, develop, export, fef, linesplan, loading, michell, offsets, optimize,
     parametric::{self, HullKind, HullSpec},
     planing, raster, resistance, table, topology, transform, trimopt,
-    optimize,
 };
 use serde_json::{json, Map, Value};
 
@@ -273,14 +272,20 @@ impl McpServer {
         let token = match seacraft_core::control_auth::read_token_file(&token_path) {
             Ok(t) => Some(t),
             Err(e) if token_file.is_none() && e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("cannot read control token file `{}`: {e}", token_path.display())),
+            Err(e) => {
+                return Err(format!(
+                    "cannot read control token file `{}`: {e}",
+                    token_path.display()
+                ))
+            }
         };
         Self::connect_with_token(addr, token)
     }
 
     /// A server that forwards tool calls with an explicit token or no authentication (if None).
     pub fn connect_with_token(addr: &str, token: Option<String>) -> Result<Self, String> {
-        let remote = Remote::connect_with_token(addr, token).map_err(|e| format!("cannot reach {addr}: {e}"))?;
+        let remote = Remote::connect_with_token(addr, token)
+            .map_err(|e| format!("cannot reach {addr}: {e}"))?;
         let mut server = Self::new();
         server.remote = Some(remote);
         Ok(server)
@@ -490,7 +495,9 @@ impl McpServer {
             if name == "batch" {
                 self.batch_remote(a)
             } else {
-                let Some(remote) = &mut self.remote else { unreachable!() };
+                let Some(remote) = &mut self.remote else {
+                    unreachable!()
+                };
                 match remote.tool(name, a) {
                     Ok(v) => text_result(&v, false),
                     Err(e) => text_result(&Value::String(e), true),
@@ -615,7 +622,11 @@ impl McpServer {
                 }
             };
 
-            if tool_res.get("isError").and_then(Value::as_bool).unwrap_or(false) {
+            if tool_res
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 self.restore_snapshot(snapshot);
                 let err_text = tool_res["content"][0]["text"]
                     .as_str()
@@ -936,10 +947,8 @@ impl McpServer {
 
         let (surface, rep) = parametric::generate(&spec)?;
         self.surface = surface;
-        self.opts = HydroOptions::from_surface(
-            &self.surface,
-            seascape_subdiv(self.opts.subdivision.level),
-        );
+        self.opts =
+            HydroOptions::from_surface(&self.surface, seascape_subdiv(self.opts.subdivision.level));
         self.source = None;
 
         let mut out = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
@@ -1213,17 +1222,21 @@ impl McpServer {
     }
 
     fn loading_condition(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
-        let cond: loading::LoadingCondition = if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
-            serde_json::from_value(case_val.clone())
-                .map_err(|e| format!("loading_condition: invalid `case`: {e}"))?
-        } else if let Some(path) = str_arg(a, "case_path").filter(|p| !p.trim().is_empty()) {
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| format!("loading_condition: cannot read {path}: {e}"))?;
-            serde_json::from_str(&text)
-                .map_err(|e| format!("loading_condition: invalid JSON in {path}: {e}"))?
-        } else {
-            return Err("loading_condition: give `case` (inline object) or `case_path` (JSON file path)".into());
-        };
+        let cond: loading::LoadingCondition =
+            if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
+                serde_json::from_value(case_val.clone())
+                    .map_err(|e| format!("loading_condition: invalid `case`: {e}"))?
+            } else if let Some(path) = str_arg(a, "case_path").filter(|p| !p.trim().is_empty()) {
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| format!("loading_condition: cannot read {path}: {e}"))?;
+                serde_json::from_str(&text)
+                    .map_err(|e| format!("loading_condition: invalid JSON in {path}: {e}"))?
+            } else {
+                return Err(
+                "loading_condition: give `case` (inline object) or `case_path` (JSON file path)"
+                    .into(),
+            );
+            };
         loading::validate(&cond).map_err(|e| format!("loading_condition: {e}"))?;
 
         let mut opts = self.opts.clone();
@@ -1335,17 +1348,25 @@ impl McpServer {
     }
 
     fn damage_stability(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
-        let case: seacraft_core::damage::DamageCase = if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
-            serde_json::from_value(case_val.clone())
-                .map_err(|e| format!("damage_stability: invalid `case`: {e}"))?
-        } else if let Some(path) = a.get("case_path").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
-            let contents = std::fs::read_to_string(path)
-                .map_err(|e| format!("damage_stability: cannot read {path}: {e}"))?;
-            serde_json::from_str(&contents)
-                .map_err(|e| format!("damage_stability: invalid JSON in {path}: {e}"))?
-        } else {
-            return Err("damage_stability: give `case` (inline object) or `case_path` (JSON file path)".into());
-        };
+        let case: seacraft_core::damage::DamageCase =
+            if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
+                serde_json::from_value(case_val.clone())
+                    .map_err(|e| format!("damage_stability: invalid `case`: {e}"))?
+            } else if let Some(path) = a
+                .get("case_path")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                let contents = std::fs::read_to_string(path)
+                    .map_err(|e| format!("damage_stability: cannot read {path}: {e}"))?;
+                serde_json::from_str(&contents)
+                    .map_err(|e| format!("damage_stability: invalid JSON in {path}: {e}"))?
+            } else {
+                return Err(
+                    "damage_stability: give `case` (inline object) or `case_path` (JSON file path)"
+                        .into(),
+                );
+            };
         seacraft_core::damage::validate(&case).map_err(|e| format!("damage_stability: {e}"))?;
 
         let level = match a.get("level") {
@@ -1492,9 +1513,15 @@ impl McpServer {
                 &mopts,
             );
             let mut warnings = Vec::new();
-            let lb = if grid.beam_wl > 1e-6 { grid.length_wl / grid.beam_wl } else { 0.0 };
+            let lb = if grid.beam_wl > 1e-6 {
+                grid.length_wl / grid.beam_wl
+            } else {
+                0.0
+            };
             if lb < 6.0 {
-                warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+                warnings.push(format!(
+                    "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
+                ));
             }
             for r in &rows {
                 if !(0.20..=1.0).contains(&r.fn_) {
@@ -1987,7 +2014,10 @@ impl McpServer {
 
         let sections = seacraft_core::report::report_sections(&opts);
 
-        let subdiv = SubdivisionOptions { level: opts.level, mode: opts.mode };
+        let subdiv = SubdivisionOptions {
+            level: opts.level,
+            mode: opts.mode,
+        };
         let hull = hydro::Hull::new(&self.surface, subdiv);
         let h_opts = hydro::HydroOptions::from_surface(&self.surface, subdiv);
         let cond = StabilityCondition {
@@ -1995,9 +2025,12 @@ impl McpServer {
             trim: 0.0,
             lcg_x: opts.lcg_x.or(Some(upright_lcb(&hull, opts.draft))),
         };
-        let target_disp = hull.displaced_volume(opts.draft, 0.0, 0.0) * h_opts.water_density / 1000.0;
+        let target_disp =
+            hull.displaced_volume(opts.draft, 0.0, 0.0) * h_opts.water_density / 1000.0;
         let curves = cross_curves(&hull, &opts.heels, &[target_disp], &cond, &h_opts);
-        let imo_pass = evaluate_imo_criteria(&curves, 0).map(|c| c.passed).unwrap_or(false);
+        let imo_pass = evaluate_imo_criteria(&curves, 0)
+            .map(|c| c.passed)
+            .unwrap_or(false);
 
         Ok(json!({
             "path": path.to_string_lossy(),
@@ -3079,9 +3112,13 @@ impl Remote {
                     "backend": "app",
                 }))
             }
-            "loading_condition" => self.request("stability.loading_condition", Value::Object(a.clone())),
+            "loading_condition" => {
+                self.request("stability.loading_condition", Value::Object(a.clone()))
+            }
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
-            "damage_stability" => self.request("stability.damage_stability", Value::Object(a.clone())),
+            "damage_stability" => {
+                self.request("stability.damage_stability", Value::Object(a.clone()))
+            }
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
@@ -3206,15 +3243,23 @@ fn flatten_hydro(reply: &Value) -> Value {
 mod tests {
     use super::*;
 
-
     /// Every `tool_name {…}` call in the agent skills names a real tool, and each skill's
     /// frontmatter is well formed.
     #[test]
     fn skills_name_only_real_tools() {
         let docs = [
-            ("seacraft-hull-design", include_str!("../../../skills/seacraft-hull-design/SKILL.md")),
-            ("seacraft-fairing", include_str!("../../../skills/seacraft-fairing/SKILL.md")),
-            ("seacraft-stability-check", include_str!("../../../skills/seacraft-stability-check/SKILL.md")),
+            (
+                "seacraft-hull-design",
+                include_str!("../../../skills/seacraft-hull-design/SKILL.md"),
+            ),
+            (
+                "seacraft-fairing",
+                include_str!("../../../skills/seacraft-fairing/SKILL.md"),
+            ),
+            (
+                "seacraft-stability-check",
+                include_str!("../../../skills/seacraft-stability-check/SKILL.md"),
+            ),
         ];
         let tools: Vec<String> = tool_definitions()
             .iter()
@@ -3227,11 +3272,27 @@ mod tests {
                 .and_then(|r| r.split_once("\n---\n"))
                 .unwrap_or_else(|| panic!("{folder}: no frontmatter"))
                 .0;
-            let keys: Vec<&str> = front.lines().filter_map(|l| l.split_once(':').map(|k| k.0)).collect();
+            let keys: Vec<&str> = front
+                .lines()
+                .filter_map(|l| l.split_once(':').map(|k| k.0))
+                .collect();
             assert_eq!(keys, ["name", "description"], "{folder}: frontmatter keys");
-            let field = |k: &str| front.lines().find_map(|l| l.strip_prefix(k)).unwrap().trim();
-            assert_eq!(field("name:"), folder, "{folder}: name must equal the folder");
-            assert!(field("description:").starts_with("Use when "), "{folder}: description");
+            let field = |k: &str| {
+                front
+                    .lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .unwrap()
+                    .trim()
+            };
+            assert_eq!(
+                field("name:"),
+                folder,
+                "{folder}: name must equal the folder"
+            );
+            assert!(
+                field("description:").starts_with("Use when "),
+                "{folder}: description"
+            );
             for span in doc.split('`').skip(1).step_by(2) {
                 let name: String = span
                     .chars()
@@ -3241,12 +3302,18 @@ mod tests {
                     continue;
                 }
                 if span[name.len()..].starts_with(" {") {
-                    assert!(tools.contains(&name), "{folder} calls `{name}`, which is not a tool");
+                    assert!(
+                        tools.contains(&name),
+                        "{folder} calls `{name}`, which is not a tool"
+                    );
                     checked += 1;
                 }
             }
         }
-        assert!(checked >= 30, "only {checked} tool calls found in the skills");
+        assert!(
+            checked >= 30,
+            "only {checked} tool calls found in the skills"
+        );
     }
 
     fn send(server: &mut McpServer, msg: Value) -> Value {
@@ -4259,9 +4326,16 @@ mod tests {
             .iter()
             .find(|t| t["name"] == "optimize_hull")
             .expect("optimize_hull");
-        assert_eq!(Effect::of(optimise), Effect::Edits, "it replaces the session hull in place");
+        assert_eq!(
+            Effect::of(optimise),
+            Effect::Edits,
+            "it replaces the session hull in place"
+        );
         assert!(
-            optimise["description"].as_str().unwrap_or_default().contains("EDITS THE MODEL"),
+            optimise["description"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("EDITS THE MODEL"),
             "the description must say it edits the model"
         );
         let load = tools
@@ -4282,7 +4356,9 @@ mod tests {
     #[test]
     fn optimize_hull_edits_the_session_hull_and_batch_rolls_it_back() {
         let mut s = McpServer::new();
-        let v0 = ok(&mut s, 1, "hydro_compute", json!({}))["volume_m3"].as_f64().expect("volume");
+        let v0 = ok(&mut s, 1, "hydro_compute", json!({}))["volume_m3"]
+            .as_f64()
+            .expect("volume");
         let args = json!({
             "speed_kn": 8.0, "vars": ["lb"], "kg": 1.0, "min_gm": 0.5,
             "max_evaluations": 8, "level": 2,
@@ -4299,28 +4375,51 @@ mod tests {
                 {"name": "hull_info", "arguments": {"bogus": 1}},
             ]}),
         );
-        assert!(msg.contains("bogus") || msg.contains("unknown argument"), "{msg}");
-        assert_eq!(ok(&mut s, 4, "hull_info", json!({}))["extents"], before["extents"]);
+        assert!(
+            msg.contains("bogus") || msg.contains("unknown argument"),
+            "{msg}"
+        );
+        assert_eq!(
+            ok(&mut s, 4, "hull_info", json!({}))["extents"],
+            before["extents"]
+        );
 
         // On its own it succeeds and the session hull is the optimised one.
         let r = ok(&mut s, 5, "optimize_hull", args);
         let rep = &r["report"];
         let (b, o) = (&rep["baseline"], &rep["optimised"]);
-        assert!(o["rt_kn"].as_f64().unwrap_or(f64::MAX) <= b["rt_kn"].as_f64().unwrap_or(0.0) + 1e-12, "{r}");
+        assert!(
+            o["rt_kn"].as_f64().unwrap_or(f64::MAX) <= b["rt_kn"].as_f64().unwrap_or(0.0) + 1e-12,
+            "{r}"
+        );
         assert_eq!(rep["variables"].as_array().map(Vec::len), Some(1), "{r}");
         assert_eq!(rep["constraints_met"], true, "{r}");
-        assert!(rep["trajectory"].as_array().is_some_and(|t| !t.is_empty() && t.len() <= 8), "{r}");
+        assert!(
+            rep["trajectory"]
+                .as_array()
+                .is_some_and(|t| !t.is_empty() && t.len() <= 8),
+            "{r}"
+        );
         assert_eq!(r["backend"], "headless");
         // The measurement draft followed the optimised hull, and the same
         // displacement floats at it.
         let h = ok(&mut s, 6, "hydro_compute", json!({}));
-        assert!((h["draft"].as_f64().unwrap_or(0.0) - r["draft"].as_f64().unwrap_or(-1.0)).abs() < 1e-12, "{h}");
+        assert!(
+            (h["draft"].as_f64().unwrap_or(0.0) - r["draft"].as_f64().unwrap_or(-1.0)).abs()
+                < 1e-12,
+            "{h}"
+        );
         let v = h["volume_m3"].as_f64().expect("volume");
         assert!((v - v0).abs() / v0 < 0.011, "{v} against {v0}");
 
         // Bad arguments are tool errors, not panics.
         fails(&mut s, 7, "optimize_hull", json!({"speed_kn": 0.0}));
-        fails(&mut s, 8, "optimize_hull", json!({"speed_kn": 8.0, "vars": ["wibble"]}));
+        fails(
+            &mut s,
+            8,
+            "optimize_hull",
+            json!({"speed_kn": 8.0, "vars": ["wibble"]}),
+        );
     }
 
     #[test]
@@ -4474,7 +4573,10 @@ mod tests {
         let gm_fluid = inline["gm_fluid"].as_f64().expect("gm_fluid");
         let fsc = inline["fsc_m"].as_f64().expect("fsc_m");
         assert!(fsc > 0.0, "slack tank must produce positive FSC: {inline}");
-        assert!(gm_fluid < gm_solid, "GM_fluid {gm_fluid} must be < GM_solid {gm_solid}");
+        assert!(
+            gm_fluid < gm_solid,
+            "GM_fluid {gm_fluid} must be < GM_solid {gm_solid}"
+        );
         assert!((gm_solid - gm_fluid - fsc).abs() < 1e-12);
 
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-loadcase.json");
@@ -4488,7 +4590,10 @@ mod tests {
             from_file["gm_fluid"].as_f64().unwrap() < from_file["gm_solid"].as_f64().unwrap(),
             "{from_file}"
         );
-        assert!(from_file["imo_criteria"]["passed"].is_boolean(), "{from_file}");
+        assert!(
+            from_file["imo_criteria"]["passed"].is_boolean(),
+            "{from_file}"
+        );
 
         fails(&mut s, 3, "loading_condition", json!({}));
     }
@@ -4561,12 +4666,20 @@ mod tests {
         assert_eq!(fail_json["completed"], 1);
         assert_eq!(fail_json["failed"]["index"], 1);
         assert_eq!(fail_json["failed"]["name"], "move_point");
-        assert!(fail_json["failed"]["error"].as_str().unwrap().contains("out of range"));
+        assert!(fail_json["failed"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("out of range"));
 
         // Verify point 0 was rolled back: z is still 0.5, not 5.0
         let after_info = ok(&mut s, 4, "hull_info", json!({}));
         assert_eq!(after_info["points"], before_info["points"]);
-        let check_pt = ok(&mut s, 5, "move_point", json!({"index": 0, "xyz": [0.0, 0.0, 0.5]}));
+        let check_pt = ok(
+            &mut s,
+            5,
+            "move_point",
+            json!({"index": 0, "xyz": [0.0, 0.0, 0.5]}),
+        );
         assert!((check_pt["before"]["z"].as_f64().unwrap() - 0.5).abs() < 1e-9);
 
         // 3. nested batch rejected
@@ -4585,7 +4698,10 @@ mod tests {
         );
         let nested_json: Value = serde_json::from_str(&nested_err).expect("nested fail json");
         assert_eq!(nested_json["failed"]["name"], "batch");
-        assert!(nested_json["failed"]["error"].as_str().unwrap().contains("nested batch"));
+        assert!(nested_json["failed"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("nested batch"));
 
         // 4. >100 calls rejected with -32602
         let calls_101: Vec<Value> = (0..101)
@@ -4598,7 +4714,10 @@ mod tests {
             json!({"name": "batch", "arguments": {"calls": calls_101}}),
         );
         assert_eq!(too_many["error"]["code"], -32602);
-        assert!(too_many["error"]["message"].as_str().unwrap().contains("too many items"));
+        assert!(too_many["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("too many items"));
 
         // 5. deliberately panicking path does not kill the server — assert next ping still answers
         let panic_res = request(
@@ -4633,21 +4752,27 @@ mod tests {
             reader.read_line(&mut line).expect("read");
             let v: Value = serde_json::from_str(line.trim()).expect("json");
             assert_eq!(v["method"], "history.mark");
-            stream.write_all(b"{\"ok\":true,\"result\":{\"mark\":42}}\n").expect("write");
+            stream
+                .write_all(b"{\"ok\":true,\"result\":{\"mark\":42}}\n")
+                .expect("write");
 
             // 2. Expect first tool call (point.move)
             line.clear();
             reader.read_line(&mut line).expect("read");
             let v: Value = serde_json::from_str(line.trim()).expect("json");
             assert_eq!(v["method"], "point.move");
-            stream.write_all(b"{\"ok\":true,\"result\":{\"index\":0}}\n").expect("write");
+            stream
+                .write_all(b"{\"ok\":true,\"result\":{\"index\":0}}\n")
+                .expect("write");
 
             // 3. Expect second tool call (model.split_face which fails)
             line.clear();
             reader.read_line(&mut line).expect("read");
             let v: Value = serde_json::from_str(line.trim()).expect("json");
             assert_eq!(v["method"], "model.split_face");
-            stream.write_all(b"{\"ok\":false,\"error\":\"split error\"}\n").expect("write");
+            stream
+                .write_all(b"{\"ok\":false,\"error\":\"split error\"}\n")
+                .expect("write");
 
             // 4. Expect history.restore with mark 42
             line.clear();
@@ -4655,7 +4780,9 @@ mod tests {
             let v: Value = serde_json::from_str(line.trim()).expect("json");
             assert_eq!(v["method"], "history.restore");
             assert_eq!(v["params"]["mark"], 42);
-            stream.write_all(b"{\"ok\":true,\"result\":{\"restored\":true}}\n").expect("write");
+            stream
+                .write_all(b"{\"ok\":true,\"result\":{\"restored\":true}}\n")
+                .expect("write");
         });
 
         let mut s = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
@@ -4682,7 +4809,10 @@ mod tests {
         assert_eq!(fail_json["completed"], 1);
         assert_eq!(fail_json["failed"]["index"], 1);
         assert_eq!(fail_json["failed"]["name"], "split_face");
-        assert!(fail_json["failed"]["error"].as_str().unwrap().contains("split error"));
+        assert!(fail_json["failed"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("split error"));
 
         handle.join().expect("server thread finished");
     }
@@ -4725,11 +4855,15 @@ mod tests {
         });
 
         // Test connecting with the token file
-        let mut s = McpServer::connect(&addr.to_string(), Some(&token_path)).expect("connect with token file");
+        let mut s = McpServer::connect(&addr.to_string(), Some(&token_path))
+            .expect("connect with token file");
         assert!(s.is_remote());
 
         let info = s.call_tool("hull_info", &json!({}));
-        assert_eq!(info["content"][0]["text"], "{\n  \"version\": \"0.1.0-beta.48\"\n}");
+        assert_eq!(
+            info["content"][0]["text"],
+            "{\n  \"version\": \"0.1.0-beta.48\"\n}"
+        );
 
         handle.join().expect("server thread finished");
 

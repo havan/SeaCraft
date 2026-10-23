@@ -195,7 +195,10 @@ pub fn viewport_with_texture(
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(if active { 2.0 } else { 1.0 }, if active { FRAME_ACTIVE } else { FRAME }),
+        Stroke::new(
+            if active { 2.0 } else { 1.0 },
+            if active { FRAME_ACTIVE } else { FRAME },
+        ),
         egui::StrokeKind::Inside,
     );
 }
@@ -216,10 +219,12 @@ fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: 
 
     let base = (*center).dot(view.right);
     let up_base = (*center).dot(view.up);
-    let step = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0]
-        .into_iter()
-        .find(|s| 2.0 * half / s <= 30.0)
-        .unwrap_or(1000.0);
+    let step = [
+        0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0,
+    ]
+    .into_iter()
+    .find(|s| 2.0 * half / s <= 30.0)
+    .unwrap_or(1000.0);
 
     let paint = |a: Vec3, b: Vec3, color: Color32| {
         if let (Some(p), Some(q)) = (view.project(a, rect), view.project(b, rect)) {
@@ -233,9 +238,17 @@ fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: 
         let u = base + offset;
         let v = up_base;
         let color = if offset.abs() < 1e-9 { GRID_AXIS } else { GRID };
-        paint(view.right * u + view.up * (v - half), view.right * u + view.up * (v + half), color);
+        paint(
+            view.right * u + view.up * (v - half),
+            view.right * u + view.up * (v + half),
+            color,
+        );
         let v2 = up_base + offset;
-        paint(view.right * (base - half) + view.up * v2, view.right * (base + half) + view.up * v2, color);
+        paint(
+            view.right * (base - half) + view.up * v2,
+            view.right * (base + half) + view.up * v2,
+            color,
+        );
     }
     let _ = width;
 }
@@ -247,12 +260,8 @@ fn draw_waterplane(
     scene: &Scene,
     fill_quad: bool,
 ) {
-    let plane = seacraft_core::hydro::waterplane(
-        scene.surface,
-        scene.draft,
-        scene.trim,
-        scene.heel_deg,
-    );
+    let plane =
+        seacraft_core::hydro::waterplane(scene.surface, scene.draft, scene.trim, scene.heel_deg);
     let (u, v) = plane.basis();
     let center = plane.project(scene.center());
     let mut u_min = f64::INFINITY;
@@ -280,7 +289,10 @@ fn draw_waterplane(
         center + u * (u_max + pad_u) + v * (v_max + pad_v),
         center + u * (u_min - pad_u) + v * (v_max + pad_v),
     ];
-    let pts: Vec<Pos2> = corners.iter().filter_map(|p| view.project(*p, rect)).collect();
+    let pts: Vec<Pos2> = corners
+        .iter()
+        .filter_map(|p| view.project(*p, rect))
+        .collect();
     if pts.len() == 4 {
         if view.perspective && fill_quad {
             let mut quad_mesh = egui::Mesh::default();
@@ -313,12 +325,18 @@ fn draw_waterplane(
             for (i, j) in [(0usize, 1usize), (1, 2), (2, 0)] {
                 if (s[i] <= 0.0) != (s[j] <= 0.0) {
                     let denom = s[i] - s[j];
-                    let t = if denom.abs() > 1e-15 { (s[i] / denom).clamp(0.0, 1.0) } else { 0.5 };
+                    let t = if denom.abs() > 1e-15 {
+                        (s[i] / denom).clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    };
                     hits.push(tri[i] + (tri[j] - tri[i]) * t);
                 }
             }
             if hits.len() == 2 {
-                if let (Some(p0), Some(p1)) = (view.project(hits[0], rect), view.project(hits[1], rect)) {
+                if let (Some(p0), Some(p1)) =
+                    (view.project(hits[0], rect), view.project(hits[1], rect))
+                {
                     painter.line_segment([p0, p1], Stroke::new(1.5, WATERLINE));
                 }
             }
@@ -461,7 +479,10 @@ fn draw_hull(
             for i in 0..f.len() {
                 let a = f[i];
                 let b = f[(i + 1) % f.len()];
-                if let (Some(p), Some(q)) = (view.project(mesh.verts[a], rect), view.project(mesh.verts[b], rect)) {
+                if let (Some(p), Some(q)) = (
+                    view.project(mesh.verts[a], rect),
+                    view.project(mesh.verts[b], rect),
+                ) {
                     painter.line_segment([p, q], Stroke::new(0.7, HULL_EDGE));
                 }
             }
@@ -475,7 +496,11 @@ fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
         return Color32::from_rgb(0x9f, 0xb4, 0xc7);
     };
     let c = layer.color.max(0) as u32;
-    Color32::from_rgb(((c >> 16) & 0xff) as u8, ((c >> 8) & 0xff) as u8, (c & 0xff) as u8)
+    Color32::from_rgb(
+        ((c >> 16) & 0xff) as u8,
+        ((c >> 8) & 0xff) as u8,
+        (c & 0xff) as u8,
+    )
 }
 
 fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, surface: &Surface) {
@@ -489,13 +514,19 @@ fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, s
         for i in 0..f.len() {
             let a = f[i];
             let b = f[(i + 1) % f.len()];
-            let (Some(p), Some(q)) = (view.project(surface.points[a].p, rect), view.project(surface.points[b].p, rect)) else {
+            let (Some(p), Some(q)) = (
+                view.project(surface.points[a].p, rect),
+                view.project(surface.points[b].p, rect),
+            ) else {
                 continue;
             };
             let crease = creases.contains(&seacraft_core::mesh::ordered(a, b));
             painter.line_segment(
                 [p, q],
-                Stroke::new(if crease { 1.6 } else { 1.0 }, if crease { CREASE } else { CONTROL }),
+                Stroke::new(
+                    if crease { 1.6 } else { 1.0 },
+                    if crease { CREASE } else { CONTROL },
+                ),
             );
         }
     }
@@ -509,7 +540,9 @@ fn draw_points(
     selected: Option<usize>,
 ) {
     for (i, p) in surface.points.iter().enumerate() {
-        let Some(s) = view.project(p.p, rect) else { continue };
+        let Some(s) = view.project(p.p, rect) else {
+            continue;
+        };
         if i == selected.unwrap_or(usize::MAX) {
             painter.circle_filled(s, 5.0, SELECTED);
             painter.circle_stroke(s, 5.0, Stroke::new(1.0, Color32::BLACK));
@@ -599,22 +632,30 @@ pub fn raster_frame(
         height,
         mode,
         background: (
-            [0x13 as f64 / 255.0, 0x19 as f64 / 255.0, 0x21 as f64 / 255.0],
-            [0x0d as f64 / 255.0, 0x12 as f64 / 255.0, 0x18 as f64 / 255.0],
+            [
+                0x13 as f64 / 255.0,
+                0x19 as f64 / 255.0,
+                0x21 as f64 / 255.0,
+            ],
+            [
+                0x0d as f64 / 255.0,
+                0x12 as f64 / 255.0,
+                0x18 as f64 / 255.0,
+            ],
         ),
         supersample: 1,
         wireframe: false,
         two_sided: true,
         waterplane: (waterplane && view.perspective).then(|| {
-            seacraft_core::hydro::waterplane(
-                scene.surface,
-                scene.draft,
-                scene.trim,
-                scene.heel_deg,
-            )
+            seacraft_core::hydro::waterplane(scene.surface, scene.draft, scene.trim, scene.heel_deg)
         }),
     };
-    let canvas = raster::render(&scene.mesh.verts, &scene.mesh.faces, &raster_view(view), &opts);
+    let canvas = raster::render(
+        &scene.mesh.verts,
+        &scene.mesh.faces,
+        &raster_view(view),
+        &opts,
+    );
     (canvas.w, canvas.h, canvas.rgba)
 }
 

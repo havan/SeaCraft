@@ -23,7 +23,9 @@ pub fn pick_point(
 ) -> Option<usize> {
     let mut best: Option<(usize, f32, f64)> = None;
     for (i, p) in pts.iter().enumerate() {
-        let Some(screen) = view.project(*p, rect) else { continue };
+        let Some(screen) = view.project(*p, rect) else {
+            continue;
+        };
         let d = screen.distance(cursor);
         if d > max_px {
             continue;
@@ -71,7 +73,10 @@ mod tests {
             Vec3::new(7.0, 0.0, 1.0),
         ];
         let on_middle = view.project(pts[1], rect()).unwrap();
-        assert_eq!(pick_point(&view, rect(), on_middle, &pts, PICK_RADIUS), Some(1));
+        assert_eq!(
+            pick_point(&view, rect(), on_middle, &pts, PICK_RADIUS),
+            Some(1)
+        );
         // 30 px away from any point: nothing.
         let far = pos2(on_middle.x, on_middle.y - 30.0);
         assert_eq!(pick_point(&view, rect(), far, &pts, PICK_RADIUS), None);
@@ -89,7 +94,10 @@ mod tests {
         // 10 px to the right moves the point 10 px worth of world units.
         let moved = ray_plane(&view.ray(pos2(start.x + 10.0, start.y), rect()), &plane).unwrap();
         let world_per_px = 8.0 / rect().height() as f64;
-        assert!((moved.x - p.x - 10.0 * world_per_px).abs() < 1e-9, "moved to {moved:?}");
+        assert!(
+            (moved.x - p.x - 10.0 * world_per_px).abs() < 1e-9,
+            "moved to {moved:?}"
+        );
         assert!((moved.z - p.z).abs() < 1e-9);
     }
 }

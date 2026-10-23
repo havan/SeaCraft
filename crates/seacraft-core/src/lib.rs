@@ -48,13 +48,13 @@ pub mod resistance;
 /// Lewis conformal mapping and Ursell–Tasai 2D heave radiation.
 pub mod seakeeping;
 pub mod stability;
-pub mod weather;
 pub mod subdiv;
 pub mod table;
 pub mod threemf;
 pub mod topology;
-pub mod trimopt;
 pub mod transform;
+pub mod trimopt;
+pub mod weather;
 
 pub use analysis::AnalysisMode;
 pub use hydro::{HydroOptions, Hydrostatics};

@@ -126,7 +126,9 @@ pub fn scan(
             match draft_for_volume(&hull, &base, trim, target) {
                 Some(d) => o.draft = d,
                 None => {
-                    errors.push(format!("trim {trim:+.3} m: the hull cannot carry the displacement"));
+                    errors.push(format!(
+                        "trim {trim:+.3} m: the hull cannot carry the displacement"
+                    ));
                     continue;
                 }
             }
@@ -147,7 +149,10 @@ pub fn scan(
         });
     }
     if points.is_empty() {
-        return Err(format!("trim: nothing could be measured ({})", errors.join("; ")));
+        return Err(format!(
+            "trim: nothing could be measured ({})",
+            errors.join("; ")
+        ));
     }
     let mut best = points[0];
     for p in &points {
@@ -156,7 +161,8 @@ pub fn scan(
         }
     }
     let at_boundary = points.len() > 1
-        && (best.trim_m <= points[0].trim_m + 1e-9 || best.trim_m >= points[points.len() - 1].trim_m - 1e-9);
+        && (best.trim_m <= points[0].trim_m + 1e-9
+            || best.trim_m >= points[points.len() - 1].trim_m - 1e-9);
     let mut warnings = Vec::new();
     if at_boundary {
         warnings.push(format!(
@@ -189,7 +195,10 @@ mod tests {
     fn opts(s: &Surface) -> HydroOptions {
         let mut o = HydroOptions::from_surface(
             s,
-            SubdivisionOptions { level: 3, mode: Default::default() },
+            SubdivisionOptions {
+                level: 3,
+                mode: Default::default(),
+            },
         );
         o.draft = 0.62;
         o
@@ -210,7 +219,12 @@ mod tests {
         let hull = Hull::new(&s, o.subdivision);
         let input = HoltropInput::measure(&hull, &o).expect("measures");
         let direct = resistance::holtrop(&input, 10.0 * 0.514_444_444_444_444_4);
-        assert!((level.rt_n - direct.rt_n).abs() < 1e-3, "{} vs {}", level.rt_n, direct.rt_n);
+        assert!(
+            (level.rt_n - direct.rt_n).abs() < 1e-3,
+            "{} vs {}",
+            level.rt_n,
+            direct.rt_n
+        );
         assert!((level.volume_m3 - scan.target_volume_m3).abs() < 1e-6);
         // And with the CLI's own numbers for this hull (35.79 kW at 10 kn).
         assert!((level.pe_kw - 35.79).abs() < 0.1, "{:.2} kW", level.pe_kw);
@@ -220,8 +234,8 @@ mod tests {
     fn the_displacement_holds_across_the_scan() {
         let s = demo::demo_hull(false);
         let o = opts(&s);
-        let result = scan(&s, o.subdivision, &o, 10.0, &trim_range(-0.4, 0.4, 5), true)
-            .expect("scans");
+        let result =
+            scan(&s, o.subdivision, &o, 10.0, &trim_range(-0.4, 0.4, 5), true).expect("scans");
         assert_eq!(result.points.len(), 5);
         for p in &result.points {
             assert!(
@@ -236,15 +250,19 @@ mod tests {
         // Trimming needs a different draft to hold the same volume.
         let first = result.points.first().expect("a point");
         let last = result.points.last().expect("a point");
-        assert!((first.draft_m - last.draft_m).abs() > 1e-3, "{:?}", result.points);
+        assert!(
+            (first.draft_m - last.draft_m).abs() > 1e-3,
+            "{:?}",
+            result.points
+        );
     }
 
     #[test]
     fn the_best_point_is_the_cheapest_of_the_curve() {
         let s = demo::demo_hull(false);
         let o = opts(&s);
-        let scan = scan(&s, o.subdivision, &o, 10.0, &trim_range(-0.3, 0.3, 7), true)
-            .expect("scans");
+        let scan =
+            scan(&s, o.subdivision, &o, 10.0, &trim_range(-0.3, 0.3, 7), true).expect("scans");
         let best = scan.best.expect("a best point");
         let min = scan
             .points
@@ -273,10 +291,13 @@ mod tests {
         let s = demo::demo_hull(false);
         let o = opts(&s);
         // A range entirely forward of the optimum must report the edge.
-        let edge = scan(&s, o.subdivision, &o, 10.0, &trim_range(0.4, 0.6, 3), true)
-            .expect("scans");
+        let edge =
+            scan(&s, o.subdivision, &o, 10.0, &trim_range(0.4, 0.6, 3), true).expect("scans");
         assert!(edge.at_boundary, "{edge:?}");
-        assert!(edge.warnings.iter().any(|w| w.contains("edge of the range")));
+        assert!(edge
+            .warnings
+            .iter()
+            .any(|w| w.contains("edge of the range")));
         assert!(scan(&s, o.subdivision, &o, 0.0, &[-0.1, 0.1], true).is_err());
         assert!(scan(&s, o.subdivision, &o, 10.0, &[0.0], true).is_err());
     }

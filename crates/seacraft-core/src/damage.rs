@@ -214,13 +214,22 @@ fn validate_compartment(c: &Compartment) -> Result<(), String> {
     }
     let coords = [c.x_min, c.x_max, c.y_min, c.y_max, c.z_min, c.z_max];
     if coords.iter().any(|v| !v.is_finite()) {
-        return Err(format!("compartment `{}`: box bounds must be finite", c.name));
+        return Err(format!(
+            "compartment `{}`: box bounds must be finite",
+            c.name
+        ));
     }
     if c.x_max < c.x_min || c.y_max < c.y_min || c.z_max < c.z_min {
-        return Err(format!("compartment `{}`: max bounds must be >= min bounds", c.name));
+        return Err(format!(
+            "compartment `{}`: max bounds must be >= min bounds",
+            c.name
+        ));
     }
     if !c.permeability.is_finite() || !(0.0..=1.0).contains(&c.permeability) {
-        return Err(format!("compartment `{}`: permeability must be in 0..=1", c.name));
+        return Err(format!(
+            "compartment `{}`: permeability must be in 0..=1",
+            c.name
+        ));
     }
     Ok(())
 }
@@ -396,21 +405,29 @@ fn clip_poly_2d(
 ) -> Vec<(f64, f64)> {
     let mut current = poly.to_vec();
     // 1. y >= y_min
-    current = clip_half_plane_2d(&current, |p| p.0 - y_min, |p, q, t| {
-        (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1))
-    });
+    current = clip_half_plane_2d(
+        &current,
+        |p| p.0 - y_min,
+        |p, q, t| (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)),
+    );
     // 2. y <= y_max
-    current = clip_half_plane_2d(&current, |p| y_max - p.0, |p, q, t| {
-        (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1))
-    });
+    current = clip_half_plane_2d(
+        &current,
+        |p| y_max - p.0,
+        |p, q, t| (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)),
+    );
     // 3. z >= z_min
-    current = clip_half_plane_2d(&current, |p| p.1 - z_min, |p, q, t| {
-        (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1))
-    });
+    current = clip_half_plane_2d(
+        &current,
+        |p| p.1 - z_min,
+        |p, q, t| (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)),
+    );
     // 4. z <= z_max
-    current = clip_half_plane_2d(&current, |p| z_max - p.1, |p, q, t| {
-        (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1))
-    });
+    current = clip_half_plane_2d(
+        &current,
+        |p| z_max - p.1,
+        |p, q, t| (p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)),
+    );
     current
 }
 
@@ -532,8 +549,7 @@ pub fn damaged_buoyancy(
         if s.verts.is_empty() || s.tris.is_empty() {
             continue;
         }
-        let (comp_vol, comp_moment, _, _, _) =
-            crate::hydro::integrate(&s.verts, &s.tris, &wp);
+        let (comp_vol, comp_moment, _, _, _) = crate::hydro::integrate(&s.verts, &s.tris, &wp);
         net_vol -= mu * comp_vol;
         net_moment -= comp_moment * mu;
     }
@@ -754,11 +770,9 @@ pub fn resolve_compartments(
                 let lc = case.loading_condition.as_ref().or(loading_cond).ok_or_else(|| {
                     format!("compartment `{name}` was given by name but no loading condition was provided")
                 })?;
-                let tank = lc
-                    .tanks
-                    .iter()
-                    .find(|t| t.name == *name)
-                    .ok_or_else(|| format!("compartment `{name}` not found in loading condition tanks"))?;
+                let tank = lc.tanks.iter().find(|t| t.name == *name).ok_or_else(|| {
+                    format!("compartment `{name}` not found in loading condition tanks")
+                })?;
                 let c = Compartment {
                     name: tank.name.clone(),
                     x_min: tank.x_min,
@@ -797,7 +811,11 @@ pub fn evaluate(
         (Some(d), Some(k)) => {
             let lcg = case.lcg.unwrap_or_else(|| {
                 let (target_v, b) = hull.buoyancy(opts.draft, 0.0, 0.0);
-                if target_v > 1e-12 { b.x } else { 0.5 * (hull.model_min.x + hull.model_max.x) }
+                if target_v > 1e-12 {
+                    b.x
+                } else {
+                    0.5 * (hull.model_min.x + hull.model_max.x)
+                }
             });
             let tcg = case.tcg.unwrap_or(0.0);
             (d, k, lcg, tcg)
@@ -834,12 +852,11 @@ pub fn evaluate(
     let mut warnings = Vec::new();
 
     // 1. Intact equilibrium floating condition.
-    let intact_fc = solve_floating(&hull, target_volume, 0.0, lcg, 0.0).unwrap_or(
-        FloatingCondition {
+    let intact_fc =
+        solve_floating(&hull, target_volume, 0.0, lcg, 0.0).unwrap_or(FloatingCondition {
             draft: opts.draft,
             trim: 0.0,
-        },
-    );
+        });
 
     // 2. Build solids for each compartment.
     let solids: Vec<CompartmentSolid> = compartments
@@ -849,14 +866,15 @@ pub fn evaluate(
 
     // 3. Damaged equilibrium solve: draft, trim, heel.
     let g = Vec3::new(lcg, tcg, hull.keel + kg);
-    let righting_lever_at_heel = |phi: f64, trim_hint: f64| -> Option<(FloatingCondition, f64, Vec3)> {
-        let fc = solve_damaged_floating(&hull, &solids, target_volume, phi, lcg, trim_hint)?;
-        let (_, b) = damaged_buoyancy(&hull, &solids, fc.draft, fc.trim, phi);
-        let wp = waterplane_for(hull.keel, hull.length, fc.draft, fc.trim, phi);
-        let t = wp.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
-        let gz = (b - g).dot(t);
-        Some((fc, gz, b))
-    };
+    let righting_lever_at_heel =
+        |phi: f64, trim_hint: f64| -> Option<(FloatingCondition, f64, Vec3)> {
+            let fc = solve_damaged_floating(&hull, &solids, target_volume, phi, lcg, trim_hint)?;
+            let (_, b) = damaged_buoyancy(&hull, &solids, fc.draft, fc.trim, phi);
+            let wp = waterplane_for(hull.keel, hull.length, fc.draft, fc.trim, phi);
+            let t = wp.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
+            let gz = (b - g).dot(t);
+            Some((fc, gz, b))
+        };
 
     let mut eq_fc = FloatingCondition {
         draft: intact_fc.draft,

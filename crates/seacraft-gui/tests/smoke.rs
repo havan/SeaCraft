@@ -5,7 +5,10 @@ use eframe::egui;
 use seacraft_gui::App;
 
 fn demo_path() -> String {
-    format!("{}/../../examples/demo-hull.fef", env!("CARGO_MANIFEST_DIR"))
+    format!(
+        "{}/../../examples/demo-hull.fef",
+        env!("CARGO_MANIFEST_DIR")
+    )
 }
 
 /// Run `n` headless frames. Textures are never uploaded in a test, so their
@@ -85,7 +88,10 @@ fn every_viewport_has_a_usable_rectangle() {
     frames(&mut app, 2);
     for i in 0..4 {
         let rect = app.viewport_rect(i);
-        assert!(rect.width() > 100.0 && rect.height() > 100.0, "viewport {i}: {rect:?}");
+        assert!(
+            rect.width() > 100.0 && rect.height() > 100.0,
+            "viewport {i}: {rect:?}"
+        );
     }
 }
 

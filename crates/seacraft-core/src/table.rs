@@ -126,14 +126,12 @@ pub fn table(surface: &Surface, opts: &HydroOptions, drafts: &[f64]) -> Hydrosta
 impl HydrostaticTable {
     /// The row nearest a draft, for a caller that wants to check one point.
     pub fn row_at(&self, draft: f64) -> Option<&HydrostaticRow> {
-        self.rows
-            .iter()
-            .min_by(|a, b| {
-                (a.draft - draft)
-                    .abs()
-                    .partial_cmp(&(b.draft - draft).abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+        self.rows.iter().min_by(|a, b| {
+            (a.draft - draft)
+                .abs()
+                .partial_cmp(&(b.draft - draft).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 
     /// Long-format CSV: one line per row, fixed column order.
@@ -235,7 +233,13 @@ mod tests {
     use crate::subdiv::SubdivisionOptions;
 
     fn opts(s: &Surface) -> HydroOptions {
-        HydroOptions::from_surface(s, SubdivisionOptions { level: 3, mode: Default::default() })
+        HydroOptions::from_surface(
+            s,
+            SubdivisionOptions {
+                level: 3,
+                mode: Default::default(),
+            },
+        )
     }
 
     #[test]
@@ -250,11 +254,22 @@ mod tests {
         assert!((row.volume_m3 - h.volume_m3).abs() < 1e-9, "volume");
         assert!((row.km_transverse - h.km_transverse).abs() < 1e-9, "KM");
         assert!((row.lcb_x - h.lcb.x).abs() < 1e-9, "LCB");
-        assert!((row.block_coefficient - h.block_coefficient).abs() < 1e-9, "Cb");
+        assert!(
+            (row.block_coefficient - h.block_coefficient).abs() < 1e-9,
+            "Cb"
+        );
         // The published demo reference, so the table cannot drift from the
         // single-point command.
-        assert!((row.volume_m3 - 11.8508).abs() < 0.05, "{:.4}", row.volume_m3);
-        assert!((row.km_transverse - 2.6245).abs() < 0.02, "{:.4}", row.km_transverse);
+        assert!(
+            (row.volume_m3 - 11.8508).abs() < 0.05,
+            "{:.4}",
+            row.volume_m3
+        );
+        assert!(
+            (row.km_transverse - 2.6245).abs() < 0.02,
+            "{:.4}",
+            row.km_transverse
+        );
     }
 
     #[test]
@@ -286,8 +301,16 @@ mod tests {
             // Physical magnitudes: a 12 m boat immerses a few tonnes per metre
             // of length, so 0.1..1.0 t/cm and 0.05..5 t*m/cm. A missing
             // kg-to-tonne factor is a factor of 1000 and would fail here.
-            assert!((0.05..1.5).contains(&r.tpc), "TPC {:.4} t/cm is not plausible", r.tpc);
-            assert!((0.02..5.0).contains(&r.mtc), "MTC {:.4} t*m/cm is not plausible", r.mtc);
+            assert!(
+                (0.05..1.5).contains(&r.tpc),
+                "TPC {:.4} t/cm is not plausible",
+                r.tpc
+            );
+            assert!(
+                (0.02..5.0).contains(&r.mtc),
+                "MTC {:.4} t*m/cm is not plausible",
+                r.mtc
+            );
             assert!(r.displacement_t > 0.0);
         }
         // Volume and displacement rise with draft, and the top row is the
@@ -295,7 +318,11 @@ mod tests {
         assert!(t.rows.windows(2).all(|w| w[1].volume_m3 > w[0].volume_m3));
         let top = t.rows.last().expect("a row");
         assert!((top.draft - 0.62).abs() < 1e-12);
-        assert!((top.volume_m3 - 11.8508).abs() < 0.05, "{:.4}", top.volume_m3);
+        assert!(
+            (top.volume_m3 - 11.8508).abs() < 0.05,
+            "{:.4}",
+            top.volume_m3
+        );
     }
 
     #[test]

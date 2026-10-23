@@ -176,7 +176,11 @@ impl<F: FnMut(&[f64]) -> f64> Evaluator<F> {
         if !fx.is_finite() {
             fx = 1e300; // keeps the ordering total
         }
-        self.trajectory.push(TrajectoryPoint { eval: self.trajectory.len() + 1, x: x.to_vec(), f: fx });
+        self.trajectory.push(TrajectoryPoint {
+            eval: self.trajectory.len() + 1,
+            x: x.to_vec(),
+            f: fx,
+        });
         Some(fx)
     }
 }
@@ -226,7 +230,9 @@ pub fn nelder_mead<F: FnMut(&[f64]) -> f64>(
     let mut start = x0.to_vec();
     ev.clamp(&mut start);
     'build: {
-        let Some(f0) = ev.eval(&mut start) else { break 'build };
+        let Some(f0) = ev.eval(&mut start) else {
+            break 'build;
+        };
         simplex.push((start.clone(), f0));
         for i in 0..n {
             let mut v = start.clone();
@@ -236,7 +242,9 @@ pub fn nelder_mead<F: FnMut(&[f64]) -> f64>(
                 v[i] = start[i] - scale[i] * step.get(i).map_or(1.0, |s| s.signum());
                 ev.clamp(&mut v);
             }
-            let Some(fv) = ev.eval(&mut v) else { break 'build };
+            let Some(fv) = ev.eval(&mut v) else {
+                break 'build;
+            };
             simplex.push((v, fv));
         }
     }
@@ -302,7 +310,9 @@ pub fn nelder_mead<F: FnMut(&[f64]) -> f64>(
             let best = simplex[0].0.clone();
             for slot in simplex.iter_mut().skip(1) {
                 let mut v = along(&best, &slot.0, SIGMA);
-                let Some(fv) = ev.eval(&mut v) else { break 'outer };
+                let Some(fv) = ev.eval(&mut v) else {
+                    break 'outer;
+                };
                 *slot = (v, fv);
             }
         }
@@ -452,7 +462,10 @@ impl OptimizeSpec {
         Self {
             speed_kn,
             method: Method::Auto,
-            vars: [DesignVar::CpDelta, DesignVar::LcbDeltaFrac].iter().map(|v| VarSpec::new(*v)).collect(),
+            vars: [DesignVar::CpDelta, DesignVar::LcbDeltaFrac]
+                .iter()
+                .map(|v| VarSpec::new(*v))
+                .collect(),
             hold_displacement_tol: 0.01,
             min_gm: None,
             kg: None,
@@ -491,13 +504,17 @@ impl OptimizeSpec {
                 .split_once(':')
                 .ok_or_else(|| format!("bound `{b}` must look like cp=-0.02:0.02"))?;
             let parse = |s: &str| {
-                s.trim().parse::<f64>().map_err(|_| format!("bound `{b}`: `{s}` is not a number"))
+                s.trim()
+                    .parse::<f64>()
+                    .map_err(|_| format!("bound `{b}`: `{s}` is not a number"))
             };
             let (lo, hi) = (parse(lo)?, parse(hi)?);
-            let slot = vars
-                .iter_mut()
-                .find(|v| v.var == var)
-                .ok_or_else(|| format!("bound given for `{}`, which is not being optimised", var.name()))?;
+            let slot = vars.iter_mut().find(|v| v.var == var).ok_or_else(|| {
+                format!(
+                    "bound given for `{}`, which is not being optimised",
+                    var.name()
+                )
+            })?;
             slot.lo = lo;
             slot.hi = hi;
         }
@@ -531,7 +548,11 @@ impl OptimizeSpec {
             Some(Value::Array(items)) => {
                 let mut names = Vec::new();
                 for item in items {
-                    names.push(item.as_str().ok_or("`vars` must be an array of names")?.to_string());
+                    names.push(
+                        item.as_str()
+                            .ok_or("`vars` must be an array of names")?
+                            .to_string(),
+                    );
                 }
                 spec.vars = Self::parse_vars(&names.join(","))?;
             }
@@ -551,7 +572,10 @@ impl OptimizeSpec {
                         .filter(|(lo, hi)| lo.is_finite() && hi.is_finite())
                         .ok_or_else(|| format!("`bounds.{name}` must be [lo, hi]"))?;
                     let slot = spec.vars.iter_mut().find(|v| v.var == var).ok_or_else(|| {
-                        format!("`bounds.{name}` given, but `{}` is not being optimised", var.name())
+                        format!(
+                            "`bounds.{name}` given, but `{}` is not being optimised",
+                            var.name()
+                        )
                     })?;
                     slot.lo = pair.0;
                     slot.hi = pair.1;
@@ -587,7 +611,10 @@ impl OptimizeSpec {
 
     fn validate(&self) -> Result<(), String> {
         if !(self.speed_kn.is_finite() && self.speed_kn > 0.0) {
-            return Err(format!("optimize: a speed of {} kn is not positive", self.speed_kn));
+            return Err(format!(
+                "optimize: a speed of {} kn is not positive",
+                self.speed_kn
+            ));
         }
         if self.vars.is_empty() {
             return Err("optimize: give at least one variable".into());
@@ -765,7 +792,10 @@ fn measure(
     let draft = match fixed_draft {
         Some(d) => d,
         None => {
-            let (lo, hi) = (DRAFT_RANGE.0 * base_ctx.draft0, DRAFT_RANGE.1 * base_ctx.draft0);
+            let (lo, hi) = (
+                DRAFT_RANGE.0 * base_ctx.draft0,
+                DRAFT_RANGE.1 * base_ctx.draft0,
+            );
             solve_draft(&hull, base_ctx.target_volume, 0.0, 0.0)
                 .unwrap_or(hi)
                 .clamp(lo, hi)
@@ -781,16 +811,26 @@ fn measure(
         Method::Savitsky => {
             let setup = planing::setup(cand, base_ctx.subdiv, &o, None, None, None)?;
             if setup.deadrise_measured.is_none() {
-                warnings.push("deadrise could not be measured at the transom; 12 degrees assumed".into());
+                warnings.push(
+                    "deadrise could not be measured at the transom; 12 degrees assumed".into(),
+                );
             }
             let p = planing::planing_point(&setup.hull, v)
                 .ok_or_else(|| "the hull does not plane at this speed".to_string())?;
-            (p.resistance_n, p.pe_w, v / (GRAVITY * input.length_wl).sqrt(), Some(p.trim_deg))
+            (
+                p.resistance_n,
+                p.pe_w,
+                v / (GRAVITY * input.length_wl).sqrt(),
+                Some(p.trim_deg),
+            )
         }
         _ => {
             let r = resistance::holtrop(&input, v);
             if r.fn_ > 0.55 {
-                warnings.push(format!("Fn {:.2} is above the 0.55 Holtrop-Mennen was fitted to", r.fn_));
+                warnings.push(format!(
+                    "Fn {:.2} is above the 0.55 Holtrop-Mennen was fitted to",
+                    r.fn_
+                ));
             }
             (r.rt_n, r.pe_w, r.fn_, None)
         }
@@ -863,7 +903,10 @@ fn judge(ctx: &Ctx, m: &Measured) -> Judged {
     }
     let extra = m.warnings.len().saturating_sub(ctx.warnings0);
     penalty += rt0 * WARNING_WEIGHT * extra as f64;
-    Judged { f: s.rt_kn + penalty, feasible }
+    Judged {
+        f: s.rt_kn + penalty,
+        feasible,
+    }
 }
 
 fn decode(vars: &[VarSpec], x: &[f64]) -> (f64, f64, f64) {
@@ -912,7 +955,10 @@ fn build(
     if (s - 1.0).abs() > 1e-12 {
         transform::apply(&mut surface, Vec3::new(s, 1.0 / s, 1.0), Vec3::ZERO)?;
     }
-    Ok(Built { surface, shift_converged })
+    Ok(Built {
+        surface,
+        shift_converged,
+    })
 }
 
 fn measure_ctx(ctx: &Ctx) -> MeasureCtx {
@@ -958,7 +1004,9 @@ pub fn optimize_hull(
     let hull0 = Hull::new(surface, subdiv);
     let target_volume = hull0.displaced_volume(draft0, 0.0, 0.0);
     if !(target_volume.is_finite() && target_volume > 1e-9) {
-        return Err(format!("optimize: the hull displaces nothing at T = {draft0:.3} m"));
+        return Err(format!(
+            "optimize: the hull displaces nothing at T = {draft0:.3} m"
+        ));
     }
     // The shift's own bookkeeping of Cp and LCB (it measures from the model's
     // aft end, with 21+ stations), so its targets are consistent with it.
@@ -1043,7 +1091,11 @@ pub fn optimize_hull(
                 Err(_) => (failure, false),
             };
             seen.insert(key, records.len());
-            records.push(Record { x: x.to_vec(), f, feasible });
+            records.push(Record {
+                x: x.to_vec(),
+                f,
+                feasible,
+            });
             f
         },
         &x0,
@@ -1059,7 +1111,9 @@ pub fn optimize_hull(
             .filter(|r| r.feasible || !only_feasible)
             .min_by(|a, b| a.f.partial_cmp(&b.f).unwrap_or(std::cmp::Ordering::Equal))
     };
-    let chosen = cheapest(true).or_else(|| cheapest(false)).ok_or("optimize: nothing could be evaluated")?;
+    let chosen = cheapest(true)
+        .or_else(|| cheapest(false))
+        .ok_or("optimize: nothing could be evaluated")?;
     let best_x = chosen.x.clone();
 
     let built = build(&ctx, &best_x, &mut shifted)?;
@@ -1072,7 +1126,8 @@ pub fn optimize_hull(
     let mut warnings: Vec<String> = finish.warnings.clone();
     if spec.min_gm.is_none() {
         warnings.push(
-            "no stability constraint: give kg and min_gm to hold GM while the hull is reshaped".into(),
+            "no stability constraint: give kg and min_gm to hold GM while the hull is reshaped"
+                .into(),
         );
     }
     if !judged.feasible {
@@ -1111,7 +1166,11 @@ pub fn optimize_hull(
         })
         .collect();
     if variables.iter().any(|v| v.at_bound) {
-        let names: Vec<&str> = variables.iter().filter(|v| v.at_bound).map(|v| v.name).collect();
+        let names: Vec<&str> = variables
+            .iter()
+            .filter(|v| v.at_bound)
+            .map(|v| v.name)
+            .collect();
         warnings.push(format!(
             "{} ended on a bound; a wider range may find a lower resistance",
             names.join(", ")
@@ -1156,9 +1215,19 @@ mod tests {
 
     #[test]
     fn nelder_mead_finds_the_rosenbrock_minimum() {
-        let opts = NmOptions { max_evaluations: 2000, x_tol: 1e-9, f_tol: 1e-14, ..NmOptions::default() };
+        let opts = NmOptions {
+            max_evaluations: 2000,
+            x_tol: 1e-9,
+            f_tol: 1e-14,
+            ..NmOptions::default()
+        };
         let r = nelder_mead(rosenbrock, &[-1.2, 1.0], &[0.5, 0.5], &opts);
-        assert!((r.x[0] - 1.0).abs() < 1e-3 && (r.x[1] - 1.0).abs() < 1e-3, "{:?} f {}", r.x, r.f);
+        assert!(
+            (r.x[0] - 1.0).abs() < 1e-3 && (r.x[1] - 1.0).abs() < 1e-3,
+            "{:?} f {}",
+            r.x,
+            r.f
+        );
         assert_eq!(r.stop, NmStop::Converged, "{r:?}");
         assert!(r.f < 1e-6, "f {}", r.f);
         assert_eq!(r.evaluations, r.trajectory.len());
@@ -1184,7 +1253,12 @@ mod tests {
 
     #[test]
     fn the_evaluation_cap_ends_the_run() {
-        let opts = NmOptions { max_evaluations: 10, x_tol: 1e-12, f_tol: 1e-14, ..NmOptions::default() };
+        let opts = NmOptions {
+            max_evaluations: 10,
+            x_tol: 1e-12,
+            f_tol: 1e-14,
+            ..NmOptions::default()
+        };
         let r = nelder_mead(rosenbrock, &[-1.2, 1.0], &[0.5, 0.5], &opts);
         assert_eq!(r.evaluations, 10);
         assert_eq!(r.stop, NmStop::MaxEvaluations);
@@ -1206,9 +1280,10 @@ mod tests {
         assert!(spec.validate().is_ok());
         spec.vars[0].lo = 0.01; // the unchanged hull is no longer reachable
         assert!(spec.validate().is_err());
-        let p: Map<String, Value> =
-            serde_json::from_str(r#"{"speed_kn": 8, "vars": ["cp", "lb"], "bounds": {"lb": [0.95, 1.05]}}"#)
-                .expect("json");
+        let p: Map<String, Value> = serde_json::from_str(
+            r#"{"speed_kn": 8, "vars": ["cp", "lb"], "bounds": {"lb": [0.95, 1.05]}}"#,
+        )
+        .expect("json");
         let spec = OptimizeSpec::from_params(&p, Some(1.5)).expect("params");
         assert_eq!(spec.vars.len(), 2);
         assert_eq!(spec.kg, Some(1.5));
@@ -1217,7 +1292,13 @@ mod tests {
 
     fn demo_setup() -> (Surface, HydroOptions) {
         let s = demo::demo_hull(false);
-        let o = HydroOptions::from_surface(&s, SubdivisionOptions { level: 2, mode: SubdivisionMode::Loop });
+        let o = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
         (s, o)
     }
 
@@ -1234,27 +1315,54 @@ mod tests {
         // The optimiser works on a copy.
         assert_eq!(fef::write(&s), before, "the input surface was modified");
 
-        assert!(rep.optimised.rt_kn <= rep.baseline.rt_kn + 1e-12, "{rep:#?}");
+        assert!(
+            rep.optimised.rt_kn <= rep.baseline.rt_kn + 1e-12,
+            "{rep:#?}"
+        );
         assert!(rep.rt_change_pct <= 1e-9, "{}", rep.rt_change_pct);
-        assert!(rep.displacement_error_pct <= 100.0 * spec.hold_displacement_tol + 1e-6, "{rep:#?}");
+        assert!(
+            rep.displacement_error_pct <= 100.0 * spec.hold_displacement_tol + 1e-6,
+            "{rep:#?}"
+        );
         assert!(rep.constraints_met, "{rep:#?}");
         assert!(rep.optimised.gm_m.expect("gm") >= 1.0 - 1e-9, "{rep:#?}");
         assert!(rep.evaluations <= 24 && rep.evaluations == rep.trajectory.len());
-        assert_eq!(rep.method, Method::Holtrop, "8 kn on 12 m is a displacement speed");
-        assert_eq!(rep.variables.len(), 2, "default is Cp and LCB; L/B is opt-in");
+        assert_eq!(
+            rep.method,
+            Method::Holtrop,
+            "8 kn on 12 m is a displacement speed"
+        );
+        assert_eq!(
+            rep.variables.len(),
+            2,
+            "default is Cp and LCB; L/B is opt-in"
+        );
 
         // Re-measure the returned surface from scratch with the same public
         // tools a user would reach for.
         let o2 = HydroOptions::from_surface(&out, o.subdivision);
-        assert!((o2.draft - rep.optimised.draft_m).abs() < 1e-12, "design draft was not carried");
+        assert!(
+            (o2.draft - rep.optimised.draft_m).abs() < 1e-12,
+            "design draft was not carried"
+        );
         let hull = Hull::new(&out, o.subdivision);
         let h = hull.hydrostatics(&o2);
         let input = HoltropInput::measure(&hull, &o2).expect("measures");
         let r = resistance::holtrop(&input, 8.0 * KNOT);
         let opt = &rep.optimised;
-        assert!((r.rt_n / 1000.0 - opt.rt_kn).abs() < 1e-9 * opt.rt_kn.max(1.0), "{} vs {}", r.rt_n / 1000.0, opt.rt_kn);
+        assert!(
+            (r.rt_n / 1000.0 - opt.rt_kn).abs() < 1e-9 * opt.rt_kn.max(1.0),
+            "{} vs {}",
+            r.rt_n / 1000.0,
+            opt.rt_kn
+        );
         assert!((r.pe_w / 1000.0 - opt.pe_kw).abs() < 1e-9 * opt.pe_kw.max(1.0));
-        assert!((h.volume_m3 - opt.volume_m3).abs() < 1e-9, "{} vs {}", h.volume_m3, opt.volume_m3);
+        assert!(
+            (h.volume_m3 - opt.volume_m3).abs() < 1e-9,
+            "{} vs {}",
+            h.volume_m3,
+            opt.volume_m3
+        );
         assert!((h.displacement_t - opt.displacement_t).abs() < 1e-9);
         assert!((input.cp - opt.cp).abs() < 1e-12 && (input.cb - opt.cb).abs() < 1e-12);
         assert!((input.lcb_pct - opt.lcb_pct).abs() < 1e-9);
@@ -1263,10 +1371,19 @@ mod tests {
         // And the baseline is the unchanged hull measured the ordinary way.
         let input0 = resistance::input_for(&s, o.subdivision).expect("baseline");
         let r0 = resistance::holtrop(&input0, 8.0 * KNOT);
-        assert!((r0.rt_n / 1000.0 - rep.baseline.rt_kn).abs() < 1e-9, "{} vs {}", r0.rt_n / 1000.0, rep.baseline.rt_kn);
+        assert!(
+            (r0.rt_n / 1000.0 - rep.baseline.rt_kn).abs() < 1e-9,
+            "{} vs {}",
+            r0.rt_n / 1000.0,
+            rep.baseline.rt_kn
+        );
         // The displacement is the original one.
         let v0 = Hull::new(&s, o.subdivision).hydrostatics(&o).volume_m3;
-        assert!((h.volume_m3 - v0).abs() / v0 <= spec.hold_displacement_tol + 1e-9, "{} vs {v0}", h.volume_m3);
+        assert!(
+            (h.volume_m3 - v0).abs() / v0 <= spec.hold_displacement_tol + 1e-9,
+            "{} vs {v0}",
+            h.volume_m3
+        );
     }
 
     #[test]
@@ -1277,13 +1394,22 @@ mod tests {
         spec.max_evaluations = 12;
         let (_, rep) = optimize_hull(&s, &o, &spec).expect("optimises");
         assert_eq!(rep.variables.len(), 1);
-        assert!((rep.optimised.cp - rep.baseline.cp).abs() < 1e-9, "Cp moved without being asked");
+        assert!(
+            (rep.optimised.cp - rep.baseline.cp).abs() < 1e-9,
+            "Cp moved without being asked"
+        );
         assert!((rep.optimised.lcb_pct - rep.baseline.lcb_pct).abs() < 1e-9);
         // L/B x s^2, displacement and draft unchanged by a pure stretch.
         let s_val = rep.variables[0].value;
-        assert!((rep.optimised.lb / rep.baseline.lb - s_val * s_val).abs() < 2e-3, "{rep:#?}");
+        assert!(
+            (rep.optimised.lb / rep.baseline.lb - s_val * s_val).abs() < 2e-3,
+            "{rep:#?}"
+        );
         assert!((rep.optimised.draft_m - rep.baseline.draft_m).abs() < 1e-4);
-        assert!(rep.warnings.iter().any(|w| w.contains("no stability constraint")));
+        assert!(rep
+            .warnings
+            .iter()
+            .any(|w| w.contains("no stability constraint")));
     }
 
     #[test]

@@ -72,9 +72,12 @@ pub fn default_token_path(port: u16) -> PathBuf {
 
 /// Write `token` to `path` with mode 0600 on Unix.
 pub fn write_token_file(path: &Path, token: &str) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "token file path has no parent folder"))?;
+    let dir = path.parent().ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidInput,
+            "token file path has no parent folder",
+        )
+    })?;
     std::fs::create_dir_all(dir)?;
     let _ = std::fs::remove_file(path);
     let mut opts = std::fs::OpenOptions::new();
@@ -122,7 +125,10 @@ pub struct ControlRoots {
 
 impl ControlRoots {
     pub fn new(read_roots: Vec<PathBuf>, write_roots: Vec<PathBuf>) -> Self {
-        Self { read_roots, write_roots }
+        Self {
+            read_roots,
+            write_roots,
+        }
     }
 }
 
@@ -136,7 +142,9 @@ pub fn check_read_path(path: &Path, roots: &[PathBuf]) -> std::result::Result<Pa
         .canonicalize()
         .map_err(|e| format!("cannot resolve path `{}`: {e}", path.display()))?;
     for root in roots {
-        let Ok(canonical_root) = root.canonicalize() else { continue };
+        let Ok(canonical_root) = root.canonicalize() else {
+            continue;
+        };
         if canonical.starts_with(&canonical_root) {
             return Ok(canonical);
         }
@@ -160,10 +168,16 @@ pub fn check_write_path(path: &Path, roots: &[PathBuf]) -> std::result::Result<P
     if roots.is_empty() {
         return Ok(path.to_path_buf());
     }
-    let canonical = canonicalize_write_target(path)
-        .map_err(|e| format!("cannot resolve parent directory for write path `{}`: {e}", path.display()))?;
+    let canonical = canonicalize_write_target(path).map_err(|e| {
+        format!(
+            "cannot resolve parent directory for write path `{}`: {e}",
+            path.display()
+        )
+    })?;
     for root in roots {
-        let Ok(canonical_root) = root.canonicalize() else { continue };
+        let Ok(canonical_root) = root.canonicalize() else {
+            continue;
+        };
         if canonical.starts_with(&canonical_root) {
             return Ok(canonical);
         }

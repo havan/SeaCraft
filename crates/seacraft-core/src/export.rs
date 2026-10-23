@@ -35,7 +35,11 @@ pub struct RenderMesh {
 
 /// Refine the hull for display, dropping hidden layers and mirroring the
 /// symmetric ones.
-pub fn render_mesh(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode) -> RenderMesh {
+pub fn render_mesh(
+    surface: &Surface,
+    level: u8,
+    mode: crate::subdiv::SubdivisionMode,
+) -> RenderMesh {
     let mut mesh = evaluate(surface, SubdivisionOptions { level, mode });
     let sym: Vec<bool> = surface.layers.iter().map(|l| l.symmetric).collect();
     mesh.mirror_symmetric(&sym);
@@ -48,7 +52,11 @@ pub fn render_mesh(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
             face_layer.push(mesh.face_layer[fi]);
         }
     }
-    RenderMesh { verts: mesh.verts, faces, face_layer }
+    RenderMesh {
+        verts: mesh.verts,
+        faces,
+        face_layer,
+    }
 }
 
 pub fn control_mesh(surface: &Surface) -> RenderMesh {
@@ -80,7 +88,12 @@ pub fn newell_normal(points: &[Vec3]) -> Vec3 {
 fn write_obj(mesh: &RenderMesh, up: UpAxis, header: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {} - SeaCraft {}", header, crate::VERSION);
-    let _ = writeln!(out, "# {} vertices, {} faces", mesh.verts.len(), mesh.faces.len());
+    let _ = writeln!(
+        out,
+        "# {} vertices, {} faces",
+        mesh.verts.len(),
+        mesh.faces.len()
+    );
     for v in &mesh.verts {
         let (a, b, c) = up.map(*v);
         let _ = writeln!(out, "v {:.6} {:.6} {:.6}", a, b, c);
@@ -96,13 +109,26 @@ fn write_obj(mesh: &RenderMesh, up: UpAxis, header: &str) -> String {
 }
 
 /// Wavefront OBJ of the refined hull.
-pub fn obj(surface: &Surface, level: u8, mode: crate::subdiv::SubdivisionMode, up: UpAxis) -> String {
-    write_obj(&render_mesh(surface, level, mode), up, surface.settings.name.as_str())
+pub fn obj(
+    surface: &Surface,
+    level: u8,
+    mode: crate::subdiv::SubdivisionMode,
+    up: UpAxis,
+) -> String {
+    write_obj(
+        &render_mesh(surface, level, mode),
+        up,
+        surface.settings.name.as_str(),
+    )
 }
 
 /// Wavefront OBJ of the control net only.
 pub fn obj_control(surface: &Surface, up: UpAxis) -> String {
-    write_obj(&control_mesh(surface), up, &format!("{} (control net)", surface.settings.name))
+    write_obj(
+        &control_mesh(surface),
+        up,
+        &format!("{} (control net)", surface.settings.name),
+    )
 }
 
 /// Binary STL of the refined hull.
@@ -196,7 +222,14 @@ pub fn iges_surface(surface: &Surface, level: u8, mode: SubdivisionMode) -> Stri
     // 25 girth points per station: enough to carry a bilge radius around, few
     // enough to keep the parameter data readable.
     const COLUMNS: usize = 25;
-    let curves = crate::linesplan::curves_3d(surface, LinesplanOptions { level, mode, ..Default::default() });
+    let curves = crate::linesplan::curves_3d(
+        surface,
+        LinesplanOptions {
+            level,
+            mode,
+            ..Default::default()
+        },
+    );
     let (min, max) = surface.extents();
     let tol = ((max.x - min.x).max(max.y - min.y).max(max.z - min.z)).max(0.1) * 1e-6;
     let mut patches: Vec<(&str, crate::iges::BsplineSurface)> = Vec::new();
@@ -206,14 +239,21 @@ pub fn iges_surface(surface: &Surface, level: u8, mode: SubdivisionMode) -> Stri
             patches.push((label, patch));
         }
     }
-    let patches: Vec<(&str, &crate::iges::BsplineSurface)> =
-        patches.iter().map(|(label, patch)| (*label, patch)).collect();
+    let patches: Vec<(&str, &crate::iges::BsplineSurface)> = patches
+        .iter()
+        .map(|(label, patch)| (*label, patch))
+        .collect();
     crate::iges::write_iges_surfaces(&surface.settings.name, &patches, 6)
 }
 
 /// The station sections of one side as a `stations × columns` grid of points,
 /// with the rows sorted by station position `x`.
-fn station_grid(curves: &LinesplanCurves3d, starboard: bool, columns: usize, tol: f64) -> Vec<Vec<Vec3>> {
+fn station_grid(
+    curves: &LinesplanCurves3d,
+    starboard: bool,
+    columns: usize,
+    tol: f64,
+) -> Vec<Vec<Vec3>> {
     // The planes at the extreme `x` of the mesh lie *in* its end faces (the
     // transom and the stem). There the cut is not a section at all but every
     // in-plane edge of those faces, which arrives as a fan of degenerate
@@ -257,7 +297,10 @@ fn station_grid(curves: &LinesplanCurves3d, starboard: bool, columns: usize, tol
     let mut last_x = f64::NEG_INFINITY;
     for (x, row) in rows {
         if x - last_x <= tol {
-            if out.last().is_some_and(|previous| arc_length(&row) > arc_length(previous)) {
+            if out
+                .last()
+                .is_some_and(|previous| arc_length(&row) > arc_length(previous))
+            {
                 out.pop();
                 out.push(row);
             }
@@ -317,7 +360,11 @@ fn resample(points: &[Vec3], count: usize) -> Option<Vec<Vec3>> {
             segment += 1;
         }
         let length = points[segment + 1].dist(points[segment]);
-        let t = if length > 0.0 { ((target - walked) / length).clamp(0.0, 1.0) } else { 0.0 };
+        let t = if length > 0.0 {
+            ((target - walked) / length).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         out.push(points[segment].lerp(points[segment + 1], t));
     }
     Some(out)
@@ -341,7 +388,10 @@ pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
     let indices = indices.trim_end_matches(',').to_string();
     let title = html_escape(&surface.settings.name);
     let (min, max) = surface.extents();
-    let size = (max.x - min.x).max(max.y - min.y).max(max.z - min.z).max(1.0);
+    let size = (max.x - min.x)
+        .max(max.y - min.y)
+        .max(max.z - min.z)
+        .max(1.0);
     let cx = (min.x + max.x) * 0.5;
     let cy = (min.y + max.y) * 0.5;
     let cz = (min.z + max.z) * 0.5;
@@ -406,7 +456,10 @@ pub fn viewer_html(surface: &Surface, level: u8, mode: crate::subdiv::Subdivisio
 }
 
 fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 #[cfg(test)]
@@ -435,39 +488,74 @@ mod tests {
 
         // Two patches — one per side of the centreline — two directory records
         // and one parameter block each.
-        let d: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('D')).collect();
+        let d: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('D'))
+            .collect();
         assert_eq!(d.len(), 4, "two patches, two directory records each");
         for record in &d {
-            assert_eq!(&record[0..8].trim(), &"128", "every entity is a B-spline surface");
+            assert_eq!(
+                &record[0..8].trim(),
+                &"128",
+                "every entity is a B-spline surface"
+            );
         }
-        let labels: Vec<String> = d.chunks(2).map(|pair| pair[1][56..64].trim().to_owned()).collect();
+        let labels: Vec<String> = d
+            .chunks(2)
+            .map(|pair| pair[1][56..64].trim().to_owned())
+            .collect();
         assert_eq!(labels, vec!["STBD".to_owned(), "PORT".to_owned()]);
-        let p: Vec<&str> = text.lines().filter(|l| l.chars().nth(72) == Some('P')).collect();
+        let p: Vec<&str> = text
+            .lines()
+            .filter(|l| l.chars().nth(72) == Some('P'))
+            .collect();
         assert!(p[0].starts_with("128,"), "{:?}", &p[0][..16]);
         let first_pd: usize = d[0][8..16].trim().parse().unwrap();
         let pd_count: usize = d[1][24..32].trim().parse().unwrap();
         assert_eq!(first_pd, 1);
-        assert!(pd_count > 0 && pd_count < p.len(), "each entity owns a block of records");
+        assert!(
+            pd_count > 0 && pd_count < p.len(),
+            "each entity owns a block of records"
+        );
 
         // The sections the patches were built from: one row per usable station,
         // 25 girth points each, sorted from the after end forward.
         let curves = crate::linesplan::curves_3d(
             &hull,
-            LinesplanOptions { level: 3, mode: SubdivisionMode::Loop, ..Default::default() },
+            LinesplanOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+                ..Default::default()
+            },
         );
         let (min, max) = hull.extents();
         let tol = ((max.x - min.x).max(max.y - min.y).max(max.z - min.z)).max(0.1) * 1e-6;
         let grid = station_grid(&curves, true, 25, tol);
-        assert!(grid.len() >= 2, "the demo hull has stations to loft through");
-        assert!(grid.iter().all(|row| row.len() == 25), "every row is 25 girth points");
-        assert!(grid.windows(2).all(|w| w[0][0].x < w[1][0].x), "rows sorted by x");
-        assert!(grid.iter().flatten().all(|p| p.y >= -1e-6 && p.x >= min.x - 1e-9 && p.x <= max.x + 1e-9));
+        assert!(
+            grid.len() >= 2,
+            "the demo hull has stations to loft through"
+        );
+        assert!(
+            grid.iter().all(|row| row.len() == 25),
+            "every row is 25 girth points"
+        );
+        assert!(
+            grid.windows(2).all(|w| w[0][0].x < w[1][0].x),
+            "rows sorted by x"
+        );
+        assert!(grid
+            .iter()
+            .flatten()
+            .all(|p| p.y >= -1e-6 && p.x >= min.x - 1e-9 && p.x <= max.x + 1e-9));
 
         // Interpolation is exact at the grid, so the file carries the hull's own
         // corner points: the after keel point and the fore sheer point of each
         // patch are in its parameter data.
         let joined = parameter_data(&text);
-        let numbers: Vec<f64> = joined.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+        let numbers: Vec<f64> = joined
+            .split(',')
+            .filter_map(|t| t.trim().parse().ok())
+            .collect();
         for corner in [grid[0][0], grid[grid.len() - 1][24]] {
             for v in [corner.x, corner.y, corner.z] {
                 assert!(

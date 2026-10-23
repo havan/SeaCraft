@@ -334,7 +334,10 @@ pub fn chain_paths(segs: &[(Vec3, Vec3)], tol: f64) -> Vec<(Vec<Vec3>, bool)> {
     let cell = tol.max(1e-12);
     let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
     let mut points: Vec<Vec3> = Vec::new();
-    let id = |p: Vec3, points: &mut Vec<Vec3>, grid: &mut HashMap<(i64, i64, i64), Vec<usize>>| -> usize {
+    let id = |p: Vec3,
+              points: &mut Vec<Vec3>,
+              grid: &mut HashMap<(i64, i64, i64), Vec<usize>>|
+     -> usize {
         let key = |v: Vec3| {
             (
                 (v.x / cell).floor() as i64,
@@ -491,7 +494,11 @@ fn loop_moments(loops: &[Vec<Vec3>], plane: &Plane) -> Option<PolygonMoments> {
 
 /// Area and moments of a set of plane loops, clipped to the submerged side of
 /// the waterplane. Coordinates are expressed in the plane's own 2D basis.
-pub fn clipped_loop_moments(loops: &[Vec<Vec3>], plane: &Plane, wp: &Plane) -> Option<PolygonMoments> {
+pub fn clipped_loop_moments(
+    loops: &[Vec<Vec3>],
+    plane: &Plane,
+    wp: &Plane,
+) -> Option<PolygonMoments> {
     if loops.is_empty() {
         return None;
     }
@@ -613,161 +620,169 @@ impl Hull {
     }
 
     fn hydrostatics_inner(&self, opts: &HydroOptions) -> Hydrostatics {
-    let verts = &self.verts;
-    let tris = &self.tris;
-    let wp = waterplane_for(self.keel, self.length, opts.draft, opts.trim, opts.heel_deg);
-    let mut result = Hydrostatics {
-        draft: opts.draft,
-        trim_m: opts.trim,
-        heel_deg: opts.heel_deg,
-        water_density: opts.water_density,
-        appendage_coefficient: opts.appendage_coefficient,
-        ..Default::default()
-    };
+        let verts = &self.verts;
+        let tris = &self.tris;
+        let wp = waterplane_for(self.keel, self.length, opts.draft, opts.trim, opts.heel_deg);
+        let mut result = Hydrostatics {
+            draft: opts.draft,
+            trim_m: opts.trim,
+            heel_deg: opts.heel_deg,
+            water_density: opts.water_density,
+            appendage_coefficient: opts.appendage_coefficient,
+            ..Default::default()
+        };
 
-    let model_min = self.model_min;
-    let model_max = self.model_max;
-    result.model_min = model_min;
-    result.model_max = model_max;
+        let model_min = self.model_min;
+        let model_max = self.model_max;
+        result.model_min = model_min;
+        result.model_max = model_max;
 
-    let origin = wp.project(Vec3::ZERO);
-    let (volume, moment, wetted, smin, smax) = integrate(verts, tris, &wp);
-    result.volume_m3 = volume * opts.appendage_coefficient;
-    result.wetted_surface_m2 = wetted;
-    result.displacement_kg = volume * opts.appendage_coefficient * opts.water_density;
-    result.displacement_t = result.displacement_kg / 1000.0;
+        let origin = wp.project(Vec3::ZERO);
+        let (volume, moment, wetted, smin, smax) = integrate(verts, tris, &wp);
+        result.volume_m3 = volume * opts.appendage_coefficient;
+        result.wetted_surface_m2 = wetted;
+        result.displacement_kg = volume * opts.appendage_coefficient * opts.water_density;
+        result.displacement_t = result.displacement_kg / 1000.0;
 
-    if volume > 1e-12 {
-        // `moment` is taken about the foot of the perpendicular from the world
-        // origin onto the waterplane, so shift back into model coordinates.
-        let b = moment / volume + origin;
-        result.lcb = b;
-        result.kb = b.z - self.keel;
-    } else {
-        result.warnings.push(Warning {
-            code: "nothing_submerged",
-            message: "the model is not submerged at this draft".into(),
-        });
-    }
-
-    result.submerged_length = smax.x - smin.x;
-    result.submerged_beam = smax.y - smin.y;
-    result.absolute_draft = if volume > 1e-12 {
-        let mut d: f64 = 0.0;
-        for v in verts.iter() {
-            let s = wp.side(*v);
-            if s < 0.0 {
-                d = d.max(-s);
-            }
+        if volume > 1e-12 {
+            // `moment` is taken about the foot of the perpendicular from the world
+            // origin onto the waterplane, so shift back into model coordinates.
+            let b = moment / volume + origin;
+            result.lcb = b;
+            result.kb = b.z - self.keel;
+        } else {
+            result.warnings.push(Warning {
+                code: "nothing_submerged",
+                message: "the model is not submerged at this draft".into(),
+            });
         }
-        d
-    } else {
-        0.0
-    };
 
-    // ---- waterplane ----------------------------------------------------
-    let segs = plane_segments(verts, tris, &wp);
-    let (min, max) = (model_min, model_max);
-    let scale = (max.x - min.x).max(max.y - min.y).max(1.0);
-    let loops = chain_loops(&segs, scale * 1e-7);
-    if let Some(m) = loop_moments(&loops, &wp) {
-        let (u, v) = wp.basis();
-        let area = m.area.abs();
-        result.waterplane_area_m2 = area;
-        let cx = m.mx / m.area;
-        let cy = m.my / m.area;
-        result.lcf = u * cx + v * cy;
-        result.waterplane_inertia_transverse = (m.ix - cy * cy * m.area).abs();
-        result.waterplane_inertia_longitudinal = (m.iy - cx * cx * m.area).abs();
-
-        // Waterline length/beam from the actual intersection points.
-        if let Some(poly) = loops.iter().max_by_key(|p| p.len()) {
-            let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
-            let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
-            for p in poly {
-                let pu = u.dot(*p);
-                let pv = v.dot(*p);
-                umin = umin.min(pu);
-                umax = umax.max(pu);
-                vmin = vmin.min(pv);
-                vmax = vmax.max(pv);
+        result.submerged_length = smax.x - smin.x;
+        result.submerged_beam = smax.y - smin.y;
+        result.absolute_draft = if volume > 1e-12 {
+            let mut d: f64 = 0.0;
+            for v in verts.iter() {
+                let s = wp.side(*v);
+                if s < 0.0 {
+                    d = d.max(-s);
+                }
             }
-            result.lwl = umax - umin;
-            result.bwl = vmax - vmin;
-        }
-    } else if !segs.is_empty() {
-        result.warnings.push(Warning {
+            d
+        } else {
+            0.0
+        };
+
+        // ---- waterplane ----------------------------------------------------
+        let segs = plane_segments(verts, tris, &wp);
+        let (min, max) = (model_min, model_max);
+        let scale = (max.x - min.x).max(max.y - min.y).max(1.0);
+        let loops = chain_loops(&segs, scale * 1e-7);
+        if let Some(m) = loop_moments(&loops, &wp) {
+            let (u, v) = wp.basis();
+            let area = m.area.abs();
+            result.waterplane_area_m2 = area;
+            let cx = m.mx / m.area;
+            let cy = m.my / m.area;
+            result.lcf = u * cx + v * cy;
+            result.waterplane_inertia_transverse = (m.ix - cy * cy * m.area).abs();
+            result.waterplane_inertia_longitudinal = (m.iy - cx * cx * m.area).abs();
+
+            // Waterline length/beam from the actual intersection points.
+            if let Some(poly) = loops.iter().max_by_key(|p| p.len()) {
+                let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
+                let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
+                for p in poly {
+                    let pu = u.dot(*p);
+                    let pv = v.dot(*p);
+                    umin = umin.min(pu);
+                    umax = umax.max(pu);
+                    vmin = vmin.min(pv);
+                    vmax = vmax.max(pv);
+                }
+                result.lwl = umax - umin;
+                result.bwl = vmax - vmin;
+            }
+        } else if !segs.is_empty() {
+            result.warnings.push(Warning {
             code: "waterline_not_closed",
             message: "waterline segments did not form a closed loop; waterplane properties are unavailable".into(),
         });
-    }
-    if result.lwl == 0.0 {
-        // Fall back to the submerged extents.
-        result.lwl = result.submerged_length;
-        result.bwl = result.submerged_beam;
-    }
+        }
+        if result.lwl == 0.0 {
+            // Fall back to the submerged extents.
+            result.lwl = result.submerged_length;
+            result.bwl = result.submerged_beam;
+        }
 
-    // ---- metacentres ---------------------------------------------------
-    if result.volume_m3 > 1e-12 {
-        result.bm_transverse = result.waterplane_inertia_transverse / result.volume_m3;
-        result.bm_longitudinal = result.waterplane_inertia_longitudinal / result.volume_m3;
-        result.km_transverse = result.kb + result.bm_transverse;
-        result.km_longitudinal = result.kb + result.bm_longitudinal;
-    }
+        // ---- metacentres ---------------------------------------------------
+        if result.volume_m3 > 1e-12 {
+            result.bm_transverse = result.waterplane_inertia_transverse / result.volume_m3;
+            result.bm_longitudinal = result.waterplane_inertia_longitudinal / result.volume_m3;
+            result.km_transverse = result.kb + result.bm_transverse;
+            result.km_longitudinal = result.kb + result.bm_longitudinal;
+        }
 
-    // ---- coefficients --------------------------------------------------
-    let draft = opts.draft;
-    if draft > 0.0 && result.volume_m3 > 0.0 {
-        let l = if result.lwl > 0.0 { result.lwl } else { result.submerged_length };
-        let b = if result.bwl > 0.0 { result.bwl } else { result.submerged_beam };
-        if l * b * draft > 0.0 {
-            result.block_coefficient = result.volume_m3 / (l * b * draft);
+        // ---- coefficients --------------------------------------------------
+        let draft = opts.draft;
+        if draft > 0.0 && result.volume_m3 > 0.0 {
+            let l = if result.lwl > 0.0 {
+                result.lwl
+            } else {
+                result.submerged_length
+            };
+            let b = if result.bwl > 0.0 {
+                result.bwl
+            } else {
+                result.submerged_beam
+            };
+            if l * b * draft > 0.0 {
+                result.block_coefficient = result.volume_m3 / (l * b * draft);
+            }
+            if result.waterplane_area_m2 * draft > 0.0 {
+                result.vertical_prismatic_coefficient =
+                    result.volume_m3 / (result.waterplane_area_m2 * draft);
+            }
+            if l * b > 0.0 {
+                result.waterplane_coefficient = result.waterplane_area_m2 / (l * b);
+            }
+            result.mainframe_x = opts.mainframe_x.unwrap_or(result.lcf.x);
+            let am = section_area(verts, tris, result.mainframe_x, &wp);
+            result.mainframe_area_m2 = am;
+            if am * l > 0.0 {
+                result.prismatic_coefficient = result.volume_m3 / (am * l);
+            }
+            if b * draft > 0.0 {
+                result.midship_coefficient = am / (b * draft);
+            }
         }
-        if result.waterplane_area_m2 * draft > 0.0 {
-            result.vertical_prismatic_coefficient =
-                result.volume_m3 / (result.waterplane_area_m2 * draft);
-        }
-        if l * b > 0.0 {
-            result.waterplane_coefficient = result.waterplane_area_m2 / (l * b);
-        }
-        result.mainframe_x = opts.mainframe_x.unwrap_or(result.lcf.x);
-        let am = section_area(verts, tris, result.mainframe_x, &wp);
-        result.mainframe_area_m2 = am;
-        if am * l > 0.0 {
-            result.prismatic_coefficient = result.volume_m3 / (am * l);
-        }
-        if b * draft > 0.0 {
-            result.midship_coefficient = am / (b * draft);
-        }
-    }
 
-    // ---- section area curve -------------------------------------------
-    if opts.stations > 1 && result.volume_m3 > 0.0 {
-        let x0 = smin.x.max(model_min.x);
-        let x1 = smax.x.min(model_max.x);
-        let n = opts.stations;
-        for i in 0..n {
-            let t = i as f64 / (n - 1) as f64;
-            let x = x0 + (x1 - x0) * t;
-            let a = section_area(verts, tris, x, &wp);
-            result.sac.push(SectionArea { x, area: a });
+        // ---- section area curve -------------------------------------------
+        if opts.stations > 1 && result.volume_m3 > 0.0 {
+            let x0 = smin.x.max(model_min.x);
+            let x1 = smax.x.min(model_max.x);
+            let n = opts.stations;
+            for i in 0..n {
+                let t = i as f64 / (n - 1) as f64;
+                let x = x0 + (x1 - x0) * t;
+                let a = section_area(verts, tris, x, &wp);
+                result.sac.push(SectionArea { x, area: a });
+            }
         }
-    }
 
-    // ---- lateral area (centreline profile) -----------------------------
-    let centre = Plane::new(Vec3::new(0.0, 1.0, 0.0), 0.0);
-    let lsegs = plane_segments(verts, tris, &centre);
-    let lpaths = chain_paths(&lsegs, 1e-7);
-    let lloops = close_along_waterplane(lpaths);
-    if let Some(m) = clipped_loop_moments(&lloops, &centre, &wp) {
-        let (u, v) = centre.basis();
-        result.lateral_area_m2 = m.area.abs();
-        let cx = m.mx / m.area;
-        let cy = m.my / m.area;
-        result.lateral_centroid = u * cx + v * cy;
-    }
+        // ---- lateral area (centreline profile) -----------------------------
+        let centre = Plane::new(Vec3::new(0.0, 1.0, 0.0), 0.0);
+        let lsegs = plane_segments(verts, tris, &centre);
+        let lpaths = chain_paths(&lsegs, 1e-7);
+        let lloops = close_along_waterplane(lpaths);
+        if let Some(m) = clipped_loop_moments(&lloops, &centre, &wp) {
+            let (u, v) = centre.basis();
+            result.lateral_area_m2 = m.area.abs();
+            let cx = m.mx / m.area;
+            let cy = m.my / m.area;
+            result.lateral_centroid = u * cx + v * cy;
+        }
 
-    result
+        result
     }
 }
 
@@ -803,9 +818,15 @@ mod tests {
             let starboard = wp.side(Vec3::new(6.0, 2.0, 0.5));
             let port = wp.side(Vec3::new(6.0, -2.0, 0.5));
             if heel > 0.0 {
-                assert!(starboard < port, "heel {heel} must sink starboard: {starboard} vs {port}");
+                assert!(
+                    starboard < port,
+                    "heel {heel} must sink starboard: {starboard} vs {port}"
+                );
             } else if heel < 0.0 {
-                assert!(starboard > port, "heel {heel} must sink port: {starboard} vs {port}");
+                assert!(
+                    starboard > port,
+                    "heel {heel} must sink port: {starboard} vs {port}"
+                );
             }
         }
     }
@@ -815,6 +836,9 @@ mod tests {
         let wp = waterplane_for(0.0, 12.0, 1.0, 0.4, 0.0);
         let bow = wp.side(Vec3::new(12.0, 0.0, 1.0));
         let stern = wp.side(Vec3::new(0.0, 0.0, 1.0));
-        assert!(bow > 0.0 && stern < 0.0, "positive trim lifts the bow: {bow} / {stern}");
+        assert!(
+            bow > 0.0 && stern < 0.0,
+            "positive trim lifts the bow: {bow} / {stern}"
+        );
     }
 }

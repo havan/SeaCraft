@@ -138,7 +138,6 @@ pub struct Heave2d {
     pub amplitude_ratio: f64,
 }
 
-
 /// Panels used on a Lewis contour by [`heave_2d`]: 60 gives 0.2 % against 120.
 pub const LEWIS_PANELS: usize = 60;
 
@@ -161,14 +160,22 @@ pub fn heave_2d(form: &LewisForm, omega: f64, rho: f64, g: f64) -> Heave2d {
 /// semicircle the first is near `ω²b/g ≈ 2.4`, for a rectangle at
 /// `K = (π/2b)·coth(πT/2b)`); results close to one are unreliable.
 pub fn heave_2d_section(contour: &[(f64, f64)], omega: f64, rho: f64, g: f64) -> Heave2d {
-    let k = if omega.is_finite() { omega * omega / g } else { f64::INFINITY };
+    let k = if omega.is_finite() {
+        omega * omega / g
+    } else {
+        f64::INFINITY
+    };
     let panels: Vec<Panel> = contour
         .windows(2)
         .filter_map(|w| Panel::new(w[0], w[1]))
         .collect();
     let n = panels.len();
     if n == 0 || k.is_nan() || k <= 0.0 {
-        return Heave2d { added_mass: f64::NAN, damping: f64::NAN, amplitude_ratio: f64::NAN };
+        return Heave2d {
+            added_mass: f64::NAN,
+            damping: f64::NAN,
+            amplitude_ratio: f64::NAN,
+        };
     }
     // Normal velocity (a) and potential (p) at midpoint i of unit source
     // strength on panel j and its port-side mirror.
@@ -201,7 +208,11 @@ pub fn heave_2d_section(contour: &[(f64, f64)], omega: f64, rho: f64, g: f64) ->
     // Unit heave velocity: ∂φ/∂n = n_z.
     let rhs: Vec<C> = panels.iter().map(|pi| C::real(pi.normal.1)).collect();
     let Some(sigma) = solve_complex(a, rhs, n) else {
-        return Heave2d { added_mass: f64::NAN, damping: f64::NAN, amplitude_ratio: f64::NAN };
+        return Heave2d {
+            added_mass: f64::NAN,
+            damping: f64::NAN,
+            amplitude_ratio: f64::NAN,
+        };
     };
     // ∫ φ n_z ds over both sides; force = -iωρ∫φ n_z ds = iω a33 - b33.
     let mut integral = C::ZERO;
@@ -213,13 +224,21 @@ pub fn heave_2d_section(contour: &[(f64, f64)], omega: f64, rho: f64, g: f64) ->
         integral = integral + phi * (2.0 * pi.normal.1 * pi.len);
     }
     let added_mass = -rho * integral.re;
-    let damping = if omega.is_finite() { -omega * rho * integral.im } else { 0.0 };
+    let damping = if omega.is_finite() {
+        -omega * rho * integral.im
+    } else {
+        0.0
+    };
     let amplitude_ratio = if omega.is_finite() {
         (damping.max(0.0) * omega.powi(3) / (rho * g * g)).sqrt()
     } else {
         0.0
     };
-    Heave2d { added_mass, damping, amplitude_ratio }
+    Heave2d {
+        added_mass,
+        damping,
+        amplitude_ratio,
+    }
 }
 
 struct Panel {
@@ -241,7 +260,13 @@ impl Panel {
         // Keel → waterline with the hull on the left: the fluid is on the right.
         let normal = (d.1 / len, -d.0 / len);
         let mid = (p0.0 + 0.5 * d.0, p0.1 + 0.5 * d.1);
-        Some(Panel { p0, d, len, mid, normal })
+        Some(Panel {
+            p0,
+            d,
+            len,
+            mid,
+            normal,
+        })
     }
 }
 
@@ -271,7 +296,13 @@ fn green(at: (f64, f64), src: (f64, f64), k: f64, with_r1: bool) -> (C, (C, C)) 
     if k.is_finite() {
         let w = C::new(dzi, dy);
         let ekw = (w * k).exp();
-        let sgn = if dy > 0.0 { 1.0 } else if dy < 0.0 { -1.0 } else { 0.0 };
+        let sgn = if dy > 0.0 {
+            1.0
+        } else if dy < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
         let f = ekw * e1(w * k) + C::new(0.0, PI * sgn) * ekw;
         let fp = f * k - C::real(1.0) / w;
         let wave = (k * dzi).exp();
@@ -338,7 +369,8 @@ fn e1(z: C) -> C {
 /// Gaussian elimination with partial pivoting on a dense `n × n` system.
 fn solve_complex(mut a: Vec<C>, mut b: Vec<C>, n: usize) -> Option<Vec<C>> {
     for col in 0..n {
-        let piv = (col..n).max_by(|&x, &y| a[x * n + col].abs().total_cmp(&a[y * n + col].abs()))?;
+        let piv =
+            (col..n).max_by(|&x, &y| a[x * n + col].abs().total_cmp(&a[y * n + col].abs()))?;
         if a[piv * n + col].abs().is_nan() || a[piv * n + col].abs() <= 1e-300 {
             return None;
         }
@@ -368,7 +400,9 @@ fn solve_complex(mut a: Vec<C>, mut b: Vec<C>, n: usize) -> Option<Vec<C>> {
         }
         x[row] = s / a[row * n + row];
     }
-    x.iter().all(|v| v.re.is_finite() && v.im.is_finite()).then_some(x)
+    x.iter()
+        .all(|v| v.re.is_finite() && v.im.is_finite())
+        .then_some(x)
 }
 
 /// 8-point Gauss–Legendre nodes and weights on [−1, 1] (tabulated digits kept).
@@ -432,7 +466,10 @@ impl std::ops::Neg for C {
 impl std::ops::Mul for C {
     type Output = C;
     fn mul(self, o: C) -> C {
-        C::new(self.re * o.re - self.im * o.im, self.re * o.im + self.im * o.re)
+        C::new(
+            self.re * o.re - self.im * o.im,
+            self.re * o.im + self.im * o.re,
+        )
     }
 }
 impl std::ops::Mul<f64> for C {
@@ -445,10 +482,12 @@ impl std::ops::Div for C {
     type Output = C;
     fn div(self, o: C) -> C {
         let d = o.re * o.re + o.im * o.im;
-        C::new((self.re * o.re + self.im * o.im) / d, (self.im * o.re - self.re * o.im) / d)
+        C::new(
+            (self.re * o.re + self.im * o.im) / d,
+            (self.im * o.re - self.re * o.im) / d,
+        )
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -577,7 +616,12 @@ mod tests {
             let exact = heave_added_mass_infinite(&form, rho);
             let panel = heave_2d(&form, f64::INFINITY, rho, 9.81);
             let err = (panel.added_mass - exact).abs() / exact;
-            assert!(err < 0.01, "b={b} T={t} σ={sigma}: {} vs {exact} ({:.2} %)", panel.added_mass, err * 100.0);
+            assert!(
+                err < 0.01,
+                "b={b} T={t} σ={sigma}: {} vs {exact} ({:.2} %)",
+                panel.added_mass,
+                err * 100.0
+            );
             assert_eq!(panel.damping, 0.0);
         }
     }
@@ -616,9 +660,21 @@ mod tests {
                 let omega = (xi * g / b).sqrt();
                 let h = heave_2d(&form, omega, rho, g);
                 let close = |got: f64, want: f64, tol: f64| (got - want).abs() <= tol * want;
-                assert!(close(h.added_mass / norm, am, 0.015), "b={b} ξ={xi}: a {} vs {am}", h.added_mass / norm);
-                assert!(close(h.damping / (norm * omega), dm, 0.02), "b={b} ξ={xi}: b {} vs {dm}", h.damping / (norm * omega));
-                assert!(close(h.amplitude_ratio, abar, 0.015), "b={b} ξ={xi}: Ā {} vs {abar}", h.amplitude_ratio);
+                assert!(
+                    close(h.added_mass / norm, am, 0.015),
+                    "b={b} ξ={xi}: a {} vs {am}",
+                    h.added_mass / norm
+                );
+                assert!(
+                    close(h.damping / (norm * omega), dm, 0.02),
+                    "b={b} ξ={xi}: b {} vs {dm}",
+                    h.damping / (norm * omega)
+                );
+                assert!(
+                    close(h.amplitude_ratio, abar, 0.015),
+                    "b={b} ξ={xi}: Ā {} vs {abar}",
+                    h.amplitude_ratio
+                );
             }
         }
     }
@@ -632,8 +688,14 @@ mod tests {
             let coarse = heave_2d_section(&lewis_contour(&form, 61), omega, rho, g);
             let fine = heave_2d_section(&lewis_contour(&form, 121), omega, rho, g);
             assert!(coarse.damping > 0.0, "ξ={xi}");
-            assert!((coarse.added_mass - fine.added_mass).abs() < 0.01 * fine.added_mass, "ξ={xi}");
-            assert!((coarse.damping - fine.damping).abs() < 0.01 * fine.damping, "ξ={xi}");
+            assert!(
+                (coarse.added_mass - fine.added_mass).abs() < 0.01 * fine.added_mass,
+                "ξ={xi}"
+            );
+            assert!(
+                (coarse.damping - fine.damping).abs() < 0.01 * fine.damping,
+                "ξ={xi}"
+            );
         }
     }
 

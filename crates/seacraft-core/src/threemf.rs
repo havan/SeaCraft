@@ -47,7 +47,13 @@ pub fn weld(positions: &[Vec3], triangles: &[[u32; 3]], eps: f64) -> (Vec<Vec3>,
     // A non-positive tolerance would divide by zero in the grid cells; fall
     // back to an exact-coincidence grid rather than panicking.
     let eps = if eps > 0.0 { eps } else { f64::EPSILON };
-    let cell = |p: Vec3| [(p.x / eps).round() as i64, (p.y / eps).round() as i64, (p.z / eps).round() as i64];
+    let cell = |p: Vec3| {
+        [
+            (p.x / eps).round() as i64,
+            (p.y / eps).round() as i64,
+            (p.z / eps).round() as i64,
+        ]
+    };
 
     let mut grid: HashMap<[i64; 3], Vec<u32>> = HashMap::new();
     let mut verts: Vec<Vec3> = Vec::with_capacity(positions.len());
@@ -59,7 +65,11 @@ pub fn weld(positions: &[Vec3], triangles: &[[u32; 3]], eps: f64) -> (Vec<Vec3>,
         'search: for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let key = [c[0].saturating_add(dx), c[1].saturating_add(dy), c[2].saturating_add(dz)];
+                    let key = [
+                        c[0].saturating_add(dx),
+                        c[1].saturating_add(dy),
+                        c[2].saturating_add(dz),
+                    ];
                     for &i in grid.get(&key).into_iter().flatten() {
                         if verts.get(i as usize).is_some_and(|q| q.dist(*p) <= eps) {
                             found = Some(i);
@@ -85,7 +95,11 @@ pub fn weld(positions: &[Vec3], triangles: &[[u32; 3]], eps: f64) -> (Vec<Vec3>,
     let tris: Vec<[u32; 3]> = triangles
         .iter()
         .filter_map(|t| {
-            let (a, b, c) = (*remap.get(t[0] as usize)?, *remap.get(t[1] as usize)?, *remap.get(t[2] as usize)?);
+            let (a, b, c) = (
+                *remap.get(t[0] as usize)?,
+                *remap.get(t[1] as usize)?,
+                *remap.get(t[2] as usize)?,
+            );
             (a != b && b != c && c != a).then_some([a, b, c])
         })
         .collect();
@@ -126,17 +140,37 @@ fn coord(v: f64) -> f64 {
 /// The model part's XML: one object holding the whole mesh, at `unit="meter"`.
 fn model_xml(name: &str, verts: &[Vec3], tris: &[[u32; 3]]) -> String {
     let title = esc(name);
-    let object_name = if title.is_empty() { "SeaCraft hull".to_string() } else { title.clone() };
+    let object_name = if title.is_empty() {
+        "SeaCraft hull".to_string()
+    } else {
+        title.clone()
+    };
     let mut x = String::with_capacity(256 + verts.len() * 48 + tris.len() * 40);
     x.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    let _ = writeln!(x, "<model unit=\"meter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">");
-    let _ = writeln!(x, " <metadata name=\"Application\">SeaCraft {}</metadata>", crate::VERSION);
+    let _ = writeln!(
+        x,
+        "<model unit=\"meter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">"
+    );
+    let _ = writeln!(
+        x,
+        " <metadata name=\"Application\">SeaCraft {}</metadata>",
+        crate::VERSION
+    );
     let _ = writeln!(x, " <metadata name=\"Title\">{title}</metadata>");
     x.push_str(" <resources>\n");
-    let _ = writeln!(x, "  <object id=\"1\" type=\"model\" name=\"{object_name}\">");
+    let _ = writeln!(
+        x,
+        "  <object id=\"1\" type=\"model\" name=\"{object_name}\">"
+    );
     x.push_str("   <mesh>\n    <vertices>\n");
     for v in verts {
-        let _ = writeln!(x, "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", coord(v.x), coord(v.y), coord(v.z));
+        let _ = writeln!(
+            x,
+            "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+            coord(v.x),
+            coord(v.y),
+            coord(v.z)
+        );
     }
     x.push_str("    </vertices>\n    <triangles>\n");
     for [a, b, c] in tris {
@@ -174,7 +208,11 @@ const CRC_TABLE: [u32; 256] = {
         let mut c = n as u32;
         let mut k = 0;
         while k < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             k += 1;
         }
         table[n] = c;
@@ -277,7 +315,9 @@ pub fn write_3mf(name: &str, verts: &[Vec3], faces: &[Vec<usize>]) -> Vec<u8> {
     let idx = |i: usize| if i < n { u32::try_from(i).ok() } else { None };
     let mut raw: Vec<[u32; 3]> = Vec::with_capacity(faces.len() * 2);
     for face in faces {
-        let Some((first, rest)) = face.split_first() else { continue };
+        let Some((first, rest)) = face.split_first() else {
+            continue;
+        };
         // Fan from the first corner: a quad becomes two triangles, an n-gon
         // n - 2. Out-of-range indices are skipped rather than written as a
         // triangle a slicer would reject.
@@ -320,7 +360,8 @@ mod tests {
             let size = u32_at(zip, o + 18) as usize;
             let name_len = u16_at(zip, o + 26) as usize;
             let extra = u16_at(zip, o + 28) as usize;
-            let name = String::from_utf8(zip[o + 30..o + 30 + name_len].to_vec()).expect("ascii name");
+            let name =
+                String::from_utf8(zip[o + 30..o + 30 + name_len].to_vec()).expect("ascii name");
             let start = o + 30 + name_len + extra;
             out.push((name, crc, zip[start..start + size].to_vec()));
             o = start + size;
@@ -349,7 +390,11 @@ mod tests {
         ];
         let (verts, tris) = weld(&positions, &triangles, 1e-6);
         assert_eq!(verts.len(), 4, "duplicates merged: {verts:?}");
-        assert_eq!(tris, vec![[0, 1, 2], [0, 2, 3], [1, 2, 3]], "sliver dropped, indices remapped");
+        assert_eq!(
+            tris,
+            vec![[0, 1, 2], [0, 2, 3], [1, 2, 3]],
+            "sliver dropped, indices remapped"
+        );
 
         // A tolerance below the gap leaves the near-duplicate alone.
         let (verts, tris) = weld(&positions[..4], &triangles[..2], 1e-6);
@@ -375,7 +420,11 @@ mod tests {
         ];
         let zip = write_3mf("Hull <&> \"demo\"", &verts, &faces);
 
-        assert_eq!(zip.get(..4), Some(&LOCAL_SIG.to_le_bytes()[..]), "starts with a local file header");
+        assert_eq!(
+            zip.get(..4),
+            Some(&LOCAL_SIG.to_le_bytes()[..]),
+            "starts with a local file header"
+        );
 
         // End of central directory: last 22 bytes, no archive comment.
         assert!(zip.len() > 22);
@@ -384,18 +433,41 @@ mod tests {
 
         let entries = local_entries(&zip);
         let names: Vec<&str> = entries.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"]);
+        assert_eq!(
+            names,
+            ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"]
+        );
 
         // The central directory agrees with the local headers: same count, and
         // its recorded offset really holds the first central header.
-        assert_eq!(u16_at(&zip, eocd + 10) as usize, entries.len(), "entries on disk");
-        assert_eq!(u16_at(&zip, eocd + 8) as usize, entries.len(), "entries in total");
+        assert_eq!(
+            u16_at(&zip, eocd + 10) as usize,
+            entries.len(),
+            "entries on disk"
+        );
+        assert_eq!(
+            u16_at(&zip, eocd + 8) as usize,
+            entries.len(),
+            "entries in total"
+        );
         let cd_offset = u32_at(&zip, eocd + 16) as usize;
         let cd_size = u32_at(&zip, eocd + 12) as usize;
-        assert_eq!(u32_at(&zip, cd_offset), CENTRAL_SIG, "central directory offset");
+        assert_eq!(
+            u32_at(&zip, cd_offset),
+            CENTRAL_SIG,
+            "central directory offset"
+        );
         assert_eq!(cd_offset + cd_size, eocd, "central directory size");
-        assert_eq!(u16_at(&zip, cd_offset + 28) as usize, u16_at(&zip, 26) as usize, "name length");
-        assert_eq!(u32_at(&zip, cd_offset + 42) as usize, 0, "first local header offset");
+        assert_eq!(
+            u16_at(&zip, cd_offset + 28) as usize,
+            u16_at(&zip, 26) as usize,
+            "name length"
+        );
+        assert_eq!(
+            u32_at(&zip, cd_offset + 42) as usize,
+            0,
+            "first local header offset"
+        );
 
         for (name, crc, data) in &entries {
             assert_eq!(crc32(data), *crc, "{name}: CRC-32");
@@ -404,7 +476,12 @@ mod tests {
         let model = String::from_utf8(entries[2].2.clone()).expect("utf-8 model");
         assert!(model.contains("unit=\"meter\""), "{model}");
         assert!(model.contains(CORE_NS), "{model}");
-        assert!(model.contains("<metadata name=\"Title\">Hull &lt;&amp;&gt; &quot;demo&quot;</metadata>"), "{model}");
+        assert!(
+            model.contains(
+                "<metadata name=\"Title\">Hull &lt;&amp;&gt; &quot;demo&quot;</metadata>"
+            ),
+            "{model}"
+        );
         assert_eq!(model.matches("<vertex ").count(), 8, "{model}");
         assert_eq!(model.matches("<triangle ").count(), 12, "{model}");
         assert_eq!(model.matches("<item ").count(), 1, "{model}");

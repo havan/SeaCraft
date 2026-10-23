@@ -23,8 +23,8 @@
 //! vertices moved.
 
 use crate::hydro::{self, HydroOptions};
-use crate::mesh::Surface;
 use crate::math::Vec3;
+use crate::mesh::Surface;
 use crate::subdiv::SubdivisionOptions;
 use serde::Serialize;
 
@@ -88,7 +88,6 @@ impl Targets {
     }
 }
 
-
 /// What a caller wants done to the model, in one request.
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct TransformRequest {
@@ -135,18 +134,26 @@ pub fn run(
     subdiv: SubdivisionOptions,
 ) -> Result<(Surface, TransformReport), String> {
     if request.is_empty() {
-        return Err("nothing to do: give target dimensions, a scale, a translation or a mirror"
-            .to_string());
+        return Err(
+            "nothing to do: give target dimensions, a scale, a translation or a mirror".to_string(),
+        );
     }
     let before = MainDimensions::measure(surface, subdiv);
-    let targets = Targets { lwl: request.lwl, bwl: request.bwl, draft: request.draft };
+    let targets = Targets {
+        lwl: request.lwl,
+        bwl: request.bwl,
+        draft: request.draft,
+    };
     let (mut out, fit) = if targets.is_empty() {
         (surface.clone(), None)
     } else {
         let (fitted, report) = fit_to_targets(surface, targets, subdiv, 1e-3, 4)?;
         (fitted, Some(report))
     };
-    let mut cumulative_scale = fit.as_ref().map(|f| f.scale).unwrap_or(Vec3::new(1.0, 1.0, 1.0));
+    let mut cumulative_scale = fit
+        .as_ref()
+        .map(|f| f.scale)
+        .unwrap_or(Vec3::new(1.0, 1.0, 1.0));
     if let Some(scale) = request.scale {
         apply(&mut out, scale, Vec3::ZERO)?;
         cumulative_scale = Vec3::new(
@@ -244,7 +251,10 @@ pub fn mirror(surface: &mut Surface, axis: Axis) -> Result<(), String> {
     let centre = match axis {
         Axis::X => 0.5 * (min.x + max.x),
         Axis::Y => 0.0,
-        Axis::Z => surface.lowest_hydrostatics_point() + 0.5 * (max.z - surface.lowest_hydrostatics_point()),
+        Axis::Z => {
+            surface.lowest_hydrostatics_point()
+                + 0.5 * (max.z - surface.lowest_hydrostatics_point())
+        }
     };
     for p in &mut surface.points {
         match axis {
@@ -304,8 +314,9 @@ pub fn fit_to_targets(
             }
         }
     }
-    let before = MainDimensions::measure(surface, subdiv)
-        .ok_or_else(|| "cannot measure the model: it has no waterline (draft must be positive)".to_string())?;
+    let before = MainDimensions::measure(surface, subdiv).ok_or_else(|| {
+        "cannot measure the model: it has no waterline (draft must be positive)".to_string()
+    })?;
 
     let mut out = surface.clone();
     let mut cumulative = Vec3::new(1.0, 1.0, 1.0);
@@ -412,7 +423,10 @@ mod tests {
     fn hydro(surface: &Surface, level: u8) -> hydro::Hydrostatics {
         let mut opts = HydroOptions::from_surface(
             surface,
-            SubdivisionOptions { level, mode: SubdivisionMode::Loop },
+            SubdivisionOptions {
+                level,
+                mode: SubdivisionMode::Loop,
+            },
         );
         opts.stations = 0;
         hydro::compute(surface, &opts)
@@ -431,7 +445,10 @@ mod tests {
         );
         assert!((after.lwl - 2.0 * before.lwl).abs() < 1e-6);
         assert!((after.bwl - 2.0 * before.bwl).abs() < 1e-6);
-        assert!((after.draft - 2.0 * before.draft).abs() < 1e-9, "settings draft scales");
+        assert!(
+            (after.draft - 2.0 * before.draft).abs() < 1e-9,
+            "settings draft scales"
+        );
         assert!((after.block_coefficient - before.block_coefficient).abs() < 1e-9);
         // The anchor: the aft end and the keel stay put.
         let (min, _) = s.extents();
@@ -442,11 +459,27 @@ mod tests {
     #[test]
     fn fit_hits_length_beam_and_draft_on_a_real_hull() {
         let s = crate::demo::demo_hull(false);
-        let targets = Targets { lwl: Some(15.0), bwl: Some(4.6), draft: Some(0.8) };
-        let (fitted, report) =
-            fit_to_targets(&s, targets, SubdivisionOptions { level: 3, mode: SubdivisionMode::Loop }, 1e-3, 4)
-                .expect("fit");
-        assert!(report.max_error < 1e-3, "residual {}: {report:?}", report.max_error);
+        let targets = Targets {
+            lwl: Some(15.0),
+            bwl: Some(4.6),
+            draft: Some(0.8),
+        };
+        let (fitted, report) = fit_to_targets(
+            &s,
+            targets,
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
+            1e-3,
+            4,
+        )
+        .expect("fit");
+        assert!(
+            report.max_error < 1e-3,
+            "residual {}: {report:?}",
+            report.max_error
+        );
         assert!(report.iterations <= 4);
         assert!((report.after.lwl - 15.0).abs() / 15.0 < 1e-3, "{report:?}");
         assert!((report.after.bwl - 4.6).abs() / 4.6 < 1e-3, "{report:?}");
@@ -455,11 +488,18 @@ mod tests {
         // The original is untouched: a fit works on a copy.
         let original = MainDimensions::measure(
             &s,
-            SubdivisionOptions { level: 3, mode: SubdivisionMode::Loop },
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
         )
         .expect("measure");
         assert!((original.lwl - report.before.lwl).abs() < 1e-9);
-        assert!((fitted.settings.draft - 0.8).abs() < 1e-9, "{}", fitted.settings.draft);
+        assert!(
+            (fitted.settings.draft - 0.8).abs() < 1e-9,
+            "{}",
+            fitted.settings.draft
+        );
     }
 
     #[test]
@@ -469,7 +509,11 @@ mod tests {
         apply(&mut s, Vec3::new(1.0, 1.0, 1.0), Vec3::new(5.0, 0.0, 0.0)).expect("translate");
         let after = hydro(&s, 2);
         assert!((after.volume_m3 - before.volume_m3).abs() < 1e-9);
-        assert!((after.lcb.x - (before.lcb.x + 5.0)).abs() < 1e-9, "lcb {}", after.lcb.x);
+        assert!(
+            (after.lcb.x - (before.lcb.x + 5.0)).abs() < 1e-9,
+            "lcb {}",
+            after.lcb.x
+        );
         assert!((after.lcb.z - before.lcb.z).abs() < 1e-9);
         assert!((after.block_coefficient - before.block_coefficient).abs() < 1e-9);
     }
@@ -527,11 +571,19 @@ mod tests {
         ] {
             assert!(apply(&mut s, bad, Vec3::ZERO).is_err(), "{bad:?}");
         }
-        assert!(apply(&mut s, Vec3::new(1.0, 1.0, 1.0), Vec3::new(f64::NAN, 0.0, 0.0)).is_err());
+        assert!(apply(
+            &mut s,
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(f64::NAN, 0.0, 0.0)
+        )
+        .is_err());
         assert!(fit_to_targets(&s, Targets::default(), LEVEL, 1e-3, 3).is_err());
         assert!(fit_to_targets(
             &s,
-            Targets { lwl: Some(-1.0), ..Targets::default() },
+            Targets {
+                lwl: Some(-1.0),
+                ..Targets::default()
+            },
             LEVEL,
             1e-3,
             3

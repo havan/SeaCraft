@@ -8,9 +8,14 @@ use seacraft_core::stability::{
     StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{damage, lackenby, loading, table, trimopt, 
-    analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    develop, michell, offsets, parametric::{self, HullKind, HullSpec}, planing, raster, resistance, topology, transform,
+use seacraft_core::{
+    analysis::AnalysisMode,
+    curves, damage, demo, develop, export, fef, lackenby, linesplan, loading,
+    math::Vec3,
+    mesh::Surface,
+    michell, offsets,
+    parametric::{self, HullKind, HullSpec},
+    planing, raster, resistance, table, topology, transform, trimopt,
 };
 use std::path::{Path, PathBuf};
 
@@ -434,7 +439,10 @@ struct TrimArgs {
 
 fn cmd_trim(a: TrimArgs) -> Result<()> {
     let s = load(&a.file)?;
-    let subdiv = SubdivisionOptions { level: a.level, mode: SubdivisionMode::Loop };
+    let subdiv = SubdivisionOptions {
+        level: a.level,
+        mode: SubdivisionMode::Loop,
+    };
     let mut opts = HydroOptions::from_surface(&s, subdiv);
     if let Some(d) = a.draft {
         opts.draft = d;
@@ -450,13 +458,22 @@ fn cmd_trim(a: TrimArgs) -> Result<()> {
         "trim scan at {:.2} kn, displacement held at {:.3} m3{}",
         scan.speed_kn,
         scan.target_volume_m3,
-        if a.no_hold_volume { " (NOT held: draft fixed)" } else { "" }
+        if a.no_hold_volume {
+            " (NOT held: draft fixed)"
+        } else {
+            ""
+        }
     );
     println!("   trim    draft     LWL      Fn     RT [kN]   PE [kW]");
     for p in &scan.points {
         println!(
             "{:+7.3} {:7.3} {:8.3} {:6.3} {:10.3} {:10.2}",
-            p.trim_m, p.draft_m, p.lwl_m, p.froude, p.rt_n / 1000.0, p.pe_kw
+            p.trim_m,
+            p.draft_m,
+            p.lwl_m,
+            p.froude,
+            p.rt_n / 1000.0,
+            p.pe_kw
         );
     }
     if let Some(b) = scan.best {
@@ -466,7 +483,11 @@ fn cmd_trim(a: TrimArgs) -> Result<()> {
             b.draft_m,
             b.rt_n / 1000.0,
             b.pe_kw,
-            if scan.at_boundary { " (at the edge of the range)" } else { "" }
+            if scan.at_boundary {
+                " (at the edge of the range)"
+            } else {
+                ""
+            }
         );
     }
     for w in &scan.warnings {
@@ -532,7 +553,10 @@ struct OptimizeArgs {
 fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     use seacraft_core::optimize::{self, Method, OptimizeSpec};
     let s = load(&a.file)?;
-    let subdiv = SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() };
+    let subdiv = SubdivisionOptions {
+        level: a.subdiv.level,
+        mode: a.subdiv.mode.into(),
+    };
     let opts = HydroOptions::from_surface(&s, subdiv);
     let mut spec = OptimizeSpec::new(a.speed);
     spec.method = match a.method {
@@ -554,7 +578,8 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     spec.hold_displacement_tol = a.tol;
     spec.max_evaluations = a.max_evals;
     spec.draft = a.draft;
-    let (out, report) = optimize::optimize_hull(&s, &opts, &spec).map_err(|e| anyhow::anyhow!(e))?;
+    let (out, report) =
+        optimize::optimize_hull(&s, &opts, &spec).map_err(|e| anyhow::anyhow!(e))?;
     std::fs::write(&a.output, fef::write(&out))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     if a.json {
@@ -566,9 +591,19 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
         "{}  -  resistance optimisation at {:.2} kn ({:?}, Fn {:.3})",
         s.settings.name, report.speed_kn, report.method, b.froude
     );
-    println!("  {:<14} {:>12} {:>12} {:>10}", "", "baseline", "optimised", "change");
+    println!(
+        "  {:<14} {:>12} {:>12} {:>10}",
+        "", "baseline", "optimised", "change"
+    );
     let row = |name: &str, x: f64, y: f64, prec: usize| {
-        println!("  {:<14} {:>12.prec$} {:>12.prec$} {:>+10.prec$}", name, x, y, y - x, prec = prec);
+        println!(
+            "  {:<14} {:>12.prec$} {:>12.prec$} {:>+10.prec$}",
+            name,
+            x,
+            y,
+            y - x,
+            prec = prec
+        );
     };
     row("RT [kN]", b.rt_kn, o.rt_kn, 3);
     row("PE [kW]", b.pe_kw, o.pe_kw, 2);
@@ -590,7 +625,11 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
         "  RT {:+.2} %   displacement error {:.3} %   constraints {}",
         report.rt_change_pct,
         report.displacement_error_pct,
-        if report.constraints_met { "met" } else { "NOT met" }
+        if report.constraints_met {
+            "met"
+        } else {
+            "NOT met"
+        }
     );
     println!("  variables:");
     for v in &report.variables {
@@ -647,7 +686,10 @@ fn cmd_table(a: TableArgs) -> Result<()> {
     let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
     let opts = HydroOptions::from_surface(
         &s,
-        SubdivisionOptions { level: a.level, mode: SubdivisionMode::Loop },
+        SubdivisionOptions {
+            level: a.level,
+            mode: SubdivisionMode::Loop,
+        },
     );
     let drafts = match &a.drafts {
         Some(list) => list
@@ -662,7 +704,8 @@ fn cmd_table(a: TableArgs) -> Result<()> {
     }
     let t = table::table(&s, &opts, &drafts);
     if let Some(path) = &a.csv {
-        std::fs::write(path, t.csv()).with_context(|| format!("cannot write {}", path.display()))?;
+        std::fs::write(path, t.csv())
+            .with_context(|| format!("cannot write {}", path.display()))?;
     }
     if let Some(path) = &a.html {
         std::fs::write(path, t.html())
@@ -736,7 +779,10 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
     let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
     let mut opts = HydroOptions::from_surface(
         &s,
-        SubdivisionOptions { level: a.level, mode: SubdivisionMode::Loop },
+        SubdivisionOptions {
+            level: a.level,
+            mode: SubdivisionMode::Loop,
+        },
     );
     if let Some(d) = a.draft {
         opts.draft = d;
@@ -748,7 +794,8 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
         a.cp.unwrap_or(now.prismatic_coefficient),
         a.lcb.unwrap_or(lcb_now),
     );
-    let (out, report) = lackenby::fit(&s, target, &opts, 1e-3, 10).map_err(|e| anyhow::anyhow!(e))?;
+    let (out, report) =
+        lackenby::fit(&s, target, &opts, 1e-3, 10).map_err(|e| anyhow::anyhow!(e))?;
     std::fs::write(&a.output, fef::write(&out))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     if a.json {
@@ -760,7 +807,10 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
         "  before  Cp {:.4}  LCB {:+.2} %  V {:.3} m3  LWL {:.3} m",
         report.before.cp, report.before.lcb_pct, report.before.volume_m3, report.before.lwl
     );
-    println!("  target  Cp {:.4}  LCB {:+.2} %", target.cp, target.lcb_pct);
+    println!(
+        "  target  Cp {:.4}  LCB {:+.2} %",
+        target.cp, target.lcb_pct
+    );
     println!(
         "  after   Cp {:.4}  LCB {:+.2} %  V {:.3} m3  LWL {:.3} m",
         report.after.cp, report.after.lcb_pct, report.after.volume_m3, report.after.lwl
@@ -1148,8 +1198,8 @@ fn run() -> Result<()> {
 }
 
 fn load(path: &Path) -> Result<Surface> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let surface = fef::parse(&text).with_context(|| format!("cannot parse {}", path.display()))?;
     Ok(surface)
 }
@@ -1217,7 +1267,10 @@ fn cmd_generate(a: GenerateArgs) -> Result<()> {
     println!("  LWL (m)       {:8.3}     {:8.3}", rep.target_lwl, rep.lwl);
     println!("  BWL (m)       {:8.3}     {:8.3}", rep.target_bwl, rep.bwl);
     println!("  draft T (m)   {:8.3}     {:8.3}", rep.target_draft, rep.t);
-    println!("  depth D (m)   {:8.3}     {:8.3}", rep.target_depth, rep.target_depth);
+    println!(
+        "  depth D (m)   {:8.3}     {:8.3}",
+        rep.target_depth, rep.target_depth
+    );
     match rep.target_cb {
         Some(tcb) => println!("  Cb            {:8.4}     {:8.4}", tcb, rep.cb),
         None => println!("  Cb                   -     {:8.4}", rep.cb),
@@ -1249,7 +1302,10 @@ fn cmd_info(a: InfoArgs) -> Result<()> {
     }
     println!(
         "  principal      L {:.3}  B {:.3}  T {:.3} m   rho {:.0} kg/m3  appendage {:.3}",
-        s.settings.length, s.settings.beam, s.settings.draft, s.settings.water_density,
+        s.settings.length,
+        s.settings.beam,
+        s.settings.draft,
+        s.settings.water_density,
         s.settings.appendage_coefficient
     );
     println!(
@@ -1274,7 +1330,11 @@ fn cmd_info(a: InfoArgs) -> Result<()> {
             l.name,
             l.id,
             if l.visible { "visible " } else { "hidden  " },
-            if l.symmetric { "symmetric " } else { "asymmetric " },
+            if l.symmetric {
+                "symmetric "
+            } else {
+                "asymmetric "
+            },
             if l.use_in_hydrostatics { "hydro" } else { "-" },
             l.density,
             l.thickness
@@ -1286,7 +1346,10 @@ fn cmd_info(a: InfoArgs) -> Result<()> {
 fn hydro_options(a: &HydroArgs, s: &Surface) -> HydroOptions {
     let mut o = HydroOptions::from_surface(
         s,
-        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
     );
     if let Some(d) = a.draft {
         o.draft = d;
@@ -1329,31 +1392,64 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
             s.settings.name, result.draft, result.trim_m
         );
     } else {
-        println!("{}  -  hydrostatics at T {:.3} m", s.settings.name, result.draft);
+        println!(
+            "{}  -  hydrostatics at T {:.3} m",
+            s.settings.name, result.draft
+        );
     }
     println!();
     let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
     row("volume", format!("{:.3} m3", result.volume_m3));
     row(
         "displacement",
-        format!("{:.0} kg  ({:.3} t)", result.displacement_kg, result.displacement_t),
+        format!(
+            "{:.0} kg  ({:.3} t)",
+            result.displacement_kg, result.displacement_t
+        ),
     );
-    row("block coefficient Cb", format!("{:.4}", result.block_coefficient));
-    row("prismatic Cp", format!("{:.4}", result.prismatic_coefficient));
+    row(
+        "block coefficient Cb",
+        format!("{:.4}", result.block_coefficient),
+    );
+    row(
+        "prismatic Cp",
+        format!("{:.4}", result.prismatic_coefficient),
+    );
     row("midship Cm", format!("{:.4}", result.midship_coefficient));
-    row("waterplane Cwp", format!("{:.4}", result.waterplane_coefficient));
-    row("vertical prismatic Cvp", format!("{:.4}", result.vertical_prismatic_coefficient));
+    row(
+        "waterplane Cwp",
+        format!("{:.4}", result.waterplane_coefficient),
+    );
+    row(
+        "vertical prismatic Cvp",
+        format!("{:.4}", result.vertical_prismatic_coefficient),
+    );
     println!();
     row(
         "LCB",
-        format!("x {:.3}  y {:.3}  z {:.3} m", result.lcb.x, result.lcb.y, result.lcb.z),
+        format!(
+            "x {:.3}  y {:.3}  z {:.3} m",
+            result.lcb.x, result.lcb.y, result.lcb.z
+        ),
     );
     row("KB", format!("{:.3} m above keel", result.kb));
-    row("LCF", format!("x {:.3}  y {:.3}", result.lcf.x, result.lcf.y));
+    row(
+        "LCF",
+        format!("x {:.3}  y {:.3}", result.lcf.x, result.lcf.y),
+    );
     println!();
-    row("LWL x BWL", format!("{:.3} x {:.3} m", result.lwl, result.bwl));
-    row("wetted surface", format!("{:.3} m2", result.wetted_surface_m2));
-    row("waterplane area", format!("{:.3} m2", result.waterplane_area_m2));
+    row(
+        "LWL x BWL",
+        format!("{:.3} x {:.3} m", result.lwl, result.bwl),
+    );
+    row(
+        "wetted surface",
+        format!("{:.3} m2", result.wetted_surface_m2),
+    );
+    row(
+        "waterplane area",
+        format!("{:.3} m2", result.waterplane_area_m2),
+    );
     row(
         "waterplane I_T / I_L",
         format!(
@@ -1362,21 +1458,41 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
         ),
     );
     row("BM transverse", format!("{:.3} m", result.bm_transverse));
-    row("BM longitudinal", format!("{:.3} m", result.bm_longitudinal));
+    row(
+        "BM longitudinal",
+        format!("{:.3} m", result.bm_longitudinal),
+    );
     row("KM transverse", format!("{:.3} m", result.km_transverse));
-    row("KM longitudinal", format!("{:.3} m", result.km_longitudinal));
+    row(
+        "KM longitudinal",
+        format!("{:.3} m", result.km_longitudinal),
+    );
     if let Some(kg) = a.kg {
-        row(&format!("GM (KG {:.3})", kg), format!("{:.3} m", result.gm(kg)));
+        row(
+            &format!("GM (KG {:.3})", kg),
+            format!("{:.3} m", result.gm(kg)),
+        );
     }
     println!();
-    row("midship section area", format!("{:.4} m2 at x {:.3}", result.mainframe_area_m2, result.mainframe_x));
+    row(
+        "midship section area",
+        format!(
+            "{:.4} m2 at x {:.3}",
+            result.mainframe_area_m2, result.mainframe_x
+        ),
+    );
     row("lateral area", format!("{:.3} m2", result.lateral_area_m2));
     if !result.sac.is_empty() {
         println!();
         println!("  section area curve ({} stations)", result.sac.len());
         for p in &result.sac {
             let bar = (p.area / result.mainframe_area_m2.max(1e-9) * 40.0).round() as usize;
-            println!("  x {:>7.3}  {:>7.4} m2  {}", p.x, p.area, "#".repeat(bar.min(60)));
+            println!(
+                "  x {:>7.3}  {:>7.4} m2  {}",
+                p.x,
+                p.area,
+                "#".repeat(bar.min(60))
+            );
         }
     }
     if !result.warnings.is_empty() {
@@ -1400,9 +1516,25 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
     let data: Vec<u8> = match ext.as_str() {
         "obj" => {
             let mut text = if a.control {
-                export::obj_control(&s, if a.up == UpArg::Y { export::UpAxis::Y } else { export::UpAxis::Z })
+                export::obj_control(
+                    &s,
+                    if a.up == UpArg::Y {
+                        export::UpAxis::Y
+                    } else {
+                        export::UpAxis::Z
+                    },
+                )
             } else {
-                export::obj(&s, a.subdiv.level, mode, if a.up == UpArg::Y { export::UpAxis::Y } else { export::UpAxis::Z })
+                export::obj(
+                    &s,
+                    a.subdiv.level,
+                    mode,
+                    if a.up == UpArg::Y {
+                        export::UpAxis::Y
+                    } else {
+                        export::UpAxis::Z
+                    },
+                )
             };
             if a.no_mirror {
                 text = obj_from_unmirrored(&s, a.subdiv.level, mode);
@@ -1421,7 +1553,11 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
     };
     std::fs::write(&a.output, &data)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
-    println!("wrote {} ({:.1} KiB)", a.output.display(), data.len() as f64 / 1024.0);
+    println!(
+        "wrote {} ({:.1} KiB)",
+        a.output.display(),
+        data.len() as f64 / 1024.0
+    );
     Ok(())
 }
 
@@ -1446,7 +1582,10 @@ fn cmd_subdiv(a: SubdivArgs) -> Result<()> {
     let s = load(&a.file)?;
     let mut mesh = evaluate(
         &s,
-        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
     );
     if a.mirror {
         let sym: Vec<bool> = s.layers.iter().map(|l| l.symmetric).collect();
@@ -1456,7 +1595,10 @@ fn cmd_subdiv(a: SubdivArgs) -> Result<()> {
     baked.points = mesh
         .verts
         .iter()
-        .map(|p| seacraft_core::mesh::ControlPoint { p: *p, kind: seacraft_core::mesh::VertexKind::Regular })
+        .map(|p| seacraft_core::mesh::ControlPoint {
+            p: *p,
+            kind: seacraft_core::mesh::VertexKind::Regular,
+        })
         .collect();
     baked.faces = mesh.faces.clone();
     baked.face_layer = if mesh.face_layer.is_empty() {
@@ -1481,7 +1623,10 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
     let s = load(&a.file)?;
     let mut opts = HydroOptions::from_surface(
         &s,
-        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
     );
     if let Some(d) = a.draft {
         opts.draft = d;
@@ -1492,7 +1637,10 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
     }
     let result = hydro::compute(&s, &opts);
     if let Some(path) = &a.svg {
-        let title = format!("{} - sectional area curve, T = {:.3} m", s.settings.name, opts.draft);
+        let title = format!(
+            "{} - sectional area curve, T = {:.3} m",
+            s.settings.name, opts.draft
+        );
         std::fs::write(path, curves::sac_svg(&result.sac, &title))
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
@@ -1557,7 +1705,10 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
     let s = load(&a.file)?;
     let mut opts = HydroOptions::from_surface(
         &s,
-        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
     );
     if let Some(d) = a.draft {
         opts.draft = d;
@@ -1594,7 +1745,11 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
             }
         }
         std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {} ({} stations)", path.display(), bonjean.sections.len());
+        println!(
+            "wrote {} ({} stations)",
+            path.display(),
+            bonjean.sections.len()
+        );
     }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&bonjean)?);
@@ -1654,7 +1809,10 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
     let s = load(&a.file)?;
     let opts = HydroOptions::from_surface(
         &s,
-        SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() },
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
     );
     let hull = seacraft_core::hydro::Hull::new(&s, opts.subdivision);
     let waterlines = match &a.waterlines {
@@ -1760,7 +1918,10 @@ fn parse_triple(text: &str, key: &str) -> Result<Vec3> {
         .collect::<std::result::Result<_, _>>()
         .with_context(|| format!("{key} must be three comma-separated numbers"))?;
     if parts.len() != 3 {
-        bail!("{key} must be three comma-separated numbers, got {}", parts.len());
+        bail!(
+            "{key} must be three comma-separated numbers, got {}",
+            parts.len()
+        );
     }
     Ok(Vec3::new(parts[0], parts[1], parts[2]))
 }
@@ -1769,10 +1930,22 @@ fn cmd_transform(a: TransformArgs) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.level,
-        mode: if a.catmull_clark { SubdivisionMode::CatmullClark } else { SubdivisionMode::Loop },
+        mode: if a.catmull_clark {
+            SubdivisionMode::CatmullClark
+        } else {
+            SubdivisionMode::Loop
+        },
     };
-    let targets = transform::Targets { lwl: a.lwl, bwl: a.bwl, draft: a.draft };
-    let scale = a.scale.as_deref().map(|t| parse_triple(t, "--scale")).transpose()?;
+    let targets = transform::Targets {
+        lwl: a.lwl,
+        bwl: a.bwl,
+        draft: a.draft,
+    };
+    let scale = a
+        .scale
+        .as_deref()
+        .map(|t| parse_triple(t, "--scale"))
+        .transpose()?;
     let translate = a
         .translate
         .as_deref()
@@ -1795,8 +1968,7 @@ fn cmd_transform(a: TransformArgs) -> Result<()> {
             MirrorArg::Z => transform::Axis::Z,
         }),
     };
-    let (out, report) =
-        transform::run(&s, &request, subdiv).map_err(|e| anyhow::anyhow!(e))?;
+    let (out, report) = transform::run(&s, &request, subdiv).map_err(|e| anyhow::anyhow!(e))?;
     let before = report.before;
     let after = report.after;
     let fit = report.fit.clone();
@@ -1892,9 +2064,15 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         );
 
         let mut warnings = Vec::new();
-        let lb = if grid.beam_wl > 1e-6 { grid.length_wl / grid.beam_wl } else { 0.0 };
+        let lb = if grid.beam_wl > 1e-6 {
+            grid.length_wl / grid.beam_wl
+        } else {
+            0.0
+        };
         if lb < 6.0 {
-            warnings.push(format!("L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"));
+            warnings.push(format!(
+                "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
+            ));
         }
         for r in &rows {
             if !(0.20..=1.0).contains(&r.fn_) {
@@ -1916,7 +2094,8 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
                     r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
                 ));
             }
-            std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+            std::fs::write(path, text)
+                .with_context(|| format!("cannot write {}", path.display()))?;
             println!("wrote {} ({} speeds)", path.display(), rows.len());
         }
 
@@ -1977,8 +2156,9 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
     }
 
     if a.method == ResistanceMethodArg::Dsyhs {
-        let dsyhs_in = resistance::DsyhsInput::measure(&hull, &opts)
-            .context("cannot measure the hull for DSYHS: a positive draft and waterline are needed")?;
+        let dsyhs_in = resistance::DsyhsInput::measure(&hull, &opts).context(
+            "cannot measure the hull for DSYHS: a positive draft and waterline are needed",
+        )?;
         let speeds = parse_ordinates(&a.speeds, "speeds")?;
         let rows = resistance::dsyhs_curve(&dsyhs_in, &speeds);
         let mut warnings = dsyhs_in.warnings();
@@ -2002,7 +2182,8 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
                     r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
                 ));
             }
-            std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+            std::fs::write(path, text)
+                .with_context(|| format!("cannot write {}", path.display()))?;
             println!("wrote {} ({} speeds)", path.display(), rows.len());
         }
 
@@ -2137,7 +2318,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}  -  Holtrop-Mennen resistance, T {:.3} m", s.settings.name, input.draft);
+    println!(
+        "{}  -  Holtrop-Mennen resistance, T {:.3} m",
+        s.settings.name, input.draft
+    );
     println!(
         "  LWL {:.3}  BWL {:.3}  S {:.2} m2  nabla {:.2} m3  Cb {:.4}  Cp {:.4}  Cm {:.4}",
         input.length_wl,
@@ -2150,7 +2334,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
     );
     println!(
         "  LCB {:+.2} % L  iE {:.1} deg  AT {:.3} m2  ABT {:.3} m2  c_stern {:+.1}",
-        input.lcb_pct, input.half_entrance_deg, input.transom_area_m2, input.bulb_area_m2,
+        input.lcb_pct,
+        input.half_entrance_deg,
+        input.transom_area_m2,
+        input.bulb_area_m2,
         input.c_stern
     );
     for w in &warnings {
@@ -2237,8 +2424,12 @@ fn parse_pair(text: &str, key: &str) -> Result<(usize, usize)> {
     if parts.len() != 2 {
         bail!("{key} takes two point indices, A,B");
     }
-    let a: usize = parts[0].parse().with_context(|| format!("{key}: `{}` is not an index", parts[0]))?;
-    let b: usize = parts[1].parse().with_context(|| format!("{key}: `{}` is not an index", parts[1]))?;
+    let a: usize = parts[0]
+        .parse()
+        .with_context(|| format!("{key}: `{}` is not an index", parts[0]))?;
+    let b: usize = parts[1]
+        .parse()
+        .with_context(|| format!("{key}: `{}` is not an index", parts[1]))?;
     Ok((a, b))
 }
 
@@ -2249,7 +2440,9 @@ fn parse_triple_indices(text: &str, key: &str) -> Result<(usize, usize, usize)> 
     }
     let mut out = [0usize; 3];
     for (i, p) in parts.iter().enumerate() {
-        out[i] = p.parse().with_context(|| format!("{key}: `{p}` is not an index"))?;
+        out[i] = p
+            .parse()
+            .with_context(|| format!("{key}: `{p}` is not an index"))?;
     }
     Ok((out[0], out[1], out[2]))
 }
@@ -2265,7 +2458,8 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
     // split keeps the face's index, so an `--insert-edge` naming that face
     // afterwards refers to the first triangle of the fan.
     for &face in &a.split_face {
-        let r = topology::split_face(&mut s, face).map_err(|e| anyhow::anyhow!("--split-face: {e}"))?;
+        let r =
+            topology::split_face(&mut s, face).map_err(|e| anyhow::anyhow!("--split-face: {e}"))?;
         splits.push(r);
     }
     for text in &a.insert_edge {
@@ -2275,7 +2469,8 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
     }
     for text in &a.crease {
         let (x, y) = parse_pair(text, "--crease")?;
-        topology::set_crease(&mut s, x, y, true).map_err(|e| anyhow::anyhow!("--crease {text}: {e}"))?;
+        topology::set_crease(&mut s, x, y, true)
+            .map_err(|e| anyhow::anyhow!("--crease {text}: {e}"))?;
     }
     for text in &a.clear_crease {
         let (x, y) = parse_pair(text, "--clear-crease")?;
@@ -2290,7 +2485,8 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
     {
         bail!("nothing to do: give --split-face, --insert-edge, --crease or --clear-crease");
     }
-    s.validate().map_err(|e| anyhow::anyhow!("the edited model does not validate: {e}"))?;
+    s.validate()
+        .map_err(|e| anyhow::anyhow!("the edited model does not validate: {e}"))?;
     std::fs::write(&a.output, fef::write(&s))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
 
@@ -2332,7 +2528,10 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
 
 fn cmd_planing(a: PlaningArgs) -> Result<()> {
     let s = load(&a.file)?;
-    let subdiv = SubdivisionOptions { level: a.subdiv.level, mode: a.subdiv.mode.into() };
+    let subdiv = SubdivisionOptions {
+        level: a.subdiv.level,
+        mode: a.subdiv.mode.into(),
+    };
     let mut opts = HydroOptions::from_surface(&s, subdiv);
     if let Some(d) = a.draft {
         opts.draft = d;
@@ -2364,8 +2563,18 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
         for p in &curve {
             text.push_str(&format!(
                 "{:.2},{:.3},{:.4},{:.5},{:.5},{:.3},{:.4},{:.3},{:.4},{:.6},{:.1},{:.1}\n",
-                p.speed_kn, p.speed_m_s, p.cv, p.c_delta, p.cl_beta, p.trim_deg, p.lambda,
-                p.wetted_length_m, p.lcp_over_b, p.cf, p.resistance_n, p.pe_w
+                p.speed_kn,
+                p.speed_m_s,
+                p.cv,
+                p.c_delta,
+                p.cl_beta,
+                p.trim_deg,
+                p.lambda,
+                p.wetted_length_m,
+                p.lcp_over_b,
+                p.cf,
+                p.resistance_n,
+                p.pe_w
             ));
         }
         std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
@@ -2384,7 +2593,10 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
     if a.csv.is_some() {
         return Ok(());
     }
-    println!("{}  -  Savitsky planing, T {:.3} m", s.settings.name, opts.draft);
+    println!(
+        "{}  -  Savitsky planing, T {:.3} m",
+        s.settings.name, opts.draft
+    );
     println!(
         "  weight {:.2} kN, beam {:.3} m, LCG {:.3} m from the transom ({:.3} b), deadrise {:.1} deg{}",
         weight_n / 1000.0,
@@ -2402,8 +2614,14 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
     for p in &curve {
         println!(
             "  {:>6.1}  {:>6.3}  {:>6.2}d  {:>7.3}  {:>10.3}  {:>7.3}  {:>10.2}  {:>10.2}",
-            p.speed_kn, p.cv, p.trim_deg, p.lambda, p.wetted_length_m, p.lcp_over_b,
-            p.resistance_n / 1000.0, p.pe_w / 1000.0
+            p.speed_kn,
+            p.cv,
+            p.trim_deg,
+            p.lambda,
+            p.wetted_length_m,
+            p.lcp_over_b,
+            p.resistance_n / 1000.0,
+            p.pe_w / 1000.0
         );
     }
     let missed: Vec<f64> = speeds
@@ -2412,9 +2630,14 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
         .copied()
         .collect();
     if !missed.is_empty() {
-        println!("  no planing equilibrium at {:?} kn (outside the hull's planing range)", missed);
+        println!(
+            "  no planing equilibrium at {:?} kn (outside the hull's planing range)",
+            missed
+        );
     }
-    println!("\n  effective power only; add --propeller-diameter to `resistance` for the shaft power.");
+    println!(
+        "\n  effective power only; add --propeller-diameter to `resistance` for the shaft power."
+    );
     Ok(())
 }
 
@@ -2422,7 +2645,11 @@ fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.level,
-        mode: if a.catmull_clark { SubdivisionMode::CatmullClark } else { SubdivisionMode::Loop },
+        mode: if a.catmull_clark {
+            SubdivisionMode::CatmullClark
+        } else {
+            SubdivisionMode::Loop
+        },
     };
     let axis = develop::BandAxis::parse(&a.axis)
         .with_context(|| format!("unknown --axis `{}` (use x, y or z)", a.axis))?;
@@ -2465,7 +2692,10 @@ fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&unfolded)?);
         return Ok(());
     }
-    println!("{}  -  plate expansion across a {:?} band", s.settings.name, axis);
+    println!(
+        "{}  -  plate expansion across a {:?} band",
+        s.settings.name, axis
+    );
     println!(
         "  band {lo:.3} .. {hi:.3} m on {axis:?}, stations {x_lo:.3} .. {x_hi:.3}, {} of {} faces",
         faces.len(),
@@ -2551,8 +2781,8 @@ fn cmd_report(a: ReportArgs) -> Result<()> {
     if a.planing {
         opts.include_planing = true;
     }
-    let html = seacraft_core::report::design_report(&s, &opts)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let html =
+        seacraft_core::report::design_report(&s, &opts).map_err(|e| anyhow::anyhow!("{e}"))?;
     std::fs::write(&a.output, html)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());
@@ -2561,7 +2791,11 @@ fn cmd_report(a: ReportArgs) -> Result<()> {
 
 fn cmd_render(a: RenderArgs) -> Result<()> {
     let s = load(&a.file)?;
-    let mode = if a.catmull_clark { SubdivisionMode::CatmullClark } else { SubdivisionMode::Loop };
+    let mode = if a.catmull_clark {
+        SubdivisionMode::CatmullClark
+    } else {
+        SubdivisionMode::Loop
+    };
     let mesh = export::render_mesh(&s, a.level, mode);
 
     let (min, max) = s.extents();
@@ -2610,8 +2844,12 @@ fn parse_size(text: &str) -> Result<(usize, usize)> {
         .or_else(|| text.split_once('X'))
         .with_context(|| format!("image size must be WIDTHxHEIGHT, got '{text}'"))?;
     Ok((
-        w.trim().parse().with_context(|| format!("bad width '{w}'"))?,
-        h.trim().parse().with_context(|| format!("bad height '{h}'"))?,
+        w.trim()
+            .parse()
+            .with_context(|| format!("bad width '{w}'"))?,
+        h.trim()
+            .parse()
+            .with_context(|| format!("bad height '{h}'"))?,
     ))
 }
 
@@ -2628,10 +2866,19 @@ fn parse_list(text: &str) -> Result<Vec<f64>> {
 fn cmd_stability(a: StabilityArgs) -> Result<()> {
     let s = load(&a.file)?;
     let mode: SubdivisionMode = a.subdiv.mode.into();
-    let hull = hydro::Hull::new(&s, SubdivisionOptions { level: a.subdiv.level, mode });
+    let hull = hydro::Hull::new(
+        &s,
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode,
+        },
+    );
     let mut base = HydroOptions::from_surface(
         &s,
-        SubdivisionOptions { level: a.subdiv.level, mode },
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode,
+        },
     );
     base.trim = a.trim;
     let heels = parse_list(&a.heels)?;
@@ -2661,10 +2908,20 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         let mut text = String::from("heel_deg,displacement_t,draft_m,trim_m,kn_m,gz_m\n");
         for c in &curves {
             for p in &c.points {
-                let d = p.draft.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
-                let t = p.trim_m.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
-                let kn = p.kn.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
-                let gz = p.gz.map(|v| format!("{:.4}", v)).unwrap_or_else(|| "—".into());
+                let d = p
+                    .draft
+                    .map(|v| format!("{:.4}", v))
+                    .unwrap_or_else(|| "—".into());
+                let t = p
+                    .trim_m
+                    .map(|v| format!("{:.4}", v))
+                    .unwrap_or_else(|| "—".into());
+                let kn =
+                    p.kn.map(|v| format!("{:.4}", v))
+                        .unwrap_or_else(|| "—".into());
+                let gz =
+                    p.gz.map(|v| format!("{:.4}", v))
+                        .unwrap_or_else(|| "—".into());
                 text.push_str(&format!(
                     "{:.2},{:.3},{},{},{},{}\n",
                     c.heel_deg, p.displacement_t, d, t, kn, gz
@@ -2805,13 +3062,7 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     println!("  {}", "-".repeat(96));
     println!(
         "  {:<34} {:<10} {:>9.3} {:>9.3} {:>+9.3} {:>9.3} {:>10.3}",
-        "TOTAL / CG",
-        "",
-        res.displacement_t,
-        res.lcg,
-        res.tcg,
-        res.vcg_z,
-        res.fsm_t_m
+        "TOTAL / CG", "", res.displacement_t, res.lcg, res.tcg, res.vcg_z, res.fsm_t_m
     );
     println!();
     let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
@@ -2835,11 +3086,17 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     );
     row(
         "LCB / LCF",
-        format!("{:.3} m / {:.3} m  (LWL {:.3} m)", res.lcb_x, res.lcf_x, res.lwl),
+        format!(
+            "{:.3} m / {:.3} m  (LWL {:.3} m)",
+            res.lcb_x, res.lcf_x, res.lwl
+        ),
     );
     row(
         "KB / BM / KM",
-        format!("{:.3} / {:.3} / {:.3} m", res.kb, res.bm_transverse, res.km_transverse),
+        format!(
+            "{:.3} / {:.3} / {:.3} m",
+            res.kb, res.bm_transverse, res.km_transverse
+        ),
     );
     row(
         "GM (solid / fluid)",
@@ -2847,7 +3104,10 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     );
 
     if let Some(c) = &res.imo_criteria {
-        println!("\n  IMO A.749 / 2008 IS Code Part A intact stability criteria (KG_fluid {:.3} m):", res.kg_fluid);
+        println!(
+            "\n  IMO A.749 / 2008 IS Code Part A intact stability criteria (KG_fluid {:.3} m):",
+            res.kg_fluid
+        );
         println!(
             "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
             "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
@@ -2908,11 +3168,17 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
     );
     row(
         "LCG / TCG / KG",
-        format!("{:.3} m / {:+.3} m / {:.3} m above keel", res.lcg, res.tcg, res.kg),
+        format!(
+            "{:.3} m / {:+.3} m / {:.3} m above keel",
+            res.lcg, res.tcg, res.kg
+        ),
     );
     row(
         "intact equilibrium",
-        format!("draft {:.3} m, trim {:+.3} m", res.intact_draft, res.intact_trim_m),
+        format!(
+            "draft {:.3} m, trim {:+.3} m",
+            res.intact_draft, res.intact_trim_m
+        ),
     );
     row(
         "damaged equilibrium",
@@ -2921,7 +3187,11 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
             res.draft,
             res.trim_m,
             res.heel_deg,
-            if res.equilibrium_found { " [FOUND]" } else { " [UNREACHED]" }
+            if res.equilibrium_found {
+                " [FOUND]"
+            } else {
+                " [UNREACHED]"
+            }
         ),
     );
     row("sinkage", format!("{:+.3} m", res.sinkage_m));
@@ -2935,7 +3205,10 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
     );
     row(
         "net buoyancy centroid",
-        format!("LCB {:.3} m, TCB {:+.3} m, KB {:.3} m", res.lcb_x, res.tcb_y, res.kb),
+        format!(
+            "LCB {:.3} m, TCB {:+.3} m, KB {:.3} m",
+            res.lcb_x, res.tcb_y, res.kb
+        ),
     );
     println!();
     println!("  flooded compartments:");
@@ -2972,9 +3245,14 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
                 "    {:>8.1}  {:>8.1}  {:>10}  {:>10}  {:>10}",
                 p.relative_heel_deg,
                 p.heel_deg,
-                p.draft.map(|d| format!("{:.3}", d)).unwrap_or_else(|| "—".to_string()),
-                p.trim_m.map(|t| format!("{:+.3}", t)).unwrap_or_else(|| "—".to_string()),
-                p.gz.map(|g| format!("{:+.4}", g)).unwrap_or_else(|| "—".to_string()),
+                p.draft
+                    .map(|d| format!("{:.3}", d))
+                    .unwrap_or_else(|| "—".to_string()),
+                p.trim_m
+                    .map(|t| format!("{:+.3}", t))
+                    .unwrap_or_else(|| "—".to_string()),
+                p.gz.map(|g| format!("{:+.4}", g))
+                    .unwrap_or_else(|| "—".to_string()),
             );
         }
     }
@@ -3014,10 +3292,7 @@ fn print_weather_summary(w: &seacraft_core::weather::WeatherResult) {
         "    windage   A {:.3} m2 (hull {:.3}, extra {:.3})  Z {:.3} m  P {:.0} Pa",
         w.area_m2, w.hull_windage_area_m2, w.extra_windage_area_m2, w.z_m, w.wind_pressure_pa
     );
-    println!(
-        "    levers    lw1 {:.4} m   lw2 {:.4} m",
-        w.lw1_m, w.lw2_m
-    );
+    println!("    levers    lw1 {:.4} m   lw2 {:.4} m", w.lw1_m, w.lw2_m);
     println!(
         "    rolling   X1 {:.3}  X2 {:.3}  k {:.3}  r {:.3}  C {:.4}  T {:.2} s  s {:.4}  ->  phi1 {:.2} deg",
         w.x1, w.x2, w.k, w.r, w.c, w.roll_period_s, w.s, w.phi1_deg
