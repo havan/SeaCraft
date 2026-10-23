@@ -1009,7 +1009,7 @@ pub fn optimize_hull(
         ));
     }
     // The shift's own bookkeeping of Cp and LCB (it measures from the model's
-    // aft end, with 21+ stations), so its targets are consistent with it.
+    // waterline's aft end, with 21+ stations), so its targets are consistent with it.
     let mut lack_opts = base_opts.clone();
     lack_opts.stations = lack_opts.stations.max(21);
     let h0 = crate::hydro::compute(surface, &lack_opts);
@@ -1017,7 +1017,7 @@ pub fn optimize_hull(
         return Err("optimize: the hull has no waterline length at this draft".into());
     }
     let lackenby_cp0 = h0.prismatic_coefficient;
-    let lackenby_lcb0 = (h0.lcb.x - h0.model_min.x) / h0.lwl * 100.0 - 50.0;
+    let lackenby_lcb0 = (h0.lcb.x - h0.wl_aft_x) / h0.lwl * 100.0 - 50.0;
 
     let mut ctx = Ctx {
         base: surface,

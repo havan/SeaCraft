@@ -92,6 +92,9 @@ pub struct Hydrostatics {
     pub waterplane_inertia_longitudinal: f64,
     pub lcf: Vec3,
     pub lwl: f64,
+    /// Model `x` of the waterline's aft end, where `lwl` is measured from
+    /// (equal to `model_min.x` unless the stern overhangs the waterline).
+    pub wl_aft_x: f64,
     pub bwl: f64,
     pub submerged_length: f64,
     pub submerged_beam: f64,
@@ -702,6 +705,7 @@ impl Hull {
             if let Some(poly) = loops.iter().max_by_key(|p| p.len()) {
                 let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
                 let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
+                result.wl_aft_x = poly.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
                 for p in poly {
                     let pu = u.dot(*p);
                     let pv = v.dot(*p);
@@ -723,6 +727,7 @@ impl Hull {
             // Fall back to the submerged extents.
             result.lwl = result.submerged_length;
             result.bwl = result.submerged_beam;
+            result.wl_aft_x = model_min.x;
         }
 
         // ---- metacentres ---------------------------------------------------

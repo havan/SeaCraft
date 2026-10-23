@@ -162,11 +162,7 @@ pub fn fit(
         if h.volume_m3.abs() < 1e-9 {
             return Err("Lackenby: the hull displaces nothing at this draft".into());
         }
-        Ok((
-            HullState::measure(&h, h.model_min.x, h.lwl),
-            h.model_min.x,
-            h.lwl,
-        ))
+        Ok((HullState::measure(&h, h.wl_aft_x, h.lwl), h.wl_aft_x, h.lwl))
     };
 
     let (before, x0, lwl) = measure(surface)?;
@@ -315,7 +311,7 @@ mod tests {
         let s = demo::demo_hull(false);
         let o = opts();
         let h = hydro::compute(&s, &o);
-        let out = shift(&s, 0.02, 0.01, h.model_min.x, h.lwl);
+        let out = shift(&s, 0.02, 0.01, h.wl_aft_x, h.lwl);
         let h2 = hydro::compute(&out, &o);
         assert!(
             (h2.lwl - h.lwl).abs() / h.lwl < 0.005,
@@ -326,12 +322,52 @@ mod tests {
     }
 
     #[test]
+    fn a_hull_with_overhangs_is_measured_on_its_waterline() {
+        // The yacht has a counter stern: its waterline starts forward of the
+        // model's aft end. Lackenby must measure LCB from the waterline, as
+        // the resistance methods do, and shift the whole run up to the bow.
+        use crate::parametric::{generate, HullKind, HullSpec};
+        let spec = HullSpec::default_for(HullKind::Yacht);
+        let (s, _) = generate(&spec).expect("yacht");
+        let mut o = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: Default::default(),
+            },
+        );
+        o.draft = spec.draft;
+        o.stations = 41;
+        let h = hydro::compute(&s, &o);
+        assert!(
+            h.wl_aft_x > h.model_min.x + 0.2,
+            "the yacht should overhang aft: wl {} vs model {}",
+            h.wl_aft_x,
+            h.model_min.x
+        );
+        let lcb_pct = |h: &hydro::Hydrostatics| (h.lcb.x - h.wl_aft_x) / h.lwl * 100.0 - 50.0;
+        let target = LackenbyTarget::new(h.prismatic_coefficient + 0.01, lcb_pct(&h) + 0.5);
+        let (out, report) = fit(&s, target, &o, 1e-3, 8).expect("fits");
+        assert!(report.converged, "{report:?}");
+        let mut o2 = o.clone();
+        o2.stations = o.stations.max(21);
+        let after = hydro::compute(&out, &o2);
+        assert!(
+            (lcb_pct(&after) - target.lcb_pct).abs() < 0.05,
+            "LCB {} vs target {}",
+            lcb_pct(&after),
+            target.lcb_pct
+        );
+        assert!((after.prismatic_coefficient - target.cp).abs() < 2e-3);
+    }
+
+    #[test]
     fn same_target_returns_the_same_hull() {
         let s = demo::demo_hull(false);
         let o = opts();
         let h = hydro::compute(&s, &o);
         let target = LackenbyTarget::new(h.prismatic_coefficient, 0.0);
-        let lcb_pct = (h.lcb.x - h.model_min.x) / h.lwl * 100.0 - 50.0;
+        let lcb_pct = (h.lcb.x - h.wl_aft_x) / h.lwl * 100.0 - 50.0;
         let target = LackenbyTarget::new(target.cp, lcb_pct);
         let (_, report) = fit(&s, target, &o, 1e-3, 4).expect("fits");
         assert!(report.converged);
@@ -352,7 +388,7 @@ mod tests {
         let s = demo::demo_hull(false);
         let o = opts();
         let h = hydro::compute(&s, &o);
-        let lcb_pct = (h.lcb.x - h.model_min.x) / h.lwl * 100.0 - 50.0;
+        let lcb_pct = (h.lcb.x - h.wl_aft_x) / h.lwl * 100.0 - 50.0;
         // Inside the basis's authority (see the module header): a 0.5 % nudge.
         let target = LackenbyTarget::new(h.prismatic_coefficient - 0.005, lcb_pct);
         let (out, report) = fit(&s, target, &o, 1e-3, 10).expect("fits");
@@ -376,7 +412,7 @@ mod tests {
         let s = demo::demo_hull(false);
         let o = opts();
         let h = hydro::compute(&s, &o);
-        let lcb_pct = (h.lcb.x - h.model_min.x) / h.lwl * 100.0 - 50.0;
+        let lcb_pct = (h.lcb.x - h.wl_aft_x) / h.lwl * 100.0 - 50.0;
         let target = LackenbyTarget::new(h.prismatic_coefficient - 0.03, lcb_pct);
         let (out, report) = fit(&s, target, &o, 1e-3, 8).expect("a result, honestly labelled");
         assert!(!report.converged, "{report:?}");
@@ -396,7 +432,7 @@ mod tests {
         let s = demo::demo_hull(false);
         let o = opts();
         let h = hydro::compute(&s, &o);
-        let lcb_pct = (h.lcb.x - h.model_min.x) / h.lwl * 100.0 - 50.0;
+        let lcb_pct = (h.lcb.x - h.wl_aft_x) / h.lwl * 100.0 - 50.0;
         let target = LackenbyTarget::new(h.prismatic_coefficient, lcb_pct + 0.5);
         let (_, report) = fit(&s, target, &o, 1e-2, 10).expect("fits");
         assert!(report.converged, "{report:?}");

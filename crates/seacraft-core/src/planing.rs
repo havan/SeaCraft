@@ -10,7 +10,7 @@
 //! The equations, in SI:
 //!
 //! * `CΔ = Δ/(ρ g B³)` and `CV = V/√(gB)` — load and speed coefficients;
-//! * `CLβ = 2CΔ/CV²` and `CL0 = CLβ − 0.0065 β CLβ^0.6` — lift, deadrise-corrected;
+//! * `CLβ = 2CΔ/CV²` and `CLβ = CL0 − 0.0065 β CL0^0.6` — lift, deadrise-corrected (solved for `CL0`);
 //! * `CL0 = τ^1.1 (0.0120 λ^0.5 + 0.0055 λ^2.5/CV²)` — the lift equation, solved
 //!   for the mean wetted length-to-beam ratio `λ` at a given trim `τ`;
 //! * `LCP/b = λ (0.75 − 1/(5.21 CV²/λ² + 2.39))` — centre of pressure;
@@ -183,6 +183,27 @@ fn lambda_for_trim(hull: &PlaningHull, cv: f64, cl0: f64, trim_deg: f64) -> Opti
     Some(0.5 * (lo + hi))
 }
 
+/// The flat-plate lift coefficient `C_L0` whose deadrise-reduced value is
+/// `cl_beta`: Savitsky (1964) gives `C_Lβ = C_L0 − 0.0065 β C_L0^0.6`, so a
+/// vee bottom needs the larger `C_L0`. Solved by fixed-point iteration,
+/// which contracts wherever `0.0039 β C_L0^-0.4 < 1` (all practical hulls).
+pub fn flat_plate_lift(cl_beta: f64, beta_deg: f64) -> Option<f64> {
+    if !(cl_beta > 0.0 && cl_beta.is_finite()) {
+        return None;
+    }
+    let beta = beta_deg.max(0.0);
+    let mut cl0 = cl_beta;
+    for _ in 0..200 {
+        let next = cl_beta + 0.0065 * beta * cl0.powf(0.6);
+        if (next - cl0).abs() <= 1e-14 * next {
+            return Some(next);
+        }
+        cl0 = next;
+    }
+    let residual = cl0 - 0.0065 * beta * cl0.powf(0.6) - cl_beta;
+    (residual.abs() <= 1e-9 * cl_beta).then_some(cl0)
+}
+
 fn lcp_over_b(cv: f64, lambda: f64) -> f64 {
     lambda * (0.75 - 1.0 / (5.21 * cv * cv / (lambda * lambda) + 2.39))
 }
@@ -201,10 +222,7 @@ pub fn planing_point(hull: &PlaningHull, speed_m_s: f64) -> Option<PlaningPoint>
     }
     let cl_beta = 2.0 * c_delta / (cv * cv);
     let beta = hull.deadrise_deg.max(0.0);
-    let cl0 = cl_beta - 0.0065 * beta * cl_beta.powf(0.6);
-    if cl0 <= 0.0 {
-        return None;
-    }
+    let cl0 = flat_plate_lift(cl_beta, beta)?;
     let lcg_over_b = hull.lcg_from_transom_m / hull.beam_m;
 
     // Scan trims for the first sign change of (LCP/b − LCG/b). The pressure
@@ -373,7 +391,11 @@ mod tests {
                 planing_point(&h, kn * 0.514444).unwrap_or_else(|| panic!("no planing at {kn} kn"));
             // CL0 = τ^1.1 (0.012 λ^0.5 + 0.0055 λ^2.5/CV²) must hold at the
             // reported trim and wetted length, to the solver's tolerance.
-            let cl0 = p.cl_beta - 0.0065 * h.deadrise_deg * p.cl_beta.powf(0.6);
+            let cl0 = flat_plate_lift(p.cl_beta, h.deadrise_deg).unwrap();
+            // Savitsky: the deadrise lowers the flat-plate lift to CLβ.
+            let back = cl0 - 0.0065 * h.deadrise_deg * cl0.powf(0.6);
+            assert!((back - p.cl_beta).abs() < 1e-12 * p.cl_beta, "{back}");
+            assert!(cl0 > p.cl_beta);
             let lhs = p.trim_deg.powf(1.1)
                 * (0.0120 * p.lambda.sqrt() + 0.0055 * p.lambda.powf(2.5) / (p.cv * p.cv));
             assert!(
@@ -409,13 +431,23 @@ mod tests {
     }
 
     #[test]
+    fn flat_plate_lift_matches_a_hand_solution() {
+        // β = 10°, CLβ = 0.05: x − 0.065 x^0.6 = 0.05 has its root at 0.062290
+        // (independent check in Python: 0.06229 − 0.065 · 0.06229^0.6 = 0.05000).
+        let cl0 = flat_plate_lift(0.05, 10.0).unwrap();
+        assert!((cl0 - 0.062290).abs() < 1e-6, "{cl0}");
+        assert_eq!(flat_plate_lift(0.05, 0.0), Some(0.05));
+        assert_eq!(flat_plate_lift(0.0, 10.0), None);
+    }
+
+    #[test]
     fn the_wetted_length_falls_as_trim_rises() {
         // Same speed and load, more trim: the hull carries its weight on a
         // shorter, flatter patch.
         let h = hull();
         let cv = 30.0 * 0.514444 / (G * h.beam_m).sqrt();
         let cl_beta = 2.0 * h.load_coefficient() / (cv * cv);
-        let cl0 = cl_beta - 0.0065 * h.deadrise_deg * cl_beta.powf(0.6);
+        let cl0 = flat_plate_lift(cl_beta, h.deadrise_deg).unwrap();
         let low = lambda_for_trim(&h, cv, cl0, 3.0).expect("3 deg");
         let high = lambda_for_trim(&h, cv, cl0, 9.0).expect("9 deg");
         assert!(
@@ -463,19 +495,16 @@ mod tests {
             "PE at 30 kn = {:.0} W",
             at30.pe_w
         );
-        // At the same speed and LCG the deadrise hull trims less than a flat
-        // bottom: with the pressure centre pinned under the CG, a V carries its
-        // lift at a smaller angle. (The drag comparison is *not* asserted: with
-        // the trim free the flat hull trades a smaller wetted area for a larger
-        // trim angle, and the balance can fall either way — the method's own
-        // answer here is that the flat hull drags more, which is a statement
-        // about this LCG, not a law.)
+        // At the same speed and LCG the deadrise hull trims more than a flat
+        // bottom: deadrise costs lift (CLβ < CL0), so the V needs a larger
+        // flat-plate lift and finds it at a larger angle. (The drag comparison
+        // is *not* asserted: wetted area and trim trade against each other.)
         let mut flat = h;
         flat.deadrise_deg = 0.0;
         let flat30 = planing_point(&flat, 30.0 * 0.514444).expect("flat hull");
         assert!(
-            flat30.trim_deg > at30.trim_deg,
-            "flat trim {} should exceed the V's {}",
+            flat30.trim_deg < at30.trim_deg,
+            "flat trim {} should be below the V's {}",
             flat30.trim_deg,
             at30.trim_deg
         );

@@ -364,8 +364,9 @@ pub fn michell_wave_resistance_from_grid(
     let factor = (4.0 * rho * g * g) / (PI * u * u);
     let rw_n = factor * integral;
 
-    // Normalised wave resistance coefficient Cw = Rw / (0.5 * rho * U^2 * S)
-    let q_dyn = 0.5 * rho * u * u * grid.wetted_surface_m2;
+    // Normalised wave resistance coefficient Cw = Rw / (0.5 * rho * U^2 * S),
+    // with S of both demihulls for a catamaran (Rw is for both).
+    let q_dyn = 0.5 * rho * u * u * grid.wetted_surface_m2 * hull_count(opts);
     let cw = if q_dyn > 1e-9 { rw_n / q_dyn } else { 0.0 };
 
     let converged_note = format!(
@@ -385,6 +386,15 @@ pub fn michell_wave_resistance_from_grid(
         cw,
         fn_,
         converged_note,
+    }
+}
+
+/// Hulls the grid stands for: two demihulls when a catamaran spacing is set.
+fn hull_count(opts: &MichellOptions) -> f64 {
+    if opts.catamaran_spacing.is_some() {
+        2.0
+    } else {
+        1.0
     }
 }
 
@@ -410,7 +420,8 @@ pub fn michell_resistance_curve(
                 0.0
             };
             let q = 0.5 * rho * v * v;
-            let rf = q * grid.wetted_surface_m2 * cf;
+            // The grid is one demihull; a catamaran drags both through the water.
+            let rf = q * grid.wetted_surface_m2 * hull_count(opts) * cf;
             let michell_res = michell_wave_resistance_from_grid(grid, v, rho, g, opts);
             let rw = michell_res.rw_n;
             let rt = rf * form_factor + rw;
@@ -749,6 +760,20 @@ mod tests {
             (ratio - 2.0).abs() < 0.02,
             "catamaran at large spacing should give 2x monohull within 2%, got ratio {:.4}",
             ratio
+        );
+
+        // Friction, total and Cw follow: two demihulls far apart drag twice as
+        // much as one, with the same coefficient.
+        let curve = |o: &MichellOptions| {
+            michell_resistance_curve(&grid, 1.0, 1.19e-6, rho, g, &[8.0], o)[0].clone()
+        };
+        let (mono, cat) = (curve(&mono_opts), curve(&cat_opts));
+        assert!((cat.rf_n / mono.rf_n - 2.0).abs() < 1e-12);
+        assert!(
+            (cat.rt_n / mono.rt_n - 2.0).abs() < 0.02,
+            "{} vs {}",
+            cat.rt_n,
+            mono.rt_n
         );
     }
 
