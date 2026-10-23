@@ -1343,6 +1343,28 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 }));
             }
 
+            if method.eq_ignore_ascii_case("dsyhs") {
+                let dsyhs_in = seacraft_core::resistance::DsyhsInput::measure(&hull, &opts)
+                    .ok_or("resistance.compute: cannot measure the hull for DSYHS")?;
+                let mut warnings = dsyhs_in.warnings();
+                let rows = seacraft_core::resistance::dsyhs_curve(&dsyhs_in, &speeds);
+                for r in &rows {
+                    if !(0.15..=0.75).contains(&r.fn_) {
+                        warnings.push(format!(
+                            "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
+                            r.fn_, r.speed_kn
+                        ));
+                    }
+                }
+                return Ok(json!({
+                    "backend": "app",
+                    "method": "dsyhs",
+                    "input": dsyhs_in,
+                    "warnings": warnings,
+                    "speeds": rows,
+                }));
+            }
+
             let mut input = seacraft_core::resistance::HoltropInput::measure(&hull, &opts)
                 .ok_or("resistance.compute: cannot measure the hull")?;
             input.c_stern = number(p, "cstern")?.unwrap_or(0.0);
@@ -2081,6 +2103,10 @@ mod tests {
         assert_eq!(rm["ok"], true, "{rm}");
         assert_eq!(rm["result"]["method"], "michell");
         assert_eq!(rm["result"]["speeds"].as_array().map(Vec::len), Some(2));
+        let rd = call(&mut app, &ctx, "resistance.compute", json!({ "draft": 0.62, "speeds": [6.0, 8.0], "method": "dsyhs" }));
+        assert_eq!(rd["ok"], true, "{rd}");
+        assert_eq!(rd["result"]["method"], "dsyhs");
+        assert_eq!(rd["result"]["speeds"].as_array().map(Vec::len), Some(2));
         let p = call(&mut app, &ctx, "planing.compute", json!({ "speeds": [20.0], "deadrise": 15.0 }));
         assert_eq!(p["ok"], true, "{p}");
         let row = &p["result"]["speeds"][0];

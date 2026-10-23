@@ -36,7 +36,7 @@ Ask for, or state as an assumption, KG, the draft or displacement, the LCG, and 
 
 ## Resistance
 
-- `resistance_curve {"draft": 0.62, "speeds": [6, 8]}` (knots): `rt_n`, `pe_w`, `rf_n`, `rw_n`, `fn_`, `wave_branch`. Supports `method: "michell"` (with optional `cat_spacing` for catamarans) as well as Holtrop-Mennen (`method: "holtrop"`). Demo at 8 kn: Fn 0.40, RT 3627 N, Pe 14.9 kW. Read `warnings`: Holtrop-Mennen is for displacement hulls, Fn below about 0.5; Michell is for slender hulls (L/B >= 6, Fn 0.2-1.0). Add `propeller_diameter` for wake and thrust deduction.
+- `resistance_curve {"draft": 0.62, "speeds": [6, 8]}` (knots): `rt_n`, `pe_w`, `rf_n`, `rw_n`, `fn_`, `wave_branch`. Supports `method: "michell"` (with optional `cat_spacing` for catamarans) and DSYHS sailing yacht resistance (`method: "dsyhs"`) as well as Holtrop-Mennen (`method: "holtrop"`). Demo at 8 kn: Fn 0.40, RT 3627 N, Pe 14.9 kW. Read `warnings`: Holtrop-Mennen is for displacement hulls, Fn below about 0.5; Michell is for slender hulls (L/B >= 6, Fn 0.2-1.0); DSYHS is for sailing yacht bare hulls (Fn 0.15-0.75). Add `propeller_diameter` for wake and thrust deduction.
 - `trim_scan {"speed_kn": 8, "from": -0.4, "to": 0.4, "steps": 9}` for the cheapest trim at constant displacement; `at_boundary: true` means widen the range.
 - `planing_curve {"speeds": [20], "draft": 0.62}` (Savitsky): trim, wetted length, resistance. The demo is not a planing hull (deadrise measured 0.9 degrees); on it the 20 kn row gives 14.5 kN at 5.2 degrees, and means little. Use planing only for a hull with deadrise.
 

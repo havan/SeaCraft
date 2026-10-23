@@ -175,6 +175,17 @@ superimposes the twin wave patterns at centreline separation `s`, which converge
 to `2 * R_W(monohull)` as separation grows. Total resistance pairs Michell wave
 resistance with the ITTC-57 friction line and form factor `1+k` (`seacraft resistance --method michell`).
 
+`dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
+bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending
+Keuning & Sonnenberg, 1998) for sailing yacht hulls (`Fn` 0.15–0.75). The
+polynomial evaluates `R_r / (∇·ρ·g) = (∇^(1/3)/LWL)·(a0 + a1·LCB/LWL + a2·Cp + a3·∇^(2/3)/Aw + a4·BWL/LWL + a5·LCB/LCF + a6·BWL/Tc + a7·Cm)`
+with linear interpolation between tabulated Froude numbers and clamping without
+extrapolation. Longitudinal centres of buoyancy and flotation are referenced
+to the forward perpendicular (FPP, positive aft) per the series convention.
+Frictional resistance follows the ITTC-57 correlation line on the canoe-body
+wetted surface using the series' Reynolds length `0.7·LWL` with `1+k = 1.0`
+(`seacraft resistance <hull> --method dsyhs`).
+
 `topology` edits the control net without moving the surface (`seacraft edit`):
 `split_face` fans a face around its centroid, `insert_edge` joins two
 non-adjacent points of a face, and `set_crease` makes an edge hard through
@@ -360,7 +371,7 @@ seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks 
                               [--csv out.csv] [--html offsets.html] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
-seacraft resistance hull.fef [--method holtrop|michell] [--cat-spacing S]
+seacraft resistance hull.fef [--method holtrop|michell|dsyhs] [--cat-spacing S]
                               [--speeds 6,8,10,12] [--draft T] [--cstern X]
                               [--propeller-diameter D] [--expanded-area 0.7] [--eta-o 0.6]
                               [--shaft-efficiency 0.98] [--appendage-area m2] [--csv out.csv] [--json]

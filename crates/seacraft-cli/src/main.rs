@@ -828,13 +828,14 @@ enum ResistanceMethodArg {
     #[default]
     Holtrop,
     Michell,
+    Dsyhs,
 }
 
 #[derive(Args, Debug)]
 struct ResistanceArgs {
     /// Input .fef file
     file: PathBuf,
-    /// Resistance method (holtrop or michell)
+    /// Resistance method (holtrop, michell, or dsyhs)
     #[arg(long, value_enum, default_value_t = ResistanceMethodArg::Holtrop)]
     method: ResistanceMethodArg,
     /// Catamaran demihull centreline spacing in metres (Michell method only)
@@ -1956,6 +1957,88 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         println!(
             "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
             "kn", "Fn", "1+k1", "RT [kN]", "PE [kW]", "RF [kN]", "RW [kN]"
+        );
+        for r in &rows {
+            println!(
+                "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}",
+                r.speed_kn,
+                r.fn_,
+                r.form_factor,
+                r.rt_n / 1000.0,
+                r.pe_w / 1000.0,
+                r.rf_n / 1000.0,
+                r.rw_n / 1000.0
+            );
+        }
+        return Ok(());
+    }
+
+    if a.method == ResistanceMethodArg::Dsyhs {
+        let dsyhs_in = resistance::DsyhsInput::measure(&hull, &opts)
+            .context("cannot measure the hull for DSYHS: a positive draft and waterline are needed")?;
+        let speeds = parse_ordinates(&a.speeds, "speeds")?;
+        let rows = resistance::dsyhs_curve(&dsyhs_in, &speeds);
+        let mut warnings = dsyhs_in.warnings();
+        for r in &rows {
+            if !(0.15..=0.75).contains(&r.fn_) {
+                warnings.push(format!(
+                    "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
+                    r.fn_, r.speed_kn
+                ));
+            }
+        }
+
+        if let Some(path) = &a.csv {
+            let mut text = String::from(
+                "speed_kn,speed_m_s,fn,re,cf,form_factor,rf_n,rapp_n,rw_n,rb_n,rtr_n,ra_n,rt_n,pe_w\n",
+            );
+            for r in &rows {
+                text.push_str(&format!(
+                    "{:.3},{:.4},{:.5},{:.0},{:.6},{:.4},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1},{:.1}\n",
+                    r.speed_kn, r.speed_m_s, r.fn_, r.reynolds, r.cf, r.form_factor, r.rf_n,
+                    r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
+                ));
+            }
+            std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+            println!("wrote {} ({} speeds)", path.display(), rows.len());
+        }
+
+        if a.json {
+            let body = serde_json::json!({
+                "method": "dsyhs",
+                "input": dsyhs_in,
+                "warnings": warnings,
+                "speeds": rows,
+            });
+            println!("{}", serde_json::to_string_pretty(&body)?);
+            return Ok(());
+        }
+        if a.csv.is_some() {
+            return Ok(());
+        }
+
+        println!(
+            "{}  -  Delft Systematic Yacht Hull Series (DSYHS), T {:.3} m",
+            s.settings.name, dsyhs_in.draft_canoe
+        );
+        println!(
+            "  LWL {:.3}  BWL {:.3}  Tc {:.3}  Vol {:.3} m3  Aw {:.2} m2  Cp {:.3}  Cm {:.3}  LCB/LWL {:.3}",
+            dsyhs_in.length_wl,
+            dsyhs_in.beam_wl,
+            dsyhs_in.draft_canoe,
+            dsyhs_in.volume_m3,
+            dsyhs_in.waterplane_area_m2,
+            dsyhs_in.cp,
+            dsyhs_in.cm,
+            dsyhs_in.lcb_fpp_ratio
+        );
+        for w in &warnings {
+            println!("  warning: {w}");
+        }
+        println!();
+        println!(
+            "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
+            "kn", "Fn", "1+k", "RT [kN]", "PE [kW]", "RF [kN]", "RR [kN]"
         );
         for r in &rows {
             println!(

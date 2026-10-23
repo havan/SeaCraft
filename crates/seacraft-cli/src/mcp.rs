@@ -1482,6 +1482,28 @@ impl McpServer {
             }));
         }
 
+        if method == "dsyhs" {
+            let dsyhs_in = resistance::DsyhsInput::measure(&hull, &opts)
+                .ok_or("resistance_curve: cannot measure the hull for DSYHS (positive draft and waterline needed)")?;
+            let mut warnings = dsyhs_in.warnings();
+            let rows = resistance::dsyhs_curve(&dsyhs_in, &speeds);
+            for r in &rows {
+                if !(0.15..=0.75).contains(&r.fn_) {
+                    warnings.push(format!(
+                        "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
+                        r.fn_, r.speed_kn
+                    ));
+                }
+            }
+            return Ok(json!({
+                "backend": "headless",
+                "method": "dsyhs",
+                "input": dsyhs_in,
+                "warnings": warnings,
+                "speeds": rows,
+            }));
+        }
+
         let mut input = resistance::HoltropInput::measure(&hull, &opts)
             .ok_or("resistance_curve: cannot measure the hull (a positive draft and a waterline are needed)")?;
         if let Some(v) = number_arg(a, "cstern") {
@@ -2439,13 +2461,13 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "resistance_curve",
             "Resistance curve",
-            "Still-water resistance over a speed sweep: Holtrop-Mennen empirical method or Michell thin-ship \
-             wave resistance. Returns RT, components (RF, RW, 1+k), effective power PE, and warnings. Supports \
+            "Still-water resistance over a speed sweep: Holtrop-Mennen empirical method, Michell thin-ship \
+             wave resistance, or Delft Systematic Yacht Hull Series (DSYHS) sailing yacht bare-hull resistance. Returns RT, components (RF, RW, 1+k), effective power PE, and warnings. Supports \
              catamarans via `cat_spacing` when `method: michell`. Give `propeller_diameter` to also get \
              propulsion factors.",
             obj(
                 json!({
-                    "method": string("Resistance method: 'holtrop' (default) or 'michell'"),
+                    "method": string("Resistance method: 'holtrop' (default), 'michell', or 'dsyhs'"),
                     "cat_spacing": number("Demihull centreline separation in metres for catamarans (Michell method only)"),
                     "draft": number("Draft in metres (default: the model's design draft)"),
                     "speeds": {"type": "array", "items": {"type": "number"}, "description": "Speeds in knots (default 6,8,10,12,14)"},
@@ -3742,6 +3764,24 @@ mod tests {
             let v = p["speed_m_s"].as_f64().unwrap_or(0.0);
             assert!((pe - rt * v).abs() < 1e-6, "{p}");
             assert!(rt > 0.0 && p["wave_branch"] == "michell", "{p}");
+        }
+
+        // resistance_curve with DSYHS method
+        let dsyhs_curve = ok(
+            &mut s,
+            79,
+            "resistance_curve",
+            json!({"draft": 0.62, "speeds": [6.0, 8.0], "method": "dsyhs"}),
+        );
+        assert_eq!(dsyhs_curve["method"], "dsyhs");
+        let d_points = dsyhs_curve["speeds"].as_array().expect("speeds");
+        assert_eq!(d_points.len(), 2, "{dsyhs_curve}");
+        for p in d_points {
+            let rt = p["rt_n"].as_f64().unwrap_or(0.0);
+            let pe = p["pe_w"].as_f64().unwrap_or(0.0);
+            let v = p["speed_m_s"].as_f64().unwrap_or(0.0);
+            assert!((pe - rt * v).abs() < 1e-6, "{p}");
+            assert!(rt > 0.0 && p["wave_branch"] == "dsyhs", "{p}");
         }
         // planing_curve: the trim equilibrium is pinned by the pressure centre.
         let plan = ok(

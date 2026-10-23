@@ -28,7 +28,7 @@
 
 use crate::hydro::{self, Hull, HydroOptions};
 use crate::subdiv::SubdivisionOptions;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Gravity used by the method, m/s².
 pub const GRAVITY: f64 = 9.80665;
@@ -351,10 +351,23 @@ pub struct Resistance {
     pub pe_w: f64,
 }
 
+/// Still-water resistance prediction method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    /// Holtrop & Mennen (1984) approximate power prediction method for displacement ships.
+    #[default]
+    Holtrop,
+    /// Michell thin-ship wave resistance theory (1898) for slender hulls and catamarans.
+    Michell,
+    /// Delft Systematic Yacht Hull Series (DSYHS) bare-hull resistance for sailing yachts (Keuning & Katgert 2008).
+    Dsyhs,
+}
+
 /// Wave resistance coefficient pieces, exposed because they are the part most
 /// worth checking against the paper.
 /// Which wave-resistance branch a Froude number falls in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveBranch {
     /// `Fn <= 0.40`: the `c1` / `m1` fit.
@@ -365,6 +378,8 @@ pub enum WaveBranch {
     High,
     /// Michell thin-ship wave resistance theory (1898).
     Michell,
+    /// Delft Systematic Yacht Hull Series (DSYHS) residuary resistance (Keuning & Katgert 2008).
+    Dsyhs,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -512,7 +527,7 @@ pub fn wave_resistance(input: &HoltropInput, fn_: f64) -> f64 {
             let high = wave_high(input, &w55, 0.55);
             low + (10.0 * fn_ - 4.0) * (high - low) / 1.5
         }
-        WaveBranch::Michell => 0.0,
+        WaveBranch::Michell | WaveBranch::Dsyhs => 0.0,
     }
 }
 
@@ -633,6 +648,302 @@ pub fn input_for(surface: &crate::Surface, subdiv: SubdivisionOptions) -> Option
     let opts = HydroOptions::from_surface(surface, subdiv);
     let hull = Hull::new(surface, subdiv);
     HoltropInput::measure(&hull, &opts)
+}
+
+// ---------------------------------------------------------------------------
+// Delft Systematic Yacht Hull Series (DSYHS)
+// ---------------------------------------------------------------------------
+
+/// Geometric and hydrostatic parameters needed by the DSYHS upright bare-hull resistance model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DsyhsInput {
+    /// Waterline length LWL, m.
+    pub length_wl: f64,
+    /// Waterline maximum beam BWL, m.
+    pub beam_wl: f64,
+    /// Canoe-body draft Tc at midship, m.
+    pub draft_canoe: f64,
+    /// Underwater canoe-body volume of displacement ∇, m³.
+    pub volume_m3: f64,
+    /// Waterplane area Aw at zero speed, m².
+    pub waterplane_area_m2: f64,
+    /// Wetted surface area of canoe body Sw, m².
+    pub wetted_surface_m2: f64,
+    /// Prismatic coefficient Cp.
+    pub cp: f64,
+    /// Midship section area coefficient Cm.
+    pub cm: f64,
+    /// Longitudinal centre of buoyancy (LCB) measured from the forward perpendicular
+    /// (FPP, fore end of DWL) as a fraction of LWL (positive aft towards stern, ~0.50-0.56).
+    pub lcb_fpp_ratio: f64,
+    /// Longitudinal centre of flotation (LCF) measured from the forward perpendicular
+    /// (FPP, fore end of DWL) as a fraction of LWL (positive aft towards stern, ~0.50-0.60).
+    pub lcf_fpp_ratio: f64,
+    /// Form factor (1 + k). The DSYHS bare-hull regression was derived using Froude's
+    /// hypothesis with 1+k = 1.0 on the ITTC-57 friction line.
+    pub form_factor: f64,
+    /// Water density, kg/m³.
+    pub water_density: f64,
+    /// Kinematic viscosity, m²/s.
+    pub viscosity: f64,
+}
+
+impl DsyhsInput {
+    /// Measure DSYHS input numbers from a hull at its design condition.
+    ///
+    /// In SeaCraft's coordinate convention: x points forward (bow is at highest x),
+    /// y points to starboard, and z points up.
+    /// The Forward Perpendicular (FPP) is at `x_max` of the design waterline cut.
+    /// Distances aft of FPP are therefore `x_max - x`.
+    pub fn measure(hull: &Hull, opts: &HydroOptions) -> Option<Self> {
+        let mut o = opts.clone();
+        o.stations = 0;
+        if o.draft <= 0.0 {
+            return None;
+        }
+        let h = hull.hydrostatics(&o);
+        if h.volume_m3 <= 0.0 || h.lwl <= 0.0 || h.bwl <= 0.0 {
+            return None;
+        }
+        let wp = hydro::waterplane_for(hull.keel, hull.length, o.draft, o.trim, o.heel_deg);
+        let segs = hydro::plane_segments(&hull.verts, &hull.tris, &wp);
+        let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (a, b) in &segs {
+            x_min = x_min.min(a.x).min(b.x);
+            x_max = x_max.max(a.x).max(b.x);
+        }
+        if !(x_min.is_finite() && x_max.is_finite()) || x_max <= x_min {
+            return None;
+        }
+        let lwl = x_max - x_min;
+
+        // FPP is at x_max (the forward end of the waterline).
+        // Longitudinal positions measured aft of FPP:
+        let lcb_fpp = (x_max - h.lcb.x).max(0.0);
+        let lcf_fpp = (x_max - h.lcf.x).max(1e-6);
+        let lcb_fpp_ratio = lcb_fpp / lwl;
+        let lcf_fpp_ratio = lcf_fpp / lwl;
+
+        Some(Self {
+            length_wl: lwl,
+            beam_wl: h.bwl,
+            draft_canoe: o.draft,
+            volume_m3: h.volume_m3,
+            waterplane_area_m2: h.waterplane_area_m2,
+            wetted_surface_m2: h.wetted_surface_m2,
+            cp: h.prismatic_coefficient,
+            cm: h.midship_coefficient,
+            lcb_fpp_ratio,
+            lcf_fpp_ratio,
+            form_factor: 1.0,
+            water_density: o.water_density,
+            viscosity: if (o.water_density - 1000.0).abs() < 25.0 {
+                VISCOSITY_FRESH_WATER
+            } else {
+                VISCOSITY_SEA_WATER
+            },
+        })
+    }
+
+    /// Check hull parameters against published DSYHS series validity boundaries.
+    ///
+    /// Ranges as published in Keuning & Katgert (2008), Table 1 & text:
+    /// - Cp: 0.52 to 0.60
+    /// - Cm: 0.65 to 0.78
+    /// - LWL / BWL: 2.73 to 5.00
+    /// - BWL / Tc: 2.46 to 19.38
+    /// - LWL / ∇^(1/3): 4.34 to 8.50
+    /// - LCB from FPP: 0.50 to 0.56 · LWL
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let lb = if self.beam_wl > 1e-6 { self.length_wl / self.beam_wl } else { 0.0 };
+        let bt = if self.draft_canoe > 1e-6 { self.beam_wl / self.draft_canoe } else { 0.0 };
+        let l_vol = if self.volume_m3 > 1e-6 { self.length_wl / self.volume_m3.cbrt() } else { 0.0 };
+        if !(0.52..=0.60).contains(&self.cp) {
+            out.push(format!("Cp {:.3} is outside DSYHS valid range 0.52-0.60", self.cp));
+        }
+        if !(0.65..=0.78).contains(&self.cm) {
+            out.push(format!("Cm {:.3} is outside DSYHS valid range 0.65-0.78", self.cm));
+        }
+        if !(2.73..=5.00).contains(&lb) {
+            out.push(format!("L/B {lb:.2} is outside DSYHS valid range 2.73-5.00"));
+        }
+        if !(2.46..=19.38).contains(&bt) {
+            out.push(format!("B/T {bt:.2} is outside DSYHS valid range 2.46-19.38"));
+        }
+        if !(4.34..=8.50).contains(&l_vol) {
+            out.push(format!("L/∇^(1/3) {l_vol:.2} is outside DSYHS valid range 4.34-8.50"));
+        }
+        if !(0.50..=0.56).contains(&self.lcb_fpp_ratio) {
+            out.push(format!(
+                "LCB from FPP {:.3}·LWL is outside DSYHS valid range 0.50-0.56",
+                self.lcb_fpp_ratio
+            ));
+        }
+        out
+    }
+}
+
+#[rustfmt::skip]
+const DSYHS_FN_GRID: [f64; 13] = [
+    0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75,
+];
+
+// Source:
+// Authors: J. A. Keuning and M. Katgert
+// Title: "A bare hull resistance prediction method derived from the results of the Delft Systematic Yacht Hull Series extended to higher speeds"
+// Year: 2008
+// Conference: Proceedings of the International Conference on Innovation in High Performance Sailing Yachts (InnovSail '08), Lorient, France, 29-30 May 2008.
+// URL: https://www.scribd.com/document/346520042/Keuning-2008-PDF (also indexed on boatdesign.net)
+// Table: Table 2 ("The coefficients for the polynomial for the untrimmed upright residuary resistance of the bare hull")
+//
+// Cross-check (2026-10-23, against an independent reproduction, not the paper
+// itself): P. Teixeira, "Development of a Velocity Prediction Program for
+// Sailing Yachts", MSc thesis, IST Lisbon, Appendix IV, Table IV-1
+// (https://fenix.tecnico.ulisboa.pt/downloadFile/3378094857519920/Thesis_Pedro_Teixeira_104081_V3.pdf).
+// All 104 coefficients agree except a3 at Fn 0.55, printed there as 0.8762
+// (0.8726 here, which is also the value another open VPP project quotes from
+// the paper's Table 2). The thesis labels its 13 columns Fn 0.10-0.70; the
+// paper extends the series to Fn 0.75 and the 0.55 quote above fixes the
+// labelling used here, 0.15-0.75.
+//
+// Columns: [a0, a1, a2, a3, a4, a5, a6, a7]
+// Variables:
+//   a0: constant
+//   a1: LCB / LWL (measured from FPP, fraction of LWL, positive aft)
+//   a2: Cp (prismatic coefficient)
+//   a3: ∇^(2/3) / Aw (displacement volume to waterplane area ratio)
+//   a4: BWL / LWL (waterline beam to length ratio)
+//   a5: LCB / LCF (ratio of centers from FPP)
+//   a6: BWL / Tc (beam to canoe-body draft ratio)
+//   a7: Cm (midship section area coefficient)
+#[rustfmt::skip]
+const DSYHS_COEFFICIENTS: [[f64; 8]; 13] = [
+    // Fn = 0.15
+    [-0.0005,  0.0023, -0.0086, -0.0015,  0.0061,  0.0010,  0.0001,  0.0052],
+    // Fn = 0.20
+    [-0.0003,  0.0059, -0.0064,  0.0070,  0.0014,  0.0013,  0.0005, -0.0020],
+    // Fn = 0.25
+    [-0.0002, -0.0156,  0.0031, -0.0021, -0.0070,  0.0148,  0.0010, -0.0043],
+    // Fn = 0.30
+    [-0.0009,  0.0016,  0.0337, -0.0285, -0.0367,  0.0218,  0.0015, -0.0172],
+    // Fn = 0.35
+    [-0.0026, -0.0567,  0.0446, -0.1091, -0.0707,  0.0914,  0.0021, -0.0078],
+    // Fn = 0.40
+    [-0.0064, -0.4034, -0.1250,  0.0273, -0.1341,  0.3578,  0.0045,  0.1115],
+    // Fn = 0.45
+    [-0.0218, -0.5261, -0.2945,  0.2485, -0.2428,  0.6293,  0.0081,  0.2086],
+    // Fn = 0.50
+    [-0.0388, -0.5986, -0.3038,  0.6033, -0.0430,  0.8332,  0.0106,  0.1336],
+    // Fn = 0.55
+    [-0.0347, -0.4764, -0.2361,  0.8726,  0.4219,  0.8990,  0.0096, -0.2272],
+    // Fn = 0.60
+    [-0.0361,  0.0037, -0.2960,  0.9661,  0.6123,  0.7534,  0.0100, -0.3352],
+    // Fn = 0.65
+    [ 0.0008,  0.3728, -0.3667,  1.3957,  1.0343,  0.3230,  0.0072, -0.4632],
+    // Fn = 0.70
+    [ 0.0108, -0.1238, -0.2026,  1.1282,  1.1836,  0.4973,  0.0038, -0.4477],
+    // Fn = 0.75
+    [ 0.1023,  0.7726,  0.5040,  1.7867,  2.1934, -1.5479, -0.0115, -0.0977],
+];
+
+/// Residuary resistance in newtons by the DSYHS polynomial (Keuning & Katgert 2008).
+///
+/// Interpolates linearly between tabulated Froude numbers without extrapolation
+/// (clamped to 0.15..=0.75).
+pub fn dsyhs_residuary_resistance(input: &DsyhsInput, fn_: f64) -> f64 {
+    if fn_ <= 0.0 || input.volume_m3 <= 0.0 || input.length_wl <= 0.0 {
+        return 0.0;
+    }
+    let fn_clamped = fn_.clamp(0.15, 0.75);
+    let idx_f = (fn_clamped - 0.15) / 0.05;
+    let idx = (idx_f.floor() as usize).min(11);
+    let t = (fn_clamped - DSYHS_FN_GRID[idx]) / 0.05;
+
+    let x1 = input.lcb_fpp_ratio;
+    let x2 = input.cp;
+    let x3 = input.volume_m3.powf(2.0 / 3.0) / input.waterplane_area_m2.max(1e-6);
+    let x4 = input.beam_wl / input.length_wl.max(1e-6);
+    let x5 = input.lcb_fpp_ratio / input.lcf_fpp_ratio.max(1e-6);
+    let x6 = input.beam_wl / input.draft_canoe.max(1e-6);
+    let x7 = input.cm;
+
+    let eval_poly = |coeffs: &[f64; 8]| -> f64 {
+        coeffs[0]
+            + coeffs[1] * x1
+            + coeffs[2] * x2
+            + coeffs[3] * x3
+            + coeffs[4] * x4
+            + coeffs[5] * x5
+            + coeffs[6] * x6
+            + coeffs[7] * x7
+    };
+
+    let p0 = eval_poly(&DSYHS_COEFFICIENTS[idx]);
+    let p1 = eval_poly(&DSYHS_COEFFICIENTS[idx + 1]);
+    let p = (1.0 - t) * p0 + t * p1;
+
+    let displacement_weight = input.volume_m3 * input.water_density * GRAVITY;
+    let l_disp_factor = input.volume_m3.cbrt() / input.length_wl.max(1e-6);
+    let rr = displacement_weight * l_disp_factor * p;
+    rr.max(0.0)
+}
+
+/// Total still-water bare-hull resistance for sailing yachts (DSYHS Keuning & Katgert 2008).
+///
+/// Frictional resistance is computed with ITTC-57 line on canoe-body wetted surface
+/// at Reynolds length `0.7·LWL`, as defined by the Delft series.
+pub fn dsyhs(input: &DsyhsInput, speed_m_s: f64) -> Resistance {
+    let v = speed_m_s.max(0.0);
+    let l = input.length_wl;
+    let fn_ = if l > 1e-6 { v / (GRAVITY * l).sqrt() } else { 0.0 };
+
+    // Frictional resistance: ITTC-57 with L_ref = 0.7 * LWL per Delft series definition.
+    let l_ref = 0.7 * l;
+    let re = if input.viscosity > 1e-9 { v * l_ref / input.viscosity } else { 0.0 };
+    let cf = if re > 1.0 { 0.075 / (re.log10() - 2.0).powi(2) } else { 0.0 };
+    let q = 0.5 * input.water_density * v * v;
+    let rf = q * input.wetted_surface_m2 * cf;
+
+    let rr = if v > 1e-6 {
+        dsyhs_residuary_resistance(input, fn_)
+    } else {
+        0.0
+    };
+
+    let form_factor = input.form_factor;
+    let rt = rf * form_factor + rr;
+
+    Resistance {
+        speed_kn: v / KNOT,
+        speed_m_s: v,
+        fn_,
+        reynolds: re,
+        cf,
+        form_factor,
+        rf_n: rf,
+        rapp_n: 0.0,
+        rw_n: rr,
+        rb_n: 0.0,
+        rtr_n: 0.0,
+        ra_n: 0.0,
+        viscous_coefficient: form_factor * cf,
+        wave_branch: WaveBranch::Dsyhs,
+        rt_n: rt,
+        pe_w: rt * v,
+    }
+}
+
+/// DSYHS resistance curve at speeds in knots.
+pub fn dsyhs_curve(input: &DsyhsInput, speeds_kn: &[f64]) -> Vec<Resistance> {
+    speeds_kn.iter().map(|&s| dsyhs(input, s * KNOT)).collect()
+}
+
+/// Measure DSYHS input from a Surface at its design condition.
+pub fn dsyhs_input_for(surface: &crate::Surface, subdiv: SubdivisionOptions) -> Option<DsyhsInput> {
+    let opts = HydroOptions::from_surface(surface, subdiv);
+    let hull = Hull::new(surface, subdiv);
+    DsyhsInput::measure(&hull, &opts)
 }
 
 #[cfg(test)]
@@ -1028,6 +1339,141 @@ mod tests {
         assert!(w.iter().any(|s| s.contains("Cp")), "{w:?}");
         assert!(w.iter().any(|s| s.contains("L/B")), "{w:?}");
         assert!(w.iter().any(|s| s.contains("B/T")), "{w:?}");
+    }
+
+    fn sample_dsyhs() -> DsyhsInput {
+        DsyhsInput {
+            length_wl: 10.0,
+            beam_wl: 3.0,
+            draft_canoe: 0.50,
+            volume_m3: 5.0,
+            waterplane_area_m2: 18.0,
+            wetted_surface_m2: 25.0,
+            cp: 0.55,
+            cm: 0.70,
+            lcb_fpp_ratio: 0.52,
+            lcf_fpp_ratio: 0.56,
+            form_factor: 1.0,
+            water_density: 1025.0,
+            viscosity: VISCOSITY_SEA_WATER,
+        }
+    }
+
+    #[test]
+    fn dsyhs_polynomial_at_tabulated_fn_matches_hand_arithmetic() {
+        let input = sample_dsyhs();
+        let rr = dsyhs_residuary_resistance(&input, 0.40);
+
+        // Arithmetic hand computation at Fn = 0.40:
+        // Hull parameters:
+        // LWL = 10.0 m, BWL = 3.0 m, Tc = 0.50 m, volume = 5.0 m³,
+        // Aw = 18.0 m², Sw = 25.0 m², Cp = 0.55, Cm = 0.70,
+        // LCB from FPP = 5.2 m (LCB/LWL = 0.52),
+        // LCF from FPP = 5.6 m (LCF/LWL = 0.56, LCB/LCF = 5.2 / 5.6 = 13/14),
+        // rho = 1025.0 kg/m³, g = 9.80665 m/s².
+        //
+        // Dimensionless terms:
+        // x1 = LCB / LWL = 0.52
+        // x2 = Cp = 0.55
+        // x3 = ∇^(2/3) / Aw = 5.0^(2/3) / 18.0 = 2.924017738212866 / 18.0 = 0.16244542990071478
+        // x4 = BWL / LWL = 3.0 / 10.0 = 0.30
+        // x5 = LCB / LCF = 5.2 / 5.6 = 13.0 / 14.0 = 0.9285714285714286
+        // x6 = BWL / Tc = 3.0 / 0.50 = 6.0
+        // x7 = Cm = 0.70
+        //
+        // Coefficients from Keuning & Katgert (2008), Table 2 at Fn = 0.40:
+        // a0 = -0.0064
+        // a1 = -0.4034
+        // a2 = -0.1250
+        // a3 =  0.0273
+        // a4 = -0.1341
+        // a5 =  0.3578
+        // a6 =  0.0045
+        // a7 =  0.1115
+        //
+        // Individual polynomial terms:
+        // term0 = a0                          = -0.0064
+        // term1 = a1 * x1 = -0.4034 * 0.52    = -0.209768
+        // term2 = a2 * x2 = -0.1250 * 0.55    = -0.068750
+        // term3 = a3 * x3 =  0.0273 * (5^(2/3)/18) = 0.004434755236289513
+        // term4 = a4 * x4 = -0.1341 * 0.30    = -0.040230
+        // term5 = a5 * x5 =  0.3578 * (13/14) =  0.33224285714285715
+        // term6 = a6 * x6 =  0.0045 * 6.0     =  0.027000
+        // term7 = a7 * x7 =  0.1115 * 0.70    =  0.078050
+        //
+        // Polynomial sum P:
+        // P = term0 + term1 + term2 + term3 + term4 + term5 + term6 + term7
+        //   = 0.11657961237914666
+        //
+        // Scale factors:
+        // ∇^(1/3) / LWL = 5.0^(1/3) / 10.0 = 0.1709975946676697
+        // ∇ * rho * g = 5.0 * 1025.0 * 9.80665 = 50259.08125 N
+        //
+        // Expected residuary resistance Rr:
+        // Rr = (∇ * rho * g) * (∇^(1/3) / LWL) * P
+        //    = 50259.08125 * 0.1709975946676697 * 0.11657955394017726
+        //    = 1001.9064497080522 N
+        let expected_rr = 1001.9064497080522;
+        assert!(
+            (rr - expected_rr).abs() < 1e-4,
+            "hand arithmetic: got {rr}, expected {expected_rr}"
+        );
+    }
+
+    #[test]
+    fn dsyhs_interpolation_midway_between_fn_rows() {
+        let input = sample_dsyhs();
+        let r_35 = dsyhs_residuary_resistance(&input, 0.35);
+        let r_40 = dsyhs_residuary_resistance(&input, 0.40);
+        let r_mid = dsyhs_residuary_resistance(&input, 0.375);
+        let expected = 0.5 * (r_35 + r_40);
+        assert!(
+            (r_mid - expected).abs() < 1e-9,
+            "midway interpolation: got {r_mid}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn dsyhs_worked_example_source_paper_note() {
+        // The source paper Keuning & Katgert (2008) "A bare hull resistance prediction method
+        // derived from the results of the Delft Systematic Yacht Hull Series extended to higher speeds"
+        // lists model geometric particulars in Table 3 (page 8) and plots calculated vs measured
+        // resistance curves in Figures 5-9 (pages 9-11), but does not print numeric force values in a
+        // worked-example table. Test (1) verifies the exact formula against hand arithmetic from Table 2.
+    }
+
+    #[test]
+    fn dsyhs_parametric_yacht_resistance_finite_positive_increasing() {
+        use crate::parametric::{self, HullKind, HullSpec};
+        use crate::subdiv::SubdivisionOptions;
+
+        let spec = HullSpec::default_for(HullKind::Yacht);
+        let subdiv = SubdivisionOptions { level: 2, ..Default::default() };
+        let (surface, _report) = parametric::generate(&spec).expect("generate yacht surface");
+        let dsyhs_in = dsyhs_input_for(&surface, subdiv).expect("dsyhs input for yacht");
+
+        let speeds = [4.0, 5.0, 6.0, 7.0, 8.0];
+        let curve = dsyhs_curve(&dsyhs_in, &speeds);
+        assert_eq!(curve.len(), 5);
+
+        for w in curve.windows(2) {
+            assert!(
+                w[1].rt_n > w[0].rt_n,
+                "Rt must increase with speed: {} kn ({:.1} N) vs {} kn ({:.1} N)",
+                w[0].speed_kn, w[0].rt_n, w[1].speed_kn, w[1].rt_n
+            );
+            assert!(w[1].pe_w > w[0].pe_w, "Pe must increase with speed");
+        }
+
+        for r in &curve {
+            assert!(r.rt_n > 0.0 && r.rt_n.is_finite(), "Rt must be finite and positive: {}", r.rt_n);
+            assert!(r.rf_n > 0.0 && r.rf_n.is_finite(), "Rf must be finite and positive: {}", r.rf_n);
+            assert!(r.rw_n >= 0.0 && r.rw_n.is_finite(), "Rr must be finite and non-negative: {}", r.rw_n);
+            assert_eq!(r.wave_branch, WaveBranch::Dsyhs);
+        }
+
+        let warnings = dsyhs_in.warnings();
+        assert!(!warnings.is_empty(), "expected warnings for out-of-range yacht parameters, got none");
     }
 }
 
