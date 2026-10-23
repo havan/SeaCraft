@@ -317,6 +317,7 @@ mod tests {
                 name: "Deckhouse".into(),
                 area_m2: 3.5,
                 z_centroid: 2.4,
+                profile: None,
             }],
             report: ReportSettings {
                 kg: Some(1.1),

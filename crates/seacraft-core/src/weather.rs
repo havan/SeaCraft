@@ -27,6 +27,15 @@ fn default_wind_pressure_pa() -> f64 {
     DEFAULT_WIND_PRESSURE_PA
 }
 
+/// Lateral outline rectangle on the profile view (model x and z).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindageRect {
+    pub x_min: f64,
+    pub x_max: f64,
+    pub z_min: f64,
+    pub z_max: f64,
+}
+
 /// An additional above-waterline lateral windage item (e.g. superstructure, deckhouse, mast).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindageItem {
@@ -35,9 +44,34 @@ pub struct WindageItem {
     pub area_m2: f64,
     /// Vertical centroid above the keel (m).
     pub z_centroid: f64,
+    /// Lateral outline on the profile view (model x and z), if defined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<WindageRect>,
 }
 
 impl WindageItem {
+    /// Construct a windage item from a lateral profile rectangle.
+    pub fn from_profile(name: impl Into<String>, rect: WindageRect) -> Self {
+        let width = (rect.x_max - rect.x_min).max(0.0);
+        let height = (rect.z_max - rect.z_min).max(0.0);
+        Self {
+            name: name.into(),
+            area_m2: width * height,
+            z_centroid: (rect.z_min + rect.z_max) / 2.0,
+            profile: Some(rect),
+        }
+    }
+
+    /// Keep area and vertical centroid in sync with the profile rectangle.
+    pub fn sync_from_profile(&mut self) {
+        if let Some(rect) = self.profile {
+            let width = (rect.x_max - rect.x_min).max(0.0);
+            let height = (rect.z_max - rect.z_min).max(0.0);
+            self.area_m2 = width * height;
+            self.z_centroid = (rect.z_min + rect.z_max) / 2.0;
+        }
+    }
+
     /// Parse a `name:area:z` specification string (used by the CLI).
     pub fn parse_spec(spec: &str) -> Result<Self, String> {
         let parts: Vec<&str> = spec.rsplitn(3, ':').collect();
@@ -68,6 +102,7 @@ impl WindageItem {
             name: name.to_string(),
             area_m2,
             z_centroid,
+            profile: None,
         })
     }
 }
@@ -1296,5 +1331,43 @@ mod tests {
         );
         assert!(w.area_a_m_rad.is_finite() && w.area_a_m_rad > 0.0, "{w:?}");
         assert!(w.area_b_m_rad.is_finite() && w.area_b_m_rad > 0.0, "{w:?}");
+    }
+
+    #[test]
+    fn windage_item_from_profile_and_sync() {
+        let rect = WindageRect {
+            x_min: 3.0,
+            x_max: 6.0,
+            z_min: 1.6,
+            z_max: 2.4,
+        };
+        let mut item = WindageItem::from_profile("Deckhouse", rect);
+        assert_eq!(item.name, "Deckhouse");
+        assert!((item.area_m2 - 2.4).abs() < 1e-12);
+        assert!((item.z_centroid - 2.0).abs() < 1e-12);
+        assert_eq!(item.profile, Some(rect));
+
+        item.profile = Some(WindageRect {
+            x_min: 2.0,
+            x_max: 6.0,
+            z_min: 1.0,
+            z_max: 3.0,
+        });
+        item.sync_from_profile();
+        assert!((item.area_m2 - 8.0).abs() < 1e-12);
+        assert!((item.z_centroid - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn windage_item_parses_old_json_without_profile() {
+        let old_json = r#"{"name":"Mast","area_m2":1.5,"z_centroid":4.0}"#;
+        let item: WindageItem = serde_json::from_str(old_json).expect("parse old JSON");
+        assert_eq!(item.name, "Mast");
+        assert_eq!(item.area_m2, 1.5);
+        assert_eq!(item.z_centroid, 4.0);
+        assert_eq!(item.profile, None);
+
+        let round_trip = serde_json::to_string(&item).expect("serialize");
+        assert!(!round_trip.contains("profile"), "profile omitted when None");
     }
 }

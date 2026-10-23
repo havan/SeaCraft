@@ -186,6 +186,14 @@ pub enum VolumeRef {
     Compartment(usize),
 }
 
+/// The tab shown in the unified right-hand design dock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesignDock {
+    Loading,
+    Damage,
+    Windage,
+}
+
 pub struct App {
     surface: Option<Surface>,
     path: Option<PathBuf>,
@@ -204,6 +212,7 @@ pub struct App {
     cache: Option<RenderCache>,
     selected: Option<usize>,
     selected_volume: Option<VolumeRef>,
+    selected_windage: Option<usize>,
     last_highlighted_tank: Option<usize>,
     last_highlighted_compartment: Option<usize>,
     history: History,
@@ -218,13 +227,12 @@ pub struct App {
     close_requested: bool,
     show_layers: bool,
     show_hydro: bool,
-    show_loading: bool,
+    design_dock: Option<DesignDock>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
     loading_stale: bool,
     loading_worker: Option<std::sync::mpsc::Receiver<(u64, LoadingResult)>>,
     loading_generation: u64,
-    show_damage: bool,
     damage_selected: usize,
     damage_result: Option<DamageResult>,
     damage_stale: bool,
@@ -293,6 +301,7 @@ impl App {
             cache: None,
             selected: None,
             selected_volume: None,
+            selected_windage: None,
             last_highlighted_tank: None,
             last_highlighted_compartment: None,
             history: History::new(64),
@@ -305,13 +314,12 @@ impl App {
             close_requested: false,
             show_layers: true,
             show_hydro: true,
-            show_loading: false,
+            design_dock: None,
             loading_selected: 0,
             loading_result: None,
             loading_stale: true,
             loading_worker: None,
             loading_generation: 0,
-            show_damage: false,
             damage_selected: 0,
             damage_result: None,
             damage_stale: true,
@@ -425,6 +433,7 @@ impl App {
         self.revision += 1;
         self.selected = None;
         self.selected_volume = None;
+        self.selected_windage = None;
         self.last_highlighted_tank = None;
         self.last_highlighted_compartment = None;
         self.drag = None;
@@ -591,7 +600,7 @@ impl App {
         }
         self.refresh_hydro(false);
 
-        if self.show_loading {
+        if let Some(mut dock) = self.design_dock {
             let (tank_highlight, scroll_to_tank) = match self.selected_volume {
                 Some(VolumeRef::Tank(idx)) => {
                     let scroll = self.last_highlighted_tank != Some(idx);
@@ -599,13 +608,43 @@ impl App {
                 }
                 _ => (None, false),
             };
-            let action = egui::Panel::right("loading_panel")
+            let (comp_highlight, scroll_to_comp) = match self.selected_volume {
+                Some(VolumeRef::Compartment(idx)) => {
+                    let scroll = self.last_highlighted_compartment != Some(idx);
+                    (Some(idx), scroll)
+                }
+                _ => (None, false),
+            };
+
+            egui::Panel::right("design_dock")
                 .resizable(true)
                 .default_size(380.0)
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .show(ui, |ui| {
-                            panels::loading(
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(dock == DesignDock::Loading, "Loading")
+                            .clicked()
+                        {
+                            dock = DesignDock::Loading;
+                        }
+                        if ui
+                            .selectable_label(dock == DesignDock::Damage, "Damage")
+                            .clicked()
+                        {
+                            dock = DesignDock::Damage;
+                        }
+                        if ui
+                            .selectable_label(dock == DesignDock::Windage, "Windage")
+                            .clicked()
+                        {
+                            dock = DesignDock::Windage;
+                        }
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical().show(ui, |ui| match dock {
+                        DesignDock::Loading => {
+                            let action = panels::loading(
                                 ui,
                                 panels::LoadingPanel {
                                     project: &mut self.project,
@@ -616,22 +655,69 @@ impl App {
                                     highlight: tank_highlight,
                                     scroll_to: scroll_to_tank,
                                 },
-                            )
-                        })
-                        .inner
-                })
-                .inner;
+                            );
+                            match action {
+                                panels::LoadingAction::Changed => {
+                                    self.dirty = true;
+                                    self.loading_stale = true;
+                                }
+                                panels::LoadingAction::Compute => {
+                                    self.start_loading_compute();
+                                }
+                                panels::LoadingAction::None => {}
+                            }
+                        }
+                        DesignDock::Damage => {
+                            let action = panels::damage(
+                                ui,
+                                panels::DamagePanel {
+                                    project: &mut self.project,
+                                    selected: &mut self.damage_selected,
+                                    result: self.damage_result.as_ref(),
+                                    stale: self.damage_stale,
+                                    busy: self.damage_worker.is_some(),
+                                    highlight: comp_highlight,
+                                    scroll_to: scroll_to_comp,
+                                },
+                            );
+                            match action {
+                                panels::DamageAction::Changed => {
+                                    self.dirty = true;
+                                    self.damage_stale = true;
+                                }
+                                panels::DamageAction::Compute => {
+                                    self.start_damage_compute();
+                                }
+                                panels::DamageAction::None => {}
+                            }
+                        }
+                        DesignDock::Windage => {
+                            let action = panels::windage(
+                                ui,
+                                panels::WindagePanel {
+                                    project: &mut self.project,
+                                    weather: self
+                                        .loading_result
+                                        .as_ref()
+                                        .and_then(|r| r.weather.as_ref()),
+                                    stale: self.loading_stale,
+                                    selected: &mut self.selected_windage,
+                                },
+                            );
+                            match action {
+                                panels::WindageAction::Changed => {
+                                    self.dirty = true;
+                                    self.loading_stale = true;
+                                }
+                                panels::WindageAction::None => {}
+                            }
+                        }
+                    });
+                });
+
+            self.design_dock = Some(dock);
             self.last_highlighted_tank = tank_highlight;
-            match action {
-                panels::LoadingAction::Changed => {
-                    self.dirty = true;
-                    self.loading_stale = true;
-                }
-                panels::LoadingAction::Compute => {
-                    self.start_loading_compute();
-                }
-                panels::LoadingAction::None => {}
-            }
+            self.last_highlighted_compartment = comp_highlight;
         }
 
         if let Some(rx) = &self.loading_worker {
@@ -654,49 +740,6 @@ impl App {
             }
             if done {
                 self.loading_worker = None;
-            }
-        }
-
-        if self.show_damage {
-            let (comp_highlight, scroll_to_comp) = match self.selected_volume {
-                Some(VolumeRef::Compartment(idx)) => {
-                    let scroll = self.last_highlighted_compartment != Some(idx);
-                    (Some(idx), scroll)
-                }
-                _ => (None, false),
-            };
-            let action = egui::Panel::right("damage_panel")
-                .resizable(true)
-                .default_size(380.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .show(ui, |ui| {
-                            panels::damage(
-                                ui,
-                                panels::DamagePanel {
-                                    project: &mut self.project,
-                                    selected: &mut self.damage_selected,
-                                    result: self.damage_result.as_ref(),
-                                    stale: self.damage_stale,
-                                    busy: self.damage_worker.is_some(),
-                                    highlight: comp_highlight,
-                                    scroll_to: scroll_to_comp,
-                                },
-                            )
-                        })
-                        .inner
-                })
-                .inner;
-            self.last_highlighted_compartment = comp_highlight;
-            match action {
-                panels::DamageAction::Changed => {
-                    self.dirty = true;
-                    self.damage_stale = true;
-                }
-                panels::DamageAction::Compute => {
-                    self.start_damage_compute();
-                }
-                panels::DamageAction::None => {}
             }
         }
 
@@ -781,6 +824,7 @@ impl App {
         if escape {
             self.selected = None;
             self.selected_volume = None;
+            self.selected_windage = None;
         }
         if frame {
             self.reset_cameras();
@@ -873,6 +917,7 @@ impl App {
                     ui.checkbox(&mut self.display.points, "Control points");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
+                    ui.checkbox(&mut self.display.windage, "Windage outlines");
                     ui.checkbox(&mut self.display.grid, "Grid");
                     ui.checkbox(&mut self.display.combs, "Curvature combs");
                     ui.separator();
@@ -902,15 +947,19 @@ impl App {
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
-                    // The loading and damage panels share one dock: three
-                    // right-hand panels leave no room for the viewports.
-                    let mut loading = self.show_loading;
+                    // The loading, damage and windage panels share one dock:
+                    // multiple right-hand panels leave no room for the viewports.
+                    let mut loading = self.show_loading();
                     if ui.checkbox(&mut loading, "Loading panel").changed() {
                         self.set_show_loading(loading);
                     }
-                    let mut damage = self.show_damage;
+                    let mut damage = self.show_damage();
                     if ui.checkbox(&mut damage, "Damage panel").changed() {
                         self.set_show_damage(damage);
+                    }
+                    let mut windage = self.show_windage();
+                    if ui.checkbox(&mut windage, "Windage panel").changed() {
+                        self.set_show_windage(windage);
                     }
                     ui.separator();
                     let mut level = self.level as u32;
@@ -1325,6 +1374,14 @@ impl App {
         let overlays = self.volume_overlays();
         let mut volume_overlays: Vec<render::VolumeOverlay> =
             overlays.iter().map(|(_, o)| o.clone()).collect();
+        let mut windage_overlays = self.windage_overlays();
+        let windage_indices: Vec<usize> = self
+            .project
+            .windage
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| item.profile.map(|_| idx))
+            .collect();
 
         for (cell, index) in cells {
             self.viewport_rects[index] = cell;
@@ -1377,26 +1434,50 @@ impl App {
             if response.clicked() {
                 self.active = index;
                 self.selected = self.pick_at(ui, &view, cell);
-                if self.selected.is_none() && self.display.volumes {
+                if self.selected.is_none() {
                     let cursor = ui.input(|i| i.pointer.interact_pos());
-                    if let Some(cursor) = cursor {
-                        if let Some(hit) =
-                            render::pick_volume(&view, cell, cursor, &volume_overlays)
-                        {
-                            let vref = overlays[hit].0;
-                            self.selected_volume = Some(vref);
-                            match vref {
-                                VolumeRef::Tank(_) => self.set_show_loading(true),
-                                VolumeRef::Compartment(_) => self.set_show_damage(true),
+                    let mut hit_windage = false;
+                    if self.display.windage && self.cameras[index].kind == ViewKind::Profile {
+                        if let Some(cursor) = cursor {
+                            if let Some(hit) =
+                                render::pick_windage(&view, cell, cursor, &windage_overlays)
+                            {
+                                self.selected_windage = Some(windage_indices[hit]);
+                                self.selected_volume = None;
+                                self.set_show_windage(true);
+                                hit_windage = true;
+                            }
+                        }
+                    }
+                    if !hit_windage {
+                        self.selected_windage = None;
+                        if self.display.volumes {
+                            if let Some(cursor) = cursor {
+                                if let Some(hit) =
+                                    render::pick_volume(&view, cell, cursor, &volume_overlays)
+                                {
+                                    let vref = overlays[hit].0;
+                                    self.selected_volume = Some(vref);
+                                    match vref {
+                                        VolumeRef::Tank(_) => self.set_show_loading(true),
+                                        VolumeRef::Compartment(_) => self.set_show_damage(true),
+                                    }
+                                } else {
+                                    self.selected_volume = None;
+                                }
+                            } else {
+                                self.selected_volume = None;
                             }
                         } else {
                             self.selected_volume = None;
                         }
-                    } else {
-                        self.selected_volume = None;
                     }
                 } else {
+                    self.selected_windage = None;
                     self.selected_volume = None;
+                }
+                for (idx, overlay) in windage_indices.iter().zip(windage_overlays.iter_mut()) {
+                    overlay.selected = self.selected_windage == Some(*idx);
                 }
                 for (vref, overlay) in overlays.iter().zip(volume_overlays.iter_mut()) {
                     overlay.selected = self.selected_volume == Some(vref.0);
@@ -1421,6 +1502,7 @@ impl App {
                     mesh: &cache.mesh,
                     curves: cache.curves.as_ref(),
                     volumes: &volume_overlays,
+                    windage: &windage_overlays,
                     min: cache.min,
                     max: cache.max,
                     draft: self.hydro.options.draft,
@@ -1696,6 +1778,7 @@ impl App {
         self.project_error = None;
         self.dirty = true;
         self.selected_volume = None;
+        self.selected_windage = None;
         self.last_highlighted_tank = None;
         self.last_highlighted_compartment = None;
         self.loading_stale = true;
@@ -1704,20 +1787,76 @@ impl App {
         self.damage_selected = 0;
     }
 
-    /// Show or hide the loading panel; showing it hides the damage panel.
+    /// Show or hide the loading panel; showing it shows only it in the design dock.
     pub fn set_show_loading(&mut self, show: bool) {
-        self.show_loading = show;
         if show {
-            self.show_damage = false;
+            self.design_dock = Some(DesignDock::Loading);
+        } else if self.design_dock == Some(DesignDock::Loading) {
+            self.design_dock = None;
         }
     }
 
     pub fn show_loading(&self) -> bool {
-        self.show_loading
+        self.design_dock == Some(DesignDock::Loading)
+    }
+
+    /// Show or hide the damage panel; showing it shows only it in the design dock.
+    pub fn set_show_damage(&mut self, show: bool) {
+        if show {
+            self.design_dock = Some(DesignDock::Damage);
+        } else if self.design_dock == Some(DesignDock::Damage) {
+            self.design_dock = None;
+        }
     }
 
     pub fn show_damage(&self) -> bool {
-        self.show_damage
+        self.design_dock == Some(DesignDock::Damage)
+    }
+
+    /// Show or hide the windage panel; showing it shows only it in the design dock.
+    pub fn set_show_windage(&mut self, show: bool) {
+        if show {
+            self.design_dock = Some(DesignDock::Windage);
+        } else if self.design_dock == Some(DesignDock::Windage) {
+            self.design_dock = None;
+        }
+    }
+
+    pub fn show_windage(&self) -> bool {
+        self.design_dock == Some(DesignDock::Windage)
+    }
+
+    pub fn design_dock(&self) -> Option<DesignDock> {
+        self.design_dock
+    }
+
+    pub fn selected_windage(&self) -> Option<usize> {
+        self.selected_windage
+    }
+
+    pub fn set_selected_windage(&mut self, sel: Option<usize>) {
+        self.selected_windage = sel;
+    }
+
+    pub fn selected_windage_info(&self) -> Option<(usize, String)> {
+        let idx = self.selected_windage?;
+        let name = self.project.windage.get(idx).map(|w| w.name.clone())?;
+        Some((idx, name))
+    }
+
+    pub fn windage_overlays(&self) -> Vec<render::WindageOverlay> {
+        self.project
+            .windage
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                item.profile.map(|rect| render::WindageOverlay {
+                    name: item.name.clone(),
+                    rect,
+                    selected: self.selected_windage == Some(idx),
+                })
+            })
+            .collect()
     }
 
     pub fn selected_volume(&self) -> Option<VolumeRef> {
@@ -1887,14 +2026,6 @@ impl App {
         self.loading_result = Some(res);
         self.loading_stale = false;
         Ok(self.loading_result.as_ref().unwrap())
-    }
-
-    /// Show or hide the damage panel; showing it hides the loading panel.
-    pub fn set_show_damage(&mut self, show: bool) {
-        self.show_damage = show;
-        if show {
-            self.show_loading = false;
-        }
     }
 
     pub fn damage_result(&self) -> Option<&DamageResult> {

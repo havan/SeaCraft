@@ -11,6 +11,7 @@ use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::math::Vec3;
 use seacraft_core::mesh::Surface;
 use seacraft_core::raster;
+use seacraft_core::weather::WindageRect;
 
 use crate::camera::{Camera, ViewTransform};
 
@@ -48,6 +49,8 @@ pub struct DisplayOptions {
     pub waterplane: bool,
     /// Draw project tanks and compartments.
     pub volumes: bool,
+    /// Draw superstructure and deck windage profile outlines.
+    pub windage: bool,
     /// Draw the ground grid.
     pub grid: bool,
     /// Draw station/buttock/waterline section curves and curvature combs.
@@ -67,6 +70,7 @@ impl Default for DisplayOptions {
             points: true,
             waterplane: true,
             volumes: true,
+            windage: true,
             grid: true,
             combs: false,
             analysis: AnalysisMode::Shaded,
@@ -91,6 +95,14 @@ pub struct VolumeOverlay {
     pub selected: bool,
 }
 
+/// A 2D lateral windage profile outline in the model's y = 0 plane.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindageOverlay {
+    pub name: String,
+    pub rect: WindageRect,
+    pub selected: bool,
+}
+
 /// Everything a viewport draws.
 pub struct Scene<'a> {
     pub surface: &'a Surface,
@@ -100,6 +112,8 @@ pub struct Scene<'a> {
     pub curves: Option<&'a seacraft_core::linesplan::LinesplanCurves3d>,
     /// Project tanks and compartments.
     pub volumes: &'a [VolumeOverlay],
+    /// Superstructure and deck windage profile outlines.
+    pub windage: &'a [WindageOverlay],
     pub min: Vec3,
     pub max: Vec3,
     /// Current floating condition, for the waterplane.
@@ -184,6 +198,9 @@ pub fn viewport_with_texture(
     }
     if opts.volumes {
         draw_volumes(&painter, &view, rect, scene.volumes);
+    }
+    if opts.windage && camera.kind == crate::camera::ViewKind::Profile {
+        draw_windage(&painter, &view, rect, scene.windage);
     }
     if opts.combs {
         if let Some(curves) = scene.curves {
@@ -914,6 +931,98 @@ fn draw_volumes(
     }
 }
 
+/// Pick the windage item under `cursor` with the smallest projected area.
+pub fn pick_windage(
+    view: &ViewTransform,
+    rect: Rect,
+    cursor: Pos2,
+    windage: &[WindageOverlay],
+) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, item) in windage.iter().enumerate() {
+        let p0 = Vec3::new(item.rect.x_min, 0.0, item.rect.z_min);
+        let p1 = Vec3::new(item.rect.x_max, 0.0, item.rect.z_min);
+        let p2 = Vec3::new(item.rect.x_max, 0.0, item.rect.z_max);
+        let p3 = Vec3::new(item.rect.x_min, 0.0, item.rect.z_max);
+
+        if let (Some(q0), Some(q1), Some(q2), Some(q3)) = (
+            view.project(p0, rect),
+            view.project(p1, rect),
+            view.project(p2, rect),
+            view.project(p3, rect),
+        ) {
+            let hull = convex_hull_2d(&[q0, q1, q2, q3]);
+            if hull.len() >= 3 && point_in_polygon(cursor, &hull) {
+                let area = polygon_area(&hull);
+                if best.as_ref().is_none_or(|(_, best_area)| area < *best_area) {
+                    best = Some((i, area));
+                }
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+fn draw_windage(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    rect: Rect,
+    windage: &[WindageOverlay],
+) {
+    for item in windage {
+        let p0 = Vec3::new(item.rect.x_min, 0.0, item.rect.z_min);
+        let p1 = Vec3::new(item.rect.x_max, 0.0, item.rect.z_min);
+        let p2 = Vec3::new(item.rect.x_max, 0.0, item.rect.z_max);
+        let p3 = Vec3::new(item.rect.x_min, 0.0, item.rect.z_max);
+
+        if let (Some(q0), Some(q1), Some(q2), Some(q3)) = (
+            view.project(p0, rect),
+            view.project(p1, rect),
+            view.project(p2, rect),
+            view.project(p3, rect),
+        ) {
+            let hull = convex_hull_2d(&[q0, q1, q2, q3]);
+            if hull.len() >= 3 {
+                let (fill, stroke) = if item.selected {
+                    (
+                        Color32::from_rgba_unmultiplied(60, 200, 100, 50),
+                        Stroke::new(2.0, Color32::from_rgb(120, 255, 160)),
+                    )
+                } else {
+                    (
+                        Color32::from_rgba_unmultiplied(60, 200, 100, 25),
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(70, 190, 110, 180)),
+                    )
+                };
+                painter.add(egui::Shape::convex_polygon(hull, fill, stroke));
+
+                let min_x = q0.x.min(q1.x).min(q2.x).min(q3.x);
+                let max_x = q0.x.max(q1.x).max(q2.x).max(q3.x);
+                let min_y = q0.y.min(q1.y).min(q2.y).min(q3.y);
+                let max_y = q0.y.max(q1.y).max(q2.y).max(q3.y);
+                let w_px = max_x - min_x;
+                let h_px = max_y - min_y;
+
+                if w_px >= 30.0 && h_px >= 14.0 && !item.name.is_empty() {
+                    let center = Pos2::new((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
+                    let text_color = if item.selected {
+                        Color32::from_rgb(220, 255, 230)
+                    } else {
+                        Color32::from_rgba_unmultiplied(180, 230, 190, 200)
+                    };
+                    painter.text(
+                        center,
+                        Align2::CENTER_CENTER,
+                        &item.name,
+                        FontId::proportional(11.0),
+                        text_color,
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -972,5 +1081,42 @@ mod tests {
         let outside = Pos2::new(5.0, 5.0);
         let miss = pick_volume(&view, rect, outside, &volumes);
         assert_eq!(miss, None, "a cursor outside both yields None");
+    }
+
+    #[test]
+    fn pick_windage_hits_smallest_enclosing_rect_and_misses_outside() {
+        let camera = Camera::ortho(ViewKind::Profile, Vec3::ZERO, 30.0);
+        let view = camera.transform();
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(200.0, 200.0));
+
+        let outer = WindageOverlay {
+            name: "Outer".into(),
+            rect: WindageRect {
+                x_min: -10.0,
+                x_max: 10.0,
+                z_min: -5.0,
+                z_max: 5.0,
+            },
+            selected: false,
+        };
+        let inner = WindageOverlay {
+            name: "Inner".into(),
+            rect: WindageRect {
+                x_min: -2.0,
+                x_max: 2.0,
+                z_min: -2.0,
+                z_max: 2.0,
+            },
+            selected: false,
+        };
+        let windage = vec![outer, inner];
+
+        let center_screen = view.project(Vec3::ZERO, rect).expect("project center");
+        let hit = pick_windage(&view, rect, center_screen, &windage);
+        assert_eq!(hit, Some(1), "inner rect with smaller area is picked");
+
+        let outside = Pos2::new(5.0, 5.0);
+        let miss = pick_windage(&view, rect, outside, &windage);
+        assert_eq!(miss, None, "outside yields None");
     }
 }

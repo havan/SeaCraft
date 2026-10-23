@@ -6,6 +6,7 @@ use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
 use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
 use seacraft_core::project::Project;
 use seacraft_core::stability::CrossCurve;
+use seacraft_core::weather::{WeatherResult, WindageItem, WindageRect};
 use seacraft_core::Surface;
 
 /// Draw one row per layer. Returns whether any flag or colour changed.
@@ -1828,6 +1829,292 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     action
 }
 
+/// Action requested by the windage panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindageAction {
+    None,
+    Changed,
+}
+
+/// Windage panel state.
+pub struct WindagePanel<'a> {
+    pub project: &'a mut Project,
+    pub weather: Option<&'a WeatherResult>,
+    pub stale: bool,
+    pub selected: &'a mut Option<usize>,
+}
+
+pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
+    let mut action = WindageAction::None;
+    ui.heading("Superstructure & Windage");
+    ui.add_space(4.0);
+
+    if ui.button("+ Add windage item").clicked() {
+        let name = format!("Item {}", panel.project.windage.len() + 1);
+        panel.project.windage.push(WindageItem {
+            name,
+            area_m2: 1.0,
+            z_centroid: 2.0,
+            profile: None,
+        });
+        *panel.selected = Some(panel.project.windage.len() - 1);
+        return WindageAction::Changed;
+    }
+    ui.add_space(4.0);
+
+    let mut remove_idx = None;
+    if panel.project.windage.is_empty() {
+        ui.label("No windage items defined.");
+    } else {
+        egui::Grid::new("windage_items_table")
+            .num_columns(4)
+            .spacing([8.0, 6.0])
+            .show(ui, |ui| {
+                ui.label("");
+                ui.label(egui::RichText::new("Name").strong());
+                ui.label(egui::RichText::new("Geometry").strong());
+                ui.label("");
+                ui.end_row();
+
+                for (i, item) in panel.project.windage.iter_mut().enumerate() {
+                    let is_selected = *panel.selected == Some(i);
+                    let row_start = ui.cursor().min;
+
+                    let sel_label = if is_selected { "●" } else { "○" };
+                    if ui.selectable_label(is_selected, sel_label).clicked() {
+                        *panel.selected = if is_selected { None } else { Some(i) };
+                    }
+
+                    if ui
+                        .add_sized([100.0, 20.0], egui::TextEdit::singleline(&mut item.name))
+                        .changed()
+                    {
+                        action = WindageAction::Changed;
+                    }
+
+                    if let Some(mut rect) = item.profile {
+                        let mut rect_changed = false;
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("x:");
+                                rect_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut rect.x_min)
+                                            .speed(0.02)
+                                            .prefix("min "),
+                                    )
+                                    .changed();
+                                rect_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut rect.x_max)
+                                            .speed(0.02)
+                                            .prefix("max "),
+                                    )
+                                    .changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("z:");
+                                rect_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut rect.z_min)
+                                            .speed(0.02)
+                                            .prefix("min "),
+                                    )
+                                    .changed();
+                                rect_changed |= ui
+                                    .add(
+                                        egui::DragValue::new(&mut rect.z_max)
+                                            .speed(0.02)
+                                            .prefix("max "),
+                                    )
+                                    .changed();
+                            });
+                            ui.label(format!(
+                                "Area: {:.2} m², z: {:.2} m",
+                                item.area_m2, item.z_centroid
+                            ));
+                        });
+                        if rect_changed {
+                            item.profile = Some(rect);
+                            item.sync_from_profile();
+                            action = WindageAction::Changed;
+                        }
+                    } else {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label("Area:");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut item.area_m2)
+                                            .speed(0.02)
+                                            .range(0.0..=f64::INFINITY)
+                                            .suffix(" m²"),
+                                    )
+                                    .changed()
+                                {
+                                    action = WindageAction::Changed;
+                                }
+                                ui.label("z:");
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut item.z_centroid)
+                                            .speed(0.02)
+                                            .suffix(" m"),
+                                    )
+                                    .changed()
+                                {
+                                    action = WindageAction::Changed;
+                                }
+                            });
+                            if ui.button("Draw as rectangle").clicked() {
+                                let area = item.area_m2.max(0.1);
+                                let w = area.sqrt();
+                                let h = w;
+                                let mid_x = panel
+                                    .project
+                                    .compartments
+                                    .first()
+                                    .map(|c| (c.x_min + c.x_max) * 0.5)
+                                    .or_else(|| {
+                                        panel.project.loading_conditions.first().and_then(|c| {
+                                            c.tanks.first().map(|t| (t.x_min + t.x_max) * 0.5)
+                                        })
+                                    })
+                                    .unwrap_or(6.0);
+                                item.profile = Some(WindageRect {
+                                    x_min: mid_x - w * 0.5,
+                                    x_max: mid_x + w * 0.5,
+                                    z_min: item.z_centroid - h * 0.5,
+                                    z_max: item.z_centroid + h * 0.5,
+                                });
+                                item.sync_from_profile();
+                                action = WindageAction::Changed;
+                            }
+                        });
+                    }
+
+                    if ui.button("✖").clicked() {
+                        remove_idx = Some(i);
+                    }
+
+                    let row_end = ui.cursor().min;
+                    if is_selected {
+                        let row_rect = egui::Rect::from_min_max(
+                            egui::pos2(ui.min_rect().min.x, row_start.y),
+                            egui::pos2(ui.min_rect().max.x, row_end.y),
+                        );
+                        ui.painter().rect_stroke(
+                            row_rect,
+                            2.0,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 200, 100)),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+
+                    ui.end_row();
+                }
+            });
+
+        if let Some(i) = remove_idx {
+            panel.project.windage.remove(i);
+            if *panel.selected == Some(i) {
+                *panel.selected = None;
+            } else if let Some(ref mut sel) = *panel.selected {
+                if *sel > i {
+                    *sel -= 1;
+                }
+            }
+            action = WindageAction::Changed;
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Windage Totals").strong());
+    let total_area: f64 = panel.project.windage.iter().map(|w| w.area_m2).sum();
+    let total_az: f64 = panel
+        .project
+        .windage
+        .iter()
+        .map(|w| w.area_m2 * w.z_centroid)
+        .sum();
+    let z_centroid = if total_area > 1e-9 {
+        total_az / total_area
+    } else {
+        0.0
+    };
+    egui::Grid::new("windage_totals_grid")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("Total windage area (ΣA):");
+            ui.label(format!("{:.2} m²", total_area));
+            ui.end_row();
+            ui.label("Area-weighted z centroid:");
+            ui.label(format!("{:.2} m", z_centroid));
+            ui.end_row();
+        });
+
+    ui.add_space(8.0);
+    ui.separator();
+    if let Some(w) = panel.weather {
+        let badge_color = if w.passed {
+            egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
+        } else {
+            egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Weather Criterion Summary (§2.3):").strong());
+            ui.colored_label(badge_color, if w.passed { "PASS" } else { "FAIL" });
+            if panel.stale {
+                ui.colored_label(egui::Color32::from_rgb(220, 150, 40), "(stale)");
+            }
+        });
+        ui.small("from the loading panel's last Compute");
+        ui.add_space(2.0);
+
+        egui::Grid::new("windage_weather_grid")
+            .num_columns(2)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Hull lateral windage area:");
+                ui.label(format!("{:.2} m²", w.hull_windage_area_m2));
+                ui.end_row();
+
+                ui.label("Extra windage area:");
+                ui.label(format!("{:.2} m²", w.extra_windage_area_m2));
+                ui.end_row();
+
+                ui.label("Total windage area (A):");
+                ui.label(format!("{:.2} m²", w.area_m2));
+                ui.end_row();
+
+                ui.label("Vertical lever arm (Z):");
+                ui.label(format!("{:.2} m", w.z_m));
+                ui.end_row();
+
+                ui.label("Wind heeling lever (lw1):");
+                ui.label(format!("{:.3} m", w.lw1_m));
+                ui.end_row();
+
+                ui.label("Steady heel angle (φ0):");
+                ui.label(format!(
+                    "{:.1}° (lim {:.1}°)",
+                    w.phi0_deg.unwrap_or(0.0),
+                    w.phi0_limit_deg
+                ));
+                ui.end_row();
+
+                ui.label("Energy ratio (b/a):");
+                ui.label(format!("{:.2} (req ≥1.0)", w.area_ratio));
+                ui.end_row();
+            });
+    } else {
+        ui.label("Compute a loading condition to check the weather criterion");
+    }
+
+    action
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2076,6 +2363,57 @@ mod tests {
                 },
             );
             assert_eq!(action, DamageAction::None);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn windage_panel_runs_headlessly() {
+        let ctx = egui::Context::default();
+        let mut project = Project::default();
+        let mut selected = None;
+        let input = egui::RawInput::default();
+        let mut out = ctx.run_ui(input.clone(), |ui| {
+            let action = windage(
+                ui,
+                WindagePanel {
+                    project: &mut project,
+                    weather: None,
+                    stale: false,
+                    selected: &mut selected,
+                },
+            );
+            assert_eq!(action, WindageAction::None);
+        });
+        out.textures_delta.clear();
+
+        project.windage.push(WindageItem::from_profile(
+            "Deckhouse",
+            WindageRect {
+                x_min: 3.0,
+                x_max: 6.0,
+                z_min: 1.6,
+                z_max: 2.4,
+            },
+        ));
+        project.windage.push(WindageItem {
+            name: "Mast".into(),
+            area_m2: 1.2,
+            z_centroid: 2.0,
+            profile: None,
+        });
+
+        let mut out = ctx.run_ui(input, |ui| {
+            let action = windage(
+                ui,
+                WindagePanel {
+                    project: &mut project,
+                    weather: None,
+                    stale: true,
+                    selected: &mut selected,
+                },
+            );
+            assert_eq!(action, WindageAction::None);
         });
         out.textures_delta.clear();
     }

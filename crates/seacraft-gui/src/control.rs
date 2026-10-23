@@ -633,6 +633,7 @@ fn handle_inner(
             let mut active: Option<usize> = None;
             let mut loading_panel: Option<bool> = None;
             let mut damage_panel: Option<bool> = None;
+            let mut windage_panel: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -658,6 +659,10 @@ fn handle_inner(
                     "volumes" => {
                         display.volumes =
                             value.as_bool().ok_or("`volumes` must be true or false")?
+                    }
+                    "windage" => {
+                        display.windage =
+                            value.as_bool().ok_or("`windage` must be true or false")?
                     }
                     "grid" => {
                         display.grid = value.as_bool().ok_or("`grid` must be true or false")?
@@ -707,6 +712,13 @@ fn handle_inner(
                                 .ok_or("`damage_panel` must be true or false")?,
                         )
                     }
+                    "windage_panel" => {
+                        windage_panel = Some(
+                            value
+                                .as_bool()
+                                .ok_or("`windage_panel` must be true or false")?,
+                        )
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
@@ -716,6 +728,9 @@ fn handle_inner(
             }
             if let Some(show) = damage_panel {
                 app.set_show_damage(show);
+            }
+            if let Some(show) = windage_panel {
+                app.set_show_windage(show);
             }
             if let Some(mode) = analysis {
                 app.set_analysis(mode);
@@ -2119,6 +2134,13 @@ fn inspect(app: &App) -> Value {
             }),
             None => Value::Null,
         },
+        "selected_windage": match app.selected_windage_info() {
+            Some((index, name)) => json!({
+                "index": index,
+                "name": name,
+            }),
+            None => Value::Null,
+        },
         "undo_len": app.undo_len(),
         "points": app.control_point_count(),
         "faces": app.face_count(),
@@ -2130,6 +2152,7 @@ fn inspect(app: &App) -> Value {
             "points": d.points,
             "waterplane": d.waterplane,
             "volumes": d.volumes,
+            "windage": d.windage,
             "grid": d.grid,
             "combs": d.combs,
             "analysis": d.analysis.label(),
@@ -2258,6 +2281,7 @@ fn render_png(
         mesh,
         curves: None,
         volumes: &[],
+        windage: &[],
         min,
         max,
         draft,

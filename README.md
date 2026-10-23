@@ -328,6 +328,20 @@ volume selects it, outlines it in bright accent, and opens and focuses the
 corresponding Loading or Damage dock with the volume highlighted and scrolled
 into view.
 
+The unified right-hand design dock also provides the **Windage** tab (View menu
+`Windage panel`, or control `ui.set {"windage_panel": true}`), sharing the dock
+with Loading and Damage. It configures superstructure and deck windage items:
+either as lateral profile rectangles (the `profile` field in project and
+loading condition JSON: `{"x_min", "x_max", "z_min", "z_max"}` with automatic
+area and vertical centroid synchronization) or as standalone area and vertical
+centroid values with a "Draw as rectangle" button. The Profile viewport renders
+items with profile rectangles as translucent green outlines in the $y = 0$ plane
+(View menu `Windage outlines` or control `ui.set {"windage": true}`), drawn
+brighter when selected. Clicking inside an outline in the Profile view selects
+the windage item and opens the Windage tab. The panel displays totals ($\Sigma A$
+and area-weighted $z$) and the IMO §2.3 severe wind and rolling (weather)
+criterion summary from the loading panel's last compute.
+
 ### Seakeeping (strip-theory heave & pitch motions)
 
 `seakeeping::head_sea_raos` (`seacraft seakeeping hull.fef --draft T` / MCP
