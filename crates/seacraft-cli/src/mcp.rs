@@ -49,8 +49,9 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::SubdivisionMode;
 use seacraft_core::{
-    curves, demo, develop, export, fef, linesplan, offsets, planing, raster, resistance, table,
-    topology, transform, trimopt,
+    curves, demo, develop, export, fef, linesplan, offsets,
+    parametric::{self, HullKind, HullSpec},
+    planing, raster, resistance, table, topology, transform, trimopt,
 };
 use serde_json::{json, Map, Value};
 
@@ -438,6 +439,7 @@ impl McpServer {
         match name {
             "hull_info" => Ok(self.hull_info()),
             "load_hull" => self.load_hull(a),
+            "generate_hull" => self.generate_hull(a),
             "save_hull" => self.save_hull(a),
             "move_point" => self.move_point(a),
             "set_crease" => self.set_crease(a),
@@ -552,6 +554,60 @@ impl McpServer {
             _ => return Err("load_hull: give `path` or `demo: true`".to_string()),
         }
         Ok(self.hull_info())
+    }
+
+    fn generate_hull(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let kind = match str_arg(a, "kind") {
+            Some(k) => k.parse::<HullKind>()?,
+            None => HullKind::Displacement,
+        };
+        let mut spec = HullSpec::default_for(kind);
+        if let Some(v) = number_arg(a, "lwl") {
+            spec.lwl = v;
+        }
+        if let Some(v) = number_arg(a, "beam") {
+            spec.beam = v;
+        }
+        if let Some(v) = number_arg(a, "draft") {
+            spec.draft = v;
+        }
+        if let Some(v) = number_arg(a, "depth") {
+            spec.depth = v;
+        }
+        if let Some(v) = number_arg(a, "cb") {
+            spec.cb = Some(v);
+        }
+        if let Some(v) = number_arg(a, "lcb_frac").or_else(|| number_arg(a, "lcb")) {
+            spec.lcb_frac = Some(v);
+        }
+        if let Some(v) = number_arg(a, "deadrise_deg").or_else(|| number_arg(a, "deadrise")) {
+            spec.deadrise_deg = v;
+        }
+        if let Some(v) = number_arg(a, "transom_frac").or_else(|| number_arg(a, "transom")) {
+            spec.transom_frac = v;
+        }
+        if let Some(v) = usize_arg(a, "stations") {
+            spec.stations = v;
+        }
+        if let Some(v) = usize_arg(a, "points_per_station") {
+            spec.points_per_station = v;
+        }
+
+        let (surface, rep) = parametric::generate(&spec)?;
+        self.surface = surface;
+        self.opts = HydroOptions::from_surface(
+            &self.surface,
+            seascape_subdiv(self.opts.subdivision.level),
+        );
+        self.source = None;
+
+        let mut out = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
+        if let Some(obj) = out.as_object_mut() {
+            obj.insert("points".into(), json!(self.surface.points.len()));
+            obj.insert("faces".into(), json!(self.surface.faces.len()));
+            obj.insert("layers".into(), json!(self.surface.layers.len()));
+        }
+        Ok(out)
     }
 
     fn save_hull(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
@@ -1530,6 +1586,33 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Replaces,
         ),
         tool(
+            "generate_hull",
+            "Generate a parametric hull",
+            "Replace the model with a parametric symmetric half-model control net built from principal dimensions \
+             (`displacement`, `planing` or `yacht`), scaled so level-3 LWL, BWL and T match the specification and \
+             optionally solved for target block coefficient `cb` and LCB fraction `lcb_frac`. Returns the generation report.",
+            obj(
+                json!({
+                    "kind": {"type": "string", "enum": ["displacement", "planing", "yacht"], "description": "Hull family (default displacement)"},
+                    "lwl": number("Waterline length LWL in metres"),
+                    "beam": number("Waterline beam BWL in metres"),
+                    "draft": number("Canoe-body draft T at midship in metres"),
+                    "depth": number("Moulded depth from keel to sheer at midship in metres"),
+                    "cb": number("Target block coefficient Cb (0.35..=0.85)"),
+                    "lcb_frac": number("Target LCB as fraction of LWL from the aft perpendicular (0.35..=0.60)"),
+                    "lcb": number("Alias for lcb_frac (0.35..=0.60)"),
+                    "deadrise_deg": number("Bottom deadrise angle in degrees (planing only, default 15)"),
+                    "deadrise": number("Alias for deadrise_deg"),
+                    "transom_frac": number("Transom immersion / beam ratio (0..=1)"),
+                    "transom": number("Alias for transom_frac"),
+                    "stations": integer("Number of longitudinal control stations (default 9)"),
+                    "points_per_station": integer("Number of control points per station (default 5)"),
+                }),
+                &[],
+            ),
+            Effect::Replaces,
+        ),
+        tool(
             "save_hull",
             "Save the hull",
             "Write the control net as a FREE!ship `.fef` file. Without `path` the model is written back to the \
@@ -2067,6 +2150,7 @@ impl Remote {
                 ),
                 None => Err("load_hull: give `path` or `demo: true`".to_string()),
             },
+            "generate_hull" => self.request("model.generate", Value::Object(a.clone())),
             "save_hull" => match str_arg(a, "path").filter(|p| !p.trim().is_empty()) {
                 Some(path) => self.request("model.save", json!({"path": path})),
                 None => Err("save_hull: give `path` (the app saves to the named file)".to_string()),
@@ -2378,6 +2462,7 @@ mod tests {
             vec![
                 "hull_info",
                 "load_hull",
+                "generate_hull",
                 "save_hull",
                 "move_point",
                 "set_crease",
@@ -3191,6 +3276,39 @@ mod tests {
             .expect("load_hull");
         assert_eq!(load["annotations"]["destructiveHint"], true);
         assert_eq!(Effect::of(load), Effect::Replaces);
+
+        let gen = tools
+            .iter()
+            .find(|t| t["name"] == "generate_hull")
+            .expect("generate_hull");
+        assert_eq!(gen["annotations"]["destructiveHint"], true);
+        assert_eq!(Effect::of(gen), Effect::Replaces);
+    }
+
+    #[test]
+    fn generate_hull_then_hull_info_succeeds() {
+        let mut s = McpServer::new();
+        let gen = ok(
+            &mut s,
+            1,
+            "generate_hull",
+            json!({
+                "kind": "displacement",
+                "lwl": 10.0,
+                "beam": 3.0,
+                "draft": 0.6,
+                "depth": 1.6
+            }),
+        );
+        assert_eq!(gen["kind"], "displacement");
+        assert!((gen["lwl"].as_f64().unwrap() - 10.0).abs() <= 0.05);
+        assert!((gen["bwl"].as_f64().unwrap() - 3.0).abs() <= 0.02);
+        assert!((gen["t"].as_f64().unwrap() - 0.6).abs() <= 0.01);
+
+        let info = ok(&mut s, 2, "hull_info", json!({}));
+        assert_eq!(info["validation"]["ok"], true);
+        assert_eq!(info["layers"][0]["symmetric"], true);
+        assert!((info["principal"]["length"].as_f64().unwrap() - 10.0).abs() < 1e-6);
     }
 
     #[test]

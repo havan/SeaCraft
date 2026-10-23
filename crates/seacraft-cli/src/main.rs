@@ -10,7 +10,7 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{lackenby, table, trimopt, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
-    develop, offsets, planing, raster, resistance, topology, transform,
+    develop, offsets, parametric::{self, HullKind, HullSpec}, planing, raster, resistance, topology, transform,
 };
 use std::path::{Path, PathBuf};
 
@@ -33,6 +33,8 @@ struct Cli {
 enum Command {
     /// Write the built-in demo hull to a .fef file
     Demo(DemoArgs),
+    /// Generate a parametric hull control net from principal dimensions
+    Generate(GenerateArgs),
     /// Summarise a model
     Info(InfoArgs),
     /// Hydrostatics for one floating condition
@@ -136,6 +138,66 @@ struct DemoArgs {
     /// Model only the starboard half (symmetric layer)
     #[arg(long)]
     symmetric: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum HullKindArg {
+    Displacement,
+    Planing,
+    Yacht,
+}
+
+impl From<HullKindArg> for HullKind {
+    fn from(k: HullKindArg) -> Self {
+        match k {
+            HullKindArg::Displacement => HullKind::Displacement,
+            HullKindArg::Planing => HullKind::Planing,
+            HullKindArg::Yacht => HullKind::Yacht,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+struct GenerateArgs {
+    /// Hull family
+    #[arg(long, value_enum, default_value_t = HullKindArg::Displacement)]
+    kind: HullKindArg,
+    /// Waterline length LWL in metres
+    #[arg(long)]
+    lwl: Option<f64>,
+    /// Waterline beam BWL in metres
+    #[arg(long)]
+    beam: Option<f64>,
+    /// Canoe-body draft T at midship in metres
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Moulded depth from keel to sheer at midship in metres
+    #[arg(long)]
+    depth: Option<f64>,
+    /// Optional target block coefficient Cb (0.35..=0.85)
+    #[arg(long)]
+    cb: Option<f64>,
+    /// Optional target LCB as a fraction of LWL from the aft perpendicular (0.35..=0.60)
+    #[arg(long)]
+    lcb: Option<f64>,
+    /// Bottom deadrise angle in degrees (planing only, default 15)
+    #[arg(long)]
+    deadrise: Option<f64>,
+    /// Transom immersion / beam ratio (0..=1)
+    #[arg(long)]
+    transom: Option<f64>,
+    /// Number of longitudinal stations (default 9)
+    #[arg(long)]
+    stations: Option<usize>,
+    /// Number of control points per station (default 5)
+    #[arg(long)]
+    points_per_station: Option<usize>,
+    /// Output .fef path
+    #[arg(short, long, default_value = "generated.fef")]
+    output: PathBuf,
+    /// Emit the generation report as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -827,6 +889,7 @@ fn main() {
 fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Demo(a) => cmd_demo(a),
+        Command::Generate(a) => cmd_generate(a),
         Command::Info(a) => cmd_info(a),
         Command::Hydro(a) => cmd_hydro(a),
         Command::Export(a) => cmd_export(a),
@@ -868,6 +931,69 @@ fn cmd_demo(a: DemoArgs) -> Result<()> {
         surface.layers.len(),
         if surface.layers.len() == 1 { "" } else { "s" }
     );
+    Ok(())
+}
+
+fn cmd_generate(a: GenerateArgs) -> Result<()> {
+    let kind: HullKind = a.kind.into();
+    let mut spec = HullSpec::default_for(kind);
+    if let Some(lwl) = a.lwl {
+        spec.lwl = lwl;
+    }
+    if let Some(beam) = a.beam {
+        spec.beam = beam;
+    }
+    if let Some(draft) = a.draft {
+        spec.draft = draft;
+    }
+    if let Some(depth) = a.depth {
+        spec.depth = depth;
+    }
+    if let Some(cb) = a.cb {
+        spec.cb = Some(cb);
+    }
+    if let Some(lcb) = a.lcb {
+        spec.lcb_frac = Some(lcb);
+    }
+    if let Some(deadrise) = a.deadrise {
+        spec.deadrise_deg = deadrise;
+    }
+    if let Some(transom) = a.transom {
+        spec.transom_frac = transom;
+    }
+    if let Some(stations) = a.stations {
+        spec.stations = stations;
+    }
+    if let Some(pps) = a.points_per_station {
+        spec.points_per_station = pps;
+    }
+
+    let (surface, rep) = parametric::generate(&spec).map_err(|e| anyhow::anyhow!(e))?;
+    std::fs::write(&a.output, fef::write(&surface))
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&rep)?);
+        return Ok(());
+    }
+
+    println!("parametric hull ({}) -> {}", rep.kind, a.output.display());
+    println!("  parameter       target     achieved");
+    println!("  LWL (m)       {:8.3}     {:8.3}", rep.target_lwl, rep.lwl);
+    println!("  BWL (m)       {:8.3}     {:8.3}", rep.target_bwl, rep.bwl);
+    println!("  draft T (m)   {:8.3}     {:8.3}", rep.target_draft, rep.t);
+    println!("  depth D (m)   {:8.3}     {:8.3}", rep.target_depth, rep.target_depth);
+    match rep.target_cb {
+        Some(tcb) => println!("  Cb            {:8.4}     {:8.4}", tcb, rep.cb),
+        None => println!("  Cb                   -     {:8.4}", rep.cb),
+    }
+    match rep.target_lcb_frac {
+        Some(tlcb) => println!("  LCB / LWL     {:8.4}     {:8.4}", tlcb, rep.lcb_frac),
+        None => println!("  LCB / LWL            -     {:8.4}", rep.lcb_frac),
+    }
+    println!("  volume (m3)          -     {:8.3}", rep.volume);
+    println!("  disp (t)             -     {:8.3}", rep.displacement_t);
+    println!("  iterations           -     {:8}", rep.iterations);
     Ok(())
 }
 

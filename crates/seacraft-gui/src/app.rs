@@ -331,6 +331,20 @@ impl App {
         self.adopt();
     }
 
+    /// Replace the current model with a newly generated parametric hull.
+    pub fn load_generated(&mut self, surface: Surface) {
+        self.status = format!(
+            "{} — parametric hull ({} points, {} faces)",
+            surface.settings.name,
+            surface.points.len(),
+            surface.faces.len()
+        );
+        self.surface = Some(surface);
+        self.path = None;
+        self.dirty = true;
+        self.adopt();
+    }
+
     /// Reset the derived state after a model change.
     fn adopt(&mut self) {
         self.revision += 1;

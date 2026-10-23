@@ -108,6 +108,7 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | CPU z-buffer rasterizer + waterplane depth + PNG | `raster.rs` |
 | OBJ / STL / 3MF / PLY / IGES / HTML viewer | `export.rs` |
 | Parametric demo hull | `demo.rs` |
+| Parametric hull generator (`displacement`, `planing`, `yacht`) | `parametric.rs` |
 | Command-line front end + MCP stdio server (`seacraft mcp`) | `crates/seacraft-cli` |
 | Desktop modeller (4 viewports, drag, docks, `--control`) | `crates/seacraft-gui` |
 
@@ -194,6 +195,18 @@ hard-chine V and understates a round-bilge hull; `--deadrise` overrides it.
 at stations x waterlines and buttock heights at stations x buttocks — as a
 terminal table, long-format CSV, JSON or a standalone HTML page
 (`seacraft offsets`). A cell the section cannot reach is empty (`-`), not zero.
+
+### Parametric hull generation
+
+`parametric::generate` (`seacraft generate` / MCP `generate_hull`) builds a
+symmetric half-model control net from principal dimensions (`--kind
+displacement|planing|yacht`, `--lwl`, `--beam`, `--draft`, `--depth`), scales it
+so level-3 refined `LWL`, `BWL` and `T` match within 0.5 %, and optionally
+solves section/longitudinal fullness for `--cb` and station shifts for `--lcb`:
+
+```console
+seacraft generate --kind planing --lwl 10 --beam 3.2 --draft 0.6 --depth 1.8 --cb 0.45 --lcb 0.42 -o out.fef
+```
 
 ### Stability
 

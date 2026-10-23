@@ -644,6 +644,53 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "layers": app.layer_count(),
             }))
         }
+        "model.generate" => {
+            use seacraft_core::parametric::{self, HullKind, HullSpec};
+            let kind = match text(p, "kind")? {
+                Some(k) => k.parse::<HullKind>()?,
+                None => HullKind::Displacement,
+            };
+            let mut spec = HullSpec::default_for(kind);
+            if let Some(v) = number(p, "lwl")? {
+                spec.lwl = v;
+            }
+            if let Some(v) = number(p, "beam")? {
+                spec.beam = v;
+            }
+            if let Some(v) = number(p, "draft")? {
+                spec.draft = v;
+            }
+            if let Some(v) = number(p, "depth")? {
+                spec.depth = v;
+            }
+            if let Some(v) = number(p, "cb")? {
+                spec.cb = Some(v);
+            }
+            if let Some(v) = number(p, "lcb_frac")?.or(number(p, "lcb")?) {
+                spec.lcb_frac = Some(v);
+            }
+            if let Some(v) = number(p, "deadrise_deg")?.or(number(p, "deadrise")?) {
+                spec.deadrise_deg = v;
+            }
+            if let Some(v) = number(p, "transom_frac")?.or(number(p, "transom")?) {
+                spec.transom_frac = v;
+            }
+            if let Some(v) = index_at(p, "stations", 66)? {
+                spec.stations = v;
+            }
+            if let Some(v) = index_at(p, "points_per_station", 34)? {
+                spec.points_per_station = v;
+            }
+            let (surface, rep) = parametric::generate(&spec)?;
+            app.load_generated(surface);
+            let mut out = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("points".into(), json!(app.control_point_count()));
+                obj.insert("faces".into(), json!(app.face_count()));
+                obj.insert("layers".into(), json!(app.layer_count()));
+            }
+            Ok(out)
+        }
         "model.open" => {
             let path = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("missing `path`")?;
             app.open_model(std::path::Path::new(path.trim()))?;
@@ -1845,6 +1892,7 @@ mod tests {
             "ui.key",
             "ui.render",
             "model.load_demo",
+            "model.generate",
             "model.open",
             "model.save",
             "model.export",
