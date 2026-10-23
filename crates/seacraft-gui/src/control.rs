@@ -961,6 +961,98 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
             }
             Ok(v)
         }
+        "stability.weather" | "weather_criterion" => {
+            let mut opts = app.hydro_options().clone();
+            if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
+                opts.draft = d;
+            }
+            if let Some(t) = number_in(p, "trim", -100.0..=100.0)? {
+                opts.trim = t;
+            }
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+                level,
+                mode: app.subdivision_mode(),
+            };
+            let kg = match p.get("kg") {
+                None | Some(Value::Null) => app.kg(),
+                Some(_) => number_in(p, "kg", 0.0..=1.0e3)?
+                    .ok_or_else(|| "stability.weather: `kg` must be >= 0".to_string())?,
+            };
+            let lcg = number_in(p, "lcg", -1.0e4..=1.0e4)?;
+            let free = boolean(p, "free_trim")?.unwrap_or_else(|| app.free_trim()) || lcg.is_some();
+            let bilge = match text(p, "bilge")? {
+                None => {
+                    if let Some(ak) = number_in(p, "bilge_keel_area_m2", 0.0..=1.0e4)? {
+                        seacraft_core::weather::BilgeKind::Keels { area_m2: ak }
+                    } else {
+                        seacraft_core::weather::BilgeKind::Round
+                    }
+                }
+                Some("keels") => {
+                    let ak = number_in(p, "bilge_keel_area_m2", 0.0..=1.0e4)?.unwrap_or(0.0);
+                    seacraft_core::weather::BilgeKind::Keels { area_m2: ak }
+                }
+                Some(s) => seacraft_core::weather::BilgeKind::parse(s)
+                    .map_err(|e| format!("stability.weather: {e}"))?,
+            };
+            let windage_extra: Vec<seacraft_core::weather::WindageItem> = match p.get("windage_extra") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("stability.weather: invalid `windage_extra`: {e}"))?,
+            };
+            for w in &windage_extra {
+                if !w.area_m2.is_finite() || w.area_m2 < 0.0 || !w.z_centroid.is_finite() {
+                    return Err(format!(
+                        "stability.weather: windage item `{}` must have finite `area_m2 >= 0` and `z_centroid`",
+                        w.name
+                    ));
+                }
+            }
+            let downflooding_deg = match p.get("downflooding_deg") {
+                None | Some(Value::Null) => None,
+                Some(_) => Some(
+                    number_in(p, "downflooding_deg", 0.001..=180.0)?
+                        .ok_or_else(|| "stability.weather: `downflooding_deg` must be in (0, 180]".to_string())?,
+                ),
+            };
+            let wind_pressure_pa = match p.get("wind_pressure_pa") {
+                None | Some(Value::Null) => seacraft_core::weather::DEFAULT_WIND_PRESSURE_PA,
+                Some(_) => number_in(p, "wind_pressure_pa", 0.0..=1.0e5)?
+                    .ok_or_else(|| "stability.weather: `wind_pressure_pa` must be >= 0".to_string())?,
+            };
+            let surface = app
+                .surface()
+                .ok_or_else(|| "stability.weather: no model is loaded".to_string())?;
+            let hull = seacraft_core::hydro::Hull::new(surface, opts.subdivision);
+            let lcg_x = if free {
+                Some(lcg.or_else(|| app.lcg()).unwrap_or_else(|| seacraft_core::stability::upright_lcb(&hull, opts.draft)))
+            } else {
+                None
+            };
+            let cond = seacraft_core::stability::StabilityCondition {
+                kg,
+                trim: opts.trim,
+                lcg_x,
+            };
+            let w_input = seacraft_core::weather::WeatherInput {
+                windage_extra,
+                bilge,
+                downflooding_deg,
+                wind_pressure_pa,
+            };
+            let res = seacraft_core::weather::evaluate_hull_weather(&hull, &opts, &cond, &w_input);
+            let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        }
         "model.split_face" => {
             // A topology edit: snapshot first, so Ctrl+Z in the window undoes it
             // exactly like a drag does.
@@ -2005,6 +2097,7 @@ mod tests {
             "edge.crease",
             "hydro.compute",
             "stability.cross_curves",
+            "stability.weather",
             "report.design",
             "app.quit",
             "no.such.method",

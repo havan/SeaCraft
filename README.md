@@ -228,7 +228,12 @@ computes each slack tank's liquid centroid and free-surface moment `FSM = ρ·i_
 (`0` when empty or pressed-up), applies the free-surface correction
 `FSC = FSM / Δ` to obtain `KG_fluid = KG + FSC` and `GM_fluid = KM − KG_fluid`,
 solves the free-trim equilibrium floating condition (`draft`, `trim`, `list`),
-and evaluates GZ cross curves and IMO A.749 criteria at `KG_fluid`.
+and evaluates GZ cross curves, IMO A.749 criteria, and the IMO 2008 IS Code
+Part A §2.3 severe wind and rolling (weather) criterion at `KG_fluid`.
+`weather::evaluate_weather` (`seacraft stability ... --weather` / MCP
+`weather_criterion`) also evaluates the weather criterion standalone with
+configurable bilge type (`round`, `sharp`, `keels:<Ak>`), superstructure
+windage items (`--windage name:area:z`) and downflooding angle.
 
 ### Fairing analysis
 
@@ -330,7 +335,8 @@ seacraft trim      hull.fef --speed kn [--from -0.6] [--to 0.6] [--steps 13]
 seacraft table     hull.fef [--to T] [--steps N] [--drafts a,b,c] [--csv f] [--html f] [--json]
 seacraft lackenby  hull.fef -o out.fef [--cp 0.72] [--lcb -9.3] [--draft T] [--json]
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
-                            [--trim m | --free-trim [--lcg x]] [--csv out.csv]
+                            [--trim m | --free-trim [--lcg x]] [--weather [--bilge round|sharp|keels:Ak]
+                            [--windage name:area:z]... [--downflooding deg]] [--csv out.csv]
 seacraft loadcase  hull.fef case.json [--json]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]

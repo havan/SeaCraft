@@ -42,6 +42,7 @@ pub mod raster;
 pub mod report;
 pub mod resistance;
 pub mod stability;
+pub mod weather;
 pub mod subdiv;
 pub mod table;
 pub mod threemf;

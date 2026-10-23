@@ -24,6 +24,10 @@ use crate::stability::{
     cross_curves, evaluate_imo_criteria, solve_draft, solve_floating, CrossCurve,
     FloatingCondition, ImoCriteria, StabilityCondition,
 };
+use crate::weather::{
+    evaluate_weather, hull_windage_on_hull, sample_weather_gz, BilgeKind, WeatherHydro,
+    WeatherInput, WeatherResult, WindageItem,
+};
 use serde::{Deserialize, Serialize};
 
 fn default_permeability() -> f64 {
@@ -76,6 +80,15 @@ pub struct LoadingCondition {
     pub items: Vec<WeightItem>,
     #[serde(default)]
     pub tanks: Vec<Tank>,
+    /// Optional superstructure/extra windage items for the IMO weather criterion.
+    #[serde(default, alias = "windage")]
+    pub windage_extra: Vec<WindageItem>,
+    /// Bilge kind for the IMO weather criterion (default `Round`).
+    #[serde(default)]
+    pub bilge: BilgeKind,
+    /// Optional downflooding angle φf in degrees for the IMO weather criterion.
+    #[serde(default)]
+    pub downflooding_deg: Option<f64>,
 }
 
 /// One row of the weight and centre-of-gravity breakdown table.
@@ -182,6 +195,8 @@ pub struct LoadingResult {
     pub cross_curves: Vec<CrossCurve>,
     /// IMO A.749 / 2008 IS Code Part A general intact stability criteria evaluated with `KG_fluid`.
     pub imo_criteria: Option<ImoCriteria>,
+    /// IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather) criterion evaluated with `KG_fluid`.
+    pub weather: Option<WeatherResult>,
 }
 
 /// Validate a [`LoadingCondition`] before evaluation.
@@ -215,6 +230,24 @@ pub fn validate(cond: &LoadingCondition) -> Result<(), String> {
         }
         if !t.permeability.is_finite() || !(0.0..=1.0).contains(&t.permeability) {
             return Err(format!("tank `{}`: `permeability` must be in 0..=1", t.name));
+        }
+    }
+    for w in &cond.windage_extra {
+        if !w.area_m2.is_finite() || w.area_m2 < 0.0 {
+            return Err(format!("windage `{}`: `area_m2` must be finite and non-negative", w.name));
+        }
+        if !w.z_centroid.is_finite() {
+            return Err(format!("windage `{}`: `z_centroid` must be finite", w.name));
+        }
+    }
+    if let BilgeKind::Keels { area_m2 } = cond.bilge {
+        if !area_m2.is_finite() || area_m2 < 0.0 {
+            return Err("bilge `keels`: `area_m2` must be finite and non-negative".into());
+        }
+    }
+    if let Some(df) = cond.downflooding_deg {
+        if !df.is_finite() || df <= 0.0 {
+            return Err("`downflooding_deg` must be positive and finite".into());
         }
     }
     let total_mass = cond.lightship.mass_t
@@ -631,7 +664,7 @@ pub fn evaluate(
         90.0_f64.copysign(tcg)
     };
 
-    let (curves, imo_criteria) = if total_mass > 1e-12 {
+    let (curves, imo_criteria, weather) = if total_mass > 1e-12 {
         let stab_cond = StabilityCondition {
             kg: kg_fluid,
             trim: floating.trim,
@@ -640,9 +673,20 @@ pub fn evaluate(
         let heels = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 75.0, 90.0];
         let c = cross_curves(&hull, &heels, &[total_mass], &stab_cond, &solved_opts);
         let imo = evaluate_imo_criteria(&c, 0);
-        (c, imo)
+
+        let wh = WeatherHydro::from_hydrostatics(&hydro, kg_fluid);
+        let windage = hull_windage_on_hull(&hull, floating.draft, floating.trim);
+        let fine_gz = sample_weather_gz(&hull, total_mass, &stab_cond, &solved_opts);
+        let w_input = WeatherInput {
+            windage_extra: cond.windage_extra.clone(),
+            bilge: cond.bilge,
+            downflooding_deg: cond.downflooding_deg,
+            ..WeatherInput::default()
+        };
+        let w_res = evaluate_weather(&fine_gz, &wh, windage, &w_input);
+        (c, imo, Some(w_res))
     } else {
-        (Vec::new(), None)
+        (Vec::new(), None, None)
     };
 
     LoadingResult {
@@ -675,6 +719,7 @@ pub fn evaluate(
         gm_fluid,
         cross_curves: curves,
         imo_criteria,
+        weather,
     }
 }
 
@@ -789,6 +834,9 @@ mod tests {
                 permeability: 1.0,
                 clip_to_hull: false,
             }],
+            windage_extra: Vec::new(),
+            bilge: BilgeKind::Round,
+            downflooding_deg: None,
         };
         let res = evaluate(&surface, &opts, &cond);
 

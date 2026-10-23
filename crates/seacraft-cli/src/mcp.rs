@@ -448,6 +448,7 @@ impl McpServer {
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
             "loading_condition" => self.loading_condition(a),
+            "weather_criterion" => self.weather_criterion(a),
             "bonjean_curves" => self.bonjean_curves(a),
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
@@ -892,6 +893,102 @@ impl McpServer {
             opts.subdivision.level = level_arg(a)?;
         }
         let res = loading::evaluate(&self.surface, &opts, &cond);
+        let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn weather_criterion(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let mut base = self.opts.clone();
+        self.apply_condition(a, &mut base)?;
+        if !base.draft.is_finite() || base.draft <= 0.0 {
+            return Err("weather_criterion: `draft` must be positive".to_string());
+        }
+        let kg = match a.get("kg") {
+            None | Some(Value::Null) => self.kg,
+            Some(v) => v
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .ok_or("weather_criterion: `kg` must be a non-negative finite number")?,
+        };
+        let lcg = number_arg(a, "lcg");
+        let free = bool_arg(a, "free_trim").unwrap_or(false) || lcg.is_some();
+
+        let bilge = match str_arg(a, "bilge") {
+            None => {
+                if let Some(ak) = number_arg(a, "bilge_keel_area_m2") {
+                    if ak < 0.0 {
+                        return Err("weather_criterion: `bilge_keel_area_m2` must be >= 0".into());
+                    }
+                    seacraft_core::weather::BilgeKind::Keels { area_m2: ak }
+                } else {
+                    seacraft_core::weather::BilgeKind::Round
+                }
+            }
+            Some("keels") => {
+                let ak = number_arg(a, "bilge_keel_area_m2").unwrap_or(0.0);
+                if ak < 0.0 {
+                    return Err("weather_criterion: `bilge_keel_area_m2` must be >= 0".into());
+                }
+                seacraft_core::weather::BilgeKind::Keels { area_m2: ak }
+            }
+            Some(s) => seacraft_core::weather::BilgeKind::parse(s)
+                .map_err(|e| format!("weather_criterion: {e}"))?,
+        };
+
+        let windage_extra: Vec<seacraft_core::weather::WindageItem> = match a.get("windage_extra") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|e| format!("weather_criterion: invalid `windage_extra`: {e}"))?,
+        };
+        for w in &windage_extra {
+            if !w.area_m2.is_finite() || w.area_m2 < 0.0 || !w.z_centroid.is_finite() {
+                return Err(format!(
+                    "weather_criterion: windage item `{}` must have finite `area_m2 >= 0` and `z_centroid`",
+                    w.name
+                ));
+            }
+        }
+
+        let downflooding_deg = match a.get("downflooding_deg") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let df = v
+                    .as_f64()
+                    .filter(|n| n.is_finite() && *n > 0.0)
+                    .ok_or("weather_criterion: `downflooding_deg` must be positive")?;
+                Some(df)
+            }
+        };
+
+        let wind_pressure_pa = match a.get("wind_pressure_pa") {
+            None | Some(Value::Null) => seacraft_core::weather::DEFAULT_WIND_PRESSURE_PA,
+            Some(v) => v
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .ok_or("weather_criterion: `wind_pressure_pa` must be non-negative")?,
+        };
+
+        let hull = hydro::Hull::new(&self.surface, base.subdivision);
+        let lcg_x = if free {
+            Some(lcg.unwrap_or_else(|| upright_lcb(&hull, base.draft)))
+        } else {
+            None
+        };
+        let cond = StabilityCondition {
+            kg,
+            trim: base.trim,
+            lcg_x,
+        };
+        let w_input = seacraft_core::weather::WeatherInput {
+            windage_extra,
+            bilge,
+            downflooding_deg,
+            wind_pressure_pa,
+        };
+        let res = seacraft_core::weather::evaluate_hull_weather(&hull, &base, &cond, &w_input);
         let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
             o.insert("backend".into(), json!("headless"));
@@ -1833,6 +1930,33 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "weather_criterion",
+            "Weather criterion (IMO IS Code §2.3)",
+            "Evaluate the IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather) criterion on the refined \
+             hull: measures the hull's lateral windage profile above the waterline and underwater lateral area, adds \
+             any superstructure `windage_extra` items, computes steady and gust wind heeling levers lw1 and lw2, \
+             interpolates Table 2.3.4-1..4 roll factors (X1, X2, k, r, s, T, C) and roll-back angle phi1, samples the \
+             GZ curve at 2-deg steps from -30 to +60 deg, and integrates heeling energy area `a` and righting energy \
+             area `b` to check `phi0 <= 16 deg` and `b >= a`.",
+            obj(
+                json!({
+                    "draft": number("Design draft in metres (default: the model's)"),
+                    "trim": number("Trim in metres, positive bow-up (default 0)"),
+                    "kg": number("Vertical centre of gravity above the keel in metres (default: the server's)"),
+                    "free_trim": boolean("Trim freely to longitudinal equilibrium while heeling"),
+                    "lcg": number("Longitudinal centre of gravity in model x; implies free trim"),
+                    "bilge": string("Bilge kind: 'round', 'sharp', or 'keels:<Ak>' (default 'round')"),
+                    "bilge_keel_area_m2": number("Bilge/bar keel total lateral area Ak in m2 when bilge is 'keels'"),
+                    "windage_extra": {"type": "array", "items": {"type": "object"}, "description": "Additional windage items [{name, area_m2, z_centroid}]"},
+                    "downflooding_deg": number("Downflooding angle phi_f in degrees (optional)"),
+                    "wind_pressure_pa": number("Steady wind pressure P in Pa (default 504)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "bonjean_curves",
             "Bonjean curves",
             "Section area against draft at every longitudinal station, cut from the refined mesh at even keel: the \
@@ -2338,6 +2462,7 @@ impl Remote {
                 }))
             }
             "loading_condition" => self.request("stability.loading_condition", Value::Object(a.clone())),
+            "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
@@ -2630,6 +2755,7 @@ mod tests {
                 "hydro_compute",
                 "stability_cross_curves",
                 "loading_condition",
+                "weather_criterion",
                 "bonjean_curves",
                 "table_of_offsets",
                 "resistance_curve",
@@ -2906,6 +3032,27 @@ mod tests {
         let crit = curves["imo_criteria"].as_array().expect("criteria");
         assert_eq!(crit.len(), 2, "one criteria row per displacement: {curves}");
         assert!(crit.iter().all(|c| c["passed"].is_boolean()), "{curves}");
+
+        // weather_criterion: IMO 2008 IS Code Part A §2.3 severe wind and rolling.
+        let wc = ok(
+            &mut s,
+            150,
+            "weather_criterion",
+            json!({
+                "draft": 0.62,
+                "kg": 1.0,
+                "free_trim": true,
+                "bilge": "round",
+                "windage_extra": [{"name": "Deckhouse", "area_m2": 4.0, "z_centroid": 1.8}],
+                "level": 2
+            }),
+        );
+        assert_eq!(wc["backend"], "headless", "{wc}");
+        assert!(wc["area_m2"].as_f64().unwrap_or(0.0) > 4.0, "{wc}");
+        assert!(wc["lw1_m"].as_f64().unwrap_or(0.0) > 0.0, "{wc}");
+        assert!(wc["phi1_deg"].as_f64().unwrap_or(0.0) > 0.0, "{wc}");
+        assert!(wc["passed"].is_boolean(), "{wc}");
+        fails(&mut s, 151, "weather_criterion", json!({"bilge": "bogus"}));
 
         // render_png: a real PNG on disk, with its metadata.
         let png = temp_path("png");

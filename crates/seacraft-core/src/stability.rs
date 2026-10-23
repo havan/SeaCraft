@@ -24,6 +24,13 @@ use crate::hydro::{waterplane_for, Hull, HydroOptions};
 use crate::math::{deg_to_rad, Vec3};
 use serde::Serialize;
 
+pub use crate::weather::{
+    evaluate_hull_weather, evaluate_weather, hull_windage, hull_windage_on_hull, k_factor,
+    roll_period, rollback_angle_deg, s_factor, sample_weather_gz, x1_factor, x2_factor, BilgeKind,
+    WeatherHydro, WeatherInput, WeatherResult, WindageItem, DEFAULT_PHI0_LIMIT_DEG,
+    DEFAULT_WIND_PRESSURE_PA, GRAVITY_M_S2,
+};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CrossCurvePoint {
     /// Displacement in tonnes.

@@ -840,6 +840,18 @@ struct StabilityArgs {
     /// Trim freely to longitudinal equilibrium instead of holding --trim
     #[arg(long)]
     free_trim: bool,
+    /// Evaluate the IMO 2008 IS Code §2.3 severe wind and rolling (weather) criterion
+    #[arg(long)]
+    weather: bool,
+    /// Bilge configuration for the weather criterion: round, sharp, or keels:<Ak>
+    #[arg(long, default_value = "round")]
+    bilge: String,
+    /// Superstructure windage item name:area:z in m2 and m above keel (repeatable)
+    #[arg(long = "windage", value_name = "NAME:AREA:Z")]
+    windage: Vec<String>,
+    /// Downflooding angle in degrees for the weather criterion
+    #[arg(long, value_name = "DEG")]
+    downflooding: Option<f64>,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
     /// Write CSV to this path (otherwise print a table)
@@ -2348,6 +2360,29 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
             );
         }
     }
+    if a.weather {
+        let bilge = seacraft_core::weather::BilgeKind::parse(&a.bilge)
+            .map_err(|e| anyhow::anyhow!("--bilge: {e}"))?;
+        let mut windage_extra = Vec::with_capacity(a.windage.len());
+        for spec in &a.windage {
+            let item = seacraft_core::weather::WindageItem::parse_spec(spec)
+                .map_err(|e| anyhow::anyhow!("--windage: {e}"))?;
+            windage_extra.push(item);
+        }
+        if let Some(df) = a.downflooding {
+            if !df.is_finite() || df <= 0.0 {
+                bail!("--downflooding must be positive and finite");
+            }
+        }
+        let w_input = seacraft_core::weather::WeatherInput {
+            windage_extra,
+            bilge,
+            downflooding_deg: a.downflooding,
+            ..Default::default()
+        };
+        let w = seacraft_core::weather::evaluate_hull_weather(&hull, &base, &cond, &w_input);
+        print_weather_summary(&w);
+    }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;
     Ok(())
@@ -2454,7 +2489,50 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
             if c.passed { "PASS" } else { "FAIL" }
         );
     }
+    if let Some(w) = &res.weather {
+        print_weather_summary(w);
+    }
     Ok(())
+}
+
+fn print_weather_summary(w: &seacraft_core::weather::WeatherResult) {
+    let opt_deg = |v: Option<f64>| match v {
+        Some(x) if x.is_finite() => format!("{x:.2} deg"),
+        _ => "—".to_string(),
+    };
+    println!("\n  IMO 2008 IS Code Part A §2.3 weather criterion:");
+    println!(
+        "    windage   A {:.3} m2 (hull {:.3}, extra {:.3})  Z {:.3} m  P {:.0} Pa",
+        w.area_m2, w.hull_windage_area_m2, w.extra_windage_area_m2, w.z_m, w.wind_pressure_pa
+    );
+    println!(
+        "    levers    lw1 {:.4} m   lw2 {:.4} m",
+        w.lw1_m, w.lw2_m
+    );
+    println!(
+        "    rolling   X1 {:.3}  X2 {:.3}  k {:.3}  r {:.3}  C {:.4}  T {:.2} s  s {:.4}  ->  phi1 {:.2} deg",
+        w.x1, w.x2, w.k, w.r, w.c, w.roll_period_s, w.s, w.phi1_deg
+    );
+    println!(
+        "    angles    phi0 {} (limit <= {:.1} deg: {})   phi0-phi1 {}   phic {}   phi2 {}",
+        opt_deg(w.phi0_deg),
+        w.phi0_limit_deg,
+        if w.phi0_passed { "PASS" } else { "FAIL" },
+        opt_deg(w.phi_roll_deg),
+        opt_deg(w.phic_deg),
+        opt_deg(w.phi2_deg)
+    );
+    println!(
+        "    areas     a {:.4} m*rad   b {:.4} m*rad   b/a {:.2} (req b >= a: {})   status {}",
+        w.area_a_m_rad,
+        w.area_b_m_rad,
+        w.area_ratio,
+        if w.area_passed { "PASS" } else { "FAIL" },
+        if w.passed { "PASS" } else { "FAIL" }
+    );
+    for note in &w.notes {
+        println!("    note      {note}");
+    }
 }
 
 /// JSON-RPC 2.0 over stdio: one MCP message per line, in and out. Diagnostics

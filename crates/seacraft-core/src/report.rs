@@ -607,6 +607,86 @@ pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, 
 
     out.push_str("    </tbody>\n");
     out.push_str("  </table>\n");
+
+    // IMO 2008 IS Code §2.3 Severe Wind and Rolling (Weather) Criterion Table
+    let weather_res = stability::evaluate_hull_weather(
+        &hull,
+        &h_opts,
+        &cond,
+        &stability::WeatherInput::default(),
+    );
+    let badge = |pass: bool| {
+        if pass {
+            "<span class=\"badge-pass\">PASS</span>"
+        } else {
+            "<span class=\"badge-fail\">FAIL</span>"
+        }
+    };
+    out.push_str("  <h3>IMO 2008 IS Code Part A &sect;2.3 Severe Wind and Rolling (Weather) Criterion</h3>\n");
+    out.push_str("  <table>\n");
+    out.push_str("    <thead>\n");
+    out.push_str("      <tr><th class=\"text-left\">Parameter / Criterion</th><th>Requirement / Formula</th><th>Value</th><th class=\"text-center\">Status</th></tr>\n");
+    out.push_str("    </thead>\n");
+    out.push_str("    <tbody>\n");
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Lateral windage area A &amp; lever Z</td><td>P = {} Pa</td><td>A = {} m&sup2;, Z = {} m</td><td class=\"text-center\">&mdash;</td></tr>",
+        fmt_num(weather_res.wind_pressure_pa, 0),
+        fmt_num(weather_res.area_m2, 3),
+        fmt_num(weather_res.z_m, 3)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Wind heeling levers l<sub>w1</sub> / l<sub>w2</sub></td><td>l<sub>w2</sub> = 1.5 &middot; l<sub>w1</sub></td><td>{} m / {} m</td><td class=\"text-center\">&mdash;</td></tr>",
+        fmt_num(weather_res.lw1_m, 4),
+        fmt_num(weather_res.lw2_m, 4)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Roll factors (X<sub>1</sub>, X<sub>2</sub>, k, r, s) &amp; period T</td><td>T = 2&middot;C&middot;B / &radic;GM</td><td>({}, {}, {}, {}, {}), T = {} s</td><td class=\"text-center\">&mdash;</td></tr>",
+        fmt_num(weather_res.x1, 3),
+        fmt_num(weather_res.x2, 3),
+        fmt_num(weather_res.k, 3),
+        fmt_num(weather_res.r, 3),
+        fmt_num(weather_res.s, 4),
+        fmt_num(weather_res.roll_period_s, 2)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Roll-back angle &phi;<sub>1</sub></td><td>109&middot;k&middot;X<sub>1</sub>&middot;X<sub>2</sub>&middot;&radic;(r&middot;s)</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
+        fmt_num(weather_res.phi1_deg, 2)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Steady wind heel angle &phi;<sub>0</sub></td><td>&le; {}&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+        fmt_num(weather_res.phi0_limit_deg, 1),
+        fmt_opt(weather_res.phi0_deg, 2),
+        badge(weather_res.phi0_passed)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Integration limits (&phi;<sub>0</sub> &minus; &phi;<sub>1</sub>, &phi;<sub>c</sub>, &phi;<sub>2</sub>)</td><td>&phi;<sub>2</sub> = min(50&deg;, &phi;<sub>f</sub>, &phi;<sub>c2</sub>)</td><td>({}&deg;, {}&deg;, {}&deg;)</td><td class=\"text-center\">&mdash;</td></tr>",
+        fmt_opt(weather_res.phi_roll_deg, 2),
+        fmt_opt(weather_res.phic_deg, 2),
+        fmt_opt(weather_res.phi2_deg, 2)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">Energy balance (area b vs area a)</td><td>b &ge; a</td><td>a = {} m&middot;rad, b = {} m&middot;rad (b/a = {})</td><td class=\"text-center\">{}</td></tr>",
+        fmt_num(weather_res.area_a_m_rad, 4),
+        fmt_num(weather_res.area_b_m_rad, 4),
+        fmt_num(weather_res.area_ratio, 2),
+        badge(weather_res.area_passed)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Weather Criterion Overall</strong></td><td>&phi;<sub>0</sub> &le; 16&deg; and b &ge; a</td><td>l<sub>w1</sub> = {} m, l<sub>w2</sub> = {} m</td><td class=\"text-center\">{}</td></tr>",
+        fmt_num(weather_res.lw1_m, 4),
+        fmt_num(weather_res.lw2_m, 4),
+        badge(weather_res.passed)
+    );
+    out.push_str("    </tbody>\n");
+    out.push_str("  </table>\n");
     out.push_str("</section>\n\n");
 
     // ------------------------------------------------------------- 6. Resistance (Holtrop-Mennen)
@@ -1212,6 +1292,10 @@ mod tests {
         assert_eq!(sec_open, 7, "expected 7 sections with planing enabled");
 
         assert!(!html.contains("NaN"), "HTML report must contain no NaN values");
+        assert!(
+            html.contains("Severe Wind and Rolling (Weather) Criterion"),
+            "HTML report must include the IMO weather criterion table"
+        );
     }
 
     #[test]

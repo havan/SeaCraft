@@ -26,6 +26,7 @@ Ask for, or state as an assumption, KG, the draft or displacement, the LCG, and 
 
 `stability_cross_curves {"draft": 0.62, "kg": 2.2, "free_trim": true, "heels": [0, 10, 20, 30, 40, 60, 80], "displacements": [6, 12, 15]}`
 - For a full loaded ship (lightship, deadweight items, and slack tanks with free-surface correction `FSC = FSM / Δ`), run `loading_condition {"case_path": "examples/demo-loadcase.json"}` (or pass `"case"` inline) to evaluate `kg_fluid`, `gm_fluid`, the free-trim floating condition and IMO A.749 criteria directly.
+- For the IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather) criterion, run `weather_criterion {"draft": 0.62, "kg": 1.0, "free_trim": true, "bilge": "round"}` (optionally with `windage_extra` and `downflooding_deg`) to check steady-wind heel `phi0_deg <= 16` and gust energy balance `area_b_m_rad >= area_a_m_rad`.
 - `condition.lcg_x` is the LCG used (defaults to the LCB at the given draft, 4.297 m on the demo).
 - `curves[].points[]` hold `kn`, `gz`, `draft` and `trim_m` per displacement. GZ at 0 degrees must be about 0 (1e-16 on the demo). If not, the condition is wrong.
 - `imo_criteria[]` per displacement: `area_0_30_m_rad` (need >= 0.055), `area_0_40_m_rad` (>= 0.090), `area_30_40_m_rad` (>= 0.030), `max_gz_30_plus_m` (>= 0.20 m), `angle_of_max_gz_deg` (>= 25), `gm0_m` (>= 0.15), and `passed`.
