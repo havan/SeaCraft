@@ -24,6 +24,15 @@
 //! Booleans are written as `0`/`1`; the parser also accepts `true`/`false`.
 //! Further trailing tokens are ignored, so files written by the original
 //! application parse unchanged.
+//!
+//! **One project setting is deliberately not in the file**: the mainframe
+//! station (`ProjectSettings::mainframe_location`). The settings line above is
+//! the whole of what FREE!ship writes, and inventing a token for a value the
+//! original application cannot read back would make the file mean one thing
+//! here and another there. A model therefore loads with `0`, which every
+//! measurement reads as "use the LCF"; a caller that wants the midship section
+//! at a particular station passes it in (`--mainframe`, or `mainframe_x` over
+//! MCP) rather than relying on state that would not survive the round trip.
 
 use crate::math::Vec3;
 use crate::mesh::{ControlEdge, ControlPoint, Layer, ProjectSettings, Surface, VertexKind};

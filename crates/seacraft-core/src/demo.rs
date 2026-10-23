@@ -62,7 +62,13 @@ pub fn demo_hull(symmetric: bool) -> Surface {
         appendage_coefficient: 1.0,
         imperial: false,
         main_particulars_set: true,
-        mainframe_location: 5.2,
+        // 0 means "measure the midship section at the LCF". The `.fef` format
+        // carries no mainframe station (see `fef.rs`), so a demo that set one
+        // here would measure at that station in memory and at the LCF after a
+        // save/load round trip — two different `Cm` and `Cp` from the same
+        // model. Pass `--mainframe 5.2` (or `mainframe_x` over MCP) to measure
+        // the section at midships instead.
+        mainframe_location: 0.0,
     };
 
     let ns = STATIONS.len();

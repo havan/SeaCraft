@@ -690,7 +690,9 @@ fn hydro_options(a: &HydroArgs, s: &Surface) -> HydroOptions {
     if let Some(x) = a.appendage {
         o.appendage_coefficient = x;
     }
-    o.mainframe_x = a.mainframe;
+    // The flag overrides; without it the project setting stands (0 = the LCF).
+    // Overwriting it with `None` here silently dropped a model's own mainframe.
+    o.mainframe_x = a.mainframe.or(o.mainframe_x);
     o.stations = a.stations;
     o
 }

@@ -1163,6 +1163,11 @@ impl McpServer {
         if a.contains_key("level") {
             opts.subdivision.level = level_arg(a)?;
         }
+        // The midship station: absent leaves the model's own setting, a
+        // positive value measures there, and 0 asks for the LCF.
+        if let Some(x) = number_arg(a, "mainframe_x") {
+            opts.mainframe_x = if x > 0.0 { Some(x) } else { None };
+        }
         Ok(())
     }
 }
@@ -1416,6 +1421,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "lcg": number("Longitudinal centre of gravity in model x; implies free trim"),
                     "density": number("Water density in kg/m3 (default: the model's)"),
                     "stations": integer("Stations for the section area curve (default 21)"),
+                    "mainframe_x": number("Station to measure the midship section and Cm/Cp at; 0 or omitted uses the LCF"),
                     "level": integer("Subdivision level 0-6 (default 3)"),
                 }),
                 &[],
@@ -2366,6 +2372,29 @@ mod tests {
         let text = std::fs::read_to_string(&svg).expect("the SVG was written");
         assert!(text.starts_with("<?xml") || text.contains("<svg"), "an SVG");
         let _ = std::fs::remove_file(&svg);
+
+        // mainframe_x: the midship section can be measured where the caller
+        // wants it, and the default is the LCF (the `.fef` carries no mainframe).
+        let default_hydro = ok(&mut s, 90, "hydro_compute", json!({"draft": 0.62}));
+        let lcf = default_hydro["mainframe_x"].as_f64().unwrap_or(0.0);
+        assert!(lcf > 3.0 && lcf < 6.0, "{default_hydro}");
+        let at_lcf = default_hydro["mainframe_area_m2"].as_f64().unwrap_or(0.0);
+        let moved = ok(
+            &mut s,
+            91,
+            "hydro_compute",
+            json!({"draft": 0.62, "mainframe_x": 5.2}),
+        );
+        assert!((moved["mainframe_x"].as_f64().unwrap_or(0.0) - 5.2).abs() < 1e-9, "{moved}");
+        let at_52 = moved["mainframe_area_m2"].as_f64().unwrap_or(0.0);
+        assert!(
+            (at_lcf - 1.467).abs() < 0.01 && (at_52 - 1.441).abs() < 0.02,
+            "mainframe areas {at_lcf} at the LCF and {at_52} at 5.2 m"
+        );
+        assert!(
+            (moved["midship_coefficient"].as_f64().unwrap_or(0.0) - 0.6561).abs() < 0.005,
+            "Cm at 5.2 m: {moved}"
+        );
 
         // resistance_curve: PE = RT·V, the branch is reported, and the power
         // chain closes when a propeller is given.

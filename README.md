@@ -272,7 +272,8 @@ archive in metres.
 ```text
 seacraft demo      -o hull.fef [--symmetric]
 seacraft info      hull.fef
-seacraft hydro     hull.fef [--draft T] [--trim m | --free-trim [--lcg x]] [--heel deg] [--kg m] [--json]
+seacraft hydro     hull.fef [--draft T] [--trim m | --free-trim [--lcg x]] [--heel deg] [--kg m]
+                              [--mainframe x] [--json]
 seacraft sac       hull.fef [--stations N] [--csv out.csv] [--svg sac.svg] [--json]
 seacraft bonjean   hull.fef [--stations N] [--drafts T1,T2,...] [--draft-steps N]
                               [--csv out.csv] [--svg bonjean.svg] [--json]
@@ -381,8 +382,13 @@ cursor position on the active viewport's focal plane and the crate version.
   `transform_hull`, `hydro_compute`, `stability_cross_curves`, `bonjean_curves`,
   `table_of_offsets`, `unfold_plate`, `resistance_curve`, `planing_curve`,
   `export_linesplan` and `render_png`.
-* Not yet implemented: Lackenby transformation, propulsion (propeller, wake
-  fraction) and the Savitsky planing method,
+* The mainframe station is a measurement choice, not a project property: the
+  `.fef` settings line is FREE!ship's and carries no such field, so a model
+  loads measuring the midship section at the LCF. `--mainframe` (or
+  `mainframe_x` over MCP) measures it elsewhere — the demo hull's published
+  `Cm`/`Cp` are the LCF values.
+* Not yet implemented: Lackenby transformation, damage stability / floodable
+  length,
   VRML import, and interactive face/edge splitting or extrusion in the GUI.
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.
