@@ -2,6 +2,8 @@
 
 use eframe::egui;
 use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
+use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
+use seacraft_core::project::Project;
 use seacraft_core::stability::CrossCurve;
 use seacraft_core::Surface;
 
@@ -463,6 +465,683 @@ fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve]) {
     );
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadingAction {
+    None,
+    Changed,
+    Compute,
+}
+
+pub struct LoadingPanel<'a> {
+    pub project: &'a mut Project,
+    pub selected: &'a mut usize,
+    pub result: Option<&'a LoadingResult>,
+    pub stale: bool,
+    pub busy: bool,
+}
+
+fn unique_condition_name(base: &str, existing: &[LoadingCondition]) -> String {
+    let base_trimmed = base.trim();
+    let base_name = if base_trimmed.is_empty() {
+        "Condition"
+    } else {
+        base_trimmed
+    };
+    if !existing.iter().any(|c| c.name == base_name) {
+        return base_name.to_string();
+    }
+    let mut counter = 2;
+    loop {
+        let name = format!("{base_name} ({counter})");
+        if !existing.iter().any(|c| c.name == name) {
+            return name;
+        }
+        counter += 1;
+    }
+}
+
+/// A general GZ plot: heel (deg) across, righting lever GZ (m) up, with labelled curves.
+pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
+    let height = 150.0;
+    let (response, painter) = ui.allocate_painter(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let rect = response.rect;
+    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
+
+    let mut heel_max: f64 = 40.0;
+    let mut gz_max: f64 = 0.1;
+    let mut gz_min: f64 = 0.0;
+
+    for (_, pts) in curves {
+        for &(h, g) in pts {
+            if h.is_finite() {
+                heel_max = heel_max.max(h);
+            }
+            if g.is_finite() {
+                gz_max = gz_max.max(g);
+                gz_min = gz_min.min(g);
+            }
+        }
+    }
+    let gz_range = (gz_max - gz_min).max(0.05) * 1.15;
+    let gz_base = gz_min - (gz_range - (gz_max - gz_min)) * 0.5;
+
+    let to_screen = |heel: f64, gz: f64| -> egui::Pos2 {
+        let x = rect.left() + (heel / heel_max) as f32 * rect.width();
+        let y = rect.bottom() - ((gz - gz_base) / gz_range) as f32 * rect.height();
+        egui::pos2(x, y)
+    };
+
+    // Zero line and the axes.
+    if gz_base <= 0.0 && gz_base + gz_range >= 0.0 {
+        painter.line_segment(
+            [to_screen(0.0, 0.0), to_screen(heel_max, 0.0)],
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
+        );
+    }
+    painter.line_segment(
+        [to_screen(0.0, gz_base), to_screen(0.0, gz_base + gz_range)],
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
+    );
+
+    let colours = [
+        egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
+        egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
+        egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+        egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+        egui::Color32::from_rgb(0xc0, 0x7c, 0xeb),
+        egui::Color32::from_rgb(0x40, 0xd0, 0xd0),
+    ];
+
+    for (i, (label, pts)) in curves.iter().enumerate() {
+        let points: Vec<egui::Pos2> = pts
+            .iter()
+            .filter(|(h, g)| h.is_finite() && g.is_finite())
+            .map(|&(h, g)| to_screen(h, g))
+            .collect();
+        if points.len() >= 2 {
+            painter.add(egui::Shape::line(
+                points,
+                egui::Stroke::new(1.4, colours[i % colours.len()]),
+            ));
+        }
+        if curves.len() > 1 && !label.is_empty() {
+            let legend_pos = rect.left_top() + egui::vec2(6.0, 16.0 + i as f32 * 14.0);
+            painter.text(
+                legend_pos,
+                egui::Align2::LEFT_TOP,
+                label,
+                egui::FontId::monospace(10.0),
+                colours[i % colours.len()],
+            );
+        }
+    }
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 2.0),
+        egui::Align2::LEFT_TOP,
+        format!("GZ up to {gz_max:.2} m · heel to {heel_max:.0}°"),
+        egui::FontId::monospace(10.0),
+        egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
+    );
+}
+
+pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
+    let mut action = LoadingAction::None;
+    ui.heading("Loading Condition");
+    ui.add_space(4.0);
+
+    // Condition picker and New / Duplicate / Delete buttons
+    let mut delete_requested = false;
+    let mut duplicate_requested = false;
+    let mut new_requested = false;
+
+    if panel.project.loading_conditions.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("No conditions in project.");
+            if ui.button("New").clicked() {
+                new_requested = true;
+            }
+        });
+    } else {
+        if *panel.selected >= panel.project.loading_conditions.len() {
+            *panel.selected = panel.project.loading_conditions.len() - 1;
+        }
+        let current_name = panel.project.loading_conditions[*panel.selected]
+            .name
+            .clone();
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("loading_condition_picker")
+                .selected_text(&current_name)
+                .show_ui(ui, |ui| {
+                    for (idx, cond) in panel.project.loading_conditions.iter().enumerate() {
+                        if ui
+                            .selectable_label(*panel.selected == idx, &cond.name)
+                            .clicked()
+                        {
+                            *panel.selected = idx;
+                            action = LoadingAction::Changed;
+                        }
+                    }
+                });
+            if ui.button("New").clicked() {
+                new_requested = true;
+            }
+            if ui.button("Duplicate").clicked() {
+                duplicate_requested = true;
+            }
+            if ui.button("Delete").clicked() {
+                delete_requested = true;
+            }
+        });
+    }
+
+    if new_requested {
+        let name = unique_condition_name("Condition 1", &panel.project.loading_conditions);
+        panel.project.loading_conditions.push(LoadingCondition {
+            name,
+            lightship: WeightItem {
+                name: "Lightship".into(),
+                mass_t: 10.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            items: Vec::new(),
+            tanks: Vec::new(),
+            windage_extra: Vec::new(),
+            bilge: seacraft_core::weather::BilgeKind::Round,
+            downflooding_deg: None,
+        });
+        *panel.selected = panel.project.loading_conditions.len() - 1;
+        return LoadingAction::Changed;
+    }
+
+    if duplicate_requested && !panel.project.loading_conditions.is_empty() {
+        let orig = &panel.project.loading_conditions[*panel.selected];
+        let mut dup = orig.clone();
+        dup.name = unique_condition_name(&orig.name, &panel.project.loading_conditions);
+        panel.project.loading_conditions.push(dup);
+        *panel.selected = panel.project.loading_conditions.len() - 1;
+        return LoadingAction::Changed;
+    }
+
+    if delete_requested && !panel.project.loading_conditions.is_empty() {
+        panel.project.loading_conditions.remove(*panel.selected);
+        if *panel.selected >= panel.project.loading_conditions.len() && *panel.selected > 0 {
+            *panel.selected -= 1;
+        }
+        return LoadingAction::Changed;
+    }
+
+    if panel.project.loading_conditions.is_empty() {
+        return action;
+    }
+
+    let cond = &mut panel.project.loading_conditions[*panel.selected];
+
+    // Editable name
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        if ui.text_edit_singleline(&mut cond.name).changed() {
+            action = LoadingAction::Changed;
+        }
+    });
+    let name = cond.name.clone();
+    if panel
+        .project
+        .loading_conditions
+        .iter()
+        .filter(|c| c.name == name)
+        .count()
+        > 1
+    {
+        ui.colored_label(
+            egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+            "Another condition has this name; rename it before saving.",
+        );
+    }
+    let cond = &mut panel.project.loading_conditions[*panel.selected];
+
+    // Lightship
+    ui.separator();
+    ui.label(egui::RichText::new("Lightship").strong());
+    ui.columns(2, |cols| {
+        cols[0].spacing_mut().item_spacing.y = 2.0;
+        cols[0].horizontal(|ui| {
+            ui.label("Mass (t):");
+            if ui
+                .add(
+                    egui::DragValue::new(&mut cond.lightship.mass_t)
+                        .speed(0.01)
+                        .range(0.0..=f64::INFINITY),
+                )
+                .changed()
+            {
+                action = LoadingAction::Changed;
+            }
+        });
+        cols[0].horizontal(|ui| {
+            ui.label("LCG x (m):");
+            if ui
+                .add(egui::DragValue::new(&mut cond.lightship.x).speed(0.01))
+                .changed()
+            {
+                action = LoadingAction::Changed;
+            }
+        });
+        cols[1].spacing_mut().item_spacing.y = 2.0;
+        cols[1].horizontal(|ui| {
+            ui.label("TCG y (m):");
+            if ui
+                .add(egui::DragValue::new(&mut cond.lightship.y).speed(0.01))
+                .changed()
+            {
+                action = LoadingAction::Changed;
+            }
+        });
+        cols[1].horizontal(|ui| {
+            ui.label("KG z (m):");
+            if ui
+                .add(egui::DragValue::new(&mut cond.lightship.z).speed(0.01))
+                .changed()
+            {
+                action = LoadingAction::Changed;
+            }
+        });
+    });
+
+    // Weights grid
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Deadweight Items").strong());
+        if ui.button("+ Add weight").clicked() {
+            let n = cond.items.len() + 1;
+            cond.items.push(WeightItem {
+                name: format!("Item {n}"),
+                mass_t: 0.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            });
+            action = LoadingAction::Changed;
+        }
+    });
+
+    if !cond.items.is_empty() {
+        egui::Grid::new("items_weights_grid")
+            .num_columns(6)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Name");
+                ui.label("Mass (t)");
+                ui.label("x (m)");
+                ui.label("y (m)");
+                ui.label("z (m)");
+                ui.label("");
+                ui.end_row();
+
+                let mut remove_item = None;
+                for (i, item) in cond.items.iter_mut().enumerate() {
+                    if ui
+                        .add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut item.name))
+                        .changed()
+                    {
+                        action = LoadingAction::Changed;
+                    }
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut item.mass_t)
+                                .speed(0.01)
+                                .range(0.0..=f64::INFINITY),
+                        )
+                        .changed()
+                    {
+                        action = LoadingAction::Changed;
+                    }
+                    if ui
+                        .add(egui::DragValue::new(&mut item.x).speed(0.01))
+                        .changed()
+                    {
+                        action = LoadingAction::Changed;
+                    }
+                    if ui
+                        .add(egui::DragValue::new(&mut item.y).speed(0.01))
+                        .changed()
+                    {
+                        action = LoadingAction::Changed;
+                    }
+                    if ui
+                        .add(egui::DragValue::new(&mut item.z).speed(0.01))
+                        .changed()
+                    {
+                        action = LoadingAction::Changed;
+                    }
+                    if ui.button("🗑").on_hover_text("Remove weight").clicked() {
+                        remove_item = Some(i);
+                    }
+                    ui.end_row();
+                }
+                if let Some(i) = remove_item {
+                    cond.items.remove(i);
+                    action = LoadingAction::Changed;
+                }
+            });
+    }
+
+    // Tanks grid
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Tanks").strong());
+        if ui.button("+ Add tank").clicked() {
+            let n = cond.tanks.len() + 1;
+            cond.tanks.push(Tank {
+                name: format!("Tank {n}"),
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: -0.5,
+                y_max: 0.5,
+                z_min: 0.0,
+                z_max: 0.5,
+                fill: 0.5,
+                density_t_m3: 1.0,
+                permeability: 0.98,
+                clip_to_hull: false,
+            });
+            action = LoadingAction::Changed;
+        }
+    });
+
+    let mut remove_tank = None;
+    for (t_idx, tank) in cond.tanks.iter_mut().enumerate() {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name:");
+                if ui.text_edit_singleline(&mut tank.name).changed() {
+                    action = LoadingAction::Changed;
+                }
+                if ui
+                    .checkbox(&mut tank.clip_to_hull, "Clip to hull")
+                    .changed()
+                {
+                    action = LoadingAction::Changed;
+                }
+                if ui.button("🗑").on_hover_text("Remove tank").clicked() {
+                    remove_tank = Some(t_idx);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Fill:");
+                let mut fill_pct = (tank.fill * 100.0).round();
+                if ui
+                    .add(egui::Slider::new(&mut fill_pct, 0.0..=100.0).suffix("%"))
+                    .changed()
+                {
+                    tank.fill = (fill_pct / 100.0).clamp(0.0, 1.0);
+                    action = LoadingAction::Changed;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Density (t/m³):");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut tank.density_t_m3)
+                            .speed(0.01)
+                            .range(0.0..=10.0),
+                    )
+                    .changed()
+                {
+                    action = LoadingAction::Changed;
+                }
+                ui.label("Perm.:");
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut tank.permeability)
+                            .speed(0.01)
+                            .range(0.0..=1.0),
+                    )
+                    .changed()
+                {
+                    action = LoadingAction::Changed;
+                }
+            });
+            egui::CollapsingHeader::new("Bounds [x, y, z]")
+                .id_salt(("tank_bounds_header", t_idx))
+                .default_open(false)
+                .show(ui, |ui| {
+                    egui::Grid::new(format!("tank_bounds_{t_idx}"))
+                        .num_columns(3)
+                        .show(ui, |ui| {
+                            ui.label("X range (m):");
+                            if ui
+                                .add(egui::DragValue::new(&mut tank.x_min).speed(0.01))
+                                .changed()
+                            {
+                                action = LoadingAction::Changed;
+                            }
+                            if ui
+                                .add(egui::DragValue::new(&mut tank.x_max).speed(0.01))
+                                .changed()
+                            {
+                                action = LoadingAction::Changed;
+                            }
+                            ui.end_row();
+
+                            ui.label("Y range (m):");
+                            if ui
+                                .add(egui::DragValue::new(&mut tank.y_min).speed(0.01))
+                                .changed()
+                            {
+                                action = LoadingAction::Changed;
+                            }
+                            if ui
+                                .add(egui::DragValue::new(&mut tank.y_max).speed(0.01))
+                                .changed()
+                            {
+                                action = LoadingAction::Changed;
+                            }
+                            ui.end_row();
+
+                            ui.label("Z range (m):");
+                            if ui
+                                .add(egui::DragValue::new(&mut tank.z_min).speed(0.01))
+                                .changed()
+                            {
+                                action = LoadingAction::Changed;
+                            }
+                            if ui
+                                .add(egui::DragValue::new(&mut tank.z_max).speed(0.01))
+                                .changed()
+                            {
+                                action = LoadingAction::Changed;
+                            }
+                            ui.end_row();
+                        });
+                });
+        });
+    }
+    if let Some(i) = remove_tank {
+        cond.tanks.remove(i);
+        action = LoadingAction::Changed;
+    }
+
+    // Compute button
+    ui.separator();
+    ui.horizontal(|ui| {
+        let btn = ui.add_enabled(!panel.busy, egui::Button::new("Compute"));
+        if btn.clicked() {
+            action = LoadingAction::Compute;
+        }
+        if panel.busy {
+            ui.spinner();
+            ui.label("computing…");
+        } else if panel.stale {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                "stale — press Compute",
+            );
+        }
+    });
+
+    // Results
+    if let Some(r) = panel.result {
+        ui.separator();
+        ui.heading("Equilibrium & Hydrostatics");
+        ui.columns(2, |cols| {
+            cols[0].spacing_mut().item_spacing.y = 2.0;
+            row(
+                &mut cols[0],
+                "Δ (mass)",
+                format!("{:.3} t", r.displacement_t),
+            );
+            row(&mut cols[0], "LCG", format!("{:.3} m", r.lcg));
+            row(&mut cols[0], "TCG", format!("{:.3} m", r.tcg));
+            row(&mut cols[0], "KG (solid)", format!("{:.3} m", r.kg_solid));
+            row(&mut cols[0], "FSM", format!("{:.2} t·m", r.fsm_t_m));
+            row(&mut cols[0], "FSC", format!("{:.3} m", r.fsc_m));
+
+            cols[1].spacing_mut().item_spacing.y = 2.0;
+            row(&mut cols[1], "KG (fluid)", format!("{:.3} m", r.kg_fluid));
+            row(&mut cols[1], "Draft", format!("{:.3} m", r.draft));
+            row(&mut cols[1], "Trim", format!("{:.3} m", r.trim_m));
+            row(&mut cols[1], "List", format!("{:.1}°", r.list_deg));
+            row(&mut cols[1], "GM (solid)", format!("{:.3} m", r.gm_solid));
+            row(&mut cols[1], "GM (fluid)", format!("{:.3} m", r.gm_fluid));
+        });
+
+        if !r.tanks.is_empty() {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Tank Summary").strong());
+            egui::Grid::new("result_tanks_table")
+                .num_columns(4)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("Tank");
+                    ui.label("Fill");
+                    ui.label("Mass (t)");
+                    ui.label("FSM (t·m)");
+                    ui.end_row();
+                    for t in &r.tanks {
+                        ui.label(&t.name);
+                        ui.label(format!("{:.0}%", t.fill * 100.0));
+                        ui.label(format!("{:.3}", t.mass_t));
+                        ui.label(format!("{:.2}", t.fsm_t_m));
+                        ui.end_row();
+                    }
+                });
+        }
+
+        if let Some(imo) = &r.imo_criteria {
+            ui.add_space(4.0);
+            let badge_color = if imo.passed {
+                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
+            } else {
+                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
+            };
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("IMO A.749 Criteria:").strong());
+                ui.colored_label(badge_color, if imo.passed { "PASS" } else { "FAIL" });
+            });
+            let pass_fail = |ok: bool| {
+                if ok {
+                    (egui::Color32::from_rgb(0x5a, 0xd0, 0x6a), "PASS")
+                } else {
+                    (egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), "FAIL")
+                }
+            };
+            egui::Grid::new("imo_criteria_table")
+                .num_columns(3)
+                .striped(true)
+                .show(ui, |ui| {
+                    let rows = [
+                        (
+                            "A(0–30°) ≥ 0.055",
+                            format!("{:.3} m·rad", imo.area_0_30_m_rad),
+                            imo.area_0_30_m_rad >= 0.055,
+                        ),
+                        (
+                            "A(0–40°) ≥ 0.090",
+                            format!("{:.3} m·rad", imo.area_0_40_m_rad),
+                            imo.area_0_40_m_rad >= 0.090,
+                        ),
+                        (
+                            "A(30–40°) ≥ 0.030",
+                            format!("{:.3} m·rad", imo.area_30_40_m_rad),
+                            imo.area_30_40_m_rad >= 0.030,
+                        ),
+                        (
+                            "GZ(≥30°) ≥ 0.20",
+                            format!("{:.3} m", imo.max_gz_30_plus_m),
+                            imo.max_gz_30_plus_m >= 0.20,
+                        ),
+                        (
+                            "φ(GZmax) ≥ 25°",
+                            format!("{:.0}°", imo.angle_of_max_gz_deg),
+                            imo.angle_of_max_gz_deg >= 25.0,
+                        ),
+                        (
+                            "GM0 ≥ 0.15",
+                            format!("{:.3} m", imo.gm0_m),
+                            imo.gm0_m >= 0.15,
+                        ),
+                    ];
+                    for (name, val, ok) in rows {
+                        let (col, text) = pass_fail(ok);
+                        ui.label(name);
+                        ui.label(val);
+                        ui.colored_label(col, text);
+                        ui.end_row();
+                    }
+                });
+        }
+
+        if let Some(w) = &r.weather {
+            ui.add_space(4.0);
+            let badge_color = if w.passed {
+                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
+            } else {
+                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
+            };
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Weather Criterion (§2.3):").strong());
+                ui.colored_label(badge_color, if w.passed { "PASS" } else { "FAIL" });
+            });
+            ui.columns(2, |cols| {
+                row(
+                    &mut cols[0],
+                    "Steady heel φ0",
+                    format!("{:.1}° (lim 16°)", w.phi0_deg.unwrap_or(0.0)),
+                );
+                row(
+                    &mut cols[1],
+                    "Area ratio b/a",
+                    format!("{:.2} (req ≥1.0)", w.area_ratio),
+                );
+            });
+        }
+
+        ui.add_space(4.0);
+        let pts: Vec<(f64, f64)> = r
+            .cross_curves
+            .iter()
+            .filter_map(|c| {
+                c.points
+                    .first()
+                    .and_then(|p| p.gz)
+                    .filter(|gz| gz.is_finite())
+                    .map(|gz| (c.heel_deg, gz))
+            })
+            .collect();
+        if !pts.is_empty() {
+            ui.label(egui::RichText::new("Righting Lever GZ").strong());
+            plot_gz(ui, &[(r.name.clone(), pts)]);
+        }
+    }
+
+    action
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -569,5 +1248,80 @@ mod tests {
         assert!(sac_polyline(&[], rect).is_empty());
         let flat = [SectionArea { x: 1.0, area: 0.0 }];
         assert!(sac_polyline(&flat, rect).is_empty());
+    }
+
+    #[test]
+    fn loading_panel_and_plot_gz_run_headlessly() {
+        let ctx = egui::Context::default();
+        let mut project = Project::default();
+        let mut selected = 0;
+        let input = egui::RawInput::default();
+        let mut out = ctx.run_ui(input.clone(), |ui| {
+            let action = loading(
+                ui,
+                LoadingPanel {
+                    project: &mut project,
+                    selected: &mut selected,
+                    result: None,
+                    stale: false,
+                    busy: false,
+                },
+            );
+            assert_eq!(action, LoadingAction::None);
+        });
+        out.textures_delta.clear();
+
+        project.loading_conditions.push(LoadingCondition {
+            name: "Departure".into(),
+            lightship: WeightItem {
+                name: "Lightship".into(),
+                mass_t: 10.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            items: vec![WeightItem {
+                name: "Cargo".into(),
+                mass_t: 2.0,
+                x: 1.0,
+                y: 0.0,
+                z: 0.5,
+            }],
+            tanks: vec![Tank {
+                name: "Fuel".into(),
+                x_min: 0.0,
+                x_max: 2.0,
+                y_min: -0.5,
+                y_max: 0.5,
+                z_min: 0.0,
+                z_max: 0.5,
+                fill: 0.5,
+                density_t_m3: 0.85,
+                permeability: 0.98,
+                clip_to_hull: false,
+            }],
+            windage_extra: Vec::new(),
+            bilge: seacraft_core::weather::BilgeKind::Round,
+            downflooding_deg: None,
+        });
+
+        let mut out = ctx.run_ui(input, |ui| {
+            let action = loading(
+                ui,
+                LoadingPanel {
+                    project: &mut project,
+                    selected: &mut selected,
+                    result: None,
+                    stale: true,
+                    busy: false,
+                },
+            );
+            assert_eq!(action, LoadingAction::None);
+            plot_gz(
+                ui,
+                &[("Test".into(), vec![(0.0, 0.0), (10.0, 0.2), (20.0, 0.35)])],
+            );
+        });
+        out.textures_delta.clear();
     }
 }

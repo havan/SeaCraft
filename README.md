@@ -298,7 +298,16 @@ version is refused rather than half read, and unknown keys survive a round
 trip. `loadcase` and `damage` accept a project file in place of a bare case
 (`--name` picks one, otherwise the first) and fall back to the model's sidecar
 when no case file is given; `stability --weather` uses the sidecar's windage
-when no `--windage` is given. GUI control: `project.get`, `project.set`.
+when no `--windage` is given. GUI control: `project.get`, `project.set`;
+MCP: `project_get`, `project_set`, and `loading_condition {name}` (`save_hull`
+writes the sidecar too).
+
+The GUI's **Loading panel** (View menu, or control `ui.set {"loading_panel":
+true}`) edits the project's loading conditions — lightship, weights, tanks
+with fill, density, permeability and box bounds — and computes the condition
+on a worker thread (Compute): Δ, LCG/TCG, KG solid/fluid, FSM/FSC, draft,
+trim, list, GM, the tank table, IMO A.749 and weather criteria with
+PASS/FAIL, and the GZ curve. Control: `loading.compute {name}`.
 
 ### Seakeeping (strip-theory heave & pitch motions)
 

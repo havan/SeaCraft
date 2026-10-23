@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use eframe::egui;
 use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
+use seacraft_core::loading::LoadingResult;
 use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::project::{self, Project};
 use seacraft_core::stability::{self, CrossCurve};
@@ -206,6 +207,12 @@ pub struct App {
     close_requested: bool,
     show_layers: bool,
     show_hydro: bool,
+    show_loading: bool,
+    loading_selected: usize,
+    loading_result: Option<LoadingResult>,
+    loading_stale: bool,
+    loading_worker: Option<std::sync::mpsc::Receiver<(u64, LoadingResult)>>,
+    loading_generation: u64,
     /// Cursor position on the active viewport's focal plane, for the status bar.
     cursor_world: Option<Vec3>,
     /// Geometry changed since the hydrostatics were last computed.
@@ -278,6 +285,12 @@ impl App {
             close_requested: false,
             show_layers: true,
             show_hydro: true,
+            show_loading: false,
+            loading_selected: 0,
+            loading_result: None,
+            loading_stale: true,
+            loading_worker: None,
+            loading_generation: 0,
             cursor_world: None,
             hydro_dirty: true,
             hydro: HydroState::new(),
@@ -395,6 +408,10 @@ impl App {
         self.hydro.hull_revision = u64::MAX;
         self.hydro_dirty = true;
         self.hydro.last_edit = Some(std::time::Instant::now());
+        self.loading_stale = true;
+        self.loading_selected = 0;
+        self.loading_result = None;
+        self.loading_worker = None;
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
         if let Some(s) = &self.surface {
@@ -540,6 +557,62 @@ impl App {
             }
         }
         self.refresh_hydro(false);
+
+        if self.show_loading {
+            let action = egui::Panel::right("loading_panel")
+                .resizable(true)
+                .default_size(380.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .show(ui, |ui| {
+                            panels::loading(
+                                ui,
+                                panels::LoadingPanel {
+                                    project: &mut self.project,
+                                    selected: &mut self.loading_selected,
+                                    result: self.loading_result.as_ref(),
+                                    stale: self.loading_stale,
+                                    busy: self.loading_worker.is_some(),
+                                },
+                            )
+                        })
+                        .inner
+                })
+                .inner;
+            match action {
+                panels::LoadingAction::Changed => {
+                    self.dirty = true;
+                    self.loading_stale = true;
+                }
+                panels::LoadingAction::Compute => {
+                    self.start_loading_compute();
+                }
+                panels::LoadingAction::None => {}
+            }
+        }
+
+        if let Some(rx) = &self.loading_worker {
+            let mut done = false;
+            match rx.try_recv() {
+                Ok((gen, res)) => {
+                    done = true;
+                    if gen == self.loading_generation {
+                        self.loading_result = Some(res);
+                        self.loading_stale = false;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(100));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    done = true;
+                }
+            }
+            if done {
+                self.loading_worker = None;
+            }
+        }
 
         egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         self.dialog_window(ui);
@@ -711,6 +784,7 @@ impl App {
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
+                    ui.checkbox(&mut self.show_loading, "Loading panel");
                     ui.separator();
                     let mut level = self.level as u32;
                     if ui
@@ -846,7 +920,11 @@ impl App {
                         path.display()
                     );
                 } else if !self.project.is_empty() || sidecar.exists() {
-                    if let Err(e) = self.project.save(&sidecar) {
+                    if let Err(e) = self
+                        .project
+                        .validate()
+                        .and_then(|()| self.project.save(&sidecar))
+                    {
                         self.status = format!("saved {}, but {e}", path.display());
                         return false;
                     }
@@ -1442,6 +1520,7 @@ impl App {
     fn touch_geometry(&mut self) {
         self.hydro_dirty = true;
         self.hydro.last_edit = Some(std::time::Instant::now());
+        self.loading_stale = true;
     }
 
     // ---- accessors (tests and dock panels) -----------------------------
@@ -1460,6 +1539,82 @@ impl App {
         self.project = project;
         self.project_error = None;
         self.dirty = true;
+        self.loading_stale = true;
+        self.loading_selected = 0;
+    }
+
+    pub fn set_show_loading(&mut self, show: bool) {
+        self.show_loading = show;
+    }
+
+    pub fn loading_result(&self) -> Option<&LoadingResult> {
+        self.loading_result.as_ref()
+    }
+
+    pub fn start_loading_compute(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            self.status = "No model loaded.".into();
+            return;
+        };
+        if self.project.loading_conditions.is_empty() {
+            self.status = "No loading condition in project.".into();
+            return;
+        }
+        let sel = self
+            .loading_selected
+            .min(self.project.loading_conditions.len() - 1);
+        let cond = &self.project.loading_conditions[sel];
+        let with_windage = self.project.with_windage(cond);
+        if let Err(e) = seacraft_core::loading::validate(&with_windage) {
+            self.status = format!("Loading condition invalid: {e}");
+            return;
+        }
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision.level = self.level;
+        opts.subdivision.mode = self.mode;
+
+        self.loading_generation += 1;
+        let gen = self.loading_generation;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.loading_worker = Some(rx);
+
+        std::thread::spawn(move || {
+            let res = seacraft_core::loading::evaluate(&surface, &opts, &with_windage);
+            let _ = tx.send((gen, res));
+        });
+    }
+
+    pub fn compute_loading_blocking(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<&LoadingResult, String> {
+        let surface = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| "no model loaded".to_string())?;
+        let cond = self.project.loading_condition(name)?;
+        let with_windage = self.project.with_windage(cond);
+        seacraft_core::loading::validate(&with_windage)?;
+        // Show the condition that was computed, and drop any worker result.
+        if let Some(i) = self
+            .project
+            .loading_conditions
+            .iter()
+            .position(|c| c.name == with_windage.name)
+        {
+            self.loading_selected = i;
+        }
+        self.loading_generation += 1;
+        self.loading_worker = None;
+
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision.level = self.level;
+        opts.subdivision.mode = self.mode;
+
+        let res = seacraft_core::loading::evaluate(surface, &opts, &with_windage);
+        self.loading_result = Some(res);
+        self.loading_stale = false;
+        Ok(self.loading_result.as_ref().unwrap())
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {

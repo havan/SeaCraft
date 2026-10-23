@@ -631,6 +631,7 @@ fn handle_inner(
             let mut analysis: Option<AnalysisMode> = None;
             let mut level: Option<usize> = None;
             let mut active: Option<usize> = None;
+            let mut loading_panel: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -687,10 +688,20 @@ fn handle_inner(
                                 as usize,
                         );
                     }
+                    "loading_panel" => {
+                        loading_panel = Some(
+                            value
+                                .as_bool()
+                                .ok_or("`loading_panel` must be true or false")?,
+                        )
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
             *app.display_mut() = display;
+            if let Some(show) = loading_panel {
+                app.set_show_loading(show);
+            }
             if let Some(mode) = analysis {
                 app.set_analysis(mode);
             }
@@ -1251,6 +1262,11 @@ fn handle_inner(
                 o.insert("backend".into(), json!("app"));
             }
             Ok(v)
+        }
+        "loading.compute" => {
+            let name = text(p, "name")?;
+            let res = app.compute_loading_blocking(name)?;
+            serde_json::to_value(res).map_err(|e| e.to_string())
         }
         "stability.weather" | "weather_criterion" => {
             let mut opts = app.hydro_options().clone();
@@ -2274,6 +2290,32 @@ mod tests {
     }
 
     #[test]
+    fn loading_compute_over_control() {
+        let (mut app, ctx) = demo();
+        let cond_text = std::fs::read_to_string(format!(
+            "{}/../../examples/demo-loadcase.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let cond: seacraft_core::loading::LoadingCondition =
+            serde_json::from_str(&cond_text).unwrap();
+        let project = seacraft_core::project::Project {
+            loading_conditions: vec![cond],
+            ..Default::default()
+        };
+        app.set_project(project);
+
+        let r = call(&mut app, &ctx, "loading.compute", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        let disp = r["result"]["displacement_t"]
+            .as_f64()
+            .expect("displacement");
+        assert!((disp - 12.147).abs() < 0.05, "disp {disp}");
+        let draft = r["result"]["draft"].as_f64().expect("draft");
+        assert!((draft - 0.620).abs() < 0.01, "draft {draft}");
+    }
+
+    #[test]
     fn inspect_set_move_hydro_and_render_over_control() {
         let (mut app, ctx) = demo();
 
@@ -3246,6 +3288,7 @@ mod tests {
             "model.export",
             "project.get",
             "project.set",
+            "loading.compute",
             "point.move",
             "edge.crease",
             "hydro.compute",

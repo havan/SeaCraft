@@ -105,6 +105,8 @@ Other measurements: bonjean_curves, table_of_offsets, hydro_table, trim_scan, re
 unfold_plate. Edit with move_point, set_crease, split_face, insert_edge and transform_hull.
 optimize_hull {speed_kn} reshapes the hull (Cp, LCB, L/B) to cut resistance at a speed, holding displacement; it edits the model.
 Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
+Project data: project_get and project_set read and write the design sidecar (loading conditions, compartments, damage cases, windage).
+Evaluate loading conditions with loading_condition {name} (or inline case / case_path).
 Tool failures come back as a normal result with isError true and a message; protocol errors are JSON-RPC errors.
 Resources: seacraft://hull (summary of the loaded hull) and seacraft://tools (catalogue with each tool's effect).";
 
@@ -182,6 +184,8 @@ pub struct McpServer {
     kg: f64,
     /// The file the model came from, if any (reported by `hull_info`).
     source: Option<PathBuf>,
+    project: seacraft_core::project::Project,
+    project_error: Option<String>,
     remote: Option<Remote>,
     initialized: bool,
 }
@@ -192,6 +196,8 @@ struct ServerSnapshot {
     opts: HydroOptions,
     kg: f64,
     source: Option<PathBuf>,
+    project: seacraft_core::project::Project,
+    project_error: Option<String>,
 }
 
 impl Default for McpServer {
@@ -207,6 +213,8 @@ impl McpServer {
             opts: self.opts.clone(),
             kg: self.kg,
             source: self.source.clone(),
+            project: self.project.clone(),
+            project_error: self.project_error.clone(),
         }
     }
 
@@ -215,6 +223,8 @@ impl McpServer {
         self.opts = snap.opts;
         self.kg = snap.kg;
         self.source = snap.source;
+        self.project = snap.project;
+        self.project_error = snap.project_error;
     }
     /// The demo hull (a full model), measured at its design draft.
     pub fn new() -> Self {
@@ -235,6 +245,8 @@ impl McpServer {
             opts,
             kg: 1.0,
             source: None,
+            project: seacraft_core::project::Project::default(),
+            project_error: None,
             remote: None,
             initialized: false,
         }
@@ -244,6 +256,11 @@ impl McpServer {
     pub fn load_file(path: &Path) -> Result<Self, String> {
         let mut server = Self::from_surface(read_fef(path)?);
         server.source = Some(path.to_path_buf());
+        match seacraft_core::project::Project::load_for_model(path) {
+            Ok(Some(p)) => server.project = p,
+            Ok(None) => {}
+            Err(e) => server.project_error = Some(e),
+        }
         Ok(server)
     }
 
@@ -788,6 +805,8 @@ impl McpServer {
             "load_hull" => self.load_hull(a),
             "generate_hull" => self.generate_hull(a),
             "save_hull" => self.save_hull(a),
+            "project_get" => self.project_get(a),
+            "project_set" => self.project_set(a),
             "move_point" => self.move_point(a),
             "set_crease" => self.set_crease(a),
             "split_face" => self.split_face(a),
@@ -886,6 +905,7 @@ impl McpServer {
 
     fn load_hull(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let demo = bool_arg(a, "demo").unwrap_or(false);
+        let mut parse_err = None;
         match str_arg(a, "path") {
             Some(path) if !path.trim().is_empty() => {
                 let surface = read_fef(Path::new(path))?;
@@ -895,6 +915,21 @@ impl McpServer {
                     seascape_subdiv(self.opts.subdivision.level),
                 );
                 self.source = Some(PathBuf::from(path));
+                match seacraft_core::project::Project::load_for_model(Path::new(path)) {
+                    Ok(Some(p)) => {
+                        self.project = p;
+                        self.project_error = None;
+                    }
+                    Ok(None) => {
+                        self.project = seacraft_core::project::Project::default();
+                        self.project_error = None;
+                    }
+                    Err(e) => {
+                        self.project = seacraft_core::project::Project::default();
+                        self.project_error = Some(e.clone());
+                        parse_err = Some(e);
+                    }
+                }
             }
             _ if demo => {
                 self.surface = demo::demo_hull(bool_arg(a, "symmetric").unwrap_or(false));
@@ -903,10 +938,18 @@ impl McpServer {
                     seascape_subdiv(self.opts.subdivision.level),
                 );
                 self.source = None;
+                self.project = seacraft_core::project::Project::default();
+                self.project_error = None;
             }
             _ => return Err("load_hull: give `path` or `demo: true`".to_string()),
         }
-        Ok(self.hull_info())
+        let mut info = self.hull_info();
+        if let Some(err) = parse_err {
+            if let Some(obj) = info.as_object_mut() {
+                obj.insert("project_error".into(), json!(err));
+            }
+        }
+        Ok(info)
     }
 
     fn generate_hull(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
@@ -951,6 +994,8 @@ impl McpServer {
         self.opts =
             HydroOptions::from_surface(&self.surface, seascape_subdiv(self.opts.subdivision.level));
         self.source = None;
+        self.project = seacraft_core::project::Project::default();
+        self.project_error = None;
 
         let mut out = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
         if let Some(obj) = out.as_object_mut() {
@@ -972,11 +1017,25 @@ impl McpServer {
         let text = fef::write(&self.surface);
         std::fs::write(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
         self.source = Some(path.clone());
+        // The sidecar travels with the model, as in the GUI: written when it
+        // holds something or already exists, never over one that failed to load.
+        let sidecar = seacraft_core::project::sidecar_path(&path);
+        let project = if self.project_error.is_some() {
+            None
+        } else if !self.project.is_empty() || sidecar.exists() {
+            self.project
+                .save(&sidecar)
+                .map_err(|e| format!("save_hull: {e}"))?;
+            Some(sidecar.to_string_lossy().to_string())
+        } else {
+            None
+        };
         Ok(json!({
             "path": path.to_string_lossy(),
             "bytes": text.len(),
             "points": self.surface.points.len(),
             "faces": self.surface.faces.len(),
+            "project": project,
         }))
     }
 
@@ -1222,6 +1281,30 @@ impl McpServer {
         }))
     }
 
+    fn project_get(&mut self, _a: &Map<String, Value>) -> Result<Value, String> {
+        let mut v = serde_json::to_value(&self.project).map_err(|e| format!("project_get: {e}"))?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn project_set(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let p_val = a.get("project").ok_or("project_set: give `project`")?;
+        let p_text = serde_json::to_string(p_val).map_err(|e| format!("project_set: {e}"))?;
+        let project = seacraft_core::project::Project::from_json(&p_text)
+            .map_err(|e| format!("project_set: {e}"))?;
+        self.project = project;
+        self.project_error = None;
+        Ok(json!({
+            "format": self.project.format,
+            "version": self.project.version,
+            "empty": self.project.is_empty(),
+            "loading_conditions": self.project.loading_conditions.len(),
+            "backend": "headless",
+        }))
+    }
+
     fn loading_condition(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let cond: loading::LoadingCondition =
             if let Some(case_val) = a.get("case").filter(|v| !v.is_null()) {
@@ -1233,10 +1316,12 @@ impl McpServer {
                 serde_json::from_str(&text)
                     .map_err(|e| format!("loading_condition: invalid JSON in {path}: {e}"))?
             } else {
-                return Err(
-                "loading_condition: give `case` (inline object) or `case_path` (JSON file path)"
-                    .into(),
-            );
+                let name = str_arg(a, "name");
+                let c = self
+                    .project
+                    .loading_condition(name)
+                    .map_err(|e| format!("loading_condition: {e}"))?;
+                self.project.with_windage(c)
             };
         loading::validate(&cond).map_err(|e| format!("loading_condition: {e}"))?;
 
@@ -2371,6 +2456,25 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Files,
         ),
         tool(
+            "project_get",
+            "Get the project sidecar",
+            "Return the design data sidecar (loading conditions, compartments, damage cases, windage, and report settings).",
+            obj(json!({}), &[]),
+            Effect::ReadOnly,
+        ),
+        tool(
+            "project_set",
+            "Set the project sidecar",
+            "Replace the design data sidecar. `project` must be a valid seacraft-project JSON object with format and version 1.",
+            obj(
+                json!({
+                    "project": {"type": "object", "description": "The complete project sidecar object"},
+                }),
+                &["project"],
+            ),
+            Effect::Edits,
+        ),
+        tool(
             "move_point",
             "Move a control point",
             "Set control point `index` to `xyz` in metres (x forward, y starboard, z up). On a symmetric layer y \
@@ -2477,12 +2581,14 @@ pub fn tool_definitions() -> Vec<Value> {
              optional hull clipping): sums mass, LCG, TCG and solid KG, integrates each tank's liquid centroid and \
              free-surface moment FSM = rho * i_t, applies the free-surface correction FSC = FSM / Delta to obtain \
              KG_fluid, solves the free-trim floating condition (draft, trim, list angle), and evaluates GZ cross \
-             curves and IMO A.749 intact-stability criteria at KG_fluid. Pass either `case` (inline LoadingCondition \
-             JSON object) or `case_path` (path to a JSON file).",
+             curves and IMO A.749 intact-stability criteria at KG_fluid. Pass `case` (inline LoadingCondition \
+             JSON object), `case_path` (path to a JSON file), or `name` (name of a condition in the project sidecar; \
+             when neither case nor case_path is given, defaults to the project's named condition or the first condition).",
             obj(
                 json!({
                     "case": {"type": "object", "description": "Inline LoadingCondition object {name, lightship, items, tanks}"},
                     "case_path": string("Path to a LoadingCondition JSON file"),
+                    "name": string("Name of a loading condition in the project sidecar (used when case and case_path are omitted)"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
                 }),
                 &[],
@@ -3183,8 +3289,20 @@ impl Remote {
                     "backend": "app",
                 }))
             }
-            "loading_condition" => {
+            "loading_condition" if a.contains_key("case") || a.contains_key("case_path") => {
                 self.request("stability.loading_condition", Value::Object(a.clone()))
+            }
+            "loading_condition" => {
+                let mut p = json!({});
+                if let Some(name) = str_arg(a, "name") {
+                    p["name"] = json!(name);
+                }
+                self.request("loading.compute", p)
+            }
+            "project_get" => self.request("project.get", json!({})),
+            "project_set" => {
+                let p = a.get("project").ok_or("project_set: give `project`")?;
+                self.request("project.set", json!({ "project": p }))
             }
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
             "damage_stability" => {
@@ -3507,6 +3625,8 @@ mod tests {
                 "load_hull",
                 "generate_hull",
                 "save_hull",
+                "project_get",
+                "project_set",
                 "move_point",
                 "set_crease",
                 "split_face",
@@ -4231,6 +4351,7 @@ mod tests {
             ("load_hull", json!({"path": "/no/such/hull.fef"})),
             ("load_hull", json!({"path": "/etc/passwd"})),
             ("save_hull", json!({"path": "/no/such/dir/hull.fef"})),
+            ("project_set", json!({"project": {}})),
             ("hydro_compute", json!({"draft": 0.0})),
             ("hydro_compute", json!({"draft": -1.0})),
             ("hydro_compute", json!({"density": 0.0})),
@@ -4378,6 +4499,7 @@ mod tests {
         }
         for n in [
             "hull_info",
+            "project_get",
             "hydro_compute",
             "stability_cross_curves",
             "trim_scan",
@@ -4387,6 +4509,7 @@ mod tests {
         for n in [
             "load_hull",
             "save_hull",
+            "project_set",
             "move_point",
             "transform_hull",
             "optimize_hull",
@@ -4669,6 +4792,94 @@ mod tests {
         );
 
         fails(&mut s, 3, "loading_condition", json!({}));
+    }
+
+    #[test]
+    fn project_set_then_project_get_round_trip() {
+        let mut s = McpServer::new();
+        let initial = ok(&mut s, 1, "project_get", json!({}));
+        assert_eq!(initial["format"], "seacraft-project");
+        assert_eq!(initial["version"], 1);
+
+        let windage = json!([{ "name": "Deckhouse", "area_m2": 4.2, "z_centroid": 2.5 }]);
+        let project_json = json!({
+            "format": "seacraft-project",
+            "version": 1,
+            "windage": windage,
+            "loading_conditions": [],
+            "compartments": [],
+            "damage_cases": [],
+        });
+        let set_res = ok(&mut s, 2, "project_set", json!({ "project": project_json }));
+        assert_eq!(set_res["format"], "seacraft-project");
+
+        let get_res = ok(&mut s, 3, "project_get", json!({}));
+        assert_eq!(get_res["windage"], windage);
+
+        // save_hull writes the sidecar next to the model; load_hull reads it back.
+        let dir = std::env::temp_dir().join(format!("seacraft-mcp-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fef = dir.join("hull.fef");
+        let saved = ok(
+            &mut s,
+            4,
+            "save_hull",
+            json!({ "path": fef.to_string_lossy() }),
+        );
+        assert!(
+            saved["project"]
+                .as_str()
+                .unwrap()
+                .ends_with("hull.seacraft.json"),
+            "{saved}"
+        );
+        let mut t = McpServer::new();
+        ok(
+            &mut t,
+            5,
+            "load_hull",
+            json!({ "path": fef.to_string_lossy() }),
+        );
+        assert_eq!(ok(&mut t, 6, "project_get", json!({}))["windage"], windage);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn loading_condition_by_name_equals_inline_case() {
+        let mut s = McpServer::new();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-loadcase.json");
+        let text = std::fs::read_to_string(&path).expect("demo-loadcase.json");
+        let cond: seacraft_core::loading::LoadingCondition =
+            serde_json::from_str(&text).expect("parse demo-loadcase.json");
+
+        let inline_res = ok(
+            &mut s,
+            1,
+            "loading_condition",
+            json!({ "case": serde_json::to_value(&cond).unwrap() }),
+        );
+
+        let project_json = json!({
+            "format": "seacraft-project",
+            "version": 1,
+            "loading_conditions": [serde_json::to_value(&cond).unwrap()],
+            "compartments": [],
+            "damage_cases": [],
+            "windage": [],
+        });
+        ok(&mut s, 2, "project_set", json!({ "project": project_json }));
+
+        let name_res = ok(&mut s, 3, "loading_condition", json!({ "name": cond.name }));
+
+        assert_eq!(inline_res["displacement_t"], name_res["displacement_t"]);
+        assert_eq!(inline_res["draft"], name_res["draft"]);
+        assert_eq!(inline_res["trim_m"], name_res["trim_m"]);
+        assert_eq!(inline_res["kg_fluid"], name_res["kg_fluid"]);
+        assert_eq!(inline_res["gm_fluid"], name_res["gm_fluid"]);
+
+        let default_res = ok(&mut s, 4, "loading_condition", json!({}));
+        assert_eq!(inline_res["displacement_t"], default_res["displacement_t"]);
+        assert_eq!(inline_res["draft"], default_res["draft"]);
     }
 
     #[test]

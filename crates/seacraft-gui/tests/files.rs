@@ -138,3 +138,26 @@ fn the_project_sidecar_travels_with_the_model() {
     app.load_demo();
     assert!(app.project().is_empty());
 }
+
+#[test]
+fn a_project_with_duplicate_names_is_not_saved() {
+    use seacraft_core::project::{sidecar_path, Project};
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let case = format!(
+        "{}/../../examples/demo-loadcase.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let cond: seacraft_core::loading::LoadingCondition =
+        serde_json::from_str(&std::fs::read_to_string(case).unwrap()).unwrap();
+    app.set_project(Project {
+        loading_conditions: vec![cond.clone(), cond],
+        ..Default::default()
+    });
+    let path = scratch("dup.fef");
+    assert!(
+        !app.save_to(&path),
+        "a sidecar that would not load back must not be written"
+    );
+    assert!(app.status().contains("named"), "{}", app.status());
+    assert!(!sidecar_path(&path).exists());
+}
