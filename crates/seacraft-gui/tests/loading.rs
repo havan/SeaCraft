@@ -108,3 +108,24 @@ fn loading_worker_thread_computes_in_background() {
         res.floating.draft
     );
 }
+
+#[test]
+fn a_result_for_an_edited_hull_is_not_taken_as_fresh() {
+    let (mut app, ctx, _) = setup_demo_with_loadcase();
+    app.start_loading_compute();
+    assert!(app.loading_busy());
+    // Edit the hull while the worker measures the old one.
+    app.snapshot_undo();
+    app.surface_mut().unwrap().points[3].p.z += 0.05;
+    app.mark_geometry_changed();
+    let t0 = Instant::now();
+    while app.loading_busy() && t0.elapsed() < Duration::from_secs(60) {
+        frame(&ctx, &mut app);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!app.loading_busy(), "the worker finished");
+    assert!(
+        app.loading_result().is_none(),
+        "a result for the hull before the edit was shown as current"
+    );
+}

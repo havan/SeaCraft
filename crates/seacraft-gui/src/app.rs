@@ -157,6 +157,14 @@ impl ExportKind {
     }
 }
 
+/// One undo step: the model and the draft it was measured at, since a
+/// transform or an optimisation moves both.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    surface: Surface,
+    draft: f64,
+}
+
 /// Which file dialog is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DialogKind {
@@ -182,6 +190,9 @@ struct FileDialogState {
     kind: DialogKind,
     path: String,
     error: Option<String>,
+    /// What to do once a "Save as" opened from the unsaved-changes prompt
+    /// has written the model (new, open or quit).
+    then: Option<PendingAction>,
 }
 
 /// Reference to a selected project tank or compartment.
@@ -467,8 +478,8 @@ pub struct App {
     selected_windage: Option<usize>,
     last_highlighted_tank: Option<usize>,
     last_highlighted_compartment: Option<usize>,
-    history: History,
-    marks: Vec<(u64, Option<Surface>, usize)>,
+    history: History<Snapshot>,
+    marks: Vec<(u64, Option<Surface>, Project, usize)>,
     next_mark_id: u64,
     drag: Option<DragState>,
     /// Unsaved edits since the last save / load.
@@ -1380,21 +1391,27 @@ impl App {
                         .add(egui::Slider::new(&mut level, 0..=5).text("subdivision level"))
                         .changed()
                     {
-                        self.level = level as u8;
+                        // Through the setters: shading caches and the
+                        // hydrostatics key on the revision.
+                        self.set_subdivision_level(level as u8);
                     }
+                    let mut mode = self.mode;
                     egui::ComboBox::from_label("mode")
-                        .selected_text(match self.mode {
+                        .selected_text(match mode {
                             SubdivisionMode::Loop => "Loop",
                             SubdivisionMode::CatmullClark => "Catmull-Clark",
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.mode, SubdivisionMode::Loop, "Loop");
+                            ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
                             ui.selectable_value(
-                                &mut self.mode,
+                                &mut mode,
                                 SubdivisionMode::CatmullClark,
                                 "Catmull-Clark",
                             );
                         });
+                    if mode != self.mode {
+                        self.set_subdivision_mode(mode);
+                    }
                     ui.separator();
                     if ui.button("Reset cameras (F)").clicked() {
                         self.reset_cameras();
@@ -1483,6 +1500,7 @@ impl App {
             kind,
             path,
             error: None,
+            then: None,
         });
     }
 
@@ -1512,6 +1530,15 @@ impl App {
                         "saved {}; project file left as it was ({e})",
                         path.display()
                     );
+                    // The sidecar on disk could not be read, so it is not
+                    // overwritten; design data entered since stays unsaved.
+                    self.saved_state = Some((text, Project::default()));
+                    self.refresh_dirty();
+                    if self.dirty {
+                        self.status
+                            .push_str(" — design data NOT saved: fix or remove the project file");
+                    }
+                    return true;
                 } else if !self.project.is_empty() || sidecar.exists() {
                     if let Err(e) = self
                         .project
@@ -1539,6 +1566,14 @@ impl App {
         let Some(surface) = &self.surface else {
             return false;
         };
+        // The drawing shows what the viewports show: their refinement and
+        // combs, as the CLI does with its flags.
+        let linesplan_opts = seacraft_core::linesplan::LinesplanOptions {
+            level: self.level,
+            mode: self.mode,
+            combs: self.display.combs,
+            ..Default::default()
+        };
         let written = match kind {
             ExportKind::Obj => std::fs::write(
                 path,
@@ -1555,26 +1590,15 @@ impl App {
             ExportKind::Html => {
                 std::fs::write(path, export::viewer_html(surface, self.level, self.mode))
             }
-            ExportKind::Linesplan => std::fs::write(
-                path,
-                seacraft_core::linesplan::svg(
-                    surface,
-                    seacraft_core::linesplan::LinesplanOptions::default(),
-                ),
-            ),
-            ExportKind::LinesplanDxf => std::fs::write(
-                path,
-                seacraft_core::linesplan::dxf(
-                    surface,
-                    seacraft_core::linesplan::LinesplanOptions::default(),
-                ),
-            ),
+            ExportKind::Linesplan => {
+                std::fs::write(path, seacraft_core::linesplan::svg(surface, linesplan_opts))
+            }
+            ExportKind::LinesplanDxf => {
+                std::fs::write(path, seacraft_core::linesplan::dxf(surface, linesplan_opts))
+            }
             ExportKind::LinesplanIges => std::fs::write(
                 path,
-                seacraft_core::linesplan::iges(
-                    surface,
-                    seacraft_core::linesplan::LinesplanOptions::default(),
-                ),
+                seacraft_core::linesplan::iges(surface, linesplan_opts),
             ),
         };
         match written {
@@ -1662,6 +1686,10 @@ impl App {
         if !ok {
             dialog.error = Some(self.status.clone());
             self.dialog = Some(dialog);
+        } else if let Some(action) = dialog.then {
+            if !self.dirty {
+                self.perform(action);
+            }
         }
     }
 
@@ -1696,7 +1724,16 @@ impl App {
         match choice {
             Some(Some(action)) => {
                 self.save();
-                if !self.dirty {
+                if let Some(dialog) = self
+                    .dialog
+                    .as_mut()
+                    .filter(|d| d.kind == DialogKind::SaveAs)
+                {
+                    // An untitled model: the prompt hands over to "Save as",
+                    // which carries the action out once the file is written.
+                    dialog.then = Some(action);
+                    self.pending = None;
+                } else if !self.dirty {
                     self.pending = None;
                     self.perform(action);
                 }
@@ -1723,13 +1760,22 @@ impl App {
         self.history.can_redo()
     }
 
+    /// The model and its measurement draft, as the history stores them.
+    fn current_snapshot(&self) -> Option<Snapshot> {
+        Some(Snapshot {
+            surface: self.surface.clone()?,
+            draft: self.hydro.options.draft,
+        })
+    }
+
     pub fn undo(&mut self) {
-        let Some(current) = self.surface.clone() else {
+        let Some(current) = self.current_snapshot() else {
             return;
         };
         if let Some(previous) = self.history.undo(&current) {
-            let moved = previous.points.len();
-            self.surface = Some(previous);
+            let moved = previous.surface.points.len();
+            self.surface = Some(previous.surface);
+            self.hydro.options.draft = previous.draft;
             self.revision += 1;
             self.refresh_dirty();
             self.touch_geometry();
@@ -1738,11 +1784,12 @@ impl App {
     }
 
     pub fn redo(&mut self) {
-        let Some(current) = self.surface.clone() else {
+        let Some(current) = self.current_snapshot() else {
             return;
         };
         if let Some(next) = self.history.redo(&current) {
-            self.surface = Some(next);
+            self.surface = Some(next.surface);
+            self.hydro.options.draft = next.draft;
             self.revision += 1;
             self.refresh_dirty();
             self.touch_geometry();
@@ -1754,8 +1801,12 @@ impl App {
     pub fn mark(&mut self) -> u64 {
         let id = self.next_mark_id;
         self.next_mark_id += 1;
-        self.marks
-            .push((id, self.surface.clone(), self.history.undo_len()));
+        self.marks.push((
+            id,
+            self.surface.clone(),
+            self.project.clone(),
+            self.history.undo_len(),
+        ));
         id
     }
 
@@ -1764,10 +1815,15 @@ impl App {
         let pos = self
             .marks
             .iter()
-            .position(|(m, _, _)| *m == id)
+            .position(|(m, _, _, _)| *m == id)
             .ok_or_else(|| format!("unknown mark {id}"))?;
-        let (_, surface, undo_len) = self.marks[pos].clone();
+        let (_, surface, project, undo_len) = self.marks[pos].clone();
         self.marks.truncate(pos);
+        // A batch may have edited the project as well as the model: roll
+        // both back, as the headless server does.
+        if project != self.project {
+            self.set_project(project);
+        }
         self.surface = surface;
         self.history.truncate_undo(undo_len);
         self.history.clear_redo();
@@ -1780,7 +1836,7 @@ impl App {
 
     /// Drop a mark without restoring.
     pub fn forget_mark(&mut self, id: u64) {
-        if let Some(pos) = self.marks.iter().position(|(m, _, _)| *m == id) {
+        if let Some(pos) = self.marks.iter().position(|(m, _, _, _)| *m == id) {
             self.marks.truncate(pos);
         }
     }
@@ -2012,6 +2068,11 @@ impl App {
         view: &crate::camera::ViewTransform,
         cell: egui::Rect,
     ) -> Option<usize> {
+        // Hidden control points cannot be grabbed: a drag would move a point
+        // the user cannot see.
+        if !self.display.points {
+            return None;
+        }
         let cursor = ui.input(|i| i.pointer.interact_pos())?;
         let surface = self.surface.as_ref()?;
         let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
@@ -2041,7 +2102,11 @@ impl App {
         let offset = picking::ray_plane(&view.ray(cursor, cell), &plane)
             .map(|hit| center - hit)
             .unwrap_or(Vec3::ZERO);
-        self.history.snapshot(surface);
+        let snap = Snapshot {
+            surface: surface.clone(),
+            draft: self.hydro.options.draft,
+        };
+        self.history.snapshot(&snap);
         self.selected = Some(point);
         self.active = index;
         self.status = format!("dragging control point {point}");
@@ -2183,6 +2248,12 @@ impl App {
         self.damage_stale = true;
         self.perf_state.resistance_stale = true;
         self.perf_state.raos_stale = true;
+        // A worker still running measures the old hull: its answer must not
+        // land as fresh, so the generations it carries no longer match.
+        self.loading_generation += 1;
+        self.damage_generation += 1;
+        self.perf_resistance_generation += 1;
+        self.perf_raos_generation += 1;
     }
 
     // ---- accessors (tests and dock panels) -----------------------------
@@ -2207,8 +2278,10 @@ impl App {
         self.last_highlighted_compartment = None;
         self.loading_stale = true;
         self.loading_selected = 0;
+        self.loading_generation += 1;
         self.damage_stale = true;
         self.damage_selected = 0;
+        self.damage_generation += 1;
         self.perf_state.resistance_stale = true;
         self.perf_state.resistance = None;
         self.perf_resistance_worker = None;
@@ -2525,6 +2598,11 @@ impl App {
 
     pub fn loading_result(&self) -> Option<&LoadingResult> {
         self.loading_result.as_ref()
+    }
+
+    /// Whether a loading-condition worker is still running.
+    pub fn loading_busy(&self) -> bool {
+        self.loading_worker.is_some()
     }
 
     pub fn start_loading_compute(&mut self) {
@@ -2895,6 +2973,13 @@ impl App {
 
     /// Mutable access to the model, for panels and tests. Call
     /// [`App::mark_geometry_changed`] afterwards.
+    /// The project edited in place, as the dock panels do (tests).
+    #[doc(hidden)]
+    pub fn project_mut_for_test(&mut self) -> &mut Project {
+        self.dirty = true;
+        &mut self.project
+    }
+
     pub fn surface_mut(&mut self) -> Option<&mut Surface> {
         self.surface.as_mut()
     }
@@ -2942,6 +3027,12 @@ impl App {
     /// repeated solves cheap; the UI drives the same field from the menu.
     pub fn set_subdivision_level(&mut self, level: u8) {
         self.level = level.clamp(0, 5);
+        self.revision += 1;
+        self.touch_geometry();
+    }
+
+    pub fn set_subdivision_mode(&mut self, mode: SubdivisionMode) {
+        self.mode = mode;
         self.revision += 1;
         self.touch_geometry();
     }
@@ -3024,7 +3115,11 @@ impl App {
     /// Record the current model on the undo stack, as a drag does on grab.
     pub fn snapshot_undo(&mut self) {
         if let Some(surface) = self.surface.as_ref() {
-            self.history.snapshot(surface);
+            let snap = Snapshot {
+                surface: surface.clone(),
+                draft: self.hydro.options.draft,
+            };
+            self.history.snapshot(&snap);
         }
     }
 

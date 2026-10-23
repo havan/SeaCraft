@@ -1232,6 +1232,13 @@ fn handle_inner(
                 "rows": serde_json::to_value(&t.rows).unwrap_or(Value::Null),
             }))
         }
+        "stability.cross_curves"
+            if ["heels", "displacements", "draft", "trim", "level"]
+                .iter()
+                .any(|k| p.get(k).is_some_and(|v| !v.is_null())) =>
+        {
+            explicit_cross_curves(app, p)
+        }
         "stability.cross_curves" => {
             apply_stability_inputs(app, p)?;
             app.compute_cross_curves();
@@ -1356,7 +1363,8 @@ fn handle_inner(
             };
             let windage_extra: Vec<seacraft_core::weather::WindageItem> =
                 match p.get("windage_extra") {
-                    None | Some(Value::Null) => Vec::new(),
+                    // As a loading condition does: the project's windage.
+                    None | Some(Value::Null) => app.project().windage.clone(),
                     Some(v) => serde_json::from_value(v.clone())
                         .map_err(|e| format!("stability.weather: invalid `windage_extra`: {e}"))?,
                 };
@@ -1473,7 +1481,7 @@ fn handle_inner(
             let speed_kn = number(p, "speed_kn")?
                 .or(number(p, "speed")?)
                 .unwrap_or(0.0);
-            let kg = number(p, "kg")?.unwrap_or(0.0);
+            let kg = number(p, "kg")?.unwrap_or_else(|| app.kg());
             let kyy = number(p, "kyy")?;
             let stations = number_in(p, "stations", 3.0..=200.0)?
                 .map(|n| n.round() as usize)
@@ -1525,12 +1533,14 @@ fn handle_inner(
             // exactly like a drag does.
             let faces = app.surface().map(|s| s.faces.len()).unwrap_or(0);
             let face = index_at(p, "face", faces)?.ok_or("model.split_face: give `face`")?;
+            // Edit a copy: a refused split must leave no undo entry behind.
+            let mut edited = app.surface().ok_or("no model loaded")?.clone();
+            let report = seacraft_core::topology::split_face(&mut edited, face)
+                .map_err(|e| format!("model.split_face: {e}"))?;
             app.snapshot_undo();
-            let report = {
-                let surface = app.surface_mut().ok_or("no model loaded")?;
-                seacraft_core::topology::split_face(surface, face)
-                    .map_err(|e| format!("model.split_face: {e}"))?
-            };
+            if let Some(surface) = app.surface_mut() {
+                *surface = edited;
+            }
             app.mark_geometry_changed();
             app.status_note(format!(
                 "face {face} split into {} triangles",
@@ -1551,11 +1561,12 @@ fn handle_inner(
             let count = app.surface().map(|s| s.points.len()).unwrap_or(0);
             let a = index_at(p, "a", count)?.ok_or("model.insert_edge: give `a`")?;
             let b = index_at(p, "b", count)?.ok_or("model.insert_edge: give `b`")?;
+            let mut edited = app.surface().ok_or("no model loaded")?.clone();
+            seacraft_core::topology::insert_edge(&mut edited, f, a, b)
+                .map_err(|e| format!("model.insert_edge: {e}"))?;
             app.snapshot_undo();
-            {
-                let surface = app.surface_mut().ok_or("no model loaded")?;
-                seacraft_core::topology::insert_edge(surface, f, a, b)
-                    .map_err(|e| format!("model.insert_edge: {e}"))?;
+            if let Some(surface) = app.surface_mut() {
+                *surface = edited;
             }
             app.mark_geometry_changed();
             app.status_note(format!("edge {a}-{b} inserted on face {f}"));
@@ -1773,6 +1784,9 @@ fn handle_inner(
             if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
                 opts.draft = d;
             }
+            if let Some(level) = number_in(p, "level", 0.0..=6.0)? {
+                opts.subdivision.level = level as u8;
+            }
             let surface = app
                 .surface()
                 .ok_or_else(|| "resistance.compute: no model is loaded".to_string())?;
@@ -1916,6 +1930,9 @@ fn handle_inner(
             if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
                 opts.draft = d;
             }
+            if let Some(level) = number_in(p, "level", 0.0..=6.0)? {
+                opts.subdivision.level = level as u8;
+            }
             let surface = app
                 .surface()
                 .ok_or_else(|| "planing.compute: no model is loaded".to_string())?;
@@ -1953,7 +1970,7 @@ fn handle_inner(
             let vec3 = |key: &str| -> Result<Option<Vec3>, String> {
                 match p.get(key) {
                     None | Some(Value::Null) => Ok(None),
-                    Some(_) => Ok(Some(triple(p, key)?)),
+                    Some(v) => Ok(Some(triple(v, key)?)),
                 }
             };
             let request = seacraft_core::transform::TransformRequest {
@@ -2358,6 +2375,73 @@ fn apply_stability_inputs(app: &mut App, p: &Value) -> Result<(), String> {
         app.set_free_trim(free, lcg);
     }
     Ok(())
+}
+
+/// `stability.cross_curves` with an explicit grid or condition: computed on
+/// the current model exactly as the headless MCP `stability_cross_curves`
+/// tool does (same defaults, same reply shape), without touching the dock.
+fn explicit_cross_curves(app: &mut App, p: &Value) -> Result<Value, String> {
+    use seacraft_core::stability::{
+        cross_curves, default_displacements, evaluate_imo_criteria, upright_lcb, StabilityCondition,
+    };
+    let surface = app.surface().ok_or("no model loaded")?.clone();
+    let mut base = app.hydro_options().clone();
+    if let Some(d) = number(p, "draft")? {
+        base.draft = d;
+    }
+    if let Some(t) = number(p, "trim")? {
+        base.trim = t;
+    }
+    if let Some(level) = number_in(p, "level", 0.0..=6.0)? {
+        base.subdivision.level = level as u8;
+    }
+    if !(base.draft.is_finite() && base.draft > 0.0) {
+        return Err("`draft` must be positive".into());
+    }
+    let kg = number_in(p, "kg", 0.0..=10_000.0)?.unwrap_or_else(|| app.kg());
+    let lcg = number(p, "lcg")?;
+    let free = boolean(p, "free_trim")?.unwrap_or(false) || lcg.is_some();
+    let hull = seacraft_core::hydro::Hull::new(&surface, base.subdivision);
+    let heels = numbers(p, "heels")?
+        .unwrap_or_else(|| vec![0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 75.0, 90.0]);
+    if heels.is_empty() || heels.len() > 200 {
+        return Err("`heels` must have 1 to 200 angles".into());
+    }
+    let displacements = match numbers(p, "displacements")? {
+        Some(d) => d,
+        None => default_displacements(
+            hull.displaced_volume(base.draft, base.trim, 0.0) * base.water_density / 1000.0,
+        ),
+    };
+    if displacements.is_empty()
+        || displacements.len() > 50
+        || displacements.iter().any(|d| *d <= 0.0)
+    {
+        return Err("`displacements` must be 1 to 50 positive tonnes".into());
+    }
+    let lcg_x = free.then(|| lcg.unwrap_or_else(|| upright_lcb(&hull, base.draft)));
+    let cond = StabilityCondition {
+        kg,
+        trim: base.trim,
+        lcg_x,
+    };
+    let curves = cross_curves(&hull, &heels, &displacements, &cond, &base);
+    let imo: Vec<Value> = (0..displacements.len())
+        .filter_map(|i| evaluate_imo_criteria(&curves, i))
+        .filter_map(|c| serde_json::to_value(c).ok())
+        .collect();
+    Ok(json!({
+        "condition": {
+            "kg": kg,
+            "trim": base.trim,
+            "lcg_x": lcg_x,
+            "free_to_trim": free,
+        },
+        "heels_deg": heels,
+        "displacements_t": displacements,
+        "curves": serde_json::to_value(&curves).map_err(|e| e.to_string())?,
+        "imo_criteria": imo,
+    }))
 }
 
 /// A control point's layer: symmetric layers model only `y >= 0`.
@@ -3938,6 +4022,164 @@ mod tests {
         assert!(
             (heave - 1.0).abs() <= 0.05,
             "heave at longest wavelength must be ~1 (got {heave})"
+        );
+    }
+
+    #[test]
+    fn model_transform_takes_scale_and_translate_over_control() {
+        let (mut app, ctx) = demo();
+        let before = app.surface().unwrap().points[5].p;
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.transform",
+            json!({"scale": [1.1, 1.0, 1.0], "translate": [0.5, 0.0, 0.0]}),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let after = app.surface().unwrap().points[5].p;
+        assert!(after.x != before.x, "x moved: {before:?} -> {after:?}");
+        assert!((after.z - before.z).abs() < 1e-12);
+    }
+
+    #[test]
+    fn explicit_cross_curves_match_the_core_and_leave_the_dock_alone() {
+        use seacraft_core::stability::{cross_curves, StabilityCondition};
+        let (mut app, ctx) = demo();
+        let r = call(
+            &mut app,
+            &ctx,
+            "stability.cross_curves",
+            json!({"kg": 1.0, "heels": [0.0, 30.0], "displacements": [10.0], "draft": 0.62}),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let res = &r["result"];
+        assert_eq!(res["heels_deg"], json!([0.0, 30.0]), "{res}");
+        let kn = res["curves"][1]["points"][0]["kn"]
+            .as_f64()
+            .expect("kn at 30");
+        let mut base = app.hydro_options().clone();
+        base.draft = 0.62;
+        let hull = seacraft_core::hydro::Hull::new(app.surface().unwrap(), base.subdivision);
+        let want = cross_curves(
+            &hull,
+            &[30.0],
+            &[10.0],
+            &StabilityCondition::fixed(1.0, base.trim),
+            &base,
+        );
+        assert!((kn - want[0].points[0].kn.unwrap()).abs() < 1e-9);
+        assert!(app.cross_curves().is_none(), "the dock was not recomputed");
+        assert_eq!(app.kg(), demo().0.kg(), "the dock KG is unchanged");
+    }
+
+    #[test]
+    fn a_refused_topology_edit_leaves_no_undo_entry() {
+        let (mut app, ctx) = demo();
+        let before = app.undo_len();
+        // Points 0 and 1 are not two corners of face 5 that can be joined.
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.insert_edge",
+            json!({"face": 5, "a": 0, "b": 1}),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(app.undo_len(), before);
+    }
+
+    #[test]
+    fn weather_and_seakeeping_default_to_the_app_state() {
+        use seacraft_core::project::Project;
+        use seacraft_core::weather::WindageItem;
+        let (mut app, ctx) = demo();
+        app.set_project(Project {
+            windage: vec![WindageItem {
+                name: "Mast".into(),
+                area_m2: 2.0,
+                z_centroid: 4.0,
+                profile: None,
+            }],
+            ..Default::default()
+        });
+        let r = call(&mut app, &ctx, "stability.weather", json!({"kg": 1.0}));
+        assert_eq!(r["ok"], true, "{r}");
+        let extra = r["result"]["extra_windage_area_m2"]
+            .as_f64()
+            .or_else(|| r["result"]["weather"]["extra_windage_area_m2"].as_f64());
+        assert_eq!(extra, Some(2.0), "{r}");
+
+        app.set_kg(1.3);
+        let sk = |app: &mut App, extra: Value| {
+            let mut p = json!({"speed_kn": 0.0, "lambda_min": 1.0, "lambda_max": 3.0});
+            if let (Some(o), Some(e)) = (p.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            let r = call(app, &ctx, "seakeeping.compute", p);
+            assert_eq!(r["ok"], true, "{r}");
+            r["result"]["coefficients"][0]["c55"].as_f64().expect("c55")
+        };
+        // C55 carries ρg∇(KB − KG): the default must be the app's KG.
+        let by_default = sk(&mut app, json!({}));
+        assert_eq!(by_default, sk(&mut app, json!({"kg": 1.3})));
+        assert_ne!(by_default, sk(&mut app, json!({"kg": 0.0})));
+    }
+
+    #[test]
+    fn resistance_and_planing_take_a_level() {
+        let (mut app, ctx) = demo();
+        for method in ["resistance.compute", "planing.compute"] {
+            let r = call(
+                &mut app,
+                &ctx,
+                method,
+                json!({"level": 1, "speeds": [20.0]}),
+            );
+            assert_eq!(r["ok"], true, "{method}: {r}");
+            let r = call(&mut app, &ctx, method, json!({"level": 9}));
+            assert_eq!(r["ok"], false, "{method} refuses level 9: {r}");
+        }
+    }
+
+    #[test]
+    fn undoing_a_transform_restores_the_measurement_draft() {
+        let (mut app, ctx) = demo();
+        let draft = app.hydro_options().draft;
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.transform",
+            json!({"draft": draft * 1.5}),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(
+            (app.hydro_options().draft - draft).abs() > 1e-3,
+            "draft moved"
+        );
+        app.undo();
+        assert_eq!(app.hydro_options().draft, draft);
+        app.redo();
+        assert!((app.hydro_options().draft - draft).abs() > 1e-3);
+    }
+
+    #[test]
+    fn restoring_a_mark_rolls_the_project_back_too() {
+        let (mut app, ctx) = demo();
+        let mark = call(&mut app, &ctx, "history.mark", json!({}));
+        assert_eq!(mark["ok"], true, "{mark}");
+        let id = mark["result"]["mark"].clone();
+        let project = json!({
+            "format": "seacraft-project",
+            "version": 1,
+            "windage": [{"name": "Mast", "area_m2": 1.0, "z_centroid": 2.0}],
+        });
+        let r = call(&mut app, &ctx, "project.set", json!({"project": project}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.project().windage.len(), 1);
+        let r = call(&mut app, &ctx, "history.restore", json!({"mark": id}));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(
+            app.project().windage.is_empty(),
+            "the project edit was rolled back"
         );
     }
 }

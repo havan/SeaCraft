@@ -266,6 +266,13 @@ pub fn solve_floating(
 /// Longitudinal centre of buoyancy of the upright hull at `draft`. The natural
 /// `LCG` for a free-to-trim solve when the model carries no mass distribution
 /// of its own.
+/// The displacements a cross-curve table uses when none are given: half,
+/// all and 125 % of the design displacement, unrounded so a boat under a
+/// tonne still gets three positive rows.
+pub fn default_displacements(design_t: f64) -> Vec<f64> {
+    vec![0.5 * design_t, design_t, 1.25 * design_t]
+}
+
 pub fn upright_lcb(hull: &Hull, draft: f64) -> f64 {
     hull.buoyancy(draft, 0.0, 0.0).1.x
 }

@@ -5,15 +5,16 @@
 
 use seacraft_core::Surface;
 
-/// Bounded undo and redo stacks of whole models.
+/// Bounded undo and redo stacks of whole models (or of whatever state `T`
+/// travels with a model, such as the measurement draft).
 #[derive(Debug, Default)]
-pub struct History {
-    undo: Vec<Surface>,
-    redo: Vec<Surface>,
+pub struct History<T = Surface> {
+    undo: Vec<T>,
+    redo: Vec<T>,
     limit: usize,
 }
 
-impl History {
+impl<T: Clone> History<T> {
     /// A history that keeps at most `limit` snapshots.
     pub fn new(limit: usize) -> Self {
         Self {
@@ -24,7 +25,7 @@ impl History {
     }
 
     /// Record the state *before* a mutation.
-    pub fn snapshot(&mut self, s: &Surface) {
+    pub fn snapshot(&mut self, s: &T) {
         self.undo.push(s.clone());
         if self.undo.len() > self.limit {
             self.undo.remove(0);
@@ -33,14 +34,14 @@ impl History {
     }
 
     /// Swap `current` for the previous state; `current` goes on the redo stack.
-    pub fn undo(&mut self, current: &Surface) -> Option<Surface> {
+    pub fn undo(&mut self, current: &T) -> Option<T> {
         let previous = self.undo.pop()?;
         self.redo.push(current.clone());
         Some(previous)
     }
 
     /// Swap `current` for the next state; `current` goes back on the undo stack.
-    pub fn redo(&mut self, current: &Surface) -> Option<Surface> {
+    pub fn redo(&mut self, current: &T) -> Option<T> {
         let next = self.redo.pop()?;
         self.undo.push(current.clone());
         if self.undo.len() > self.limit {

@@ -198,3 +198,50 @@ fn a_project_with_duplicate_names_is_not_saved() {
     assert!(app.status().contains("named"), "{}", app.status());
     assert!(!sidecar_path(&path).exists());
 }
+
+#[test]
+fn design_data_is_not_marked_saved_when_the_sidecar_was_unreadable() {
+    use seacraft_core::project::sidecar_path;
+    let path = scratch("broken-sidecar.fef");
+    std::fs::copy(demo_path(), &path).unwrap();
+    std::fs::write(sidecar_path(&path), "{ not json").unwrap();
+    let mut app = App::headless_for_test(None);
+    app.open_model(&path).unwrap();
+    // Design data entered in a panel (which edits the project in place).
+    app.project_mut_for_test()
+        .windage
+        .push(seacraft_core::weather::WindageItem {
+            name: "Mast".into(),
+            area_m2: 1.0,
+            z_centroid: 2.0,
+            profile: None,
+        });
+    assert!(app.save_to(&path), "{}", app.status());
+    assert!(
+        app.is_dirty(),
+        "the windage item is not on disk: {}",
+        app.status()
+    );
+    assert!(app.status().contains("NOT saved"), "{}", app.status());
+    assert_eq!(
+        std::fs::read_to_string(sidecar_path(&path)).unwrap(),
+        "{ not json"
+    );
+}
+
+#[test]
+fn the_linesplan_export_uses_the_viewport_settings() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.display_mut().combs = true;
+    let path = scratch("combs.svg");
+    assert!(
+        app.export_to(ExportKind::Linesplan, &path),
+        "{}",
+        app.status()
+    );
+    let svg = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        svg.contains("class=\"comb\""),
+        "combs drawn as in the viewports"
+    );
+}

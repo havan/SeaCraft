@@ -1249,8 +1249,9 @@ impl McpServer {
             Some(v) => numbers(v, "displacements")?,
             None => {
                 let volume = hull.displaced_volume(base.draft, base.trim, 0.0);
-                let t = volume * base.water_density / 1000.0;
-                vec![(t * 0.5).round(), t.round(), (t * 1.25).round()]
+                seacraft_core::stability::default_displacements(
+                    volume * base.water_density / 1000.0,
+                )
             }
         };
         if displacements.is_empty() || displacements.iter().any(|d| !d.is_finite() || *d <= 0.0) {
@@ -1380,7 +1381,8 @@ impl McpServer {
         };
 
         let windage_extra: Vec<seacraft_core::weather::WindageItem> = match a.get("windage_extra") {
-            None | Some(Value::Null) => Vec::new(),
+            // As a loading condition does: the project's windage.
+            None | Some(Value::Null) => self.project.windage.clone(),
             Some(v) => serde_json::from_value(v.clone())
                 .map_err(|e| format!("weather_criterion: invalid `windage_extra`: {e}"))?,
         };
@@ -1493,7 +1495,7 @@ impl McpServer {
             return Err("seakeeping_raos: draft must be positive".into());
         }
         let speed_kn = a.get("speed_kn").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let kg = a.get("kg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let kg = a.get("kg").and_then(|v| v.as_f64()).unwrap_or(self.kg);
         let kyy = a.get("kyy").and_then(|v| v.as_f64());
         let stations = a
             .get("stations")
@@ -2686,7 +2688,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 json!({
                     "draft": number("Design draft in metres (defaults to model's design draft)"),
                     "speed_kn": number("Ship forward speed in knots (default 0.0)"),
-                    "kg": number("Vertical centre of gravity KG in metres above keel (default 0.0)"),
+                    "kg": number("Vertical centre of gravity KG in metres above keel (default: the session KG)"),
                     "kyy": number("Pitch radius of gyration in metres (default 0.25 * Lwl)"),
                     "stations": integer("Number of transverse stations along waterline (default 21)"),
                     "lambda_min": number("Minimum wavelength ratio lambda / L (default 0.3)"),
@@ -2716,7 +2718,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "gamma": number("JONSWAP peak enhancement factor 1-20 (omit for Bretschneider)"),
                     "draft": number("Design draft in metres (defaults to model's design draft)"),
                     "speed_kn": number("Ship forward speed in knots (default 0.0)"),
-                    "kg": number("Vertical centre of gravity KG in metres above keel (default 0.0)"),
+                    "kg": number("Vertical centre of gravity KG in metres above keel (default: the session KG)"),
                     "kyy": number("Pitch radius of gyration in metres (default 0.25 * Lwl)"),
                     "stations": integer("Number of transverse stations along waterline, 3-200 (default 21)"),
                     "points": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "x": {"type": "number"}}, "required": ["x"]}, "description": "Evaluation points {name, x} with x in model coordinates, metres (default LCG and Bow)"},
@@ -3335,6 +3337,15 @@ impl Remote {
             }
             "stability_cross_curves" => {
                 let r = self.request("stability.cross_curves", Value::Object(a.clone()))?;
+                // With an explicit grid or condition the app answers in this
+                // tool's own shape.
+                if r.get("condition").is_some() {
+                    let mut r = r;
+                    if let Some(o) = r.as_object_mut() {
+                        o.insert("backend".into(), json!("app"));
+                    }
+                    return Ok(r);
+                }
                 // The app solves its own heel/displacement grid and returns one
                 // criteria row; present both the way the headless tool does.
                 let imo = match r.get("imo") {
@@ -5364,5 +5375,29 @@ mod tests {
             Ok(_) => panic!("expected missing token file to fail"),
         };
         assert!(err.contains("cannot read control token file"));
+    }
+
+    #[test]
+    fn a_boat_under_a_tonne_gets_default_cross_curve_displacements() {
+        // The default rows were rounded to whole tonnes: 0 t for a dinghy,
+        // which the tool then refused.
+        let mut s = McpServer::new();
+        ok(
+            &mut s,
+            1,
+            "transform_hull",
+            json!({ "scale": [0.3, 0.3, 0.3] }),
+        );
+        let r = ok(
+            &mut s,
+            2,
+            "stability_cross_curves",
+            json!({ "heels": [0.0, 20.0] }),
+        );
+        let d = r["displacements_t"].as_array().expect("displacements");
+        assert_eq!(d.len(), 3, "{r}");
+        let t: Vec<f64> = d.iter().map(|v| v.as_f64().unwrap()).collect();
+        assert!(t[1] > 0.0 && t[1] < 1.0, "{t:?}");
+        assert!((t[0] - 0.5 * t[1]).abs() < 1e-12 && (t[2] - 1.25 * t[1]).abs() < 1e-12);
     }
 }

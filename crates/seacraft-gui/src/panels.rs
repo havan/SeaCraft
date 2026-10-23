@@ -481,23 +481,34 @@ pub fn report_options(
 
             // Speeds (comma list)
             ui.label("Speeds (knots):");
-            let mut speeds_text = report
-                .speeds_kn
-                .as_ref()
-                .map(|v| {
-                    v.iter()
-                        .map(|s| s.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut speeds_text)
-                        .hint_text("Default (e.g. 6, 8, 10, 12, 14)"),
-                )
-                .changed()
-            {
+            // While the field has focus its text lives in egui's memory:
+            // re-formatting the parsed list every frame would eat a comma
+            // or a trailing "." the moment it is typed.
+            let buffer_id = ui.make_persistent_id("report_speeds_text");
+            let mut speeds_text =
+                ui.data(|d| d.get_temp::<String>(buffer_id))
+                    .unwrap_or_else(|| {
+                        report
+                            .speeds_kn
+                            .as_ref()
+                            .map(|v| {
+                                v.iter()
+                                    .map(|s| s.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default()
+                    });
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut speeds_text)
+                    .hint_text("Default (e.g. 6, 8, 10, 12, 14)"),
+            );
+            if response.has_focus() {
+                ui.data_mut(|d| d.insert_temp(buffer_id, speeds_text.clone()));
+            } else {
+                ui.data_mut(|d| d.remove::<String>(buffer_id));
+            }
+            if response.changed() {
                 let parsed: Vec<f64> = speeds_text
                     .split(',')
                     .filter_map(|s| s.trim().parse::<f64>().ok())
@@ -1288,6 +1299,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     });
 
     let mut remove_comp = None;
+    let mut renamed: Vec<(String, String)> = Vec::new();
     for (c_idx, comp) in panel.project.compartments.iter_mut().enumerate() {
         let is_highlighted = panel.highlight == Some(c_idx);
         let mut frame = egui::Frame::group(ui.style());
@@ -1297,8 +1309,10 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name:");
+                let old_name = comp.name.clone();
                 if ui.text_edit_singleline(&mut comp.name).changed() {
                     action = DamageAction::Changed;
+                    renamed.push((old_name, comp.name.clone()));
                 }
                 if ui
                     .checkbox(&mut comp.clip_to_hull, "Clip to hull")
@@ -1379,6 +1393,16 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         });
         if is_highlighted && panel.scroll_to {
             frame_resp.response.scroll_to_me(Some(egui::Align::Center));
+        }
+    }
+    // Damage cases name their compartments: follow a rename.
+    for (old, new) in renamed {
+        for case in &mut panel.project.damage_cases {
+            for spec in &mut case.compartments {
+                if matches!(spec, CompartmentSpec::Named(n) if *n == old) {
+                    *spec = CompartmentSpec::Named(new.clone());
+                }
+            }
         }
     }
     if let Some(i) = remove_comp {
@@ -2164,7 +2188,19 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     }
 
     if delete_requested && !panel.project.loading_conditions.is_empty() {
-        panel.project.loading_conditions.remove(*panel.selected);
+        let gone = panel
+            .project
+            .loading_conditions
+            .remove(*panel.selected)
+            .name;
+        // A damage case that used it falls back to its own particulars,
+        // rather than naming a condition that no longer exists (which would
+        // make the project unsavable).
+        for case in &mut panel.project.damage_cases {
+            if case.loading_condition_name.as_deref() == Some(gone.as_str()) {
+                case.loading_condition_name = None;
+            }
+        }
         if *panel.selected >= panel.project.loading_conditions.len() && *panel.selected > 0 {
             *panel.selected -= 1;
         }
@@ -2177,7 +2213,8 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
 
     let cond = &mut panel.project.loading_conditions[*panel.selected];
 
-    // Editable name
+    // Editable name; damage cases that refer to it follow the rename.
+    let old_name = cond.name.clone();
     ui.horizontal(|ui| {
         ui.label("Name:");
         if ui.text_edit_singleline(&mut cond.name).changed() {
@@ -2185,6 +2222,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         }
     });
     let name = cond.name.clone();
+    if name != old_name {
+        for case in &mut panel.project.damage_cases {
+            if case.loading_condition_name.as_deref() == Some(old_name.as_str()) {
+                case.loading_condition_name = Some(name.clone());
+            }
+        }
+    }
     if panel
         .project
         .loading_conditions

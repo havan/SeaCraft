@@ -722,7 +722,7 @@ fn cmd_table(a: TableArgs) -> Result<()> {
         t.name, t.water_density, a.level
     );
     println!(
-        "   T     nabla      Delta     KB      BM     KML     LCB     LCF     Cb     Cp      TPC    MTC"
+        "   T     nabla      Delta     KB      BM     KMT     LCB     LCF     Cb     Cp      TPC    MTC"
     );
     println!("   m       m3          t      m       m       m       m       m                     t/cm  t*m/cm");
     for r in &t.rows {
@@ -1611,7 +1611,12 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
                 )
             };
             if a.no_mirror {
-                text = obj_from_unmirrored(&s, a.subdiv.level, mode);
+                let up = if a.up == UpArg::Y {
+                    export::UpAxis::Y
+                } else {
+                    export::UpAxis::Z
+                };
+                text = obj_from_unmirrored(&s, a.subdiv.level, mode, a.control, up);
             }
             text.into_bytes()
         }
@@ -1636,11 +1641,21 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
 }
 
 /// OBJ without mirroring symmetric layers, for inspecting a half model.
-fn obj_from_unmirrored(s: &Surface, level: u8, mode: SubdivisionMode) -> String {
+/// The modelled half only (symmetric layers not mirrored): the refined mesh,
+/// or the control net itself with `control`, in the requested axis order.
+fn obj_from_unmirrored(
+    s: &Surface,
+    level: u8,
+    mode: SubdivisionMode,
+    control: bool,
+    up: export::UpAxis,
+) -> String {
+    let level = if control { 0 } else { level };
     let mesh = evaluate(s, SubdivisionOptions { level, mode });
     let mut out = String::from("# SeaCraft - unmirrored\n");
     for v in &mesh.verts {
-        out.push_str(&format!("v {:.6} {:.6} {:.6}\n", v.x, v.y, v.z));
+        let (a, b, c) = up.map(*v);
+        out.push_str(&format!("v {a:.6} {b:.6} {c:.6}\n"));
     }
     for f in &mesh.faces {
         out.push('f');
@@ -2809,7 +2824,8 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         comb_scale: a.comb_scale,
     };
     // The extension picks the format: `.dxf` gives the three views on named
-    // layers plus 3D copies of every curve, anything else the standalone SVG.
+    // layers plus 3D copies of every curve, `.svg` (or none) the standalone
+    // SVG; anything else is refused rather than written as SVG.
     let extension = a
         .output
         .extension()
@@ -2818,7 +2834,10 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
     let text = match extension.as_str() {
         "dxf" => linesplan::dxf(&s, opts),
         "igs" | "iges" => linesplan::iges(&s, opts),
-        _ => linesplan::svg(&s, opts),
+        "svg" | "" => linesplan::svg(&s, opts),
+        other => {
+            bail!("unsupported linesplan extension `.{other}` (use .svg, .dxf, .igs or .iges)")
+        }
     };
     std::fs::write(&a.output, text)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
@@ -2968,8 +2987,9 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         Some(text) => parse_list(text)?,
         None => {
             let design_volume = hull.displaced_volume(base.draft, a.trim, 0.0);
-            let t = design_volume * base.water_density / 1000.0;
-            vec![(t * 0.5).round(), t.round(), (t * 1.25).round()]
+            seacraft_core::stability::default_displacements(
+                design_volume * base.water_density / 1000.0,
+            )
         }
     };
     let free = a.free_trim || a.lcg.is_some();

@@ -16,7 +16,8 @@ pub enum UpAxis {
 }
 
 impl UpAxis {
-    fn map(self, v: Vec3) -> (f64, f64, f64) {
+    /// The model point in this axis convention.
+    pub fn map(self, v: Vec3) -> (f64, f64, f64) {
         match self {
             UpAxis::Z => (v.x, v.y, v.z),
             UpAxis::Y => (v.y, v.z, v.x),

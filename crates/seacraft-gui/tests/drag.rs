@@ -248,3 +248,45 @@ fn symmetric_layer_clamps_dragged_point_at_the_centreline() {
         "symmetric layer must clamp y >= 0, got {after:?}"
     );
 }
+
+#[test]
+fn hidden_control_points_cannot_be_dragged() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.display_mut().points = false;
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let index = {
+        let surface = app.surface().expect("model loaded");
+        surface
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+            .map(|(i, _)| i)
+            .expect("a sheer point")
+    };
+    let before = app.surface().unwrap().points[index].p;
+    let rect = app.viewport_rect(1);
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before, rect)
+        .expect("point visible");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 50.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(50.0, 0.0), false)],
+    );
+    assert_eq!(app.surface().unwrap().points[index].p, before);
+    assert_eq!(app.undo_len(), 0);
+}
