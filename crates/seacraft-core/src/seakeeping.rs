@@ -652,6 +652,11 @@ pub struct SeakeepingReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coefficients: Option<Vec<GlobalCoefficients>>,
     pub warnings: Vec<Warning>,
+    /// Longitudinal centre of gravity (= LCB at equilibrium) in model x, metres.
+    /// This is the origin of the motion coordinates used by the RAOs.
+    pub x_lcg: f64,
+    /// Forward end of the design waterline in model x, metres.
+    pub x_bow: f64,
 }
 
 struct ExtractedSection {
@@ -1235,6 +1240,8 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
         natural_pitch_omega,
         coefficients: Some(global_coeffs),
         warnings,
+        x_lcg,
+        x_bow: wl_max,
     })
 }
 

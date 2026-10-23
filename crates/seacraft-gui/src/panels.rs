@@ -621,14 +621,28 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
             );
         }
 
+        // A sea-state run puts the RAOs on the spectrum's ω grid, which can reach
+        // λ/L > 100; past a few hull lengths both curves are flat at 1 and only
+        // squash the interesting part, so the plot stops at λ/L = 5.
+        const PLOT_LAMBDA_MAX: f64 = 5.0;
+        let shown = rep
+            .frequencies
+            .iter()
+            .filter(|p| p.lambda_over_l <= PLOT_LAMBDA_MAX)
+            .count();
+        let in_plot = |p: &&seacraft_core::seakeeping::RaoPoint| {
+            shown < 3 || p.lambda_over_l <= PLOT_LAMBDA_MAX
+        };
         let heave_pts: Vec<(f64, f64)> = rep
             .frequencies
             .iter()
+            .filter(in_plot)
             .map(|p| (p.lambda_over_l, p.heave_amp))
             .collect();
         let pitch_pts: Vec<(f64, f64)> = rep
             .frequencies
             .iter()
+            .filter(in_plot)
             .map(|p| (p.lambda_over_l, p.pitch_amp))
             .collect();
         let series = vec![
@@ -638,7 +652,216 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
         plot_xy(ui, "Motion RAOs", "λ / L", "RAO", &series);
     }
 
+    ui.add_space(4.0);
+    ui.separator();
+    if sea_state_section(ui, panel.state) {
+        action = PerformanceAction::Changed;
+    }
+
     action
+}
+
+/// The Performance tab's "Sea state" section: spectrum input, response points and
+/// (after Compute) the significant-response table with MSI. Returns whether an input
+/// changed (the results are then out of date).
+fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState) -> bool {
+    use crate::app::{SeaPoint, SeaPointPos, SeaSpectrumKind, SeaStateInput};
+    let mut changed = false;
+    ui.strong("Sea state (irregular head seas)");
+    ui.add_space(2.0);
+
+    let input = &mut state.sea_input;
+    if ui
+        .checkbox(&mut input.enabled, "Compute sea-state responses")
+        .on_hover_text(
+            "Computes the RAOs on the spectrum's frequency grid (0.2–5 ωp) with the next \
+             Compute, so the RAO plot above then covers that range.",
+        )
+        .changed()
+    {
+        changed = true;
+    }
+
+    if input.enabled {
+        egui::ComboBox::from_label("Spectrum")
+            .selected_text(input.kind.label())
+            .show_ui(ui, |ui| {
+                for k in [SeaSpectrumKind::Bretschneider, SeaSpectrumKind::Jonswap] {
+                    if ui.selectable_value(&mut input.kind, k, k.label()).clicked() {
+                        changed = true;
+                    }
+                }
+            });
+        ui.horizontal(|ui| {
+            let hs = ui.add(
+                egui::DragValue::new(&mut input.hs)
+                    .speed(0.05)
+                    .range(0.05..=25.0)
+                    .prefix("Hs: ")
+                    .suffix(" m"),
+            );
+            let tp = ui.add(
+                egui::DragValue::new(&mut input.tp)
+                    .speed(0.1)
+                    .range(1.0..=30.0)
+                    .prefix("Tp: ")
+                    .suffix(" s"),
+            );
+            if hs.changed() || tp.changed() {
+                changed = true;
+            }
+            if input.kind == SeaSpectrumKind::Jonswap
+                && ui
+                    .add(
+                        egui::DragValue::new(&mut input.gamma)
+                            .speed(0.05)
+                            .range(1.0..=10.0)
+                            .prefix("γ: "),
+                    )
+                    .changed()
+            {
+                changed = true;
+            }
+        });
+
+        ui.label("Response points:");
+        let mut remove = None;
+        for (i, p) in input.points.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                if ui
+                    .add(egui::TextEdit::singleline(&mut p.name).desired_width(80.0))
+                    .changed()
+                {
+                    changed = true;
+                }
+                match &mut p.pos {
+                    SeaPointPos::Lcg => {
+                        ui.label("at the LCG");
+                    }
+                    SeaPointPos::Bow => {
+                        ui.label("at the forward end of the waterline");
+                    }
+                    SeaPointPos::Model(x) => {
+                        if ui
+                            .add(
+                                egui::DragValue::new(x)
+                                    .speed(0.05)
+                                    .range(-1000.0..=1000.0)
+                                    .prefix("x: ")
+                                    .suffix(" m"),
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                }
+                if ui.small_button("🗑").on_hover_text("Remove point").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            input.points.remove(i);
+            changed = true;
+        }
+        ui.horizontal(|ui| {
+            if input.points.len() < 16 && ui.small_button("+ Point").clicked() {
+                let n = input.points.len() + 1;
+                input.points.push(SeaPoint {
+                    name: format!("P{n}"),
+                    pos: SeaPointPos::Model(0.0),
+                });
+                changed = true;
+            }
+            if ui.small_button("Reset points").clicked() {
+                input.points = SeaStateInput::default_points();
+                changed = true;
+            }
+        });
+        if let Some(problem) = input.problem() {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xd0, 0x40, 0x40),
+                format!("⚠ {problem}"),
+            );
+        }
+    }
+
+    let stale = state.raos_stale;
+    if let Some(r) = &state.sea_result {
+        ui.add_space(4.0);
+        if stale {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                "Sea-state results out of date",
+            );
+        }
+        let sea = match r.sea {
+            seacraft_core::seastate::WaveSpectrum::Bretschneider { hs, tp } => {
+                format!("Bretschneider Hs {hs:.2} m, Tp {tp:.2} s")
+            }
+            seacraft_core::seastate::WaveSpectrum::Jonswap { hs, tp, gamma } => {
+                format!("JONSWAP Hs {hs:.2} m, Tp {tp:.2} s, γ {gamma:.2}")
+            }
+        };
+        ui.label(format!(
+            "{sea} at {:.1} kn: Hs check {:.3} m, T1 {:.2} s, Tz {:.2} s",
+            r.speed_kn, r.spectrum.hs_check, r.spectrum.t1_s, r.spectrum.tz_s
+        ));
+        for w in &r.warnings {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+                format!("⚠ {}", w.message),
+            );
+        }
+        egui::Grid::new("sea_global_table")
+            .striped(true)
+            .min_col_width(50.0)
+            .show(ui, |ui| {
+                for h in ["Response", "Significant", "RMS", "Tz (s)"] {
+                    ui.label(egui::RichText::new(h).strong());
+                }
+                ui.end_row();
+                for (name, st) in [("Heave (m)", &r.heave), ("Pitch (deg)", &r.pitch_deg)] {
+                    ui.label(name);
+                    ui.label(format!("{:.3}", st.significant));
+                    ui.label(format!("{:.3}", st.rms));
+                    ui.label(format!("{:.2}", st.tz_s));
+                    ui.end_row();
+                }
+            });
+        ui.add_space(2.0);
+        egui::Grid::new("sea_points_table")
+            .striped(true)
+            .min_col_width(50.0)
+            .show(ui, |ui| {
+                for h in [
+                    "Point",
+                    "x (m)",
+                    "Motion sig. (m)",
+                    "Relative sig. (m)",
+                    "Accel. RMS (g)",
+                    "MSI (%)",
+                ] {
+                    ui.label(egui::RichText::new(h).strong());
+                }
+                ui.end_row();
+                for p in &r.points {
+                    ui.label(&p.name);
+                    ui.label(format!("{:.2}", p.x));
+                    ui.label(format!("{:.3}", p.vertical_motion.significant));
+                    ui.label(format!("{:.3}", p.relative_motion.significant));
+                    ui.label(format!("{:.4}", p.acceleration_rms_g));
+                    ui.label(format!("{:.1}", p.msi_percent));
+                    ui.end_row();
+                }
+            });
+        ui.label(
+            "MSI: share of unadapted people expected to vomit within a 2-hour exposure \
+             (O'Hanlon & McCauley 1974).",
+        );
+    }
+    changed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

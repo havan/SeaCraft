@@ -48,6 +48,8 @@ pub mod report;
 pub mod resistance;
 /// Lewis conformal mapping and Ursell–Tasai 2D heave radiation.
 pub mod seakeeping;
+/// Irregular head-sea responses: spectra, significant motions, accelerations, MSI.
+pub mod seastate;
 pub mod stability;
 pub mod subdiv;
 pub mod table;

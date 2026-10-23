@@ -1128,6 +1128,18 @@ struct SeakeepingArgs {
     /// Maximum wavelength ratio lambda / L
     #[arg(long, default_value_t = 3.0)]
     lambda_max: f64,
+    /// Significant wave height in metres: with --tp, adds irregular head-sea responses
+    #[arg(long)]
+    hs: Option<f64>,
+    /// Peak wave period in seconds (with --hs)
+    #[arg(long)]
+    tp: Option<f64>,
+    /// JONSWAP peak enhancement factor (default: Bretschneider spectrum)
+    #[arg(long)]
+    gamma: Option<f64>,
+    /// Extra response point NAME:X (model x in metres); repeatable. Default: LCG and Bow
+    #[arg(long = "point", value_name = "NAME:X")]
+    point: Vec<String>,
     /// Number of frequency points sampled across lambda / L
     #[arg(long, default_value_t = 30)]
     points: usize,
@@ -3443,9 +3455,14 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
 
     let rep = seacraft_core::seakeeping::head_sea_raos(&s, &spec)
         .map_err(|e| anyhow::anyhow!("seakeeping: {e}"))?;
+    let irregular = irregular_sea_for(&a, &spec, &s)?;
 
     if a.json {
-        println!("{}", serde_json::to_string_pretty(&rep)?);
+        let mut v = serde_json::to_value(&rep)?;
+        if let (Some(o), Some(irr)) = (v.as_object_mut(), &irregular) {
+            o.insert("irregular".into(), serde_json::to_value(irr)?);
+        }
+        println!("{}", serde_json::to_string_pretty(&v)?);
         return Ok(());
     }
 
@@ -3524,6 +3541,10 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
             pt.pitch_phase_deg
         );
     }
+    if let Some(irr) = &irregular {
+        println!();
+        print_irregular_sea(irr);
+    }
     if !rep.warnings.is_empty() {
         println!();
         println!("warnings:");
@@ -3532,6 +3553,111 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Irregular head-sea responses when `--hs` and `--tp` are both given.
+fn irregular_sea_for(
+    a: &SeakeepingArgs,
+    spec: &seacraft_core::seakeeping::SeakeepingSpec,
+    s: &seacraft_core::Surface,
+) -> Result<Option<seacraft_core::seastate::IrregularReport>> {
+    use seacraft_core::seastate::{irregular_head_sea, IrregularSpec, MotionPoint, WaveSpectrum};
+    let (hs, tp) = match (a.hs, a.tp) {
+        (None, None) => {
+            if a.gamma.is_some() || !a.point.is_empty() {
+                bail!("--gamma and --point need --hs and --tp");
+            }
+            return Ok(None);
+        }
+        (Some(hs), Some(tp)) => (hs, tp),
+        _ => bail!("--hs and --tp must be given together"),
+    };
+    let sea = match a.gamma {
+        Some(gamma) => WaveSpectrum::Jonswap { hs, tp, gamma },
+        None => WaveSpectrum::Bretschneider { hs, tp },
+    };
+    let mut points = Vec::new();
+    for p in &a.point {
+        let (name, x) = p
+            .rsplit_once(':')
+            .with_context(|| format!("--point {p:?}: expected NAME:X"))?;
+        let x: f64 = x
+            .trim()
+            .parse()
+            .with_context(|| format!("--point {p:?}: X must be a number"))?;
+        if name.trim().is_empty() || !x.is_finite() {
+            bail!("--point {p:?}: expected NAME:X with a name and a finite X");
+        }
+        points.push(MotionPoint {
+            name: name.trim().to_string(),
+            x,
+        });
+    }
+    let mut irr = IrregularSpec::new(sea, spec.clone());
+    irr.points = points;
+    irregular_head_sea(s, &irr)
+        .map(Some)
+        .map_err(|e| anyhow::anyhow!("seakeeping (irregular): {e}"))
+}
+
+fn print_irregular_sea(r: &seacraft_core::seastate::IrregularReport) {
+    use seacraft_core::seastate::WaveSpectrum;
+    println!("Irregular head seas");
+    match r.sea {
+        WaveSpectrum::Bretschneider { hs, tp } => {
+            println!("  Bretschneider spectrum: Hs {hs:.2} m, Tp {tp:.2} s")
+        }
+        WaveSpectrum::Jonswap { hs, tp, gamma } => {
+            println!("  JONSWAP spectrum: Hs {hs:.2} m, Tp {tp:.2} s, gamma {gamma:.2}")
+        }
+    }
+    println!(
+        "  spectrum check: Hs = 4*sqrt(m0) = {:.3} m, T1 = {:.2} s, Tz = {:.2} s  ({} frequencies, {:.3}..{:.3} rad/s)",
+        r.spectrum.hs_check,
+        r.spectrum.t1_s,
+        r.spectrum.tz_s,
+        r.omega_count,
+        r.omega_min,
+        r.omega_max
+    );
+    println!(
+        "  speed: {:.1} kn; motion origin LCG at x = {:.3} m",
+        r.speed_kn, r.x_lcg
+    );
+    println!();
+    println!(
+        "  {:<22} {:>10} {:>10} {:>10}",
+        "response", "sig. ampl.", "RMS", "Tz (s)"
+    );
+    let row = |name: String, st: &seacraft_core::seastate::ResponseStats, unit: &str| {
+        println!(
+            "  {:<22} {:>10.4} {:>10.4} {:>10.2}  {unit}",
+            name, st.significant, st.rms, st.tz_s
+        );
+    };
+    row("heave".into(), &r.heave, "m");
+    row("pitch".into(), &r.pitch_deg, "deg");
+    for p in &r.points {
+        let tag = format!("{} (x {:.2})", p.name, p.x);
+        row(format!("{tag} motion"), &p.vertical_motion, "m");
+        row(format!("{tag} relative"), &p.relative_motion, "m");
+        row(format!("{tag} accel."), &p.vertical_acceleration, "m/s2");
+    }
+    println!();
+    println!(
+        "  {:<22} {:>10} {:>12} {:>9}",
+        "point", "acc RMS g", "acc sig. g", "MSI %"
+    );
+    for p in &r.points {
+        println!(
+            "  {:<22} {:>10.4} {:>12.4} {:>9.1}",
+            p.name, p.acceleration_rms_g, p.acceleration_significant_g, p.msi_percent
+        );
+    }
+    println!("  {}", r.msi_note);
+    for w in &r.warnings {
+        println!("  warning [{}]: {}", w.code, w.message);
+    }
 }
 
 fn print_weather_summary(w: &seacraft_core::weather::WeatherResult) {

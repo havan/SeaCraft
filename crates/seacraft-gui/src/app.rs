@@ -16,6 +16,7 @@ use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::project::{self, Project};
 use seacraft_core::resistance::{self, HoltropInput};
 use seacraft_core::seakeeping::{SeakeepingReport, SeakeepingSpec};
+use seacraft_core::seastate::{IrregularReport, IrregularSpec};
 use seacraft_core::stability::{self, CrossCurve};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
@@ -262,6 +263,145 @@ impl ResistanceResult {
     }
 }
 
+/// Which wave spectrum the sea-state section uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeaSpectrumKind {
+    Bretschneider,
+    Jonswap,
+}
+
+impl SeaSpectrumKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            SeaSpectrumKind::Bretschneider => "Bretschneider",
+            SeaSpectrumKind::Jonswap => "JONSWAP",
+        }
+    }
+}
+
+/// Where a sea-state response point sits along the hull.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SeaPointPos {
+    /// The longitudinal centre of gravity.
+    Lcg,
+    /// The forward end of the design waterline.
+    Bow,
+    /// A model x coordinate in metres.
+    Model(f64),
+}
+
+/// A named response point of the sea-state section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeaPoint {
+    pub name: String,
+    pub pos: SeaPointPos,
+}
+
+/// Input of the Performance tab's "Sea state" section (irregular head seas).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeaStateInput {
+    /// Compute the sea-state responses with the RAOs (RAOs then use the spectrum's ω grid).
+    pub enabled: bool,
+    pub kind: SeaSpectrumKind,
+    pub hs: f64,
+    pub tp: f64,
+    pub gamma: f64,
+    pub points: Vec<SeaPoint>,
+}
+
+impl Default for SeaStateInput {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: SeaSpectrumKind::Bretschneider,
+            hs: 1.0,
+            tp: 6.0,
+            gamma: 3.3,
+            points: Self::default_points(),
+        }
+    }
+}
+
+impl SeaStateInput {
+    /// The default response points: LCG and Bow.
+    pub fn default_points() -> Vec<SeaPoint> {
+        vec![
+            SeaPoint {
+                name: "LCG".into(),
+                pos: SeaPointPos::Lcg,
+            },
+            SeaPoint {
+                name: "Bow".into(),
+                pos: SeaPointPos::Bow,
+            },
+        ]
+    }
+
+    pub fn spectrum(&self) -> seacraft_core::seastate::WaveSpectrum {
+        match self.kind {
+            SeaSpectrumKind::Bretschneider => {
+                seacraft_core::seastate::WaveSpectrum::Bretschneider {
+                    hs: self.hs,
+                    tp: self.tp,
+                }
+            }
+            SeaSpectrumKind::Jonswap => seacraft_core::seastate::WaveSpectrum::Jonswap {
+                hs: self.hs,
+                tp: self.tp,
+                gamma: self.gamma,
+            },
+        }
+    }
+
+    /// Why the input cannot be computed, if so.
+    pub fn problem(&self) -> Option<String> {
+        self.spectrum().validate().err()
+    }
+
+    /// The points with LCG and Bow resolved to model x.
+    pub fn resolve_points(
+        &self,
+        x_lcg: f64,
+        x_bow: f64,
+    ) -> Vec<seacraft_core::seastate::MotionPoint> {
+        self.points
+            .iter()
+            .map(|p| seacraft_core::seastate::MotionPoint {
+                name: p.name.clone(),
+                x: match p.pos {
+                    SeaPointPos::Lcg => x_lcg,
+                    SeaPointPos::Bow => x_bow,
+                    SeaPointPos::Model(x) => x,
+                },
+            })
+            .collect()
+    }
+}
+
+/// RAOs for the Performance tab. With a sea state, the RAOs are computed once on the
+/// spectrum's ω grid (0.2 ωp … 5 ωp) and integrated against the spectrum.
+pub fn compute_raos_with_sea(
+    surface: &Surface,
+    spec: &SeakeepingSpec,
+    sea: Option<&SeaStateInput>,
+) -> Result<(SeakeepingReport, Option<IrregularReport>), String> {
+    let Some(input) = sea else {
+        let rep = seacraft_core::seakeeping::head_sea_raos(surface, spec)
+            .map_err(|e| format!("seakeeping compute: {e}"))?;
+        return Ok((rep, None));
+    };
+    let mut ispec = IrregularSpec::new(input.spectrum(), spec.clone());
+    ispec.validate().map_err(|e| format!("sea state: {e}"))?;
+    let mut sk = spec.clone();
+    sk.omegas = ispec.omega_grid();
+    let rep = seacraft_core::seakeeping::head_sea_raos(surface, &sk)
+        .map_err(|e| format!("seakeeping compute: {e}"))?;
+    ispec.points = input.resolve_points(rep.x_lcg, rep.x_bow);
+    let irr = seacraft_core::seastate::irregular_from_raos(&rep, &ispec)
+        .map_err(|e| format!("sea state: {e}"))?;
+    Ok((rep, Some(irr)))
+}
+
 /// State for the performance tab (resistance prediction and seakeeping RAOs).
 #[derive(Debug, Clone)]
 pub struct PerformanceState {
@@ -275,6 +415,10 @@ pub struct PerformanceState {
     pub raos: Option<SeakeepingReport>,
     pub resistance_stale: bool,
     pub raos_stale: bool,
+    /// Input of the sea-state section.
+    pub sea_input: SeaStateInput,
+    /// Irregular-sea responses from the same run as `raos` (None unless a sea state was set).
+    pub sea_result: Option<IrregularReport>,
 }
 
 impl Default for PerformanceState {
@@ -290,9 +434,15 @@ impl Default for PerformanceState {
             raos: None,
             resistance_stale: true,
             raos_stale: true,
+            sea_input: SeaStateInput::default(),
+            sea_result: None,
         }
     }
 }
+
+/// What the RAO worker sends back: the RAOs and, with a sea state, the
+/// irregular-sea responses computed from them.
+type RaoOutcome = Result<(SeakeepingReport, Option<IrregularReport>), String>;
 
 pub struct App {
     surface: Option<Surface>,
@@ -342,7 +492,7 @@ pub struct App {
     perf_resistance_worker:
         Option<std::sync::mpsc::Receiver<(u64, Result<ResistanceResult, String>)>>,
     perf_resistance_generation: u64,
-    perf_raos_worker: Option<std::sync::mpsc::Receiver<(u64, Result<SeakeepingReport, String>)>>,
+    perf_raos_worker: Option<std::sync::mpsc::Receiver<(u64, RaoOutcome)>>,
     perf_raos_generation: u64,
     /// Cursor position on the active viewport's focal plane, for the status bar.
     cursor_world: Option<Vec3>,
@@ -568,6 +718,7 @@ impl App {
         self.perf_resistance_worker = None;
         self.perf_state.raos_stale = true;
         self.perf_state.raos = None;
+        self.perf_state.sea_result = None;
         self.perf_raos_worker = None;
         self.damage_result = None;
         self.damage_worker = None;
@@ -576,6 +727,7 @@ impl App {
         self.perf_resistance_worker = None;
         self.perf_state.raos_stale = true;
         self.perf_state.raos = None;
+        self.perf_state.sea_result = None;
         self.perf_raos_worker = None;
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
@@ -975,8 +1127,9 @@ impl App {
                     done = true;
                     if gen == self.perf_raos_generation {
                         match res {
-                            Ok(r) => {
+                            Ok((r, irr)) => {
                                 self.perf_state.raos = Some(r);
+                                self.perf_state.sea_result = irr;
                                 self.perf_state.raos_stale = false;
                             }
                             Err(e) => {
@@ -2021,6 +2174,7 @@ impl App {
         self.perf_resistance_worker = None;
         self.perf_state.raos_stale = true;
         self.perf_state.raos = None;
+        self.perf_state.sea_result = None;
         self.perf_raos_worker = None;
     }
 
@@ -2453,13 +2607,22 @@ impl App {
             .as_ref()
             .ok_or_else(|| "no model loaded".to_string())?;
         let spec = self.seakeeping_spec();
-        let rep = seacraft_core::seakeeping::head_sea_raos(surface, &spec)
-            .map_err(|e| format!("seakeeping compute: {e}"))?;
+        let sea = self.sea_for_job();
+        let (rep, irr) = compute_raos_with_sea(surface, &spec, sea.as_ref())?;
         self.perf_raos_generation += 1;
         self.perf_raos_worker = None;
         self.perf_state.raos = Some(rep);
+        self.perf_state.sea_result = irr;
         self.perf_state.raos_stale = false;
         Ok(self.perf_state.raos.as_ref().unwrap())
+    }
+
+    /// The sea-state input when the section is switched on.
+    fn sea_for_job(&self) -> Option<SeaStateInput> {
+        self.perf_state
+            .sea_input
+            .enabled
+            .then(|| self.perf_state.sea_input.clone())
     }
 
     pub fn start_resistance_compute(&mut self) {
@@ -2490,6 +2653,7 @@ impl App {
             None => return,
         };
         let spec = self.seakeeping_spec();
+        let sea = self.sea_for_job();
 
         self.perf_raos_generation += 1;
         let gen = self.perf_raos_generation;
@@ -2497,8 +2661,7 @@ impl App {
         self.perf_raos_worker = Some(rx);
 
         std::thread::spawn(move || {
-            let rep = seacraft_core::seakeeping::head_sea_raos(&surface, &spec)
-                .map_err(|e| format!("seakeeping compute: {e}"));
+            let rep = compute_raos_with_sea(&surface, &spec, sea.as_ref());
             let _ = tx.send((gen, rep));
         });
     }
@@ -2520,6 +2683,7 @@ impl App {
         self.perf_state.resistance = Some(res);
         self.perf_state.resistance_stale = false;
         self.perf_state.raos = Some(raos);
+        self.perf_state.sea_result = None;
         self.perf_state.raos_stale = false;
     }
 

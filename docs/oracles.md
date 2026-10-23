@@ -423,3 +423,37 @@ at U = 0 has no heave–pitch coupling; the speed terms satisfy A35 − A53 = 2U
 Analytic limits. The speed-term signs were derived by Claude from the relative-motion sectional force
 −D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, integrated by parts; the long-wave test caught the original swapped signs.
 The demo hull's KG = 2.2 m limit (≈ 1.10) is BM_L/GM_L from `seacraft hydro`. Not published values.
+
+---
+
+## 17. Irregular Head Seas: Spectra, Significant Responses, MSI (E2)
+
+### Formula
+Bretschneider (ITTC two-parameter) S(ω) = 5/16·Hs²·ωp⁴·ω⁻⁵·exp(−5/4·(ωp/ω)⁴); its moments are
+m_n = (A/4)·B^((n−4)/4)·Γ(1 − n/4) with A = 5/16·Hs²·ωp⁴, B = 5/4·ωp⁴, so m0 = Hs²/16, T1 = 0.7718·Tp,
+Tz = 0.7104·Tp. JONSWAP multiplies by γ^r (σ = 0.07/0.09) and is rescaled numerically to m0 = Hs²/16.
+Responses: m_n = ∫|H(ω)|²·ω_eⁿ·S(ω) dω over the incident frequency, ω_e = ω + ω²U/g; significant amplitude 2√m0.
+Point motion s = η3 + x_r·η5 (pitch bow up), relative motion s − e^{ikx_r}, acceleration −ω_e²·s.
+MSI (O'Hanlon & McCauley 1974, 2 h): 100·Φ((log10(a/g) − μ)/0.4), μ = −0.819 + 2.32·(log10 ω)², a = 0.798·σ_a.
+
+### Test Locations
+- [`crates/seacraft-core/src/seastate.rs`](../crates/seacraft-core/src/seastate.rs): `bretschneider_moments_match_the_oracle`,
+  `jonswap_gamma_one_is_bretschneider_and_normalised`, `flat_rao_gives_half_hs_at_any_speed`,
+  `resonant_synthetic_rao_matches_the_oracle`, `msi_matches_the_oracle`, `long_waves_are_followed_on_the_demo_hull`,
+  `moderate_sea_on_the_demo_hull_is_finite_and_bow_is_worse`.
+
+### Oracle values
+Recipe: [`docs/oracles/irregular_seas.py`](oracles/irregular_seas.py) — run with `python3 -I irregular_seas.py`
+(scipy quadrature, independent of the Rust grid integration).
+
+| Quantity (Bretschneider Hs = 2 m, Tp = 8 s) | Value |
+|---|---|
+| m0 / m1 / m2 | 0.250000 / 0.254414 / 0.305597 |
+| JONSWAP γ = 3.3 normalisation (Goda: 1 − 0.287 ln γ) | 0.6558 (0.6573) |
+| Resonant RAO (ωn 1.2, ζ 0.2, U 3 m/s): m0 / m2 / m4 | 0.825369 / 1.050609 / 1.590609 |
+| MSI (a/g, ω) → %: (0.10, 1.0) (0.05, 1.0) (0.20, 1.0) (0.10, 0.5) (0.10, 2.0) (0.02, 1.2) | 32.545, 11.409, 61.794, 16.401, 16.401, 1.267 |
+
+### Provenance
+Analytic moments and a hand-checkable normal-CDF formula, computed by Claude with scipy. The relative-motion
+sign rests on the RAO phases: in long waves pitch leads heave by ≈ +90° (λ/L = 8: +92.8°), i.e. the hull
+follows the wave slope, so s ≈ e^{ikx_r}. Not published values.

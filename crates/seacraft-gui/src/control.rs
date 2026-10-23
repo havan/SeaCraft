@@ -1503,6 +1503,21 @@ fn handle_inner(
             }
             Ok(v)
         }
+        "seakeeping.irregular" | "seakeeping_irregular" => {
+            let surface = app
+                .surface()
+                .ok_or_else(|| "seakeeping.irregular: no model is loaded".to_string())?;
+            let spec =
+                seacraft_core::seastate::IrregularSpec::from_params(p, surface.settings.draft)
+                    .map_err(|e| format!("seakeeping.irregular: {e}"))?;
+            let rep = seacraft_core::seastate::irregular_head_sea(surface, &spec)
+                .map_err(|e| format!("seakeeping.irregular: {e}"))?;
+            let mut v = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        }
         "model.split_face" => {
             // A topology edit: snapshot first, so Ctrl+Z in the window undoes it
             // exactly like a drag does.
@@ -3034,6 +3049,38 @@ mod tests {
             false
         );
 
+        // ---- seakeeping.irregular: sea-state responses ---------------------
+        let dirty_before = app.is_dirty();
+        let undo_before = app.undo_len();
+        let r = call(
+            &mut app,
+            &ctx,
+            "seakeeping.irregular",
+            json!({
+                "draft": 0.62, "speed_kn": 6.0, "kg": 0.392, "stations": 11,
+                "hs": 1.0, "tp": 4.0, "omegas": 20,
+                "points": [{"name": "Deck", "x": 0.0}]
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["backend"], "app");
+        assert_eq!(r["result"]["points"][0]["name"], "Deck");
+        assert!(r["result"]["heave"]["significant"].as_f64().unwrap() > 0.0);
+        assert_eq!(app.is_dirty(), dirty_before);
+        assert_eq!(app.undo_len(), undo_before);
+        for bad in [
+            json!({ "draft": 0.62 }),
+            json!({ "draft": 0.62, "hs": 1.0, "tp": 0.0 }),
+            json!({ "draft": 0.62, "hs": 1.0, "tp": 4.0, "gamma": 0.1 }),
+            json!({ "draft": 0.62, "hs": 1.0, "tp": 4.0, "points": [{"x": "a"}] }),
+        ] {
+            assert_eq!(
+                call(&mut app, &ctx, "seakeeping.irregular", bad.clone())["ok"],
+                false,
+                "{bad}"
+            );
+        }
+
         // ---- curves.offsets: the same table from the app's model ----------
         let dirty_before = app.is_dirty();
         let undo_before = app.undo_len();
@@ -3476,6 +3523,7 @@ mod tests {
             "loading.compute",
             "damage.compute",
             "performance.compute",
+            "seakeeping.irregular",
             "point.move",
             "edge.crease",
             "hydro.compute",

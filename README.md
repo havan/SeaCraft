@@ -353,7 +353,9 @@ across wavelength ratios $\lambda/L$, deriving mass distribution from fluid $KG$
 and reporting natural heave and pitch periods along with irregular frequency
 warnings. Both resistance and seakeeping run on background worker threads with
 generation counters, accompanied by interactive XY plots, tabular readouts, and
-validity warnings in amber.
+validity warnings in amber. Its *Sea state* section (spectrum, $H_s$, $T_p$, $\gamma$,
+response points) adds significant heave, pitch, point motions, relative motion,
+vertical accelerations and MSI in irregular head seas from the same RAO run.
 
 ### Seakeeping (strip-theory heave & pitch motions)
 
@@ -378,6 +380,25 @@ loads*, SNAME Trans. 78):
   $\omega_e = \omega + \omega^2 U / g$, reporting non-dimensional heave
   amplitude $z_a / \zeta_a$, pitch amplitude $\theta_a / (k \zeta_a)$, phases, and
   natural heave/pitch frequencies.
+
+#### Irregular head seas (`seastate`)
+
+`seastate::irregular_head_sea` (`seacraft seakeeping hull.fef --draft T --hs M --tp S
+[--gamma G] [--point NAME:X]...` / MCP `seakeeping_irregular` / GUI control
+`seakeeping.irregular` / the Performance tab's *Sea state* section) integrates the
+RAOs against a long-crested Bretschneider (ITTC two-parameter) or, with `--gamma`,
+JONSWAP spectrum (normalised numerically to $m_0 = H_s^2/16$). The RAOs are computed
+on $0.2\,\omega_p \ldots 5\,\omega_p$ and the response moments
+$m_n = \int |H|^2 \omega_e^n S(\omega)\,d\omega$ run over the incident frequency.
+Reported per response: significant amplitude $2\sqrt{m_0}$, RMS and the mean
+zero-crossing encounter period — for heave (m), pitch (deg, bow up) and, at each
+point (default the LCG and the forward end of the waterline; `--point NAME:X` adds
+others at model $x$), vertical motion, motion relative to the wave surface and
+vertical acceleration (m/s², g). The motion sickness incidence follows O'Hanlon &
+McCauley (1974) for a 2-hour exposure, from the mean absolute acceleration
+$0.798\,\sigma_a$ at the acceleration's mean zero-crossing encounter frequency.
+Head seas only, linear and long-crested; with `--json` the result is the
+`irregular` object. Oracles: `docs/oracles.md` §17.
 
 ### Fairing analysis
 
@@ -489,6 +510,7 @@ seacraft loadcase  hull.fef [case.json|project.json] [--name NAME] [--json]
 seacraft damage    hull.fef [case.json|project.json] [--name NAME] [--json]
 seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--stations N]
                             [--lambda-min 0.3] [--lambda-max 3.0] [--points 30] [--csv|--json]
+                            [--hs M --tp S [--gamma G] [--point NAME:X]...]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]
 seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]

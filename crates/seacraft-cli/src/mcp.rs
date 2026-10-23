@@ -103,6 +103,8 @@ hydro_compute {draft, trim, heel_deg, kg} for one floating condition (free_trim 
 stability_cross_curves for KN/GZ and the IMO A.749 criteria -> render_png to look at the result.
 Other measurements: bonjean_curves, table_of_offsets, hydro_table, trim_scan, resistance_curve, planing_curve,
 unfold_plate. Edit with move_point, set_crease, split_face, insert_edge and transform_hull.
+seakeeping_raos gives heave and pitch RAOs in regular head seas; seakeeping_irregular {hs, tp, gamma?} integrates them over a
+wave spectrum for significant motions, relative motion, accelerations and MSI.
 optimize_hull {speed_kn} reshapes the hull (Cp, LCB, L/B) to cut resistance at a speed, holding displacement; it edits the model.
 Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
 Project data: project_get and project_set read and write the design sidecar (loading conditions, compartments, damage cases, windage).
@@ -818,6 +820,7 @@ impl McpServer {
             "weather_criterion" => self.weather_criterion(a),
             "damage_stability" => self.damage_stability(a),
             "seakeeping_raos" => self.seakeeping_raos(a),
+            "seakeeping_irregular" => self.seakeeping_irregular(a),
             "bonjean_curves" => self.bonjean_curves(a),
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
@@ -1516,6 +1519,22 @@ impl McpServer {
         let rep = seacraft_core::seakeeping::head_sea_raos(&self.surface, &spec)
             .map_err(|e| format!("seakeeping_raos: {e}"))?;
 
+        let mut v = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn seakeeping_irregular(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let params = Value::Object(a.clone());
+        let spec = seacraft_core::seastate::IrregularSpec::from_params(
+            &params,
+            self.surface.settings.draft,
+        )
+        .map_err(|e| format!("seakeeping_irregular: {e}"))?;
+        let rep = seacraft_core::seastate::irregular_head_sea(&self.surface, &spec)
+            .map_err(|e| format!("seakeeping_irregular: {e}"))?;
         let mut v = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
             o.insert("backend".into(), json!("headless"));
@@ -2671,6 +2690,34 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "seakeeping_irregular",
+            "Seakeeping in irregular head seas (significant motions, accelerations, MSI)",
+            "Heave, pitch, vertical motion, motion relative to the wave surface, vertical acceleration and the motion \
+             sickness incidence in a long-crested irregular head sea, from the strip-theory RAOs of seakeeping_raos \
+             integrated against a Bretschneider (default) or JONSWAP (give gamma) spectrum over the incident frequency. \
+             Significant amplitude is 2*sqrt(m0); Tz is the mean zero-crossing encounter period. MSI is the share of \
+             unadapted people expected to vomit within 2 hours (O'Hanlon & McCauley 1974) from the mean absolute \
+             acceleration 0.798*sigma and its mean zero-crossing encounter frequency. Responses are reported at \
+             `points` ([{name, x}] in model x; default LCG and Bow = forward end of the design waterline). \
+             Heave in m, pitch in degrees (bow up), accelerations in m/s2 and g.",
+            obj(
+                json!({
+                    "hs": number("Significant wave height in metres"),
+                    "tp": number("Peak wave period in seconds"),
+                    "gamma": number("JONSWAP peak enhancement factor 1-20 (omit for Bretschneider)"),
+                    "draft": number("Design draft in metres (defaults to model's design draft)"),
+                    "speed_kn": number("Ship forward speed in knots (default 0.0)"),
+                    "kg": number("Vertical centre of gravity KG in metres above keel (default 0.0)"),
+                    "kyy": number("Pitch radius of gyration in metres (default 0.25 * Lwl)"),
+                    "stations": integer("Number of transverse stations along waterline, 3-200 (default 21)"),
+                    "points": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "x": {"type": "number"}}, "required": ["x"]}, "description": "Evaluation points {name, x} with x in model coordinates, metres (default LCG and Bow)"},
+                    "omegas": integer("Frequencies across 0.2..5 times the peak frequency, 8-2000 (default 60)"),
+                }),
+                &["hs", "tp"],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "bonjean_curves",
             "Bonjean curves",
             "Section area against draft at every longitudinal station, cut from the refined mesh at even keel: the \
@@ -3323,6 +3370,9 @@ impl Remote {
                 self.request("damage.compute", p)
             }
             "seakeeping_raos" => self.request("seakeeping.compute", Value::Object(a.clone())),
+            "seakeeping_irregular" => {
+                self.request("seakeeping.irregular", Value::Object(a.clone()))
+            }
             "bonjean_curves" => self.request("curves.bonjean", Value::Object(a.clone())),
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
@@ -3651,6 +3701,7 @@ mod tests {
                 "weather_criterion",
                 "damage_stability",
                 "seakeeping_raos",
+                "seakeeping_irregular",
                 "bonjean_curves",
                 "table_of_offsets",
                 "resistance_curve",
@@ -4981,6 +5032,68 @@ mod tests {
         assert!(res["natural_heave_omega"].as_f64().unwrap() > 0.0);
         assert!(res["natural_pitch_omega"].as_f64().unwrap() > 0.0);
         fails(&mut s, 2, "seakeeping_raos", json!({ "draft": -1.0 }));
+    }
+
+    #[test]
+    fn seakeeping_irregular_tool_reports_sea_state_responses() {
+        let mut s = McpServer::new();
+        let res = ok(
+            &mut s,
+            1,
+            "seakeeping_irregular",
+            json!({
+                "draft": 0.62,
+                "speed_kn": 6.0,
+                "kg": 0.392,
+                "stations": 11,
+                "hs": 1.0,
+                "tp": 4.0,
+                "gamma": 3.3,
+                "omegas": 24,
+                "points": [{"name": "Mid", "x": 0.0}],
+            }),
+        );
+        assert_eq!(res["backend"], "headless");
+        assert_eq!(res["sea"]["kind"], "jonswap");
+        assert_eq!(res["omega_count"], 24);
+        assert!(res["heave"]["significant"].as_f64().unwrap() > 0.0);
+        assert!(res["pitch_deg"]["significant"].as_f64().unwrap() > 0.0);
+        let pts = res["points"].as_array().expect("points");
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0]["name"], "Mid");
+        assert!(pts[0]["msi_percent"].as_f64().unwrap() >= 0.0);
+        // Default points are LCG and Bow.
+        let dflt = ok(
+            &mut s,
+            2,
+            "seakeeping_irregular",
+            json!({ "draft": 0.62, "hs": 1.0, "tp": 4.0, "stations": 11, "omegas": 16 }),
+        );
+        assert_eq!(dflt["sea"]["kind"], "bretschneider");
+        assert_eq!(dflt["points"][0]["name"], "LCG");
+        assert_eq!(dflt["points"][1]["name"], "Bow");
+        // A missing required argument is a protocol error (-32602), not a tool error.
+        let missing = request(
+            &mut s,
+            3,
+            "tools/call",
+            json!({"name": "seakeeping_irregular", "arguments": { "draft": 0.62 }}),
+        );
+        assert_eq!(missing["error"]["code"], -32602, "{missing}");
+        fails(
+            &mut s,
+            4,
+            "seakeeping_irregular",
+            json!({ "draft": 0.62, "hs": -1.0, "tp": 4.0 }),
+        );
+        let wrong_type = request(
+            &mut s,
+            5,
+            "tools/call",
+            json!({"name": "seakeeping_irregular",
+                   "arguments": { "draft": 0.62, "hs": 1.0, "tp": 4.0, "points": "bow" }}),
+        );
+        assert_eq!(wrong_type["error"]["code"], -32602, "{wrong_type}");
     }
 
     #[test]
