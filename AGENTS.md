@@ -40,7 +40,9 @@ dragging with undo, a layer dock, a live hydrostatics dock with GZ cross
 curves, file/export actions, and a tabbed design dock (Loading, Damage,
 Windage, Performance) over the `<model>.seacraft.json` project file, with
 tanks, compartments and windage drawn in the viewports and a design report
-with project sections. `0.1.0` was cut on 2026-10-24.
+with project sections. `0.1.0` was cut on 2026-10-24; round 3 (`0.1.1` …
+`0.1.10`) was a fix round from a three-area bug hunt
+(`.hermes/plans/2026-10-24_round3-fix-round.md`).
 
 The workspace is a **local-only** git repository: no remotes, no push.
 
@@ -194,6 +196,16 @@ These were real failures in this codebase; the fixes are load-bearing.
   the old fixed-trim behaviour for speed and compatibility. The check is the
   analytic box: at 2 m draft, asking a 10 m box for `LCB` 4.0 m must trim 2.4 m
   bow-up (see `tests/analytic.rs`).
+* **Chained loops come out in arbitrary directions.** Two pontoons walked
+  opposite ways cancelled each other's waterplane. `hydro::loop_moments` and
+  `clipped_loop_moments` take each loop's sign from its nesting
+  (`math::loop_signs`), never from the winding the chain walk produced.
+* **A point in plane coordinates needs the plane's offset.** `u·cx + v·cy`
+  lies in the plane through the origin; add `-n·d` to land on the real plane
+  (the LCF was at z ≈ 0 and shifted in x under trim).
+* **Savitsky's deadrise relation is `C_Lβ = C_L0 − 0.0065 β C_L0^0.6`.** It
+  gives `C_Lβ` from `C_L0`; solve it for `C_L0` (`planing::flat_plate_lift`),
+  do not substitute `C_Lβ` on the right.
 * **`PolygonMoments::from_polygon` returns signed values.** Areas/moments may
   come back negative depending on winding; callers take `abs()` where the
   orientation is not guaranteed.

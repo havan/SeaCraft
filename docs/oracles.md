@@ -514,3 +514,31 @@ plain method (`lid = false`) at ξ = 1.82 must be more than 30 % off in a.
 ### Provenance
 Lid oracle and the transom formulas derived and checked by Claude (2026-10-23); not published values. Ohmatsu, "On
 the irregular frequencies in the theory of oscillating bodies in a free surface", Papers Ship Res. Inst. 48 (1975).
+
+## 19. Round-3 fixes: silhouette windage, Savitsky CL0, catamaran friction, loop signs
+
+### Formulas
+- Lateral windage is the side silhouette: at each station `x` the hull spans `[z_lo(x), z_hi(x)]`;
+  above-water area `A = ∫ (z_hi − max(z_lo, z_wl(x)))⁺ dx`, centroid `∫ ½(top² − bottom²) dx / A`, and the same
+  below the waterline with `min(z_hi, z_wl)`. Trapezoidal rule over 400 stations.
+- Savitsky (1964): `C_Lβ = C_L0 − 0.0065 β C_L0^0.6`, solved for `C_L0` by `C_L0 ← C_Lβ + 0.0065 β C_L0^0.6`.
+- Michell with a catamaran spacing: `R_W` is for both demihulls, so `R_F = ½ρV²·(2S)·C_F` and `C_W` uses `2S`.
+- Waterplane/section loops: sign `(−1)^depth` from nesting (even-odd containment of each loop's first point).
+
+### Tests
+- [`weather.rs::windage_is_the_side_silhouette_not_the_centreline_cut`](../crates/seacraft-core/src/weather.rs) — a
+  10 m × 4 m barge with a deck dipping from z = 3 (sides) to 2.5 (centreline), unrefined net, d = 1.2 m: A = 18 m²,
+  z = 2.1 m, underwater 12 m² at 0.6 m (the centreline cut would give 13 m²). Trimmed 1 m by the bow: underwater
+  centroid `10 (1.7³ − 0.7³) / 6 / 12` = 0.63472 m.
+- [`planing.rs::flat_plate_lift_matches_a_hand_solution`](../crates/seacraft-core/src/planing.rs) — β = 10°,
+  C_Lβ = 0.05 → C_L0 = 0.062290 (checked in Python: 0.06229 − 0.065 · 0.06229^0.6 = 0.05000).
+- [`michell.rs::test_catamaran_large_spacing_doubles_monohull`](../crates/seacraft-core/src/michell.rs) — at
+  s/L = 10, R_F doubles exactly and R_T within 2 %.
+- [`math.rs::loop_signs_count_separate_loops_and_subtract_holes`](../crates/seacraft-core/src/math.rs) — two unit
+  squares walked in opposite directions sum to 2; a 2 × 2 square with a unit hole, both counter-clockwise, gives 3.
+- [`hydro.rs::the_lcf_lies_on_the_trimmed_waterplane`](../crates/seacraft-core/src/hydro.rs) — demo at T 0.62,
+  trim 0.3: `|n·LCF + d| < 1e-9`.
+
+### Provenance
+Derived by Claude for the round-3 fixes (2026-10-24); hand and Python checks, not published values. Savitsky,
+"Hydrodynamic design of planing hulls", Marine Technology 1(1), 1964.
