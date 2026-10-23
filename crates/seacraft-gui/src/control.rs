@@ -1263,6 +1263,65 @@ fn handle_inner(app: &mut App, ctx: &egui::Context, req: &ControlRequest, p: &Va
                 "written": written,
             }))
         }
+        "report.design" => {
+            let path_str = text(p, "path")?.filter(|s| !s.trim().is_empty()).ok_or("report.design: `path` is required")?;
+            let path = std::path::PathBuf::from(path_str.trim());
+            let surface = app.surface().ok_or_else(|| "report.design: no model loaded".to_string())?;
+
+            let mut opts = seacraft_core::report::ReportOptions::from_surface(surface);
+            if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
+                opts.draft = d;
+            }
+            if let Some(kg) = number_in(p, "kg", 0.0..=1.0e3)? {
+                opts.kg = kg;
+            }
+            if let Some(lcg) = number_in(p, "lcg", -1.0e6..=1.0e6)? {
+                opts.lcg_x = Some(lcg);
+            }
+            if let Some(speeds) = numbers(p, "speeds_kn")?.or(numbers(p, "speeds")?) {
+                if !speeds.is_empty() {
+                    opts.speeds_kn = speeds;
+                }
+            }
+            if let Some(nr) = boolean(p, "include_resistance")? {
+                opts.include_resistance = nr;
+            }
+            if let Some(pl) = boolean(p, "include_planing")? {
+                opts.include_planing = pl;
+            }
+            if let Some(lvl) = number_in(p, "level", 0.0..=6.0)? {
+                opts.level = lvl.round() as u8;
+            } else {
+                opts.level = app.subdivision_level();
+            }
+            opts.mode = app.subdivision_mode();
+
+            let html = seacraft_core::report::design_report(surface, &opts)
+                .map_err(|e| format!("report.design: {e}"))?;
+            std::fs::write(&path, &html)
+                .map_err(|e| format!("report.design: cannot write {}: {e}", path.display()))?;
+
+            let sections = seacraft_core::report::report_sections(&opts);
+
+            let hull = seacraft_core::hydro::Hull::new(surface, seacraft_core::subdiv::SubdivisionOptions { level: opts.level, mode: opts.mode });
+            let h_opts = seacraft_core::hydro::HydroOptions::from_surface(surface, seacraft_core::subdiv::SubdivisionOptions { level: opts.level, mode: opts.mode });
+            let cond = seacraft_core::stability::StabilityCondition {
+                kg: opts.kg,
+                trim: 0.0,
+                lcg_x: opts.lcg_x.or(Some(seacraft_core::stability::upright_lcb(&hull, opts.draft))),
+            };
+            let target_disp = hull.displaced_volume(opts.draft, 0.0, 0.0) * h_opts.water_density / 1000.0;
+            let curves = seacraft_core::stability::cross_curves(&hull, &opts.heels, &[target_disp], &cond, &h_opts);
+            let imo_pass = seacraft_core::stability::evaluate_imo_criteria(&curves, 0).map(|c| c.passed).unwrap_or(false);
+
+            Ok(json!({
+                "path": path.to_string_lossy(),
+                "bytes": html.len(),
+                "sections": sections,
+                "imo_pass": imo_pass,
+                "imo_passed": imo_pass,
+            }))
+        }
         "app.quit" => {
             app.request_quit(ctx);
             Ok(json!({ "quitting": true }))
@@ -1841,6 +1900,16 @@ mod tests {
         assert_eq!(call(&mut app, &ctx, "model.export", json!({ "path": obj_text, "format": "tiff" }))["ok"], false);
         assert_eq!(call(&mut app, &ctx, "model.export", json!({ "path": obj_text }))["ok"], false);
 
+        // ---- report.design ------------------------------------------------
+        let report_path = scratch("dossier.html");
+        let report_text = report_path.to_string_lossy().to_string();
+        let r = call(&mut app, &ctx, "report.design", json!({ "path": report_text, "draft": 0.62, "kg": 2.2 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(report_path.exists());
+        assert!(r["result"]["bytes"].as_u64().unwrap_or(0) > 1000);
+        let _ = std::fs::remove_file(&report_path);
+        assert_eq!(call(&mut app, &ctx, "report.design", json!({}))["ok"], false);
+
         // ---- model.load_demo ----------------------------------------------
         let r = call(&mut app, &ctx, "model.load_demo", json!({}));
         assert_eq!(r["ok"], true, "{r}");
@@ -1900,6 +1969,7 @@ mod tests {
             "edge.crease",
             "hydro.compute",
             "stability.cross_curves",
+            "report.design",
             "app.quit",
             "no.such.method",
         ];

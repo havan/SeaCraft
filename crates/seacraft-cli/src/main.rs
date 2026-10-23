@@ -69,6 +69,8 @@ enum Command {
     Stability(StabilityArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
     Linesplan(LinesplanArgs),
+    /// Design dossier: self-contained HTML report with particulars, linesplan, hydrostatics, SAC, stability and resistance
+    Report(ReportArgs),
     /// Render a preview PNG, including zebra, curvature and draft analysis
     Render(RenderArgs),
     /// Serve the hull to a Model Context Protocol client over stdio
@@ -844,6 +846,35 @@ struct StabilityArgs {
 }
 
 #[derive(Args, Debug)]
+struct ReportArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output HTML path
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Draft in metres (defaults to model's design draft)
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Centre of gravity height above keel in metres
+    #[arg(long)]
+    kg: Option<f64>,
+    /// Longitudinal centre of gravity in model x
+    #[arg(long)]
+    lcg: Option<f64>,
+    /// Speeds in knots, comma separated
+    #[arg(long)]
+    speeds: Option<String>,
+    /// Exclude Holtrop-Mennen resistance analysis
+    #[arg(long)]
+    no_resistance: bool,
+    /// Include Savitsky planing hull analysis
+    #[arg(long)]
+    planing: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
 struct McpArgs {
     /// Forward tool calls to a running `seacraft-gui --control HOST:PORT`
     #[arg(long, value_name = "HOST:PORT")]
@@ -907,6 +938,7 @@ fn run() -> Result<()> {
         Command::Planing(a) => cmd_planing(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Linesplan(a) => cmd_linesplan(a),
+        Command::Report(a) => cmd_report(a),
         Command::Render(a) => cmd_render(a),
         Command::Mcp(a) => cmd_mcp(a),
     }
@@ -2078,6 +2110,43 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         _ => linesplan::svg(&s, opts),
     };
     std::fs::write(&a.output, text)
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    println!("wrote {}", a.output.display());
+    Ok(())
+}
+
+fn cmd_report(a: ReportArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let mut opts = seacraft_core::report::ReportOptions::from_surface(&s);
+    opts.level = a.subdiv.level;
+    opts.mode = a.subdiv.mode.into();
+    if let Some(d) = a.draft {
+        if d <= 0.0 {
+            bail!("draft must be positive");
+        }
+        opts.draft = d;
+    }
+    if let Some(kg) = a.kg {
+        if kg < 0.0 {
+            bail!("kg must be non-negative");
+        }
+        opts.kg = kg;
+    }
+    if let Some(lcg) = a.lcg {
+        opts.lcg_x = Some(lcg);
+    }
+    if let Some(speeds) = &a.speeds {
+        opts.speeds_kn = parse_list(speeds)?;
+    }
+    if a.no_resistance {
+        opts.include_resistance = false;
+    }
+    if a.planing {
+        opts.include_planing = true;
+    }
+    let html = seacraft_core::report::design_report(&s, &opts)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    std::fs::write(&a.output, html)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());
     Ok(())

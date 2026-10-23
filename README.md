@@ -232,6 +232,17 @@ shades:
 * **Draft** — green where the surface can be pulled from +z at more than the
   draft angle, red on undercuts.
 
+### Design dossier
+
+`seacraft report` (and the `design_report` MCP tool) compiles a self-contained
+HTML5 design dossier for a hull: principal particulars, inlined linesplan SVG,
+hydrostatics table, sectional area curve SVG, GZ cross curves and IMO A.749
+intact-stability evaluation, and Holtrop–Mennen powering curves.
+
+```console
+seacraft report hull.fef -o report.html --kg 1.2
+```
+
 `raster` is a dependency-free CPU z-buffer renderer with 2× supersampling and a
 small PNG encoder, so those modes work per pixel with no GPU:
 
@@ -310,6 +321,7 @@ seacraft lackenby  hull.fef -o out.fef [--cp 0.72] [--lcb -9.3] [--draft T] [--j
 seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,...]
                             [--trim m | --free-trim [--lcg x]] [--csv out.csv]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
+seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing]
 seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]
 seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]

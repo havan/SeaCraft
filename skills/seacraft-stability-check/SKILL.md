@@ -45,7 +45,7 @@ Ask for, or state as an assumption, KG, the draft or displacement, the LCG, and 
 
 ## Report
 
-State the condition (draft, trim, heel, KG, LCG, density, `level`), then displacement, KM, GM, LCB, the IMO table with margins, and warnings. Datum above keel for KB, KM, KG.
+State the condition (draft, trim, heel, KG, LCG, density, `level`), then displacement, KM, GM, LCB, the IMO table with margins, and warnings. Datum above keel for KB, KM, KG. Finish by producing `design_report {"path": "/tmp/report.html"}`.
 
 ## Red flags
 

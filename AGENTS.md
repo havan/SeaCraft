@@ -61,6 +61,7 @@ crates/seacraft-core/
   src/threemf.rs            spatial-grid vertex welding + 3MF 1.3 archive writer
   src/analysis.rs           vertex normals, discrete curvature, zebra/draft/curvature
   src/raster.rs             CPU z-buffer rasterizer, 2x SSAA, waterplane depth, PNG
+  src/report.rs             design dossier: self-contained HTML5 report (particulars, lines, hydro, SAC, stability, resistance)
   src/export.rs             OBJ (y- or z-up), binary STL, 3MF, PLY, IGES, HTML viewer
   src/demo.rs               parametric 12 m demo hull, full and half model
   src/parametric.rs         parametric hull generator (displacement/planing/yacht) from principal dims

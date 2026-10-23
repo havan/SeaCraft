@@ -38,6 +38,7 @@ pub mod offsets;
 pub mod parametric;
 pub mod planing;
 pub mod raster;
+pub mod report;
 pub mod resistance;
 pub mod stability;
 pub mod subdiv;
@@ -50,6 +51,7 @@ pub mod transform;
 pub use analysis::AnalysisMode;
 pub use hydro::{HydroOptions, Hydrostatics};
 pub use mesh::{Layer, ProjectSettings, Surface};
+pub use report::{design_report, ReportOptions};
 pub use subdiv::{SubdivisionMode, SubdivisionOptions};
 
 /// Crate version.

@@ -47,7 +47,7 @@ use seacraft_core::mesh::Surface;
 use seacraft_core::stability::{
     cross_curves, evaluate_imo_criteria, hydrostatics_free_trim, upright_lcb, StabilityCondition,
 };
-use seacraft_core::subdiv::SubdivisionMode;
+use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     curves, demo, develop, export, fef, linesplan, offsets,
     parametric::{self, HullKind, HullSpec},
@@ -457,6 +457,7 @@ impl McpServer {
             "trim_scan" => self.trim_scan(a),
             "export_linesplan" => self.export_linesplan(a),
             "render_png" => self.render_png(a),
+            "design_report" => self.design_report(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
         }
     }
@@ -1339,6 +1340,71 @@ impl McpServer {
         }))
     }
 
+    fn design_report(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let path = str_arg(a, "path")
+            .filter(|p| !p.trim().is_empty())
+            .ok_or("design_report: give `path`")?;
+        let path = PathBuf::from(path);
+
+        let mut opts = seacraft_core::report::ReportOptions::from_surface(&self.surface);
+        if let Some(d) = number_arg(a, "draft") {
+            if d <= 0.0 {
+                return Err("design_report: `draft` must be positive".into());
+            }
+            opts.draft = d;
+        }
+        if let Some(kg) = number_arg(a, "kg") {
+            if kg < 0.0 {
+                return Err("design_report: `kg` must be non-negative".into());
+            }
+            opts.kg = kg;
+        }
+        if let Some(lcg) = number_arg(a, "lcg") {
+            opts.lcg_x = Some(lcg);
+        }
+        if let Some(v) = a.get("speeds_kn").or_else(|| a.get("speeds")) {
+            opts.speeds_kn = positives(v, "speeds_kn")?;
+        }
+        if let Some(nr) = bool_arg(a, "include_resistance") {
+            opts.include_resistance = nr;
+        }
+        if let Some(pl) = bool_arg(a, "include_planing") {
+            opts.include_planing = pl;
+        }
+        if a.get("level").is_some() {
+            opts.level = level_arg(a)?;
+        } else {
+            opts.level = self.opts.subdivision.level;
+        }
+        opts.mode = self.opts.subdivision.mode;
+
+        let html = seacraft_core::report::design_report(&self.surface, &opts)
+            .map_err(|e| format!("design_report: {e}"))?;
+        std::fs::write(&path, html.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+
+        let sections = seacraft_core::report::report_sections(&opts);
+
+        let subdiv = SubdivisionOptions { level: opts.level, mode: opts.mode };
+        let hull = hydro::Hull::new(&self.surface, subdiv);
+        let h_opts = hydro::HydroOptions::from_surface(&self.surface, subdiv);
+        let cond = StabilityCondition {
+            kg: opts.kg,
+            trim: 0.0,
+            lcg_x: opts.lcg_x.or(Some(upright_lcb(&hull, opts.draft))),
+        };
+        let target_disp = hull.displaced_volume(opts.draft, 0.0, 0.0) * h_opts.water_density / 1000.0;
+        let curves = cross_curves(&hull, &opts.heels, &[target_disp], &cond, &h_opts);
+        let imo_pass = evaluate_imo_criteria(&curves, 0).map(|c| c.passed).unwrap_or(false);
+
+        Ok(json!({
+            "path": path.to_string_lossy(),
+            "bytes": html.len(),
+            "sections": sections,
+            "imo_pass": imo_pass,
+            "imo_passed": imo_pass,
+        }))
+    }
+
     /// The floating condition a request asks for, applied to `opts`.
     fn apply_condition(
         &self,
@@ -1927,6 +1993,24 @@ pub fn tool_definitions() -> Vec<Value> {
             ),
             Effect::Files,
         ),
+        tool(
+            "design_report",
+            "Generate a design dossier",
+            "Produce a self-contained HTML5 design report of the hull (particulars, linesplan, hydrostatics table, \
+             sectional area curve, GZ curve with IMO A.749 criteria, and Holtrop-Mennen resistance). \
+             Returns path, bytes, sections present, and IMO pass/fail.",
+            obj(
+                json!({
+                    "path": string("Output HTML path"),
+                    "draft": number("Draft in metres (default: model's design draft)"),
+                    "kg": number("Vertical centre of gravity above keel in metres"),
+                    "lcg": number("Longitudinal centre of gravity in model x"),
+                    "speeds_kn": {"type": "array", "items": {"type": "number"}, "description": "Speeds in knots for resistance evaluation"},
+                }),
+                &["path"],
+            ),
+            Effect::Files,
+        ),
     ]
 }
 
@@ -2268,6 +2352,34 @@ impl Remote {
                 }
                 self.request("ui.render", p)
             }
+            "design_report" => {
+                let path = str_arg(a, "path")
+                    .filter(|p| !p.trim().is_empty())
+                    .ok_or("design_report: give `path`")?;
+                let mut p = json!({ "path": path });
+                if let Some(d) = number_arg(a, "draft") {
+                    p["draft"] = json!(d);
+                }
+                if let Some(kg) = number_arg(a, "kg") {
+                    p["kg"] = json!(kg);
+                }
+                if let Some(lcg) = number_arg(a, "lcg") {
+                    p["lcg"] = json!(lcg);
+                }
+                if let Some(v) = a.get("speeds_kn").or_else(|| a.get("speeds")) {
+                    p["speeds_kn"] = v.clone();
+                }
+                if let Some(nr) = bool_arg(a, "include_resistance") {
+                    p["include_resistance"] = json!(nr);
+                }
+                if let Some(pl) = bool_arg(a, "include_planing") {
+                    p["include_planing"] = json!(pl);
+                }
+                if a.get("level").is_some() {
+                    p["level"] = json!(level_arg(a)?);
+                }
+                self.request("report.design", p)
+            }
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
         }
     }
@@ -2453,7 +2565,7 @@ mod tests {
         let pong = request(&mut s, 3, "ping", json!({}));
         assert_eq!(pong["result"], json!({}));
 
-        // tools/list: the nineteen hull tools, each with a JSON Schema.
+        // tools/list: every hull tool, each with a JSON Schema.
         let list = request(&mut s, 4, "tools/list", json!({}));
         let tools = list["result"]["tools"].as_array().expect("a tool array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
@@ -2480,6 +2592,7 @@ mod tests {
                 "trim_scan",
                 "export_linesplan",
                 "render_png",
+                "design_report",
             ]
         );
         for t in tools {
@@ -2982,6 +3095,22 @@ mod tests {
             "unfold_plate",
             json!({"axis": "z", "from": 50.0, "to": 60.0}),
         );
+
+        // design_report writes the HTML dossier and returns summary.
+        let rep = temp_path("html");
+        let rep_res = ok(
+            &mut s,
+            89,
+            "design_report",
+            json!({"path": rep.to_string_lossy(), "draft": 0.62, "kg": 2.2}),
+        );
+        assert!(rep.exists(), "design_report must write file");
+        assert!(rep_res["bytes"].as_u64().unwrap_or(0) > 1000);
+        assert!(rep_res["sections"].as_array().unwrap().len() >= 6);
+        assert_eq!(rep_res["imo_passed"], json!(false));
+        let content = std::fs::read_to_string(&rep).unwrap();
+        assert!(content.contains("Principal Particulars"));
+        let _ = std::fs::remove_file(&rep);
 
         // save_hull then load_hull round-trips the control net.
         let fef = temp_path("fef");
