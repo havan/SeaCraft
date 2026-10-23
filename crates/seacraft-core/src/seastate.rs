@@ -369,12 +369,18 @@ impl IrregularSpec {
             }
             Some(_) => return Err("`points` must be an array of {name, x}".into()),
         }
+        let transom_terms = match obj.get("transom_terms") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("`transom_terms` must be true or false".into()),
+        };
         let seakeeping = SeakeepingSpec {
             draft,
             speed_kn: num("speed_kn")?.or(num("speed")?).unwrap_or(0.0),
             kg: num("kg")?.unwrap_or(0.0),
             kyy: num("kyy")?,
             stations: count("stations", 3.0, 200.0)?.unwrap_or(21),
+            transom_terms,
             ..Default::default()
         };
         let spec = Self {

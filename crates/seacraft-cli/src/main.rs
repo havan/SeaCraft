@@ -1149,6 +1149,9 @@ struct SeakeepingArgs {
     /// Acceleration due to gravity in m/s2
     #[arg(long, default_value_t = 9.81)]
     g: f64,
+    /// Leave out the STF transom boundary terms at the aft end of the strip integration
+    #[arg(long)]
+    no_transom: bool,
     /// Write CSV to this path or emit to stdout if no path or '-' is given
     #[arg(long, num_args = 0..=1, default_missing_value = "-")]
     csv: Option<PathBuf>,
@@ -3461,6 +3464,7 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
         points: Some(a.points),
         rho: a.rho,
         g: a.g,
+        transom_terms: !a.no_transom,
         ..Default::default()
     };
 

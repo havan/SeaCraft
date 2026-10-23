@@ -9,6 +9,22 @@
 //! Python solutions (panels, and Ursell's multipoles for the semicircle); see
 //! `docs/oracles/heave_2d.py` and the tests.
 //!
+//! ## Irregular frequencies and the interior lid
+//!
+//! A source distribution on the hull alone fails at the irregular frequencies,
+//! the eigenfrequencies of the interior (sloshing) problem of the body below
+//! the free surface (for the semicircle `K R ≈ 1.82` and `4.78`, where the
+//! added mass is off by up to 60 %). Following Ohmatsu (1975) the waterline is
+//! closed from inside by a lid of source panels on `z = 0` between the
+//! waterline and the centreline, carrying `∂φ/∂z = 0`. The interior problem
+//! with a rigid lid has only the trivial solution, so the irregular
+//! frequencies disappear; the forces are still integrated over the hull only.
+//! Imposing `φ = 0` on the lid instead (the Dirichlet variant) does *not*
+//! work: it diverges with panel refinement at the waterline corner.
+//! [`heave_2d_section_with`] with `lid = false` is the plain method.
+//! Checked against Ursell's multipoles for the semicircle in
+//! `docs/oracles/heave_2d_lid.py` (docs/oracles.md §18).
+//!
 //! # Strip Theory Heave and Pitch Motions (B7b)
 //!
 //! Linear strip-theory heave and pitch motion Response Amplitude Operators (RAOs)
@@ -17,7 +33,8 @@
 //! * N. Salvesen, E.O. Tuck, and O.M. Faltinsen, "Ship motions and sea loads",
 //!   Transactions SNAME 78, pp. 250–287 (1970).
 //!
-//! Transom boundary terms may be omitted and are omitted in this implementation.
+//! The transom boundary terms (see below) are included unless switched off with
+//! [`SeakeepingSpec::transom_terms`].
 //!
 //! Speed terms in A35/A53/B35/B53 and the U/(iω_e)·H₃ moment term follow from the
 //! relative-motion sectional force −D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, by
@@ -25,6 +42,33 @@
 //! same stations as the excitation (plus ρg∇(KB − KG) in C55), so very long waves
 //! give heave → 1 and pitch → ∫2b·x² / (∫2b·x² + ∇(KB − KG)) at any speed
 //! (= 1 when KG = KB); see `very_long_waves_are_followed_at_any_speed`.
+//!
+//! ## Transom terms
+//!
+//! Time factor `e^{iω_e t}`, complex sectional mass `m = a − i·b/ω_e`, relative
+//! vertical velocity `w − v` with `w = iω_e(η₃ + xη₅) − Uη₅` the section's
+//! velocity and `v = iω κ e^{ikx}` (`κ = e^{−kT*}`) the wave's. The sectional
+//! force is `−D/Dt[m·(w − v)]`; integrating `U ∂ₓ[m(w − v)]` by parts over the
+//! hull gives, besides the speed terms above, the boundary term at the aft end
+//! `x_A` (the forward end has no section, `m = 0`):
+//!
+//! `∫ −D/Dt[m(w − v)] dx ∋ U·m_A·(v_A − w_A)`.
+//!
+//! The `w_A` part is the radiation transom term; with `m_A = a_A − i b_A/ω_e`,
+//! `a_A, b_A` the 2-D coefficients of the aftmost station (zero for a closed
+//! stern), it adds
+//!
+//! * `ΔA33 = −U b_A/ω_e²`, `ΔB33 = U a_A`
+//! * `ΔA35 = (−U x_A b_A + U² a_A)/ω_e²`, `ΔB35 = U x_A a_A + U² b_A/ω_e²`
+//! * `ΔA53 = −U x_A b_A/ω_e²`, `ΔB53 = U x_A a_A`
+//! * `ΔA55 = (−U x_A² b_A + U² x_A a_A)/ω_e²`, `ΔB55 = U x_A² a_A + U² x_A b_A/ω_e²`
+//!
+//! (that is `ΔK = −ω_e²ΔA + iω_eΔB = U m_A·(iω_e, iω_e x_A − U)` times 1 and
+//! `x_A`), and the `v_A` part is the diffraction term
+//! `ΔF₃ = U m_A v_A`, `ΔF₅ = x_A ΔF₃` with `v_A = iω κ_A e^{ik x_A}`. In very
+//! long waves the hull follows the wave (`w → v`), so the radiation and the
+//! excitation transom terms cancel and the long-wave limit above is unchanged
+//! at any speed: that test is the sign check of these terms.
 //!
 //! # Sign Conventions
 //!
@@ -56,6 +100,9 @@
 //!   infinite-frequency added mass.
 //! * W. Frank, "Oscillation of cylinders in or below the free surface of deep
 //!   fluids", NSRDC report 2375 (1967) — the close-fit pulsating source method.
+//! * M. Ohmatsu, "On the irregular frequencies in the theory of oscillating
+//!   bodies in a free surface", Papers of Ship Research Institute 48 (1975) —
+//!   the interior free-surface lid that removes them.
 //! * F. Ursell, "On the heaving motion of a circular cylinder on the surface of a
 //!   fluid", Q. J. Mech. Appl. Math. 2 (1949) — used for the semicircle oracle.
 
@@ -199,27 +246,65 @@ pub fn heave_2d(form: &LewisForm, omega: f64, rho: f64, g: f64) -> Heave2d {
 /// panel midpoints. `omega = f64::INFINITY` solves the `phi = 0` free-surface
 /// limit (damping 0).
 ///
-/// Like every surface source method this has irregular frequencies (for a
-/// semicircle the first is near `ω²b/g ≈ 2.4`, for a rectangle at
-/// `K = (π/2b)·coth(πT/2b)`); results close to one are unreliable.
+/// The plain surface source method has irregular frequencies (for a
+/// semicircle near `K R ≈ 1.82` and `4.78`, for a rectangle at
+/// `K = (π/2b)·coth(πT/2b)`); this entry point removes them with an interior
+/// free-surface lid, see [`heave_2d_section_with`].
 pub fn heave_2d_section(contour: &[(f64, f64)], omega: f64, rho: f64, g: f64) -> Heave2d {
+    heave_2d_section_with(contour, omega, rho, g, true)
+}
+
+/// [`heave_2d_section`] with the interior-lid irregular-frequency removal
+/// switched by `lid`. `lid = false` is the plain Frank method, which is
+/// unreliable near its irregular frequencies (kept for the oracle test that
+/// documents them).
+///
+/// The lid is `nlid = max(4, ⌈b_wl / mean hull panel length⌉)` source panels on
+/// `z = 0` from the waterline end of the contour to the centreline, carrying
+/// the interior condition `∂φ/∂z = 0` (lid normal `+z`). It is skipped for a
+/// zero waterline half-beam, for a contour that does not end on `z = 0`, and
+/// for `omega = ∞` (`K = ∞` has no irregular frequencies). Forces are
+/// integrated over the hull panels only.
+pub fn heave_2d_section_with(
+    contour: &[(f64, f64)],
+    omega: f64,
+    rho: f64,
+    g: f64,
+    lid: bool,
+) -> Heave2d {
     let k = if omega.is_finite() {
         omega * omega / g
     } else {
         f64::INFINITY
     };
-    let panels: Vec<Panel> = contour
+    let mut panels: Vec<Panel> = contour
         .windows(2)
         .filter_map(|w| Panel::new(w[0], w[1]))
         .collect();
-    let n = panels.len();
-    if n == 0 || k.is_nan() || k <= 0.0 {
+    let nh = panels.len();
+    if nh == 0 || k.is_nan() || k <= 0.0 {
         return Heave2d {
             added_mass: f64::NAN,
             damping: f64::NAN,
             amplitude_ratio: f64::NAN,
         };
     }
+    // Interior free-surface lid on z = 0, waterline → centreline (Ohmatsu 1975).
+    if lid && k.is_finite() {
+        let (b_wl, z_wl) = *contour.last().unwrap_or(&(0.0, 0.0));
+        if b_wl >= 1e-9 && z_wl.abs() <= 1e-6 * (1.0 + b_wl) {
+            let mean_len = panels.iter().map(|p| p.len).sum::<f64>() / nh as f64;
+            let nlid = ((b_wl / mean_len).ceil() as usize).max(4);
+            for l in 0..nlid {
+                let y0 = b_wl * (1.0 - l as f64 / nlid as f64);
+                let y1 = b_wl * (1.0 - (l + 1) as f64 / nlid as f64);
+                if let Some(p) = Panel::new((y0, 0.0), (y1, 0.0)) {
+                    panels.push(p);
+                }
+            }
+        }
+    }
+    let n = panels.len();
     // Normal velocity (a) and potential (p) at midpoint i of unit source
     // strength on panel j and its port-side mirror.
     let mut a = vec![C::ZERO; n * n];
@@ -228,28 +313,52 @@ pub fn heave_2d_section(contour: &[(f64, f64)], omega: f64, rho: f64, g: f64) ->
         for mirror in [1.0, -1.0] {
             for (i, pi) in panels.iter().enumerate() {
                 let own = i == j && mirror > 0.0;
+                let hull_own = own && j < nh;
+                let lid_own = own && j >= nh;
                 let (mut vn, mut ph) = (C::ZERO, C::ZERO);
                 for (gx, gw) in GAUSS8 {
                     let s = 0.5 * (gx + 1.0);
                     let src = (mirror * (pj.p0.0 + s * pj.d.0), pj.p0.1 + s * pj.d.1);
-                    let (val, grad) = green(pi.mid, src, k, !own);
+                    let (val, grad) = green(pi.mid, src, k, !hull_own);
                     let w = 0.5 * gw * pj.len;
-                    ph = ph + val * w;
+                    if lid_own {
+                        // The wave part carries 2 ln|Δy| (the Rankine terms
+                        // cancel on z = 0); integrate that analytically below.
+                        ph = ph + (val - C::real(2.0 * (pi.mid.0 - src.0).abs().ln())) * w;
+                    } else {
+                        ph = ph + val * w;
+                    }
                     vn = vn + (grad.0 * pi.normal.0 + grad.1 * pi.normal.1) * w;
                 }
-                if own {
+                if hull_own {
                     // Own panel: ∫ ln r ds at the midpoint, and the jump of the
                     // single layer's normal derivative on the fluid side.
                     ph = ph + C::real(pj.len * ((0.5 * pj.len).ln() - 1.0));
                     vn = vn + C::real(PI);
+                }
+                if lid_own {
+                    // ∫ 2 ln|s| ds over the panel, and the jump −2π seen from
+                    // below (a source sheet on z = 0 radiates 2π σ each way).
+                    ph = ph + C::real(2.0 * pj.len * ((0.5 * pj.len).ln() - 1.0));
+                    vn = vn + C::real(-2.0 * PI);
                 }
                 a[i * n + j] = a[i * n + j] + vn;
                 p[i * n + j] = p[i * n + j] + ph;
             }
         }
     }
-    // Unit heave velocity: ∂φ/∂n = n_z.
-    let rhs: Vec<C> = panels.iter().map(|pi| C::real(pi.normal.1)).collect();
+    // Unit heave velocity on the hull: ∂φ/∂n = n_z; ∂φ/∂z = 0 on the lid.
+    let rhs: Vec<C> = panels
+        .iter()
+        .enumerate()
+        .map(|(i, pi)| {
+            if i < nh {
+                C::real(pi.normal.1)
+            } else {
+                C::ZERO
+            }
+        })
+        .collect();
     let Some(sigma) = solve_complex(a, rhs, n) else {
         return Heave2d {
             added_mass: f64::NAN,
@@ -257,9 +366,9 @@ pub fn heave_2d_section(contour: &[(f64, f64)], omega: f64, rho: f64, g: f64) ->
             amplitude_ratio: f64::NAN,
         };
     };
-    // ∫ φ n_z ds over both sides; force = -iωρ∫φ n_z ds = iω a33 - b33.
+    // ∫ φ n_z ds over both sides of the hull; force = -iωρ∫φ n_z ds = iω a33 - b33.
     let mut integral = C::ZERO;
-    for (i, pi) in panels.iter().enumerate() {
+    for (i, pi) in panels.iter().take(nh).enumerate() {
         let mut phi = C::ZERO;
         for (j, sj) in sigma.iter().enumerate() {
             phi = phi + p[i * n + j] * *sj;
@@ -571,6 +680,14 @@ pub struct SeakeepingSpec {
     /// Acceleration of gravity in m/s^2 (default 9.81).
     #[serde(default = "default_g")]
     pub g: f64,
+    /// Apply the STF transom boundary terms at the aft end of the strip
+    /// integration (default true; see the module documentation).
+    #[serde(default = "default_transom_terms")]
+    pub transom_terms: bool,
+}
+
+fn default_transom_terms() -> bool {
+    true
 }
 
 fn default_stations() -> usize {
@@ -599,6 +716,7 @@ impl Default for SeakeepingSpec {
             points: None,
             rho: 1025.0,
             g: 9.81,
+            transom_terms: true,
         }
     }
 }
@@ -908,7 +1026,8 @@ fn trapz_complex(xs: &[f64], ys: &[C]) -> C {
 
 /// Compute linear strip-theory heave and pitch motion RAOs in regular head seas.
 ///
-/// Implements Salvesen, Tuck & Faltinsen (1970) strip theory (transom terms omitted).
+/// Implements Salvesen, Tuck & Faltinsen (1970) strip theory including the
+/// transom boundary terms ([`SeakeepingSpec::transom_terms`]).
 ///
 /// # Sign Conventions
 ///
@@ -921,6 +1040,31 @@ fn trapz_complex(xs: &[f64], ys: &[C]) -> C {
 /// * N. Salvesen, E.O. Tuck, and O.M. Faltinsen, "Ship motions and sea loads",
 ///   Transactions SNAME 78, pp. 250–287 (1970).
 pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<SeakeepingReport, String> {
+    head_sea_raos_detailed(surface, spec).map(|(report, _)| report)
+}
+
+/// The aft end of the strip integration at one wave frequency: the data the
+/// transom boundary terms are built from (recorded whether or not
+/// [`SeakeepingSpec::transom_terms`] applies them).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AftStation {
+    /// Incident wave frequency in rad/s.
+    pub omega: f64,
+    /// Encounter frequency in rad/s.
+    pub omega_e: f64,
+    /// Station position `x_A` from the LCG in metres (negative aft).
+    pub x_a: f64,
+    /// 2-D heave added mass `a_A` of the aftmost station (0 for a closed stern).
+    pub a_a: f64,
+    /// 2-D heave damping `b_A` of the aftmost station (0 for a closed stern).
+    pub b_a: f64,
+}
+
+/// [`head_sea_raos`] that also returns the [`AftStation`] of every frequency.
+pub(crate) fn head_sea_raos_detailed(
+    surface: &Surface,
+    spec: &SeakeepingSpec,
+) -> Result<(SeakeepingReport, Vec<AftStation>), String> {
     if spec.draft <= 0.0 || !spec.draft.is_finite() {
         return Err("draft must be positive and finite".into());
     }
@@ -1041,7 +1185,7 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
 
     let mut raos = Vec::with_capacity(omegas.len());
     let mut global_coeffs = Vec::with_capacity(omegas.len());
-    let mut irregular_freq_warned = false;
+    let mut aft_stations = Vec::with_capacity(omegas.len());
 
     for &w in &omegas {
         if w <= 0.0 {
@@ -1060,26 +1204,14 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
         let mut x2b33_secs = Vec::with_capacity(n_stations);
         let mut f3_secs = Vec::with_capacity(n_stations);
         let mut h3_secs = Vec::with_capacity(n_stations);
+        // Depth attenuation κ_A = e^{−k T*_A} of the aftmost station (0 if it is closed).
+        let mut kappa_aft = 0.0;
 
         for (i, (cut_x, sec)) in station_contours.iter().enumerate() {
             let x_rel = station_xs[i];
             let b = sec.half_beam;
             let t = sec.draft;
             let a_sec = sec.area;
-
-            if !irregular_freq_warned && b > 0.0 {
-                let xi = w_e * w_e * b / spec.g;
-                if xi > 2.0 {
-                    irregular_freq_warned = true;
-                    warnings.push(Warning {
-                        code: "irregular_frequency_proximity",
-                        message: format!(
-                            "omega_e^2 * b / g = {:.2} > 2.0 at station x = {:.3} m; near panel irregular frequencies",
-                            xi, cut_x
-                        ),
-                    });
-                }
-            }
 
             if a_sec < 1e-6 || b < 1e-4 || t < 1e-4 {
                 a33_secs.push(0.0);
@@ -1138,6 +1270,9 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
             // Exciting force per section (Froude-Krylov + Diffraction with depth attenuation e^{-k T*})
             let t_star = a_sec / (2.0 * b);
             let kappa = (-k_wave * t_star).exp();
+            if i == 0 {
+                kappa_aft = kappa;
+            }
             let phase = C::new((k_wave * x_rel).cos(), (k_wave * x_rel).sin());
 
             // Froude–Krylov ρg·2b plus diffraction h₃ = −ω(ω_e a₃₃ − i b₃₃) (STF).
@@ -1155,16 +1290,47 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
         let a55_0 = trapz(&station_xs, &x2a33_secs);
         let b55_0 = trapz(&station_xs, &x2b33_secs);
 
-        let a33 = a33_0;
-        let b33 = b33_0;
+        let mut a33 = a33_0;
+        let mut b33 = b33_0;
         // STF speed terms for pitch positive bow up (x forward): derived from the
         // relative-motion force −D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, by parts.
-        let a35 = a35_0 + (u_speed / (w_e * w_e)) * b33_0;
-        let b35 = b35_0 - u_speed * a33_0;
-        let a53 = a35_0 - (u_speed / (w_e * w_e)) * b33_0;
-        let b53 = b35_0 + u_speed * a33_0;
-        let a55 = a55_0 + (u_speed * u_speed / (w_e * w_e)) * a33_0;
-        let b55 = b55_0 + (u_speed * u_speed / (w_e * w_e)) * b33_0;
+        let mut a35 = a35_0 + (u_speed / (w_e * w_e)) * b33_0;
+        let mut b35 = b35_0 - u_speed * a33_0;
+        let mut a53 = a35_0 - (u_speed / (w_e * w_e)) * b33_0;
+        let mut b53 = b35_0 + u_speed * a33_0;
+        let mut a55 = a55_0 + (u_speed * u_speed / (w_e * w_e)) * a33_0;
+        let mut b55 = b55_0 + (u_speed * u_speed / (w_e * w_e)) * b33_0;
+
+        // STF transom terms: the boundary terms of the same integration by parts
+        // at the aft end x_A (zero for a closed stern, a_A = b_A = 0).
+        let x_a = station_xs[0];
+        let (a_a, b_a) = (a33_secs[0], b33_secs[0]);
+        aft_stations.push(AftStation {
+            omega: w,
+            omega_e: w_e,
+            x_a,
+            a_a,
+            b_a,
+        });
+        let mut transom_f3 = C::ZERO;
+        let mut transom_f5 = C::ZERO;
+        if spec.transom_terms {
+            let (u, we2) = (u_speed, w_e * w_e);
+            a33 += -u * b_a / we2;
+            b33 += u * a_a;
+            a35 += (-u * x_a * b_a + u * u * a_a) / we2;
+            b35 += u * x_a * a_a + u * u * b_a / we2;
+            a53 += -u * x_a * b_a / we2;
+            b53 += u * x_a * a_a;
+            a55 += (-u * x_a * x_a * b_a + u * u * x_a * a_a) / we2;
+            b55 += u * x_a * x_a * a_a + u * u * x_a * b_a / we2;
+            // ΔF3 = U m_A v_A, ΔF5 = x_A ΔF3, m_A = a_A − i b_A/ω_e, v_A = iω κ_A e^{ik x_A}.
+            let m_a = C::new(a_a, -b_a / w_e);
+            let v_a =
+                C::new(0.0, w * kappa_aft) * C::new((k_wave * x_a).cos(), (k_wave * x_a).sin());
+            transom_f3 = m_a * v_a * u;
+            transom_f5 = transom_f3 * x_a;
+        }
 
         global_coeffs.push(GlobalCoefficients {
             omega: w,
@@ -1192,7 +1358,8 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
         let static_m5 = trapz_complex(&station_xs, &x_f3_secs);
         // STF: the speed term U/(iω_e) applies to the diffraction part only.
         let h3_total = trapz_complex(&station_xs, &h3_secs);
-        let f5_total = static_m5 + C::new(0.0, -u_speed / w_e) * h3_total;
+        let f5_total = static_m5 + C::new(0.0, -u_speed / w_e) * h3_total + transom_f5;
+        let f3_total = f3_total + transom_f3;
 
         // 2x2 complex motion equations
         let k11 = C::new(c33 - w_e * w_e * (mass + a33), w_e * b33);
@@ -1234,15 +1401,18 @@ pub fn head_sea_raos(surface: &Surface, spec: &SeakeepingSpec) -> Result<Seakeep
     let natural_heave_omega = find_natural_frequency(&global_coeffs, mass, c33, true);
     let natural_pitch_omega = find_natural_frequency(&global_coeffs, i55, c55, false);
 
-    Ok(SeakeepingReport {
-        frequencies: raos,
-        natural_heave_omega,
-        natural_pitch_omega,
-        coefficients: Some(global_coeffs),
-        warnings,
-        x_lcg,
-        x_bow: wl_max,
-    })
+    Ok((
+        SeakeepingReport {
+            frequencies: raos,
+            natural_heave_omega,
+            natural_pitch_omega,
+            coefficients: Some(global_coeffs),
+            warnings,
+            x_lcg,
+            x_bow: wl_max,
+        },
+        aft_stations,
+    ))
 }
 
 fn find_natural_frequency(
@@ -1845,6 +2015,9 @@ mod tests {
             kg: 2.2,
             stations: 21,
             points: Some(5),
+            // The speed structure below is that of the strip integrals; the
+            // transom terms have their own structure (see the transom tests).
+            transom_terms: false,
             ..Default::default()
         };
         let rep = head_sea_raos(&surface, &spec).expect("head_sea_raos failed");
@@ -1907,6 +2080,238 @@ mod tests {
             "peak heave frequency {:.3} must be within 5% of natural_heave_omega {:.3} (got {:.2}%)",
             peak_omega, nat, err * 100.0
         );
+    }
+
+    /// E3 oracle (docs/oracles/heave_2d_lid.py, §18): semicircle R = 1 with 60 hull
+    /// panels against Ursell's multipoles. Columns: ξ = KR, a/(ρπR²/2),
+    /// b/(ρπR²/2·ω). The plain method is off by 60 % at the irregular
+    /// frequency ξ ≈ 1.82; the lid removes it.
+    #[test]
+    fn lid_removes_the_irregular_frequencies_of_the_semicircle() {
+        let (rho, g) = (1025.0, 9.81);
+        let ursell: [(f64, f64, f64); 8] = [
+            (0.50, 0.6479, 0.8140),
+            (1.00, 0.6084, 0.3973),
+            (1.50, 0.6687, 0.2120),
+            (1.82, 0.7096, 0.1470),
+            (2.50, 0.7801, 0.0729),
+            (3.00, 0.8178, 0.0461),
+            (4.00, 0.8684, 0.0206),
+            (4.78, 0.8937, 0.0120),
+        ];
+        let form = lewis_form(1.0, 1.0, PI / 4.0).unwrap();
+        let contour = lewis_contour(&form, 61);
+        let norm = 0.5 * rho * PI;
+        for (xi, am, dm) in ursell {
+            let omega = (xi * g).sqrt();
+            let lid = heave_2d_section(&contour, omega, rho, g);
+            let (a, b) = (lid.added_mass / norm, lid.damping / (norm * omega));
+            println!("ξ={xi:4.2}: lid a={a:.4} b={b:.4}");
+            assert!(
+                (a - am).abs() <= 0.02 * am,
+                "ξ={xi}: lid a {a} vs Ursell {am}"
+            );
+            assert!(
+                (b - dm).abs() <= (0.03 * dm).max(0.002),
+                "ξ={xi}: lid b {b} vs Ursell {dm}"
+            );
+        }
+        let omega = (1.82_f64 * g).sqrt();
+        let plain = heave_2d_section_with(&contour, omega, rho, g, false);
+        let a = plain.added_mass / norm;
+        assert!(
+            (a - 0.7096).abs() > 0.3 * 0.7096,
+            "plain Frank at ξ = 1.82 must show the irregular frequency, got a = {a}"
+        );
+        // The lid is a no-op in the infinite-frequency limit (K = ∞).
+        let inf = heave_2d_section(&contour, f64::INFINITY, rho, g);
+        let inf_plain = heave_2d_section_with(&contour, f64::INFINITY, rho, g, false);
+        assert_eq!(inf.added_mass, inf_plain.added_mass);
+    }
+
+    /// An octahedron hull (pointed at bow and stern): the aftmost station is closed.
+    fn test_diamond(l: f64, b: f64, d: f64) -> Surface {
+        let mut s = test_box_barge(l, b, d);
+        s.points.clear();
+        s.edges.clear();
+        s.faces.clear();
+        s.face_layer.clear();
+        let pts = [
+            (0.0, 0.0, 0.5 * d),
+            (l, 0.0, 0.5 * d),
+            (0.5 * l, 0.5 * b, 0.5 * d),
+            (0.5 * l, -0.5 * b, 0.5 * d),
+            (0.5 * l, 0.0, 0.0),
+            (0.5 * l, 0.0, d),
+        ];
+        for (x, y, z) in pts {
+            s.add_point(crate::math::Vec3::new(x, y, z));
+        }
+        // 0 stern, 1 bow, 2 starboard, 3 port, 4 keel, 5 top; outward winding.
+        for face in [
+            vec![1, 2, 5],
+            vec![1, 4, 2],
+            vec![1, 5, 3],
+            vec![1, 3, 4],
+            vec![0, 5, 2],
+            vec![0, 2, 4],
+            vec![0, 3, 5],
+            vec![0, 4, 3],
+        ] {
+            s.add_face(face, 0);
+        }
+        s.initialize_trace();
+        for edge in &mut s.edges {
+            edge.crease = true;
+        }
+        for point in &mut s.points {
+            point.kind = crate::mesh::VertexKind::Corner;
+        }
+        s
+    }
+
+    /// With a closed stern (a_A = b_A = 0) the transom terms vanish identically.
+    #[test]
+    fn transom_terms_vanish_for_a_closed_stern() {
+        let surface = test_diamond(10.0, 2.0, 2.0);
+        let run = |transom_terms: bool| {
+            let spec = SeakeepingSpec {
+                draft: 0.8,
+                speed_kn: 6.0,
+                kg: 0.6,
+                omegas: vec![1.0, 1.6, 2.4, 3.2],
+                transom_terms,
+                ..Default::default()
+            };
+            head_sea_raos_detailed(&surface, &spec).expect("raos")
+        };
+        let (on, aft) = run(true);
+        let (off, _) = run(false);
+        for s in &aft {
+            assert_eq!(s.a_a, 0.0);
+            assert_eq!(s.b_a, 0.0);
+        }
+        for (p, q) in on.frequencies.iter().zip(&off.frequencies) {
+            assert_eq!(p.heave_amp, q.heave_amp);
+            assert_eq!(p.pitch_amp, q.pitch_amp);
+            assert_eq!(p.heave_phase_deg, q.heave_phase_deg);
+            assert_eq!(p.pitch_phase_deg, q.pitch_phase_deg);
+            assert!(p.heave_amp.is_finite() && p.heave_amp > 0.0);
+        }
+    }
+
+    /// For the demo hull (wide transom) at 6 kn the coefficients change by
+    /// exactly the STF transom formulas built from the aft station's a_A, b_A.
+    #[test]
+    fn transom_coefficient_changes_match_the_formulas() {
+        let surface = crate::demo::demo_hull(true);
+        let u = 6.0 * 0.5144444444444445;
+        let run = |transom_terms: bool| {
+            let spec = SeakeepingSpec {
+                draft: 0.62,
+                speed_kn: 6.0,
+                kg: 2.2,
+                omegas: vec![2.0, 3.0, 4.5],
+                transom_terms,
+                ..Default::default()
+            };
+            head_sea_raos_detailed(&surface, &spec).expect("raos")
+        };
+        let (on, aft) = run(true);
+        let (off, aft_off) = run(false);
+        assert_eq!(aft, aft_off);
+        let (c_on, c_off) = (on.coefficients.unwrap(), off.coefficients.unwrap());
+        for ((on, off), s) in c_on.iter().zip(&c_off).zip(&aft) {
+            let (x, a, b, we2) = (s.x_a, s.a_a, s.b_a, s.omega_e * s.omega_e);
+            assert!(
+                a > 0.0 && b > 0.0,
+                "the demo hull has a transom: a_A {a}, b_A {b}"
+            );
+            let checks = [
+                ("A33", on.a33 - off.a33, -u * b / we2),
+                ("B33", on.b33 - off.b33, u * a),
+                ("A35", on.a35 - off.a35, (-u * x * b + u * u * a) / we2),
+                ("B35", on.b35 - off.b35, u * x * a + u * u * b / we2),
+                ("A53", on.a53 - off.a53, -u * x * b / we2),
+                ("B53", on.b53 - off.b53, u * x * a),
+                (
+                    "A55",
+                    on.a55 - off.a55,
+                    (-u * x * x * b + u * u * x * a) / we2,
+                ),
+                ("B55", on.b55 - off.b55, u * x * x * a + u * u * x * b / we2),
+            ];
+            for (name, got, want) in checks {
+                assert!(
+                    (got - want).abs() <= 1e-9 * want.abs().max(1.0),
+                    "ω={}: Δ{name} {got} vs {want}",
+                    s.omega
+                );
+            }
+        }
+        // The terms act on the motions.
+        let (p_on, p_off) = (&on.frequencies[1], &off.frequencies[1]);
+        assert!((p_on.heave_amp - p_off.heave_amp).abs() > 1e-6);
+    }
+
+    /// The transom terms are on by default and keep the long-wave limit
+    /// (radiation and excitation terms cancel) at 0, 3 and 6 kn.
+    #[test]
+    fn long_waves_are_followed_with_transom_terms_at_any_speed() {
+        assert!(SeakeepingSpec::default().transom_terms);
+        let surface = crate::demo::demo_hull(true);
+        for speed_kn in [0.0, 3.0, 6.0] {
+            let spec = SeakeepingSpec {
+                draft: 0.62,
+                speed_kn,
+                kg: 0.392,
+                lambda_min: Some(100.0),
+                lambda_max: Some(100.0),
+                points: Some(1),
+                transom_terms: true,
+                ..Default::default()
+            };
+            let rep = head_sea_raos(&surface, &spec).expect("raos");
+            let p = &rep.frequencies[0];
+            assert!(
+                (p.heave_amp - 1.0).abs() < 0.01,
+                "{speed_kn} kn: heave {}",
+                p.heave_amp
+            );
+            assert!(
+                (p.pitch_amp - 1.0).abs() < 0.02,
+                "{speed_kn} kn: pitch {}",
+                p.pitch_amp
+            );
+        }
+    }
+
+    /// Demo hull at 6 kn: the effect of the transom terms (printed for the E3 report).
+    #[test]
+    fn transom_effect_on_the_demo_hull_rao_is_moderate() {
+        let surface = crate::demo::demo_hull(true);
+        for ratio in [1.0, 1.5, 2.0] {
+            let run = |transom_terms: bool| {
+                let spec = SeakeepingSpec {
+                    draft: 0.62,
+                    speed_kn: 6.0,
+                    kg: 2.2,
+                    lambda_min: Some(ratio),
+                    lambda_max: Some(ratio),
+                    points: Some(1),
+                    transom_terms,
+                    ..Default::default()
+                };
+                let rep = head_sea_raos(&surface, &spec).expect("raos");
+                (rep.frequencies[0].heave_amp, rep.frequencies[0].pitch_amp)
+            };
+            let (h1, p1) = run(true);
+            let (h0, p0) = run(false);
+            println!("λ/L={ratio}: heave on {h1:.4} off {h0:.4}; pitch on {p1:.4} off {p0:.4}");
+            assert!(h1.is_finite() && p1.is_finite());
+            assert!((h1 - h0).abs() < 0.5 * h0.max(0.2), "heave {h1} vs {h0}");
+            assert!((p1 - p0).abs() < 0.5 * p0.max(0.2), "pitch {p1} vs {p0}");
+        }
     }
 
     /// Test 7.g: demo hull at 6 kn gives finite RAOs at all points, no panics

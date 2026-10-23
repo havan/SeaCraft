@@ -367,7 +367,13 @@ loads*, SNAME Trans. 78):
 
 * Sectional 2D heave added mass and damping are evaluated across waterline
   stations via Frank's pulsating close-fit source distribution method on the
-  actual submerged station contour (with Lewis conformal form fallback).
+  actual submerged station contour (with Lewis conformal form fallback). An
+  interior free-surface lid (Ohmatsu 1975) removes the irregular frequencies of
+  the panel method, so results are reliable at any frequency.
+* The STF transom boundary terms at the aft end of the strip integration
+  (radiation coefficients and the matching excitation, zero for a closed stern)
+  are on by default; `--no-transom` (MCP/control `transom_terms: false`) leaves
+  them out.
 * Forward speed terms follow the STF formulation: coupled radiation terms
   $A_{35}, B_{35}, A_{53}, B_{53}$ satisfy the STF speed relationships
   ($A_{35} - A_{53} = -2(U/\omega_e^2) B_{33}$, $B_{35} - B_{53} = 2 U A_{33}$).

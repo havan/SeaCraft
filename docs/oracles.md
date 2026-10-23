@@ -457,3 +457,60 @@ Recipe: [`docs/oracles/irregular_seas.py`](oracles/irregular_seas.py) — run wi
 Analytic moments and a hand-checkable normal-CDF formula, computed by Claude with scipy. The relative-motion
 sign rests on the RAO phases: in long waves pitch leads heave by ≈ +90° (λ/L = 8: +92.8°), i.e. the hull
 follows the wave slope, so s ≈ e^{ikx_r}. Not published values.
+
+---
+
+## 18. Irregular-frequency lid and transom terms (E3)
+
+### Formula
+**Lid.** The Frank source method on the hull alone has irregular frequencies (the eigenfrequencies of the interior
+problem below the free surface). Ohmatsu (1975) closes the waterline from inside with source panels on z = 0 between
+the waterline and the centreline (`nlid = max(4, ⌈b_wl / mean hull panel length⌉)`), with ∂φ/∂z = 0 on the lid; forces
+are integrated over the hull only. At z = 0 the Rankine part ln r₁ − ln r₂ cancels; the lid self panel uses
+Σ w(G − 2 ln|Δy|) + 2L(ln(L/2) − 1) for the potential and −2π + Σ w ∂G/∂z for the normal derivative. A `φ = 0` lid
+(Dirichlet) was tried and diverges with refinement. K = ∞ has none, so the lid is skipped there.
+
+**Transom terms** (pitch bow up, x forward from the LCG, `e^{iω_e t}`, m = a − i b/ω_e; x_A, a_A, b_A the aft end
+and the 2-D coefficients of the aftmost station, zero for a closed stern). The transom part of −D/Dt[m(w − v)]
+integrated over x is U·m_A·(v_A − w_A), w = iω_e(η₃ + xη₅) − Uη₅, v_A = iω κ_A e^{ik x_A}. Radiation (w_A):
+
+| | A | B |
+|---|---|---|
+| 33 | −U b_A/ω_e² | U a_A |
+| 35 | (−U x_A b_A + U² a_A)/ω_e² | U x_A a_A + U² b_A/ω_e² |
+| 53 | −U x_A b_A/ω_e² | U x_A a_A |
+| 55 | (−U x_A² b_A + U² x_A a_A)/ω_e² | U x_A² a_A + U² x_A b_A/ω_e² |
+
+Excitation (v_A): ΔF₃ = U m_A v_A, ΔF₅ = x_A ΔF₃. In very long waves the hull follows the wave (w → v), so the two
+terms cancel: `very_long_waves_are_followed_at_any_speed` (and the version with the terms explicitly on at 0/3/6 kn)
+is the sign check. A closed stern (a_A = b_A = 0) is unchanged by the terms.
+
+### Test Locations
+- [`crates/seacraft-core/src/seakeeping.rs::lid_removes_the_irregular_frequencies_of_the_semicircle`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::transom_terms_vanish_for_a_closed_stern`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::transom_coefficient_changes_match_the_formulas`](../crates/seacraft-core/src/seakeeping.rs)
+- [`crates/seacraft-core/src/seakeeping.rs::long_waves_are_followed_with_transom_terms_at_any_speed`](../crates/seacraft-core/src/seakeeping.rs)
+- `very_long_waves_are_followed_at_any_speed` (§16) and `test_stf_speed_structure` (run with the transom terms off:
+  the structure A35 − A53 = 2U/ω_e²·B33 holds for the strip integrals, not for the boundary terms).
+
+### Oracle values
+Recipe: [`docs/oracles/heave_2d_lid.py`](oracles/heave_2d_lid.py) — run with `python3 -I docs/oracles/heave_2d_lid.py`
+(numpy + scipy). Semicircle R = 1, 60 hull panels, columns a/(ρπR²/2) and b/(ρπR²/2·ω):
+
+| ξ = KR | Ursell (a, b) | lid (a, b) | plain (a, b) |
+|---|---|---|---|
+| 0.50 | 0.6479 0.8140 | 0.6487 0.8129 | 0.6480 0.8120 |
+| 1.00 | 0.6084 0.3973 | 0.6093 0.3974 | 0.6085 0.3952 |
+| 1.50 | 0.6687 0.2120 | 0.6692 0.2128 | 0.6679 0.2080 |
+| 1.82 | 0.7096 0.1470 | 0.7098 0.1479 | 0.2895 0.3839 |
+| 2.50 | 0.7801 0.0729 | 0.7798 0.0739 | 0.7816 0.0742 |
+| 3.00 | 0.8178 0.0461 | 0.8173 0.0471 | 0.8190 0.0467 |
+| 4.00 | 0.8684 0.0206 | 0.8676 0.0214 | 0.8695 0.0208 |
+| 4.78 | 0.8937 0.0120 | 0.8928 0.0127 | 0.8780 0.0284 |
+
+The Rust lid result is asserted within 2 % (a) and 3 % or 0.002 absolute (b) of the Ursell columns at every ξ; the
+plain method (`lid = false`) at ξ = 1.82 must be more than 30 % off in a.
+
+### Provenance
+Lid oracle and the transom formulas derived and checked by Claude (2026-10-23); not published values. Ohmatsu, "On
+the irregular frequencies in the theory of oscillating bodies in a free surface", Papers Ship Res. Inst. 48 (1975).

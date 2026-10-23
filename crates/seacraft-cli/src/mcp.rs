@@ -1503,6 +1503,11 @@ impl McpServer {
         let lambda_min = a.get("lambda_min").and_then(|v| v.as_f64());
         let lambda_max = a.get("lambda_max").and_then(|v| v.as_f64());
         let points = a.get("points").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let transom_terms = match a.get("transom_terms") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("seakeeping_raos: transom_terms must be true or false".into()),
+        };
 
         let spec = seacraft_core::seakeeping::SeakeepingSpec {
             draft,
@@ -1513,6 +1518,7 @@ impl McpServer {
             lambda_min,
             lambda_max,
             points,
+            transom_terms,
             ..Default::default()
         };
 
@@ -2686,6 +2692,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "lambda_min": number("Minimum wavelength ratio lambda / L (default 0.3)"),
                     "lambda_max": number("Maximum wavelength ratio lambda / L (default 3.0)"),
                     "points": integer("Number of frequency points across lambda / L (default 30)"),
+                    "transom_terms": boolean("Apply the STF transom boundary terms at the aft end (default true)"),
                 }),
                 &[],
             ),
@@ -2714,6 +2721,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "stations": integer("Number of transverse stations along waterline, 3-200 (default 21)"),
                     "points": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "x": {"type": "number"}}, "required": ["x"]}, "description": "Evaluation points {name, x} with x in model coordinates, metres (default LCG and Bow)"},
                     "omegas": integer("Frequencies across 0.2..5 times the peak frequency, 8-2000 (default 60)"),
+                    "transom_terms": boolean("Apply the STF transom boundary terms at the aft end (default true)"),
                 }),
                 &["hs", "tp"],
             ),

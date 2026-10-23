@@ -1481,6 +1481,7 @@ fn handle_inner(
             let lambda_min = number(p, "lambda_min")?;
             let lambda_max = number(p, "lambda_max")?;
             let points = number_in(p, "points", 1.0..=500.0)?.map(|n| n.round() as usize);
+            let transom_terms = boolean(p, "transom_terms")?.unwrap_or(true);
 
             let spec = seacraft_core::seakeeping::SeakeepingSpec {
                 draft,
@@ -1491,6 +1492,7 @@ fn handle_inner(
                 lambda_min,
                 lambda_max,
                 points,
+                transom_terms,
                 ..Default::default()
             };
 
