@@ -382,6 +382,12 @@ cursor position on the active viewport's focal plane and the crate version.
   `transform_hull`, `hydro_compute`, `stability_cross_curves`, `bonjean_curves`,
   `table_of_offsets`, `unfold_plate`, `resistance_curve`, `planing_curve`,
   `export_linesplan` and `render_png`.
+* The hydrostatics table (`seacraft table`) runs the same measurement once per
+  draft and adds two table quantities that `hydro` does not store: `TPC =
+  A_w·ρ/100` tonnes per centimetre and `MTC = ρ·I_L/(100·L)` tonnes·metres per
+  centimetre. Both need the kilogram-to-tonne factor, because the core keeps
+  density in kg/m³ — a row must be able to disagree with `seacraft hydro`, and
+  a test pins them together.
 * The mainframe station is a measurement choice, not a project property: the
   `.fef` settings line is FREE!ship's and carries no such field, so a model
   loads measuring the midship section at the LCF. `--mainframe` (or

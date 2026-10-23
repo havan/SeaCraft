@@ -8,7 +8,7 @@ use seacraft_core::stability::{
     StabilityCondition,
 };
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
-use seacraft_core::{lackenby, 
+use seacraft_core::{lackenby, table, 
     analysis::AnalysisMode, curves, demo, export, fef, linesplan, math::Vec3, mesh::Surface,
     develop, offsets, planing, raster, resistance, topology, transform,
 };
@@ -51,6 +51,8 @@ enum Command {
     Transform(TransformArgs),
     /// Shift stations to nudge Cp and LCB (Lackenby-style, ends pinned)
     Lackenby(LackenbyArgs),
+    /// Hydrostatics table: displacement, KB, BM, KM, LCB, LCF, TPC, MTC per draft
+    Table(TableArgs),
     /// Still-water resistance and effective power (Holtrop-Mennen 1984)
     Resistance(ResistanceArgs),
     /// Developable plate expansion: flatten a strake or buttock band
@@ -326,6 +328,98 @@ struct OffsetsArgs {
     json: bool,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
+}
+
+#[derive(Args, Debug)]
+struct TableArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Top draft in metres (default: the project draft)
+    #[arg(long)]
+    to: Option<f64>,
+    /// Number of drafts from just above zero to the top one
+    #[arg(long, default_value_t = 10)]
+    steps: usize,
+    /// Explicit drafts, comma separated (overrides --to/--steps)
+    #[arg(long)]
+    drafts: Option<String>,
+    /// Write the table as CSV
+    #[arg(long)]
+    csv: Option<PathBuf>,
+    /// Write the table as a standalone HTML page
+    #[arg(long)]
+    html: Option<PathBuf>,
+    /// Subdivision level (0 = control net, max 6)
+    #[arg(long, default_value_t = 3)]
+    level: u8,
+    /// Emit the table as JSON
+    #[arg(long)]
+    json: bool,
+}
+
+fn cmd_table(a: TableArgs) -> Result<()> {
+    let text = std::fs::read_to_string(&a.file)
+        .with_context(|| format!("cannot read {}", a.file.display()))?;
+    let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
+    let opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions { level: a.level, mode: SubdivisionMode::Loop },
+    );
+    let drafts = match &a.drafts {
+        Some(list) => list
+            .split(',')
+            .map(|t| t.trim().parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("--drafts: {e}"))?,
+        None => table::draft_range(a.to.unwrap_or(opts.draft), a.steps),
+    };
+    if drafts.is_empty() {
+        return Err(anyhow::anyhow!("no drafts to measure"));
+    }
+    let t = table::table(&s, &opts, &drafts);
+    if let Some(path) = &a.csv {
+        std::fs::write(path, t.csv()).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    if let Some(path) = &a.html {
+        std::fs::write(path, t.html())
+            .with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&t)?);
+        return Ok(());
+    }
+    println!(
+        "hydrostatics for {} (rho {:.1} kg/m3, level {})",
+        t.name, t.water_density, a.level
+    );
+    println!(
+        "   T     nabla      Delta     KB      BM     KML     LCB     LCF     Cb     Cp      TPC    MTC"
+    );
+    println!("   m       m3          t      m       m       m       m       m                     t/cm  t*m/cm");
+    for r in &t.rows {
+        println!(
+            "{:5.2} {:9.3} {:9.2} {:6.3} {:6.3} {:7.3} {:7.3} {:7.3} {:6.3} {:6.3} {:6.3} {:6.3}",
+            r.draft,
+            r.volume_m3,
+            r.displacement_t,
+            r.kb,
+            r.bm_transverse,
+            r.km_transverse,
+            r.lcb_x,
+            r.lcf_x,
+            r.block_coefficient,
+            r.prismatic_coefficient,
+            r.tpc,
+            r.mtc
+        );
+    }
+    if let Some(p) = &a.csv {
+        println!("  wrote {}", p.display());
+    }
+    if let Some(p) = &a.html {
+        println!("  wrote {}", p.display());
+    }
+    Ok(())
 }
 
 #[derive(Args, Debug)]
@@ -667,6 +761,7 @@ fn run() -> Result<()> {
         Command::Offsets(a) => cmd_offsets(a),
         Command::Transform(a) => cmd_transform(a),
         Command::Lackenby(a) => cmd_lackenby(a),
+        Command::Table(a) => cmd_table(a),
         Command::Resistance(a) => cmd_resistance(a),
         Command::Unfold(a) => cmd_unfold(a),
         Command::Edit(a) => cmd_edit(a),

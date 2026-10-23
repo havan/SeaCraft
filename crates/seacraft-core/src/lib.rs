@@ -40,6 +40,7 @@ pub mod raster;
 pub mod resistance;
 pub mod stability;
 pub mod subdiv;
+pub mod table;
 pub mod threemf;
 pub mod topology;
 pub mod transform;
