@@ -108,6 +108,10 @@ fn main() -> eframe::Result {
                         "seacraft-gui: control socket listening on {}",
                         listener.addr
                     );
+                    #[cfg(unix)]
+                    if let Some(t) = &listener.token_file {
+                        signals::remove_on_signal(&t.0);
+                    }
                     (Some(listener.receiver), listener.token_file)
                 }
                 Err(err) => {
@@ -145,4 +149,44 @@ fn main() -> eframe::Result {
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Delete the control token file when the app is killed by a signal, so the
+/// secret does not outlive the process. `Drop` covers a normal quit only.
+#[cfg(unix)]
+mod signals {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    static TOKEN_PATH: OnceLock<CString> = OnceLock::new();
+
+    // Only async-signal-safe calls: unlink, signal, raise.
+    extern "C" fn on_signal(sig: libc::c_int) {
+        if let Some(path) = TOKEN_PATH.get() {
+            // SAFETY: a NUL-terminated path that lives for the whole process.
+            unsafe { libc::unlink(path.as_ptr()) };
+        }
+        // SAFETY: restore the default action and re-raise, so the process
+        // still ends the way the sender asked.
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+
+    pub fn remove_on_signal(path: &Path) {
+        let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        if TOKEN_PATH.set(c_path).is_err() {
+            return;
+        }
+        let handler = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+            // SAFETY: installs a handler that only makes async-signal-safe calls.
+            unsafe { libc::signal(sig, handler) };
+        }
+    }
 }
