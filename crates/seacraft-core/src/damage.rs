@@ -214,8 +214,12 @@ pub fn validate(case: &DamageCase) -> Result<(), String> {
         }
     }
     if let Some(density) = case.water_density {
-        if !density.is_finite() || density <= 0.0 {
-            return Err("`water_density` must be finite and positive".into());
+        // Tonnes per m³ here (1.025 for sea water); 1025 would be kg/m³ and
+        // shrink the displaced volume a thousandfold.
+        if !density.is_finite() || !(0.5..=2.0).contains(&density) {
+            return Err(format!(
+                "`water_density` is in t/m³ and must be between 0.5 and 2.0 (got {density})"
+            ));
         }
     }
     Ok(())
@@ -1100,9 +1104,11 @@ fn evaluate_residual_criteria(
     if gz_points.len() < 2 {
         return None;
     }
+    // The curve up to the first heel without an equilibrium: past that gap the
+    // curve is unknown, so it is neither bridged nor counted.
     let valid_points: Vec<(f64, f64)> = gz_points
         .iter()
-        .filter_map(|p| match p.gz {
+        .map_while(|p| match p.gz {
             Some(g) if g.is_finite() => Some((p.relative_heel_deg, g)),
             _ => None,
         })
@@ -1113,7 +1119,13 @@ fn evaluate_residual_criteria(
     }
 
     // Find angle of vanishing stability theta_v where residual GZ drops <= 0.
-    let mut theta_v = valid_points.last().unwrap().0;
+    // A curve that never rises above zero has no positive range at all; one
+    // that stays positive is credited up to its last known heel.
+    let mut theta_v = if valid_points.iter().any(|&(_, g)| g > 0.0) {
+        valid_points[valid_points.len() - 1].0
+    } else {
+        0.0
+    };
     for i in 1..valid_points.len() {
         let (t0, g0) = valid_points[i - 1];
         let (t1, g1) = valid_points[i];
@@ -1172,6 +1184,53 @@ fn evaluate_residual_criteria(
 mod tests {
     use super::*;
     use crate::subdiv::{SubdivisionMode, SubdivisionOptions};
+
+    fn gz_curve(values: &[Option<f64>]) -> Vec<DamageGzPoint> {
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, &gz)| DamageGzPoint {
+                heel_deg: 5.0 * i as f64,
+                relative_heel_deg: 5.0 * i as f64,
+                draft: gz.map(|_| 1.0),
+                trim_m: gz.map(|_| 0.0),
+                gz,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_residual_curve_that_never_rises_has_no_positive_range() {
+        let pts = gz_curve(&[Some(0.0), Some(-0.02), Some(-0.05), Some(-0.1)]);
+        let c = evaluate_residual_criteria(0.0, &pts).unwrap();
+        assert_eq!(c.positive_range_deg, 0.0);
+        assert_eq!(c.area_m_rad, 0.0);
+        assert!(!c.passed);
+    }
+
+    #[test]
+    fn residual_criteria_stop_at_the_first_heel_without_equilibrium() {
+        // Positive to 10°, no equilibrium at 15° and 20°, positive again at 25°:
+        // only 0..10° is known, so the range ends there and nothing is bridged.
+        let pts = gz_curve(&[Some(0.0), Some(0.05), Some(0.08), None, None, Some(0.3)]);
+        let c = evaluate_residual_criteria(0.0, &pts).unwrap();
+        assert_eq!(c.positive_range_deg, 10.0);
+        assert!((c.max_gz_m - 0.08).abs() < 1e-12);
+        let want = (0.5 * 0.05 * 5.0 + 0.5 * (0.05 + 0.08) * 5.0) * std::f64::consts::PI / 180.0;
+        assert!((c.area_m_rad - want).abs() < 1e-12, "{}", c.area_m_rad);
+    }
+
+    #[test]
+    fn a_density_in_kg_per_m3_is_refused() {
+        let case = DamageCase {
+            name: "kg per m3".into(),
+            compartments: vec![CompartmentSpec::Named("Hold".into())],
+            water_density: Some(1025.0),
+            ..DamageCase::default()
+        };
+        let err = validate(&case).unwrap_err();
+        assert!(err.contains("t/m³"), "{err}");
+    }
 
     fn make_box_barge(length: f64, beam: f64, depth: f64) -> Surface {
         let mut s = Surface::new();

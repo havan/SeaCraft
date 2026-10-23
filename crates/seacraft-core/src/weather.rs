@@ -342,7 +342,7 @@ pub struct WeatherResult {
     pub phi0_passed: bool,
     /// Whether area b >= area a (with valid φc and φ2) is satisfied.
     pub area_passed: bool,
-    /// Whether the complete weather criterion is satisfied (`phi0_passed && area_passed`).
+    /// Whether the complete weather criterion is satisfied (`phi0_passed && area_passed`, and GM > 0).
     pub passed: bool,
     /// Explanatory notes when φ0, φc, or φ2 cannot be found or inputs are degenerate.
     pub notes: Vec<String>,
@@ -754,7 +754,7 @@ pub fn evaluate_weather(
     };
     let (c, roll_period_s) = roll_period(hydro.beam_m, hydro.draft_m, hydro.lwl_m, hydro.gm_m);
     if hydro.gm_m <= 0.0 {
-        notes.push("GM <= 0: roll period T cannot be evaluated from positive GM".into());
+        notes.push("GM <= 0: the roll period is undefined and the criterion fails".into());
     }
     let s = s_factor(roll_period_s);
     let phi1_deg = rollback_angle_deg(k, x1, x2, r, s);
@@ -880,7 +880,9 @@ pub fn evaluate_weather(
         && phi2_deg.is_some()
         && area_b_m_rad >= area_a_m_rad
         && area_b_m_rad > 0.0;
-    let passed = phi0_passed && area_passed;
+    // With GM <= 0 the roll period, and with it φ1, is meaningless: the
+    // criterion cannot be met however the areas come out.
+    let passed = phi0_passed && area_passed && hydro.gm_m > 0.0;
 
     WeatherResult {
         hull_windage_area_m2: hull_area,
