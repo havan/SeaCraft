@@ -541,7 +541,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(_cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
+        crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::new_detached();
         app.status =
             "No model loaded. File > New demo hull, or File > Open .fef… (Ctrl+O).".to_owned();
@@ -823,12 +824,15 @@ impl App {
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        // `App::new` themes the window's context; a headless test's context
+        // gets the same type scale on its first frame.
+        crate::theme::ensure(ui);
         self.shortcuts(ui);
         self.menu(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.dirty {
-                    ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), "● unsaved");
+                    ui.colored_label(crate::theme::WARN, "● unsaved");
                 }
                 ui.label(&self.status);
                 ui.separator();
@@ -1703,7 +1707,7 @@ impl App {
                 ui.label("Path");
                 ui.add(egui::TextEdit::singleline(&mut dialog.path).desired_width(f32::INFINITY));
                 if let Some(err) = &dialog.error {
-                    ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), err);
+                    ui.colored_label(crate::theme::FAIL, err);
                 }
                 ui.separator();
                 let wanted = match dialog.kind {

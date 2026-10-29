@@ -103,3 +103,52 @@ fn curvature_combs_render_in_viewports_without_panicking() {
     frames(&mut app, 2);
     assert!(app.display().combs);
 }
+
+/// The type scale reaches a context the app did not create, on the first
+/// frame: quantity names at body size, never the old 9 pt small text.
+#[test]
+fn a_headless_frame_draws_with_the_theme_type_scale() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.recompute_hydrostatics();
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 1000.0),
+        )),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+    out.textures_delta.clear();
+    let style = ctx.global_style();
+    let size = |s: egui::TextStyle| style.text_styles[&s].size;
+    assert!(size(egui::TextStyle::Body) >= 12.0);
+    assert!(size(egui::TextStyle::Small) >= 11.0);
+    assert!(seacraft_gui::theme::is_themed(&style));
+
+    fn walk(shape: &egui::Shape, out: &mut Vec<(String, f32)>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            egui::Shape::Text(t) => out.push((
+                t.galley.text().to_string(),
+                t.galley
+                    .job
+                    .sections
+                    .first()
+                    .map_or(0.0, |s| s.format.font_id.size),
+            )),
+            _ => {}
+        }
+    }
+    let mut text = Vec::new();
+    for clipped in &out.shapes {
+        walk(&clipped.shape, &mut text);
+    }
+    for name in ["displacement", "KM(t)", "MTC"] {
+        let (_, pt) = text
+            .iter()
+            .find(|(t, _)| t == name)
+            .unwrap_or_else(|| panic!("{name} not on the hydrostatics dock: {text:?}"));
+        assert!(*pt >= 12.0, "{name} at {pt} pt");
+    }
+}

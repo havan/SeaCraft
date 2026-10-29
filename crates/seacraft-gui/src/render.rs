@@ -14,25 +14,7 @@ use seacraft_core::raster;
 use seacraft_core::weather::WindageRect;
 
 use crate::camera::{Camera, ViewTransform};
-
-// ---- palette -----------------------------------------------------------
-
-pub const BG: Color32 = Color32::from_rgb(0x13, 0x19, 0x21);
-pub const FRAME: Color32 = Color32::from_rgb(0x2a, 0x35, 0x42);
-pub const FRAME_ACTIVE: Color32 = Color32::from_rgb(0x54, 0x8c, 0xc8);
-pub const GRID: Color32 = Color32::from_rgb(0x21, 0x2b, 0x36);
-pub const GRID_AXIS: Color32 = Color32::from_rgb(0x33, 0x42, 0x52);
-pub const HULL_EDGE: Color32 = Color32::from_rgb(0x7f, 0x9a, 0xb5);
-pub const CONTROL: Color32 = Color32::from_rgb(0xe8, 0x9d, 0x3a);
-pub const CREASE: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
-pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
-pub const SELECTED: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
-pub const WATERPLANE: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
-pub const WATERLINE: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
-pub const SECTION_CURVE: Color32 = Color32::from_rgb(0x9a, 0xb8, 0xd4);
-pub const COMB_SPIKE: Color32 = Color32::from_rgb(0x4b, 0x9c, 0x62);
-pub const COMB_ENV: Color32 = Color32::from_rgb(0x63, 0xd4, 0x82);
-pub const TEXT: Color32 = Color32::from_rgb(0x8e, 0x9e, 0xae);
+use crate::theme;
 
 /// What the viewports may draw.
 #[derive(Debug, Clone)]
@@ -160,16 +142,21 @@ pub fn viewport_with_texture(
     texture: Option<&egui::TextureHandle>,
 ) {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, BG);
+    painter.rect_filled(rect, 0.0, theme::CANVAS);
     let Some(scene) = scene else {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
             "No model loaded",
             FontId::proportional(14.0),
-            TEXT,
+            theme::TEXT_SECONDARY,
         );
-        painter.rect_stroke(rect, 0.0, Stroke::new(1.0, FRAME), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(1.0, theme::FRAME),
+            egui::StrokeKind::Inside,
+        );
         return;
     };
 
@@ -214,35 +201,49 @@ pub fn viewport_with_texture(
         draw_points(&painter, &view, rect, scene.surface, selected);
     }
 
-    // Caption and scale.
-    painter.text(
+    // Caption and scale, on a backing so the hull behind stays readable.
+    hud_caption(
+        &painter,
         rect.left_top() + egui::vec2(8.0, 6.0),
         Align2::LEFT_TOP,
-        camera.kind.label(),
-        FontId::proportional(12.0),
-        TEXT,
+        camera.kind.label().to_owned(),
     );
     let world_per_px = view.world_per_px(rect, camera.distance);
-    painter.text(
+    hud_caption(
+        &painter,
         rect.right_top() + egui::vec2(-8.0, 6.0),
         Align2::RIGHT_TOP,
         format!("{world_per_px:.3} m/px"),
-        FontId::monospace(11.0),
-        TEXT,
     );
     painter.rect_stroke(
         rect,
         0.0,
         Stroke::new(
             if active { 2.0 } else { 1.0 },
-            if active { FRAME_ACTIVE } else { FRAME },
+            if active {
+                theme::FRAME_ACTIVE
+            } else {
+                theme::FRAME
+            },
         ),
         egui::StrokeKind::Inside,
     );
 }
 
+/// A viewport caption in the caption font on a semi-opaque canvas backing.
+/// Returns the backing rectangle.
+pub fn hud_caption(painter: &egui::Painter, pos: Pos2, align: Align2, text: String) -> Rect {
+    let galley = painter.layout_no_wrap(text, theme::caption_font(), theme::TEXT_SECONDARY);
+    let text_rect = align.anchor_size(pos, galley.size());
+    let backing = text_rect.expand2(egui::vec2(4.0, 2.0));
+    painter.rect_filled(backing, 2.0, theme::HUD_BACKING);
+    painter.galley(text_rect.min, galley, theme::TEXT_SECONDARY);
+    backing
+}
+
 /// A 1 m grid in the plane through the camera target, spaced adaptively so it
-/// never becomes a solid wall of lines.
+/// never becomes a solid wall of lines. In the orthographic views the datum
+/// lines (centreline, baseline, x = 0) and midship are drawn stronger.
 fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: &Vec3) {
     // World height visible at the target plane: the orthographic height, or
     // the perspective frustum's height at the distance of the target.
@@ -265,31 +266,73 @@ fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: 
     .find(|s| 2.0 * half / s <= 30.0)
     .unwrap_or(1000.0);
 
-    let paint = |a: Vec3, b: Vec3, color: Color32| {
-        if let (Some(p), Some(q)) = (view.project(a, rect), view.project(b, rect)) {
-            painter.line_segment([p, q], Stroke::new(1.0, color));
-        }
-    };
-
-    let n = (half / step).ceil() as i64;
-    for i in -n..=n {
-        let offset = i as f64 * step;
-        let u = base + offset;
-        let v = up_base;
-        let color = if offset.abs() < 1e-9 { GRID_AXIS } else { GRID };
-        paint(
-            view.right * u + view.up * (v - half),
-            view.right * u + view.up * (v + half),
-            color,
-        );
-        let v2 = up_base + offset;
-        paint(
-            view.right * (base - half) + view.up * v2,
-            view.right * (base + half) + view.up * v2,
-            color,
-        );
+    // Minor lines first, datum lines on top of them.
+    let mut lines: Vec<([Vec3; 2], bool)> = Vec::new();
+    let datum_right = is_world_axis(view.right);
+    let datum_up = is_world_axis(view.up);
+    for (u, zero) in grid_lines(base, half, step) {
+        lines.push((
+            [
+                view.right * u + view.up * (up_base - half),
+                view.right * u + view.up * (up_base + half),
+            ],
+            zero && datum_right,
+        ));
     }
-    let _ = width;
+    for (v, zero) in grid_lines(up_base, half, step) {
+        lines.push((
+            [
+                view.right * (base - half) + view.up * v,
+                view.right * (base + half) + view.up * v,
+            ],
+            zero && datum_up,
+        ));
+    }
+    // Midship: the middle of the model's length, where a view runs along x.
+    if datum_right && view.right.x.abs() > 0.999 {
+        lines.push((
+            [
+                view.right * base + view.up * (up_base - half),
+                view.right * base + view.up * (up_base + half),
+            ],
+            true,
+        ));
+    }
+    if datum_up && view.up.x.abs() > 0.999 {
+        lines.push((
+            [
+                view.right * (base - half) + view.up * up_base,
+                view.right * (base + half) + view.up * up_base,
+            ],
+            true,
+        ));
+    }
+    lines.sort_by_key(|(_, major)| *major);
+    for ([a, b], major) in lines {
+        if let (Some(p), Some(q)) = (view.project(a, rect), view.project(b, rect)) {
+            let stroke = if major {
+                Stroke::new(1.2, theme::GRID_MAJOR)
+            } else {
+                Stroke::new(1.0, theme::GRID_MINOR)
+            };
+            painter.line_segment([p, q], stroke);
+        }
+    }
+}
+
+/// Grid line coordinates on multiples of `step` covering `base ± half`,
+/// each flagged when it is the world datum (coordinate zero). Anchored to the
+/// world, not to the model, so a line at 3 m is at 3 m in every view.
+pub fn grid_lines(base: f64, half: f64, step: f64) -> Vec<(f64, bool)> {
+    let i0 = ((base - half) / step).floor() as i64;
+    let i1 = ((base + half) / step).ceil() as i64;
+    (i0..=i1).map(|i| (i as f64 * step, i == 0)).collect()
+}
+
+/// Whether a view axis runs along a world axis (the orthographic views), so
+/// its zero line is a datum: the centreline, the baseline or x = 0.
+fn is_world_axis(axis: Vec3) -> bool {
+    axis.x.abs().max(axis.y.abs()).max(axis.z.abs()) > 0.999
 }
 
 fn draw_waterplane(
@@ -336,13 +379,13 @@ fn draw_waterplane(
         if view.perspective && fill_quad {
             let mut quad_mesh = egui::Mesh::default();
             for &p in &pts {
-                quad_mesh.colored_vertex(p, WATERPLANE);
+                quad_mesh.colored_vertex(p, theme::WATERPLANE_FILL);
             }
             quad_mesh.add_triangle(0, 1, 2);
             quad_mesh.add_triangle(0, 2, 3);
             painter.add(egui::Shape::mesh(quad_mesh));
         }
-        let border = Color32::from_rgba_unmultiplied(0x5c, 0xa8, 0xf0, 0x80);
+        let border = theme::WATERPLANE_EDGE;
         for i in 0..4 {
             painter.line_segment([pts[i], pts[(i + 1) % 4]], Stroke::new(1.0, border));
         }
@@ -376,7 +419,7 @@ fn draw_waterplane(
                 if let (Some(p0), Some(p1)) =
                     (view.project(hits[0], rect), view.project(hits[1], rect))
                 {
-                    painter.line_segment([p0, p1], Stroke::new(1.5, WATERLINE));
+                    painter.line_segment([p0, p1], Stroke::new(1.5, theme::DWL));
                 }
             }
         }
@@ -402,7 +445,7 @@ fn draw_combs(
         for curve in *group {
             for w in curve.points.windows(2) {
                 if let (Some(p), Some(q)) = (view.project(w[0], rect), view.project(w[1], rect)) {
-                    painter.line_segment([p, q], Stroke::new(1.0, SECTION_CURVE));
+                    painter.line_segment([p, q], Stroke::new(1.0, theme::SECTION_CURVE));
                 }
             }
             if curve.closed && curve.points.len() >= 3 {
@@ -410,18 +453,18 @@ fn draw_combs(
                     view.project(*curve.points.last().unwrap(), rect),
                     view.project(curve.points[0], rect),
                 ) {
-                    painter.line_segment([p, q], Stroke::new(1.0, SECTION_CURVE));
+                    painter.line_segment([p, q], Stroke::new(1.0, theme::SECTION_CURVE));
                 }
             }
             let mut tips: Vec<Pos2> = Vec::with_capacity(curve.spikes.len());
             for &(base, tip) in &curve.spikes {
                 if let (Some(b), Some(t)) = (view.project(base, rect), view.project(tip, rect)) {
-                    painter.line_segment([b, t], Stroke::new(0.8, COMB_SPIKE));
+                    painter.line_segment([b, t], Stroke::new(0.8, theme::COMB_SPIKE));
                     tips.push(t);
                 }
             }
             for w in tips.windows(2) {
-                painter.line_segment([w[0], w[1]], Stroke::new(1.1, COMB_ENV));
+                painter.line_segment([w[0], w[1]], Stroke::new(1.1, theme::COMB_ENVELOPE));
             }
         }
     }
@@ -522,7 +565,7 @@ fn draw_hull(
                     view.project(mesh.verts[a], rect),
                     view.project(mesh.verts[b], rect),
                 ) {
-                    painter.line_segment([p, q], Stroke::new(0.7, HULL_EDGE));
+                    painter.line_segment([p, q], Stroke::new(0.7, theme::WIREFRAME));
                 }
             }
         }
@@ -532,14 +575,9 @@ fn draw_hull(
 /// A layer's colour, or the default hull grey when the index is out of range.
 fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
     let Some(layer) = layer.and_then(|i| surface.layers.get(i)) else {
-        return Color32::from_rgb(0x9f, 0xb4, 0xc7);
+        return theme::HULL_DEFAULT;
     };
-    let c = layer.color.max(0) as u32;
-    Color32::from_rgb(
-        ((c >> 16) & 0xff) as u8,
-        ((c >> 8) & 0xff) as u8,
-        (c & 0xff) as u8,
-    )
+    theme::layer_colour(layer.color)
 }
 
 fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, surface: &Surface) {
@@ -564,7 +602,11 @@ fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, s
                 [p, q],
                 Stroke::new(
                     if crease { 1.6 } else { 1.0 },
-                    if crease { CREASE } else { CONTROL },
+                    if crease {
+                        theme::CREASE
+                    } else {
+                        theme::CONTROL_NET
+                    },
                 ),
             );
         }
@@ -583,10 +625,10 @@ fn draw_points(
             continue;
         };
         if i == selected.unwrap_or(usize::MAX) {
-            painter.circle_filled(s, 5.0, SELECTED);
-            painter.circle_stroke(s, 5.0, Stroke::new(1.0, Color32::BLACK));
+            painter.circle_filled(s, 5.0, theme::POINT_SELECTED);
+            painter.circle_stroke(s, 5.0, Stroke::new(1.0, theme::POINT_SELECTED_OUTLINE));
         } else {
-            painter.circle_filled(s, 2.0, POINT);
+            painter.circle_filled(s, 2.0, theme::POINT);
         }
     }
 }
@@ -855,13 +897,9 @@ fn draw_volumes(
         let hull = convex_hull_2d(&valid_pts);
         if hull.len() >= 3 {
             let base_fill = match vol.kind {
-                VolumeKind::Tank { .. } => Color32::from_rgba_unmultiplied(235, 160, 40, 25),
-                VolumeKind::Compartment { flooded: false } => {
-                    Color32::from_rgba_unmultiplied(120, 160, 200, 25)
-                }
-                VolumeKind::Compartment { flooded: true } => {
-                    Color32::from_rgba_unmultiplied(230, 60, 60, 70)
-                }
+                VolumeKind::Tank { .. } => theme::TANK_FILL,
+                VolumeKind::Compartment { flooded: false } => theme::COMPARTMENT_FILL,
+                VolumeKind::Compartment { flooded: true } => theme::FLOODED_FILL,
             };
             painter.add(egui::Shape::convex_polygon(hull, base_fill, Stroke::NONE));
         }
@@ -878,7 +916,7 @@ fn draw_volumes(
                 if sub_valid.len() >= 3 {
                     let sub_hull = convex_hull_2d(&sub_valid);
                     if sub_hull.len() >= 3 {
-                        let liquid_blue = Color32::from_rgba_unmultiplied(60, 140, 240, 70);
+                        let liquid_blue = theme::TANK_LIQUID;
                         painter.add(egui::Shape::convex_polygon(
                             sub_hull,
                             liquid_blue,
@@ -891,19 +929,15 @@ fn draw_volumes(
 
         // 3. 12 box edges
         let (edge_color, edge_width) = match (&vol.kind, vol.selected) {
-            (VolumeKind::Tank { .. }, false) => (Color32::from_rgb(220, 150, 40), 1.0),
-            (VolumeKind::Tank { .. }, true) => (Color32::from_rgb(255, 200, 70), 2.0),
-            (VolumeKind::Compartment { flooded: false }, false) => {
-                (Color32::from_rgb(120, 155, 190), 1.0)
-            }
+            (VolumeKind::Tank { .. }, false) => (theme::TANK_EDGE, 1.0),
+            (VolumeKind::Tank { .. }, true) => (theme::TANK_EDGE_SELECTED, 2.0),
+            (VolumeKind::Compartment { flooded: false }, false) => (theme::COMPARTMENT_EDGE, 1.0),
             (VolumeKind::Compartment { flooded: false }, true) => {
-                (Color32::from_rgb(170, 210, 250), 2.0)
+                (theme::COMPARTMENT_EDGE_SELECTED, 2.0)
             }
-            (VolumeKind::Compartment { flooded: true }, false) => {
-                (Color32::from_rgb(220, 60, 60), 1.0)
-            }
+            (VolumeKind::Compartment { flooded: true }, false) => (theme::FLOODED_EDGE, 1.0),
             (VolumeKind::Compartment { flooded: true }, true) => {
-                (Color32::from_rgb(255, 90, 90), 2.0)
+                (theme::FLOODED_EDGE_SELECTED, 2.0)
             }
         };
         let stroke = Stroke::new(edge_width, edge_color);
@@ -986,14 +1020,11 @@ fn draw_windage(
             if hull.len() >= 3 {
                 let (fill, stroke) = if item.selected {
                     (
-                        Color32::from_rgba_unmultiplied(60, 200, 100, 50),
-                        Stroke::new(2.0, Color32::from_rgb(120, 255, 160)),
+                        theme::WINDAGE_FILL_SELECTED,
+                        Stroke::new(2.0, theme::WINDAGE_EDGE_SELECTED),
                     )
                 } else {
-                    (
-                        Color32::from_rgba_unmultiplied(60, 200, 100, 25),
-                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(70, 190, 110, 180)),
-                    )
+                    (theme::WINDAGE_FILL, Stroke::new(1.0, theme::WINDAGE_EDGE))
                 };
                 painter.add(egui::Shape::convex_polygon(hull, fill, stroke));
 
@@ -1007,9 +1038,9 @@ fn draw_windage(
                 if w_px >= 30.0 && h_px >= 14.0 && !item.name.is_empty() {
                     let center = Pos2::new((min_x + max_x) * 0.5, (min_y + max_y) * 0.5);
                     let text_color = if item.selected {
-                        Color32::from_rgb(220, 255, 230)
+                        theme::WINDAGE_TEXT_SELECTED
                     } else {
-                        Color32::from_rgba_unmultiplied(180, 230, 190, 200)
+                        theme::WINDAGE_TEXT
                     };
                     painter.text(
                         center,
@@ -1028,6 +1059,93 @@ fn draw_windage(
 mod tests {
     use super::*;
     use crate::camera::{Camera, ViewKind};
+
+    #[test]
+    fn grid_lines_are_world_anchored_with_one_datum() {
+        let lines = grid_lines(3.3, 10.0, 1.0);
+        assert!(lines.first().unwrap().0 <= 3.3 - 10.0);
+        assert!(lines.last().unwrap().0 >= 3.3 + 10.0);
+        for (c, _) in &lines {
+            assert!((c - c.round()).abs() < 1e-12, "{c} is not on the 1 m grid");
+        }
+        let datums: Vec<_> = lines.iter().filter(|l| l.1).collect();
+        assert_eq!(datums.len(), 1);
+        assert_eq!(datums[0].0, 0.0);
+        // Far from the origin there is no datum to draw.
+        assert!(grid_lines(100.0, 5.0, 1.0).iter().all(|l| !l.1));
+    }
+
+    #[test]
+    fn major_grid_lines_are_stronger_and_captions_sit_on_a_backing() {
+        let s = seacraft_core::demo::demo_hull(false);
+        let mesh = export::render_mesh(&s, 1, Default::default());
+        let (min, max) = s.extents();
+        let scene = Scene {
+            surface: &s,
+            mesh: &mesh,
+            curves: None,
+            volumes: &[],
+            windage: &[],
+            min,
+            max,
+            draft: 0.62,
+            trim: 0.0,
+            heel_deg: 0.0,
+        };
+        let opts = DisplayOptions {
+            shaded: false,
+            control_net: false,
+            points: false,
+            waterplane: false,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
+            let camera = Camera::new(ViewKind::Profile, (min + max) * 0.5, max - min);
+            viewport(ui, rect, &camera, Some(&scene), &opts, true, None);
+        });
+        out.textures_delta.clear();
+        let mut minor = 0;
+        let mut major = 0;
+        let mut backings = Vec::new();
+        let mut captions = Vec::new();
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut |shape| match shape {
+                egui::Shape::LineSegment { stroke, .. } => {
+                    if stroke.color == theme::GRID_MINOR {
+                        minor += 1;
+                        assert!(stroke.width <= 1.0);
+                    } else if stroke.color == theme::GRID_MAJOR {
+                        major += 1;
+                        assert!(stroke.width > 1.0);
+                    }
+                }
+                egui::Shape::Rect(r) if r.fill == theme::HUD_BACKING => backings.push(r.rect),
+                egui::Shape::Text(t) => captions.push((t.galley.text().to_string(), t.pos)),
+                _ => {}
+            });
+        }
+        assert!(minor > 4, "{minor} minor lines");
+        // Profile: baseline z = 0, x = 0 and midship.
+        assert_eq!(major, 3, "datum lines in the profile view");
+        assert_eq!(backings.len(), 2, "view name and scale each get a backing");
+        for (text, pos) in &captions {
+            assert!(
+                backings.iter().any(|b| b.contains(*pos)),
+                "caption {text:?} has no backing"
+            );
+        }
+        assert!(captions.iter().any(|(t, _)| t == "Profile"));
+        assert!(captions.iter().any(|(t, _)| t.ends_with("m/px")));
+    }
 
     #[test]
     fn convex_hull_2d_square_and_interior_points() {

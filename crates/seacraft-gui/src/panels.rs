@@ -10,6 +10,8 @@ use seacraft_core::stability::CrossCurve;
 use seacraft_core::weather::{WeatherResult, WindageItem, WindageRect};
 use seacraft_core::Surface;
 
+use crate::theme;
+
 /// Draw one row per layer. Returns whether any flag or colour changed.
 ///
 /// Hiding every layer is allowed: the viewports then show no hull and the
@@ -71,10 +73,7 @@ pub fn layers(ui: &mut egui::Ui, surface: &mut Surface) -> bool {
     }
     if !surface.layers.iter().any(|l| l.visible) {
         ui.separator();
-        ui.colored_label(
-            egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-            "no visible layers",
-        );
+        ui.colored_label(theme::WARN, "no visible layers");
     }
     changed
 }
@@ -101,19 +100,14 @@ pub struct HydroPanel<'a> {
     pub curves: Option<&'a [CrossCurve]>,
 }
 
-/// Criteria badge colours. One set for every dock, so a FAIL is the same red
-/// everywhere (a later batch moves these into `theme.rs`).
-pub const BADGE_PASS: egui::Color32 = egui::Color32::from_rgb(0x5a, 0xd0, 0x6a);
-pub const BADGE_FAIL: egui::Color32 = egui::Color32::from_rgb(0xe0, 0x5c, 0x5c);
-pub const BADGE_STALE: egui::Color32 = egui::Color32::from_rgb(0x8e, 0x9e, 0xae);
-
-/// The text and colour of a criteria badge: never colour alone.
+/// The text and colour of a criteria badge: never colour alone. The colours
+/// are the theme's semantic tokens, so a FAIL is the same red in every dock.
 pub fn criteria_badge_style(passed: bool, stale: bool) -> (&'static str, egui::Color32) {
     match (passed, stale) {
-        (true, false) => ("PASS", BADGE_PASS),
-        (false, false) => ("FAIL", BADGE_FAIL),
-        (true, true) => ("PASS · stale", BADGE_STALE),
-        (false, true) => ("FAIL · stale", BADGE_STALE),
+        (true, false) => ("PASS", theme::OK),
+        (false, false) => ("FAIL", theme::FAIL),
+        (true, true) => ("PASS · stale", theme::STALE),
+        (false, true) => ("FAIL · stale", theme::STALE),
     }
 }
 
@@ -124,22 +118,59 @@ pub fn criteria_badge(ui: &mut egui::Ui, passed: bool, stale: bool) -> egui::Res
     ui.label(egui::RichText::new(text).monospace().strong().color(colour))
 }
 
-fn row(ui: &mut egui::Ui, label: &str, value: String) {
-    ui.horizontal(|ui| {
-        ui.small(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.monospace(value);
-        });
-    });
+/// One numeric readout: a quantity's name, its value at a fixed precision
+/// (signed quantities carry their sign) and its unit, kept apart so the
+/// value column can align and the unit never glues onto the number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readout {
+    pub name: &'static str,
+    pub value: String,
+    pub unit: &'static str,
 }
 
-/// The measurement rows the dock draws, in two columns.
+impl Readout {
+    pub fn new(name: &'static str, value: String, unit: &'static str) -> Self {
+        Self { name, value, unit }
+    }
+}
+
+/// Draw readouts as a three-column grid: name (body size, secondary colour),
+/// value (monospace, right-aligned by padding to the widest value, so the
+/// decimals of equal-precision rows line up) and unit (muted, fixed width).
+pub fn readouts(ui: &mut egui::Ui, id: &str, rows: &[Readout]) {
+    let width = rows
+        .iter()
+        .map(|r| r.value.chars().count())
+        .max()
+        .unwrap_or(0);
+    egui::Grid::new(id)
+        .num_columns(3)
+        .spacing(egui::vec2(8.0, 4.0))
+        .show(ui, |ui| {
+            for r in rows {
+                ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(format!("{:>width$}", r.value))
+                        .monospace()
+                        .color(theme::TEXT_PRIMARY),
+                );
+                ui.horizontal(|ui| {
+                    ui.set_min_width(theme::UNIT_WIDTH);
+                    ui.label(egui::RichText::new(r.unit).color(theme::TEXT_MUTED));
+                });
+                ui.end_row();
+            }
+        });
+}
+
+/// The measurement rows the dock draws, in two groups (the form and the
+/// stability quantities).
 ///
 /// Kept separate from the drawing so the numbers (and their formatting) can be
 /// tested without a frame: `TPC` and `MTC` are table quantities computed here
 /// from the measured waterplane, with the kilogram-to-tonne factor the core's
 /// kg/m³ density needs.
-pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<(&'static str, String)>; 2] {
+pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<Readout>; 2] {
     let rho_t = h.water_density / 1000.0;
     let tpc = h.waterplane_area_m2 * rho_t / 100.0;
     let mtc = if h.lwl > 1e-9 {
@@ -147,29 +178,89 @@ pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<(&'static str, String
     } else {
         0.0
     };
+    let r = Readout::new;
     [
         vec![
-            ("volume", format!("{:.3} m³", h.volume_m3)),
-            ("displacement", format!("{:.2} t", h.displacement_t)),
-            ("Cb", format!("{:.3}", h.block_coefficient)),
-            ("Cp", format!("{:.3}", h.prismatic_coefficient)),
-            ("Cm", format!("{:.3}", h.midship_coefficient)),
-            ("Cwp", format!("{:.3}", h.waterplane_coefficient)),
-            ("LCB", format!("{:.3} m", h.lcb.x)),
-            ("LCF", format!("{:.3} m", h.lcf.x)),
-            ("TPC", format!("{:.3} t/cm", tpc)),
+            r("volume", format!("{:.3}", h.volume_m3), "m³"),
+            r("displacement", format!("{:.2}", h.displacement_t), "t"),
+            r("Cb", format!("{:.3}", h.block_coefficient), ""),
+            r("Cp", format!("{:.3}", h.prismatic_coefficient), ""),
+            r("Cm", format!("{:.3}", h.midship_coefficient), ""),
+            r("Cwp", format!("{:.3}", h.waterplane_coefficient), ""),
+            r("LCB", format!("{:.3}", h.lcb.x), "m"),
+            r("LCF", format!("{:.3}", h.lcf.x), "m"),
+            r("TPC", format!("{:.3}", tpc), "t/cm"),
         ],
         vec![
-            ("KB", format!("{:.3} m", h.kb)),
-            ("BM(t)", format!("{:.3} m", h.bm_transverse)),
-            ("KM(t)", format!("{:.3} m", h.km_transverse)),
-            ("GM", format!("{:+.3} m", h.gm(kg))),
-            ("wetted", format!("{:.2} m²", h.wetted_surface_m2)),
-            ("waterplane", format!("{:.2} m²", h.waterplane_area_m2)),
-            ("LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl)),
-            ("midship", format!("{:.3} m²", h.mainframe_area_m2)),
-            ("MTC", format!("{:.3} t·m/cm", mtc)),
+            r("KB", format!("{:.3}", h.kb), "m"),
+            r("BM(t)", format!("{:.3}", h.bm_transverse), "m"),
+            r("KM(t)", format!("{:.3}", h.km_transverse), "m"),
+            r("GM", format!("{:+.3}", h.gm(kg)), "m"),
+            r("wetted", format!("{:.2}", h.wetted_surface_m2), "m²"),
+            r("waterplane", format!("{:.2}", h.waterplane_area_m2), "m²"),
+            r("LWL / BWL", format!("{:.2} / {:.2}", h.lwl, h.bwl), "m"),
+            r("midship", format!("{:.3}", h.mainframe_area_m2), "m²"),
+            r("MTC", format!("{:.3}", mtc), "t·m/cm"),
         ],
+    ]
+}
+
+/// The damaged-equilibrium readouts of the Damage tab. Trim, heel and GM
+/// are signed and show their sign.
+pub fn damage_rows(d: &DamageResult) -> Vec<Readout> {
+    let r = Readout::new;
+    vec![
+        r("Δ (mass)", format!("{:.3}", d.displacement_t), "t"),
+        r("Intact draft", format!("{:.3}", d.intact_draft), "m"),
+        r("Damaged draft", format!("{:.3}", d.draft), "m"),
+        r("Sinkage", format!("{:.3}", d.sinkage_m), "m"),
+        r("Damaged heel", format!("{:+.1}", d.heel_deg), "°"),
+        r("Net buoyant vol.", format!("{:.3}", d.net_volume_m3), "m³"),
+        r("KG", format!("{:.3}", d.kg), "m"),
+        r("Intact trim", format!("{:+.3}", d.intact_trim_m), "m"),
+        r("Damaged trim", format!("{:+.3}", d.trim_m), "m"),
+        match d.freeboard_m {
+            Some(fb) => r("Min freeboard", format!("{fb:.3}"), "m"),
+            None => r("Min freeboard", "-".to_string(), ""),
+        },
+        r("Lost buoyancy", format!("{:.3}", d.lost_volume_m3), "m³"),
+        r("KB", format!("{:.3}", d.kb), "m"),
+    ]
+}
+
+/// The equilibrium readouts of the Loading tab. TCG, trim, list and GM are
+/// signed and show their sign.
+pub fn loading_rows(l: &LoadingResult) -> Vec<Readout> {
+    let r = Readout::new;
+    vec![
+        r("Δ (mass)", format!("{:.3}", l.displacement_t), "t"),
+        r("LCG", format!("{:.3}", l.lcg), "m"),
+        r("TCG", format!("{:+.3}", l.tcg), "m"),
+        r("KG (solid)", format!("{:.3}", l.kg_solid), "m"),
+        r("FSM", format!("{:.2}", l.fsm_t_m), "t·m"),
+        r("FSC", format!("{:.3}", l.fsc_m), "m"),
+        r("KG (fluid)", format!("{:.3}", l.kg_fluid), "m"),
+        r("Draft", format!("{:.3}", l.draft), "m"),
+        r("Trim", format!("{:+.3}", l.trim_m), "m"),
+        r("List", format!("{:+.1}", l.list_deg), "°"),
+        r("GM (solid)", format!("{:+.3}", l.gm_solid), "m"),
+        r("GM (fluid)", format!("{:+.3}", l.gm_fluid), "m"),
+    ]
+}
+
+/// The IMO severe wind and rolling readouts, each with its limit.
+pub fn weather_rows(w: &WeatherResult) -> Vec<Readout> {
+    vec![
+        Readout::new(
+            "Steady heel φ0",
+            format!("{:.1}", w.phi0_deg.unwrap_or(0.0)),
+            "° (lim 16°)",
+        ),
+        Readout::new(
+            "Area ratio b/a",
+            format!("{:.2}", w.area_ratio),
+            "(req ≥1.0)",
+        ),
     ]
 }
 
@@ -215,18 +306,18 @@ fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics) {
         egui::Sense::hover(),
     );
     let (caption, rect) = sac_plot_rects(response.rect);
-    painter.rect_filled(rect, 2.0, PLOT_BG);
+    painter.rect_filled(rect, 2.0, theme::PLOT_BG);
     let points = sac_polyline(&h.sac, rect);
     if points.len() < 2 {
         return;
     }
     painter.line_segment(
         [rect.left_bottom(), rect.right_bottom()],
-        egui::Stroke::new(1.0, PLOT_AXIS),
+        egui::Stroke::new(1.0, theme::PLOT_AXIS),
     );
     painter.add(egui::Shape::line(
         points,
-        egui::Stroke::new(1.4, PLOT_COLOURS[0]),
+        egui::Stroke::new(1.4, theme::PLOT_SERIES[0]),
     ));
     let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
     plot_caption(
@@ -355,32 +446,20 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
 
     match panel.result {
         Some(h) if h.volume_m3 > 0.0 => {
-            let columns = hydrostatic_rows(h, *panel.kg);
-            ui.columns(2, |cols| {
-                for (col, rows) in cols.iter_mut().zip(columns.iter()) {
-                    col.spacing_mut().item_spacing.y = 4.0;
-                    for (label, value) in rows {
-                        row(col, label, value.clone());
-                    }
-                }
-            });
+            // One grid for both groups, so every value shares one column.
+            let rows = hydrostatic_rows(h, *panel.kg).concat();
+            readouts(ui, "hydro_readouts", &rows);
             ui.add_space(2.0);
             plot_sac(ui, h);
             for warning in &h.warnings {
-                ui.colored_label(egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), &warning.message);
+                ui.colored_label(theme::FAIL, &warning.message);
             }
             if h.gm(*panel.kg) < 0.0 {
-                ui.colored_label(
-                    egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
-                    "negative GM: the hull is unstable upright",
-                );
+                ui.colored_label(theme::FAIL, "negative GM: the hull is unstable upright");
             }
         }
         Some(_) => {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                "nothing is submerged at this draft",
-            );
+            ui.colored_label(theme::WARN, "nothing is submerged at this draft");
         }
         None => {
             ui.small("no measurement yet");
@@ -784,10 +863,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
                 ui.label("Computing RAOs…");
             }
         } else if is_stale {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                "Results out of date",
-            );
+            ui.colored_label(theme::WARN, "Results out of date");
         }
     });
 
@@ -841,7 +917,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     if let Some(res) = &panel.state.resistance {
         for w in &res.warnings {
-            ui.colored_label(egui::Color32::from_rgb(0xe8, 0x9d, 0x3a), format!("⚠ {w}"));
+            ui.colored_label(theme::WARN, format!("⚠ {w}"));
         }
 
         let series = vec![(
@@ -954,10 +1030,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
         ));
 
         for w in &rep.warnings {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                format!("⚠ {}", w.message),
-            );
+            ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
         }
 
         // A sea-state run puts the RAOs on the spectrum's ω grid, which can reach
@@ -1119,10 +1192,7 @@ fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState
             }
         });
         if let Some(problem) = input.problem() {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xd0, 0x40, 0x40),
-                format!("⚠ {problem}"),
-            );
+            ui.colored_label(theme::FAIL, format!("⚠ {problem}"));
         }
     }
 
@@ -1130,10 +1200,7 @@ fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState
     if let Some(r) = &state.sea_result {
         ui.add_space(4.0);
         if stale {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                "Sea-state results out of date",
-            );
+            ui.colored_label(theme::WARN, "Sea-state results out of date");
         }
         let sea = match r.sea {
             seacraft_core::seastate::WaveSpectrum::Bretschneider { hs, tp } => {
@@ -1148,10 +1215,7 @@ fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState
             r.speed_kn, r.spectrum.hs_check, r.spectrum.t1_s, r.spectrum.tz_s
         ));
         for w in &r.warnings {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                format!("⚠ {}", w.message),
-            );
+            ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
         }
         egui::Grid::new("sea_global_table")
             .striped(true)
@@ -1293,7 +1357,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         let is_highlighted = panel.highlight == Some(c_idx);
         let mut frame = egui::Frame::group(ui.style());
         if is_highlighted {
-            frame = frame.stroke(egui::Stroke::new(2.0, egui::Color32::from_rgb(220, 60, 60)));
+            frame = frame.stroke(egui::Stroke::new(2.0, theme::HIGHLIGHT_COMPARTMENT));
         }
         let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1509,7 +1573,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         > 1
     {
         ui.colored_label(
-            egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+            theme::FAIL,
             "Another damage case has this name; rename it before saving.",
         );
     }
@@ -1714,10 +1778,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             ui.spinner();
             ui.label("computing…");
         } else if panel.stale {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                "stale — press Compute",
-            );
+            ui.colored_label(theme::WARN, "stale — press Compute");
         }
     });
 
@@ -1727,57 +1788,14 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         ui.heading("Damaged Equilibrium");
         if !r.equilibrium_found {
             ui.colored_label(
-                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+                theme::FAIL,
                 "Equilibrium NOT found (lost buoyancy exceeds reserve buoyancy or capsized)",
             );
         } else {
-            ui.colored_label(
-                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
-                "Equilibrium found",
-            );
+            ui.colored_label(theme::OK, "Equilibrium found");
         }
 
-        ui.columns(2, |cols| {
-            cols[0].spacing_mut().item_spacing.y = 2.0;
-            row(
-                &mut cols[0],
-                "Δ (mass)",
-                format!("{:.3} t", r.displacement_t),
-            );
-            row(
-                &mut cols[0],
-                "Intact draft",
-                format!("{:.3} m", r.intact_draft),
-            );
-            row(&mut cols[0], "Damaged draft", format!("{:.3} m", r.draft));
-            row(&mut cols[0], "Sinkage", format!("{:.3} m", r.sinkage_m));
-            row(&mut cols[0], "Damaged heel", format!("{:.1}°", r.heel_deg));
-            row(
-                &mut cols[0],
-                "Net buoyant vol.",
-                format!("{:.3} m³", r.net_volume_m3),
-            );
-
-            cols[1].spacing_mut().item_spacing.y = 2.0;
-            row(&mut cols[1], "KG", format!("{:.3} m", r.kg));
-            row(
-                &mut cols[1],
-                "Intact trim",
-                format!("{:.3} m", r.intact_trim_m),
-            );
-            row(&mut cols[1], "Damaged trim", format!("{:.3} m", r.trim_m));
-            if let Some(fb) = r.freeboard_m {
-                row(&mut cols[1], "Min freeboard", format!("{:.3} m", fb));
-            } else {
-                row(&mut cols[1], "Min freeboard", "-".to_string());
-            }
-            row(
-                &mut cols[1],
-                "Lost buoyancy",
-                format!("{:.3} m³", r.lost_volume_m3),
-            );
-            row(&mut cols[1], "KB", format!("{:.3} m", r.kb));
-        });
+        readouts(ui, "damage_readouts", &damage_rows(r));
 
         if !r.compartments.is_empty() {
             ui.add_space(4.0);
@@ -1864,10 +1882,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         if !r.warnings.is_empty() {
             ui.add_space(4.0);
             for w in &r.warnings {
-                ui.colored_label(
-                    egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                    format!("Warning: {w}"),
-                );
+                ui.colored_label(theme::WARN, format!("Warning: {w}"));
             }
         }
     }
@@ -1878,21 +1893,8 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 /// Height of the caption band above every plot, in points. No curve point
 /// is drawn inside it, so the caption never sits on the data.
 pub const PLOT_CAPTION_BAND: f32 = 20.0;
-/// Plot captions, tick labels and legends: 11 pt monospace.
-const PLOT_FONT_SIZE: f32 = 11.0;
-const PLOT_BG: egui::Color32 = egui::Color32::from_rgb(0x0f, 0x14, 0x1b);
-const PLOT_AXIS: egui::Color32 = egui::Color32::from_rgb(0x4a, 0x5c, 0x70);
-const PLOT_GRID: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x29, 0x35);
-const PLOT_TEXT: egui::Color32 = egui::Color32::from_rgb(0x8e, 0x9e, 0xae);
-const PLOT_THRESHOLD: egui::Color32 = egui::Color32::from_rgb(0xa8, 0x84, 0x48);
-const PLOT_COLOURS: [egui::Color32; 6] = [
-    egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
-    egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
-    egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-    egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
-    egui::Color32::from_rgb(0xc0, 0x7c, 0xeb),
-    egui::Color32::from_rgb(0x40, 0xd0, 0xd0),
-];
+/// Plot captions, tick labels and legends: the theme's caption size.
+const PLOT_FONT_SIZE: f32 = theme::CAPTION_SIZE;
 /// Room left of the plot area for the y tick labels, below it for the x ones.
 const PLOT_Y_LABEL_WIDTH: f32 = 42.0;
 const PLOT_X_LABEL_HEIGHT: f32 = 16.0;
@@ -1915,8 +1917,8 @@ fn plot_caption(painter: &egui::Painter, caption: egui::Rect, text: &str) {
         caption.left_center() + egui::vec2(4.0, 0.0),
         egui::Align2::LEFT_CENTER,
         text,
-        egui::FontId::monospace(PLOT_FONT_SIZE),
-        PLOT_TEXT,
+        theme::caption_font(),
+        theme::PLOT_TEXT,
     );
 }
 
@@ -2069,9 +2071,9 @@ impl PlotAxes {
 
     /// Grid, axes, tick labels and (on a GZ plot) the dashed criteria lines.
     fn paint_frame(&self, painter: &egui::Painter) {
-        let font = egui::FontId::monospace(PLOT_FONT_SIZE);
+        let font = theme::caption_font();
         let area = self.area;
-        painter.rect_filled(area, 2.0, PLOT_BG);
+        painter.rect_filled(area, 2.0, theme::PLOT_BG);
         let (x0, x1) = self.x_range();
         let (y0, y1) = self.y_range();
         let x_dec = tick_decimals(&self.x_ticks);
@@ -2080,9 +2082,9 @@ impl PlotAxes {
         for &x in &self.x_ticks {
             let sx = self.to_screen(x, y0).x;
             let colour = if x.abs() < 1e-12 {
-                PLOT_AXIS
+                theme::PLOT_AXIS
             } else {
-                PLOT_GRID
+                theme::PLOT_GRID
             };
             painter.line_segment(
                 [egui::pos2(sx, area.top()), egui::pos2(sx, area.bottom())],
@@ -2093,15 +2095,15 @@ impl PlotAxes {
                 egui::Align2::CENTER_TOP,
                 tick_label(x, x_dec, x_suffix),
                 font.clone(),
-                PLOT_TEXT,
+                theme::PLOT_TEXT,
             );
         }
         for &y in &self.y_ticks {
             let sy = self.to_screen(x0, y).y;
             let colour = if y.abs() < 1e-12 {
-                PLOT_AXIS
+                theme::PLOT_AXIS
             } else {
-                PLOT_GRID
+                theme::PLOT_GRID
             };
             painter.line_segment(
                 [egui::pos2(area.left(), sy), egui::pos2(area.right(), sy)],
@@ -2112,13 +2114,13 @@ impl PlotAxes {
                 egui::Align2::RIGHT_CENTER,
                 tick_label(y, y_dec, ""),
                 font.clone(),
-                PLOT_TEXT,
+                theme::PLOT_TEXT,
             );
         }
         if !self.gz {
             return;
         }
-        let dash = egui::Stroke::new(1.0, PLOT_THRESHOLD);
+        let dash = egui::Stroke::new(1.0, theme::PLOT_THRESHOLD);
         for heel in GZ_THRESHOLD_HEELS_DEG {
             if heel > x0 && heel < x1 {
                 let sx = self.to_screen(heel, y0).x;
@@ -2149,7 +2151,7 @@ impl PlotAxes {
                     egui::Align2::RIGHT_CENTER,
                     format!("{GZ_THRESHOLD_M:.2}"),
                     font,
-                    PLOT_THRESHOLD,
+                    theme::PLOT_THRESHOLD,
                 );
             }
         }
@@ -2173,7 +2175,7 @@ fn draw_plot(
     let axes = PlotAxes::fit(response.rect, series, gz);
     axes.paint_frame(&painter);
     for (i, (_, pts)) in series.iter().enumerate() {
-        let colour = PLOT_COLOURS[i % PLOT_COLOURS.len()];
+        let colour = theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()];
         for run in axes.polylines(pts) {
             if run.len() == 1 {
                 painter.circle_filled(run[0], 1.8, colour);
@@ -2193,7 +2195,7 @@ fn draw_plot(
                     egui::RichText::new(legend_title)
                         .monospace()
                         .size(PLOT_FONT_SIZE)
-                        .color(PLOT_TEXT),
+                        .color(theme::PLOT_TEXT),
                 );
             }
             for (i, (label, _)) in series.iter().enumerate() {
@@ -2204,7 +2206,7 @@ fn draw_plot(
                     egui::RichText::new(format!("━ {label}"))
                         .monospace()
                         .size(PLOT_FONT_SIZE)
-                        .color(PLOT_COLOURS[i % PLOT_COLOURS.len()]),
+                        .color(theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()]),
                 );
             }
         });
@@ -2450,7 +2452,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         > 1
     {
         ui.colored_label(
-            egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+            theme::FAIL,
             "Another condition has this name; rename it before saving.",
         );
     }
@@ -2610,10 +2612,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         let is_highlighted = panel.highlight == Some(t_idx);
         let mut frame = egui::Frame::group(ui.style());
         if is_highlighted {
-            frame = frame.stroke(egui::Stroke::new(
-                2.0,
-                egui::Color32::from_rgb(220, 150, 40),
-            ));
+            frame = frame.stroke(egui::Stroke::new(2.0, theme::HIGHLIGHT_TANK));
         }
         let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -2740,10 +2739,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             ui.spinner();
             ui.label("computing…");
         } else if panel.stale {
-            ui.colored_label(
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-                "stale — press Compute",
-            );
+            ui.colored_label(theme::WARN, "stale — press Compute");
         }
     });
 
@@ -2751,27 +2747,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     if let Some(r) = panel.result {
         ui.separator();
         ui.heading("Equilibrium & Hydrostatics");
-        ui.columns(2, |cols| {
-            cols[0].spacing_mut().item_spacing.y = 2.0;
-            row(
-                &mut cols[0],
-                "Δ (mass)",
-                format!("{:.3} t", r.displacement_t),
-            );
-            row(&mut cols[0], "LCG", format!("{:.3} m", r.lcg));
-            row(&mut cols[0], "TCG", format!("{:.3} m", r.tcg));
-            row(&mut cols[0], "KG (solid)", format!("{:.3} m", r.kg_solid));
-            row(&mut cols[0], "FSM", format!("{:.2} t·m", r.fsm_t_m));
-            row(&mut cols[0], "FSC", format!("{:.3} m", r.fsc_m));
-
-            cols[1].spacing_mut().item_spacing.y = 2.0;
-            row(&mut cols[1], "KG (fluid)", format!("{:.3} m", r.kg_fluid));
-            row(&mut cols[1], "Draft", format!("{:.3} m", r.draft));
-            row(&mut cols[1], "Trim", format!("{:.3} m", r.trim_m));
-            row(&mut cols[1], "List", format!("{:.1}°", r.list_deg));
-            row(&mut cols[1], "GM (solid)", format!("{:.3} m", r.gm_solid));
-            row(&mut cols[1], "GM (fluid)", format!("{:.3} m", r.gm_fluid));
-        });
+        readouts(ui, "loading_readouts", &loading_rows(r));
 
         if !r.tanks.is_empty() {
             ui.add_space(4.0);
@@ -2852,18 +2828,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 ui.label(egui::RichText::new("Weather Criterion (§2.3):").strong());
                 criteria_badge(ui, w.passed, panel.stale);
             });
-            ui.columns(2, |cols| {
-                row(
-                    &mut cols[0],
-                    "Steady heel φ0",
-                    format!("{:.1}° (lim 16°)", w.phi0_deg.unwrap_or(0.0)),
-                );
-                row(
-                    &mut cols[1],
-                    "Area ratio b/a",
-                    format!("{:.2} (req ≥1.0)", w.area_ratio),
-                );
-            });
+            readouts(ui, "weather_readouts", &weather_rows(w));
         }
 
         ui.add_space(4.0);
@@ -3064,7 +3029,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                         ui.painter().rect_stroke(
                             row_rect,
                             2.0,
-                            egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 200, 100)),
+                            egui::Stroke::new(1.5, theme::HIGHLIGHT_WINDAGE),
                             egui::StrokeKind::Inside,
                         );
                     }
@@ -3190,40 +3155,203 @@ mod tests {
     fn the_dock_shows_both_columns_with_the_table_quantities() {
         let h = measured();
         let [left, right] = hydrostatic_rows(&h, 1.5);
-        assert_eq!(left.len(), right.len(), "the two columns stay balanced");
-        let labels: Vec<&str> = left.iter().chain(right.iter()).map(|(l, _)| *l).collect();
+        assert_eq!(left.len(), right.len(), "the two groups stay balanced");
+        let labels: Vec<&str> = left.iter().chain(right.iter()).map(|r| r.name).collect();
         for want in [
             "volume", "Cb", "LCB", "TPC", "KM(t)", "GM", "midship", "MTC",
         ] {
             assert!(labels.contains(&want), "{want} missing from {labels:?}");
         }
+        let find = |rows: &[Readout], name: &str| -> (f64, &'static str) {
+            let r = rows.iter().find(|r| r.name == name).expect(name);
+            (r.value.parse().expect("value parses"), r.unit)
+        };
         // The table quantities are the measured waterplane in the right units.
-        let tpc: f64 = left
-            .iter()
-            .find(|(l, _)| *l == "TPC")
-            .and_then(|(_, v)| v.trim_end_matches(" t/cm").parse().ok())
-            .expect("TPC parses");
+        let (tpc, unit) = find(&left, "TPC");
+        assert_eq!(unit, "t/cm");
         let want_tpc = h.waterplane_area_m2 * (h.water_density / 1000.0) / 100.0;
         assert!((tpc - want_tpc).abs() < 0.001, "TPC {tpc} vs {want_tpc}");
         assert!(
             (0.05..1.5).contains(&tpc),
             "TPC {tpc} t/cm is not plausible"
         );
-        let mtc: f64 = right
-            .iter()
-            .find(|(l, _)| *l == "MTC")
-            .and_then(|(_, v)| v.trim_end_matches(" t·m/cm").parse().ok())
-            .expect("MTC parses");
+        let (mtc, unit) = find(&right, "MTC");
+        assert_eq!(unit, "t·m/cm");
         let want_mtc =
             (h.water_density / 1000.0) * h.waterplane_inertia_longitudinal / (100.0 * h.lwl);
         assert!((mtc - want_mtc).abs() < 0.001, "MTC {mtc} vs {want_mtc}");
         // GM follows KG: 1.5 m lighter than the measured KM by exactly that.
-        let gm: f64 = right
-            .iter()
-            .find(|(l, _)| *l == "GM")
-            .and_then(|(_, v)| v.trim_end_matches(" m").parse().ok())
-            .expect("GM parses");
+        let (gm, unit) = find(&right, "GM");
+        assert_eq!(unit, "m");
         assert!((gm - (h.km_transverse - 1.5)).abs() < 0.002, "GM {gm}");
+    }
+
+    /// The readouts before the split, exactly as the dock printed them: value
+    /// and unit glued into one string.
+    fn glued_rows(h: &Hydrostatics, kg: f64) -> Vec<(&'static str, String)> {
+        let rho_t = h.water_density / 1000.0;
+        let tpc = h.waterplane_area_m2 * rho_t / 100.0;
+        let mtc = rho_t * h.waterplane_inertia_longitudinal / (100.0 * h.lwl);
+        vec![
+            ("volume", format!("{:.3} m³", h.volume_m3)),
+            ("displacement", format!("{:.2} t", h.displacement_t)),
+            ("Cb", format!("{:.3}", h.block_coefficient)),
+            ("Cp", format!("{:.3}", h.prismatic_coefficient)),
+            ("Cm", format!("{:.3}", h.midship_coefficient)),
+            ("Cwp", format!("{:.3}", h.waterplane_coefficient)),
+            ("LCB", format!("{:.3} m", h.lcb.x)),
+            ("LCF", format!("{:.3} m", h.lcf.x)),
+            ("TPC", format!("{:.3} t/cm", tpc)),
+            ("KB", format!("{:.3} m", h.kb)),
+            ("BM(t)", format!("{:.3} m", h.bm_transverse)),
+            ("KM(t)", format!("{:.3} m", h.km_transverse)),
+            ("GM", format!("{:+.3} m", h.gm(kg))),
+            ("wetted", format!("{:.2} m²", h.wetted_surface_m2)),
+            ("waterplane", format!("{:.2} m²", h.waterplane_area_m2)),
+            ("LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl)),
+            ("midship", format!("{:.3} m²", h.mainframe_area_m2)),
+            ("MTC", format!("{:.3} t·m/cm", mtc)),
+        ]
+    }
+
+    #[test]
+    fn readouts_split_value_and_unit_without_changing_a_number() {
+        let h = measured();
+        let rows = hydrostatic_rows(&h, 2.2).concat();
+        let before = glued_rows(&h, 2.2);
+        assert_eq!(rows.len(), before.len());
+        for (r, (name, glued)) in rows.iter().zip(&before) {
+            assert_eq!(r.name, *name);
+            // Value and unit apart: no unit text inside the value.
+            assert!(
+                !r.value.contains(['m', 't', '²', '³']),
+                "{name}: unit glued onto {:?}",
+                r.value
+            );
+            let rejoined = if r.unit.is_empty() {
+                r.value.clone()
+            } else {
+                format!("{} {}", r.value, r.unit)
+            };
+            assert_eq!(&rejoined, glued, "{name} changed");
+        }
+        // The demo reference numbers are the ones on show (AGENTS.md).
+        let value = |name: &str| -> f64 {
+            rows.iter()
+                .find(|r| r.name == name)
+                .and_then(|r| r.value.parse().ok())
+                .expect(name)
+        };
+        assert!((value("volume") - 11.85).abs() < 0.06);
+        assert!((value("Cb") - 0.504).abs() < 0.01);
+        assert!((value("KB") - 0.392).abs() < 0.01);
+        // Signed quantities carry their sign either way.
+        let gm = rows.iter().find(|r| r.name == "GM").unwrap();
+        assert!(gm.value.starts_with('+') || gm.value.starts_with('-'));
+    }
+
+    #[test]
+    fn readout_values_align_right_and_names_are_body_size() {
+        let h = measured();
+        let rows = hydrostatic_rows(&h, 2.2).concat();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                readouts(ui, "test_readouts", &rows);
+            });
+            out.textures_delta.clear();
+            texts.clear();
+            fn walk(shape: &egui::Shape, out: &mut Vec<(String, f32, f32, egui::Color32)>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                    egui::Shape::Text(t) => {
+                        let section = t.galley.job.sections.first();
+                        out.push((
+                            t.galley.text().to_string(),
+                            section.map_or(0.0, |s| s.format.font_id.size),
+                            t.pos.x + t.galley.size().x,
+                            section.map_or(t.fallback_color, |s| s.format.color),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            for clipped in &out.shapes {
+                walk(&clipped.shape, &mut texts);
+            }
+        }
+        for r in &rows {
+            let name = texts.iter().find(|t| t.0 == r.name).expect(r.name);
+            assert!(name.1 >= 12.0, "{} drawn at {} pt", r.name, name.1);
+            assert_eq!(name.3, theme::TEXT_SECONDARY);
+        }
+        // Every value is its own text, right edges on one line.
+        let values: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                texts
+                    .iter()
+                    .find(|t| t.0.trim() == r.value)
+                    .unwrap_or_else(|| panic!("value {:?} not drawn", r.value))
+            })
+            .collect();
+        let right = values[0].2;
+        for v in &values {
+            assert!(
+                (v.2 - right).abs() < 0.5,
+                "{:?} ends at {} not {right}",
+                v.0,
+                v.2
+            );
+            assert_eq!(v.1, theme::MONO_SIZE);
+        }
+        // Units are separate, muted texts.
+        let tpc = texts.iter().find(|t| t.0 == "t/cm").expect("unit drawn");
+        assert_eq!(tpc.3, theme::TEXT_MUTED);
+    }
+
+    #[test]
+    fn loading_readouts_keep_their_numbers_and_sign_signed_ones() {
+        let s = demo::demo_hull(false);
+        let opts = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: Default::default(),
+            },
+        );
+        let cond: LoadingCondition = serde_json::from_value(serde_json::json!({
+            "name": "readouts",
+            "lightship": {"name": "Lightship", "mass_t": 10.0, "x": 5.0, "y": -0.02, "z": 1.4},
+        }))
+        .expect("condition");
+        let l = seacraft_core::loading::evaluate(&s, &opts, &cond);
+        let rows = loading_rows(&l);
+        let get = |name: &str| rows.iter().find(|r| r.name == name).unwrap().clone();
+        // Value and unit apart, the value printed exactly as before the split.
+        assert_eq!(
+            get("Δ (mass)"),
+            Readout::new("Δ (mass)", format!("{:.3}", l.displacement_t), "t")
+        );
+        assert_eq!(
+            get("FSM"),
+            Readout::new("FSM", format!("{:.2}", l.fsm_t_m), "t·m")
+        );
+        assert_eq!(get("Draft").value, format!("{:.3}", l.draft));
+        // Signed quantities show their sign.
+        assert_eq!(get("TCG").value, format!("{:+.3}", l.tcg));
+        assert!(get("TCG").value.starts_with('-'), "{:?}", get("TCG"));
+        assert_eq!(get("List").unit, "°");
+        for name in ["GM (solid)", "GM (fluid)", "Trim", "List"] {
+            let v = get(name).value;
+            assert!(v.starts_with('+') || v.starts_with('-'), "{name}: {v}");
+        }
+        for r in &rows {
+            let v: f64 = r.value.parse().expect("numeric value");
+            assert!(v.is_finite(), "{}", r.name);
+        }
     }
 
     #[test]
@@ -3696,15 +3824,15 @@ mod tests {
 
     #[test]
     fn a_fail_badge_is_the_same_red_everywhere() {
-        assert_eq!(criteria_badge_style(false, false), ("FAIL", BADGE_FAIL));
-        assert_eq!(criteria_badge_style(true, false), ("PASS", BADGE_PASS));
+        assert_eq!(criteria_badge_style(false, false), ("FAIL", theme::FAIL));
+        assert_eq!(criteria_badge_style(true, false), ("PASS", theme::OK));
         assert_eq!(
             criteria_badge_style(false, true),
-            ("FAIL · stale", BADGE_STALE)
+            ("FAIL · stale", theme::STALE)
         );
         assert_eq!(
             criteria_badge_style(true, true),
-            ("PASS · stale", BADGE_STALE)
+            ("PASS · stale", theme::STALE)
         );
         let ctx = egui::Context::default();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -3713,9 +3841,12 @@ mod tests {
         });
         out.textures_delta.clear();
         let text = painted_text(&out.shapes);
-        assert!(text.contains(&("FAIL".to_string(), BADGE_FAIL)), "{text:?}");
         assert!(
-            text.contains(&("PASS · stale".to_string(), BADGE_STALE)),
+            text.contains(&("FAIL".to_string(), theme::FAIL)),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&("PASS · stale".to_string(), theme::STALE)),
             "{text:?}"
         );
         // The helper is the only place a verdict is spelled out.

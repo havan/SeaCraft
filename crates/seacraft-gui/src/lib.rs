@@ -10,5 +10,6 @@ pub mod history;
 pub mod panels;
 pub mod picking;
 pub mod render;
+pub mod theme;
 
 pub use app::App;

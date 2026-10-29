@@ -89,6 +89,7 @@ crates/seacraft-gui/
   src/control.rs            loopback TCP JSON-lines control channel
   src/camera.rs             ViewKind, Camera, ViewTransform, Ray
   src/render.rs             viewport painter: grid, shading, control net
+  src/theme.rs              colour tokens (the only colour literals), type scale, spacing
   src/picking.rs            screen-space picking, drag plane
   src/history.rs            snapshot undo/redo (64)
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
