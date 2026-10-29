@@ -204,7 +204,7 @@ pub fn viewport_with_texture(
     // Caption and scale, on a backing so the hull behind stays readable.
     hud_caption(
         &painter,
-        rect.left_top() + egui::vec2(8.0, 6.0),
+        title_pos(rect),
         Align2::LEFT_TOP,
         camera.kind.label().to_owned(),
     );
@@ -230,12 +230,32 @@ pub fn viewport_with_texture(
     );
 }
 
+/// Where a viewport's title caption is anchored (its top-left corner).
+fn title_pos(rect: Rect) -> Pos2 {
+    rect.left_top() + egui::vec2(8.0, 6.0)
+}
+
+/// The backing rectangle of the title caption of a viewport drawn in `rect`
+/// with `camera`: the caption a double-click maximises.
+pub fn title_rect(painter: &egui::Painter, rect: Rect, camera: &Camera) -> Rect {
+    let galley = painter.layout_no_wrap(
+        camera.kind.label().to_owned(),
+        theme::caption_font(),
+        theme::TEXT_SECONDARY,
+    );
+    caption_backing(Align2::LEFT_TOP.anchor_size(title_pos(rect), galley.size()))
+}
+
+fn caption_backing(text_rect: Rect) -> Rect {
+    text_rect.expand2(egui::vec2(4.0, 2.0))
+}
+
 /// A viewport caption in the caption font on a semi-opaque canvas backing.
 /// Returns the backing rectangle.
 pub fn hud_caption(painter: &egui::Painter, pos: Pos2, align: Align2, text: String) -> Rect {
     let galley = painter.layout_no_wrap(text, theme::caption_font(), theme::TEXT_SECONDARY);
     let text_rect = align.anchor_size(pos, galley.size());
-    let backing = text_rect.expand2(egui::vec2(4.0, 2.0));
+    let backing = caption_backing(text_rect);
     painter.rect_filled(backing, 2.0, theme::HUD_BACKING);
     painter.galley(text_rect.min, galley, theme::TEXT_SECONDARY);
     backing

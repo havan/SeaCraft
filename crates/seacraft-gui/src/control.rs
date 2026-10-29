@@ -649,6 +649,7 @@ fn handle_inner(
             let mut analysis_dock: Option<bool> = None;
             let mut dock_tab: Option<crate::app::DesignDock> = None;
             let mut dock_wide: Option<bool> = None;
+            let mut maximised: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -762,6 +763,10 @@ fn handle_inner(
                         dock_wide =
                             Some(value.as_bool().ok_or("`dock_wide` must be true or false")?)
                     }
+                    "maximised" => {
+                        maximised =
+                            Some(value.as_bool().ok_or("`maximised` must be true or false")?)
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
@@ -795,6 +800,10 @@ fn handle_inner(
             }
             if let Some(view) = active {
                 app.set_active_view(view);
+            }
+            // After `active_view`: maximising takes the (new) active view.
+            if let Some(max) = maximised {
+                app.set_maximised(max);
             }
             Ok(inspect(app))
         }
@@ -2020,6 +2029,7 @@ fn inspect(app: &App) -> Value {
         "level": app.subdivision_level(),
         "mode": mode_name(app.subdivision_mode()),
         "active_view": app.active_view(),
+        "maximised": app.maximised().is_some(),
         "selected_point": app.selected(),
         "selected_volume": match app.selected_volume_info() {
             Some((kind, index, name)) => json!({
@@ -3763,6 +3773,41 @@ mod tests {
             let r = call(&mut app, &ctx, "ui.set", bad.clone());
             assert_eq!(r["ok"], false, "{bad}: {r}");
         }
+    }
+
+    #[test]
+    fn ui_set_maximised_fills_the_central_area_with_the_active_view() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["maximised"], false, "{v}");
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.set",
+            json!({ "active_view": 2, "maximised": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["maximised"], true);
+        assert_eq!(app.maximised(), Some(2), "the active view is maximised");
+        // Drawn, the plan view takes the whole central area.
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+            out.textures_delta.clear();
+        }
+        assert_eq!(app.viewport_rect(2), app.central_rect());
+        assert_eq!(app.viewport_rect(0), egui::Rect::NOTHING);
+        let r = call(&mut app, &ctx, "ui.set", json!({ "maximised": false }));
+        assert_eq!(r["result"]["maximised"], false);
+        assert_eq!(app.maximised(), None);
+        let r = call(&mut app, &ctx, "ui.set", json!({ "maximised": "yes" }));
+        assert_eq!(r["ok"], false, "{r}");
     }
 
     #[test]

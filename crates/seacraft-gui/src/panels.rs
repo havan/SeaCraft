@@ -1,4 +1,5 @@
-//! Side docks: the layer manager and the hydrostatics report.
+//! Side docks (the layer manager, the Inspector, the Analysis dock tabs) and
+//! the toolbar under the menu bar.
 
 use eframe::egui;
 use seacraft_core::damage::{Compartment, CompartmentSpec, DamageCase, DamageResult};
@@ -9,8 +10,9 @@ use seacraft_core::project::{Project, ReportSeakeeping, ReportSettings};
 use seacraft_core::seastate::WaveSpectrum;
 use seacraft_core::stability::CrossCurve;
 use seacraft_core::weather::{WeatherResult, WindageItem, WindageRect};
-use seacraft_core::Surface;
+use seacraft_core::{AnalysisMode, SubdivisionMode, Surface};
 
+use crate::render::DisplayOptions;
 use crate::theme;
 
 /// Draw one row per layer. Returns whether any flag or colour changed.
@@ -3390,6 +3392,325 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     }
 
     action
+}
+
+// ---- toolbar -----------------------------------------------------------
+
+/// The parameter of each surface-analysis mode, remembered while another
+/// mode is shown so Zebra → Curvature → Zebra keeps the stripe count.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnalysisParams {
+    pub stripes: f64,
+    /// Radius (m) at which the curvature colour scale saturates.
+    pub radius: f64,
+    pub angle_deg: f64,
+}
+
+impl Default for AnalysisParams {
+    fn default() -> Self {
+        Self {
+            stripes: 14.0,
+            radius: 1.0,
+            angle_deg: 3.0,
+        }
+    }
+}
+
+impl AnalysisParams {
+    /// The mode of the same kind as `kind`, carrying the remembered parameter.
+    pub fn with_kind(&self, kind: AnalysisMode) -> AnalysisMode {
+        match kind {
+            AnalysisMode::Shaded => AnalysisMode::Shaded,
+            AnalysisMode::Zebra { .. } => AnalysisMode::Zebra {
+                stripes: self.stripes,
+            },
+            AnalysisMode::Curvature { .. } => AnalysisMode::Curvature {
+                radius: self.radius,
+            },
+            AnalysisMode::Draft { .. } => AnalysisMode::Draft {
+                angle_deg: self.angle_deg,
+            },
+        }
+    }
+
+    /// Remember the parameter `mode` carries.
+    pub fn remember(&mut self, mode: AnalysisMode) {
+        match mode {
+            AnalysisMode::Shaded => {}
+            AnalysisMode::Zebra { stripes } => self.stripes = stripes,
+            AnalysisMode::Curvature { radius } => self.radius = radius,
+            AnalysisMode::Draft { angle_deg } => self.angle_deg = angle_deg,
+        }
+    }
+}
+
+/// Whether `a` and `b` are the same analysis mode, whatever their parameters.
+pub fn same_analysis_kind(a: AnalysisMode, b: AnalysisMode) -> bool {
+    std::mem::discriminant(&a) == std::mem::discriminant(&b)
+}
+
+/// What the toolbar shows.
+pub struct ToolbarState<'a> {
+    pub display: &'a DisplayOptions,
+    pub params: AnalysisParams,
+    pub level: u8,
+    pub mode: SubdivisionMode,
+    pub maximised: bool,
+}
+
+/// What the user asked the toolbar for; `App::draw` applies it.
+#[derive(Debug, Clone, Default)]
+pub struct ToolbarOutput {
+    /// A new analysis mode, or the same mode with a new parameter.
+    pub analysis: Option<AnalysisMode>,
+    /// The display toggles, when one of them changed.
+    pub display: Option<DisplayOptions>,
+    pub level: Option<u8>,
+    pub mode: Option<SubdivisionMode>,
+    /// Frame the model in every view (F).
+    pub fit: bool,
+    /// Maximise the active view, or restore the four views.
+    pub toggle_maximise: bool,
+    /// Where each control was drawn, by name (a test hook): `shaded`,
+    /// `zebra`, `curvature`, `draft`, `param`, `net`, `points`,
+    /// `waterplane`, `combs`, `wireframe`, `level`, `level:N` (while the
+    /// list is open), `mode`, `fit`, `maximise`.
+    pub rects: Vec<(&'static str, egui::Rect)>,
+}
+
+const LEVEL_ITEMS: [&str; 6] = [
+    "level:0", "level:1", "level:2", "level:3", "level:4", "level:5",
+];
+
+/// The slim toolbar under the menu bar: analysis mode and its parameter,
+/// display toggles, subdivision level and scheme, Fit and Maximise. One row
+/// at 1600 px; it wraps on a narrower window.
+pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
+    let mut out = ToolbarOutput::default();
+    let ctx = ui.ctx().clone();
+    let keys = |modifiers: egui::Modifiers, key: egui::Key| {
+        ctx.format_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
+    };
+    let fit_key = keys(egui::Modifiers::NONE, egui::Key::F);
+    let max_key = keys(egui::Modifiers::COMMAND, egui::Key::Space);
+
+    ui.horizontal_wrapped(|ui| {
+        // Analysis mode: a segmented control.
+        let current = state.display.analysis;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (name, kind, label, tip) in [
+                (
+                    "shaded",
+                    AnalysisMode::Shaded,
+                    "Shaded",
+                    "Lit, flat-shaded hull",
+                ),
+                (
+                    "zebra",
+                    AnalysisMode::Zebra { stripes: 0.0 },
+                    "Zebra",
+                    "Reflection stripes: an unfair surface breaks them",
+                ),
+                (
+                    "curvature",
+                    AnalysisMode::Curvature { radius: 0.0 },
+                    "Curvature",
+                    "Mean curvature map",
+                ),
+                (
+                    "draft",
+                    AnalysisMode::Draft { angle_deg: 0.0 },
+                    "Draft",
+                    "Draft angle of each face against the vertical",
+                ),
+            ] {
+                let response = ui
+                    .selectable_label(same_analysis_kind(current, kind), label)
+                    .on_hover_text(tip);
+                if response.clicked() && !same_analysis_kind(current, kind) {
+                    out.analysis = Some(state.params.with_kind(kind));
+                }
+                out.rects.push((name, response.rect));
+            }
+        });
+
+        // The active mode's parameter, in a fixed-width slot so the toggles
+        // to its right do not jump when the mode changes.
+        let slot = egui::vec2(126.0, ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(
+            slot,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_size(slot);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let param = match current {
+                    AnalysisMode::Shaded => None,
+                    AnalysisMode::Zebra { stripes } => Some((
+                        "stripes",
+                        stripes,
+                        2.0..=64.0,
+                        0.25,
+                        "",
+                        "Number of reflection stripes across the view",
+                    )),
+                    AnalysisMode::Curvature { radius } => Some((
+                        "radius",
+                        radius,
+                        0.05..=100.0,
+                        0.01,
+                        " m",
+                        "Radius at which the curvature colour scale saturates",
+                    )),
+                    AnalysisMode::Draft { angle_deg } => Some((
+                        "angle",
+                        angle_deg,
+                        0.0..=45.0,
+                        0.1,
+                        "°",
+                        "Draft angle that separates pullable, borderline and undercut faces",
+                    )),
+                };
+                if let Some((name, mut value, range, speed, suffix, tip)) = param {
+                    ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY));
+                    let response = ui
+                        .add(
+                            egui::DragValue::new(&mut value)
+                                .range(range)
+                                .speed(speed)
+                                .max_decimals(2)
+                                .suffix(suffix),
+                        )
+                        .on_hover_text(tip);
+                    if response.changed() {
+                        out.analysis = Some(match current {
+                            AnalysisMode::Shaded => AnalysisMode::Shaded,
+                            AnalysisMode::Zebra { .. } => AnalysisMode::Zebra { stripes: value },
+                            AnalysisMode::Curvature { .. } => {
+                                AnalysisMode::Curvature { radius: value }
+                            }
+                            AnalysisMode::Draft { .. } => {
+                                AnalysisMode::Draft { angle_deg: value }
+                            }
+                        });
+                    }
+                    out.rects.push(("param", response.rect));
+                }
+            },
+        );
+        ui.separator();
+
+        // Display toggles, the same fields as the View menu's checkboxes.
+        let mut display = state.display.clone();
+        let mut toggled = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (name, label, tip, flag) in [
+                (
+                    "net",
+                    "Net",
+                    "Control net",
+                    &mut display.control_net as &mut bool,
+                ),
+                (
+                    "points",
+                    "Points",
+                    "Control points (hidden points cannot be picked)",
+                    &mut display.points,
+                ),
+                (
+                    "waterplane",
+                    "Waterplane",
+                    "Waterplane at the current draft",
+                    &mut display.waterplane,
+                ),
+                (
+                    "combs",
+                    "Combs",
+                    "Stations, buttocks and waterlines with curvature combs",
+                    &mut display.combs,
+                ),
+                (
+                    "wireframe",
+                    "Wire",
+                    "Wireframe of the refined mesh",
+                    &mut display.wireframe,
+                ),
+            ] {
+                let response = ui.selectable_label(*flag, label).on_hover_text(tip);
+                if response.clicked() {
+                    *flag = !*flag;
+                    toggled = true;
+                }
+                out.rects.push((name, response.rect));
+            }
+        });
+        if toggled {
+            out.display = Some(display);
+        }
+        ui.separator();
+
+        // Subdivision level and scheme, applied through the setters.
+        let mut level = state.level;
+        let combo = egui::ComboBox::from_id_salt("toolbar_level")
+            .selected_text(format!("L{level}"))
+            .width(44.0)
+            .show_ui(ui, |ui| {
+                for (n, name) in LEVEL_ITEMS.iter().enumerate() {
+                    let response = ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
+                    out.rects.push((name, response.rect));
+                }
+            });
+        let combo = combo
+            .response
+            .on_hover_text("Subdivision level, for display and measurement (0–5)");
+        out.rects.push(("level", combo.rect));
+        if level != state.level {
+            out.level = Some(level);
+        }
+        let mut mode = state.mode;
+        let combo = egui::ComboBox::from_id_salt("toolbar_mode")
+            .selected_text(match mode {
+                SubdivisionMode::Loop => "Loop",
+                SubdivisionMode::CatmullClark => "Catmull-Clark",
+            })
+            .width(104.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
+                ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
+            });
+        let combo = combo
+            .response
+            .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
+        out.rects.push(("mode", combo.rect));
+        if mode != state.mode {
+            out.mode = Some(mode);
+        }
+        ui.separator();
+
+        let fit = ui
+            .button("Fit")
+            .on_hover_text(format!("Frame the model in every view ({fit_key})"));
+        out.fit = fit.clicked();
+        out.rects.push(("fit", fit.rect));
+        // A framed button like Fit (an action, not a display toggle),
+        // highlighted while a view is maximised.
+        let max = ui
+            .add(
+                egui::Button::new(if state.maximised {
+                    "Restore"
+                } else {
+                    "Maximise"
+                })
+                .selected(state.maximised),
+            )
+            .on_hover_text(format!(
+                "Maximise the active view, or restore the four views ({max_key}, or double-click a view's title)"
+            ));
+        out.toggle_maximise = max.clicked();
+        out.rects.push(("maximise", max.rect));
+    });
+    out
 }
 
 #[cfg(test)]

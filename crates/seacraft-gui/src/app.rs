@@ -585,7 +585,19 @@ pub struct App {
     hydro_dirty: bool,
     hydro: HydroState,
     /// Viewport rectangles from the last frame, so tests can aim the pointer.
+    /// A view hidden by a maximised one has `Rect::NOTHING`.
     viewport_rects: [egui::Rect; 4],
+    /// The viewports' title captions from the last frame (double-click
+    /// maximises), `Rect::NOTHING` for a hidden view.
+    title_rects: [egui::Rect; 4],
+    /// The whole central area the viewports share, from the last frame.
+    central_rect: egui::Rect,
+    /// The view that fills the whole central area, if one is maximised.
+    maximised: Option<usize>,
+    /// Each analysis mode's parameter, kept while another mode is shown.
+    analysis_params: panels::AnalysisParams,
+    /// Where the toolbar's controls were drawn last frame (test hook).
+    toolbar_rects: Vec<(&'static str, egui::Rect)>,
     /// Rasterized frames for the analysis modes, one per viewport.
     analysis_frames: [Option<AnalysisFrame>; 4],
     /// Requests from the loopback control socket (`--control`), served once
@@ -697,6 +709,11 @@ impl App {
             hydro_dirty: true,
             hydro: HydroState::new(),
             viewport_rects: [egui::Rect::NOTHING; 4],
+            title_rects: [egui::Rect::NOTHING; 4],
+            central_rect: egui::Rect::NOTHING,
+            maximised: None,
+            analysis_params: panels::AnalysisParams::default(),
+            toolbar_rects: Vec::new(),
             analysis_frames: [None, None, None, None],
             control: None,
             synthetic: Vec::new(),
@@ -1082,6 +1099,7 @@ impl App {
         crate::theme::ensure(ui);
         self.shortcuts(ui);
         self.menu(ui);
+        self.toolbar(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.dirty {
@@ -1289,6 +1307,7 @@ impl App {
             open: bool,
             save: bool,
             save_as: bool,
+            maximise: bool,
         }
         // Read the modifiers from the key event itself: `InputState::modifiers`
         // is only refreshed by a `ModifiersChanged` event, which a synthesised
@@ -1299,6 +1318,7 @@ impl App {
                 if let egui::Event::Key {
                     key,
                     pressed: true,
+                    repeat,
                     modifiers,
                     ..
                 } = event
@@ -1313,6 +1333,9 @@ impl App {
                         egui::Key::O => pressed.open = true,
                         egui::Key::S if modifiers.shift => pressed.save_as = true,
                         egui::Key::S => pressed.save = true,
+                        // Not Tab (egui's focus key), not plain Space
+                        // (shading); a held key toggles once.
+                        egui::Key::Space if !repeat => pressed.maximise = true,
                         // Ctrl+N is kept for the New design dialog.
                         _ => {}
                     }
@@ -1337,6 +1360,9 @@ impl App {
             // No path yet: `save` opens Save as.
             self.save();
         }
+        if pressed.maximise && !typing {
+            self.toggle_maximised();
+        }
 
         // Single keys are text while a field (or any focused widget) has the
         // keyboard: typing "1" in a number field must not switch the view.
@@ -1347,7 +1373,18 @@ impl App {
             (
                 i.key_pressed(egui::Key::Escape),
                 i.key_pressed(egui::Key::F),
-                i.key_pressed(egui::Key::Space),
+                // Ctrl+Space maximises; only a plain Space toggles shading.
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::Space,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if !(modifiers.command || modifiers.ctrl)
+                    )
+                }),
             )
         });
         if escape {
@@ -1371,7 +1408,7 @@ impl App {
         .enumerate()
         {
             if ui.input(|i| i.key_pressed(key)) {
-                self.active = i;
+                self.set_active_view(i);
             }
         }
     }
@@ -1492,23 +1529,24 @@ impl App {
                     ui.label("Surface analysis");
                     ui.horizontal_wrapped(|ui| {
                         let current = self.display.analysis;
-                        for (mode, label) in [
+                        // Each mode with its remembered parameter (the
+                        // toolbar edits it; 14 stripes, 1 m, 3° by default).
+                        let params = self.analysis_params;
+                        for (kind, label) in [
                             (seacraft_core::AnalysisMode::Shaded, "Shaded"),
+                            (seacraft_core::AnalysisMode::Zebra { stripes: 0.0 }, "Zebra"),
                             (
-                                seacraft_core::AnalysisMode::Zebra { stripes: 14.0 },
-                                "Zebra",
-                            ),
-                            (
-                                seacraft_core::AnalysisMode::Curvature { radius: 1.0 },
+                                seacraft_core::AnalysisMode::Curvature { radius: 0.0 },
                                 "Curvature",
                             ),
                             (
-                                seacraft_core::AnalysisMode::Draft { angle_deg: 3.0 },
+                                seacraft_core::AnalysisMode::Draft { angle_deg: 0.0 },
                                 "Draft",
                             ),
                         ] {
-                            if ui.selectable_label(current == mode, label).clicked() {
-                                self.display.analysis = mode;
+                            let on = panels::same_analysis_kind(current, kind);
+                            if ui.selectable_label(on, label).clicked() && !on {
+                                self.set_analysis(params.with_kind(kind));
                             }
                         }
                     });
@@ -1564,6 +1602,19 @@ impl App {
                         self.reset_cameras();
                         ui.close();
                     }
+                    if ui
+                        .add(
+                            egui::Button::selectable(
+                                self.maximised.is_some(),
+                                "Maximise active view",
+                            )
+                            .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Space)),
+                        )
+                        .clicked()
+                    {
+                        self.toggle_maximised();
+                        ui.close();
+                    }
                 });
                 ui.menu_button("Help", |ui| {
                     ui.label(format!("SeaCraft {}", seacraft_core::VERSION));
@@ -1571,6 +1622,43 @@ impl App {
                 });
             });
         });
+    }
+
+    /// The slim toolbar under the menu bar; its actions are applied here,
+    /// after the panel has drawn.
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let state = panels::ToolbarState {
+            display: &self.display,
+            params: self.analysis_params,
+            level: self.level,
+            mode: self.mode,
+            maximised: self.maximised.is_some(),
+        };
+        let out = egui::Panel::top("toolbar")
+            .frame(
+                egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ui, |ui| panels::toolbar(ui, &state))
+            .inner;
+        if let Some(display) = out.display {
+            self.display = display;
+        }
+        if let Some(mode) = out.analysis {
+            self.set_analysis(mode);
+        }
+        if let Some(level) = out.level {
+            self.set_subdivision_level(level);
+        }
+        if let Some(mode) = out.mode {
+            self.set_subdivision_mode(mode);
+        }
+        if out.fit {
+            self.reset_cameras();
+        }
+        if out.toggle_maximise {
+            self.toggle_maximised();
+        }
+        self.toolbar_rects = out.rects;
     }
 
     // ---- file actions --------------------------------------------------
@@ -2014,7 +2102,16 @@ impl App {
         if rect.width() < 8.0 || rect.height() < 8.0 {
             return;
         }
-        let cells = render::quad(rect);
+        self.central_rect = rect;
+        // A maximised view takes the whole area; the others are neither
+        // drawn nor picked.
+        let cells: Vec<(egui::Rect, usize)> = match self.maximised {
+            Some(view) => vec![(rect, view)],
+            None => render::quad(rect).to_vec(),
+        };
+        self.viewport_rects = [egui::Rect::NOTHING; 4];
+        self.title_rects = [egui::Rect::NOTHING; 4];
+        let mut toggle_maximise = false;
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
         let overlays = self.volume_overlays();
         let mut volume_overlays: Vec<render::VolumeOverlay> =
@@ -2032,6 +2129,16 @@ impl App {
             self.viewport_rects[index] = cell;
             let response = ui.allocate_rect(cell, egui::Sense::click_and_drag());
             let view = self.cameras[index].transform();
+            let title = render::title_rect(ui.painter(), cell, &self.cameras[index]);
+            self.title_rects[index] = title;
+            if response.double_clicked()
+                && response
+                    .interact_pointer_pos()
+                    .is_some_and(|p| title.contains(p))
+            {
+                self.active = index;
+                toggle_maximise = true;
+            }
 
             if response.hovered() {
                 let (scroll, cursor) =
@@ -2237,6 +2344,9 @@ impl App {
         }
         for (index, frame) in fresh {
             self.analysis_frames[index] = Some(frame);
+        }
+        if toggle_maximise {
+            self.toggle_maximised();
         }
     }
 
@@ -3275,7 +3385,19 @@ impl App {
     /// Pick the surface-analysis shading (also settable from the View menu).
     pub fn set_analysis(&mut self, mode: seacraft_core::AnalysisMode) {
         self.display.analysis = mode;
+        self.analysis_params.remember(mode);
         self.analysis_frames = [None, None, None, None];
+    }
+
+    /// The parameter each analysis mode uses when it is chosen.
+    pub fn analysis_params(&self) -> panels::AnalysisParams {
+        self.analysis_params
+    }
+
+    /// The key of the analysis frame cached for `view`, if one was rendered
+    /// (see [`render::frame_key`]).
+    pub fn analysis_frame_key(&self, view: usize) -> Option<u64> {
+        self.analysis_frames[view].as_ref().map(|f| f.key)
     }
 
     pub fn subdivision_level(&self) -> u8 {
@@ -3286,8 +3408,46 @@ impl App {
         self.mode
     }
 
+    /// Make `view` the active one. A maximised view follows it.
     pub fn set_active_view(&mut self, view: usize) {
         self.active = view.min(3);
+        if self.maximised.is_some() {
+            self.maximised = Some(self.active);
+        }
+    }
+
+    /// The view filling the whole central area, if one is maximised.
+    pub fn maximised(&self) -> Option<usize> {
+        self.maximised
+    }
+
+    /// Maximise the active view (`true`) or restore the four views.
+    pub fn set_maximised(&mut self, maximised: bool) {
+        self.maximised = maximised.then_some(self.active);
+    }
+
+    /// Toolbar button, Ctrl+Space and a double-click on a view's title.
+    pub fn toggle_maximised(&mut self) {
+        self.set_maximised(self.maximised.is_none());
+    }
+
+    /// The whole central area the viewports share (last frame).
+    pub fn central_rect(&self) -> egui::Rect {
+        self.central_rect
+    }
+
+    /// View `i`'s title caption (last frame); `Rect::NOTHING` when hidden.
+    pub fn title_rect(&self, i: usize) -> egui::Rect {
+        self.title_rects[i]
+    }
+
+    /// Where the toolbar control `name` was drawn last frame (see
+    /// [`panels::ToolbarOutput::rects`]).
+    pub fn toolbar_rect(&self, name: &str) -> Option<egui::Rect> {
+        self.toolbar_rects
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, r)| *r)
     }
 
     pub fn hydro_options(&self) -> &HydroOptions {

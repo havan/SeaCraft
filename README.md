@@ -571,6 +571,13 @@ Plan        | Body plan
   model, **1**–**4** activate a viewport, **Space** toggles shading.
 * Primary drag on empty space pans, secondary drag in the perspective view
   orbits, the wheel zooms.
+* A slim toolbar under the menu bar carries the surface-analysis mode
+  (Shaded / Zebra / Curvature / Draft) with its parameter (stripes, radius,
+  draft angle; 14, 1 m and 3° by default), the display toggles (net, points,
+  waterplane, combs, wireframe), the subdivision level and scheme, **Fit** and
+  **Maximise**. **Ctrl+Space**, the toolbar button or a double-click on a
+  view's title makes the active view fill the whole viewport area (control
+  `ui.set {"maximised": true}`); **1**–**4** then switch the maximised view.
 * The left dock manages layers (colour, name, visible, symmetric, use in
   hydrostatics) and, below them, the selection **Inspector**: the selected
   control point's layer, editable x/y/z in metres (one undo step per typed
