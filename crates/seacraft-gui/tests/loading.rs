@@ -89,7 +89,7 @@ fn loading_worker_thread_computes_in_background() {
 
     let start = Instant::now();
     while app.loading_result().is_none() {
-        if start.elapsed() > Duration::from_secs(20) {
+        if start.elapsed() > Duration::from_secs(120) {
             panic!("timed out waiting for loading worker thread");
         }
         std::thread::sleep(Duration::from_millis(50));

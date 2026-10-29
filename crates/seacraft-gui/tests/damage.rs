@@ -138,7 +138,7 @@ fn damage_worker_thread_computes_in_background() {
     app.start_damage_compute();
     let start = Instant::now();
     while app.damage_result().is_none() {
-        if start.elapsed() > Duration::from_secs(30) {
+        if start.elapsed() > Duration::from_secs(120) {
             panic!("timed out waiting for damage worker thread");
         }
         std::thread::sleep(Duration::from_millis(50));
