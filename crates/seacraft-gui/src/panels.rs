@@ -101,6 +101,29 @@ pub struct HydroPanel<'a> {
     pub curves: Option<&'a [CrossCurve]>,
 }
 
+/// Criteria badge colours. One set for every dock, so a FAIL is the same red
+/// everywhere (a later batch moves these into `theme.rs`).
+pub const BADGE_PASS: egui::Color32 = egui::Color32::from_rgb(0x5a, 0xd0, 0x6a);
+pub const BADGE_FAIL: egui::Color32 = egui::Color32::from_rgb(0xe0, 0x5c, 0x5c);
+pub const BADGE_STALE: egui::Color32 = egui::Color32::from_rgb(0x8e, 0x9e, 0xae);
+
+/// The text and colour of a criteria badge: never colour alone.
+pub fn criteria_badge_style(passed: bool, stale: bool) -> (&'static str, egui::Color32) {
+    match (passed, stale) {
+        (true, false) => ("PASS", BADGE_PASS),
+        (false, false) => ("FAIL", BADGE_FAIL),
+        (true, true) => ("PASS · stale", BADGE_STALE),
+        (false, true) => ("FAIL · stale", BADGE_STALE),
+    }
+}
+
+/// A criteria verdict: `PASS` green, `FAIL` red, `… · stale` grey when the
+/// result predates the last edit. The only place a verdict is drawn.
+pub fn criteria_badge(ui: &mut egui::Ui, passed: bool, stale: bool) -> egui::Response {
+    let (text, colour) = criteria_badge_style(passed, stale);
+    ui.label(egui::RichText::new(text).monospace().strong().color(colour))
+}
+
 fn row(ui: &mut egui::Ui, label: &str, value: String) {
     ui.horizontal(|ui| {
         ui.small(label);
@@ -177,37 +200,42 @@ pub fn sac_polyline(sac: &[SectionArea], rect: egui::Rect) -> Vec<egui::Pos2> {
         .collect()
 }
 
+/// Where the SAC plot draws inside its allocated rectangle: the caption band
+/// on top and the curve area below it, never overlapping.
+pub fn sac_plot_rects(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let (caption, body) = split_caption(rect);
+    (caption, body.shrink2(egui::vec2(2.0, 4.0)))
+}
+
 /// The sectional area curve, drawn small under the readout.
 fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics) {
-    let height = 96.0;
+    let height = 96.0 + PLOT_CAPTION_BAND;
     let (response, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width(), height),
         egui::Sense::hover(),
     );
-    let rect = response.rect.shrink2(egui::vec2(2.0, 6.0));
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
+    let (caption, rect) = sac_plot_rects(response.rect);
+    painter.rect_filled(rect, 2.0, PLOT_BG);
     let points = sac_polyline(&h.sac, rect);
     if points.len() < 2 {
         return;
     }
     painter.line_segment(
         [rect.left_bottom(), rect.right_bottom()],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
+        egui::Stroke::new(1.0, PLOT_AXIS),
     );
     painter.add(egui::Shape::line(
         points,
-        egui::Stroke::new(1.4, egui::Color32::from_rgb(0x5c, 0xa8, 0xf0)),
+        egui::Stroke::new(1.4, PLOT_COLOURS[0]),
     ));
     let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
-    painter.text(
-        rect.left_top() + egui::vec2(4.0, 2.0),
-        egui::Align2::LEFT_TOP,
-        format!(
+    plot_caption(
+        &painter,
+        caption,
+        &format!(
             "SAC · A max {a_max:.2} m² · x {:.2}..{:.2} m",
             h.model_min.x, h.model_max.x
         ),
-        egui::FontId::monospace(10.0),
-        egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
     );
 }
 
@@ -360,50 +388,11 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     }
 
     if let Some(curves) = panel.curves {
+        // No criteria verdict here: these curves are the bare hull at the
+        // dock KG over a synthetic ±30 % displacement range, not a condition
+        // anyone defined. The per-criterion table lives in Loading.
         ui.separator();
-        plot_cross_curves(ui, curves);
-        if let Some(imo) = seacraft_core::stability::evaluate_imo_criteria(curves, 2) {
-            ui.add_space(4.0);
-            let badge_color = if imo.passed {
-                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
-            } else {
-                egui::Color32::from_rgb(0xe8, 0x9d, 0x3a)
-            };
-            ui.horizontal(|ui| {
-                ui.small("IMO A.749 (design disp.):");
-                ui.colored_label(badge_color, if imo.passed { "PASS" } else { "FAIL" });
-            });
-            ui.columns(2, |cols| {
-                cols[0].spacing_mut().item_spacing.y = 2.0;
-                row(
-                    &mut cols[0],
-                    "A(0–30°)",
-                    format!("{:.3} m·rad", imo.area_0_30_m_rad),
-                );
-                row(
-                    &mut cols[0],
-                    "A(0–40°)",
-                    format!("{:.3} m·rad", imo.area_0_40_m_rad),
-                );
-                row(
-                    &mut cols[0],
-                    "A(30–40°)",
-                    format!("{:.3} m·rad", imo.area_30_40_m_rad),
-                );
-                cols[1].spacing_mut().item_spacing.y = 2.0;
-                row(
-                    &mut cols[1],
-                    "GZ(≥30°)",
-                    format!("{:.3} m", imo.max_gz_30_plus_m),
-                );
-                row(
-                    &mut cols[1],
-                    "φ(GZmax)",
-                    format!("{:.0}°", imo.angle_of_max_gz_deg),
-                );
-                row(&mut cols[1], "GM0", format!("{:.3} m", imo.gm0_m));
-            });
-        }
+        plot_cross_curves(ui, curves, *panel.kg);
     }
     action
 }
@@ -1819,22 +1808,10 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
         if let Some(crit) = &r.criteria {
             ui.add_space(4.0);
-            let badge_color = if crit.passed {
-                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
-            } else {
-                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
-            };
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Residual Stability Criteria:").strong());
-                ui.colored_label(badge_color, if crit.passed { "PASS" } else { "FAIL" });
+                criteria_badge(ui, crit.passed, panel.stale);
             });
-            let pass_fail = |ok: bool| {
-                if ok {
-                    (egui::Color32::from_rgb(0x5a, 0xd0, 0x6a), "PASS")
-                } else {
-                    (egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), "FAIL")
-                }
-            };
             egui::Grid::new("damage_criteria_grid")
                 .num_columns(3)
                 .striped(true)
@@ -1862,10 +1839,9 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                         ),
                     ];
                     for (name, val, ok) in rows {
-                        let (col, text) = pass_fail(ok);
                         ui.label(name);
                         ui.label(val);
-                        ui.colored_label(col, text);
+                        criteria_badge(ui, ok, panel.stale);
                         ui.end_row();
                     }
                 });
@@ -1899,63 +1875,385 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     action
 }
 
-/// A small GZ plot: heel across, righting lever up, one line per displacement.
-fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve]) {
-    let height = 150.0;
+/// Height of the caption band above every plot, in points. No curve point
+/// is drawn inside it, so the caption never sits on the data.
+pub const PLOT_CAPTION_BAND: f32 = 20.0;
+/// Plot captions, tick labels and legends: 11 pt monospace.
+const PLOT_FONT_SIZE: f32 = 11.0;
+const PLOT_BG: egui::Color32 = egui::Color32::from_rgb(0x0f, 0x14, 0x1b);
+const PLOT_AXIS: egui::Color32 = egui::Color32::from_rgb(0x4a, 0x5c, 0x70);
+const PLOT_GRID: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x29, 0x35);
+const PLOT_TEXT: egui::Color32 = egui::Color32::from_rgb(0x8e, 0x9e, 0xae);
+const PLOT_THRESHOLD: egui::Color32 = egui::Color32::from_rgb(0xa8, 0x84, 0x48);
+const PLOT_COLOURS: [egui::Color32; 6] = [
+    egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
+    egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
+    egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
+    egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
+    egui::Color32::from_rgb(0xc0, 0x7c, 0xeb),
+    egui::Color32::from_rgb(0x40, 0xd0, 0xd0),
+];
+/// Room left of the plot area for the y tick labels, below it for the x ones.
+const PLOT_Y_LABEL_WIDTH: f32 = 42.0;
+const PLOT_X_LABEL_HEIGHT: f32 = 16.0;
+/// IMO A.749 thresholds drawn dashed on every GZ plot.
+const GZ_THRESHOLD_HEELS_DEG: [f64; 2] = [30.0, 40.0];
+const GZ_THRESHOLD_M: f64 = 0.20;
+
+/// Split a plot rectangle into its caption band (top) and the body below.
+pub fn split_caption(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let band = PLOT_CAPTION_BAND.min(rect.height());
+    let y = rect.top() + band;
+    (
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), y)),
+        egui::Rect::from_min_max(egui::pos2(rect.left(), y), rect.max),
+    )
+}
+
+fn plot_caption(painter: &egui::Painter, caption: egui::Rect, text: &str) {
+    painter.text(
+        caption.left_center() + egui::vec2(4.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        text,
+        egui::FontId::monospace(PLOT_FONT_SIZE),
+        PLOT_TEXT,
+    );
+}
+
+/// Tick values on nice numbers (1, 2, 2.5 or 5 × 10ⁿ) that cover `[lo, hi]`,
+/// four or five of them where the range allows (never fewer than three or
+/// more than six). The first and last tick are the axis ends.
+pub fn nice_ticks(lo: f64, hi: f64) -> Vec<f64> {
+    let (lo, hi) = match (lo.is_finite(), hi.is_finite()) {
+        (true, true) if hi > lo => (lo, hi),
+        (true, _) => (lo, lo + 1.0),
+        _ => (0.0, 1.0),
+    };
+    let base = 10f64.powf((hi - lo).log10().floor() - 1.0);
+    let mut best: Option<(usize, f64, i64, i64)> = None;
+    for k in 0..4 {
+        for m in [1.0, 2.0, 2.5, 5.0] {
+            let step = m * base * 10f64.powi(k);
+            let i0 = (lo / step + 1e-9).floor() as i64;
+            let i1 = (hi / step - 1e-9).ceil() as i64;
+            let n = (i1 - i0 + 1).max(0) as usize;
+            let score = match n {
+                5 => 0,
+                4 => 1,
+                6 => 2,
+                3 => 3,
+                n => 4 + n.abs_diff(5),
+            };
+            if best.is_none_or(|b| score < b.0) {
+                best = Some((score, step, i0, i1));
+            }
+        }
+    }
+    let (_, step, i0, i1) = best.unwrap_or((0, 1.0, 0, 1));
+    (i0..=i1).map(|i| i as f64 * step).collect()
+}
+
+/// Decimals that print every tick of `ticks` exactly.
+fn tick_decimals(ticks: &[f64]) -> usize {
+    let step = match ticks {
+        [a, b, ..] => (b - a).abs(),
+        _ => return 0,
+    };
+    (0..6)
+        .find(|&d| {
+            let scaled = step * 10f64.powi(d as i32);
+            (scaled - scaled.round()).abs() < 1e-6 * scaled.max(1.0)
+        })
+        .unwrap_or(6)
+}
+
+fn tick_label(value: f64, decimals: usize, suffix: &str) -> String {
+    // Never print "-0".
+    let value = if value.abs() < 1e-12 { 0.0 } else { value };
+    format!("{value:.decimals$}{suffix}")
+}
+
+/// The geometry of one x/y plot: caption band, curve area, and the axis
+/// ticks the data was fitted to (the first and last tick are the axis ends).
+/// Pure, so the layout can be tested without a frame.
+#[derive(Debug, Clone)]
+pub struct PlotAxes {
+    pub caption: egui::Rect,
+    pub area: egui::Rect,
+    pub x_ticks: Vec<f64>,
+    pub y_ticks: Vec<f64>,
+    /// GZ plot: heel in degrees across, GZ in metres up, criteria dashed.
+    pub gz: bool,
+}
+
+impl PlotAxes {
+    /// Fit the axes to every finite point of `series` inside `rect`.
+    ///
+    /// The ranges always include zero; a GZ plot also spans 0–40° and
+    /// 0–0.25 m so its criteria lines are in view.
+    pub fn fit(rect: egui::Rect, series: &[(String, Vec<(f64, f64)>)], gz: bool) -> Self {
+        let (caption, body) = split_caption(rect);
+        let left = (body.left() + PLOT_Y_LABEL_WIDTH).min(body.right());
+        let top = (body.top() + 8.0).min(body.bottom());
+        let area = egui::Rect::from_min_max(
+            egui::pos2(left, top),
+            egui::pos2(
+                (body.right() - 10.0).max(left),
+                (body.bottom() - PLOT_X_LABEL_HEIGHT).max(top),
+            ),
+        );
+        let (mut x_min, mut x_max): (f64, f64) = (0.0, if gz { 40.0 } else { 1.0 });
+        let (mut y_min, mut y_max): (f64, f64) = (0.0, if gz { 0.25 } else { 0.1 });
+        for (_, pts) in series {
+            for &(x, y) in pts {
+                if x.is_finite() && y.is_finite() {
+                    x_min = x_min.min(x);
+                    x_max = x_max.max(x);
+                    y_min = y_min.min(y);
+                    y_max = y_max.max(y);
+                }
+            }
+        }
+        Self {
+            caption,
+            area,
+            x_ticks: nice_ticks(x_min, x_max),
+            y_ticks: nice_ticks(y_min, y_max),
+            gz,
+        }
+    }
+
+    fn x_range(&self) -> (f64, f64) {
+        (
+            self.x_ticks.first().copied().unwrap_or(0.0),
+            self.x_ticks.last().copied().unwrap_or(1.0),
+        )
+    }
+
+    fn y_range(&self) -> (f64, f64) {
+        (
+            self.y_ticks.first().copied().unwrap_or(0.0),
+            self.y_ticks.last().copied().unwrap_or(1.0),
+        )
+    }
+
+    /// A data point on screen.
+    pub fn to_screen(&self, x: f64, y: f64) -> egui::Pos2 {
+        let (x0, x1) = self.x_range();
+        let (y0, y1) = self.y_range();
+        let tx = ((x - x0) / (x1 - x0).max(1e-12)) as f32;
+        let ty = ((y - y0) / (y1 - y0).max(1e-12)) as f32;
+        egui::pos2(
+            self.area.left() + tx * self.area.width(),
+            self.area.bottom() - ty * self.area.height(),
+        )
+    }
+
+    /// One series on screen, split into runs wherever a value is missing
+    /// (non-finite): a gap stays a gap, it is never bridged.
+    pub fn polylines(&self, pts: &[(f64, f64)]) -> Vec<Vec<egui::Pos2>> {
+        let mut runs = Vec::new();
+        let mut run = Vec::new();
+        for &(x, y) in pts {
+            if x.is_finite() && y.is_finite() {
+                run.push(self.to_screen(x, y));
+            } else if !run.is_empty() {
+                runs.push(std::mem::take(&mut run));
+            }
+        }
+        if !run.is_empty() {
+            runs.push(run);
+        }
+        runs
+    }
+
+    /// Grid, axes, tick labels and (on a GZ plot) the dashed criteria lines.
+    fn paint_frame(&self, painter: &egui::Painter) {
+        let font = egui::FontId::monospace(PLOT_FONT_SIZE);
+        let area = self.area;
+        painter.rect_filled(area, 2.0, PLOT_BG);
+        let (x0, x1) = self.x_range();
+        let (y0, y1) = self.y_range();
+        let x_dec = tick_decimals(&self.x_ticks);
+        let y_dec = tick_decimals(&self.y_ticks);
+        let x_suffix = if self.gz { "°" } else { "" };
+        for &x in &self.x_ticks {
+            let sx = self.to_screen(x, y0).x;
+            let colour = if x.abs() < 1e-12 {
+                PLOT_AXIS
+            } else {
+                PLOT_GRID
+            };
+            painter.line_segment(
+                [egui::pos2(sx, area.top()), egui::pos2(sx, area.bottom())],
+                egui::Stroke::new(1.0, colour),
+            );
+            painter.text(
+                egui::pos2(sx, area.bottom() + 2.0),
+                egui::Align2::CENTER_TOP,
+                tick_label(x, x_dec, x_suffix),
+                font.clone(),
+                PLOT_TEXT,
+            );
+        }
+        for &y in &self.y_ticks {
+            let sy = self.to_screen(x0, y).y;
+            let colour = if y.abs() < 1e-12 {
+                PLOT_AXIS
+            } else {
+                PLOT_GRID
+            };
+            painter.line_segment(
+                [egui::pos2(area.left(), sy), egui::pos2(area.right(), sy)],
+                egui::Stroke::new(1.0, colour),
+            );
+            painter.text(
+                egui::pos2(area.left() - 4.0, sy),
+                egui::Align2::RIGHT_CENTER,
+                tick_label(y, y_dec, ""),
+                font.clone(),
+                PLOT_TEXT,
+            );
+        }
+        if !self.gz {
+            return;
+        }
+        let dash = egui::Stroke::new(1.0, PLOT_THRESHOLD);
+        for heel in GZ_THRESHOLD_HEELS_DEG {
+            if heel > x0 && heel < x1 {
+                let sx = self.to_screen(heel, y0).x;
+                painter.extend(egui::Shape::dashed_line(
+                    &[egui::pos2(sx, area.top()), egui::pos2(sx, area.bottom())],
+                    dash,
+                    4.0,
+                    3.0,
+                ));
+            }
+        }
+        if GZ_THRESHOLD_M > y0 && GZ_THRESHOLD_M < y1 {
+            let sy = self.to_screen(x0, GZ_THRESHOLD_M).y;
+            painter.extend(egui::Shape::dashed_line(
+                &[egui::pos2(area.left(), sy), egui::pos2(area.right(), sy)],
+                dash,
+                4.0,
+                3.0,
+            ));
+            // Label it in the tick column unless a tick label is already there.
+            let clear = self
+                .y_ticks
+                .iter()
+                .all(|&t| (self.to_screen(x0, t).y - sy).abs() > PLOT_FONT_SIZE);
+            if clear {
+                painter.text(
+                    egui::pos2(area.left() - 4.0, sy),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("{GZ_THRESHOLD_M:.2}"),
+                    font,
+                    PLOT_THRESHOLD,
+                );
+            }
+        }
+    }
+}
+
+/// Draw a captioned x/y plot with ticks, and its legend underneath (outside
+/// the curves) when there is more than one labelled series.
+fn draw_plot(
+    ui: &mut egui::Ui,
+    caption: &str,
+    legend_title: &str,
+    series: &[(String, Vec<(f64, f64)>)],
+    gz: bool,
+) {
+    let height = 172.0;
     let (response, painter) = ui.allocate_painter(
         egui::vec2(ui.available_width(), height),
         egui::Sense::hover(),
     );
-    let rect = response.rect;
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
-    let mut gz_max: f64 = 0.1;
-    let mut heel_max: f64 = 1.0;
-    for curve in curves {
-        heel_max = heel_max.max(curve.heel_deg);
-        for p in &curve.points {
-            if let Some(gz) = p.gz {
-                if gz.is_finite() {
-                    gz_max = gz_max.max(gz.abs());
-                }
+    let axes = PlotAxes::fit(response.rect, series, gz);
+    axes.paint_frame(&painter);
+    for (i, (_, pts)) in series.iter().enumerate() {
+        let colour = PLOT_COLOURS[i % PLOT_COLOURS.len()];
+        for run in axes.polylines(pts) {
+            if run.len() == 1 {
+                painter.circle_filled(run[0], 1.8, colour);
+            } else {
+                painter.add(egui::Shape::line(run, egui::Stroke::new(1.4, colour)));
             }
         }
     }
-    let to_screen = |heel: f64, gz: f64| -> egui::Pos2 {
-        let x = rect.left() + (heel / heel_max) as f32 * rect.width();
-        let y = rect.bottom() - ((gz / gz_max) as f32 * 0.45 + 0.45) * rect.height();
-        egui::pos2(x, y)
-    };
-    // Zero line and the axes.
-    painter.line_segment(
-        [to_screen(0.0, 0.0), to_screen(heel_max, 0.0)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
-    );
-    let colours = [
-        egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
-        egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
-        egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-        egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
-    ];
-    for (i, curve) in curves.iter().enumerate() {
-        let points: Vec<egui::Pos2> = curve
-            .points
-            .iter()
-            .filter_map(|p| p.gz.filter(|gz| gz.is_finite()))
-            .map(|gz| to_screen(curve.heel_deg, gz))
-            .collect();
-        if points.len() >= 2 {
-            painter.add(egui::Shape::line(
-                points,
-                egui::Stroke::new(1.4, colours[i % colours.len()]),
-            ));
-        }
+    plot_caption(&painter, axes.caption, caption);
+
+    let labelled = series.iter().filter(|(l, _)| !l.is_empty()).count();
+    if series.len() > 1 && labelled > 0 {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            if !legend_title.is_empty() {
+                ui.label(
+                    egui::RichText::new(legend_title)
+                        .monospace()
+                        .size(PLOT_FONT_SIZE)
+                        .color(PLOT_TEXT),
+                );
+            }
+            for (i, (label, _)) in series.iter().enumerate() {
+                if label.is_empty() {
+                    continue;
+                }
+                ui.label(
+                    egui::RichText::new(format!("━ {label}"))
+                        .monospace()
+                        .size(PLOT_FONT_SIZE)
+                        .color(PLOT_COLOURS[i % PLOT_COLOURS.len()]),
+                );
+            }
+        });
     }
-    painter.text(
-        rect.left_top() + egui::vec2(4.0, 2.0),
-        egui::Align2::LEFT_TOP,
-        format!("GZ up to {gz_max:.2} m · heel to {heel_max:.0}°"),
-        egui::FontId::monospace(10.0),
-        egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
+}
+
+/// The cross curves as plot series: one per displacement, heel across and
+/// GZ up, labelled with the displacement in tonnes.
+///
+/// `stability::cross_curves` returns one curve per heel, each holding the
+/// displacements; this transposes it. Heels come out in increasing order. A
+/// point that did not solve (`gz: None`) is NaN, so the plotter breaks the
+/// line there instead of bridging the gap.
+pub fn cross_curve_polylines(curves: &[CrossCurve]) -> Vec<(String, Vec<(f64, f64)>)> {
+    let mut by_heel: Vec<&CrossCurve> = curves.iter().filter(|c| c.heel_deg.is_finite()).collect();
+    by_heel.sort_by(|a, b| a.heel_deg.total_cmp(&b.heel_deg));
+    let n = by_heel.iter().map(|c| c.points.len()).max().unwrap_or(0);
+    (0..n)
+        .map(|j| {
+            let disp = by_heel
+                .iter()
+                .find_map(|c| c.points.get(j))
+                .map_or(f64::NAN, |p| p.displacement_t);
+            let pts = by_heel
+                .iter()
+                .map(|c| {
+                    let gz = c
+                        .points
+                        .get(j)
+                        .and_then(|p| p.gz)
+                        .filter(|g| g.is_finite())
+                        .unwrap_or(f64::NAN);
+                    (c.heel_deg, gz)
+                })
+                .collect();
+            (format!("{disp:.1} t"), pts)
+        })
+        .collect()
+}
+
+/// The dock's GZ plot: heel across, righting lever up, one line per
+/// displacement, for the bare hull at the dock KG.
+fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve], kg: f64) {
+    draw_plot(
+        ui,
+        &format!("Cross curves — bare hull at dock KG {kg:.2} m"),
+        "GZ m at Δ",
+        &cross_curve_polylines(curves),
+        true,
     );
 }
 
@@ -1996,7 +2294,10 @@ fn unique_condition_name(base: &str, existing: &[LoadingCondition]) -> String {
     }
 }
 
-/// A general 2D XY plot with labelled series, axes, and header text.
+/// A general 2D XY plot with labelled series, ticked axes, and a caption.
+///
+/// The title `"GZ"` makes it a GZ plot: heel in degrees across, the IMO
+/// thresholds (30°, 40°, 0.20 m) dashed.
 pub fn plot_xy(
     ui: &mut egui::Ui,
     title: &str,
@@ -2004,102 +2305,13 @@ pub fn plot_xy(
     y_label: &str,
     series: &[(String, Vec<(f64, f64)>)],
 ) {
-    let height = 150.0;
-    let (response, painter) = ui.allocate_painter(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::hover(),
-    );
-    let rect = response.rect;
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x0f, 0x14, 0x1b));
-
     let is_gz = title == "GZ";
-    let mut x_min: f64 = 0.0;
-    let mut x_max: f64 = if is_gz { 40.0 } else { 1.0 };
-    let mut y_min: f64 = 0.0;
-    let mut y_max: f64 = 0.1;
-
-    for (_, pts) in series {
-        for &(x, y) in pts {
-            if x.is_finite() {
-                x_max = x_max.max(x);
-                if !is_gz {
-                    x_min = x_min.min(x);
-                }
-            }
-            if y.is_finite() {
-                y_max = y_max.max(y);
-                y_min = y_min.min(y);
-            }
-        }
-    }
-    let x_range = (x_max - x_min).max(1e-6);
-    let y_range = (y_max - y_min).max(0.05) * 1.15;
-    let y_base = y_min - (y_range - (y_max - y_min)) * 0.5;
-
-    let to_screen = |x: f64, y: f64| -> egui::Pos2 {
-        let sx = rect.left() + ((x - x_min) / x_range) as f32 * rect.width();
-        let sy = rect.bottom() - ((y - y_base) / y_range) as f32 * rect.height();
-        egui::pos2(sx, sy)
-    };
-
-    // Zero line and the axes.
-    if y_base <= 0.0 && y_base + y_range >= 0.0 {
-        painter.line_segment(
-            [to_screen(x_min, 0.0), to_screen(x_max, 0.0)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
-        );
-    }
-    if x_min <= 0.0 && x_max >= 0.0 {
-        painter.line_segment(
-            [to_screen(0.0, y_base), to_screen(0.0, y_base + y_range)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x33, 0x42, 0x52)),
-        );
-    }
-
-    let colours = [
-        egui::Color32::from_rgb(0x5c, 0xa8, 0xf0),
-        egui::Color32::from_rgb(0x5a, 0xd0, 0x6a),
-        egui::Color32::from_rgb(0xe8, 0x9d, 0x3a),
-        egui::Color32::from_rgb(0xe0, 0x5c, 0x5c),
-        egui::Color32::from_rgb(0xc0, 0x7c, 0xeb),
-        egui::Color32::from_rgb(0x40, 0xd0, 0xd0),
-    ];
-
-    for (i, (label, pts)) in series.iter().enumerate() {
-        let points: Vec<egui::Pos2> = pts
-            .iter()
-            .filter(|(x, y)| x.is_finite() && y.is_finite())
-            .map(|&(x, y)| to_screen(x, y))
-            .collect();
-        if points.len() >= 2 {
-            painter.add(egui::Shape::line(
-                points,
-                egui::Stroke::new(1.4, colours[i % colours.len()]),
-            ));
-        }
-        if series.len() > 1 && !label.is_empty() {
-            let legend_pos = rect.left_top() + egui::vec2(6.0, 16.0 + i as f32 * 14.0);
-            painter.text(
-                legend_pos,
-                egui::Align2::LEFT_TOP,
-                label,
-                egui::FontId::monospace(10.0),
-                colours[i % colours.len()],
-            );
-        }
-    }
-    let header = if is_gz {
-        format!("GZ up to {y_max:.2} m · heel to {x_max:.0}°")
+    let caption = if is_gz {
+        "GZ (m) vs heel (°)".to_string()
     } else {
-        format!("{title}: {y_label} up to {y_max:.2} · {x_label} to {x_max:.1}")
+        format!("{title}: {y_label} vs {x_label}")
     };
-    painter.text(
-        rect.left_top() + egui::vec2(4.0, 2.0),
-        egui::Align2::LEFT_TOP,
-        header,
-        egui::FontId::monospace(10.0),
-        egui::Color32::from_rgb(0x8e, 0x9e, 0xae),
-    );
+    draw_plot(ui, &caption, "", series, is_gz);
 }
 
 /// A general GZ plot: heel (deg) across, righting lever GZ (m) up, with labelled curves.
@@ -2585,22 +2797,10 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
 
         if let Some(imo) = &r.imo_criteria {
             ui.add_space(4.0);
-            let badge_color = if imo.passed {
-                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
-            } else {
-                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
-            };
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("IMO A.749 Criteria:").strong());
-                ui.colored_label(badge_color, if imo.passed { "PASS" } else { "FAIL" });
+                criteria_badge(ui, imo.passed, panel.stale);
             });
-            let pass_fail = |ok: bool| {
-                if ok {
-                    (egui::Color32::from_rgb(0x5a, 0xd0, 0x6a), "PASS")
-                } else {
-                    (egui::Color32::from_rgb(0xe0, 0x5c, 0x5c), "FAIL")
-                }
-            };
             egui::Grid::new("imo_criteria_table")
                 .num_columns(3)
                 .striped(true)
@@ -2638,10 +2838,9 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                         ),
                     ];
                     for (name, val, ok) in rows {
-                        let (col, text) = pass_fail(ok);
                         ui.label(name);
                         ui.label(val);
-                        ui.colored_label(col, text);
+                        criteria_badge(ui, ok, panel.stale);
                         ui.end_row();
                     }
                 });
@@ -2649,14 +2848,9 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
 
         if let Some(w) = &r.weather {
             ui.add_space(4.0);
-            let badge_color = if w.passed {
-                egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
-            } else {
-                egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
-            };
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Weather Criterion (§2.3):").strong());
-                ui.colored_label(badge_color, if w.passed { "PASS" } else { "FAIL" });
+                criteria_badge(ui, w.passed, panel.stale);
             });
             ui.columns(2, |cols| {
                 row(
@@ -2921,17 +3115,9 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     ui.add_space(8.0);
     ui.separator();
     if let Some(w) = panel.weather {
-        let badge_color = if w.passed {
-            egui::Color32::from_rgb(0x5a, 0xd0, 0x6a)
-        } else {
-            egui::Color32::from_rgb(0xe0, 0x5c, 0x5c)
-        };
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Weather Criterion Summary (§2.3):").strong());
-            ui.colored_label(badge_color, if w.passed { "PASS" } else { "FAIL" });
-            if panel.stale {
-                ui.colored_label(egui::Color32::from_rgb(220, 150, 40), "(stale)");
-            }
+            criteria_badge(ui, w.passed, panel.stale);
         });
         ui.small("from the loading panel's last Compute");
         ui.add_space(2.0);
@@ -2984,6 +3170,7 @@ mod tests {
     use super::*;
     use seacraft_core::demo;
     use seacraft_core::hydro;
+    use seacraft_core::stability::CrossCurvePoint;
     use seacraft_core::subdiv::SubdivisionOptions;
 
     fn measured() -> Hydrostatics {
@@ -3280,5 +3467,261 @@ mod tests {
             assert_eq!(action, WindageAction::None);
         });
         out.textures_delta.clear();
+    }
+
+    /// Every piece of text a frame painted, with its colour.
+    fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Color32)> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Color32)>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Text(t) => {
+                    let colour = t
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map_or(t.fallback_color, |s| s.format.color);
+                    out.push((t.galley.text().to_string(), colour));
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Cross curves as `stability::cross_curves` returns them: one per heel,
+    /// each over the same displacements. GZ = a·sin 2φ clears IMO A.749.
+    fn synthetic_cross_curves(heels: &[f64], displacements: &[f64]) -> Vec<CrossCurve> {
+        heels
+            .iter()
+            .map(|&heel| CrossCurve {
+                heel_deg: heel,
+                points: displacements
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &d)| {
+                        let a = 0.5 + 0.05 * j as f64;
+                        let gz = a * (2.0 * heel.to_radians()).sin();
+                        CrossCurvePoint {
+                            displacement_t: d,
+                            draft: Some(0.6),
+                            trim_m: Some(0.0),
+                            kn: Some(gz + 2.0 * heel.to_radians().sin()),
+                            gz: Some(gz),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    const HEELS: [f64; 9] = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0];
+    const DISPS: [f64; 5] = [8.3, 10.1, 11.9, 13.7, 15.5];
+
+    #[test]
+    fn cross_curves_plot_one_line_per_displacement_across_heel() {
+        // Shuffled heels: the plot must still run left to right.
+        let mut curves = synthetic_cross_curves(&HEELS, &DISPS);
+        curves.swap(0, 5);
+        curves.swap(2, 8);
+        let series = cross_curve_polylines(&curves);
+        assert_eq!(series.len(), DISPS.len(), "one polyline per displacement");
+        for (j, (label, pts)) in series.iter().enumerate() {
+            assert_eq!(label, &format!("{:.1} t", DISPS[j]));
+            assert_eq!(pts.len(), HEELS.len(), "one point per heel");
+            assert!(
+                pts.windows(2).all(|w| w[1].0 > w[0].0),
+                "heel strictly increasing: {pts:?}"
+            );
+            for (k, &(heel, gz)) in pts.iter().enumerate() {
+                assert_eq!(heel, HEELS[k]);
+                let want = curves
+                    .iter()
+                    .find(|c| c.heel_deg == heel)
+                    .and_then(|c| c.points[j].gz)
+                    .unwrap();
+                assert_eq!(gz, want, "GZ for {label} at {heel}°");
+            }
+        }
+        // On screen: x strictly increasing too, and no line is vertical.
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 172.0));
+        let axes = PlotAxes::fit(rect, &series, true);
+        for (_, pts) in &series {
+            let runs = axes.polylines(pts);
+            assert_eq!(runs.len(), 1);
+            assert!(runs[0].windows(2).all(|w| w[1].x > w[0].x));
+        }
+        assert!(cross_curve_polylines(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_missing_gz_breaks_the_cross_curve() {
+        let mut curves = synthetic_cross_curves(&HEELS, &DISPS);
+        curves[4].points[1].gz = None; // 40° at the second displacement
+        let series = cross_curve_polylines(&curves);
+        let (_, pts) = &series[1];
+        assert_eq!(pts.len(), HEELS.len());
+        assert!(pts[4].1.is_nan(), "the gap is kept, not dropped");
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 172.0));
+        let axes = PlotAxes::fit(rect, &series, true);
+        let runs = axes.polylines(pts);
+        assert_eq!(
+            runs.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![4, 4],
+            "split at the missing point, never bridged"
+        );
+        assert_eq!(axes.polylines(&series[0].1).len(), 1, "others untouched");
+    }
+
+    #[test]
+    fn no_curve_point_enters_the_caption_band() {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 40.0), egui::vec2(300.0, 172.0));
+
+        // SAC: the curve area starts below the band.
+        let h = measured();
+        let (caption, area) = sac_plot_rects(rect);
+        assert_eq!(caption.height(), PLOT_CAPTION_BAND);
+        assert_eq!(caption.top(), rect.top());
+        let pts = sac_polyline(&h.sac, area);
+        assert!(pts.len() > 2);
+        for p in &pts {
+            assert!(p.y >= caption.bottom(), "SAC point {p:?} in the band");
+        }
+
+        // plot_xy, plain and GZ, with the data at the extremes of its range.
+        let series = vec![
+            (
+                "a".to_string(),
+                vec![(-2.0, -0.4), (0.0, 0.0), (5.0, 3.7), (12.0, 9.9)],
+            ),
+            ("b".to_string(), vec![(1.0, 9.99), (11.0, -0.39)]),
+        ];
+        let gz = cross_curve_polylines(&synthetic_cross_curves(&HEELS, &DISPS));
+        for (series, is_gz) in [(&series, false), (&gz, true)] {
+            let axes = PlotAxes::fit(rect, series, is_gz);
+            assert_eq!(axes.caption.height(), PLOT_CAPTION_BAND);
+            assert!(axes.area.top() >= axes.caption.bottom());
+            for (_, s) in series {
+                for p in axes.polylines(s).into_iter().flatten() {
+                    assert!(p.y >= axes.caption.bottom(), "{p:?} in the band");
+                    assert!(axes.area.expand(1e-3).contains(p), "{p:?} off the plot");
+                }
+            }
+            for ticks in [&axes.x_ticks, &axes.y_ticks] {
+                assert!((4..=6).contains(&ticks.len()), "{ticks:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ticks_land_on_nice_numbers() {
+        assert_eq!(nice_ticks(0.0, 80.0), vec![0.0, 20.0, 40.0, 60.0, 80.0]);
+        for (lo, hi) in [
+            (0.0, 1.0),
+            (0.0, 0.42),
+            (-0.3, 0.6),
+            (0.0, 0.1),
+            (0.0, 12.7),
+            (-1.2, 0.05),
+            (3.0, 1234.0),
+            (0.0, 40.0),
+            (-0.05, 0.25),
+        ] {
+            let t = nice_ticks(lo, hi);
+            assert!((4..=5).contains(&t.len()), "{lo}..{hi}: {t:?}");
+            assert!(t[0] <= lo + 1e-12 && *t.last().unwrap() >= hi - 1e-12);
+            let step = t[1] - t[0];
+            assert!(t.windows(2).all(|w| ((w[1] - w[0]) - step).abs() < 1e-9));
+            let mantissa = step / 10f64.powf(step.log10().floor());
+            assert!(
+                [1.0, 2.0, 2.5, 5.0]
+                    .iter()
+                    .any(|m| (mantissa - m).abs() < 1e-6),
+                "{step} is not a nice step"
+            );
+        }
+        assert_eq!(tick_label(-1e-17, 1, ""), "0.0");
+        assert_eq!(tick_decimals(&[0.0, 0.25, 0.5]), 2);
+        assert_eq!(tick_decimals(&[0.0, 20.0]), 0);
+    }
+
+    #[test]
+    fn the_hydrostatics_dock_hands_down_no_verdict() {
+        let h = measured();
+        let curves = synthetic_cross_curves(&HEELS, &DISPS);
+        // The curves would pass A.749: the old dock painted PASS here.
+        let imo = seacraft_core::stability::evaluate_imo_criteria(&curves, 2).expect("criteria");
+        assert!(imo.passed, "{imo:?}");
+        let ctx = egui::Context::default();
+        let mut options =
+            HydroOptions::from_surface(&demo::demo_hull(false), SubdivisionOptions::default());
+        let (mut kg, mut free_trim, mut lcg) = (1.5, false, None);
+        let mut text = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                hydrostatics(
+                    ui,
+                    HydroPanel {
+                        options: &mut options,
+                        kg: &mut kg,
+                        free_trim: &mut free_trim,
+                        lcg: &mut lcg,
+                        result: Some(&h),
+                        stale: false,
+                        curves: Some(&curves),
+                    },
+                );
+            });
+            out.textures_delta.clear();
+            text = painted_text(&out.shapes);
+        }
+        let all: Vec<&str> = text.iter().map(|(t, _)| t.as_str()).collect();
+        assert!(
+            all.iter()
+                .any(|t| t.contains("bare hull at dock KG 1.50 m")),
+            "the cross curves say what they are: {all:?}"
+        );
+        assert!(all.iter().any(|t| t.contains("11.9 t")), "legend: {all:?}");
+        for t in &all {
+            assert!(
+                !t.contains("PASS") && !t.contains("FAIL") && !t.contains("A.749"),
+                "verdict on the hydro dock: {t}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fail_badge_is_the_same_red_everywhere() {
+        assert_eq!(criteria_badge_style(false, false), ("FAIL", BADGE_FAIL));
+        assert_eq!(criteria_badge_style(true, false), ("PASS", BADGE_PASS));
+        assert_eq!(
+            criteria_badge_style(false, true),
+            ("FAIL · stale", BADGE_STALE)
+        );
+        assert_eq!(
+            criteria_badge_style(true, true),
+            ("PASS · stale", BADGE_STALE)
+        );
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            criteria_badge(ui, false, false);
+            criteria_badge(ui, true, true);
+        });
+        out.textures_delta.clear();
+        let text = painted_text(&out.shapes);
+        assert!(text.contains(&("FAIL".to_string(), BADGE_FAIL)), "{text:?}");
+        assert!(
+            text.contains(&("PASS · stale".to_string(), BADGE_STALE)),
+            "{text:?}"
+        );
+        // The helper is the only place a verdict is spelled out.
+        let src = include_str!("panels.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap();
+        assert_eq!(body.matches("\"FAIL").count(), 2, "FAIL outside the badge");
+        assert_eq!(body.matches("\"PASS").count(), 2, "PASS outside the badge");
     }
 }
