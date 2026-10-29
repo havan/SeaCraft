@@ -13,6 +13,7 @@ seacraft-core = { path = "../seacraft-core" }
 eframe = "0.37"
 egui = "0.37"
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]

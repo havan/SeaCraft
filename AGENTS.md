@@ -87,6 +87,9 @@ crates/seacraft-cli/
 crates/seacraft-gui/
   src/main.rs               eframe bootstrap, `--open FILE`, `--control HOST:PORT`
   src/app.rs                App state, menus, file actions, dock wiring
+  src/commands.rs           typed model/analysis operations (transform, optimise, topology,
+                            crease, generate, hydro table, trim scan, Bonjean, offsets,
+                            unfold) shared by the control channel and the menus
   src/control.rs            loopback TCP JSON-lines control channel
   src/camera.rs             ViewKind, Camera, ViewTransform, Ray
   src/render.rs             viewport painter: grid, shading, control net

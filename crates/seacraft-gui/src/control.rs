@@ -27,6 +27,7 @@ use seacraft_core::math::Vec3;
 use seacraft_core::{AnalysisMode, SubdivisionMode};
 use serde_json::{json, Value};
 
+use crate::commands;
 use crate::render::{self, Scene};
 use crate::App;
 
@@ -339,6 +340,30 @@ fn write_reply(stream: &mut TcpStream, reply: &Value) -> bool {
 
 // ---- parameter helpers -------------------------------------------------
 
+/// A command result as the reply's JSON.
+fn reply<T: serde::Serialize>(result: T) -> Result<Value, String> {
+    serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+/// A command result as the reply's JSON, marked as computed by the app (the
+/// headless MCP server answers the same methods with its own backend).
+fn reply_app<T: serde::Serialize>(result: T) -> Result<Value, String> {
+    let mut v = reply(result)?;
+    if let Some(o) = v.as_object_mut() {
+        o.insert("backend".into(), json!("app"));
+    }
+    Ok(v)
+}
+
+/// An optional subdivision `level` from 0 to 6, rounded; `None` means the
+/// app's own level.
+fn level_arg(p: &Value) -> Result<Option<u8>, String> {
+    match p.get("level") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => Ok(number_in(p, "level", 0.0..=6.0)?.map(|l| l.round() as u8)),
+    }
+}
+
 /// A finite `f64` from `key`, or an error naming the type problem.
 fn number(p: &Value, key: &str) -> Result<Option<f64>, String> {
     match p.get(key) {
@@ -370,20 +395,6 @@ fn numbers(p: &Value, key: &str) -> Result<Option<Vec<f64>>, String> {
         }
         Some(_) => Err(format!("`{key}` must be an array of numbers")),
     }
-}
-
-/// A non-empty list of positive ordinates, sorted ascending.
-fn positive_ordinates(mut v: Vec<f64>, key: &str) -> Result<Vec<f64>, String> {
-    if v.is_empty() {
-        return Err(format!(
-            "curves.offsets: `{key}` needs at least one ordinate"
-        ));
-    }
-    if v.iter().any(|x| *x <= 0.0) {
-        return Err(format!("curves.offsets: `{key}` must be positive"));
-    }
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Ok(v)
 }
 
 /// A finite `f64` from `key` inside `range`.
@@ -966,7 +977,7 @@ fn handle_inner(
             }))
         }
         "model.generate" => {
-            use seacraft_core::parametric::{self, HullKind, HullSpec};
+            use seacraft_core::parametric::{HullKind, HullSpec};
             let kind = match text(p, "kind")? {
                 Some(k) => k.parse::<HullKind>()?,
                 None => HullKind::Displacement,
@@ -1002,15 +1013,7 @@ fn handle_inner(
             if let Some(v) = index_at(p, "points_per_station", 34)? {
                 spec.points_per_station = v;
             }
-            let (surface, rep) = parametric::generate(&spec)?;
-            app.load_generated(surface);
-            let mut out = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
-            if let Some(obj) = out.as_object_mut() {
-                obj.insert("points".into(), json!(app.control_point_count()));
-                obj.insert("faces".into(), json!(app.face_count()));
-                obj.insert("layers".into(), json!(app.layer_count()));
-            }
-            Ok(out)
+            reply(commands::generate(app, &spec)?)
         }
         "model.open" => {
             let path = text(p, "path")?
@@ -1098,15 +1101,14 @@ fn handle_inner(
             }))
         }
         "edge.crease" => {
-            let surface = app.surface().ok_or("no model loaded")?;
-            let count = surface.points.len();
+            let count = app.surface().ok_or("no model loaded")?.points.len();
             let list = p
                 .get("edge")
                 .and_then(Value::as_array)
                 .filter(|a| a.len() == 2)
                 .ok_or("`edge` must be [a, b] control point indices")?;
-            let mut ends = [0usize; 2];
-            for (slot, value) in ends.iter_mut().zip(list) {
+            let mut edge = [0usize; 2];
+            for (slot, value) in edge.iter_mut().zip(list) {
                 *slot = value
                     .as_f64()
                     .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
@@ -1117,26 +1119,11 @@ fn handle_inner(
                         )
                     })? as usize;
             }
-            let edge = seacraft_core::mesh::ordered(ends[0], ends[1]);
-            if !surface.edges.iter().any(|e| e.key() == edge) {
-                return Err(format!("no control edge between {} and {}", edge.0, edge.1));
-            }
             let crease = boolean(p, "crease")?.unwrap_or(true);
-            app.snapshot_undo();
-            if let Some(surface) = app.surface_mut() {
-                for e in &mut surface.edges {
-                    if e.key() == edge {
-                        e.crease = crease;
-                    }
-                }
-            }
-            app.mark_geometry_changed();
-            app.status_note(format!("edge {}-{} crease {crease}", edge.0, edge.1));
-            Ok(json!({
-                "edge": [edge.0, edge.1],
-                "crease": crease,
-                "undo_len": app.undo_len(),
-            }))
+            reply(commands::set_crease(
+                app,
+                &commands::CreaseParams { edge, crease },
+            )?)
         }
         "hydro.compute" => {
             apply_hydro_inputs(app, p)?;
@@ -1154,98 +1141,51 @@ fn handle_inner(
         }
         "hydro.trim" => {
             // Read-only: a scan is a report, not an edit.
-            let mut opts = app.hydro_options().clone();
-            if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
-                opts.draft = d;
-            }
-            let level = match p.get("level") {
-                None | Some(Value::Null) => app.subdivision_level(),
-                Some(_) => number_in(p, "level", 0.0..=6.0)?
-                    .map(|l| l.round() as u8)
-                    .unwrap_or_else(|| app.subdivision_level()),
-            };
-            let subdiv = seacraft_core::subdiv::SubdivisionOptions {
-                level,
-                mode: app.subdivision_mode(),
-            };
-            let speed = number(p, "speed_kn")?.ok_or("hydro.trim: give `speed_kn`")?;
-            let from = number_in(p, "from", -5.0..=5.0)?.unwrap_or(-0.6);
-            let to = number_in(p, "to", -5.0..=5.0)?.unwrap_or(0.6);
-            if to <= from {
-                return Err("hydro.trim: `to` must be greater than `from`".into());
-            }
+            let defaults = commands::TrimScanParams::default();
+            let draft = number_in(p, "draft", 0.001..=1.0e3)?;
+            let level = level_arg(p)?;
+            let speed_kn = number(p, "speed_kn")?.ok_or("hydro.trim: give `speed_kn`")?;
+            let from = number_in(p, "from", -5.0..=5.0)?.unwrap_or(defaults.from);
+            let to = number_in(p, "to", -5.0..=5.0)?.unwrap_or(defaults.to);
             let steps = match p.get("steps") {
-                None | Some(Value::Null) => 13,
+                None | Some(Value::Null) => defaults.steps,
                 Some(_) => number_in(p, "steps", 2.0..=200.0)?
                     .map(|n| n.round() as usize)
-                    .unwrap_or(13),
+                    .unwrap_or(defaults.steps),
             };
-            let hold = boolean(p, "hold_volume")?.unwrap_or(true);
-            let surface = app
-                .surface()
-                .ok_or_else(|| "hydro.trim: no model is loaded".to_string())?;
-            let trims = seacraft_core::trimopt::trim_range(from, to, steps);
-            let scan = seacraft_core::trimopt::scan(surface, subdiv, &opts, speed, &trims, hold)
-                .map_err(|e| format!("hydro.trim: {e}"))?;
-            Ok(json!({
-                "backend": "app",
-                "level": level,
-                "speed_kn": scan.speed_kn,
-                "target_volume_m3": scan.target_volume_m3,
-                "at_boundary": scan.at_boundary,
-                "best": scan.best,
-                "warnings": scan.warnings,
-                "points": scan.points,
-            }))
+            let hold_volume = boolean(p, "hold_volume")?.unwrap_or(defaults.hold_volume);
+            let params = commands::TrimScanParams {
+                draft,
+                level,
+                speed_kn,
+                from,
+                to,
+                steps,
+                hold_volume,
+            };
+            reply_app(commands::trim_scan(app, &params)?)
         }
         "hydro.table" => {
             // Read-only: a table is a report, not an edit.
-            let mut opts = app.hydro_options().clone();
-            if let Some(to) = number_in(p, "to", 0.001..=1.0e3)? {
-                opts.draft = to;
-            }
-            let level = match p.get("level") {
-                None | Some(Value::Null) => app.subdivision_level(),
-                Some(_) => number_in(p, "level", 0.0..=6.0)?
-                    .map(|l| l.round() as u8)
-                    .unwrap_or_else(|| app.subdivision_level()),
+            let to = number_in(p, "to", 0.001..=1.0e3)?;
+            let level = level_arg(p)?;
+            let drafts = numbers(p, "drafts")?;
+            let defaults = commands::HydroTableParams::default();
+            // `steps` only matters (and is only checked) without `drafts`.
+            let steps = match p.get("steps") {
+                _ if drafts.is_some() => defaults.steps,
+                None | Some(Value::Null) => defaults.steps,
+                Some(_) => number_in(p, "steps", 1.0..=200.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(defaults.steps),
             };
-            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            let params = commands::HydroTableParams {
+                to,
                 level,
-                mode: app.subdivision_mode(),
+                drafts,
+                steps,
             };
-            let drafts = match numbers(p, "drafts")? {
-                Some(list) => {
-                    if list.is_empty() {
-                        return Err("hydro.table: `drafts` is empty".into());
-                    }
-                    if list.iter().any(|d| *d <= 0.0) {
-                        return Err("hydro.table: `drafts` must be positive".into());
-                    }
-                    list
-                }
-                None => {
-                    let steps = match p.get("steps") {
-                        None | Some(Value::Null) => 10,
-                        Some(_) => number_in(p, "steps", 1.0..=200.0)?
-                            .map(|n| n.round() as usize)
-                            .unwrap_or(10),
-                    };
-                    seacraft_core::table::draft_range(opts.draft, steps)
-                }
-            };
-            let surface = app
-                .surface()
-                .ok_or_else(|| "hydro.table: no model is loaded".to_string())?;
-            let t = seacraft_core::table::table(surface, &opts, &drafts);
-            Ok(json!({
-                "backend": "app",
-                "level": level,
-                "name": t.name,
-                "water_density": t.water_density,
-                "drafts": t.rows.len(),
-                "rows": serde_json::to_value(&t.rows).unwrap_or(Value::Null),
-            }))
+            reply_app(commands::hydro_table(app, &params)?)
         }
         "stability.cross_curves"
             if ["heels", "displacements", "draft", "trim", "level"]
@@ -1548,152 +1488,57 @@ fn handle_inner(
             // exactly like a drag does.
             let faces = app.surface().map(|s| s.faces.len()).unwrap_or(0);
             let face = index_at(p, "face", faces)?.ok_or("model.split_face: give `face`")?;
-            // Edit a copy: a refused split must leave no undo entry behind.
-            let mut edited = app.surface().ok_or("no model loaded")?.clone();
-            let report = seacraft_core::topology::split_face(&mut edited, face)
-                .map_err(|e| format!("model.split_face: {e}"))?;
-            app.snapshot_undo();
-            if let Some(surface) = app.surface_mut() {
-                *surface = edited;
-            }
-            app.mark_geometry_changed();
-            app.status_note(format!(
-                "face {face} split into {} triangles",
-                report.pieces
-            ));
-            Ok(json!({
-                "face": report.face,
-                "point": report.point,
-                "pieces": report.pieces,
-                "faces": report.faces_after,
-                "points": report.points_after,
-                "undo_len": app.undo_len(),
-            }))
+            reply(commands::split_face(
+                app,
+                &commands::SplitFaceParams { face },
+            )?)
         }
         "model.insert_edge" => {
             let faces_total = app.surface().map(|s| s.faces.len()).unwrap_or(0);
-            let f = index_at(p, "face", faces_total)?.ok_or("model.insert_edge: give `face`")?;
+            let face = index_at(p, "face", faces_total)?.ok_or("model.insert_edge: give `face`")?;
             let count = app.surface().map(|s| s.points.len()).unwrap_or(0);
             let a = index_at(p, "a", count)?.ok_or("model.insert_edge: give `a`")?;
             let b = index_at(p, "b", count)?.ok_or("model.insert_edge: give `b`")?;
-            let mut edited = app.surface().ok_or("no model loaded")?.clone();
-            seacraft_core::topology::insert_edge(&mut edited, f, a, b)
-                .map_err(|e| format!("model.insert_edge: {e}"))?;
-            app.snapshot_undo();
-            if let Some(surface) = app.surface_mut() {
-                *surface = edited;
-            }
-            app.mark_geometry_changed();
-            app.status_note(format!("edge {a}-{b} inserted on face {f}"));
-            let faces = app.surface().map(|s| s.faces.len()).unwrap_or(0);
-            Ok(json!({
-                "face": f,
-                "a": a,
-                "b": b,
-                "faces": faces,
-                "undo_len": app.undo_len(),
-            }))
+            reply(commands::insert_edge(
+                app,
+                &commands::InsertEdgeParams { face, a, b },
+            )?)
         }
         "curves.bonjean" => {
             // Read-only measurement of the app's own model, so an agent can
             // draw the curves the way `seacraft bonjean` does. Nothing is
             // changed: no snapshot, no dirty flag.
-            let level = match p.get("level") {
-                None | Some(Value::Null) => app.subdivision_level(),
-                Some(_) => number_in(p, "level", 0.0..=6.0)?
-                    .map(|l| l.round() as u8)
-                    .unwrap_or_else(|| app.subdivision_level()),
+            let defaults = commands::BonjeanParams::default();
+            let params = commands::BonjeanParams {
+                level: level_arg(p)?,
+                stations: number_in(p, "stations", 2.0..=200.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(defaults.stations),
+                draft_steps: number_in(p, "draft_steps", 2.0..=50.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(defaults.draft_steps),
+                drafts: numbers(p, "drafts")?,
             };
-            let stations = number_in(p, "stations", 2.0..=200.0)?
-                .map(|n| n.round() as usize)
-                .unwrap_or(21);
-            let steps = number_in(p, "draft_steps", 2.0..=50.0)?
-                .map(|n| n.round() as usize)
-                .unwrap_or(10);
-            let surface = app
-                .surface()
-                .ok_or_else(|| "curves.bonjean: no model is loaded".to_string())?;
-            let hull = seacraft_core::hydro::Hull::new(
-                surface,
-                seacraft_core::subdiv::SubdivisionOptions {
-                    level,
-                    mode: app.subdivision_mode(),
-                },
-            );
-            let depth = hull.model_max.z - hull.keel;
-            if depth <= 0.0 {
-                return Err("curves.bonjean: the hull has no height above the keel".into());
-            }
-            let drafts = match numbers(p, "drafts")? {
-                Some(mut given) => {
-                    if given.len() < 2 {
-                        return Err("curves.bonjean: `drafts` needs at least two ordinates".into());
-                    }
-                    if given.iter().any(|d| *d <= 0.0) {
-                        return Err("curves.bonjean: `drafts` must be positive".into());
-                    }
-                    given.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    given
-                }
-                None => seacraft_core::curves::draft_range(depth / steps as f64, depth, steps),
-            };
-            let bj = seacraft_core::curves::bonjean(&hull, stations, &drafts);
-            Ok(json!({
-                "backend": "app",
-                "level": level,
-                "depth_m": depth,
-                "design_draft_m": app.hydro_options().draft,
-                "drafts_m": bj.drafts_m,
-                "sections": bj.sections,
-                "area_max_m2": bj.max_area(),
-            }))
+            reply_app(commands::bonjean(app, &params)?)
         }
         "curves.offsets" => {
             // Read-only, like curves.bonjean: no snapshot, no dirty flag.
-            let level = match p.get("level") {
-                None | Some(Value::Null) => app.subdivision_level(),
-                Some(_) => number_in(p, "level", 0.0..=6.0)?
-                    .map(|l| l.round() as u8)
-                    .unwrap_or_else(|| app.subdivision_level()),
+            let defaults = commands::OffsetsParams::default();
+            let params = commands::OffsetsParams {
+                level: level_arg(p)?,
+                stations: number_in(p, "stations", 2.0..=200.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(defaults.stations),
+                waterline_steps: number_in(p, "waterline_steps", 1.0..=50.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(defaults.waterline_steps),
+                buttock_steps: number_in(p, "buttock_steps", 1.0..=50.0)?
+                    .map(|n| n.round() as usize)
+                    .unwrap_or(defaults.buttock_steps),
+                waterlines: numbers(p, "waterlines")?,
+                buttocks: numbers(p, "buttocks")?,
             };
-            let stations = number_in(p, "stations", 2.0..=200.0)?
-                .map(|n| n.round() as usize)
-                .unwrap_or(21);
-            let wl_steps = number_in(p, "waterline_steps", 1.0..=50.0)?
-                .map(|n| n.round() as usize)
-                .unwrap_or(6);
-            let b_steps = number_in(p, "buttock_steps", 1.0..=50.0)?
-                .map(|n| n.round() as usize)
-                .unwrap_or(4);
-            let surface = app
-                .surface()
-                .ok_or_else(|| "curves.offsets: no model is loaded".to_string())?;
-            let hull = seacraft_core::hydro::Hull::new(
-                surface,
-                seacraft_core::subdiv::SubdivisionOptions {
-                    level,
-                    mode: app.subdivision_mode(),
-                },
-            );
-            let waterlines = match numbers(p, "waterlines")? {
-                Some(v) => positive_ordinates(v, "waterlines")?,
-                None => seacraft_core::offsets::default_waterlines(&hull, wl_steps),
-            };
-            let buttocks = match numbers(p, "buttocks")? {
-                Some(v) => positive_ordinates(v, "buttocks")?,
-                None => seacraft_core::offsets::default_buttocks(&hull, b_steps),
-            };
-            let table =
-                seacraft_core::offsets::table_of_offsets(&hull, stations, &waterlines, &buttocks);
-            Ok(json!({
-                "backend": "app",
-                "level": level,
-                "keel_z": table.keel_z,
-                "waterlines_m": table.waterlines_m,
-                "buttocks_m": table.buttocks_m,
-                "stations": table.stations,
-                "max_half_breadth_m": table.max_half_breadth(),
-            }))
+            reply_app(commands::offsets(app, &params)?)
         }
         "performance.compute" => {
             let surface = app
@@ -1971,10 +1816,6 @@ fn handle_inner(
             Ok(json!({ "backend": "app", "setup": setup, "speeds": rows }))
         }
         "model.transform" => {
-            let subdiv = seacraft_core::subdiv::SubdivisionOptions {
-                level: app.subdivision_level(),
-                mode: app.subdivision_mode(),
-            };
             let mirror = match text(p, "mirror")? {
                 None => None,
                 Some(name) => Some(
@@ -1988,7 +1829,7 @@ fn handle_inner(
                     Some(v) => Ok(Some(triple(v, key)?)),
                 }
             };
-            let request = seacraft_core::transform::TransformRequest {
+            let request = commands::TransformParams {
                 lwl: number_in(p, "lwl", 0.01..=1.0e4)?,
                 bwl: number_in(p, "bwl", 0.01..=1.0e4)?,
                 draft: number_in(p, "draft", 0.001..=1.0e3)?,
@@ -1996,35 +1837,7 @@ fn handle_inner(
                 translate: vec3("translate")?.unwrap_or(Vec3::ZERO),
                 mirror,
             };
-            let surface = app
-                .surface()
-                .ok_or_else(|| "model.transform: no model is loaded".to_string())?;
-            let (out, report) = seacraft_core::transform::run(surface, &request, subdiv)
-                .map_err(|e| format!("model.transform: {e}"))?;
-            app.snapshot_undo();
-            if let Some(surface) = app.surface_mut() {
-                *surface = out;
-            }
-            app.select_point(None);
-            // The fit rescales the model's own design draft; the app measures at
-            // its hydro option, so carry the new draft across or every number
-            // after this would be read at the old waterline.
-            let new_draft = app.surface().map(|s| s.settings.draft).unwrap_or(0.0);
-            if new_draft > 0.0 {
-                app.hydro_options_mut().draft = new_draft;
-            }
-            app.mark_geometry_changed();
-            app.status_note(format!(
-                "hull transformed: scale {:.3} x {:.3} x {:.3}",
-                report.scale.x, report.scale.y, report.scale.z
-            ));
-            Ok(json!({
-                "report": report,
-                "faces": app.face_count(),
-                "points": app.control_point_count(),
-                "draft": app.hydro_options().draft,
-                "undo_len": app.undo_len(),
-            }))
+            reply(commands::transform(app, &request)?)
         }
         "model.optimize" => {
             // Reshape the hull for lower resistance at a speed. It is an edit:
@@ -2032,121 +1845,42 @@ fn handle_inner(
             let params = p.as_object().cloned().unwrap_or_default();
             let spec = seacraft_core::optimize::OptimizeSpec::from_params(&params, Some(app.kg()))
                 .map_err(|e| format!("model.optimize: {e}"))?;
-            let level = match p.get("level") {
-                None | Some(Value::Null) => app.subdivision_level(),
-                Some(_) => number_in(p, "level", 0.0..=6.0)?
-                    .map(|l| l.round() as u8)
-                    .unwrap_or_else(|| app.subdivision_level()),
-            };
-            let mut opts = app.hydro_options().clone();
-            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
-                level,
-                mode: app.subdivision_mode(),
-            };
-            let surface = app
-                .surface()
-                .ok_or_else(|| "model.optimize: no model is loaded".to_string())?;
-            let (out, report) = seacraft_core::optimize::optimize_hull(surface, &opts, &spec)
-                .map_err(|e| format!("model.optimize: {e}"))?;
-            app.snapshot_undo();
-            if let Some(surface) = app.surface_mut() {
-                *surface = out;
-            }
-            app.select_point(None);
-            // The optimised hull is measured at the draft that holds the
-            // original displacement; the app must read it there too.
-            app.hydro_options_mut().draft = report.optimised.draft_m;
-            app.mark_geometry_changed();
-            app.status_note(format!(
-                "hull optimised at {:.1} kn: RT {:+.1} %",
-                report.speed_kn, report.rt_change_pct
-            ));
-            Ok(json!({
-                "backend": "app",
-                "level": level,
-                "kg": spec.kg,
-                "report": report,
-                "faces": app.face_count(),
-                "points": app.control_point_count(),
-                "draft": app.hydro_options().draft,
-                "undo_len": app.undo_len(),
-            }))
+            let level = level_arg(p)?;
+            reply_app(commands::optimize(
+                app,
+                &commands::OptimizeParams { spec, level },
+            )?)
         }
         "curves.unfold" => {
             // Read-only plate development: no snapshot, no dirty flag.
             let axis = match text(p, "axis")? {
-                None => seacraft_core::develop::BandAxis::Z,
+                None => commands::UnfoldParams::default().axis,
                 Some(name) => seacraft_core::develop::BandAxis::parse(name)
                     .ok_or_else(|| format!("`axis` must be x, y or z (got `{name}`)"))?,
             };
-            let level = match p.get("level") {
-                None | Some(Value::Null) => app.subdivision_level(),
-                Some(_) => number_in(p, "level", 0.0..=6.0)?
-                    .map(|l| l.round() as u8)
-                    .unwrap_or_else(|| app.subdivision_level()),
+            let level = level_arg(p)?;
+            let from = number(p, "from")?;
+            let to = number(p, "to")?;
+            let x_from = number(p, "x_from")?;
+            let x_to = number(p, "x_to")?;
+            let both_sides = boolean(p, "both_sides")?.unwrap_or(false);
+            let path = match text(p, "path")?.filter(|s| !s.trim().is_empty()) {
+                Some(path) => {
+                    Some(app.check_control_write_path(std::path::Path::new(path.trim()))?)
+                }
+                None => None,
             };
-            let lo = number(p, "from")?;
-            let hi = number(p, "to")?;
-            let x_lo = number(p, "x_from")?;
-            let x_hi = number(p, "x_to")?;
-            let both = boolean(p, "both_sides")?.unwrap_or(false);
-            let surface = app
-                .surface()
-                .ok_or_else(|| "curves.unfold: no model is loaded".to_string())?;
-            let hull = seacraft_core::hydro::Hull::new(
-                surface,
-                seacraft_core::subdiv::SubdivisionOptions {
-                    level,
-                    mode: app.subdivision_mode(),
-                },
-            );
-            let pick = |axis: seacraft_core::develop::BandAxis, given: Option<f64>, low: bool| {
-                given.unwrap_or(match (axis, low) {
-                    (seacraft_core::develop::BandAxis::X, true) => hull.model_min.x,
-                    (seacraft_core::develop::BandAxis::X, false) => hull.model_max.x,
-                    (seacraft_core::develop::BandAxis::Y, true) => hull.model_min.y,
-                    (seacraft_core::develop::BandAxis::Y, false) => hull.model_max.y,
-                    (seacraft_core::develop::BandAxis::Z, true) => hull.keel,
-                    (seacraft_core::develop::BandAxis::Z, false) => hull.model_max.z,
-                })
+            let params = commands::UnfoldParams {
+                axis,
+                level,
+                from,
+                to,
+                x_from,
+                x_to,
+                both_sides,
+                path,
             };
-            let selection = seacraft_core::develop::PatchSelection {
-                slabs: vec![
-                    (axis, pick(axis, lo, true), pick(axis, hi, false)),
-                    (
-                        seacraft_core::develop::BandAxis::X,
-                        pick(seacraft_core::develop::BandAxis::X, x_lo, true),
-                        pick(seacraft_core::develop::BandAxis::X, x_hi, false),
-                    ),
-                ],
-                starboard_only: !both,
-            };
-            let faces = seacraft_core::develop::select(&hull.verts, &hull.tris, &selection);
-            if faces.is_empty() {
-                return Err("curves.unfold: the band selected no faces; widen the range".into());
-            }
-            let unfolded = seacraft_core::develop::unfold(&hull.verts, &faces);
-            let mut written = None;
-            if let Some(path) = text(p, "path")?.filter(|s| !s.trim().is_empty()) {
-                let validated = app.check_control_write_path(std::path::Path::new(path.trim()))?;
-                let title = format!(
-                    "{} - plate on {:?} {:.2}..{:.2} m",
-                    surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
-                );
-                seacraft_core::io::write_atomic(
-                    &validated,
-                    seacraft_core::develop::svg(&unfolded, &title),
-                )
-                .map_err(|e| format!("curves.unfold: cannot write {}: {e}", validated.display()))?;
-                written = Some(validated.to_string_lossy().to_string());
-            }
-            Ok(json!({
-                "backend": "app",
-                "level": level,
-                "faces": faces.len(),
-                "plate": unfolded,
-                "written": written,
-            }))
+            reply_app(commands::unfold(app, &params)?)
         }
         "report.design" => {
             let path_str = text(p, "path")?
