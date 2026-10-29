@@ -32,6 +32,8 @@ pub mod export;
 pub mod fef;
 pub mod hydro;
 pub mod iges;
+/// Crash-safe file output: temporary sibling, sync, rename.
+pub mod io;
 pub mod lackenby;
 pub mod linesplan;
 pub mod loading;

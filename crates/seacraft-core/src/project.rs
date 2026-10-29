@@ -206,15 +206,8 @@ impl Project {
     /// Write the file through a temporary sibling and a rename, so a failed
     /// write never leaves half a project behind.
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        std::fs::write(&tmp, self.to_json())
-            .and_then(|()| std::fs::rename(&tmp, path))
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&tmp);
-                format!("cannot write {}: {e}", path.display())
-            })
+        crate::io::write_atomic(path, self.to_json())
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))
     }
 
     /// Check names are unique and every entry is valid on its own.

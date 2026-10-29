@@ -79,6 +79,7 @@ crates/seacraft-core/
   src/seakeeping.rs         Lewis sections; 2D heave added mass/damping by Frank close-fit panels (B7a); STF strip-theory heave & pitch RAOs (B7b)
   src/project.rs            <model>.seacraft.json sidecar: loading conditions, compartments, damage cases, windage, report settings
   src/seastate.rs           irregular head seas: Bretschneider/JONSWAP spectra, significant motions, MSI (E2)
+  src/io.rs                 write_atomic: temp sibling + sync + rename for every user file
   src/control_auth.rs       control-channel token (0600 file, constant-time compare) + read/write roots (ported, see ATTRIBUTION)
 crates/seacraft-cli/
   src/main.rs               clap front end, table/JSON/CSV output

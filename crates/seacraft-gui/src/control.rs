@@ -912,7 +912,7 @@ fn handle_inner(
             };
             let png = render_png(app, width, height, view, mode)?;
             let bytes = png.len();
-            std::fs::write(&validated, &png)
+            seacraft_core::io::write_atomic(&validated, &png)
                 .map_err(|e| format!("{}: {e}", validated.display()))?;
             app.status_note(format!(
                 "rendered {view} to {} ({width}×{height})",
@@ -2118,10 +2118,11 @@ fn handle_inner(
                     "{} - plate on {:?} {:.2}..{:.2} m",
                     surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
                 );
-                std::fs::write(&validated, seacraft_core::develop::svg(&unfolded, &title))
-                    .map_err(|e| {
-                        format!("curves.unfold: cannot write {}: {e}", validated.display())
-                    })?;
+                seacraft_core::io::write_atomic(
+                    &validated,
+                    seacraft_core::develop::svg(&unfolded, &title),
+                )
+                .map_err(|e| format!("curves.unfold: cannot write {}: {e}", validated.display()))?;
                 written = Some(validated.to_string_lossy().to_string());
             }
             Ok(json!({
@@ -2174,7 +2175,7 @@ fn handle_inner(
 
             let html = seacraft_core::report::design_report_with_project(surface, &opts, project)
                 .map_err(|e| format!("report.design: {e}"))?;
-            std::fs::write(&validated, &html)
+            seacraft_core::io::write_atomic(&validated, &html)
                 .map_err(|e| format!("report.design: cannot write {}: {e}", validated.display()))?;
 
             let sections = seacraft_core::report::report_sections_with_project(&opts, project);

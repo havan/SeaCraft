@@ -1019,7 +1019,8 @@ impl McpServer {
             },
         };
         let text = fef::write(&self.surface);
-        std::fs::write(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+        seacraft_core::io::write_atomic(&path, text.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         self.source = Some(path.clone());
         // The sidecar travels with the model, as in the GUI: written when it
         // holds something or already exists, never over one that failed to load.
@@ -2012,7 +2013,7 @@ impl McpServer {
                 "{} - plate on {:?} {:.2}..{:.2} m",
                 self.surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
             );
-            std::fs::write(path, develop::svg(&unfolded, &title))
+            seacraft_core::io::write_atomic(path, develop::svg(&unfolded, &title))
                 .map_err(|e| format!("unfold_plate: cannot write {path}: {e}"))?;
             written = Some(path.to_string());
         }
@@ -2054,7 +2055,8 @@ impl McpServer {
                 ))
             }
         };
-        std::fs::write(&path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+        seacraft_core::io::write_atomic(&path, text.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(json!({
             "path": path.to_string_lossy(),
             "format": format,
@@ -2122,7 +2124,8 @@ impl McpServer {
         let canvas = raster::render(&mesh.verts, &mesh.faces, &view, &opts);
         let bytes = raster::png(canvas.w, canvas.h, &canvas.rgba)
             .ok_or_else(|| format!("render_png: cannot encode a {width}x{height} PNG"))?;
-        std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        seacraft_core::io::write_atomic(&path, &bytes)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(json!({
             "path": path.to_string_lossy(),
             "bytes": bytes.len(),
@@ -2177,7 +2180,8 @@ impl McpServer {
         let html =
             seacraft_core::report::design_report_with_project(&self.surface, &opts, &self.project)
                 .map_err(|e| format!("design_report: {e}"))?;
-        std::fs::write(&path, html.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
+        seacraft_core::io::write_atomic(&path, html.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
 
         let sections = seacraft_core::report::report_sections_with_project(&opts, &self.project);
 

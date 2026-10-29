@@ -582,7 +582,7 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     spec.draft = a.draft;
     let (out, report) =
         optimize::optimize_hull(&s, &opts, &spec).map_err(|e| anyhow::anyhow!(e))?;
-    std::fs::write(&a.output, fef::write(&out))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&out))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -706,11 +706,11 @@ fn cmd_table(a: TableArgs) -> Result<()> {
     }
     let t = table::table(&s, &opts, &drafts);
     if let Some(path) = &a.csv {
-        std::fs::write(path, t.csv())
+        seacraft_core::io::write_atomic(path, t.csv())
             .with_context(|| format!("cannot write {}", path.display()))?;
     }
     if let Some(path) = &a.html {
-        std::fs::write(path, t.html())
+        seacraft_core::io::write_atomic(path, t.html())
             .with_context(|| format!("cannot write {}", path.display()))?;
     }
     if a.json {
@@ -798,7 +798,7 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
     );
     let (out, report) =
         lackenby::fit(&s, target, &opts, 1e-3, 10).map_err(|e| anyhow::anyhow!(e))?;
-    std::fs::write(&a.output, fef::write(&out))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&out))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1280,7 +1280,7 @@ fn load(path: &Path) -> Result<Surface> {
 
 fn cmd_demo(a: DemoArgs) -> Result<()> {
     let surface = demo::demo_hull(a.symmetric);
-    std::fs::write(&a.output, fef::write(&surface))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&surface))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
         "wrote {} ({} control points, {} faces, {} layer{})",
@@ -1328,7 +1328,7 @@ fn cmd_generate(a: GenerateArgs) -> Result<()> {
     }
 
     let (surface, rep) = parametric::generate(&spec).map_err(|e| anyhow::anyhow!(e))?;
-    std::fs::write(&a.output, fef::write(&surface))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&surface))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
 
     if a.json {
@@ -1630,7 +1630,7 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
             other
         ),
     };
-    std::fs::write(&a.output, &data)
+    seacraft_core::io::write_atomic(&a.output, &data)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
         "wrote {} ({:.1} KiB)",
@@ -1697,7 +1697,7 @@ fn cmd_subdiv(a: SubdivArgs) -> Result<()> {
     };
     baked.edges.clear();
     baked.rebuild_edges();
-    std::fs::write(&a.output, fef::write(&baked))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&baked))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
         "wrote {} ({} points, {} faces)",
@@ -1730,7 +1730,7 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
             "{} - sectional area curve, T = {:.3} m",
             s.settings.name, opts.draft
         );
-        std::fs::write(path, curves::sac_svg(&result.sac, &title))
+        seacraft_core::io::write_atomic(path, curves::sac_svg(&result.sac, &title))
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
     }
@@ -1758,7 +1758,7 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
             for p in &result.sac {
                 text.push_str(&format!("{:.4},{:.6}\n", p.x, p.area));
             }
-            std::fs::write(&path, text)
+            seacraft_core::io::write_atomic(&path, text)
                 .with_context(|| format!("cannot write {}", path.display()))?;
             println!("wrote {} ({} stations)", path.display(), result.sac.len());
         }
@@ -1822,7 +1822,7 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
             bonjean.sections.len(),
             opts.draft
         );
-        std::fs::write(path, curves::bonjean_svg(&bonjean, &title))
+        seacraft_core::io::write_atomic(path, curves::bonjean_svg(&bonjean, &title))
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
     }
@@ -1833,7 +1833,8 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
                 text.push_str(&format!("{:.4},{:.4},{:.6}\n", sec.x, d, sec.areas_m2[i]));
             }
         }
-        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        seacraft_core::io::write_atomic(path, text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
         println!(
             "wrote {} ({} stations)",
             path.display(),
@@ -1916,7 +1917,7 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
     let title = format!("{} - table of offsets", s.settings.name);
 
     if let Some(path) = &a.html {
-        std::fs::write(path, offsets::html(&table, &title))
+        seacraft_core::io::write_atomic(path, offsets::html(&table, &title))
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
     }
@@ -1936,7 +1937,8 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
                 }
             }
         }
-        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        seacraft_core::io::write_atomic(path, text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
         println!(
             "wrote {} ({} stations x {} waterlines)",
             path.display(),
@@ -2061,7 +2063,7 @@ fn cmd_transform(a: TransformArgs) -> Result<()> {
     let before = report.before;
     let after = report.after;
     let fit = report.fit.clone();
-    std::fs::write(&a.output, fef::write(&out))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&out))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
 
     if a.json {
@@ -2183,7 +2185,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
                     r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
                 ));
             }
-            std::fs::write(path, text)
+            seacraft_core::io::write_atomic(path, text)
                 .with_context(|| format!("cannot write {}", path.display()))?;
             println!("wrote {} ({} speeds)", path.display(), rows.len());
         }
@@ -2271,7 +2273,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
                     r.rapp_n, r.rw_n, r.rb_n, r.rtr_n, r.ra_n, r.rt_n, r.pe_w
                 ));
             }
-            std::fs::write(path, text)
+            seacraft_core::io::write_atomic(path, text)
                 .with_context(|| format!("cannot write {}", path.display()))?;
             println!("wrote {} ({} speeds)", path.display(), rows.len());
         }
@@ -2388,7 +2390,8 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             }
             text.push('\n');
         }
-        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        seacraft_core::io::write_atomic(path, text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {} ({} speeds)", path.display(), rows.len());
     }
     if a.json {
@@ -2576,7 +2579,7 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
     }
     s.validate()
         .map_err(|e| anyhow::anyhow!("the edited model does not validate: {e}"))?;
-    std::fs::write(&a.output, fef::write(&s))
+    seacraft_core::io::write_atomic(&a.output, fef::write(&s))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
 
     let creases_after = s.edges.iter().filter(|e| e.crease).count();
@@ -2666,7 +2669,8 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
                 p.pe_w
             ));
         }
-        std::fs::write(path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        seacraft_core::io::write_atomic(path, text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {} ({} speeds)", path.display(), curve.len());
     }
     if a.json {
@@ -2773,7 +2777,7 @@ fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
             "{} - plate between {:.2} and {:.2} m on {:?}",
             s.settings.name, lo, hi, axis
         );
-        std::fs::write(path, develop::svg(&unfolded, &title))
+        seacraft_core::io::write_atomic(path, develop::svg(&unfolded, &title))
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
     }
@@ -2839,7 +2843,7 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
             bail!("unsupported linesplan extension `.{other}` (use .svg, .dxf, .igs or .iges)")
         }
     };
-    std::fs::write(&a.output, text)
+    seacraft_core::io::write_atomic(&a.output, text)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());
     Ok(())
@@ -2884,7 +2888,7 @@ fn cmd_report(a: ReportArgs) -> Result<()> {
     }
     let html = seacraft_core::report::design_report_with_project(&s, &opts, &project)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    std::fs::write(&a.output, html)
+    seacraft_core::io::write_atomic(&a.output, html)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!("wrote {}", a.output.display());
     Ok(())
@@ -2926,7 +2930,7 @@ fn cmd_render(a: RenderArgs) -> Result<()> {
     let canvas = raster::render(&mesh.verts, &mesh.faces, &view, &opts);
     let bytes = raster::png(canvas.w, canvas.h, &canvas.rgba)
         .ok_or_else(|| anyhow::anyhow!("cannot encode a {}x{} PNG", width, height))?;
-    std::fs::write(&a.output, bytes)
+    seacraft_core::io::write_atomic(&a.output, bytes)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
         "wrote {} ({}x{}, {} mode, {} faces)",
@@ -3030,7 +3034,8 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
                 ));
             }
         }
-        std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))?;
+        seacraft_core::io::write_atomic(&path, text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
         return Ok(());
     }
@@ -3521,7 +3526,7 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
         if csv_path.as_os_str() == "-" || csv_path.as_os_str().is_empty() {
             print!("{text}");
         } else {
-            std::fs::write(csv_path, text)
+            seacraft_core::io::write_atomic(csv_path, text)
                 .with_context(|| format!("cannot write {}", csv_path.display()))?;
             println!(
                 "wrote {} ({} frequencies)",

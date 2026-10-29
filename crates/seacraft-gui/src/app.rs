@@ -1192,6 +1192,7 @@ impl App {
         self.dialog_window(ui);
         self.report_options_window(ui);
         self.poll_report(ui.ctx());
+        self.intercept_close(ui.ctx());
         self.pending_window(ui);
         if self.close_requested {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1506,6 +1507,25 @@ impl App {
         }
     }
 
+    /// The window manager's close (×, Alt+F4) asks about unsaved work, as
+    /// File > Quit does. A close already confirmed (`close_requested`: the
+    /// prompt's Discard or Save, Quit on a clean model, `app.quit`) goes
+    /// through, so the `Close` command it sends does not prompt again.
+    fn intercept_close(&mut self, ctx: &egui::Context) {
+        if self.close_requested || !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.dirty {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending = Some(PendingAction::Quit);
+        }
+    }
+
+    /// The unsaved-changes prompt is open.
+    pub fn unsaved_prompt_open(&self) -> bool {
+        self.pending.is_some()
+    }
+
     fn perform(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewDemo => self.load_demo(),
@@ -1589,7 +1609,7 @@ impl App {
             return false;
         };
         let text = fef::write(surface);
-        match std::fs::write(path, &text) {
+        match seacraft_core::io::write_atomic(path, &text) {
             Ok(()) => {
                 self.path = Some(path.to_path_buf());
                 self.status = format!("saved {}", path.display());
@@ -1632,6 +1652,7 @@ impl App {
 
     /// Write one of the export formats. Returns whether it was written.
     pub fn export_to(&mut self, kind: ExportKind, path: &std::path::Path) -> bool {
+        use seacraft_core::io::write_atomic;
         let Some(surface) = &self.surface else {
             return false;
         };
@@ -1644,28 +1665,28 @@ impl App {
             ..Default::default()
         };
         let written = match kind {
-            ExportKind::Obj => std::fs::write(
+            ExportKind::Obj => write_atomic(
                 path,
                 export::obj(surface, self.level, self.mode, export::UpAxis::Z),
             ),
-            ExportKind::Stl => std::fs::write(path, export::stl(surface, self.level, self.mode)),
+            ExportKind::Stl => write_atomic(path, export::stl(surface, self.level, self.mode)),
             ExportKind::ThreeMf => {
-                std::fs::write(path, export::threemf(surface, self.level, self.mode))
+                write_atomic(path, export::threemf(surface, self.level, self.mode))
             }
-            ExportKind::Ply => std::fs::write(path, export::ply(surface, self.level, self.mode)),
+            ExportKind::Ply => write_atomic(path, export::ply(surface, self.level, self.mode)),
             ExportKind::HullIges => {
-                std::fs::write(path, export::iges_surface(surface, self.level, self.mode))
+                write_atomic(path, export::iges_surface(surface, self.level, self.mode))
             }
             ExportKind::Html => {
-                std::fs::write(path, export::viewer_html(surface, self.level, self.mode))
+                write_atomic(path, export::viewer_html(surface, self.level, self.mode))
             }
             ExportKind::Linesplan => {
-                std::fs::write(path, seacraft_core::linesplan::svg(surface, linesplan_opts))
+                write_atomic(path, seacraft_core::linesplan::svg(surface, linesplan_opts))
             }
             ExportKind::LinesplanDxf => {
-                std::fs::write(path, seacraft_core::linesplan::dxf(surface, linesplan_opts))
+                write_atomic(path, seacraft_core::linesplan::dxf(surface, linesplan_opts))
             }
-            ExportKind::LinesplanIges => std::fs::write(
+            ExportKind::LinesplanIges => write_atomic(
                 path,
                 seacraft_core::linesplan::iges(surface, linesplan_opts),
             ),
@@ -2391,7 +2412,8 @@ impl App {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
         let html =
             seacraft_core::report::design_report_with_project(surface, &opts, &self.project)?;
-        std::fs::write(path, html).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        seacraft_core::io::write_atomic(path, html)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         self.status = format!("wrote report {}", path.display());
         Ok(())
     }
@@ -2412,7 +2434,7 @@ impl App {
             let result =
                 seacraft_core::report::design_report_with_project(&surface, &opts, &project)
                     .and_then(|html| {
-                        std::fs::write(&path, html)
+                        seacraft_core::io::write_atomic(&path, html)
                             .map_err(|e| format!("cannot write {}: {e}", path.display()))
                     });
             let _ = tx.send((path, result));
