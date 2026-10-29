@@ -222,11 +222,7 @@ pub fn viewport_with_texture(
         FontId::proportional(12.0),
         TEXT,
     );
-    let world_per_px = if view.perspective {
-        2.0 * camera.distance * view.fov_tan / rect.height().max(1.0) as f64
-    } else {
-        view.ortho_height / rect.height().max(1.0) as f64
-    };
+    let world_per_px = view.world_per_px(rect, camera.distance);
     painter.text(
         rect.right_top() + egui::vec2(-8.0, 6.0),
         Align2::RIGHT_TOP,
@@ -250,11 +246,12 @@ pub fn viewport_with_texture(
 fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: &Vec3) {
     // World height visible at the target plane: the orthographic height, or
     // the perspective frustum's height at the distance of the target.
+    let (w, h) = (rect.width() as f64, rect.height() as f64);
     let height = if view.perspective {
         let depth = (*center - view.eye).dot(view.forward).max(1e-3);
-        2.0 * view.fov_tan * depth
+        2.0 * view.visible_fov_tan_wh(w, h) * depth
     } else {
-        view.ortho_height
+        view.visible_height_wh(w, h)
     };
     let width = height * (rect.width().max(1.0) / rect.height().max(1.0)) as f64;
     let half = (height.max(width) * 0.75).max(1.0);
@@ -619,6 +616,7 @@ pub fn frame_key(
     }
     mix(&mut h, view.ortho_height);
     mix(&mut h, view.fov_tan);
+    mix(&mut h, view.fit_aspect);
     mix(&mut h, if view.perspective { 1.0 } else { 0.0 });
     let (a, b) = match opts.analysis {
         AnalysisMode::Shaded => (0.0, 0.0),
@@ -648,14 +646,17 @@ pub fn mode_label(mode: AnalysisMode) -> &'static str {
 }
 
 /// The rasterizer's camera for this view transform, at `width × height` pixels.
-pub fn raster_view(view: &ViewTransform) -> raster::View {
+/// The rasterizer scales by the image height, so it gets the height the
+/// aspect-aware transform actually shows over the whole cell.
+pub fn raster_view(view: &ViewTransform, width: usize, height: usize) -> raster::View {
+    let (w, h) = (width as f64, height as f64);
     raster::View {
         eye: view.eye,
         right: view.right,
         up: view.up,
         forward: view.forward,
-        ortho_height: view.ortho_height,
-        fov_tan: view.fov_tan,
+        ortho_height: view.visible_height_wh(w, h),
+        fov_tan: view.visible_fov_tan_wh(w, h),
         perspective: view.perspective,
     }
 }
@@ -695,7 +696,7 @@ pub fn raster_frame(
     let canvas = raster::render(
         &scene.mesh.verts,
         &scene.mesh.faces,
-        &raster_view(view),
+        &raster_view(view, width, height),
         &opts,
     );
     (canvas.w, canvas.h, canvas.rgba)

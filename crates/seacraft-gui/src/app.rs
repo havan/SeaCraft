@@ -491,6 +491,11 @@ pub struct App {
     pending: Option<PendingAction>,
     /// A quit that has been confirmed (the window closes at the end of the frame).
     close_requested: bool,
+    /// A widget held the keyboard when the last frame ended. egui drops the
+    /// focus on Escape before the next frame's widgets run, so this is what
+    /// tells an Escape that leaves a text field from one that clears the
+    /// selection.
+    keyboard_taken: bool,
     show_layers: bool,
     show_hydro: bool,
     design_dock: Option<DesignDock>,
@@ -538,7 +543,8 @@ pub struct App {
 impl App {
     pub fn new(_cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         let mut app = Self::new_detached();
-        app.status = "No model loaded. File > Load demo hull.".to_owned();
+        app.status =
+            "No model loaded. File > New demo hull, or File > Open .fef… (Ctrl+O).".to_owned();
         if let Some(p) = open {
             app.load(p);
         }
@@ -589,6 +595,7 @@ impl App {
             dialog: None,
             pending: None,
             close_requested: false,
+            keyboard_taken: false,
             show_layers: true,
             show_hydro: true,
             design_dock: None,
@@ -1185,15 +1192,23 @@ impl App {
         if self.close_requested {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        self.keyboard_taken = ui.ctx().egui_wants_keyboard_input();
     }
 
     fn shortcuts(&mut self, ui: &mut egui::Ui) {
+        #[derive(Default)]
+        struct Pressed {
+            undo: bool,
+            redo: bool,
+            open: bool,
+            save: bool,
+            save_as: bool,
+        }
         // Read the modifiers from the key event itself: `InputState::modifiers`
         // is only refreshed by a `ModifiersChanged` event, which a synthesised
         // test frame need not send.
-        let (undo, redo, escape, frame) = ui.input(|i| {
-            let mut undo = false;
-            let mut redo = false;
+        let pressed = ui.input(|i| {
+            let mut pressed = Pressed::default();
             for event in &i.events {
                 if let egui::Event::Key {
                     key,
@@ -1202,31 +1217,53 @@ impl App {
                     ..
                 } = event
                 {
+                    if !(modifiers.command || modifiers.ctrl) {
+                        continue;
+                    }
                     match key {
-                        egui::Key::Z if modifiers.command || modifiers.ctrl => {
-                            if modifiers.shift {
-                                redo = true;
-                            } else {
-                                undo = true;
-                            }
-                        }
+                        egui::Key::Z if modifiers.shift => pressed.redo = true,
+                        egui::Key::Z => pressed.undo = true,
+                        egui::Key::Y => pressed.redo = true,
+                        egui::Key::O => pressed.open = true,
+                        egui::Key::S if modifiers.shift => pressed.save_as = true,
+                        egui::Key::S => pressed.save = true,
+                        // Ctrl+N is kept for the New design dialog.
                         _ => {}
                     }
                 }
             }
-            (
-                undo,
-                redo,
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::F),
-            )
+            pressed
         });
-        if undo {
+        // A text field has its own undo: Ctrl+Z there must not undo the model.
+        let typing = ui.ctx().text_edit_focused();
+        if pressed.undo && !typing {
             self.undo();
         }
-        if redo {
+        if pressed.redo && !typing {
             self.redo();
         }
+        if pressed.open {
+            self.request(PendingAction::Open);
+        }
+        if pressed.save_as && self.surface.is_some() {
+            self.open_dialog(DialogKind::SaveAs);
+        } else if pressed.save && self.surface.is_some() {
+            // No path yet: `save` opens Save as.
+            self.save();
+        }
+
+        // Single keys are text while a field (or any focused widget) has the
+        // keyboard: typing "1" in a number field must not switch the view.
+        if self.keyboard_taken || ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
+        let (escape, frame, shade) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::F),
+                i.key_pressed(egui::Key::Space),
+            )
+        });
         if escape {
             self.selected = None;
             self.selected_volume = None;
@@ -1235,7 +1272,7 @@ impl App {
         if frame {
             self.reset_cameras();
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Space)) {
+        if shade {
             self.display.shaded = !self.display.shaded;
         }
         for (i, key) in [
@@ -1254,6 +1291,12 @@ impl App {
     }
 
     fn menu(&mut self, ui: &mut egui::Ui) {
+        // "Ctrl+S" here, "⌘S" on a Mac: the same text egui uses elsewhere.
+        let ctx = ui.ctx().clone();
+        let keys = |modifiers: egui::Modifiers, key: egui::Key| {
+            ctx.format_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
+        };
+        let command_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -1261,20 +1304,34 @@ impl App {
                         self.request(PendingAction::NewDemo);
                         ui.close();
                     }
-                    if ui.button("Open .fef…").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new("Open .fef…")
+                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::O)),
+                        )
+                        .clicked()
+                    {
                         self.request(PendingAction::Open);
                         ui.close();
                     }
                     ui.separator();
                     if ui
-                        .add_enabled(self.surface.is_some(), egui::Button::new("Save"))
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new("Save")
+                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::S)),
+                        )
                         .clicked()
                     {
                         self.save();
                         ui.close();
                     }
                     if ui
-                        .add_enabled(self.surface.is_some(), egui::Button::new("Save as…"))
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new("Save as…")
+                                .shortcut_text(keys(command_shift, egui::Key::S)),
+                        )
                         .clicked()
                     {
                         self.open_dialog(DialogKind::SaveAs);
@@ -1313,7 +1370,11 @@ impl App {
                 });
                 ui.menu_button("Edit", |ui| {
                     if ui
-                        .add_enabled(self.history.can_undo(), egui::Button::new("Undo  (Ctrl+Z)"))
+                        .add_enabled(
+                            self.history.can_undo(),
+                            egui::Button::new("Undo")
+                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Z)),
+                        )
                         .clicked()
                     {
                         self.undo();
@@ -1322,7 +1383,8 @@ impl App {
                     if ui
                         .add_enabled(
                             self.history.can_redo(),
-                            egui::Button::new("Redo  (Ctrl+Shift+Z)"),
+                            egui::Button::new("Redo")
+                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Y)),
                         )
                         .clicked()
                     {
@@ -1413,7 +1475,10 @@ impl App {
                         self.set_subdivision_mode(mode);
                     }
                     ui.separator();
-                    if ui.button("Reset cameras (F)").clicked() {
+                    if ui
+                        .add(egui::Button::new("Reset cameras").shortcut_text("F"))
+                        .clicked()
+                    {
                         self.reset_cameras();
                         ui.close();
                     }
@@ -1867,12 +1932,23 @@ impl App {
             let view = self.cameras[index].transform();
 
             if response.hovered() {
-                let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                let (scroll, cursor) =
+                    ui.input(|i| (i.smooth_scroll_delta.y, i.pointer.hover_pos()));
                 if scroll.abs() > 0.0 {
-                    self.cameras[index].zoom((-scroll as f64 * 0.0025).exp());
+                    let factor = (-scroll as f64 * 0.0025).exp();
+                    match cursor {
+                        // The world point under the cursor stays put.
+                        Some(cursor) => self.cameras[index].zoom_at(factor, cursor, cell),
+                        None => self.cameras[index].zoom(factor),
+                    }
                 }
             }
 
+            if response.dragged_by(egui::PointerButton::Middle) {
+                // Middle-drag pans in every view, perspective included.
+                let delta = response.drag_delta();
+                self.cameras[index].pan(delta.x, delta.y, cell);
+            }
             let secondary = ui.input(|i| i.pointer.secondary_down());
             if response.dragged() && secondary && self.cameras[index].kind.is_perspective() {
                 let delta = response.drag_delta();

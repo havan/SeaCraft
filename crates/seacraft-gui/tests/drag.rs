@@ -89,7 +89,8 @@ fn dragging_a_control_point_moves_it_and_undo_restores_it() {
 
     let after = app.surface().unwrap().points[index].p;
     let moved = after - before;
-    let per_px = app.cameras()[1].ortho_height / rect.height() as f64;
+    // The scale is aspect-aware: the smaller of the height and width fits.
+    let per_px = app.cameras()[1].transform().world_per_px(rect, 1.0);
     assert!(
         (moved.x - 50.0 * per_px).abs() < 0.05,
         "point moved {moved:?}, expected about {} in x",
