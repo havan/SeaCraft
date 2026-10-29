@@ -45,12 +45,15 @@ fn assert_every_point_inside(app: &App, why: &str) {
 #[test]
 fn every_control_point_stays_inside_its_viewport_with_the_design_dock_open() {
     let mut app = App::headless_for_test(Some(&demo_path()));
+    // The Analysis dock is open by default: close it for the wide baseline.
+    app.set_show_analysis(false);
     let ctx = egui::Context::default();
     frame(&ctx, &mut app, Vec::new());
     frame(&ctx, &mut app, Vec::new());
     assert_every_point_inside(&app, "docks closed");
     let wide = app.viewport_rect(1);
 
+    // Showing the Loading tab shows the dock again.
     app.set_show_loading(true);
     // The docks settle on the second frame.
     frame(&ctx, &mut app, Vec::new());

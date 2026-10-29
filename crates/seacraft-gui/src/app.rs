@@ -202,13 +202,64 @@ pub enum VolumeRef {
     Compartment(usize),
 }
 
-/// The tab shown in the unified right-hand design dock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The tab shown in the right-hand Analysis dock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DesignDock {
+    /// The hydrostatics report (the default tab).
+    #[default]
+    Hydrostatics,
     Loading,
     Damage,
     Windage,
     Performance,
+}
+
+impl DesignDock {
+    /// Every tab, in tab-bar order.
+    pub const ALL: [DesignDock; 5] = [
+        DesignDock::Hydrostatics,
+        DesignDock::Loading,
+        DesignDock::Damage,
+        DesignDock::Windage,
+        DesignDock::Performance,
+    ];
+
+    /// The tab-bar label.
+    pub fn label(self) -> &'static str {
+        match self {
+            DesignDock::Hydrostatics => "Hydro",
+            DesignDock::Loading => "Loading",
+            DesignDock::Damage => "Damage",
+            DesignDock::Windage => "Windage",
+            DesignDock::Performance => "Performance",
+        }
+    }
+
+    /// The control channel's name for the tab (`ui.set {"dock_tab": …}`).
+    pub fn key(self) -> &'static str {
+        match self {
+            DesignDock::Hydrostatics => "hydro",
+            DesignDock::Loading => "loading",
+            DesignDock::Damage => "damage",
+            DesignDock::Windage => "windage",
+            DesignDock::Performance => "performance",
+        }
+    }
+
+    /// The tab a control-channel name stands for.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.key() == key)
+    }
+}
+
+/// What the Analysis dock's active tab asked for, applied after the panel.
+enum DockAction {
+    None,
+    Hydro(panels::HydroAction),
+    Loading(panels::LoadingAction),
+    Damage(panels::DamageAction),
+    Windage(panels::WindageAction),
+    Performance(panels::PerformanceAction),
 }
 
 /// Method used for resistance prediction.
@@ -497,8 +548,17 @@ pub struct App {
     /// selection.
     keyboard_taken: bool,
     show_layers: bool,
-    show_hydro: bool,
-    design_dock: Option<DesignDock>,
+    /// The right-hand Analysis dock (pinned strip + tabs) is shown.
+    show_analysis: bool,
+    /// The Analysis dock's tab.
+    dock_tab: DesignDock,
+    /// The Analysis dock is widened for plots and tables.
+    dock_wide: bool,
+    /// An inspector value being dragged (point index and x/y/z): the point
+    /// moves when the drag is released, as one undo step.
+    inspector_pending: Option<(usize, [f64; 3])>,
+    /// Where the inspector's x/y/z fields were drawn last frame (test hook).
+    inspector_rects: [egui::Rect; 3],
     /// The File > Report options window is open.
     show_report_options: bool,
     /// A design report being written on a worker thread: its path and result.
@@ -538,6 +598,19 @@ pub struct App {
     control_roots: seacraft_core::control_auth::ControlRoots,
     /// Token file removed on clean shutdown.
     token_file: Option<seacraft_core::control_auth::TokenFile>,
+}
+
+/// Whether control point `point` belongs to a face on a symmetric layer
+/// (only `y >= 0` modelled), so it must not cross the centreline.
+pub fn point_on_symmetric_layer(surface: &Surface, point: usize) -> bool {
+    surface.faces.iter().enumerate().any(|(fi, f)| {
+        f.contains(&point)
+            && surface
+                .face_layer
+                .get(fi)
+                .and_then(|&li| surface.layers.get(li))
+                .is_some_and(|l| l.symmetric)
+    })
 }
 
 impl App {
@@ -598,8 +671,11 @@ impl App {
             close_requested: false,
             keyboard_taken: false,
             show_layers: true,
-            show_hydro: true,
-            design_dock: None,
+            show_analysis: true,
+            dock_tab: DesignDock::Hydrostatics,
+            dock_wide: false,
+            inspector_pending: None,
+            inspector_rects: [egui::Rect::NOTHING; 3],
             show_report_options: false,
             report_worker: None,
             loading_selected: 0,
@@ -732,6 +808,7 @@ impl App {
         self.last_highlighted_tank = None;
         self.last_highlighted_compartment = None;
         self.drag = None;
+        self.inspector_pending = None;
         self.cache = None;
         self.history.clear();
         self.marks.clear();
@@ -823,6 +900,182 @@ impl App {
         }
     }
 
+    /// The right-hand Analysis dock: the pinned live strip, the tab bar and
+    /// the active tab's body. The panels return what the user asked for and
+    /// it is applied after the panel has been drawn.
+    fn analysis_dock(&mut self, ui: &mut egui::Ui) {
+        let (tank_highlight, scroll_to_tank) = match self.selected_volume {
+            Some(VolumeRef::Tank(idx)) => (Some(idx), self.last_highlighted_tank != Some(idx)),
+            _ => (None, false),
+        };
+        let (comp_highlight, scroll_to_comp) = match self.selected_volume {
+            Some(VolumeRef::Compartment(idx)) => {
+                (Some(idx), self.last_highlighted_compartment != Some(idx))
+            }
+            _ => (None, false),
+        };
+        // Wide and normal are separate panels so each keeps its own width.
+        let panel = if self.dock_wide {
+            let window = ui.ctx().content_rect().width();
+            egui::Panel::right("analysis_dock_wide")
+                .resizable(false)
+                .exact_size((window * 0.55).round())
+        } else {
+            egui::Panel::right("analysis_dock")
+                .resizable(true)
+                .default_size(360.0)
+        };
+        let mut tab = self.dock_tab;
+        let mut toggle_wide = false;
+        let mut action = DockAction::None;
+        panel.show(ui, |ui| {
+            toggle_wide = panels::live_strip(
+                ui,
+                self.hydro.result.as_ref(),
+                self.hydro.kg,
+                self.hydro_dirty,
+                self.dock_wide,
+            );
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                // Tight enough that the five tabs fit one row at 360 px.
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().button_padding.x = 5.0;
+                for t in DesignDock::ALL {
+                    if ui.selectable_label(tab == t, t.label()).clicked() {
+                        tab = t;
+                    }
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| match tab {
+                DesignDock::Hydrostatics => {
+                    action = DockAction::Hydro(panels::hydrostatics(
+                        ui,
+                        panels::HydroPanel {
+                            options: &mut self.hydro.options,
+                            kg: &mut self.hydro.kg,
+                            free_trim: &mut self.hydro.free_trim,
+                            lcg: &mut self.hydro.lcg,
+                            result: self.hydro.result.as_ref(),
+                            stale: self.hydro_dirty,
+                            curves: self.hydro.curves.as_deref(),
+                        },
+                    ));
+                }
+                DesignDock::Loading => {
+                    action = DockAction::Loading(panels::loading(
+                        ui,
+                        panels::LoadingPanel {
+                            project: &mut self.project,
+                            selected: &mut self.loading_selected,
+                            result: self.loading_result.as_ref(),
+                            stale: self.loading_stale,
+                            busy: self.loading_worker.is_some(),
+                            highlight: tank_highlight,
+                            scroll_to: scroll_to_tank,
+                        },
+                    ));
+                }
+                DesignDock::Damage => {
+                    action = DockAction::Damage(panels::damage(
+                        ui,
+                        panels::DamagePanel {
+                            project: &mut self.project,
+                            selected: &mut self.damage_selected,
+                            result: self.damage_result.as_ref(),
+                            stale: self.damage_stale,
+                            busy: self.damage_worker.is_some(),
+                            highlight: comp_highlight,
+                            scroll_to: scroll_to_comp,
+                        },
+                    ));
+                }
+                DesignDock::Windage => {
+                    action = DockAction::Windage(panels::windage(
+                        ui,
+                        panels::WindagePanel {
+                            project: &mut self.project,
+                            weather: self
+                                .loading_result
+                                .as_ref()
+                                .and_then(|r| r.weather.as_ref()),
+                            stale: self.loading_stale,
+                            selected: &mut self.selected_windage,
+                        },
+                    ));
+                }
+                DesignDock::Performance => {
+                    let default_kg = if !self.loading_stale {
+                        self.loading_result
+                            .as_ref()
+                            .map_or(self.hydro.kg, |r| r.kg_fluid)
+                    } else {
+                        self.hydro.kg
+                    };
+                    let kg_source = if self.perf_state.kg.is_some() {
+                        "Manual"
+                    } else if !self.loading_stale && self.loading_result.is_some() {
+                        "Loading (KG_fluid)"
+                    } else {
+                        "Hydro dock"
+                    };
+                    action = DockAction::Performance(panels::performance(
+                        ui,
+                        panels::PerformancePanel {
+                            state: &mut self.perf_state,
+                            default_kg,
+                            kg_source,
+                            busy_resistance: self.perf_resistance_worker.is_some(),
+                            busy_raos: self.perf_raos_worker.is_some(),
+                        },
+                    ));
+                }
+            });
+        });
+        self.dock_tab = tab;
+        if toggle_wide {
+            self.dock_wide = !self.dock_wide;
+        }
+        self.last_highlighted_tank = tank_highlight;
+        self.last_highlighted_compartment = comp_highlight;
+
+        match action {
+            DockAction::None => {}
+            DockAction::Hydro(panels::HydroAction::Recompute) => {
+                self.hydro_dirty = true;
+                self.refresh_hydro(true);
+            }
+            DockAction::Hydro(panels::HydroAction::CrossCurves) => self.compute_curves(),
+            DockAction::Hydro(panels::HydroAction::None) => {}
+            DockAction::Loading(panels::LoadingAction::Changed) => {
+                self.dirty = true;
+                self.loading_stale = true;
+            }
+            DockAction::Loading(panels::LoadingAction::Compute) => self.start_loading_compute(),
+            DockAction::Loading(panels::LoadingAction::None) => {}
+            DockAction::Damage(panels::DamageAction::Changed) => {
+                self.dirty = true;
+                self.damage_stale = true;
+            }
+            DockAction::Damage(panels::DamageAction::Compute) => self.start_damage_compute(),
+            DockAction::Damage(panels::DamageAction::None) => {}
+            DockAction::Windage(panels::WindageAction::Changed) => {
+                self.dirty = true;
+                self.loading_stale = true;
+            }
+            DockAction::Windage(panels::WindageAction::None) => {}
+            DockAction::Performance(panels::PerformanceAction::Changed) => {
+                self.perf_state.resistance_stale = true;
+                self.perf_state.raos_stale = true;
+            }
+            DockAction::Performance(panels::PerformanceAction::Compute) => {
+                self.start_performance_compute()
+            }
+            DockAction::Performance(panels::PerformanceAction::None) => {}
+        }
+    }
+
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         // `App::new` themes the window's context; a headless test's context
         // gets the same type scale on its first frame.
@@ -855,10 +1108,25 @@ impl App {
 
         if self.show_layers {
             let mut changed = false;
+            let mut inspector = panels::InspectorOutput::default();
             egui::Panel::left("layer_panel")
                 .resizable(true)
                 .default_size(250.0)
                 .show(ui, |ui| {
+                    // The selection Inspector sits under the layer list; the
+                    // list scrolls in whatever height is left above it.
+                    egui::Panel::bottom("inspector_panel")
+                        .resizable(false)
+                        .show(ui, |ui| {
+                            inspector = panels::inspector(
+                                ui,
+                                panels::InspectorPanel {
+                                    surface: self.surface.as_ref(),
+                                    selected: self.selected,
+                                    pending: &mut self.inspector_pending,
+                                },
+                            );
+                        });
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         if let Some(surface) = self.surface.as_mut() {
                             changed = panels::layers(ui, surface);
@@ -872,207 +1140,20 @@ impl App {
                 self.dirty = true;
                 self.touch_geometry();
             }
+            self.inspector_rects = inspector.fields;
+            self.apply_inspector_action(inspector.action);
+        } else {
+            self.inspector_rects = [egui::Rect::NOTHING; 3];
         }
 
-        if self.show_hydro {
-            let action = egui::Panel::right("hydro_panel")
-                .resizable(true)
-                .default_size(340.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .show(ui, |ui| {
-                            panels::hydrostatics(
-                                ui,
-                                panels::HydroPanel {
-                                    options: &mut self.hydro.options,
-                                    kg: &mut self.hydro.kg,
-                                    free_trim: &mut self.hydro.free_trim,
-                                    lcg: &mut self.hydro.lcg,
-                                    result: self.hydro.result.as_ref(),
-                                    stale: self.hydro_dirty,
-                                    curves: self.hydro.curves.as_deref(),
-                                },
-                            )
-                        })
-                        .inner
-                })
-                .inner;
-            match action {
-                panels::HydroAction::Recompute => {
-                    self.hydro_dirty = true;
-                    self.refresh_hydro(true);
-                }
-                panels::HydroAction::CrossCurves => self.compute_curves(),
-                panels::HydroAction::None => {}
-            }
-            if self.hydro_dirty {
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(120));
-            }
+        if self.show_analysis {
+            self.analysis_dock(ui);
+        }
+        if self.hydro_dirty {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(120));
         }
         self.refresh_hydro(false);
-
-        if let Some(mut dock) = self.design_dock {
-            let (tank_highlight, scroll_to_tank) = match self.selected_volume {
-                Some(VolumeRef::Tank(idx)) => {
-                    let scroll = self.last_highlighted_tank != Some(idx);
-                    (Some(idx), scroll)
-                }
-                _ => (None, false),
-            };
-            let (comp_highlight, scroll_to_comp) = match self.selected_volume {
-                Some(VolumeRef::Compartment(idx)) => {
-                    let scroll = self.last_highlighted_compartment != Some(idx);
-                    (Some(idx), scroll)
-                }
-                _ => (None, false),
-            };
-
-            egui::Panel::right("design_dock")
-                .resizable(true)
-                .default_size(380.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(dock == DesignDock::Loading, "Loading")
-                            .clicked()
-                        {
-                            dock = DesignDock::Loading;
-                        }
-                        if ui
-                            .selectable_label(dock == DesignDock::Damage, "Damage")
-                            .clicked()
-                        {
-                            dock = DesignDock::Damage;
-                        }
-                        if ui
-                            .selectable_label(dock == DesignDock::Windage, "Windage")
-                            .clicked()
-                        {
-                            dock = DesignDock::Windage;
-                        }
-                        if ui
-                            .selectable_label(dock == DesignDock::Performance, "Performance")
-                            .clicked()
-                        {
-                            dock = DesignDock::Performance;
-                        }
-                    });
-                    ui.separator();
-
-                    egui::ScrollArea::vertical().show(ui, |ui| match dock {
-                        DesignDock::Loading => {
-                            let action = panels::loading(
-                                ui,
-                                panels::LoadingPanel {
-                                    project: &mut self.project,
-                                    selected: &mut self.loading_selected,
-                                    result: self.loading_result.as_ref(),
-                                    stale: self.loading_stale,
-                                    busy: self.loading_worker.is_some(),
-                                    highlight: tank_highlight,
-                                    scroll_to: scroll_to_tank,
-                                },
-                            );
-                            match action {
-                                panels::LoadingAction::Changed => {
-                                    self.dirty = true;
-                                    self.loading_stale = true;
-                                }
-                                panels::LoadingAction::Compute => {
-                                    self.start_loading_compute();
-                                }
-                                panels::LoadingAction::None => {}
-                            }
-                        }
-                        DesignDock::Damage => {
-                            let action = panels::damage(
-                                ui,
-                                panels::DamagePanel {
-                                    project: &mut self.project,
-                                    selected: &mut self.damage_selected,
-                                    result: self.damage_result.as_ref(),
-                                    stale: self.damage_stale,
-                                    busy: self.damage_worker.is_some(),
-                                    highlight: comp_highlight,
-                                    scroll_to: scroll_to_comp,
-                                },
-                            );
-                            match action {
-                                panels::DamageAction::Changed => {
-                                    self.dirty = true;
-                                    self.damage_stale = true;
-                                }
-                                panels::DamageAction::Compute => {
-                                    self.start_damage_compute();
-                                }
-                                panels::DamageAction::None => {}
-                            }
-                        }
-                        DesignDock::Windage => {
-                            let action = panels::windage(
-                                ui,
-                                panels::WindagePanel {
-                                    project: &mut self.project,
-                                    weather: self
-                                        .loading_result
-                                        .as_ref()
-                                        .and_then(|r| r.weather.as_ref()),
-                                    stale: self.loading_stale,
-                                    selected: &mut self.selected_windage,
-                                },
-                            );
-                            match action {
-                                panels::WindageAction::Changed => {
-                                    self.dirty = true;
-                                    self.loading_stale = true;
-                                }
-                                panels::WindageAction::None => {}
-                            }
-                        }
-                        DesignDock::Performance => {
-                            let default_kg = if !self.loading_stale {
-                                self.loading_result
-                                    .as_ref()
-                                    .map_or(self.hydro.kg, |r| r.kg_fluid)
-                            } else {
-                                self.hydro.kg
-                            };
-                            let kg_source = if self.perf_state.kg.is_some() {
-                                "Manual"
-                            } else if !self.loading_stale && self.loading_result.is_some() {
-                                "Loading (KG_fluid)"
-                            } else {
-                                "Hydro dock"
-                            };
-                            let action = panels::performance(
-                                ui,
-                                panels::PerformancePanel {
-                                    state: &mut self.perf_state,
-                                    default_kg,
-                                    kg_source,
-                                    busy_resistance: self.perf_resistance_worker.is_some(),
-                                    busy_raos: self.perf_raos_worker.is_some(),
-                                },
-                            );
-                            match action {
-                                panels::PerformanceAction::Changed => {
-                                    self.perf_state.resistance_stale = true;
-                                    self.perf_state.raos_stale = true;
-                                }
-                                panels::PerformanceAction::Compute => {
-                                    self.start_performance_compute();
-                                }
-                                panels::PerformanceAction::None => {}
-                            }
-                        }
-                    });
-                });
-
-            self.design_dock = Some(dock);
-            self.last_highlighted_tank = tank_highlight;
-            self.last_highlighted_compartment = comp_highlight;
-        }
 
         if let Some(rx) = &self.loading_worker {
             let mut done = false;
@@ -1433,24 +1514,20 @@ impl App {
                     });
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
-                    ui.checkbox(&mut self.show_hydro, "Hydrostatics panel");
-                    // The loading, damage and windage panels share one dock:
-                    // multiple right-hand panels leave no room for the viewports.
-                    let mut loading = self.show_loading();
-                    if ui.checkbox(&mut loading, "Loading panel").changed() {
-                        self.set_show_loading(loading);
-                    }
-                    let mut damage = self.show_damage();
-                    if ui.checkbox(&mut damage, "Damage panel").changed() {
-                        self.set_show_damage(damage);
-                    }
-                    let mut windage = self.show_windage();
-                    if ui.checkbox(&mut windage, "Windage panel").changed() {
-                        self.set_show_windage(windage);
-                    }
-                    let mut perf = self.show_performance();
-                    if ui.checkbox(&mut perf, "Performance panel").changed() {
-                        self.set_show_performance(perf);
+                    // One right-hand dock with tabs: several right-hand panels
+                    // leave no room for the viewports.
+                    ui.checkbox(&mut self.show_analysis, "Analysis dock");
+                    for tab in DesignDock::ALL {
+                        let name = match tab {
+                            DesignDock::Hydrostatics => "Hydrostatics",
+                            other => other.label(),
+                        };
+                        if ui
+                            .radio(self.show_analysis && self.dock_tab == tab, name)
+                            .clicked()
+                        {
+                            self.set_dock_tab(tab);
+                        }
                     }
                     ui.separator();
                     let mut level = self.level as u32;
@@ -2233,15 +2310,7 @@ impl App {
         let mut target = hit + drag.offset;
         let point = drag.point;
         if let Some(surface) = self.surface.as_mut() {
-            let on_symmetric_layer = surface.faces.iter().enumerate().any(|(fi, f)| {
-                f.contains(&point)
-                    && surface
-                        .face_layer
-                        .get(fi)
-                        .and_then(|&li| surface.layers.get(li))
-                        .is_some_and(|l| l.symmetric)
-            });
-            if on_symmetric_layer {
+            if point_on_symmetric_layer(surface, point) {
                 target.y = target.y.max(0.0);
             }
             surface.points[point].p = target;
@@ -2515,59 +2584,88 @@ impl App {
         self.show_report_options = show;
     }
 
-    pub fn set_show_loading(&mut self, show: bool) {
+    /// Show `tab` in the Analysis dock (and show the dock).
+    pub fn set_dock_tab(&mut self, tab: DesignDock) {
+        self.dock_tab = tab;
+        self.show_analysis = true;
+    }
+
+    /// The Analysis dock's tab (also when the dock is hidden).
+    pub fn dock_tab(&self) -> DesignDock {
+        self.dock_tab
+    }
+
+    /// Show or hide the whole Analysis dock; its tab is kept.
+    pub fn set_show_analysis(&mut self, show: bool) {
+        self.show_analysis = show;
+    }
+
+    pub fn show_analysis(&self) -> bool {
+        self.show_analysis
+    }
+
+    /// Widen the Analysis dock to about 55 % of the window (plots, tables).
+    pub fn set_dock_wide(&mut self, wide: bool) {
+        self.dock_wide = wide;
+    }
+
+    pub fn dock_wide(&self) -> bool {
+        self.dock_wide
+    }
+
+    /// Showing a tab selects it and shows the dock; hiding the tab that is
+    /// showing returns the dock to Hydrostatics. Hiding another tab is a no-op.
+    fn set_show_tab(&mut self, tab: DesignDock, show: bool) {
         if show {
-            self.design_dock = Some(DesignDock::Loading);
-        } else if self.design_dock == Some(DesignDock::Loading) {
-            self.design_dock = None;
+            self.set_dock_tab(tab);
+        } else if self.dock_tab == tab {
+            self.dock_tab = DesignDock::Hydrostatics;
         }
+    }
+
+    fn shows_tab(&self, tab: DesignDock) -> bool {
+        self.show_analysis && self.dock_tab == tab
+    }
+
+    /// Show the Loading tab (or leave it, back to Hydrostatics).
+    pub fn set_show_loading(&mut self, show: bool) {
+        self.set_show_tab(DesignDock::Loading, show);
     }
 
     pub fn show_loading(&self) -> bool {
-        self.design_dock == Some(DesignDock::Loading)
+        self.shows_tab(DesignDock::Loading)
     }
 
-    /// Show or hide the damage panel; showing it shows only it in the design dock.
+    /// Show the Damage tab (or leave it, back to Hydrostatics).
     pub fn set_show_damage(&mut self, show: bool) {
-        if show {
-            self.design_dock = Some(DesignDock::Damage);
-        } else if self.design_dock == Some(DesignDock::Damage) {
-            self.design_dock = None;
-        }
+        self.set_show_tab(DesignDock::Damage, show);
     }
 
     pub fn show_damage(&self) -> bool {
-        self.design_dock == Some(DesignDock::Damage)
+        self.shows_tab(DesignDock::Damage)
     }
 
-    /// Show or hide the windage panel; showing it shows only it in the design dock.
+    /// Show the Windage tab (or leave it, back to Hydrostatics).
     pub fn set_show_windage(&mut self, show: bool) {
-        if show {
-            self.design_dock = Some(DesignDock::Windage);
-        } else if self.design_dock == Some(DesignDock::Windage) {
-            self.design_dock = None;
-        }
+        self.set_show_tab(DesignDock::Windage, show);
     }
 
     pub fn show_windage(&self) -> bool {
-        self.design_dock == Some(DesignDock::Windage)
+        self.shows_tab(DesignDock::Windage)
     }
 
-    /// Show or hide the performance panel; showing it shows only it in the design dock.
+    /// Show the Performance tab (or leave it, back to Hydrostatics).
     pub fn set_show_performance(&mut self, show: bool) {
-        if show {
-            self.design_dock = Some(DesignDock::Performance);
-        } else if self.design_dock == Some(DesignDock::Performance) {
-            self.design_dock = None;
-        }
+        self.set_show_tab(DesignDock::Performance, show);
     }
 
     pub fn show_performance(&self) -> bool {
-        self.design_dock == Some(DesignDock::Performance)
+        self.shows_tab(DesignDock::Performance)
     }
 
+    /// The tab the Analysis dock shows, `None` while the dock is hidden.
     pub fn design_dock(&self) -> Option<DesignDock> {
-        self.design_dock
+        self.show_analysis.then_some(self.dock_tab)
     }
 
     pub fn selected_windage(&self) -> Option<usize> {
@@ -3223,6 +3321,63 @@ impl App {
             };
             self.history.snapshot(&snap);
         }
+    }
+
+    /// Move control point `index` to `target` as one undoable edit: the
+    /// shared path of the Inspector and the control channel's `point.move`.
+    /// A point on a symmetric layer is clamped to `y >= 0` (the mirror
+    /// supplies the other half). Returns the position the point took and
+    /// whether it sits on the centreline of a symmetric layer.
+    pub fn move_point(&mut self, index: usize, target: Vec3) -> Result<(Vec3, bool), String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        if index >= surface.points.len() {
+            return Err(format!(
+                "`index` must be from 0 to {}",
+                surface.points.len().saturating_sub(1)
+            ));
+        }
+        if !target.is_finite() {
+            return Err("the new position must be finite".into());
+        }
+        let symmetric = point_on_symmetric_layer(surface, index);
+        let target = if symmetric && target.y < 0.0 {
+            Vec3::new(target.x, 0.0, target.z)
+        } else {
+            target
+        };
+        self.snapshot_undo();
+        if let Some(surface) = self.surface.as_mut() {
+            surface.points[index].p = target;
+        }
+        self.select_point(Some(index));
+        self.mark_geometry_changed();
+        self.status_note(format!("control point {index} moved"));
+        Ok((target, symmetric && target.y == 0.0))
+    }
+
+    /// Apply what the Inspector asked for. A value equal to the point's
+    /// position changes nothing and records no undo step.
+    pub fn apply_inspector_action(&mut self, action: panels::InspectorAction) {
+        let panels::InspectorAction::Move { index, to } = action else {
+            return;
+        };
+        let unchanged = self
+            .surface
+            .as_ref()
+            .and_then(|s| s.points.get(index))
+            .is_some_and(|p| p.p == to);
+        if unchanged {
+            return;
+        }
+        if let Err(e) = self.move_point(index, to) {
+            self.status = e;
+        }
+    }
+
+    /// Where the Inspector's x (0), y (1) or z (2) field was drawn last
+    /// frame; `Rect::NOTHING` with no point selected (test hook).
+    pub fn inspector_field_rect(&self, axis: usize) -> egui::Rect {
+        self.inspector_rects[axis]
     }
 
     /// Refine the hull now if anything it depends on changed (the control

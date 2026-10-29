@@ -572,10 +572,19 @@ Plan        | Body plan
 * Primary drag on empty space pans, secondary drag in the perspective view
   orbits, the wheel zooms.
 * The left dock manages layers (colour, name, visible, symmetric, use in
-  hydrostatics). The right dock is the live hydrostatics report: draft, trim,
-  heel and KG, the full coefficient set (with TPC and MTC), the sectional area
-  curve of the current draft, and GZ cross curves drawn in place. It recomputes
-  120 ms after the last geometry change, never mid-drag.
+  hydrostatics) and, below them, the selection **Inspector**: the selected
+  control point's layer, editable x/y/z in metres (one undo step per typed
+  value or drag, clamped to `y >= 0` on a symmetric layer, as control
+  `point.move`), its vertex kind and crease edges.
+* The right **Analysis dock** is one panel: a pinned live strip (Δ, T, trim,
+  GM, LCB), then the tabs Hydro / Loading / Damage / Windage / Performance
+  (View menu radio items; control `ui.set {"dock_tab": "loading"}`, or the
+  older `{"loading_panel": true}` keys, which select the tab; `"analysis_dock"`
+  shows or hides it). *⤢ wide* widens it to about 55 % of the window. The Hydro
+  tab is the live hydrostatics report: draft, trim, heel and KG, the full
+  coefficient set (with TPC and MTC), the sectional area curve of the current
+  draft, and GZ cross curves drawn in place. It recomputes 120 ms after the
+  last geometry change, never mid-drag.
 * File menu: new demo hull, open/save `.fef` (with an in-app path dialog, so
   no desktop portal is needed), export OBJ / STL / PLY / HTML viewer /
   linesplan SVG. Unsaved work is flagged in the status bar and confirmed

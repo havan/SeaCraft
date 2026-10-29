@@ -4,6 +4,7 @@ use eframe::egui;
 use seacraft_core::damage::{Compartment, CompartmentSpec, DamageCase, DamageResult};
 use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
 use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
+use seacraft_core::math::Vec3;
 use seacraft_core::project::{Project, ReportSeakeeping, ReportSettings};
 use seacraft_core::seastate::WaveSpectrum;
 use seacraft_core::stability::CrossCurve;
@@ -77,6 +78,267 @@ pub fn layers(ui: &mut egui::Ui, surface: &mut Surface) -> bool {
     }
     changed
 }
+
+/// What the user asked the selection Inspector to do.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum InspectorAction {
+    #[default]
+    None,
+    /// Move control point `index` to `to` (one undo step; the app clamps a
+    /// symmetric layer's point to `y >= 0`).
+    Move { index: usize, to: Vec3 },
+}
+
+/// Everything the Inspector draws.
+pub struct InspectorPanel<'a> {
+    pub surface: Option<&'a Surface>,
+    pub selected: Option<usize>,
+    /// A value being dragged: committed on release, so a drag is one edit.
+    pub pending: &'a mut Option<(usize, [f64; 3])>,
+}
+
+/// The Inspector's answer: the action and where its x/y/z fields were
+/// drawn (`Rect::NOTHING` when no point is selected).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InspectorOutput {
+    pub action: InspectorAction,
+    pub fields: [egui::Rect; 3],
+}
+
+impl Default for InspectorOutput {
+    fn default() -> Self {
+        Self {
+            action: InspectorAction::None,
+            fields: [egui::Rect::NOTHING; 3],
+        }
+    }
+}
+
+/// The names of the layers whose faces use control point `point`.
+fn point_layers(surface: &Surface, point: usize) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
+    for (fi, f) in surface.faces.iter().enumerate() {
+        if !f.contains(&point) {
+            continue;
+        }
+        if let Some(layer) = surface
+            .face_layer
+            .get(fi)
+            .and_then(|&li| surface.layers.get(li))
+        {
+            if !names.contains(&layer.name.as_str()) {
+                names.push(&layer.name);
+            }
+        }
+    }
+    names
+}
+
+/// The selection Inspector: the selected control point's layer, editable
+/// x/y/z in metres and its vertex kind and crease edges (read-only).
+///
+/// A typed value is committed when the field loses focus (Enter or a click
+/// elsewhere), a dragged one when the drag is released, so either is one
+/// undo step. Escape while typing abandons the value.
+pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutput {
+    let mut out = InspectorOutput::default();
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("INSPECTOR")
+            .font(theme::caption_font())
+            .color(theme::TEXT_SECONDARY),
+    );
+    let point = match (panel.surface, panel.selected) {
+        (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
+        _ => None,
+    };
+    let Some((surface, index)) = point else {
+        *panel.pending = None;
+        ui.label(
+            egui::RichText::new("Click a point to edit it — Esc clears").color(theme::TEXT_MUTED),
+        );
+        ui.add_space(4.0);
+        return out;
+    };
+    if panel.pending.is_some_and(|(i, _)| i != index) {
+        *panel.pending = None;
+    }
+    let cp = &surface.points[index];
+    let layers = point_layers(surface, index);
+    let layer = if layers.is_empty() {
+        "no faces".to_owned()
+    } else {
+        layers.join(", ")
+    };
+    ui.label(
+        egui::RichText::new(format!("Point {index}"))
+            .strong()
+            .color(theme::TEXT_PRIMARY),
+    );
+    ui.label(egui::RichText::new(layer).color(theme::TEXT_SECONDARY));
+    ui.add_space(2.0);
+
+    let mut shown = panel.pending.map_or([cp.p.x, cp.p.y, cp.p.z], |(_, v)| v);
+    let mut commit: Option<[f64; 3]> = None;
+    egui::Grid::new("inspector_xyz")
+        .num_columns(3)
+        .spacing(egui::vec2(8.0, 4.0))
+        .show(ui, |ui| {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY));
+                let mut v = shown[axis];
+                let r = ui.add_sized(
+                    [96.0, 20.0],
+                    egui::DragValue::new(&mut v)
+                        .speed(0.005)
+                        .fixed_decimals(3)
+                        .update_while_editing(false),
+                );
+                out.fields[axis] = r.rect;
+                if r.changed() {
+                    shown[axis] = v;
+                    if r.dragged() {
+                        *panel.pending = Some((index, shown));
+                    } else {
+                        commit = Some(shown);
+                    }
+                }
+                if r.drag_stopped() {
+                    commit = Some(panel.pending.map_or(shown, |(_, p)| p));
+                }
+                ui.label(egui::RichText::new("m").color(theme::TEXT_MUTED));
+                ui.end_row();
+            }
+        });
+    if let Some(v) = commit {
+        *panel.pending = None;
+        out.action = InspectorAction::Move {
+            index,
+            to: Vec3::new(v[0], v[1], v[2]),
+        };
+    }
+
+    let creases = surface
+        .edges
+        .iter()
+        .filter(|e| e.crease && (e.a == index || e.b == index))
+        .count();
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "{:?} vertex · {creases} crease edge{}",
+            cp.kind,
+            if creases == 1 { "" } else { "s" }
+        ))
+        .color(theme::TEXT_MUTED),
+    );
+    ui.add_space(4.0);
+    out
+}
+
+/// The pinned live strip's two rows: displacement, draft and trim; GM
+/// and LCB. A dash stands for a quantity not measured yet.
+pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: f64) -> [Vec<Readout>; 2] {
+    let r = Readout::new;
+    match h {
+        Some(h) => [
+            vec![
+                r("Δ", format!("{:.2}", h.displacement_t), "t"),
+                r("T", format!("{:.3}", h.draft), "m"),
+                r("trim", format!("{:+.3}", h.trim_m), "m"),
+            ],
+            vec![
+                r("GM", format!("{:+.3}", h.gm(kg)), "m"),
+                r("LCB", format!("{:.3}", h.lcb.x), "m"),
+            ],
+        ],
+        None => [
+            vec![
+                r("Δ", "—".to_owned(), "t"),
+                r("T", "—".to_owned(), "m"),
+                r("trim", "—".to_owned(), "m"),
+            ],
+            vec![r("GM", "—".to_owned(), "m"), r("LCB", "—".to_owned(), "m")],
+        ],
+    }
+}
+
+/// The Analysis dock's pinned strip: the live floating condition in two
+/// compact rows, greyed while the hydrostatics are being recomputed, and
+/// the *⤢ wide* toggle. Returns true when the toggle was clicked.
+pub fn live_strip(
+    ui: &mut egui::Ui,
+    h: Option<&Hydrostatics>,
+    kg: f64,
+    stale: bool,
+    wide: bool,
+) -> bool {
+    let mut toggle = false;
+    let rows = live_strip_rows(h, kg);
+    let value_colour = if stale {
+        theme::STALE
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    // Fixed cells rather than a `Grid`: a grid's first-frame sizing pass
+    // would widen the resizable dock, and fixed cells line the two rows up.
+    let cell = |ui: &mut egui::Ui, width: f32, right: bool, text: egui::RichText| {
+        let layout = if right {
+            egui::Layout::right_to_left(egui::Align::Center)
+        } else {
+            egui::Layout::left_to_right(egui::Align::Center)
+        };
+        ui.allocate_ui_with_layout(egui::vec2(width, 18.0), layout, |ui| {
+            ui.set_min_width(width);
+            ui.label(text);
+        });
+    };
+    ui.add_space(2.0);
+    for (r, row) in rows.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for item in row {
+                cell(
+                    ui,
+                    STRIP_NAME_WIDTH,
+                    false,
+                    egui::RichText::new(item.name)
+                        .font(theme::caption_font())
+                        .color(theme::TEXT_SECONDARY),
+                );
+                cell(
+                    ui,
+                    STRIP_VALUE_WIDTH,
+                    true,
+                    egui::RichText::new(&item.value)
+                        .monospace()
+                        .color(value_colour),
+                );
+                cell(
+                    ui,
+                    STRIP_UNIT_WIDTH,
+                    false,
+                    egui::RichText::new(item.unit)
+                        .font(theme::caption_font())
+                        .color(theme::TEXT_MUTED),
+                );
+            }
+            if r == 1 {
+                let label = if wide { "⤡ narrow" } else { "⤢ wide" };
+                toggle = ui
+                    .selectable_label(wide, label)
+                    .on_hover_text("Widen the dock for plots and tables")
+                    .clicked();
+            }
+        });
+    }
+    toggle
+}
+
+/// Widths of the pinned strip's cells: name, value (right-aligned) and unit.
+const STRIP_NAME_WIDTH: f32 = 28.0;
+const STRIP_VALUE_WIDTH: f32 = 54.0;
+const STRIP_UNIT_WIDTH: f32 = 16.0;
 
 /// What the user asked the hydrostatics dock to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

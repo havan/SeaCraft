@@ -635,6 +635,9 @@ fn handle_inner(
             let mut damage_panel: Option<bool> = None;
             let mut windage_panel: Option<bool> = None;
             let mut performance_panel: Option<bool> = None;
+            let mut analysis_dock: Option<bool> = None;
+            let mut dock_tab: Option<crate::app::DesignDock> = None;
+            let mut dock_wide: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -727,6 +730,27 @@ fn handle_inner(
                                 .ok_or("`performance_panel` must be true or false")?,
                         )
                     }
+                    "analysis_dock" => {
+                        analysis_dock = Some(
+                            value
+                                .as_bool()
+                                .ok_or("`analysis_dock` must be true or false")?,
+                        )
+                    }
+                    "dock_tab" => {
+                        let name = value.as_str().ok_or("`dock_tab` must be a string")?;
+                        dock_tab = Some(crate::app::DesignDock::from_key(name).ok_or_else(
+                            || {
+                                format!(
+                                    "`dock_tab` must be hydro, loading, damage, windage or performance, not `{name}`"
+                                )
+                            },
+                        )?);
+                    }
+                    "dock_wide" => {
+                        dock_wide =
+                            Some(value.as_bool().ok_or("`dock_wide` must be true or false")?)
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
@@ -742,6 +766,15 @@ fn handle_inner(
             }
             if let Some(show) = performance_panel {
                 app.set_show_performance(show);
+            }
+            if let Some(tab) = dock_tab {
+                app.set_dock_tab(tab);
+            }
+            if let Some(show) = analysis_dock {
+                app.set_show_analysis(show);
+            }
+            if let Some(wide) = dock_wide {
+                app.set_dock_wide(wide);
             }
             if let Some(mode) = analysis {
                 app.set_analysis(mode);
@@ -1054,31 +1087,13 @@ fn handle_inner(
                 }
                 _ => return Err("give `xyz` [x, y, z] or `delta` [dx, dy, dz]".into()),
             };
-            if !target.is_finite() {
-                return Err("the new position must be finite".into());
-            }
-            // A symmetric layer models only y >= 0: the mirror supplies the
-            // other half, so a point dragged across the centreline is clamped.
-            let symmetric = app
-                .surface()
-                .map(|s| on_symmetric_layer(s, index))
-                .unwrap_or(false);
-            let target = if symmetric && target.y < 0.0 {
-                Vec3::new(target.x, 0.0, target.z)
-            } else {
-                target
-            };
-            app.snapshot_undo();
-            if let Some(surface) = app.surface_mut() {
-                surface.points[index].p = target;
-            }
-            app.select_point(Some(index));
-            app.mark_geometry_changed();
-            app.status_note(format!("control point {index} moved"));
+            // The Inspector's path: one undo step, the symmetric-layer clamp
+            // (y >= 0), the geometry marked changed.
+            let (target, clamped) = app.move_point(index, target)?;
             Ok(json!({
                 "index": index,
                 "point": [target.x, target.y, target.z],
-                "clamped": symmetric && target.y == 0.0,
+                "clamped": clamped,
                 "undo_len": app.undo_len(),
             }))
         }
@@ -2288,6 +2303,9 @@ fn inspect(app: &App) -> Value {
             None => Value::Null,
         },
         "undo_len": app.undo_len(),
+        "analysis_dock": app.show_analysis(),
+        "dock_tab": app.dock_tab().key(),
+        "dock_wide": app.dock_wide(),
         "points": app.control_point_count(),
         "faces": app.face_count(),
         "layers": app.layer_count(),
@@ -2443,18 +2461,6 @@ fn explicit_cross_curves(app: &mut App, p: &Value) -> Result<Value, String> {
         "curves": serde_json::to_value(&curves).map_err(|e| e.to_string())?,
         "imo_criteria": imo,
     }))
-}
-
-/// A control point's layer: symmetric layers model only `y >= 0`.
-fn on_symmetric_layer(surface: &seacraft_core::Surface, point: usize) -> bool {
-    surface.faces.iter().enumerate().any(|(fi, f)| {
-        f.contains(&point)
-            && surface
-                .face_layer
-                .get(fi)
-                .and_then(|&li| surface.layers.get(li))
-                .is_some_and(|l| l.symmetric)
-    })
 }
 
 fn export_kind(format: &str) -> Option<crate::app::ExportKind> {
@@ -3969,6 +3975,84 @@ mod tests {
         let restore = call(&mut app, &ctx, "history.restore", json!({"mark": mark}));
         assert_eq!(restore["ok"], true);
         assert!((app.surface().unwrap().points[0].p.z - original_z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ui_set_panel_keys_choose_the_analysis_dock_tab() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["analysis_dock"], true, "{v}");
+        assert_eq!(v["result"]["dock_tab"], "hydro");
+        assert_eq!(v["result"]["dock_wide"], false);
+
+        // The old per-panel keys select the tab of the one dock.
+        let r = call(&mut app, &ctx, "ui.set", json!({ "loading_panel": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["dock_tab"], "loading");
+        assert_eq!(app.dock_tab(), crate::app::DesignDock::Loading);
+        assert!(app.show_loading());
+        let r = call(&mut app, &ctx, "ui.set", json!({ "damage_panel": true }));
+        assert_eq!(r["result"]["dock_tab"], "damage");
+        assert!(app.show_damage() && !app.show_loading());
+        // Hiding the active tab returns the dock to Hydrostatics.
+        let r = call(&mut app, &ctx, "ui.set", json!({ "damage_panel": false }));
+        assert_eq!(r["result"]["dock_tab"], "hydro");
+        assert_eq!(r["result"]["analysis_dock"], true);
+
+        // The dock itself, its tab by name and the wide toggle.
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.set",
+            json!({ "dock_tab": "windage", "dock_wide": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.show_windage() && app.dock_wide());
+        let r = call(&mut app, &ctx, "ui.set", json!({ "analysis_dock": false }));
+        assert_eq!(r["result"]["analysis_dock"], false);
+        assert!(!app.show_windage(), "a hidden dock shows no tab");
+        assert_eq!(app.design_dock(), None);
+        // Showing a tab shows the dock again.
+        call(
+            &mut app,
+            &ctx,
+            "ui.set",
+            json!({ "performance_panel": true }),
+        );
+        assert_eq!(app.design_dock(), Some(crate::app::DesignDock::Performance));
+        for bad in [
+            json!({ "dock_tab": "bonjean" }),
+            json!({ "dock_tab": 2 }),
+            json!({ "analysis_dock": "yes" }),
+            json!({ "dock_wide": 1 }),
+        ] {
+            let r = call(&mut app, &ctx, "ui.set", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+    }
+
+    #[test]
+    fn point_move_and_the_inspector_share_one_path() {
+        let (mut app, ctx) = demo();
+        let before = app.surface().unwrap().points[5].p;
+        let target = before + Vec3::new(0.0, 0.0, 0.25);
+        // The Inspector's action lands exactly where `point.move` does.
+        app.apply_inspector_action(crate::panels::InspectorAction::Move {
+            index: 5,
+            to: target,
+        });
+        assert_eq!(app.surface().unwrap().points[5].p, target);
+        assert_eq!(app.undo_len(), 1);
+        let r = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({ "index": 5, "xyz": [before.x, before.y, before.z] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["undo_len"], 2);
+        assert_eq!(app.surface().unwrap().points[5].p, before);
+        assert_eq!(app.selected(), Some(5));
     }
 
     #[test]
