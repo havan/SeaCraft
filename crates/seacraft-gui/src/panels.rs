@@ -144,12 +144,8 @@ fn point_layers(surface: &Surface, point: usize) -> Vec<&str> {
 /// undo step. Escape while typing abandons the value.
 pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutput {
     let mut out = InspectorOutput::default();
+    ui.heading("Inspector");
     ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new("INSPECTOR")
-            .font(theme::caption_font())
-            .color(theme::TEXT_SECONDARY),
-    );
     let point = match (panel.surface, panel.selected) {
         (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
         _ => None,
@@ -530,31 +526,24 @@ pub fn readouts(ui: &mut egui::Ui, id: &str, rows: &[Readout]) {
     egui::Grid::new(id)
         .num_columns(3)
         .spacing(egui::vec2(8.0, 4.0))
-        .show(ui, |ui| {
-            for r in rows {
-                ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
-                ui.label(
-                    egui::RichText::new(format!("{:>width$}", r.value))
-                        .monospace()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                ui.horizontal(|ui| {
-                    ui.set_min_width(theme::UNIT_WIDTH);
-                    ui.label(egui::RichText::new(r.unit).color(theme::TEXT_MUTED));
-                });
-                ui.end_row();
-            }
-        });
+        .show(ui, |ui| readout_cells(ui, rows, width, true));
 }
 
-/// The measurement rows the dock draws, in two groups (the form and the
-/// stability quantities).
+/// A titled group of readouts ("Volume & form", "Centres", …).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadoutGroup {
+    pub title: &'static str,
+    pub rows: Vec<Readout>,
+}
+
+/// The measurement readouts the dock draws, in four groups: volume and
+/// form, centres, stability, dimensions and areas.
 ///
 /// Kept separate from the drawing so the numbers (and their formatting) can be
 /// tested without a frame: `TPC` and `MTC` are table quantities computed here
 /// from the measured waterplane, with the kilogram-to-tonne factor the core's
 /// kg/m³ density needs.
-pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<Readout>; 2] {
+pub fn hydrostatic_groups(h: &Hydrostatics, kg: f64) -> [ReadoutGroup; 4] {
     let rho_t = h.water_density / 1000.0;
     let tpc = h.waterplane_area_m2 * rho_t / 100.0;
     let mtc = if h.lwl > 1e-9 {
@@ -564,29 +553,127 @@ pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<Readout>; 2] {
     };
     let r = Readout::new;
     [
-        vec![
-            r("volume", format!("{:.3}", h.volume_m3), "m³"),
-            r("displacement", format!("{:.2}", h.displacement_t), "t"),
-            r("Cb", format!("{:.3}", h.block_coefficient), ""),
-            r("Cp", format!("{:.3}", h.prismatic_coefficient), ""),
-            r("Cm", format!("{:.3}", h.midship_coefficient), ""),
-            r("Cwp", format!("{:.3}", h.waterplane_coefficient), ""),
-            r("LCB", format!("{:.3}", h.lcb.x), "m"),
-            r("LCF", format!("{:.3}", h.lcf.x), "m"),
-            r("TPC", format!("{:.3}", tpc), "t/cm"),
-        ],
-        vec![
-            r("KB", format!("{:.3}", h.kb), "m"),
-            r("BM(t)", format!("{:.3}", h.bm_transverse), "m"),
-            r("KM(t)", format!("{:.3}", h.km_transverse), "m"),
-            r("GM", format!("{:+.3}", h.gm(kg)), "m"),
-            r("wetted", format!("{:.2}", h.wetted_surface_m2), "m²"),
-            r("waterplane", format!("{:.2}", h.waterplane_area_m2), "m²"),
-            r("LWL / BWL", format!("{:.2} / {:.2}", h.lwl, h.bwl), "m"),
-            r("midship", format!("{:.3}", h.mainframe_area_m2), "m²"),
-            r("MTC", format!("{:.3}", mtc), "t·m/cm"),
-        ],
+        ReadoutGroup {
+            title: "Volume & form",
+            rows: vec![
+                r("volume", format!("{:.3}", h.volume_m3), "m³"),
+                r("displacement", format!("{:.2}", h.displacement_t), "t"),
+                r("Cb", format!("{:.3}", h.block_coefficient), ""),
+                r("Cp", format!("{:.3}", h.prismatic_coefficient), ""),
+                r("Cm", format!("{:.3}", h.midship_coefficient), ""),
+                r("Cwp", format!("{:.3}", h.waterplane_coefficient), ""),
+            ],
+        },
+        ReadoutGroup {
+            title: "Centres",
+            rows: vec![
+                r("LCB", format!("{:.3}", h.lcb.x), "m"),
+                r("LCF", format!("{:.3}", h.lcf.x), "m"),
+                r("KB", format!("{:.3}", h.kb), "m"),
+            ],
+        },
+        ReadoutGroup {
+            title: "Stability",
+            rows: vec![
+                r("BM(t)", format!("{:.3}", h.bm_transverse), "m"),
+                r("KM(t)", format!("{:.3}", h.km_transverse), "m"),
+                r("GM", format!("{:+.3}", h.gm(kg)), "m"),
+                r("TPC", format!("{:.3}", tpc), "t/cm"),
+                r("MTC", format!("{:.3}", mtc), "t·m/cm"),
+            ],
+        },
+        ReadoutGroup {
+            title: "Dimensions & areas",
+            rows: vec![
+                r("LWL", format!("{:.2}", h.lwl), "m"),
+                r("BWL", format!("{:.2}", h.bwl), "m"),
+                r("wetted", format!("{:.2}", h.wetted_surface_m2), "m²"),
+                r("waterplane", format!("{:.2}", h.waterplane_area_m2), "m²"),
+                r("midship", format!("{:.3}", h.mainframe_area_m2), "m²"),
+            ],
+        },
     ]
+}
+
+/// The readouts as the two columns of the wide layout: volume, form and
+/// centres on the left, stability, dimensions and areas on the right.
+pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<Readout>; 2] {
+    let [form, centres, stability, areas] = hydrostatic_groups(h, kg);
+    [
+        [form.rows, centres.rows].concat(),
+        [stability.rows, areas.rows].concat(),
+    ]
+}
+
+/// Draw readout groups as one grid, each group under a small sentence-case
+/// subhead, so every value of the column shares one right edge.
+pub fn grouped_readouts(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup]) {
+    grouped_grid(ui, id, groups, false);
+}
+
+/// [`grouped_readouts`], tight enough that two columns fit a 340 px dock:
+/// narrower gaps and a unit column only as wide as its units.
+fn grouped_grid(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], compact: bool) {
+    let width = groups
+        .iter()
+        .flat_map(|g| &g.rows)
+        .map(|r| r.value.chars().count())
+        .max()
+        .unwrap_or(0);
+    let gap = if compact { 6.0 } else { 8.0 };
+    egui::Grid::new(id)
+        .num_columns(3)
+        .min_col_width(0.0)
+        .spacing(egui::vec2(gap, 4.0))
+        .show(ui, |ui| {
+            for g in groups {
+                // Painted over a zero-width cell, so a long subhead never
+                // widens the name column (the rest of its row is empty).
+                let galley = ui.painter().layout_no_wrap(
+                    g.title.to_owned(),
+                    egui::FontId::proportional(theme::SMALL_SIZE),
+                    theme::TEXT_MUTED,
+                );
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(0.0, galley.size().y), egui::Sense::hover());
+                ui.painter()
+                    .galley(rect.left_top(), galley, theme::TEXT_MUTED);
+                ui.end_row();
+                readout_cells(ui, &g.rows, width, !compact);
+            }
+        });
+}
+
+/// The three cells of each readout row: name, right-aligned value, unit
+/// (in a column at least [`theme::UNIT_WIDTH`] wide when `unit_column`).
+fn readout_cells(ui: &mut egui::Ui, rows: &[Readout], width: usize, unit_column: bool) {
+    for r in rows {
+        ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
+        ui.label(
+            egui::RichText::new(format!("{:>width$}", r.value))
+                .monospace()
+                .color(theme::TEXT_PRIMARY),
+        );
+        if unit_column {
+            ui.horizontal(|ui| {
+                ui.set_min_width(theme::UNIT_WIDTH);
+                ui.label(egui::RichText::new(r.unit).color(theme::TEXT_MUTED));
+            });
+        } else {
+            ui.label(egui::RichText::new(r.unit).color(theme::TEXT_MUTED));
+        }
+        ui.end_row();
+    }
+}
+
+/// The dock's inner width from which the hydrostatics readout splits into
+/// two columns: what a 340 px dock leaves inside its margins and scroll bar.
+pub const HYDRO_TWO_COLUMN_WIDTH: f32 = 316.0;
+
+/// Whether the hydrostatics readout is laid out in two columns at this
+/// available width.
+pub fn hydro_two_columns(available_width: f32) -> bool {
+    available_width >= HYDRO_TWO_COLUMN_WIDTH
 }
 
 /// The damaged-equilibrium readouts of the Damage tab. Trim, heel and GM
@@ -648,70 +735,47 @@ pub fn weather_rows(w: &WeatherResult) -> Vec<Readout> {
     ]
 }
 
-/// The sectional area curve as screen coordinates, inside `rect`.
-///
-/// Pure so the plot can be checked without a frame: the polyline must run
-/// left to right, stay inside the rectangle, and put zero area on the baseline
-/// and the maximum area at the top.
-pub fn sac_polyline(sac: &[SectionArea], rect: egui::Rect) -> Vec<egui::Pos2> {
-    let x0 = sac.first().map(|s| s.x).unwrap_or(0.0);
-    let x1 = sac.last().map(|s| s.x).unwrap_or(1.0);
-    let a_max = sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
-    let (x0, x1, a_max) = if (x1 - x0).abs() < 1e-9 || a_max <= 0.0 {
-        return Vec::new();
-    } else {
-        (x0, x1, a_max)
-    };
-    sac.iter()
-        .filter(|s| s.area.is_finite())
-        .map(|s| {
-            let tx = ((s.x - x0) / (x1 - x0)) as f32;
-            let ty = (s.area / a_max).clamp(0.0, 1.0) as f32;
-            egui::pos2(
-                rect.left() + tx.clamp(0.0, 1.0) * rect.width(),
-                rect.bottom() - ty * rect.height(),
-            )
-        })
-        .collect()
+/// The sectional area curve as a plot series: x along the hull, section
+/// area up, one point per station with a finite area.
+pub fn sac_series(sac: &[SectionArea]) -> Vec<(String, Vec<(f64, f64)>)> {
+    vec![(
+        String::new(),
+        sac.iter()
+            .filter(|s| s.x.is_finite() && s.area.is_finite())
+            .map(|s| (s.x, s.area))
+            .collect(),
+    )]
 }
 
-/// Where the SAC plot draws inside its allocated rectangle: the caption band
-/// on top and the curve area below it, never overlapping.
-pub fn sac_plot_rects(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
-    let (caption, body) = split_caption(rect);
-    (caption, body.shrink2(egui::vec2(2.0, 4.0)))
-}
+/// Height of the SAC plot, caption band and tick labels included.
+const SAC_PLOT_HEIGHT: f32 = 124.0;
 
-/// The sectional area curve, drawn small under the readout.
+/// The sectional area curve under the readout, on the same ticked axes as
+/// every other plot.
 fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics) {
-    let height = 96.0 + PLOT_CAPTION_BAND;
-    let (response, painter) = ui.allocate_painter(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::hover(),
-    );
-    let (caption, rect) = sac_plot_rects(response.rect);
-    painter.rect_filled(rect, 2.0, theme::PLOT_BG);
-    let points = sac_polyline(&h.sac, rect);
-    if points.len() < 2 {
-        return;
-    }
-    painter.line_segment(
-        [rect.left_bottom(), rect.right_bottom()],
-        egui::Stroke::new(1.0, theme::PLOT_AXIS),
-    );
-    painter.add(egui::Shape::line(
-        points,
-        egui::Stroke::new(1.4, theme::PLOT_SERIES[0]),
-    ));
     let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
-    plot_caption(
-        &painter,
-        caption,
-        &format!(
-            "SAC · A max {a_max:.2} m² · x {:.2}..{:.2} m",
-            h.model_min.x, h.model_max.x
-        ),
+    let caption = format!("SAC · A (m²) vs x (m) · A max {a_max:.2} m²");
+    let rect = draw_plot(
+        ui,
+        &caption,
+        "",
+        &sac_series(&h.sac),
+        false,
+        SAC_PLOT_HEIGHT,
     );
+    remember_plot_rect(ui.ctx(), "sac", rect);
+}
+
+/// Remember where plot `key` was drawn this frame (a test hook: see
+/// [`last_plot_rect`]).
+fn remember_plot_rect(ctx: &egui::Context, key: &'static str, rect: egui::Rect) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique(("plot_rect", key)), rect));
+}
+
+/// Where plot `key` (`"sac"`, `"cross_curves"`) was last drawn, legend
+/// included.
+pub fn last_plot_rect(ctx: &egui::Context, key: &'static str) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::unique(("plot_rect", key))))
 }
 
 /// Draft, trim, heel and KG controls plus the measurement readout.
@@ -720,16 +784,20 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     ui.heading("Hydrostatics");
     ui.add_space(4.0);
 
+    // From a 340 px dock the readout runs in two columns and the floating
+    // condition in two pairs per row, so the plots stay above the fold.
+    let two_columns = hydro_two_columns(ui.available_width());
+    let field_width = if two_columns { 84.0 } else { 96.0 };
     let mut changed = false;
     egui::Grid::new("floating_condition")
-        .num_columns(2)
-        .min_col_width(56.0)
+        .num_columns(if two_columns { 4 } else { 2 })
+        .min_col_width(if two_columns { 36.0 } else { 56.0 })
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
             ui.label("Draft");
             changed |= ui
                 .add_sized(
-                    [96.0, 20.0],
+                    [field_width, 20.0],
                     egui::DragValue::new(&mut panel.options.draft)
                         .speed(0.01)
                         .range(0.0..=20.0)
@@ -737,11 +805,13 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                         .suffix(" m"),
                 )
                 .changed();
-            ui.end_row();
+            if !two_columns {
+                ui.end_row();
+            }
             ui.label("Trim");
             changed |= ui
                 .add_sized(
-                    [96.0, 20.0],
+                    [field_width, 20.0],
                     egui::DragValue::new(&mut panel.options.trim)
                         .speed(0.01)
                         .range(-5.0..=5.0)
@@ -753,7 +823,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             ui.label("Heel");
             changed |= ui
                 .add_sized(
-                    [96.0, 20.0],
+                    [field_width, 20.0],
                     egui::DragValue::new(&mut panel.options.heel_deg)
                         .speed(0.2)
                         .range(-60.0..=60.0)
@@ -761,11 +831,13 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                         .suffix(" °"),
                 )
                 .changed();
-            ui.end_row();
+            if !two_columns {
+                ui.end_row();
+            }
             ui.label("KG");
             changed |= ui
                 .add_sized(
-                    [96.0, 20.0],
+                    [field_width, 20.0],
                     egui::DragValue::new(panel.kg)
                         .speed(0.02)
                         .range(0.0..=10.0)
@@ -830,9 +902,18 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
 
     match panel.result {
         Some(h) if h.volume_m3 > 0.0 => {
-            // One grid for both groups, so every value shares one column.
-            let rows = hydrostatic_rows(h, *panel.kg).concat();
-            readouts(ui, "hydro_readouts", &rows);
+            let [form, centres, stability, areas] = hydrostatic_groups(h, *panel.kg);
+            if two_columns {
+                // Side by side, so SAC and the cross curves stay above the
+                // fold at 1600 × 1000.
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 14.0;
+                    grouped_grid(ui, "hydro_readouts", &[form, centres], true);
+                    grouped_grid(ui, "hydro_readouts_2", &[stability, areas], true);
+                });
+            } else {
+                grouped_readouts(ui, "hydro_readouts", &[form, centres, stability, areas]);
+            }
             ui.add_space(2.0);
             plot_sac(ui, h);
             for warning in &h.warnings {
@@ -869,7 +950,7 @@ pub fn report_options(
 ) -> bool {
     let mut changed = false;
 
-    ui.heading("General Hydrostatics");
+    ui.heading("General hydrostatics");
     egui::Grid::new("report_hydro_grid")
         .num_columns(2)
         .spacing([12.0, 4.0])
@@ -977,7 +1058,7 @@ pub fn report_options(
         });
 
     ui.separator();
-    ui.heading("Resistance & Powering");
+    ui.heading("Resistance & powering");
     let mut inc_res = report.include_resistance.unwrap_or(true);
     if ui
         .checkbox(&mut inc_res, "Holtrop & Mennen resistance")
@@ -996,7 +1077,7 @@ pub fn report_options(
     }
 
     ui.separator();
-    ui.heading("Loading Conditions");
+    ui.heading("Loading conditions");
     let mut inc_w = report.include_weather.unwrap_or(true);
     if ui
         .checkbox(&mut inc_w, "Include IMO weather criterion")
@@ -1038,7 +1119,7 @@ pub fn report_options(
     }
 
     ui.separator();
-    ui.heading("Damage Cases");
+    ui.heading("Damage cases");
     if damage_cases.is_empty() {
         ui.label("No damage cases in project.");
     } else {
@@ -1253,7 +1334,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     ui.add_space(4.0);
     ui.separator();
-    ui.strong("Resistance Prediction");
+    ui.strong("Resistance prediction");
     ui.add_space(2.0);
 
     egui::ComboBox::from_label("Method")
@@ -1311,31 +1392,22 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
         plot_xy(ui, "Resistance", "Speed (kn)", &res.rt_label, &series);
 
         ui.add_space(2.0);
-        egui::Grid::new("resistance_table")
-            .striped(true)
-            .min_col_width(50.0)
-            .show(ui, |ui| {
-                ui.label(egui::RichText::new("V (kn)").strong());
-                ui.label(egui::RichText::new("Fn").strong());
-                ui.label(egui::RichText::new(&res.rt_label).strong());
-                ui.label(egui::RichText::new("P_E (kW)").strong());
-                ui.end_row();
-                for r in &res.rows {
-                    ui.label(format!("{:.2}", r.speed_kn));
-                    ui.label(format!("{:.3}", r.fn_));
-                    ui.label(format!("{:.2}", r.rt_kn));
-                    match r.pe_kw {
-                        Some(pe) => ui.label(format!("{:.2}", pe)),
-                        None => ui.label("-"),
-                    };
-                    ui.end_row();
-                }
-            });
+        let (rt, rt_unit) = split_unit(&res.rt_label);
+        eng_table(
+            ui,
+            &[
+                EngColumn::number("V", "kn"),
+                EngColumn::number("Fn", ""),
+                EngColumn::number(rt, rt_unit),
+                EngColumn::number("P_E", "kW"),
+            ],
+            &resistance_table(res),
+        );
     }
 
     ui.add_space(4.0);
     ui.separator();
-    ui.strong("Seakeeping (Head Sea RAOs)");
+    ui.strong("Seakeeping (head-sea RAOs)");
     ui.add_space(2.0);
 
     let speed_resp = ui.add(
@@ -1601,48 +1673,56 @@ fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState
         for w in &r.warnings {
             ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
         }
-        egui::Grid::new("sea_global_table")
-            .striped(true)
-            .min_col_width(50.0)
-            .show(ui, |ui| {
-                for h in ["Response", "Significant", "RMS", "Tz (s)"] {
-                    ui.label(egui::RichText::new(h).strong());
-                }
-                ui.end_row();
-                for (name, st) in [("Heave (m)", &r.heave), ("Pitch (deg)", &r.pitch_deg)] {
-                    ui.label(name);
-                    ui.label(format!("{:.3}", st.significant));
-                    ui.label(format!("{:.3}", st.rms));
-                    ui.label(format!("{:.2}", st.tz_s));
-                    ui.end_row();
-                }
-            });
+        let global: Vec<Vec<EngCell>> = [("Heave", "m", &r.heave), ("Pitch", "deg", &r.pitch_deg)]
+            .into_iter()
+            .map(|(name, unit, st)| {
+                vec![
+                    name.into(),
+                    unit.into(),
+                    format!("{:.3}", st.significant).into(),
+                    format!("{:.3}", st.rms).into(),
+                    format!("{:.2}", st.tz_s).into(),
+                ]
+            })
+            .collect();
+        eng_table(
+            ui,
+            &[
+                EngColumn::text("Response"),
+                EngColumn::unit(),
+                EngColumn::number("Significant", ""),
+                EngColumn::number("RMS", ""),
+                EngColumn::number("Tz", "s"),
+            ],
+            &global,
+        );
         ui.add_space(2.0);
-        egui::Grid::new("sea_points_table")
-            .striped(true)
-            .min_col_width(50.0)
-            .show(ui, |ui| {
-                for h in [
-                    "Point",
-                    "x (m)",
-                    "Motion sig. (m)",
-                    "Relative sig. (m)",
-                    "Accel. RMS (g)",
-                    "MSI (%)",
-                ] {
-                    ui.label(egui::RichText::new(h).strong());
-                }
-                ui.end_row();
-                for p in &r.points {
-                    ui.label(&p.name);
-                    ui.label(format!("{:.2}", p.x));
-                    ui.label(format!("{:.3}", p.vertical_motion.significant));
-                    ui.label(format!("{:.3}", p.relative_motion.significant));
-                    ui.label(format!("{:.4}", p.acceleration_rms_g));
-                    ui.label(format!("{:.1}", p.msi_percent));
-                    ui.end_row();
-                }
-            });
+        let points: Vec<Vec<EngCell>> = r
+            .points
+            .iter()
+            .map(|p| {
+                vec![
+                    p.name.as_str().into(),
+                    format!("{:.2}", p.x).into(),
+                    format!("{:.3}", p.vertical_motion.significant).into(),
+                    format!("{:.3}", p.relative_motion.significant).into(),
+                    format!("{:.4}", p.acceleration_rms_g).into(),
+                    format!("{:.1}", p.msi_percent).into(),
+                ]
+            })
+            .collect();
+        eng_table(
+            ui,
+            &[
+                EngColumn::text("Point"),
+                EngColumn::number("x", "m"),
+                EngColumn::number("Motion sig.", "m"),
+                EngColumn::number("Relative sig.", "m"),
+                EngColumn::number("Accel. RMS", "g"),
+                EngColumn::number("MSI", "%"),
+            ],
+            &points,
+        );
         ui.label(
             "MSI: share of unadapted people expected to vomit within a 2-hour exposure \
              (O'Hanlon & McCauley 1974).",
@@ -1710,7 +1790,7 @@ fn unique_compartment_name(base: &str, existing: &[Compartment]) -> String {
 
 pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     let mut action = DamageAction::None;
-    ui.heading("Damage Stability");
+    ui.heading("Damage stability");
     ui.add_space(4.0);
 
     // Compartments section
@@ -1855,7 +1935,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Damage case picker and New / Duplicate / Delete buttons
     ui.separator();
-    ui.heading("Damage Cases");
+    ui.heading("Damage cases");
     ui.add_space(4.0);
 
     let mut delete_case = false;
@@ -1965,7 +2045,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Flooded compartments checkboxes
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Flooded Compartments").strong());
+    ui.label(egui::RichText::new("Flooded compartments").strong());
     if panel.project.compartments.is_empty() {
         ui.label("No compartments defined above.");
     } else {
@@ -2004,7 +2084,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         .collect();
     if !inlines.is_empty() {
         ui.add_space(2.0);
-        ui.label(egui::RichText::new("Inline Compartments (read-only):").italics());
+        ui.label(egui::RichText::new("Inline compartments (read-only)").italics());
         for inc in &inlines {
             ui.label(format!(
                 "• {} [x: {:.2}..{:.2}, y: {:.2}..{:.2}, z: {:.2}..{:.2}, μ: {:.2}]",
@@ -2022,7 +2102,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Intact condition
     ui.separator();
-    ui.label(egui::RichText::new("Intact Condition").strong());
+    ui.label(egui::RichText::new("Intact condition").strong());
 
     let is_by_cond = case.loading_condition_name.is_some()
         || (case.loading_condition.is_some() && case.displacement_t.is_none());
@@ -2169,7 +2249,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     // Results
     if let Some(r) = panel.result {
         ui.separator();
-        ui.heading("Damaged Equilibrium");
+        ui.heading("Damaged equilibrium");
         if !r.equilibrium_found {
             ui.colored_label(
                 theme::FAIL,
@@ -2183,70 +2263,53 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
         if !r.compartments.is_empty() {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Flooded Compartment Summary").strong());
-            egui::Grid::new("result_damage_compartments_table")
-                .num_columns(5)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("Compartment");
-                    ui.label("μ");
-                    ui.label("Submerged (m³)");
-                    ui.label("Lost (m³)");
-                    ui.label("Centroid (x, y, z)");
-                    ui.end_row();
-                    for c in &r.compartments {
-                        ui.label(&c.name);
-                        ui.label(format!("{:.2}", c.permeability));
-                        ui.label(format!("{:.3}", c.submerged_volume_m3));
-                        ui.label(format!("{:.3}", c.lost_volume_m3));
-                        ui.label(format!(
-                            "{:.2}, {:.2}, {:.2}",
-                            c.centroid.x, c.centroid.y, c.centroid.z
-                        ));
-                        ui.end_row();
-                    }
-                });
+            ui.label(egui::RichText::new("Flooded compartment summary").strong());
+            eng_table(
+                ui,
+                &[
+                    EngColumn::text("Compartment"),
+                    EngColumn::number("μ", ""),
+                    EngColumn::number("Submerged", "m³"),
+                    EngColumn::number("Lost", "m³"),
+                    EngColumn::number("x", "m"),
+                    EngColumn::number("y", "m"),
+                    EngColumn::number("z", "m"),
+                ],
+                &compartment_table(r),
+            );
         }
 
         if let Some(crit) = &r.criteria {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Residual Stability Criteria:").strong());
+                ui.label(egui::RichText::new("Residual stability criteria").strong());
                 criteria_badge(ui, crit.passed, panel.stale);
             });
-            egui::Grid::new("damage_criteria_grid")
-                .num_columns(3)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("Criterion");
-                    ui.label("Value");
-                    ui.label("Status");
-                    ui.end_row();
-
-                    let rows = [
-                        (
-                            "Positive range ≥ 15°",
-                            format!("{:.1}°", crit.positive_range_deg),
-                            crit.positive_range_deg >= 15.0,
-                        ),
-                        (
-                            "Max GZ ≥ 0.10 m",
-                            format!("{:.3} m", crit.max_gz_m),
-                            crit.max_gz_m >= 0.10,
-                        ),
-                        (
-                            "Area ≥ 0.015 m·rad",
-                            format!("{:.4} m·rad", crit.area_m_rad),
-                            crit.area_m_rad >= 0.015,
-                        ),
-                    ];
-                    for (name, val, ok) in rows {
-                        ui.label(name);
-                        ui.label(val);
-                        criteria_badge(ui, ok, panel.stale);
-                        ui.end_row();
-                    }
-                });
+            let stale = panel.stale;
+            let rows = [
+                criterion_row(
+                    "Positive range ≥ 15°",
+                    format!("{:.1}", crit.positive_range_deg),
+                    "°",
+                    crit.positive_range_deg >= 15.0,
+                    stale,
+                ),
+                criterion_row(
+                    "Max GZ ≥ 0.10 m",
+                    format!("{:.3}", crit.max_gz_m),
+                    "m",
+                    crit.max_gz_m >= 0.10,
+                    stale,
+                ),
+                criterion_row(
+                    "Area ≥ 0.015 m·rad",
+                    format!("{:.4}", crit.area_m_rad),
+                    "m·rad",
+                    crit.area_m_rad >= 0.015,
+                    stale,
+                ),
+            ];
+            eng_table(ui, &criteria_columns(), &rows);
         }
 
         ui.add_space(4.0);
@@ -2259,7 +2322,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             })
             .collect();
         if !pts.is_empty() {
-            ui.label(egui::RichText::new("Residual Righting Lever GZ").strong());
+            ui.label(egui::RichText::new("Residual righting lever GZ").strong());
             plot_gz(ui, &[(r.case_name.clone(), pts)]);
         }
 
@@ -2272,6 +2335,321 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     }
 
     action
+}
+
+// ---- engineering tables --------------------------------------------------
+
+/// How a column of an [`eng_table`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnKind {
+    /// Names: proportional, left-aligned.
+    Text,
+    /// Numbers: monospace, right-aligned, so equal precisions align on the
+    /// decimal point.
+    Number,
+    /// A unit per row (when the rows differ): muted, left-aligned.
+    Unit,
+    /// A criteria verdict ([`criteria_badge_style`]).
+    Badge,
+}
+
+/// One column of an [`eng_table`]: its title, the unit every value in it
+/// carries (drawn muted in the header, never glued onto a number) and how
+/// it reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngColumn<'a> {
+    pub title: &'a str,
+    pub unit: &'a str,
+    pub kind: ColumnKind,
+}
+
+impl<'a> EngColumn<'a> {
+    pub fn text(title: &'a str) -> Self {
+        Self {
+            title,
+            unit: "",
+            kind: ColumnKind::Text,
+        }
+    }
+    pub fn number(title: &'a str, unit: &'a str) -> Self {
+        Self {
+            title,
+            unit,
+            kind: ColumnKind::Number,
+        }
+    }
+    pub fn unit() -> Self {
+        Self {
+            title: "",
+            unit: "",
+            kind: ColumnKind::Unit,
+        }
+    }
+    pub fn badge(title: &'a str) -> Self {
+        Self {
+            title,
+            unit: "",
+            kind: ColumnKind::Badge,
+        }
+    }
+}
+
+/// One cell of an [`eng_table`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngCell {
+    /// Text, or a number already formatted at its column's precision.
+    Text(String),
+    /// A criteria verdict: passed, stale.
+    Badge(bool, bool),
+}
+
+impl From<String> for EngCell {
+    fn from(s: String) -> Self {
+        EngCell::Text(s)
+    }
+}
+
+impl From<&str> for EngCell {
+    fn from(s: &str) -> Self {
+        EngCell::Text(s.to_owned())
+    }
+}
+
+/// Space between columns and inside each row.
+const TABLE_GAP_X: f32 = 12.0;
+const TABLE_PAD_Y: f32 = 2.0;
+/// A header wraps onto a second line rather than widen its column past this
+/// (or the column's widest value, if that is wider).
+const TABLE_HEADER_WRAP: f32 = 64.0;
+
+/// What [`eng_table`] drew: the whole table and each cell, header row
+/// first (test hooks).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngTableOutput {
+    pub rect: egui::Rect,
+    pub cells: Vec<Vec<egui::Rect>>,
+}
+
+/// The one engineering table: a header row with the units, names on the
+/// left, values right-aligned in monospace at the precision they were
+/// formatted with, rows striped from the theme. Read-only: nothing in it is
+/// clickable, so it is painted rather than laid out widget by widget.
+pub fn eng_table(
+    ui: &mut egui::Ui,
+    columns: &[EngColumn<'_>],
+    rows: &[Vec<EngCell>],
+) -> EngTableOutput {
+    let body_font = egui::FontId::proportional(theme::BODY_SIZE);
+    let mono_font = egui::FontId::monospace(theme::MONO_SIZE);
+    let unit_font = egui::FontId::proportional(theme::SMALL_SIZE);
+    let painter = ui.painter().clone();
+    let cell_galley = |kind: ColumnKind, cell: Option<&EngCell>| {
+        let (text, font, colour) = match (kind, cell) {
+            (_, None) => (String::new(), body_font.clone(), theme::TEXT_PRIMARY),
+            (_, Some(EngCell::Badge(passed, stale))) => {
+                let (text, colour) = criteria_badge_style(*passed, *stale);
+                (text.to_owned(), mono_font.clone(), colour)
+            }
+            (ColumnKind::Number, Some(EngCell::Text(t))) => {
+                (t.clone(), mono_font.clone(), theme::TEXT_PRIMARY)
+            }
+            (ColumnKind::Unit, Some(EngCell::Text(t))) => {
+                (t.clone(), body_font.clone(), theme::TEXT_MUTED)
+            }
+            (_, Some(EngCell::Text(t))) => (t.clone(), body_font.clone(), theme::TEXT_PRIMARY),
+        };
+        painter.layout_no_wrap(text, font, colour)
+    };
+    let body: Vec<Vec<std::sync::Arc<egui::Galley>>> = rows
+        .iter()
+        .map(|row| {
+            columns
+                .iter()
+                .enumerate()
+                .map(|(c, col)| cell_galley(col.kind, row.get(c)))
+                .collect()
+        })
+        .collect();
+    let value_widths: Vec<f32> = (0..columns.len())
+        .map(|c| {
+            body.iter()
+                .map(|row| row[c].size().x)
+                .fold(0.0_f32, f32::max)
+        })
+        .collect();
+    // Header: title in the secondary colour, unit muted beside it.
+    let headers: Vec<std::sync::Arc<egui::Galley>> = columns
+        .iter()
+        .enumerate()
+        .map(|(c, col)| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                col.title,
+                0.0,
+                egui::TextFormat::simple(body_font.clone(), theme::TEXT_SECONDARY),
+            );
+            if !col.unit.is_empty() {
+                job.append(
+                    &format!("({})", col.unit),
+                    if col.title.is_empty() { 0.0 } else { 4.0 },
+                    egui::TextFormat::simple(unit_font.clone(), theme::TEXT_MUTED),
+                );
+            }
+            job.wrap.max_width = value_widths[c].max(TABLE_HEADER_WRAP);
+            painter.layout_job(job)
+        })
+        .collect();
+    let widths: Vec<f32> = (0..columns.len())
+        .map(|c| value_widths[c].max(headers[c].size().x).ceil())
+        .collect();
+    let header_h = headers.iter().map(|g| g.size().y).fold(0.0_f32, f32::max) + 2.0 * TABLE_PAD_Y;
+    let row_h = body
+        .iter()
+        .flatten()
+        .map(|g| g.size().y)
+        .fold(theme::MONO_SIZE, f32::max)
+        + 2.0 * TABLE_PAD_Y;
+    let table_w = widths.iter().sum::<f32>()
+        + TABLE_GAP_X * (columns.len().saturating_sub(1) as f32)
+        + 2.0 * TABLE_PAD_Y;
+    let table_h = header_h + row_h * rows.len() as f32;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(table_w, table_h), egui::Sense::hover());
+
+    // Column x spans.
+    let mut spans = Vec::with_capacity(columns.len());
+    let mut x = rect.left() + TABLE_PAD_Y;
+    for w in &widths {
+        spans.push((x, x + w));
+        x += w + TABLE_GAP_X;
+    }
+    let place = |kind: ColumnKind, (x0, x1): (f32, f32), size: egui::Vec2, y: f32| {
+        let left = match kind {
+            ColumnKind::Number => x1 - size.x,
+            _ => x0,
+        };
+        egui::Rect::from_min_size(egui::pos2(left, y), size)
+    };
+    let mut cells = Vec::with_capacity(rows.len() + 1);
+    let mut header_cells = Vec::with_capacity(columns.len());
+    for (c, g) in headers.into_iter().enumerate() {
+        let r = place(
+            columns[c].kind,
+            spans[c],
+            g.size(),
+            rect.top() + TABLE_PAD_Y,
+        );
+        header_cells.push(r);
+        painter.galley(r.min, g, theme::TEXT_SECONDARY);
+    }
+    cells.push(header_cells);
+    let rule_y = rect.top() + header_h - 0.5;
+    painter.line_segment(
+        [
+            egui::pos2(rect.left(), rule_y),
+            egui::pos2(rect.right(), rule_y),
+        ],
+        egui::Stroke::new(1.0, theme::FRAME),
+    );
+    for (i, row) in body.into_iter().enumerate() {
+        let top = rect.top() + header_h + row_h * i as f32;
+        if i % 2 == 1 {
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(table_w, row_h)),
+                0.0,
+                theme::TABLE_STRIPE,
+            );
+        }
+        let mut row_cells = Vec::with_capacity(columns.len());
+        for (c, g) in row.into_iter().enumerate() {
+            let y = top + 0.5 * (row_h - g.size().y);
+            let r = place(columns[c].kind, spans[c], g.size(), y);
+            row_cells.push(r);
+            painter.galley(r.min, g, theme::TEXT_PRIMARY);
+        }
+        cells.push(row_cells);
+    }
+    EngTableOutput { rect, cells }
+}
+
+/// A label such as `"R_T (kN)"` split into its title and unit.
+pub fn split_unit(label: &str) -> (&str, &str) {
+    match label.rsplit_once(" (") {
+        Some((title, rest)) if rest.ends_with(')') => (title, &rest[..rest.len() - 1]),
+        _ => (label, ""),
+    }
+}
+
+/// The resistance table: speed, Froude number, total resistance and
+/// effective power, each at the precision the dock always printed.
+pub fn resistance_table(res: &crate::app::ResistanceResult) -> Vec<Vec<EngCell>> {
+    res.rows
+        .iter()
+        .map(|r| {
+            vec![
+                format!("{:.2}", r.speed_kn).into(),
+                format!("{:.3}", r.fn_).into(),
+                format!("{:.2}", r.rt_kn).into(),
+                r.pe_kw
+                    .map_or_else(|| "—".to_owned(), |pe| format!("{pe:.2}"))
+                    .into(),
+            ]
+        })
+        .collect()
+}
+
+/// The Tank summary rows of the Loading tab: name, fill in percent, mass
+/// and free-surface moment.
+pub fn tank_table(l: &LoadingResult) -> Vec<Vec<EngCell>> {
+    l.tanks
+        .iter()
+        .map(|t| {
+            vec![
+                t.name.as_str().into(),
+                format!("{:.0}", t.fill * 100.0).into(),
+                format!("{:.3}", t.mass_t).into(),
+                format!("{:.2}", t.fsm_t_m).into(),
+            ]
+        })
+        .collect()
+}
+
+/// The flooded-compartment rows of the Damage tab: name, permeability,
+/// submerged and lost volume, and the centroid one coordinate per column.
+pub fn compartment_table(d: &DamageResult) -> Vec<Vec<EngCell>> {
+    d.compartments
+        .iter()
+        .map(|c| {
+            vec![
+                c.name.as_str().into(),
+                format!("{:.2}", c.permeability).into(),
+                format!("{:.3}", c.submerged_volume_m3).into(),
+                format!("{:.3}", c.lost_volume_m3).into(),
+                format!("{:.2}", c.centroid.x).into(),
+                format!("{:.2}", c.centroid.y).into(),
+                format!("{:.2}", c.centroid.z).into(),
+            ]
+        })
+        .collect()
+}
+
+/// A criteria row: the criterion, its value and unit apart, its verdict.
+fn criterion_row(name: &str, value: String, unit: &str, passed: bool, stale: bool) -> Vec<EngCell> {
+    vec![
+        name.into(),
+        value.into(),
+        unit.into(),
+        EngCell::Badge(passed, stale),
+    ]
+}
+
+/// The criteria table's columns: criterion, value, unit, verdict.
+fn criteria_columns() -> [EngColumn<'static>; 4] {
+    [
+        EngColumn::text("Criterion"),
+        EngColumn::number("Value", ""),
+        EngColumn::unit(),
+        EngColumn::badge("Status"),
+    ]
 }
 
 /// Height of the caption band above every plot, in points. No curve point
@@ -2463,7 +2841,8 @@ impl PlotAxes {
         let x_dec = tick_decimals(&self.x_ticks);
         let y_dec = tick_decimals(&self.y_ticks);
         let x_suffix = if self.gz { "°" } else { "" };
-        for &x in &self.x_ticks {
+        let last_x = self.x_ticks.len().saturating_sub(1);
+        for (i, &x) in self.x_ticks.iter().enumerate() {
             let sx = self.to_screen(x, y0).x;
             let colour = if x.abs() < 1e-12 {
                 theme::PLOT_AXIS
@@ -2474,14 +2853,27 @@ impl PlotAxes {
                 [egui::pos2(sx, area.top()), egui::pos2(sx, area.bottom())],
                 egui::Stroke::new(1.0, colour),
             );
+            // The end labels sit inside the axis span: the first starts at
+            // the y axis, right of the y labels that end 4 px before it, so
+            // the corner never collides; the last never leaves the plot.
+            let align = if i == 0 {
+                egui::Align2::LEFT_TOP
+            } else if i == last_x {
+                egui::Align2::RIGHT_TOP
+            } else {
+                egui::Align2::CENTER_TOP
+            };
             painter.text(
                 egui::pos2(sx, area.bottom() + 2.0),
-                egui::Align2::CENTER_TOP,
+                align,
                 tick_label(x, x_dec, x_suffix),
                 font.clone(),
                 theme::PLOT_TEXT,
             );
         }
+        // The y labels, with the vertical span each one covers, so the
+        // threshold label can keep clear of them.
+        let mut y_spans: Vec<(f32, f32)> = Vec::new();
         for &y in &self.y_ticks {
             let sy = self.to_screen(x0, y).y;
             let colour = if y.abs() < 1e-12 {
@@ -2493,13 +2885,16 @@ impl PlotAxes {
                 [egui::pos2(area.left(), sy), egui::pos2(area.right(), sy)],
                 egui::Stroke::new(1.0, colour),
             );
-            painter.text(
+            // Centred on their lines, so evenly spaced ticks keep evenly
+            // spaced labels; the corner is cleared by the x labels instead.
+            let r = painter.text(
                 egui::pos2(area.left() - 4.0, sy),
                 egui::Align2::RIGHT_CENTER,
                 tick_label(y, y_dec, ""),
                 font.clone(),
                 theme::PLOT_TEXT,
             );
+            y_spans.push((r.top(), r.bottom()));
         }
         if !self.gz {
             return;
@@ -2524,11 +2919,11 @@ impl PlotAxes {
                 4.0,
                 3.0,
             ));
-            // Label it in the tick column unless a tick label is already there.
-            let clear = self
-                .y_ticks
+            // Label it in the tick column unless it would touch a tick label.
+            let half = 0.5 * PLOT_FONT_SIZE + 2.0;
+            let clear = y_spans
                 .iter()
-                .all(|&t| (self.to_screen(x0, t).y - sy).abs() > PLOT_FONT_SIZE);
+                .all(|&(top, bottom)| sy + half < top || sy - half > bottom);
             if clear {
                 painter.text(
                     egui::pos2(area.left() - 4.0, sy),
@@ -2542,21 +2937,88 @@ impl PlotAxes {
     }
 }
 
+/// Height of a plot (caption band, curves and tick labels), legend apart.
+const PLOT_HEIGHT: f32 = 172.0;
+/// Space between legend entries across, and between legend rows.
+const LEGEND_GAP_X: f32 = 10.0;
+const LEGEND_GAP_Y: f32 = 2.0;
+
+/// Where each legend entry of the given sizes goes: left to right from
+/// `origin`, wrapping onto a further row before an entry would cross
+/// `max_width`. An entry wider than the plot gets a row of its own.
+pub fn legend_layout(origin: egui::Pos2, max_width: f32, sizes: &[egui::Vec2]) -> Vec<egui::Rect> {
+    let mut rects = Vec::with_capacity(sizes.len());
+    let mut x = 0.0_f32;
+    let mut y = 0.0_f32;
+    let mut row_height = 0.0_f32;
+    for &size in sizes {
+        if x > 0.0 && x + size.x > max_width {
+            x = 0.0;
+            y += row_height + LEGEND_GAP_Y;
+            row_height = 0.0;
+        }
+        rects.push(egui::Rect::from_min_size(origin + egui::vec2(x, y), size));
+        x += size.x + LEGEND_GAP_X;
+        row_height = row_height.max(size.y);
+    }
+    rects
+}
+
 /// Draw a captioned x/y plot with ticks, and its legend underneath (outside
-/// the curves) when there is more than one labelled series.
+/// the curves) when there is more than one labelled series. The legend
+/// wraps onto as many rows as it needs within the plot's width. Returns the
+/// rectangle drawn, legend included.
 fn draw_plot(
     ui: &mut egui::Ui,
     caption: &str,
     legend_title: &str,
     series: &[(String, Vec<(f64, f64)>)],
     gz: bool,
-) {
-    let height = 172.0;
+    height: f32,
+) -> egui::Rect {
+    let width = ui.available_width();
+    let font = theme::caption_font();
+    // The legend's entries, laid out before the space is allocated so the
+    // allocation covers every row.
+    let labelled = series.iter().filter(|(l, _)| !l.is_empty()).count();
+    let mut entries: Vec<(String, egui::Color32)> = Vec::new();
+    if series.len() > 1 && labelled > 0 {
+        if !legend_title.is_empty() {
+            entries.push((legend_title.to_owned(), theme::PLOT_TEXT));
+        }
+        for (i, (label, _)) in series.iter().enumerate() {
+            if !label.is_empty() {
+                entries.push((
+                    format!("━ {label}"),
+                    theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()],
+                ));
+            }
+        }
+    }
+    let galleys: Vec<_> = entries
+        .into_iter()
+        .map(|(text, colour)| {
+            let galley = ui
+                .painter()
+                .layout(text, font.clone(), colour, width.max(1.0));
+            (galley, colour)
+        })
+        .collect();
+    let sizes: Vec<egui::Vec2> = galleys.iter().map(|(g, _)| g.size()).collect();
+    let legend = legend_layout(egui::Pos2::ZERO, width, &sizes);
+    let legend_height = legend.iter().map(|r| r.bottom()).fold(0.0_f32, f32::max);
+    let legend_height = if legend.is_empty() {
+        0.0
+    } else {
+        legend_height + 4.0
+    };
+
     let (response, painter) = ui.allocate_painter(
-        egui::vec2(ui.available_width(), height),
+        egui::vec2(width, height + legend_height),
         egui::Sense::hover(),
     );
-    let axes = PlotAxes::fit(response.rect, series, gz);
+    let plot = egui::Rect::from_min_size(response.rect.min, egui::vec2(width, height));
+    let axes = PlotAxes::fit(plot, series, gz);
     axes.paint_frame(&painter);
     for (i, (_, pts)) in series.iter().enumerate() {
         let colour = theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()];
@@ -2569,32 +3031,11 @@ fn draw_plot(
         }
     }
     plot_caption(&painter, axes.caption, caption);
-
-    let labelled = series.iter().filter(|(l, _)| !l.is_empty()).count();
-    if series.len() > 1 && labelled > 0 {
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            if !legend_title.is_empty() {
-                ui.label(
-                    egui::RichText::new(legend_title)
-                        .monospace()
-                        .size(PLOT_FONT_SIZE)
-                        .color(theme::PLOT_TEXT),
-                );
-            }
-            for (i, (label, _)) in series.iter().enumerate() {
-                if label.is_empty() {
-                    continue;
-                }
-                ui.label(
-                    egui::RichText::new(format!("━ {label}"))
-                        .monospace()
-                        .size(PLOT_FONT_SIZE)
-                        .color(theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()]),
-                );
-            }
-        });
+    let origin = egui::pos2(plot.left() + 4.0, plot.bottom() + 2.0);
+    for ((galley, colour), r) in galleys.into_iter().zip(&legend) {
+        painter.galley(origin + r.min.to_vec2(), galley, colour);
     }
+    response.rect
 }
 
 /// The cross curves as plot series: one per displacement, heel across and
@@ -2634,13 +3075,15 @@ pub fn cross_curve_polylines(curves: &[CrossCurve]) -> Vec<(String, Vec<(f64, f6
 /// The dock's GZ plot: heel across, righting lever up, one line per
 /// displacement, for the bare hull at the dock KG.
 fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve], kg: f64) {
-    draw_plot(
+    let rect = draw_plot(
         ui,
         &format!("Cross curves — bare hull at dock KG {kg:.2} m"),
         "GZ m at Δ",
         &cross_curve_polylines(curves),
         true,
+        PLOT_HEIGHT,
     );
+    remember_plot_rect(ui.ctx(), "cross_curves", rect);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2700,7 +3143,7 @@ pub fn plot_xy(
     } else {
         format!("{title}: {y_label} vs {x_label}")
     };
-    draw_plot(ui, &caption, "", series, is_gz);
+    draw_plot(ui, &caption, "", series, is_gz, PLOT_HEIGHT);
 }
 
 /// A general GZ plot: heel (deg) across, righting lever GZ (m) up, with labelled curves.
@@ -2710,7 +3153,7 @@ pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
 
 pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     let mut action = LoadingAction::None;
-    ui.heading("Loading Condition");
+    ui.heading("Loading condition");
     ui.add_space(4.0);
 
     // Condition picker and New / Duplicate / Delete buttons
@@ -2890,7 +3333,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     // Weights grid
     ui.separator();
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Deadweight Items").strong());
+        ui.label(egui::RichText::new("Deadweight items").strong());
         if ui.button("+ Add weight").clicked() {
             let n = cond.items.len() + 1;
             cond.items.push(WeightItem {
@@ -3127,86 +3570,82 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     // Results
     if let Some(r) = panel.result {
         ui.separator();
-        ui.heading("Equilibrium & Hydrostatics");
+        ui.heading("Equilibrium & hydrostatics");
         readouts(ui, "loading_readouts", &loading_rows(r));
 
         if !r.tanks.is_empty() {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Tank Summary").strong());
-            egui::Grid::new("result_tanks_table")
-                .num_columns(4)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("Tank");
-                    ui.label("Fill");
-                    ui.label("Mass (t)");
-                    ui.label("FSM (t·m)");
-                    ui.end_row();
-                    for t in &r.tanks {
-                        ui.label(&t.name);
-                        ui.label(format!("{:.0}%", t.fill * 100.0));
-                        ui.label(format!("{:.3}", t.mass_t));
-                        ui.label(format!("{:.2}", t.fsm_t_m));
-                        ui.end_row();
-                    }
-                });
+            ui.label(egui::RichText::new("Tank summary").strong());
+            eng_table(
+                ui,
+                &[
+                    EngColumn::text("Tank"),
+                    EngColumn::number("Fill", "%"),
+                    EngColumn::number("Mass", "t"),
+                    EngColumn::number("FSM", "t·m"),
+                ],
+                &tank_table(r),
+            );
         }
 
         if let Some(imo) = &r.imo_criteria {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("IMO A.749 Criteria:").strong());
+                ui.label(egui::RichText::new("IMO A.749 criteria").strong());
                 criteria_badge(ui, imo.passed, panel.stale);
             });
-            egui::Grid::new("imo_criteria_table")
-                .num_columns(3)
-                .striped(true)
-                .show(ui, |ui| {
-                    let rows = [
-                        (
-                            "A(0–30°) ≥ 0.055",
-                            format!("{:.3} m·rad", imo.area_0_30_m_rad),
-                            imo.area_0_30_m_rad >= 0.055,
-                        ),
-                        (
-                            "A(0–40°) ≥ 0.090",
-                            format!("{:.3} m·rad", imo.area_0_40_m_rad),
-                            imo.area_0_40_m_rad >= 0.090,
-                        ),
-                        (
-                            "A(30–40°) ≥ 0.030",
-                            format!("{:.3} m·rad", imo.area_30_40_m_rad),
-                            imo.area_30_40_m_rad >= 0.030,
-                        ),
-                        (
-                            "GZ(≥30°) ≥ 0.20",
-                            format!("{:.3} m", imo.max_gz_30_plus_m),
-                            imo.max_gz_30_plus_m >= 0.20,
-                        ),
-                        (
-                            "φ(GZmax) ≥ 25°",
-                            format!("{:.0}°", imo.angle_of_max_gz_deg),
-                            imo.angle_of_max_gz_deg >= 25.0,
-                        ),
-                        (
-                            "GM0 ≥ 0.15",
-                            format!("{:.3} m", imo.gm0_m),
-                            imo.gm0_m >= 0.15,
-                        ),
-                    ];
-                    for (name, val, ok) in rows {
-                        ui.label(name);
-                        ui.label(val);
-                        criteria_badge(ui, ok, panel.stale);
-                        ui.end_row();
-                    }
-                });
+            let stale = panel.stale;
+            let rows = [
+                criterion_row(
+                    "A(0–30°) ≥ 0.055",
+                    format!("{:.3}", imo.area_0_30_m_rad),
+                    "m·rad",
+                    imo.area_0_30_m_rad >= 0.055,
+                    stale,
+                ),
+                criterion_row(
+                    "A(0–40°) ≥ 0.090",
+                    format!("{:.3}", imo.area_0_40_m_rad),
+                    "m·rad",
+                    imo.area_0_40_m_rad >= 0.090,
+                    stale,
+                ),
+                criterion_row(
+                    "A(30–40°) ≥ 0.030",
+                    format!("{:.3}", imo.area_30_40_m_rad),
+                    "m·rad",
+                    imo.area_30_40_m_rad >= 0.030,
+                    stale,
+                ),
+                criterion_row(
+                    "GZ(≥30°) ≥ 0.20",
+                    format!("{:.3}", imo.max_gz_30_plus_m),
+                    "m",
+                    imo.max_gz_30_plus_m >= 0.20,
+                    stale,
+                ),
+                criterion_row(
+                    "φ(GZmax) ≥ 25°",
+                    format!("{:.0}", imo.angle_of_max_gz_deg),
+                    "°",
+                    imo.angle_of_max_gz_deg >= 25.0,
+                    stale,
+                ),
+                criterion_row(
+                    "GM0 ≥ 0.15",
+                    format!("{:.3}", imo.gm0_m),
+                    "m",
+                    imo.gm0_m >= 0.15,
+                    stale,
+                ),
+            ];
+            eng_table(ui, &criteria_columns(), &rows);
         }
 
         if let Some(w) = &r.weather {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Weather Criterion (§2.3):").strong());
+                ui.label(egui::RichText::new("Weather criterion (§2.3)").strong());
                 criteria_badge(ui, w.passed, panel.stale);
             });
             readouts(ui, "weather_readouts", &weather_rows(w));
@@ -3225,7 +3664,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             })
             .collect();
         if !pts.is_empty() {
-            ui.label(egui::RichText::new("Righting Lever GZ").strong());
+            ui.label(egui::RichText::new("Righting lever GZ").strong());
             plot_gz(ui, &[(r.name.clone(), pts)]);
         }
     }
@@ -3250,7 +3689,7 @@ pub struct WindagePanel<'a> {
 
 pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     let mut action = WindageAction::None;
-    ui.heading("Superstructure & Windage");
+    ui.heading("Superstructure & windage");
     ui.add_space(4.0);
 
     if ui.button("+ Add windage item").clicked() {
@@ -3434,7 +3873,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
 
     ui.add_space(8.0);
     ui.separator();
-    ui.label(egui::RichText::new("Windage Totals").strong());
+    ui.label(egui::RichText::new("Windage totals").strong());
     let total_area: f64 = panel.project.windage.iter().map(|w| w.area_m2).sum();
     let total_az: f64 = panel
         .project
@@ -3462,7 +3901,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     ui.separator();
     if let Some(w) = panel.weather {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Weather Criterion Summary (§2.3):").strong());
+            ui.label(egui::RichText::new("Weather criterion summary (§2.3)").strong());
             criteria_badge(ui, w.passed, panel.stale);
         });
         ui.small("from the loading panel's last Compute");
@@ -3855,7 +4294,13 @@ mod tests {
     fn the_dock_shows_both_columns_with_the_table_quantities() {
         let h = measured();
         let [left, right] = hydrostatic_rows(&h, 1.5);
-        assert_eq!(left.len(), right.len(), "the two groups stay balanced");
+        // LWL and BWL are rows of their own now (R5-5): 9 and 10 rows.
+        assert!(
+            left.len().abs_diff(right.len()) <= 1,
+            "the two columns stay balanced: {} vs {}",
+            left.len(),
+            right.len()
+        );
         let labels: Vec<&str> = left.iter().chain(right.iter()).map(|r| r.name).collect();
         for want in [
             "volume", "Cb", "LCB", "TPC", "KM(t)", "GM", "midship", "MTC",
@@ -3867,7 +4312,7 @@ mod tests {
             (r.value.parse().expect("value parses"), r.unit)
         };
         // The table quantities are the measured waterplane in the right units.
-        let (tpc, unit) = find(&left, "TPC");
+        let (tpc, unit) = find(&right, "TPC");
         assert_eq!(unit, "t/cm");
         let want_tpc = h.waterplane_area_m2 * (h.water_density / 1000.0) / 100.0;
         assert!((tpc - want_tpc).abs() < 0.001, "TPC {tpc} vs {want_tpc}");
@@ -3892,6 +4337,8 @@ mod tests {
         let rho_t = h.water_density / 1000.0;
         let tpc = h.waterplane_area_m2 * rho_t / 100.0;
         let mtc = rho_t * h.waterplane_inertia_longitudinal / (100.0 * h.lwl);
+        // In the grouped order; the old combined "LWL / BWL" row is two
+        // rows at the same precision.
         vec![
             ("volume", format!("{:.3} m³", h.volume_m3)),
             ("displacement", format!("{:.2} t", h.displacement_t)),
@@ -3901,16 +4348,17 @@ mod tests {
             ("Cwp", format!("{:.3}", h.waterplane_coefficient)),
             ("LCB", format!("{:.3} m", h.lcb.x)),
             ("LCF", format!("{:.3} m", h.lcf.x)),
-            ("TPC", format!("{:.3} t/cm", tpc)),
             ("KB", format!("{:.3} m", h.kb)),
             ("BM(t)", format!("{:.3} m", h.bm_transverse)),
             ("KM(t)", format!("{:.3} m", h.km_transverse)),
             ("GM", format!("{:+.3} m", h.gm(kg))),
+            ("TPC", format!("{:.3} t/cm", tpc)),
+            ("MTC", format!("{:.3} t·m/cm", mtc)),
+            ("LWL", format!("{:.2} m", h.lwl)),
+            ("BWL", format!("{:.2} m", h.bwl)),
             ("wetted", format!("{:.2} m²", h.wetted_surface_m2)),
             ("waterplane", format!("{:.2} m²", h.waterplane_area_m2)),
-            ("LWL / BWL", format!("{:.2} / {:.2} m", h.lwl, h.bwl)),
             ("midship", format!("{:.3} m²", h.mainframe_area_m2)),
-            ("MTC", format!("{:.3} t·m/cm", mtc)),
         ]
     }
 
@@ -4057,49 +4505,47 @@ mod tests {
     #[test]
     fn the_sac_plot_runs_left_to_right_inside_the_rect() {
         let h = measured();
-        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(120.0, 60.0));
-        let pts = sac_polyline(&h.sac, rect);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 124.0));
+        let series = sac_series(&h.sac);
+        assert_eq!(series.len(), 1, "one curve, no legend");
+        let axes = PlotAxes::fit(rect, &series, false);
+        let pts = axes.polylines(&series[0].1).concat();
         assert_eq!(pts.len(), h.sac.len(), "one point per station");
         assert!(
             pts.windows(2).all(|w| w[1].x >= w[0].x),
             "x must not go backwards"
         );
         for p in &pts {
-            assert!(
-                rect.x_range().contains(p.x) && rect.y_range().contains(p.y),
-                "{p:?}"
-            );
+            assert!(axes.area.expand(1e-3).contains(*p), "{p:?}");
         }
-        // The height is the area: the fullest station touches the top and every
-        // other point maps linearly from its own area.
-        let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
+        // The height is the area, linearly, from a zero baseline: the axes
+        // are ticked like every other plot's.
+        assert_eq!(axes.y_ticks[0], 0.0);
         for (point, station) in pts.iter().zip(h.sac.iter()) {
-            let want = rect.bottom() - (station.area / a_max) as f32 * rect.height();
+            let want = axes.to_screen(station.x, station.area);
             assert!(
-                (point.y - want).abs() < 1e-2,
-                "{station:?} drew at {point:?}, wanted y {want}"
+                (point.y - want.y).abs() < 1e-2 && (point.y - axes.area.bottom()) <= 1e-2,
+                "{station:?} drew at {point:?}, wanted {want:?}"
             );
         }
-        let peak = pts
-            .iter()
-            .zip(h.sac.iter())
-            .max_by(|a, b| {
-                a.1.area
-                    .partial_cmp(&b.1.area)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(p, _)| p.y)
-            .expect("a peak");
-        assert!((peak - rect.top()).abs() < 1e-2, "peak {peak}");
-        let lowest = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
+        let top = *axes.y_ticks.last().unwrap();
         assert!(
-            lowest < rect.top() + 1.0,
-            "the peak reaches the top: {lowest}"
+            top >= a_max && top < 2.0 * a_max,
+            "y axis to {top} for {a_max}"
+        );
+        let peak = pts.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(
+            peak < axes.area.top() + 0.5 * axes.area.height(),
+            "the peak is in the upper half: {peak}"
         );
         // Degenerate input draws nothing rather than dividing by zero.
-        assert!(sac_polyline(&[], rect).is_empty());
-        let flat = [SectionArea { x: 1.0, area: 0.0 }];
-        assert!(sac_polyline(&flat, rect).is_empty());
+        assert!(sac_series(&[])[0].1.is_empty());
+        let nan = [SectionArea {
+            x: 1.0,
+            area: f64::NAN,
+        }];
+        assert!(sac_series(&nan)[0].1.is_empty());
     }
 
     #[test]
@@ -4425,13 +4871,14 @@ mod tests {
 
         // SAC: the curve area starts below the band.
         let h = measured();
-        let (caption, area) = sac_plot_rects(rect);
-        assert_eq!(caption.height(), PLOT_CAPTION_BAND);
-        assert_eq!(caption.top(), rect.top());
-        let pts = sac_polyline(&h.sac, area);
+        let sac = sac_series(&h.sac);
+        let axes = PlotAxes::fit(rect, &sac, false);
+        assert_eq!(axes.caption.height(), PLOT_CAPTION_BAND);
+        assert_eq!(axes.caption.top(), rect.top());
+        let pts = axes.polylines(&sac[0].1).concat();
         assert!(pts.len() > 2);
         for p in &pts {
-            assert!(p.y >= caption.bottom(), "SAC point {p:?} in the band");
+            assert!(p.y >= axes.caption.bottom(), "SAC point {p:?} in the band");
         }
 
         // plot_xy, plain and GZ, with the data at the extremes of its range.
@@ -4534,6 +4981,435 @@ mod tests {
                 "verdict on the hydro dock: {t}"
             );
         }
+    }
+
+    /// Every text painted, with its screen rectangle, colour and font.
+    fn painted_texts(
+        shapes: &[egui::epaint::ClippedShape],
+    ) -> Vec<(String, egui::Rect, egui::Color32, egui::FontId)> {
+        fn walk(
+            shape: &egui::Shape,
+            out: &mut Vec<(String, egui::Rect, egui::Color32, egui::FontId)>,
+        ) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                egui::Shape::Text(t) if !t.galley.text().is_empty() => {
+                    let section = t.galley.job.sections.first();
+                    out.push((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                        section.map_or(t.fallback_color, |s| s.format.color),
+                        section.map_or(egui::FontId::default(), |s| s.format.font_id.clone()),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    /// Run `f` in a headless frame of `width` points (twice, so layouts
+    /// settle) and return what it painted.
+    fn headless(
+        width: f32,
+        mut f: impl FnMut(&mut egui::Ui),
+    ) -> Vec<(String, egui::Rect, egui::Color32, egui::FontId)> {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(width, 2000.0),
+            )),
+            ..Default::default()
+        };
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(input(), |ui| f(ui));
+            out.textures_delta.clear();
+            texts = painted_texts(&out.shapes);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_readout_has_separate_lwl_and_bwl_rows() {
+        let h = measured();
+        let groups = hydrostatic_groups(&h, 2.2);
+        let titles: Vec<&str> = groups.iter().map(|g| g.title).collect();
+        assert_eq!(
+            titles,
+            [
+                "Volume & form",
+                "Centres",
+                "Stability",
+                "Dimensions & areas"
+            ]
+        );
+        let rows: Vec<&Readout> = groups.iter().flat_map(|g| &g.rows).collect();
+        let get = |name: &str| *rows.iter().find(|r| r.name == name).expect(name);
+        assert_eq!(
+            get("LWL"),
+            &Readout::new("LWL", format!("{:.2}", h.lwl), "m")
+        );
+        assert_eq!(
+            get("BWL"),
+            &Readout::new("BWL", format!("{:.2}", h.bwl), "m")
+        );
+        for r in &rows {
+            assert!(!r.name.contains('/'), "combined row {:?}", r.name);
+            assert!(!r.value.contains('/'), "combined value {:?}", r.value);
+            assert!(r.value.chars().count() <= 7, "{} = {:?}", r.name, r.value);
+        }
+        // The columns are the groups, two by two.
+        let [left, right] = hydrostatic_rows(&h, 2.2);
+        assert_eq!(left.len(), groups[0].rows.len() + groups[1].rows.len());
+        assert_eq!(right.len(), groups[2].rows.len() + groups[3].rows.len());
+        // Drawn: names, subheads and both values on screen.
+        let texts = headless(360.0, |ui| grouped_readouts(ui, "lwl_bwl", &groups));
+        for want in ["LWL", "BWL", "Volume & form", "Dimensions & areas"] {
+            assert!(texts.iter().any(|t| t.0 == want), "{want} not drawn");
+        }
+        // Subheads are small and muted, never a quantity's look.
+        let head = texts.iter().find(|t| t.0 == "Centres").unwrap();
+        assert_eq!(head.2, theme::TEXT_MUTED);
+        assert_eq!(head.3.size, theme::SMALL_SIZE);
+        assert!(texts.iter().any(|t| t.0.trim() == format!("{:.2}", h.bwl)));
+    }
+
+    #[test]
+    fn the_readout_goes_two_columns_from_a_340_px_dock() {
+        assert!(!hydro_two_columns(300.0));
+        assert!(hydro_two_columns(HYDRO_TWO_COLUMN_WIDTH));
+        let h = measured();
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut options =
+            HydroOptions::from_surface(&demo::demo_hull(false), SubdivisionOptions::default());
+        let (mut kg, mut free_trim, mut lcg) = (2.2, false, None);
+        // Both widths drawn the way the dock draws them: a panel of that
+        // width with a vertical scroll area inside.
+        let mut layout = |width: f32| {
+            let mut texts = Vec::new();
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(1600.0, 3000.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    egui::Panel::right(format!("dock_{width}"))
+                        .resizable(false)
+                        .exact_size(width)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                hydrostatics(
+                                    ui,
+                                    HydroPanel {
+                                        options: &mut options,
+                                        kg: &mut kg,
+                                        free_trim: &mut free_trim,
+                                        lcg: &mut lcg,
+                                        result: Some(&h),
+                                        stale: false,
+                                        curves: None,
+                                    },
+                                );
+                            });
+                        });
+                });
+                out.textures_delta.clear();
+                texts = painted_texts(&out.shapes);
+            }
+            let at = |name: &str| texts.iter().find(|t| t.0 == name).expect(name).1;
+            // Everything drawn stays inside the dock: nothing pushes it wider.
+            let left = texts
+                .iter()
+                .map(|t| t.1.left())
+                .fold(f32::INFINITY, f32::min);
+            let right = texts.iter().map(|t| t.1.right()).fold(0.0, f32::max);
+            assert!(
+                left >= 1600.0 - width && right <= 1600.0,
+                "{width} px dock: text spans {left}..{right}: {:?}",
+                texts
+                    .iter()
+                    .filter(|t| t.1.left() < 1600.0 - width || t.1.right() > 1600.0)
+                    .map(|t| &t.0)
+                    .collect::<Vec<_>>()
+            );
+            (at("volume"), at("KM(t)"), at("midship"))
+        };
+        // Narrow: one column, KM(t) under volume.
+        let (volume, km, _) = layout(300.0);
+        assert!((km.left() - volume.left()).abs() < 1.0 && km.top() > volume.top());
+        // 340 px: KM(t) heads the right column, level with the first rows.
+        let (volume, km, midship) = layout(340.0);
+        assert!(km.left() > volume.right() + 40.0, "{volume:?} / {km:?}");
+        assert!(km.top() - volume.top() < 30.0, "{volume:?} / {km:?}");
+        assert!((midship.left() - km.left()).abs() < 1.0, "{midship:?}");
+        // The default 360 px dock is two columns as well.
+        let (volume, km, _) = layout(360.0);
+        assert!(km.left() > volume.right() + 40.0, "{volume:?} / {km:?}");
+    }
+
+    #[test]
+    fn a_long_legend_wraps_onto_more_rows_inside_the_plot() {
+        // Pure layout: a row breaks before an entry would cross the width.
+        let sizes = vec![egui::vec2(60.0, 13.0); 9];
+        let rects = legend_layout(egui::pos2(0.0, 0.0), 200.0, &sizes);
+        assert_eq!(rects.len(), 9);
+        let rows = {
+            let mut tops: Vec<i32> = rects.iter().map(|r| r.top() as i32).collect();
+            tops.dedup();
+            tops.len()
+        };
+        assert_eq!(rows, 3, "{rects:?}");
+        assert!(rects.iter().all(|r| r.right() <= 200.0), "{rects:?}");
+        // An entry wider than the plot takes a row of its own.
+        let rects = legend_layout(
+            egui::pos2(0.0, 0.0),
+            100.0,
+            &[egui::vec2(40.0, 13.0), egui::vec2(140.0, 13.0)],
+        );
+        assert_eq!(rects[1].left(), 0.0);
+        assert!(rects[1].top() > rects[0].top());
+
+        // Drawn: twelve displacements in a 300 px plot.
+        let series: Vec<(String, Vec<(f64, f64)>)> = (0..12)
+            .map(|i| {
+                (
+                    format!("{:.1} t", 8.0 + i as f64),
+                    vec![(0.0, 0.0), (30.0, 0.1 * i as f64)],
+                )
+            })
+            .collect();
+        let rect_of = |n: usize| {
+            let ctx = egui::Context::default();
+            theme::apply(&ctx);
+            let mut rect = egui::Rect::NOTHING;
+            let mut texts = Vec::new();
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(316.0, 1000.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| {
+                    rect = draw_plot(ui, "GZ", "GZ m at Δ", &series[..n], true, PLOT_HEIGHT);
+                });
+                out.textures_delta.clear();
+                texts = painted_texts(&out.shapes);
+            }
+            (rect, texts)
+        };
+        let (two, _) = rect_of(2);
+        let (twelve, texts) = rect_of(12);
+        assert!(
+            twelve.height() > two.height() + 10.0,
+            "the legend grew rows: {} vs {}",
+            twelve.height(),
+            two.height()
+        );
+        let legend: Vec<_> = texts.iter().filter(|t| t.0.starts_with('━')).collect();
+        assert_eq!(legend.len(), 12, "every entry drawn");
+        let mut tops: Vec<i32> = legend.iter().map(|t| t.1.top() as i32).collect();
+        tops.dedup();
+        assert!(tops.len() >= 2, "one row only: {tops:?}");
+        for t in &texts {
+            assert!(
+                t.1.right() <= twelve.right() + 0.5 && t.1.left() >= twelve.left() - 0.5,
+                "{:?} at {:?} leaves the plot {twelve:?}",
+                t.0,
+                t.1
+            );
+            assert!(
+                t.1.bottom() <= twelve.bottom() + 0.5,
+                "{:?} below the plot",
+                t.0
+            );
+        }
+    }
+
+    #[test]
+    fn plot_tick_labels_never_collide_in_the_corners() {
+        // GZ going negative (the y axis starts below zero) and a plain plot.
+        let gz = vec![(
+            "a".to_string(),
+            vec![(0.0, 0.0), (20.0, 0.4), (50.0, 0.1), (80.0, -1.3)],
+        )];
+        let plain = vec![("".to_string(), vec![(0.0, 0.0), (12.0, 1.6)])];
+        for (series, is_gz) in [(&gz, true), (&plain, false)] {
+            let texts = headless(316.0, |ui| {
+                draw_plot(ui, "", "", series, is_gz, PLOT_HEIGHT);
+            });
+            assert!(texts.len() >= 8, "{texts:?}");
+            for (i, a) in texts.iter().enumerate() {
+                for b in &texts[i + 1..] {
+                    assert!(
+                        !a.1.shrink(0.5).intersects(b.1.shrink(0.5)),
+                        "{:?} at {:?} overlaps {:?} at {:?}",
+                        a.0,
+                        a.1,
+                        b.0,
+                        b.1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eng_table_aligns_decimals_and_keeps_the_numbers() {
+        let s = demo::demo_hull(false);
+        let opts = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: Default::default(),
+            },
+        );
+        let cond: LoadingCondition = serde_json::from_value(serde_json::json!({
+            "name": "tanks",
+            "lightship": {"name": "Lightship", "mass_t": 8.0, "x": 5.0, "y": 0.0, "z": 1.2},
+            "tanks": [
+                {"name": "Fuel", "x_min": 3.0, "x_max": 4.0, "y_min": -0.5, "y_max": 0.5,
+                 "z_min": 0.2, "z_max": 0.6, "fill": 0.5, "density_t_m3": 0.85},
+                {"name": "Fresh water", "x_min": 6.0, "x_max": 7.5, "y_min": -0.6, "y_max": 0.6,
+                 "z_min": 0.2, "z_max": 0.8, "fill": 0.9, "density_t_m3": 1.0},
+                {"name": "Grey", "x_min": 8.0, "x_max": 8.5, "y_min": -0.3, "y_max": 0.3,
+                 "z_min": 0.3, "z_max": 0.5, "fill": 0.25, "density_t_m3": 1.0},
+            ],
+        }))
+        .expect("condition");
+        let l = seacraft_core::loading::evaluate(&s, &opts, &cond);
+        let rows = tank_table(&l);
+        // The numbers are the ones the old grid printed, units apart.
+        assert_eq!(rows.len(), l.tanks.len());
+        for (row, t) in rows.iter().zip(&l.tanks) {
+            assert_eq!(
+                row,
+                &vec![
+                    EngCell::Text(t.name.clone()),
+                    EngCell::Text(format!("{:.0}", t.fill * 100.0)),
+                    EngCell::Text(format!("{:.3}", t.mass_t)),
+                    EngCell::Text(format!("{:.2}", t.fsm_t_m)),
+                ]
+            );
+        }
+        let columns = [
+            EngColumn::text("Tank"),
+            EngColumn::number("Fill", "%"),
+            EngColumn::number("Mass", "t"),
+            EngColumn::number("FSM", "t·m"),
+        ];
+        let mut table = None;
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                table = Some(eng_table(ui, &columns, &rows));
+            });
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let table = table.unwrap();
+        let texts = painted_texts(&shapes);
+        assert_eq!(table.cells.len(), rows.len() + 1, "header + rows");
+        for (r, row) in rows.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                let EngCell::Text(want) = cell else {
+                    unreachable!()
+                };
+                let drawn = texts
+                    .iter()
+                    .find(|t| &t.0 == want && (t.1.min - table.cells[r + 1][c].min).length() < 0.5)
+                    .unwrap_or_else(|| panic!("{want:?} not drawn in its cell"));
+                if c == 0 {
+                    // Names: proportional, left edges on one line.
+                    assert_eq!(drawn.3.family, egui::FontFamily::Proportional);
+                    assert!((drawn.1.left() - table.cells[1][0].left()).abs() < 0.5);
+                } else {
+                    // Values: monospace, right edges on one line.
+                    assert_eq!(drawn.3, egui::FontId::monospace(theme::MONO_SIZE));
+                    assert!(
+                        (drawn.1.right() - table.cells[1][c].right()).abs() < 0.5,
+                        "{want:?} ends at {} not {}",
+                        drawn.1.right(),
+                        table.cells[1][c].right()
+                    );
+                }
+            }
+        }
+        // Units sit in the header, muted, never on a value.
+        assert!(texts
+            .iter()
+            .any(|t| t.0.contains("Mass") && t.0.contains("(t)")));
+        for t in &texts {
+            if t.3.family == egui::FontFamily::Monospace {
+                assert!(t.0.parse::<f64>().is_ok(), "{:?} is not a bare number", t.0);
+            }
+        }
+        // Zebra stripes from the theme on every other row.
+        fn stripes(shapes: &[egui::epaint::ClippedShape]) -> usize {
+            fn walk(shape: &egui::Shape, n: &mut usize) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, n)),
+                    egui::Shape::Rect(r) if r.fill == theme::TABLE_STRIPE => *n += 1,
+                    _ => {}
+                }
+            }
+            let mut n = 0;
+            shapes.iter().for_each(|c| walk(&c.shape, &mut n));
+            n
+        }
+        assert_eq!(stripes(&shapes), rows.len() / 2);
+        // Labels with their unit in brackets split cleanly.
+        assert_eq!(split_unit("R_T (kN)"), ("R_T", "kN"));
+        assert_eq!(split_unit("Fn"), ("Fn", ""));
+    }
+
+    #[test]
+    fn the_resistance_table_prints_what_the_grid_printed() {
+        let res = crate::app::ResistanceResult {
+            method: "Holtrop".into(),
+            rows: vec![
+                crate::app::ResistanceRow {
+                    speed_kn: 6.0,
+                    fn_: 0.2846,
+                    rt_kn: 1.23456,
+                    pe_kw: Some(3.8),
+                    note: None,
+                },
+                crate::app::ResistanceRow {
+                    speed_kn: 7.5,
+                    fn_: 0.3557,
+                    rt_kn: 2.5,
+                    pe_kw: None,
+                    note: None,
+                },
+            ],
+            warnings: Vec::new(),
+            rt_label: "R_T (kN)".into(),
+        };
+        let rows = resistance_table(&res);
+        let text = |r: usize, c: usize| match &rows[r][c] {
+            EngCell::Text(t) => t.clone(),
+            EngCell::Badge(..) => unreachable!(),
+        };
+        assert_eq!(
+            [text(0, 0), text(0, 1), text(0, 2), text(0, 3)],
+            ["6.00", "0.285", "1.23", "3.80"]
+        );
+        assert_eq!(text(1, 3), "—");
     }
 
     #[test]

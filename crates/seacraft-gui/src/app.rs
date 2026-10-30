@@ -635,6 +635,10 @@ pub struct App {
     inspector_pending: Option<(usize, [f64; 3])>,
     /// Where the inspector's x/y/z fields were drawn last frame (test hook).
     inspector_rects: [egui::Rect; 3],
+    /// Where the layer list and the Inspector under it were drawn last
+    /// frame (test hooks).
+    layer_list_rect: egui::Rect,
+    inspector_rect: egui::Rect,
     /// The File > Report options window is open.
     show_report_options: bool,
     /// The New design dialog, while it is open.
@@ -783,6 +787,8 @@ impl App {
             dock_wide: false,
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
+            layer_list_rect: egui::Rect::NOTHING,
+            inspector_rect: egui::Rect::NOTHING,
             show_report_options: false,
             new_design: None,
             project_settings: None,
@@ -972,7 +978,7 @@ impl App {
                 mode: self.mode,
             };
             self.hydro.options = HydroOptions::from_surface(s, subdiv);
-            let (min, max) = s.extents();
+            let (min, max) = crate::render::display_extents(s);
             for cam in &mut self.cameras {
                 cam.frame(min, max);
             }
@@ -998,7 +1004,7 @@ impl App {
         };
         if stale {
             let mesh = export::render_mesh(surface, level, self.mode);
-            let (min, max) = surface.extents();
+            let (min, max) = crate::render::display_extents(surface);
             // Section curves and combs cost more than the refinement: a drag
             // keeps the ones from before it and rebuilds them on release.
             let carried = match self.drag {
@@ -1251,26 +1257,35 @@ impl App {
                 .resizable(true)
                 .default_size(250.0)
                 .show(ui, |ui| {
-                    // The selection Inspector sits under the layer list; the
-                    // list scrolls in whatever height is left above it.
-                    egui::Panel::bottom("inspector_panel")
-                        .resizable(false)
-                        .show(ui, |ui| {
-                            inspector = panels::inspector(
-                                ui,
-                                panels::InspectorPanel {
-                                    surface: self.surface.as_ref(),
-                                    selected: self.selected,
-                                    pending: &mut self.inspector_pending,
-                                },
-                            );
-                        });
+                    // The selection Inspector sits directly under the layer
+                    // list, both in one scroll area, so the eye does not
+                    // travel the height of the window between them.
                     egui::ScrollArea::vertical().show(ui, |ui| {
+                        let top = ui.cursor().top();
                         if let Some(surface) = self.surface.as_mut() {
                             changed = panels::layers(ui, surface);
                         } else {
                             ui.label("No model loaded.");
                         }
+                        self.layer_list_rect = egui::Rect::from_x_y_ranges(
+                            ui.max_rect().x_range(),
+                            top..=ui.min_rect().bottom(),
+                        );
+                        ui.add_space(4.0);
+                        ui.separator();
+                        let top = ui.cursor().top();
+                        inspector = panels::inspector(
+                            ui,
+                            panels::InspectorPanel {
+                                surface: self.surface.as_ref(),
+                                selected: self.selected,
+                                pending: &mut self.inspector_pending,
+                            },
+                        );
+                        self.inspector_rect = egui::Rect::from_x_y_ranges(
+                            ui.max_rect().x_range(),
+                            top..=ui.min_rect().bottom(),
+                        );
                     });
                 });
             if changed {
@@ -1282,6 +1297,8 @@ impl App {
             self.apply_inspector_action(inspector.action);
         } else {
             self.inspector_rects = [egui::Rect::NOTHING; 3];
+            self.layer_list_rect = egui::Rect::NOTHING;
+            self.inspector_rect = egui::Rect::NOTHING;
         }
 
         if self.show_analysis {
@@ -2393,7 +2410,7 @@ impl App {
 
     pub fn reset_cameras(&mut self) {
         if let Some(s) = &self.surface {
-            let (min, max) = s.extents();
+            let (min, max) = crate::render::display_extents(s);
             for cam in &mut self.cameras {
                 cam.frame(min, max);
             }
@@ -3984,7 +4001,7 @@ impl App {
     /// Frame the model in view `index` alone.
     fn fit_view(&mut self, index: usize) {
         if let Some(s) = &self.surface {
-            let (min, max) = s.extents();
+            let (min, max) = crate::render::display_extents(s);
             self.cameras[index].frame(min, max);
         }
     }
@@ -4098,6 +4115,17 @@ impl App {
     /// frame; `Rect::NOTHING` with no point selected (test hook).
     pub fn inspector_field_rect(&self, axis: usize) -> egui::Rect {
         self.inspector_rects[axis]
+    }
+
+    /// Where the left dock's layer list was drawn last frame (test hook).
+    pub fn layer_list_rect(&self) -> egui::Rect {
+        self.layer_list_rect
+    }
+
+    /// Where the Inspector was drawn last frame, under the layer list
+    /// (test hook).
+    pub fn inspector_rect(&self) -> egui::Rect {
+        self.inspector_rect
     }
 
     /// Refine the hull now if anything it depends on changed (the control

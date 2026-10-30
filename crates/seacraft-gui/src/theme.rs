@@ -3,8 +3,9 @@
 //!
 //! The palette keeps the app's identity (dark slate canvas, sea-blue hull,
 //! amber control net, red creases) and fixes contrast and consistency: a FAIL
-//! is the same red in every dock, the 1 m grid reads at ≥ 2:1 against the
-//! canvas, and datum lines are stronger than the minor grid.
+//! is the same red in every dock, and the grid has three tiers: quiet minor
+//! lines (≈ 1.4:1 against the canvas, so they never compete with the hull),
+//! stronger major lines every 5 m, and the datums strongest of all.
 //!
 //! No other module writes a colour literal (`Color32::from_rgb` and friends);
 //! the test at the bottom of this file reads the sources and enforces it.
@@ -17,6 +18,8 @@ use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
 pub const CANVAS: Color32 = Color32::from_rgb(0x13, 0x19, 0x21);
 /// Dock and window background (egui's dark panel grey, made explicit).
 pub const PANEL: Color32 = Color32::from_gray(27);
+/// Every other row of an engineering table, a shade above the panel.
+pub const TABLE_STRIPE: Color32 = Color32::from_gray(33);
 /// Plot area background, a shade below the canvas.
 pub const PLOT_BG: Color32 = Color32::from_rgb(0x0f, 0x14, 0x1b);
 /// Viewport frame, inactive and active.
@@ -37,10 +40,14 @@ pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x6f, 0x7f, 0x90);
 
 // ---- viewport ----------------------------------------------------------
 
-/// The 1 m grid. At least 2:1 against [`CANVAS`] (WCAG relative luminance).
-pub const GRID_MINOR: Color32 = Color32::from_rgb(0x40, 0x50, 0x64);
-/// Datum lines: centreline (y = 0), baseline (z = 0), x = 0 and midship.
-pub const GRID_MAJOR: Color32 = Color32::from_rgb(0x5f, 0x74, 0x8a);
+/// Minor grid lines (1 m at the usual zoom): about 1.4:1 against [`CANVAS`]
+/// (WCAG relative luminance), there when looked for and quiet otherwise.
+pub const GRID_MINOR: Color32 = Color32::from_rgb(0x2a, 0x36, 0x44);
+/// Major grid lines (every 5 m at the usual zoom): about 2:1.
+pub const GRID_MAJOR: Color32 = Color32::from_rgb(0x40, 0x50, 0x64);
+/// Datum lines: centreline (y = 0), baseline (z = 0), x = 0, midship and the
+/// design waterline. Above 3:1.
+pub const GRID_DATUM: Color32 = Color32::from_rgb(0x5f, 0x74, 0x8a);
 /// Hull shade when a face's layer is missing; layers carry their own colour.
 pub const HULL_DEFAULT: Color32 = Color32::from_rgb(0x9f, 0xb4, 0xc7);
 /// Refined-mesh wireframe.
@@ -322,13 +329,23 @@ mod tests {
 
     #[test]
     fn the_grid_reads_against_the_canvas() {
+        // R5-5: the minor lines went quiet (≥ 2:1 before; now ≈ 1.4:1) so
+        // they stop competing with the hull; majors and datums carry the
+        // structure.
         let minor = contrast_ratio(GRID_MINOR, CANVAS);
         let major = contrast_ratio(GRID_MAJOR, CANVAS);
-        assert!(minor >= 2.0, "minor grid {minor:.2}:1");
+        let datum = contrast_ratio(GRID_DATUM, CANVAS);
+        assert!((1.3..=1.6).contains(&minor), "minor grid {minor:.2}:1");
         assert!(
-            major > minor + 0.5,
+            major >= 1.9 && major > minor + 0.4,
             "major {major:.2}:1 vs minor {minor:.2}:1"
         );
+        assert!(
+            datum >= 3.0 && datum > major + 1.0,
+            "datum {datum:.2}:1 vs major {major:.2}:1"
+        );
+        // Every grid tier stays below the wireframe, so the hull reads first.
+        assert!(datum < contrast_ratio(WIREFRAME, CANVAS));
         // The WCAG formula itself: white on black is 21:1.
         assert!((contrast_ratio(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 1e-9);
     }

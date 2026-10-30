@@ -112,6 +112,25 @@ impl Scene<'_> {
     }
 }
 
+/// The box the viewports frame and draw around: the control net's extent,
+/// mirrored across the centreline when a symmetric layer has faces, since
+/// the refined hull is always shown mirrored ([`export::render_mesh`]). A
+/// half model framed on its modelled `y >= 0` half alone sits off-centre
+/// with its mirror image cut off.
+pub fn display_extents(surface: &Surface) -> (Vec3, Vec3) {
+    let (mut min, mut max) = surface.extents();
+    let mirrored = surface
+        .face_layer
+        .iter()
+        .any(|&l| surface.layers.get(l).is_some_and(|l| l.symmetric));
+    if mirrored {
+        let reach = max.y.abs().max(min.y.abs());
+        min.y = -reach;
+        max.y = reach;
+    }
+    (min, max)
+}
+
 /// Project every vertex once; `None` for points behind a perspective camera.
 pub fn project_verts(view: &ViewTransform, verts: &[Vec3], rect: Rect) -> Vec<Option<Pos2>> {
     verts.iter().map(|p| view.project(*p, rect)).collect()
@@ -166,7 +185,7 @@ pub fn viewport_with_texture(
 
     let view = camera.transform();
     if opts.grid {
-        draw_grid(&painter, &view, rect, &scene.center());
+        draw_grid(&painter, &view, rect, scene);
     }
     match texture {
         Some(texture) => {
@@ -265,82 +284,251 @@ pub fn hud_caption(painter: &egui::Painter, pos: Pos2, align: Align2, text: Stri
     backing
 }
 
-/// A 1 m grid in the plane through the camera target, spaced adaptively so it
-/// never becomes a solid wall of lines. In the orthographic views the datum
-/// lines (centreline, baseline, x = 0) and midship are drawn stronger.
-fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, center: &Vec3) {
-    // World height visible at the target plane: the orthographic height, or
-    // the perspective frustum's height at the distance of the target.
-    let (w, h) = (rect.width() as f64, rect.height() as f64);
-    let height = if view.perspective {
-        let depth = (*center - view.eye).dot(view.forward).max(1e-3);
-        2.0 * view.visible_fov_tan_wh(w, h) * depth
+/// The three tiers of the viewport grid, weakest first (the drawing order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GridTier {
+    /// Every minor step (1 m at the usual zoom).
+    Minor,
+    /// Every major step (5 m at the usual zoom).
+    Major,
+    /// Centreline, baseline, x = 0, midship and the design waterline.
+    Datum,
+}
+
+/// One grid line on screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridLine {
+    pub a: Pos2,
+    pub b: Pos2,
+    pub tier: GridTier,
+}
+
+/// Minor grid lines never sit closer than this on screen.
+pub const GRID_MIN_SPACING_PX: f64 = 12.0;
+
+/// Sub-metre minor lines only once they are this far apart: zoomed in on a
+/// detail, not at the usual whole-hull zoom, where 1 m is the grid.
+const GRID_SUBMETRE_SPACING_PX: f64 = 40.0;
+
+/// The minor and major grid steps, in metres, at `px_per_m` pixels per
+/// metre: the finest minor step at least [`GRID_MIN_SPACING_PX`] apart on
+/// screen (sub-metre steps at least 40 px). 1 m minor lines come with 5 m
+/// majors; zoomed out, 5 m minors come with 10 m majors, 10 m with 50 m, and
+/// so on.
+pub fn grid_steps(px_per_m: f64) -> (f64, f64) {
+    const LADDER: [(f64, f64); 11] = [
+        (0.1, 0.5),
+        (0.5, 1.0),
+        (1.0, 5.0),
+        (5.0, 10.0),
+        (10.0, 50.0),
+        (50.0, 100.0),
+        (100.0, 500.0),
+        (500.0, 1000.0),
+        (1000.0, 5000.0),
+        (5000.0, 10000.0),
+        (10000.0, 50000.0),
+    ];
+    let px = if px_per_m.is_finite() && px_per_m > 0.0 {
+        px_per_m
     } else {
-        view.visible_height_wh(w, h)
+        1e-9
     };
-    let width = height * (rect.width().max(1.0) / rect.height().max(1.0)) as f64;
-    let half = (height.max(width) * 0.75).max(1.0);
+    LADDER
+        .into_iter()
+        .find(|(minor, _)| {
+            let need = if *minor < 1.0 {
+                GRID_SUBMETRE_SPACING_PX
+            } else {
+                GRID_MIN_SPACING_PX
+            };
+            minor * px >= need
+        })
+        .unwrap_or(LADDER[LADDER.len() - 1])
+}
 
-    let base = (*center).dot(view.right);
-    let up_base = (*center).dot(view.up);
-    let step = [
-        0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 500.0,
-    ]
-    .into_iter()
-    .find(|s| 2.0 * half / s <= 30.0)
-    .unwrap_or(1000.0);
+/// Grid lines on multiples of `minor` covering `lo..=hi`, each with its
+/// tier: [`GridTier::Major`] on multiples of `major`, [`GridTier::Datum`] at
+/// zero when `zero_is_datum`.
+fn tiered_lines(
+    lo: f64,
+    hi: f64,
+    minor: f64,
+    major: f64,
+    zero_is_datum: bool,
+) -> Vec<(f64, GridTier)> {
+    let ratio = (major / minor).round().max(1.0) as i64;
+    let i0 = (lo / minor).floor() as i64;
+    let i1 = (hi / minor).ceil() as i64;
+    (i0..=i1)
+        .map(|i| {
+            let tier = if i == 0 && zero_is_datum {
+                GridTier::Datum
+            } else if i.rem_euclid(ratio) == 0 {
+                GridTier::Major
+            } else {
+                GridTier::Minor
+            };
+            (i as f64 * minor, tier)
+        })
+        .collect()
+}
 
-    // Minor lines first, datum lines on top of them.
-    let mut lines: Vec<([Vec3; 2], bool)> = Vec::new();
+/// The viewport grid on screen, weakest tier first.
+///
+/// Orthographic views draw a grid in the view plane, world-anchored (a line
+/// at 3 m is at 3 m in every view) and covering the whole cell, with the
+/// datums where the view runs along world axes: centreline, baseline, x = 0,
+/// midship (the middle of `min..max` in x) and, in the views with z up, the
+/// design waterline at `dwl_z`.
+///
+/// The perspective view draws a ground grid on the baseline plane z = 0
+/// around the model instead of a screen-space wallpaper: it foreshortens
+/// with the hull, so it says which way is down and how far away things are,
+/// and its lines are the same metres as the orthographic views'.
+pub fn grid_segments(
+    view: &ViewTransform,
+    rect: Rect,
+    min: Vec3,
+    max: Vec3,
+    dwl_z: Option<f64>,
+) -> Vec<GridLine> {
+    let mut lines = if view.perspective {
+        ground_grid(view, rect, min, max)
+    } else {
+        ortho_grid(view, rect, min, max, dwl_z)
+    };
+    lines.sort_by_key(|l| l.tier);
+    lines
+}
+
+fn ortho_grid(
+    view: &ViewTransform,
+    rect: Rect,
+    min: Vec3,
+    max: Vec3,
+    dwl_z: Option<f64>,
+) -> Vec<GridLine> {
+    let mut out = Vec::new();
+    let world_per_px = view.world_per_px(rect, 1.0);
+    let (minor, major) = grid_steps(1.0 / world_per_px);
+    // The screen centre is the camera target; the eye sits on its axis.
+    let (base, up_base) = (view.eye.dot(view.right), view.eye.dot(view.up));
+    let half_w = 0.5 * rect.width() as f64 * world_per_px + minor;
+    let half_h = 0.5 * rect.height() as f64 * world_per_px + minor;
     let datum_right = is_world_axis(view.right);
     let datum_up = is_world_axis(view.up);
-    for (u, zero) in grid_lines(base, half, step) {
-        lines.push((
-            [
-                view.right * u + view.up * (up_base - half),
-                view.right * u + view.up * (up_base + half),
-            ],
-            zero && datum_right,
-        ));
+    let mut push = |a: Vec3, b: Vec3, tier: GridTier| {
+        if let (Some(a), Some(b)) = (view.project(a, rect), view.project(b, rect)) {
+            out.push(GridLine { a, b, tier });
+        }
+    };
+    let vertical = |u: f64| {
+        (
+            view.right * u + view.up * (up_base - half_h),
+            view.right * u + view.up * (up_base + half_h),
+        )
+    };
+    let horizontal = |v: f64| {
+        (
+            view.right * (base - half_w) + view.up * v,
+            view.right * (base + half_w) + view.up * v,
+        )
+    };
+    for (u, tier) in tiered_lines(base - half_w, base + half_w, minor, major, datum_right) {
+        let (a, b) = vertical(u);
+        push(a, b, tier);
     }
-    for (v, zero) in grid_lines(up_base, half, step) {
-        lines.push((
-            [
-                view.right * (base - half) + view.up * v,
-                view.right * (base + half) + view.up * v,
-            ],
-            zero && datum_up,
-        ));
+    for (v, tier) in tiered_lines(up_base - half_h, up_base + half_h, minor, major, datum_up) {
+        let (a, b) = horizontal(v);
+        push(a, b, tier);
     }
     // Midship: the middle of the model's length, where a view runs along x.
+    let mid_x = 0.5 * (min.x + max.x);
     if datum_right && view.right.x.abs() > 0.999 {
-        lines.push((
-            [
-                view.right * base + view.up * (up_base - half),
-                view.right * base + view.up * (up_base + half),
-            ],
-            true,
-        ));
+        let (a, b) = vertical(mid_x * view.right.x.signum());
+        push(a, b, GridTier::Datum);
     }
     if datum_up && view.up.x.abs() > 0.999 {
-        lines.push((
-            [
-                view.right * (base - half) + view.up * up_base,
-                view.right * (base + half) + view.up * up_base,
-            ],
-            true,
-        ));
+        let (a, b) = horizontal(mid_x * view.up.x.signum());
+        push(a, b, GridTier::Datum);
     }
-    lines.sort_by_key(|(_, major)| *major);
-    for ([a, b], major) in lines {
-        if let (Some(p), Some(q)) = (view.project(a, rect), view.project(b, rect)) {
-            let stroke = if major {
-                Stroke::new(1.2, theme::GRID_MAJOR)
-            } else {
-                Stroke::new(1.0, theme::GRID_MINOR)
-            };
-            painter.line_segment([p, q], stroke);
+    // The design waterline, in the views with z up (profile, body plan).
+    if let Some(z) = dwl_z.filter(|z| z.is_finite()) {
+        if view.up.z > 0.999 {
+            let (a, b) = horizontal(z);
+            push(a, b, GridTier::Datum);
         }
+    }
+    out
+}
+
+/// The perspective view's ground grid on z = 0, around the model's plan.
+fn ground_grid(view: &ViewTransform, rect: Rect, min: Vec3, max: Vec3) -> Vec<GridLine> {
+    let mut out = Vec::new();
+    // Scale at the depth of the model's centre, where the eye looks.
+    let centre = (min + max) * 0.5;
+    let depth = (centre - view.eye).dot(view.forward).max(1e-3);
+    let (minor, major) = grid_steps(1.0 / view.world_per_px(rect, depth));
+    // The model's plan plus half its length all round, so the grid frames
+    // the hull and stops well before the horizon.
+    let size = (max.x - min.x).max(max.y - min.y).max(1.0);
+    let pad = 0.5 * size;
+    let (x0, x1) = (min.x - pad, max.x + pad);
+    let (y0, y1) = (min.y - pad, max.y + pad);
+    let x_lines = tiered_lines(x0, x1, minor, major, true);
+    let y_lines = tiered_lines(y0, y1, minor, major, true);
+    let (xs, xe) = (x_lines[0].0, x_lines[x_lines.len() - 1].0);
+    let (ys, ye) = (y_lines[0].0, y_lines[y_lines.len() - 1].0);
+    let mut push = |a: Vec3, b: Vec3, tier: GridTier| {
+        if let Some((a, b)) = clip_near(view, a, b) {
+            if let (Some(a), Some(b)) = (view.project(a, rect), view.project(b, rect)) {
+                out.push(GridLine { a, b, tier });
+            }
+        }
+    };
+    for &(x, tier) in &x_lines {
+        push(Vec3::new(x, ys, 0.0), Vec3::new(x, ye, 0.0), tier);
+    }
+    for &(y, tier) in &y_lines {
+        push(Vec3::new(xs, y, 0.0), Vec3::new(xe, y, 0.0), tier);
+    }
+    let mid_x = 0.5 * (min.x + max.x);
+    push(
+        Vec3::new(mid_x, ys, 0.0),
+        Vec3::new(mid_x, ye, 0.0),
+        GridTier::Datum,
+    );
+    out
+}
+
+/// The part of segment `a`–`b` in front of a perspective camera's near
+/// plane, or `None` when all of it is behind.
+fn clip_near(view: &ViewTransform, a: Vec3, b: Vec3) -> Option<(Vec3, Vec3)> {
+    const NEAR: f64 = 0.1;
+    let (da, db) = (
+        (a - view.eye).dot(view.forward),
+        (b - view.eye).dot(view.forward),
+    );
+    match (da >= NEAR, db >= NEAR) {
+        (true, true) => Some((a, b)),
+        (false, false) => None,
+        (true, false) => Some((a, a + (b - a) * ((da - NEAR) / (da - db)))),
+        (false, true) => Some((b + (a - b) * ((db - NEAR) / (db - da)), b)),
+    }
+}
+
+/// Draw [`grid_segments`]: minor lines thin and quiet, major lines a little
+/// stronger, datums strongest.
+fn draw_grid(painter: &egui::Painter, view: &ViewTransform, rect: Rect, scene: &Scene) {
+    let dwl_z = scene.surface.lowest_hydrostatics_point() + scene.draft;
+    for line in grid_segments(view, rect, scene.min, scene.max, Some(dwl_z)) {
+        let stroke = match line.tier {
+            GridTier::Minor => Stroke::new(1.0, theme::GRID_MINOR),
+            GridTier::Major => Stroke::new(1.0, theme::GRID_MAJOR),
+            GridTier::Datum => Stroke::new(1.2, theme::GRID_DATUM),
+        };
+        painter.line_segment([line.a, line.b], stroke);
     }
 }
 
@@ -1180,6 +1368,7 @@ fn draw_windage(
 mod tests {
     use super::*;
     use crate::camera::{Camera, ViewKind};
+    use seacraft_core::math::Vec3;
 
     #[test]
     fn grid_lines_are_world_anchored_with_one_datum() {
@@ -1194,6 +1383,116 @@ mod tests {
         assert_eq!(datums[0].0, 0.0);
         // Far from the origin there is no datum to draw.
         assert!(grid_lines(100.0, 5.0, 1.0).iter().all(|l| !l.1));
+    }
+
+    #[test]
+    fn grid_steps_keep_minor_lines_apart_and_majors_every_5_m() {
+        // The usual zoom (~0.03 m/px): 1 m minors, 5 m majors.
+        assert_eq!(grid_steps(1.0 / 0.03), (1.0, 5.0));
+        // Zoomed out, the minors coarsen to 5 m (10 m majors), then 10 m.
+        assert_eq!(grid_steps(1.0 / 0.2), (5.0, 10.0));
+        assert_eq!(grid_steps(1.0 / 0.5), (10.0, 50.0));
+        // Zoomed in on a detail, half-metre and then 0.1 m minors.
+        assert_eq!(grid_steps(1.0 / 0.005), (0.5, 1.0));
+        assert_eq!(grid_steps(1.0 / 0.002), (0.1, 0.5));
+        for px_per_m in [0.01, 0.3, 2.0, 11.9, 12.0, 40.0, 250.0, 5000.0] {
+            let (minor, major) = grid_steps(px_per_m);
+            assert!(major > minor, "{px_per_m}: {minor} / {major}");
+            if px_per_m > 0.01 {
+                assert!(
+                    minor * px_per_m >= GRID_MIN_SPACING_PX,
+                    "{px_per_m} px/m: {minor} m minors are {} px apart",
+                    minor * px_per_m
+                );
+            }
+        }
+    }
+
+    /// Screen positions of the minor and major lines of an orthographic
+    /// grid, across (vertical lines) and up (horizontal lines).
+    fn grid_positions(lines: &[GridLine]) -> (Vec<f32>, Vec<f32>) {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for l in lines.iter().filter(|l| l.tier != GridTier::Datum) {
+            if (l.a.x - l.b.x).abs() < 0.01 {
+                xs.push(l.a.x);
+            } else {
+                ys.push(l.a.y);
+            }
+        }
+        xs.sort_by(f32::total_cmp);
+        ys.sort_by(f32::total_cmp);
+        (xs, ys)
+    }
+
+    #[test]
+    fn no_two_minor_grid_lines_sit_closer_than_12_px_at_any_zoom() {
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(486.0, 452.0));
+        let (min, max) = (Vec3::new(0.0, -1.8, 0.0), Vec3::new(12.0, 1.8, 1.7));
+        for kind in [ViewKind::Profile, ViewKind::Plan, ViewKind::Body] {
+            for height in [0.3, 2.0, 7.5, 14.0, 40.0, 130.0, 900.0] {
+                let camera = Camera::ortho(kind, (min + max) * 0.5, height);
+                let lines = grid_segments(&camera.transform(), rect, min, max, Some(0.62));
+                let (xs, ys) = grid_positions(&lines);
+                assert!(xs.len() >= 2 && ys.len() >= 2, "{kind:?} at {height} m");
+                for w in xs.windows(2).chain(ys.windows(2)) {
+                    assert!(
+                        w[1] - w[0] >= GRID_MIN_SPACING_PX as f32 - 0.01,
+                        "{kind:?} at {height} m: lines {} px apart",
+                        w[1] - w[0]
+                    );
+                }
+                // The grid covers the cell, so a panned view still has one.
+                assert!(xs[0] <= rect.left() + 1.0 && *xs.last().unwrap() >= rect.right() - 1.0);
+            }
+        }
+        // Body plan datums: centreline, baseline and the waterline.
+        let camera = Camera::ortho(ViewKind::Body, (min + max) * 0.5, 4.0);
+        let view = camera.transform();
+        let datums: Vec<_> = grid_segments(&view, rect, min, max, Some(0.62))
+            .into_iter()
+            .filter(|l| l.tier == GridTier::Datum)
+            .collect();
+        assert_eq!(datums.len(), 3, "{datums:?}");
+        let dwl = view.project(Vec3::new(0.0, 0.0, 0.62), rect).unwrap().y;
+        assert!(datums
+            .iter()
+            .any(|l| (l.a.y - dwl).abs() < 0.5 && (l.b.y - dwl).abs() < 0.5));
+    }
+
+    #[test]
+    fn the_perspective_grid_lies_on_the_baseline_plane() {
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(486.0, 452.0));
+        let (min, max) = (Vec3::new(0.0, -1.8, 0.0), Vec3::new(12.0, 1.8, 1.7));
+        let mut camera = Camera::new(ViewKind::Perspective, (min + max) * 0.5, max - min);
+        camera.frame(min, max);
+        let view = camera.transform();
+        let lines = grid_segments(&view, rect, min, max, Some(0.62));
+        assert!(lines.len() > 10, "{} lines", lines.len());
+        // Every end point is the projection of a point on z = 0: cast the
+        // ray back and it meets the plane where the line was drawn from.
+        for l in &lines {
+            for p in [l.a, l.b] {
+                let ray = view.ray(p, rect);
+                assert!(
+                    ray.dir.z.abs() > 1e-6,
+                    "the line is not on a plane under the eye"
+                );
+                let t = -ray.origin.z / ray.dir.z;
+                assert!(t > 0.0, "z = 0 is behind the camera at {p:?}");
+                let hit = ray.point_at(t);
+                assert!(
+                    hit.x > min.x - 7.0 && hit.x < max.x + 7.0 && hit.y.abs() < 9.0,
+                    "{hit:?} is not around the model"
+                );
+            }
+        }
+        // The centreline and midship are datums; the rest are 1 m / 5 m.
+        let datums = lines.iter().filter(|l| l.tier == GridTier::Datum).count();
+        assert!((2..=3).contains(&datums), "{datums} datums");
+        assert!(lines.iter().any(|l| l.tier == GridTier::Major));
+        // Weakest first, so a datum is never painted over.
+        assert!(lines.windows(2).all(|w| w[0].tier <= w[1].tier));
     }
 
     #[test]
@@ -1229,6 +1528,7 @@ mod tests {
         out.textures_delta.clear();
         let mut minor = 0;
         let mut major = 0;
+        let mut datum = 0;
         let mut backings = Vec::new();
         let mut captions = Vec::new();
         fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
@@ -1246,6 +1546,9 @@ mod tests {
                         assert!(stroke.width <= 1.0);
                     } else if stroke.color == theme::GRID_MAJOR {
                         major += 1;
+                        assert!(stroke.width <= 1.0);
+                    } else if stroke.color == theme::GRID_DATUM {
+                        datum += 1;
                         assert!(stroke.width > 1.0);
                     }
                 }
@@ -1255,8 +1558,10 @@ mod tests {
             });
         }
         assert!(minor > 4, "{minor} minor lines");
-        // Profile: baseline z = 0, x = 0 and midship.
-        assert_eq!(major, 3, "datum lines in the profile view");
+        // 5 m majors: at least x = 5 and x = 10 along the 12 m hull.
+        assert!(major >= 2, "{major} major lines");
+        // Profile: baseline z = 0, x = 0, midship and the design waterline.
+        assert_eq!(datum, 4, "datum lines in the profile view");
         assert_eq!(backings.len(), 2, "view name and scale each get a backing");
         for (text, pos) in &captions {
             assert!(

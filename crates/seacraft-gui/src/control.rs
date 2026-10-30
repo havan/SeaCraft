@@ -2237,7 +2237,7 @@ fn render_png(
     app.refresh_cache();
     let surface = app.surface().ok_or("no model loaded")?;
     let mesh = app.render_cache().ok_or("the model could not be refined")?;
-    let (min, max) = surface.extents();
+    let (min, max) = crate::render::display_extents(surface);
     let (draft, trim, heel_deg) = {
         let options = app.hydro_options();
         (options.draft, options.trim, options.heel_deg)
