@@ -15,16 +15,18 @@ use std::path::PathBuf;
 
 use seacraft_core::curves::{Bonjean, BonjeanSection};
 use seacraft_core::develop::{BandAxis, PatchSelection, Unfolded};
+use seacraft_core::hydro::HydroOptions;
 use seacraft_core::offsets::{OffsetStation, TableOfOffsets};
 use seacraft_core::optimize::{OptimizeReport, OptimizeSpec};
 use seacraft_core::parametric::{GenerateReport, HullSpec};
-use seacraft_core::subdiv::SubdivisionOptions;
+use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 use seacraft_core::table::HydrostaticRow;
 use seacraft_core::transform::{TransformReport, TransformRequest};
 use seacraft_core::trimopt::{TrimPoint, TrimScan};
 use serde::Serialize;
 
 use crate::App;
+use seacraft_core::Surface;
 
 /// `level`, or the app's own subdivision level when `None`.
 fn level_or_app(app: &App, level: Option<u8>) -> u8 {
@@ -36,6 +38,72 @@ fn subdivision_at(app: &App, level: u8) -> SubdivisionOptions {
     SubdivisionOptions {
         level,
         mode: app.subdivision_mode(),
+    }
+}
+
+// ---- read-only analysis inputs -------------------------------------------
+
+/// What the read-only analysis commands (tables, curves, plate development)
+/// read from the app. The control channel borrows it from the [`App`]; a
+/// background job borrows it from an owned [`ModelSnapshot`].
+#[derive(Debug, Clone, Copy)]
+pub struct ModelView<'a> {
+    pub surface: Option<&'a Surface>,
+    pub hydro: &'a HydroOptions,
+    /// The app's subdivision level (a command's `level: None`).
+    pub level: u8,
+    pub mode: SubdivisionMode,
+}
+
+impl<'a> ModelView<'a> {
+    /// The app's model and settings.
+    pub fn of(app: &'a App) -> Self {
+        Self {
+            surface: app.surface(),
+            hydro: app.hydro_options(),
+            level: app.subdivision_level(),
+            mode: app.subdivision_mode(),
+        }
+    }
+
+    fn level_or(&self, level: Option<u8>) -> u8 {
+        level.unwrap_or(self.level)
+    }
+
+    fn subdivision_at(&self, level: u8) -> SubdivisionOptions {
+        SubdivisionOptions {
+            level,
+            mode: self.mode,
+        }
+    }
+}
+
+/// An owned copy of a [`ModelView`], to move into a background job.
+#[derive(Debug, Clone)]
+pub struct ModelSnapshot {
+    pub surface: Option<Surface>,
+    pub hydro: HydroOptions,
+    pub level: u8,
+    pub mode: SubdivisionMode,
+}
+
+impl ModelSnapshot {
+    pub fn of(app: &App) -> Self {
+        Self {
+            surface: app.surface().cloned(),
+            hydro: app.hydro_options().clone(),
+            level: app.subdivision_level(),
+            mode: app.subdivision_mode(),
+        }
+    }
+
+    pub fn view(&self) -> ModelView<'_> {
+        ModelView {
+            surface: self.surface.as_ref(),
+            hydro: &self.hydro,
+            level: self.level,
+            mode: self.mode,
+        }
     }
 }
 
@@ -410,12 +478,20 @@ pub struct HydroTableResult {
 
 /// Build the hydrostatic table. Read-only.
 pub fn hydro_table(app: &App, params: &HydroTableParams) -> Result<HydroTableResult, String> {
-    let mut opts = app.hydro_options().clone();
+    hydro_table_in(ModelView::of(app), params)
+}
+
+/// [`hydro_table`] on a [`ModelView`] (a background job's snapshot).
+pub fn hydro_table_in(
+    model: ModelView<'_>,
+    params: &HydroTableParams,
+) -> Result<HydroTableResult, String> {
+    let mut opts = model.hydro.clone();
     if let Some(to) = params.to {
         opts.draft = to;
     }
-    let level = level_or_app(app, params.level);
-    opts.subdivision = subdivision_at(app, level);
+    let level = model.level_or(params.level);
+    opts.subdivision = model.subdivision_at(level);
     let drafts = match &params.drafts {
         Some(list) => {
             if list.is_empty() {
@@ -428,8 +504,8 @@ pub fn hydro_table(app: &App, params: &HydroTableParams) -> Result<HydroTableRes
         }
         None => seacraft_core::table::draft_range(opts.draft, params.steps),
     };
-    let surface = app
-        .surface()
+    let surface = model
+        .surface
         .ok_or_else(|| "hydro.table: no model is loaded".to_string())?;
     let t = seacraft_core::table::table(surface, &opts, &drafts);
     Ok(HydroTableResult {
@@ -485,17 +561,25 @@ pub struct TrimScanResult {
 
 /// Scan resistance over trim. Read-only.
 pub fn trim_scan(app: &App, params: &TrimScanParams) -> Result<TrimScanResult, String> {
-    let mut opts = app.hydro_options().clone();
+    trim_scan_in(ModelView::of(app), params)
+}
+
+/// [`trim_scan`] on a [`ModelView`] (a background job's snapshot).
+pub fn trim_scan_in(
+    model: ModelView<'_>,
+    params: &TrimScanParams,
+) -> Result<TrimScanResult, String> {
+    let mut opts = model.hydro.clone();
     if let Some(d) = params.draft {
         opts.draft = d;
     }
-    let level = level_or_app(app, params.level);
-    let subdiv = subdivision_at(app, level);
+    let level = model.level_or(params.level);
+    let subdiv = model.subdivision_at(level);
     if params.to <= params.from {
         return Err("hydro.trim: `to` must be greater than `from`".into());
     }
-    let surface = app
-        .surface()
+    let surface = model
+        .surface
         .ok_or_else(|| "hydro.trim: no model is loaded".to_string())?;
     let trims = seacraft_core::trimopt::trim_range(params.from, params.to, params.steps);
     let TrimScan {
@@ -562,11 +646,16 @@ pub struct BonjeanResult {
 
 /// Measure the Bonjean curves of the app's model. Read-only.
 pub fn bonjean(app: &App, params: &BonjeanParams) -> Result<BonjeanResult, String> {
-    let level = level_or_app(app, params.level);
-    let surface = app
-        .surface()
+    bonjean_in(ModelView::of(app), params)
+}
+
+/// [`bonjean`] on a [`ModelView`] (a background job's snapshot).
+pub fn bonjean_in(model: ModelView<'_>, params: &BonjeanParams) -> Result<BonjeanResult, String> {
+    let level = model.level_or(params.level);
+    let surface = model
+        .surface
         .ok_or_else(|| "curves.bonjean: no model is loaded".to_string())?;
-    let hull = seacraft_core::hydro::Hull::new(surface, subdivision_at(app, level));
+    let hull = seacraft_core::hydro::Hull::new(surface, model.subdivision_at(level));
     let depth = hull.model_max.z - hull.keel;
     if depth <= 0.0 {
         return Err("curves.bonjean: the hull has no height above the keel".into());
@@ -594,7 +683,7 @@ pub fn bonjean(app: &App, params: &BonjeanParams) -> Result<BonjeanResult, Strin
     Ok(BonjeanResult {
         level,
         depth_m: depth,
-        design_draft_m: app.hydro_options().draft,
+        design_draft_m: model.hydro.draft,
         drafts_m: bj.drafts_m,
         sections: bj.sections,
         area_max_m2,
@@ -659,11 +748,16 @@ fn positive_ordinates(given: &[f64], key: &str) -> Result<Vec<f64>, String> {
 
 /// Build the table of offsets of the app's model. Read-only.
 pub fn offsets(app: &App, params: &OffsetsParams) -> Result<OffsetsResult, String> {
-    let level = level_or_app(app, params.level);
-    let surface = app
-        .surface()
+    offsets_in(ModelView::of(app), params)
+}
+
+/// [`offsets`] on a [`ModelView`] (a background job's snapshot).
+pub fn offsets_in(model: ModelView<'_>, params: &OffsetsParams) -> Result<OffsetsResult, String> {
+    let level = model.level_or(params.level);
+    let surface = model
+        .surface
         .ok_or_else(|| "curves.offsets: no model is loaded".to_string())?;
-    let hull = seacraft_core::hydro::Hull::new(surface, subdivision_at(app, level));
+    let hull = seacraft_core::hydro::Hull::new(surface, model.subdivision_at(level));
     let waterlines = match &params.waterlines {
         Some(v) => positive_ordinates(v, "waterlines")?,
         None => seacraft_core::offsets::default_waterlines(&hull, params.waterline_steps),
@@ -702,6 +796,10 @@ pub struct UnfoldParams {
     pub x_to: Option<f64>,
     /// Both sides of a symmetric hull, not starboard only.
     pub both_sides: bool,
+    /// Develop only this layer's faces (index); `None` is every layer used
+    /// in the hydrostatics, as before. A layer is developed whether or not it
+    /// is used in the hydrostatics.
+    pub layer: Option<usize>,
     /// Where to write the plate as SVG. The caller has already checked the
     /// path (the control channel against its write roots).
     pub path: Option<PathBuf>,
@@ -717,6 +815,7 @@ impl Default for UnfoldParams {
             x_from: None,
             x_to: None,
             both_sides: false,
+            layer: None,
             path: None,
         }
     }
@@ -735,12 +834,36 @@ pub struct UnfoldResult {
 /// Develop a band of the hull flat. Read-only on the model; writes the SVG
 /// when `path` is given.
 pub fn unfold(app: &App, params: &UnfoldParams) -> Result<UnfoldResult, String> {
+    unfold_in(ModelView::of(app), params)
+}
+
+/// [`unfold`] on a [`ModelView`] (a background job's snapshot).
+pub fn unfold_in(model: ModelView<'_>, params: &UnfoldParams) -> Result<UnfoldResult, String> {
     let axis = params.axis;
-    let level = level_or_app(app, params.level);
-    let surface = app
-        .surface()
+    let level = model.level_or(params.level);
+    let surface = model
+        .surface
         .ok_or_else(|| "curves.unfold: no model is loaded".to_string())?;
-    let hull = seacraft_core::hydro::Hull::new(surface, subdivision_at(app, level));
+    // One layer: the same refined mesh, with only that layer's faces kept.
+    let one_layer;
+    let surface = match params.layer {
+        None => surface,
+        Some(layer) => {
+            if layer >= surface.layers.len() {
+                return Err(format!(
+                    "curves.unfold: no layer {layer} (the model has {})",
+                    surface.layers.len()
+                ));
+            }
+            let mut only = surface.clone();
+            for (i, l) in only.layers.iter_mut().enumerate() {
+                l.use_in_hydrostatics = i == layer;
+            }
+            one_layer = only;
+            &one_layer
+        }
+    };
+    let hull = seacraft_core::hydro::Hull::new(surface, model.subdivision_at(level));
     let pick = |axis: BandAxis, given: Option<f64>, low: bool| {
         given.unwrap_or(match (axis, low) {
             (BandAxis::X, true) => hull.model_min.x,

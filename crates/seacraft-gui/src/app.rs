@@ -798,6 +798,9 @@ pub struct App {
     perf_state: PerformanceState,
     resistance_track: Track<ResistanceResult>,
     raos_track: Track<RaoResult>,
+    /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
+    /// scan, plate development): inputs, results and jobs.
+    analysis: crate::analysis_views::AnalysisViews,
     /// Bumped by every change of the floating condition (draft, trim, heel,
     /// KG, free trim, LCG). With `revision` and the counters below it keys
     /// every result: a result is current while its key is unchanged.
@@ -965,6 +968,7 @@ impl App {
             perf_state: PerformanceState::default(),
             resistance_track: Track::default(),
             raos_track: Track::default(),
+            analysis: Default::default(),
             hydro_rev: 0,
             project_rev: 0,
             perf_rev: 0,
@@ -1180,6 +1184,7 @@ impl App {
         self.perf_state.raos = None;
         self.perf_state.sea_result = None;
         self.raos_track.reset();
+        self.analysis.clear_results();
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
@@ -1297,6 +1302,10 @@ impl App {
         let kg_source = self.performance_kg_source();
         let kg_estimate = self.kg_is_estimate();
         let limits = self.hydro_limits();
+        let open_view = self.analysis.open;
+        let view_panel = open_view.map(|v| self.analysis_view_panel_inputs(v));
+        let mut close_view = false;
+        let mut view_action = crate::analysis_views::ViewAction::None;
         if self.surface.is_none() {
             // Nothing to measure: the dock keeps its frame (the layout does
             // not jump when a model arrives) but not its empty controls.
@@ -1318,16 +1327,38 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
                 for (i, t) in DesignDock::ALL.into_iter().enumerate() {
-                    let response = ui.selectable_label(tab == t, t.label());
+                    let response = ui.selectable_label(tab == t && open_view.is_none(), t.label());
                     if tab_stale[i] {
                         panels::stale_dot(ui, response.rect);
                     }
                     if response.clicked() {
                         tab = t;
+                        close_view = true;
                     }
+                }
+                if let Some(view) = open_view {
+                    ui.separator();
+                    let _ = ui.selectable_label(true, view.label());
                 }
             });
             ui.separator();
+            if let (Some(view), Some((stale, busy, failure, layers, design_draft))) =
+                (open_view, view_panel)
+            {
+                view_action = crate::analysis_views::panel(
+                    ui,
+                    crate::analysis_views::ViewPanel {
+                        view,
+                        state: &mut self.analysis,
+                        stale,
+                        busy,
+                        failure,
+                        layers,
+                        design_draft,
+                    },
+                );
+                return;
+            }
             if let Some(msg) = &failure {
                 ui.colored_label(crate::theme::FAIL, format!("⚠ {msg}"));
             }
@@ -1413,6 +1444,10 @@ impl App {
         if toggle_wide {
             self.dock_wide = !self.dock_wide;
         }
+        if close_view {
+            self.analysis.open = None;
+        }
+        self.apply_view_action(view_action, ui.ctx());
         self.last_highlighted_tank = tank_highlight;
         self.last_highlighted_compartment = comp_highlight;
 
@@ -1941,6 +1976,7 @@ impl App {
                     }
                 });
                 self.model_menu(ui);
+                self.analysis_menu(ui);
                 ui.menu_button("Help", |ui| {
                     ui.label(format!("SeaCraft {}", seacraft_core::VERSION));
                     ui.label("A Rust reimplementation of FREE!ship.");
@@ -3369,7 +3405,8 @@ impl App {
             || self.loading_track.busy()
             || self.damage_track.busy()
             || self.resistance_track.busy()
-            || self.raos_track.busy();
+            || self.raos_track.busy()
+            || self.analysis.busy();
         if busy || waiting {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
@@ -3412,6 +3449,7 @@ impl App {
             Some(Err(e)) => self.status = format!("Seakeeping compute failed: {e}"),
             None => {}
         }
+        self.poll_analysis_views();
     }
 
     /// Measure the hydrostatics on a job (the previous report stays shown,
@@ -3541,6 +3579,13 @@ impl App {
         if !self.show_analysis {
             return;
         }
+        if let Some(view) = self.analysis.open {
+            // The open view instead of the hidden tab: stale or empty.
+            if self.analysis.slot(view).track.due(self.analysis_key(view)) {
+                self.start_analysis_view(view);
+            }
+            return;
+        }
         match self.dock_tab {
             DesignDock::Hydrostatics => {
                 let key = self.hydro_key();
@@ -3603,6 +3648,7 @@ impl App {
             (self.damage_stale(), "damage"),
             (self.resistance_stale(), "resistance"),
             (self.raos_stale(), "RAOs"),
+            (self.open_view_stale(), "analysis view"),
         ]
         .into_iter()
         .filter_map(|(stale, name)| stale.then_some(name))
@@ -3686,6 +3732,7 @@ impl App {
             || self.damage_track.busy()
             || self.resistance_track.busy()
             || self.raos_track.busy()
+            || self.analysis.busy()
     }
 
     /// Run `work` as the loading job, as a worker that fails would (test
@@ -5446,5 +5493,238 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
+    }
+}
+
+// ---- the Analysis menu's views (R5-8) -------------------------------------
+//
+// Hydrostatic table, Bonjean curves, offsets, trim scan and plate
+// development: each opens in the wide Analysis dock instead of the tab body
+// (a tab click goes back), computes on a job from a snapshot of the model,
+// and follows the recompute rule as a heavy result: manual (Compute or F5),
+// stale once its key moves on.
+
+impl App {
+    /// The Analysis menu: one item per view.
+    fn analysis_menu(&mut self, ui: &mut egui::Ui) {
+        use crate::analysis_views::AnalysisView;
+        ui.menu_button("Analysis", |ui| {
+            for view in AnalysisView::ALL {
+                // Tables and curves of the hull, then the studies.
+                if view == AnalysisView::TrimScan {
+                    ui.separator();
+                }
+                let item = egui::Button::selectable(self.analysis.open == Some(view), view.label());
+                if ui.add_enabled(self.surface.is_some(), item).clicked() {
+                    self.open_analysis_view(view);
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// Show `view` in the widened Analysis dock. Opening a view that has no
+    /// result yet computes it.
+    pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        self.analysis.open = Some(view);
+        self.show_analysis = true;
+        self.dock_wide = true;
+        let key = self.analysis_key(view);
+        let slot = self.analysis.slot(view);
+        if slot.result.is_none() && slot.track.due(key) {
+            self.start_analysis_view(view);
+        }
+    }
+
+    /// Back to the dock's tabs.
+    pub fn close_analysis_view(&mut self) {
+        self.analysis.open = None;
+    }
+
+    /// The view shown in the Analysis dock, if any.
+    pub fn analysis_view(&self) -> Option<crate::analysis_views::AnalysisView> {
+        self.analysis.open
+    }
+
+    /// The views' inputs.
+    pub fn analysis_inputs(&self) -> &crate::analysis_views::ViewInputs {
+        &self.analysis.inputs
+    }
+
+    /// Change a view's inputs (tests; the panel edits them in place): its
+    /// result goes stale.
+    pub fn edit_analysis_inputs(
+        &mut self,
+        view: crate::analysis_views::AnalysisView,
+        edit: impl FnOnce(&mut crate::analysis_views::ViewInputs),
+    ) {
+        edit(&mut self.analysis.inputs);
+        self.analysis.slot_mut(view).inputs_rev += 1;
+    }
+
+    /// The key a view's result is computed for: the geometry and the
+    /// subdivision (`revision`), the view's inputs and, for the hydrostatic
+    /// table and the trim scan, the floating condition they measure at.
+    fn analysis_key(&self, view: crate::analysis_views::AnalysisView) -> u64 {
+        let mut parts = vec![
+            view as u64,
+            self.revision,
+            self.analysis.slot(view).inputs_rev,
+        ];
+        if view.uses_floating_condition() {
+            let o = &self.hydro.options;
+            parts.extend([
+                o.draft.to_bits(),
+                o.trim.to_bits(),
+                o.heel_deg.to_bits(),
+                o.water_density.to_bits(),
+                o.appendage_coefficient.to_bits(),
+                o.mainframe_x.map_or(u64::MAX, f64::to_bits),
+            ]);
+        }
+        revision_key(&parts)
+    }
+
+    /// Compute a view on a job (the shown result stays, dimmed, until the
+    /// new one lands).
+    pub fn start_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        if self.surface.is_none() {
+            return;
+        }
+        let key = self.analysis_key(view);
+        let model = crate::commands::ModelSnapshot::of(self);
+        let inputs = self.analysis.inputs.clone();
+        self.status = format!("computing {}…", view.label().to_lowercase());
+        self.analysis.slot_mut(view).track.start(key, move || {
+            crate::analysis_views::compute(view, &inputs, &model)
+        });
+    }
+
+    /// Take finished view jobs; a failure goes to the status line and stays
+    /// on the view until its inputs change.
+    fn poll_analysis_views(&mut self) {
+        for view in crate::analysis_views::AnalysisView::ALL {
+            let key = self.analysis_key(view);
+            match self.analysis.slot_mut(view).track.poll(key) {
+                Some(Ok(r)) => self.install_analysis_view(view, r),
+                Some(Err(e)) => self.status = format!("{} failed: {e}", view.label()),
+                None => {}
+            }
+        }
+    }
+
+    fn install_analysis_view(
+        &mut self,
+        view: crate::analysis_views::AnalysisView,
+        result: crate::analysis_views::ViewResult,
+    ) {
+        let rows = crate::analysis_views::table(&result).rows.len();
+        self.analysis.slot_mut(view).result = Some(result);
+        self.status = format!("{}: {rows} rows", view.label());
+    }
+
+    /// Block until a view's job ends and take its result (tests).
+    pub fn wait_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        let key = self.analysis_key(view);
+        match self.analysis.slot_mut(view).track.wait(key) {
+            Some(Ok(r)) => self.install_analysis_view(view, r),
+            Some(Err(e)) => self.status = format!("{} failed: {e}", view.label()),
+            None => {}
+        }
+    }
+
+    /// A view's result, whether current or stale.
+    pub fn analysis_view_result(
+        &self,
+        view: crate::analysis_views::AnalysisView,
+    ) -> Option<&crate::analysis_views::ViewResult> {
+        self.analysis.slot(view).result.as_ref()
+    }
+
+    /// A view's result as its engineering table.
+    pub fn analysis_view_table(
+        &self,
+        view: crate::analysis_views::AnalysisView,
+    ) -> Option<crate::analysis_views::ViewTable> {
+        self.analysis_view_result(view)
+            .map(crate::analysis_views::table)
+    }
+
+    /// A view's table as the CSV *Copy CSV* puts on the clipboard.
+    pub fn analysis_view_csv(&self, view: crate::analysis_views::AnalysisView) -> Option<String> {
+        self.analysis_view_table(view)
+            .map(|t| crate::analysis_views::to_csv(&t))
+    }
+
+    /// A view shows a result computed for other inputs.
+    pub fn analysis_view_stale(&self, view: crate::analysis_views::AnalysisView) -> bool {
+        let slot = self.analysis.slot(view);
+        slot.result.is_some() && !slot.track.is_current(self.analysis_key(view))
+    }
+
+    /// A view's job is running.
+    pub fn analysis_view_busy(&self, view: crate::analysis_views::AnalysisView) -> bool {
+        self.analysis.slot(view).track.busy()
+    }
+
+    /// Why computing a view failed for its current inputs, if it did.
+    pub fn analysis_view_failure(&self, view: crate::analysis_views::AnalysisView) -> Option<&str> {
+        self.analysis
+            .slot(view)
+            .track
+            .failure(self.analysis_key(view))
+    }
+
+    /// The open view shows a stale result (counted in the status bar).
+    fn open_view_stale(&self) -> bool {
+        self.analysis
+            .open
+            .is_some_and(|v| self.analysis_view_stale(v))
+    }
+
+    /// What the view's panel needs besides the views' own state: stale,
+    /// busy, failure, the layers and the design draft.
+    fn analysis_view_panel_inputs(
+        &self,
+        view: crate::analysis_views::AnalysisView,
+    ) -> (bool, bool, Option<String>, Vec<(String, bool)>, f64) {
+        let layers = self.surface.as_ref().map_or_else(Vec::new, |s| {
+            s.layers
+                .iter()
+                .map(|l| (l.name.clone(), l.developable))
+                .collect()
+        });
+        (
+            self.analysis_view_stale(view),
+            self.analysis_view_busy(view),
+            self.analysis_view_failure(view).map(str::to_owned),
+            layers,
+            self.hydro.options.draft,
+        )
+    }
+
+    /// Apply what a view's panel asked for.
+    fn apply_view_action(
+        &mut self,
+        action: crate::analysis_views::ViewAction,
+        ctx: &egui::Context,
+    ) {
+        use crate::analysis_views::ViewAction;
+        let Some(view) = self.analysis.open else {
+            return;
+        };
+        match action {
+            ViewAction::None => {}
+            ViewAction::Changed => self.analysis.slot_mut(view).inputs_rev += 1,
+            ViewAction::Compute => self.start_analysis_view(view),
+            ViewAction::CopyCsv => {
+                if let Some(csv) = self.analysis_view_csv(view) {
+                    let rows = csv.lines().count().saturating_sub(1);
+                    ctx.copy_text(csv);
+                    self.status = format!("{}: {rows} rows copied as CSV", view.label());
+                }
+            }
+            ViewAction::Close => self.analysis.open = None,
+        }
     }
 }

@@ -2063,6 +2063,7 @@ fn handle_inner(
             let x_from = number(p, "x_from")?;
             let x_to = number(p, "x_to")?;
             let both_sides = boolean(p, "both_sides")?.unwrap_or(false);
+            let layer = number_in(p, "layer", 0.0..=1.0e6)?.map(|n| n.round() as usize);
             let path = match text(p, "path")?.filter(|s| !s.trim().is_empty()) {
                 Some(path) => {
                     Some(app.check_control_write_path(std::path::Path::new(path.trim()))?)
@@ -2077,6 +2078,7 @@ fn handle_inner(
                 x_from,
                 x_to,
                 both_sides,
+                layer,
                 path,
             };
             reply_app(commands::unfold(app, &params)?)
@@ -3408,6 +3410,14 @@ mod tests {
                 "curves.unfold",
                 json!({ "from": 50.0, "to": 60.0 })
             )["ok"],
+            false
+        );
+        // One layer alone (the Analysis menu's plate development per layer).
+        let r = call(&mut app, &ctx, "curves.unfold", json!({ "layer": 0 }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(r["result"]["faces"].as_u64().unwrap_or(0) > 0, "{r}");
+        assert_eq!(
+            call(&mut app, &ctx, "curves.unfold", json!({ "layer": 99 }))["ok"],
             false
         );
 
