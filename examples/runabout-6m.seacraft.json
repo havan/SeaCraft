@@ -1,0 +1,70 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Lightship (hull, console, 150 hp outboard)",
+        "mass_t": 1.432,
+        "x": 2.346,
+        "y": 0.0,
+        "z": 0.607
+      },
+      "items": [
+        {
+          "name": "Crew and passengers (4)",
+          "mass_t": 0.3,
+          "x": 2.4,
+          "y": 0.0,
+          "z": 0.95
+        },
+        {
+          "name": "Fuel, 150 l",
+          "mass_t": 0.11,
+          "x": 1.2,
+          "y": 0.0,
+          "z": 0.35
+        },
+        {
+          "name": "Gear and stores",
+          "mass_t": 0.08,
+          "x": 3.5,
+          "y": 0.0,
+          "z": 0.7
+        }
+      ],
+      "tanks": [],
+      "windage_extra": [],
+      "bilge": "round",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [],
+  "damage_cases": [],
+  "windage": [],
+  "report": {
+    "kg": 0.65,
+    "lcg_x": 2.337,
+    "speeds_kn": [
+      15.0,
+      20.0,
+      25.0,
+      30.0,
+      35.0
+    ],
+    "include_planing": true
+  },
+  "requirements": {
+    "name": "6.5 m outboard runabout",
+    "lwl": 5.6,
+    "bwl": 2.2,
+    "draft": 0.38,
+    "depth": 1.25,
+    "displacement_t": 1.9,
+    "cb": 0.39,
+    "lcb_frac": 0.42,
+    "design_speed_kn": 30.0
+  },
+  "kg": 0.65
+}

@@ -388,6 +388,8 @@ enum PendingAction {
     NewDemo,
     /// The New design dialog (it replaces the model and the project).
     NewDesign,
+    /// The New design dialog on *Example*.
+    NewExample,
     Open,
     Quit,
 }
@@ -1068,6 +1070,43 @@ impl App {
         self.adopt();
     }
 
+    /// Build an example hull and load it with its project, as one undo step
+    /// (the control channel's `model.example`).
+    pub fn open_example(&mut self, kind: seacraft_core::examples::Example) -> Result<(), String> {
+        let (surface, project) = seacraft_core::examples::build(kind)?;
+        let before = self.current_snapshot(true);
+        self.install_example(kind, surface, project);
+        self.history.snapshot(&before);
+        Ok(())
+    }
+
+    /// Replace the model and the project with an example's: unsaved and
+    /// untitled, the dock KG the example's, the design waterline its draft.
+    fn install_example(
+        &mut self,
+        kind: seacraft_core::examples::Example,
+        surface: Surface,
+        project: Project,
+    ) {
+        self.status = format!(
+            "{} — example `{}` ({} points, {} faces, {} layers) + project",
+            kind.title(),
+            kind.slug(),
+            surface.points.len(),
+            surface.faces.len(),
+            surface.layers.len()
+        );
+        self.surface = Some(surface);
+        self.path = None;
+        self.project = project;
+        self.project_error = None;
+        self.dirty = true;
+        self.saved_state = None;
+        self.adopt_project_kg();
+        self.adopt();
+        self.apply_requirement_defaults();
+    }
+
     /// The dock KG of the project just adopted: the KG the user set, else
     /// the requirements' estimate, else unset.
     fn adopt_project_kg(&mut self) {
@@ -1668,6 +1707,12 @@ impl App {
                         self.request(PendingAction::NewDesign);
                         ui.close();
                     }
+                    if !seacraft_core::examples::Example::all().is_empty()
+                        && ui.button("New from example…").clicked()
+                    {
+                        self.request(PendingAction::NewExample);
+                        ui.close();
+                    }
                     if ui.button("New demo hull").clicked() {
                         self.request(PendingAction::NewDemo);
                         ui.close();
@@ -1930,6 +1975,7 @@ impl App {
         self.start_rects = Some(rects);
         match action {
             crate::new_design::StartAction::NewDesign => self.request(PendingAction::NewDesign),
+            crate::new_design::StartAction::Example => self.request(PendingAction::NewExample),
             crate::new_design::StartAction::Open => self.request(PendingAction::Open),
             crate::new_design::StartAction::Demo => self.request(PendingAction::NewDemo),
             crate::new_design::StartAction::None => {}
@@ -1940,6 +1986,14 @@ impl App {
     /// prompt first: Ctrl+N, File > New design…, the start card).
     pub fn open_new_design(&mut self) {
         self.new_design = Some(crate::new_design::NewDesignState::new(
+            crate::new_design::SEA_WATER_T_M3,
+        ));
+    }
+
+    /// Open the New design dialog on *Example*, the first example's preview
+    /// already drawn (the start card's "Open an example…").
+    pub fn open_new_design_on_example(&mut self) {
+        self.new_design = Some(crate::new_design::NewDesignState::on_example(
             crate::new_design::SEA_WATER_T_M3,
         ));
     }
@@ -1973,6 +2027,16 @@ impl App {
             NewDesignRequest::Demo { half } => {
                 let before = self.current_snapshot(true);
                 self.load_demo_shape(half);
+                self.history.snapshot(&before);
+            }
+            NewDesignRequest::Example(design) => {
+                let crate::new_design::ExampleDesign {
+                    kind,
+                    surface,
+                    project,
+                } = *design;
+                let before = self.current_snapshot(true);
+                self.install_example(kind, surface, project);
                 self.history.snapshot(&before);
             }
             NewDesignRequest::Parametric(design) => {
@@ -2195,6 +2259,7 @@ impl App {
         match action {
             PendingAction::NewDemo => self.load_demo(),
             PendingAction::NewDesign => self.open_new_design(),
+            PendingAction::NewExample => self.open_new_design_on_example(),
             PendingAction::Open => self.open_dialog(DialogKind::Open),
             PendingAction::Quit => self.close_requested = true,
         }

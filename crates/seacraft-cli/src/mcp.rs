@@ -98,7 +98,7 @@ A symmetric layer models only y >= 0 (the starboard half) and is mirrored on eva
 transom face or its waterplane never closes.
 KB, BM, KM and KG are heights above the keel (the lowest hydrostatic point); LCB and LCF are in model x.
 Heel is positive to starboard (degrees). Trim is a length in metres, positive when the bow is higher than the stern.
-Workflow: load_hull {path} (or {demo: true}) -> hull_info for extents, layers and validity ->
+Workflow: load_hull {path} (or {demo: true}, or example {name} for a ready-made hull with its project) -> hull_info for extents, layers and validity ->
 hydro_compute {draft, trim, heel_deg, kg} for one floating condition (free_trim solves trim so LCB meets LCG) ->
 stability_cross_curves for KN/GZ and the IMO A.749 criteria -> render_png to look at the result.
 Other measurements: bonjean_curves, table_of_offsets, hydro_table, trim_scan, resistance_curve, planing_curve,
@@ -807,6 +807,7 @@ impl McpServer {
             "hull_info" => Ok(self.hull_info()),
             "load_hull" => self.load_hull(a),
             "generate_hull" => self.generate_hull(a),
+            "example" => self.load_example(a),
             "save_hull" => self.save_hull(a),
             "project_get" => self.project_get(a),
             "project_set" => self.project_set(a),
@@ -952,6 +953,38 @@ impl McpServer {
             if let Some(obj) = info.as_object_mut() {
                 obj.insert("project_error".into(), json!(err));
             }
+        }
+        Ok(info)
+    }
+
+    /// `example {name}`: an example hull and its design sidecar replace the
+    /// model and the project; the session KG becomes the example's.
+    fn load_example(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let name = str_arg(a, "name").ok_or("example: give `name` (see the tool's enum)")?;
+        let kind = seacraft_core::examples::Example::from_slug(name)?;
+        let (surface, project) = seacraft_core::examples::build(kind)?;
+        self.surface = surface;
+        self.opts =
+            HydroOptions::from_surface(&self.surface, seascape_subdiv(self.opts.subdivision.level));
+        self.source = None;
+        if let Some(kg) = project.kg {
+            self.kg = kg;
+        }
+        self.project = project;
+        self.project_error = None;
+        let mut info = self.hull_info();
+        if let Some(obj) = info.as_object_mut() {
+            obj.insert(
+                "example".into(),
+                json!({
+                    "name": kind.slug(),
+                    "title": kind.title(),
+                    "description": kind.description(),
+                    "source": kind.source(),
+                    "kg": self.project.kg,
+                    "loading_conditions": self.project.loading_conditions.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                }),
+            );
         }
         Ok(info)
     }
@@ -2486,6 +2519,28 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Replaces,
         ),
         tool(
+            "example",
+            "Load an example hull",
+            "Replace the model and the project with a ready-made example hull and its design sidecar: the \
+             example's KG (it becomes the session KG used when a call omits `kg`), its design requirements and a \
+             `Design` loading condition. The draft is the example's design waterline. Returns hull_info with an \
+             `example` block (name, title, description, source of the particulars).",
+            obj(
+                json!({
+                    "name": {
+                        "type": "string",
+                        "enum": seacraft_core::examples::Example::with_benchmarks()
+                            .iter()
+                            .map(|e| e.slug())
+                            .collect::<Vec<_>>(),
+                        "description": "Example name",
+                    },
+                }),
+                &["name"],
+            ),
+            Effect::Replaces,
+        ),
+        tool(
             "save_hull",
             "Save the hull",
             "Write the control net as a FREE!ship `.fef` file. Without `path` the model is written back to the \
@@ -3139,6 +3194,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// (`crates/seacraft-gui/src/control.rs`). SeaCraft's methods are not MCP
 /// tools, so each tool is translated to the one that does the same thing:
 /// `hull_info` -> `ui.inspect`, `load_hull` -> `model.open` / `model.load_demo`,
+/// `example` -> `model.example`,
 /// `save_hull` -> `model.save`, `move_point` -> `point.move`,
 /// `set_crease` -> `edge.crease`, `split_face` -> `model.split_face`,
 /// `insert_edge` -> `model.insert_edge`, `hydro_compute` -> `hydro.compute`,
@@ -3303,6 +3359,10 @@ impl Remote {
                 None => Err("load_hull: give `path` or `demo: true`".to_string()),
             },
             "generate_hull" => self.request("model.generate", Value::Object(a.clone())),
+            "example" => match str_arg(a, "name") {
+                Some(name) => self.request("model.example", json!({"name": name})),
+                None => Err("example: give `name`".to_string()),
+            },
             "save_hull" => match str_arg(a, "path").filter(|p| !p.trim().is_empty()) {
                 Some(path) => self.request("model.save", json!({"path": path})),
                 None => Err("save_hull: give `path` (the app saves to the named file)".to_string()),
@@ -3713,6 +3773,7 @@ mod tests {
                 "hull_info",
                 "load_hull",
                 "generate_hull",
+                "example",
                 "save_hull",
                 "project_get",
                 "project_set",
@@ -5403,5 +5464,75 @@ mod tests {
         let t: Vec<f64> = d.iter().map(|v| v.as_f64().unwrap()).collect();
         assert!(t[1] > 0.0 && t[1] < 1.0, "{t:?}");
         assert!((t[0] - 0.5 * t[1]).abs() < 1e-12 && (t[2] - 1.25 * t[1]).abs() < 1e-12);
+    }
+
+    /// `example {name}` loads the hull and its sidecar; the session KG and
+    /// draft are the example's, and its Design condition evaluates.
+    #[test]
+    fn example_tool_loads_the_hull_its_project_and_its_kg() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tool = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "example")
+            .expect("an example tool")
+            .clone();
+        assert_eq!(Effect::of(&tool), Effect::Replaces);
+        let names = tool["inputSchema"]["properties"]["name"]["enum"].clone();
+        assert!(
+            names.as_array().unwrap().contains(&json!("runabout-6m")),
+            "{names}"
+        );
+        assert!(
+            names.as_array().unwrap().contains(&json!("wigley")),
+            "{names}"
+        );
+
+        let info = ok(&mut s, 2, "example", json!({"name": "runabout-6m"}));
+        assert_eq!(info["example"]["name"], "runabout-6m");
+        assert_eq!(info["example"]["kg"], 0.65);
+        assert_eq!(info["validation"]["ok"], true, "{info}");
+        assert_eq!(info["layers"].as_array().unwrap().len(), 4);
+        assert_eq!(info["principal"]["draft"], 0.38);
+
+        let project = ok(&mut s, 3, "project_get", json!({}));
+        assert_eq!(project["kg"], 0.65);
+        assert_eq!(project["requirements"]["lwl"], 5.6);
+
+        // No `kg` and no `draft`: the example's.
+        let h = ok(&mut s, 4, "hydro_compute", json!({}));
+        let disp = h["displacement_t"].as_f64().unwrap();
+        assert!((disp - 1.922).abs() < 2e-3, "{disp}");
+        let gm = h["gm_m"].as_f64().unwrap();
+        let km = h["km_transverse"].as_f64().unwrap();
+        assert!((km - 0.65 - gm).abs() < 1e-9, "GM at the example KG");
+
+        let lc = ok(&mut s, 5, "loading_condition", json!({"name": "Design"}));
+        let trim = lc["trim_m"].as_f64().unwrap();
+        assert!(
+            trim.abs() < 0.005 * 5.6,
+            "the Design condition floats level: {trim}"
+        );
+
+        // An unknown name is refused by the schema; a missing one too.
+        let r = request(
+            &mut s,
+            6,
+            "tools/call",
+            json!({"name": "example", "arguments": {"name": "catamaran"}}),
+        );
+        assert!(r.get("error").is_some(), "{r}");
+        let r = request(
+            &mut s,
+            7,
+            "tools/call",
+            json!({"name": "example", "arguments": {}}),
+        );
+        assert!(r.get("error").is_some(), "{r}");
+        // The refusals left the model alone.
+        let info = ok(&mut s, 8, "hull_info", json!({}));
+        assert_eq!(info["name"], "6.5 m outboard runabout");
     }
 }

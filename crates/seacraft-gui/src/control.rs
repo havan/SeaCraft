@@ -1031,6 +1031,22 @@ fn handle_inner(
                 "layers": app.layer_count(),
             }))
         }
+        "model.example" => {
+            let name = text(p, "name")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("missing `name`")?;
+            let kind = seacraft_core::examples::Example::from_slug(name)?;
+            app.open_example(kind)?;
+            Ok(json!({
+                "name": kind.slug(),
+                "title": kind.title(),
+                "kg": app.kg(),
+                "draft": app.hydro_options().draft,
+                "points": app.control_point_count(),
+                "faces": app.face_count(),
+                "layers": app.layer_count(),
+            }))
+        }
         "model.generate" => {
             use seacraft_core::parametric::{HullKind, HullSpec};
             let kind = match text(p, "kind")? {
@@ -3490,6 +3506,34 @@ mod tests {
             false
         );
 
+        // ---- model.example -----------------------------------------------
+        let undo_before = app.undo_len();
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.example",
+            json!({ "name": "runabout-6m" }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["kg"], 0.65, "the example's KG reaches the dock");
+        assert_eq!(r["result"]["draft"], 0.38);
+        assert_eq!(app.project().kg, Some(0.65));
+        assert_eq!(app.undo_len(), undo_before + 1, "one undo step");
+        for bad in [
+            json!({}),
+            json!({ "name": "catamaran" }),
+            json!({ "name": 3 }),
+        ] {
+            assert_eq!(call(&mut app, &ctx, "model.example", bad)["ok"], false);
+        }
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.load_demo",
+            json!({ "symmetric": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+
         // A symmetric layer models only y >= 0, so a move across the
         // centreline is clamped instead of producing an unmirrorable half.
         let off_centre = app
@@ -3536,6 +3580,7 @@ mod tests {
             "ui.key",
             "ui.render",
             "model.load_demo",
+            "model.example",
             "model.generate",
             "model.open",
             "model.save",

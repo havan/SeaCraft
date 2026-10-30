@@ -1,0 +1,55 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Model (hull and fittings)",
+        "mass_t": 2.033,
+        "x": 5.0,
+        "y": 0.0,
+        "z": 0.409
+      },
+      "items": [
+        {
+          "name": "Ballast weights",
+          "mass_t": 0.8,
+          "x": 5.0,
+          "y": 0.0,
+          "z": 0.2
+        }
+      ],
+      "tanks": [],
+      "windage_extra": [],
+      "bilge": "round",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [],
+  "damage_cases": [],
+  "windage": [],
+  "report": {
+    "kg": 0.35,
+    "lcg_x": 5.0,
+    "speeds_kn": [
+      3.0,
+      4.0,
+      5.0,
+      5.78,
+      7.0
+    ]
+  },
+  "requirements": {
+    "name": "Wigley hull",
+    "lwl": 10.0,
+    "bwl": 1.0,
+    "draft": 0.625,
+    "depth": 1.0,
+    "displacement_t": 2.847,
+    "cb": 0.4444,
+    "lcb_frac": 0.5,
+    "design_speed_kn": 5.78
+  },
+  "kg": 0.35
+}

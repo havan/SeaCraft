@@ -38,6 +38,8 @@ struct Cli {
 enum Command {
     /// Write the built-in demo hull to a .fef file
     Demo(DemoArgs),
+    /// Write a ready-made example hull and its project sidecar (--list shows them)
+    Example(ExampleArgs),
     /// Generate a parametric hull control net from principal dimensions
     Generate(GenerateArgs),
     /// Summarise a model
@@ -153,6 +155,26 @@ struct DemoArgs {
     /// Model only the starboard half (symmetric layer)
     #[arg(long)]
     symmetric: bool,
+}
+
+#[derive(Args, Debug)]
+struct ExampleArgs {
+    /// Example name, e.g. `runabout-6m` (see --list)
+    #[arg(conflicts_with_all = ["list", "all"])]
+    name: Option<String>,
+    /// List the examples
+    #[arg(long, conflicts_with = "all")]
+    list: bool,
+    /// Write every example into the directory given with -o
+    #[arg(long)]
+    all: bool,
+    /// Output .fef path (default `<name>.fef`), or the directory for --all;
+    /// the `.seacraft.json` sidecar is written next to each model
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// For --list: print JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -1243,6 +1265,7 @@ fn main() {
 fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Demo(a) => cmd_demo(a),
+        Command::Example(a) => cmd_example(a),
         Command::Generate(a) => cmd_generate(a),
         Command::Info(a) => cmd_info(a),
         Command::Hydro(a) => cmd_hydro(a),
@@ -1289,6 +1312,72 @@ fn cmd_demo(a: DemoArgs) -> Result<()> {
         surface.faces.len(),
         surface.layers.len(),
         if surface.layers.len() == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+fn cmd_example(a: ExampleArgs) -> Result<()> {
+    use seacraft_core::examples::Example;
+    if a.list {
+        let list = Example::with_benchmarks();
+        if a.json {
+            let rows: Vec<serde_json::Value> = list
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "name": e.slug(),
+                        "title": e.title(),
+                        "description": e.description(),
+                        "source": e.source(),
+                        "benchmark": e.is_benchmark(),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        } else {
+            for e in list {
+                println!("{:<16} {}: {}", e.slug(), e.title(), e.description());
+            }
+        }
+        return Ok(());
+    }
+    if a.all {
+        let dir = a
+            .output
+            .context("--all needs the output directory: -o DIR")?;
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("cannot create {}", dir.display()))?;
+        for e in Example::with_benchmarks() {
+            write_example(e, &dir.join(format!("{}.fef", e.slug())))?;
+        }
+        return Ok(());
+    }
+    let Some(name) = a.name else {
+        bail!("give an example name, --list or --all");
+    };
+    let kind = Example::from_slug(&name).map_err(|e| anyhow::anyhow!(e))?;
+    let out = a
+        .output
+        .unwrap_or_else(|| PathBuf::from(format!("{}.fef", kind.slug())));
+    write_example(kind, &out)
+}
+
+/// Write an example's `.fef` and its sidecar next to it.
+fn write_example(kind: seacraft_core::examples::Example, out: &Path) -> Result<()> {
+    let (surface, project) =
+        seacraft_core::examples::build(kind).map_err(|e| anyhow::anyhow!(e))?;
+    seacraft_core::io::write_atomic(out, fef::write(&surface))
+        .with_context(|| format!("cannot write {}", out.display()))?;
+    let sidecar = project::sidecar_path(out);
+    project.save(&sidecar).map_err(|e| anyhow::anyhow!(e))?;
+    println!(
+        "wrote {} and {} ({}: {} control points, {} faces, {} layers)",
+        out.display(),
+        sidecar.display(),
+        kind.title(),
+        surface.points.len(),
+        surface.faces.len(),
+        surface.layers.len()
     );
     Ok(())
 }

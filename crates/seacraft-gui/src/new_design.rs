@@ -8,14 +8,16 @@
 //! The New design preview runs the parametric generator on a worker thread
 //! (a spec with an LCB target takes seconds; a plain one about 50 ms), 250 ms
 //! after the last edit, and draws the generated control net in profile and
-//! body plan with the painter.
+//! body plan with the painter. An example hull needs no worker: its net is a
+//! frozen table, so the preview is built the moment it is picked.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use seacraft_core::examples::Example;
 use seacraft_core::parametric::{GenerateReport, HullKind, HullSpec};
-use seacraft_core::project::Requirements;
+use seacraft_core::project::{Project, Requirements};
 use seacraft_core::Surface;
 
 use crate::theme;
@@ -69,6 +71,8 @@ pub fn speed_range(design_kn: f64) -> (f64, f64, f64) {
 pub enum StartAction {
     None,
     NewDesign,
+    /// The New design dialog, on *Example*.
+    Example,
     Open,
     Demo,
 }
@@ -77,6 +81,7 @@ pub enum StartAction {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StartRects {
     pub new_design: egui::Rect,
+    pub example: egui::Rect,
     pub open: egui::Rect,
     pub demo: egui::Rect,
 }
@@ -85,6 +90,7 @@ impl Default for StartRects {
     fn default() -> Self {
         Self {
             new_design: egui::Rect::NOTHING,
+            example: egui::Rect::NOTHING,
             open: egui::Rect::NOTHING,
             demo: egui::Rect::NOTHING,
         }
@@ -97,7 +103,7 @@ pub fn start_card(ui: &mut egui::Ui) -> (StartAction, StartRects) {
     let mut rects = StartRects::default();
     let full = ui.available_rect_before_wrap();
     ui.painter().rect_filled(full, 0.0, theme::CANVAS);
-    let size = egui::vec2(340.0, 230.0);
+    let size = egui::vec2(340.0, 268.0);
     let card = egui::Rect::from_center_size(full.center(), size).intersect(full);
     let ctx = ui.ctx().clone();
     let keys = |key: egui::Key| {
@@ -130,6 +136,13 @@ pub fn start_card(ui: &mut egui::Ui) -> (StartAction, StartRects) {
                 if r.clicked() {
                     action = StartAction::NewDesign;
                 }
+                if !Example::all().is_empty() {
+                    let r = button(ui, "Open an example…", None);
+                    rects.example = r.rect;
+                    if r.clicked() {
+                        action = StartAction::Example;
+                    }
+                }
                 let r = button(ui, "Open…", Some(keys(egui::Key::O)));
                 rects.open = r.rect;
                 if r.clicked() {
@@ -157,6 +170,8 @@ pub fn start_card(ui: &mut egui::Ui) -> (StartAction, StartRects) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartFrom {
     Parametric,
+    /// One of the example hulls, with its project.
+    Example,
     Demo,
     Import,
 }
@@ -182,8 +197,21 @@ pub enum NewDesignAction {
 #[derive(Debug, Clone)]
 pub enum NewDesignRequest {
     Parametric(Box<ParametricDesign>),
-    Demo { half: bool },
+    /// An example hull and its sidecar, as the preview built them.
+    Example(Box<ExampleDesign>),
+    Demo {
+        half: bool,
+    },
     Import,
+}
+
+/// An example to create: the hull and the project
+/// [`seacraft_core::examples::build`] made.
+#[derive(Debug, Clone)]
+pub struct ExampleDesign {
+    pub kind: Example,
+    pub surface: Surface,
+    pub project: Project,
 }
 
 /// A parametric hull to create, with the requirements it was asked for.
@@ -231,6 +259,11 @@ type PreviewOutcome = (u64, Result<Preview, String>);
 pub struct NewDesignState {
     pub start: StartFrom,
     pub kind: HullKind,
+    /// The example picked under *Example*.
+    pub example: Example,
+    /// The picked example, built (the preview and what *Create* loads).
+    example_built: Option<ExampleDesign>,
+    example_error: Option<String>,
     pub half_model: bool,
     pub name: String,
     pub lwl: f64,
@@ -269,6 +302,12 @@ impl NewDesignState {
         Self {
             start: StartFrom::Parametric,
             kind,
+            example: Example::all()
+                .first()
+                .copied()
+                .unwrap_or(Example::Runabout6m),
+            example_built: None,
+            example_error: None,
             half_model: false,
             name: default_name(kind, d.lwl),
             lwl: d.lwl,
@@ -342,8 +381,57 @@ impl NewDesignState {
         }
     }
 
+    /// The dialog opened on *Example* (the start card's "Open an
+    /// example…"), its preview already built.
+    pub fn on_example(rho_t_m3: f64) -> Self {
+        let mut s = Self::new(rho_t_m3);
+        s.start = StartFrom::Example;
+        s.refresh_example();
+        s
+    }
+
+    /// Pick an example: its preview is built at once.
+    pub fn set_example(&mut self, kind: Example) {
+        self.example = kind;
+        self.refresh_example();
+    }
+
+    /// The picked example as built for the preview.
+    pub fn example_preview(&self) -> Option<&ExampleDesign> {
+        self.example_built
+            .as_ref()
+            .filter(|b| b.kind == self.example)
+    }
+
+    /// Build the picked example unless it is the one already built.
+    fn refresh_example(&mut self) {
+        if self.example_preview().is_some() {
+            return;
+        }
+        match seacraft_core::examples::build(self.example) {
+            Ok((surface, project)) => {
+                self.example_built = Some(ExampleDesign {
+                    kind: self.example,
+                    surface,
+                    project,
+                });
+                self.example_error = None;
+            }
+            Err(e) => {
+                self.example_built = None;
+                self.example_error = Some(e);
+            }
+        }
+    }
+
     /// Why *Create* is disabled, if it is.
     pub fn problem(&self) -> Option<String> {
+        if self.start == StartFrom::Example {
+            if !self.example.is_available() {
+                return Some(format!("the {} example is not available", self.example));
+            }
+            return self.example_error.clone();
+        }
         if self.start != StartFrom::Parametric {
             return None;
         }
@@ -409,6 +497,9 @@ impl NewDesignState {
     /// Notice edits, collect a finished preview and start a new one once
     /// the edits have settled. Returns how long to wait for the next check.
     fn tick(&mut self, now: Instant) -> Option<Duration> {
+        if self.start == StartFrom::Example {
+            self.refresh_example();
+        }
         if !self.touched.name {
             // An untyped name follows the type and the length.
             self.name = default_name(self.kind, self.lwl);
@@ -484,7 +575,7 @@ impl NewDesignState {
         Some(Duration::from_millis(60))
     }
 
-    fn request(&self) -> NewDesignRequest {
+    fn request(&mut self) -> NewDesignRequest {
         match self.start {
             StartFrom::Parametric => {
                 let spec = self.spec();
@@ -495,6 +586,14 @@ impl NewDesignState {
                     requirements: self.requirements(),
                     built,
                 }))
+            }
+            StartFrom::Example => {
+                self.refresh_example();
+                match self.example_preview() {
+                    Some(b) => NewDesignRequest::Example(Box::new(b.clone())),
+                    // `problem` keeps Create disabled without a built example.
+                    None => NewDesignRequest::Import,
+                }
             }
             StartFrom::Demo => NewDesignRequest::Demo {
                 half: self.half_model,
@@ -580,7 +679,11 @@ pub fn new_design_dialog(ctx: &egui::Context, state: &mut NewDesignState) -> New
         start_from(ui, state);
         ui.separator();
         let parametric = state.start == StartFrom::Parametric;
-        ui.add_enabled_ui(parametric, |ui| principal(ui, state));
+        if state.start == StartFrom::Example {
+            example_preview(ui, state);
+        } else {
+            ui.add_enabled_ui(parametric, |ui| principal(ui, state));
+        }
         if parametric {
             egui::CollapsingHeader::new("Targets (optional)")
                 .id_salt("new_design_targets")
@@ -652,6 +755,29 @@ fn start_from(ui: &mut egui::Ui, state: &mut NewDesignState) {
                 });
             });
             ui.end_row();
+            let examples = Example::all();
+            if !examples.is_empty() {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut state.start, StartFrom::Example, "Example");
+                    ui.add_enabled_ui(state.start == StartFrom::Example, |ui| {
+                        egui::ComboBox::from_id_salt("new_design_example")
+                            .selected_text(state.example.title())
+                            .width(260.0)
+                            .show_ui(ui, |ui| {
+                                for e in examples {
+                                    let r = ui
+                                        .selectable_label(state.example == e, e.title())
+                                        .on_hover_text(e.description());
+                                    if r.clicked() && state.example != e {
+                                        state.set_example(e);
+                                    }
+                                }
+                            });
+                    });
+                });
+                ui.end_row();
+            }
             ui.label("");
             ui.horizontal(|ui| {
                 ui.radio_value(&mut state.start, StartFrom::Demo, "Demo hull");
@@ -889,7 +1015,11 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
     });
     ui.horizontal_top(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 190.0), egui::Sense::hover());
-        draw_outlines(ui.painter(), rect, state.preview.as_ref());
+        draw_outlines(
+            ui.painter(),
+            rect,
+            state.preview.as_ref().map(|p| (&p.surface, p.spec.draft)),
+        );
         ui.add_space(8.0);
         ui.vertical(|ui| {
             if let Some(e) = &state.preview_error {
@@ -928,8 +1058,84 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
     });
 }
 
-/// Profile (top) and body plan (bottom) of the preview's control net.
-fn draw_outlines(painter: &egui::Painter, rect: egui::Rect, preview: Option<&Preview>) {
+/// One row of the example preview's particulars.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExampleRow {
+    pub name: &'static str,
+    pub value: String,
+}
+
+/// The particulars an example preview lists: its design requirements and
+/// its KG.
+pub fn example_rows(project: &Project) -> Vec<ExampleRow> {
+    let mut rows = Vec::new();
+    let mut push = |name, v: Option<f64>, decimals: usize, unit: &str| {
+        if let Some(v) = v {
+            rows.push(ExampleRow {
+                name,
+                value: format!("{v:.decimals$} {unit}").trim_end().to_owned(),
+            });
+        }
+    };
+    if let Some(r) = &project.requirements {
+        push("LWL", r.lwl, 2, "m");
+        push("BWL", r.bwl, 2, "m");
+        push("T", r.draft, 3, "m");
+        push("Depth", r.depth, 2, "m");
+        push("Δ", r.displacement_t, 2, "t");
+        push("Cb", r.cb, 3, "");
+        push("Speed", r.design_speed_kn, 1, "kn");
+    }
+    push("KG", project.kg, 2, "m");
+    rows
+}
+
+/// The example under *Example*: what it is, its outlines and particulars.
+fn example_preview(ui: &mut egui::Ui, state: &NewDesignState) {
+    let e = state.example;
+    ui.label(egui::RichText::new(e.title()).color(theme::TEXT_PRIMARY));
+    ui.label(egui::RichText::new(e.description()).color(theme::TEXT_SECONDARY));
+    ui.label(
+        egui::RichText::new(format!("Particulars: {}", e.source()))
+            .small()
+            .color(theme::TEXT_MUTED),
+    );
+    ui.separator();
+    ui.horizontal_top(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(300.0, 190.0), egui::Sense::hover());
+        let built = state.example_preview();
+        draw_outlines(
+            ui.painter(),
+            rect,
+            built.map(|b| (&b.surface, b.surface.settings.draft)),
+        );
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
+            if let Some(err) = &state.example_error {
+                ui.colored_label(theme::FAIL, err);
+            }
+            let Some(b) = built else { return };
+            egui::Grid::new("new_design_example_rows")
+                .num_columns(2)
+                .spacing(egui::vec2(10.0, 4.0))
+                .show(ui, |ui| {
+                    for r in example_rows(&b.project) {
+                        ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new(r.value)
+                                .monospace()
+                                .color(theme::TEXT_PRIMARY),
+                        );
+                        ui.end_row();
+                    }
+                });
+        });
+    });
+}
+
+/// Profile (top) and body plan (bottom) of a control net, with its design
+/// waterline `draft` above the keel.
+fn draw_outlines(painter: &egui::Painter, rect: egui::Rect, net: Option<(&Surface, f64)>) {
     painter.rect_filled(rect, 4.0, theme::CANVAS);
     painter.rect_stroke(
         rect,
@@ -937,14 +1143,13 @@ fn draw_outlines(painter: &egui::Painter, rect: egui::Rect, preview: Option<&Pre
         egui::Stroke::new(1.0, theme::FRAME),
         egui::StrokeKind::Inside,
     );
-    let Some(p) = preview else { return };
-    let s = &p.surface;
+    let Some((s, draft)) = net else { return };
     if s.points.is_empty() {
         return;
     }
     let (min, max) = s.extents();
     let keel = min.z;
-    let dwl = keel + p.spec.draft;
+    let dwl = keel + draft;
     let caption = |r: egui::Rect, text: &str| {
         painter.text(
             r.left_top() + egui::vec2(4.0, 2.0),

@@ -249,6 +249,29 @@ solves section/longitudinal fullness for `--cb` and station shifts for `--lcb`:
 seacraft generate --kind planing --lwl 10 --beam 3.2 --draft 0.6 --depth 1.8 --cb 0.45 --lcb 0.42 -o out.fef
 ```
 
+### Example hulls
+
+`examples::build` (`seacraft example`, MCP `example`, and *Start from:
+Example* in the GUI's New design dialog) gives a ready-made model with its
+`.seacraft.json` sidecar: the example's KG, its design requirements and a
+"Design" loading condition that floats at the design waterline. The nets
+are hand-authored station tables, calibrated once against level-3
+hydrostatics and frozen; the committed `examples/<name>.fef` and
+`.seacraft.json` are what `build` makes (a test checks it). Measured at
+level 3, Loop, at the design draft, with Cm and Cp at the middle of the
+waterline:
+
+| name | vessel | LWL × BWL × T (m) | Δ (t) | Cb | Cp | Cm | Cwp | LCB (% LWL) | KG (m) | source of the targets |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `runabout-6m` | 6.5 m hard-chine outboard runabout, flat transom raked 12° | 5.60 × 2.21 × 0.38 | 1.92 | 0.399 | 0.683 | 0.585 | 0.789 | 41.7 | 0.65 (assumed) | representative of production boats of this size |
+| `wigley` (CLI and tests) | Wigley parabolic hull, L 10 m, B 1 m, D 1 m | 10.00 × 1.00 × 0.625 | 2.83 | 0.442 | 0.666 | 0.664 | 0.666 | 50.0 | 0.35 | closed form: Cb 4/9, Cp = Cm = Cwp 2/3, KB 0.625 T, BM 0.0857 B²/T |
+
+```console
+seacraft example --list
+seacraft example runabout-6m -o runabout.fef     # also writes runabout.seacraft.json
+seacraft example --all -o examples/              # regenerates the committed files
+```
+
 ### Stability
 
 `stability::cross_curves` floats the hull at a constant displacement for each
@@ -494,6 +517,7 @@ archive in metres.
 
 ```text
 seacraft demo      -o hull.fef [--symmetric]
+seacraft example   NAME [-o hull.fef] | --list [--json] | --all -o DIR
 seacraft info      hull.fef
 seacraft hydro     hull.fef [--draft T] [--trim m | --free-trim [--lcg x]] [--heel deg] [--kg m]
                               [--mainframe x] [--json]

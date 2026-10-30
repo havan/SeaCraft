@@ -16,7 +16,7 @@ Write the targets down with units and tolerances (for example 1 % on volume) bef
 
 ## Load and inspect
 
-1. `load_hull {"path": "hull.fef"}` or `load_hull {"demo": true}`, or start from a specification with `generate_hull {"kind": "displacement", "lwl": 10, "beam": 3, "draft": 0.6, "depth": 1.6}`. A server started with `--open` already has it loaded.
+1. `load_hull {"path": "hull.fef"}` or `load_hull {"demo": true}`, or start from a specification with `generate_hull {"kind": "displacement", "lwl": 10, "beam": 3, "draft": 0.6, "depth": 1.6}`, or from a ready-made hull with its project with `example {"name": "runabout-6m"}` (the tool's `name` enum lists the examples; each brings its KG, its requirements and a `Design` loading condition, and the session KG becomes the example's). A server started with `--open` already has it loaded.
 2. `hull_info {}`. Read `validation.ok`, `edges.boundary` and `edges.non_manifold`, `extents` (demo: length 12, beam 4, depth 1.66, keel 0) and each layer's `symmetric` and `use_in_hydrostatics`. A symmetric layer holds only y >= 0.
 3. Stop and fix the model if validation fails: a submerged boundary edge leaks and every volume is wrong. A half model needs a transom face.
 

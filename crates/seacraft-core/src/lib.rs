@@ -28,6 +28,8 @@ pub mod damage;
 pub mod demo;
 pub mod develop;
 pub mod dxf;
+/// Ready-made example hulls with their design sidecars.
+pub mod examples;
 pub mod export;
 pub mod fef;
 pub mod hydro;

@@ -74,6 +74,9 @@ crates/seacraft-core/
   src/resistance.rs         still-water resistance and effective power (Holtrop & Mennen 1984)
   src/michell.rs            Michell thin-ship wave resistance (Michlet-style) for slender monohulls and catamarans
   src/demo.rs               parametric 12 m demo hull, full and half model
+  src/examples/             example-hull library: Example enum, build() -> (Surface, Project),
+                            net primitives (mod.rs), shared acceptance checks (checks.rs),
+                            one file per hull (runabout.rs, wigley.rs, ...)
   src/parametric.rs         parametric hull generator (displacement/planing/yacht) from principal dims
   src/optimize.rs           Nelder–Mead + optimize_hull: reshape Cp/LCB/L-B for least R_T at a speed, displacement held
   src/seakeeping.rs         Lewis sections; 2D heave added mass/damping by Frank close-fit panels (B7a); STF strip-theory heave & pitch RAOs (B7b)
@@ -232,6 +235,13 @@ These were real failures in this codebase; the fixes are load-bearing.
   `analysis_color`, then give it a default in both front ends (`RenderModeArg`
   in the CLI, the View menu and `render::frame_key` in the GUI — the key must
   include the mode's parameters or the cached texture will not refresh).
+* **New example hull**: follow the "Adding a hull" steps in
+  `crates/seacraft-core/src/examples/mod.rs` (one file with a frozen station
+  table and its acceptance tests through `examples::checks`, one line in
+  `Example::builder`, then `seacraft example --all -o examples/`). `build`
+  runs no solver; calibrate once, freeze the numbers. On a half model the
+  centreline boundary (keel, stem, deck centreline) is pinned by the kernel:
+  it stays the control polyline, so give it enough points.
 * **New test**: prefer analytic or invariant checks (box displacement, barge
   waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror
   symmetry, `.fef` round-trip) over golden files.
