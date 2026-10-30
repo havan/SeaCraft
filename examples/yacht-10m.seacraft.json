@@ -1,0 +1,109 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Lightship (hull, rig, engine, ballast keel)",
+        "mass_t": 4.234,
+        "x": 4.27,
+        "y": 0.0,
+        "z": 1.673
+      },
+      "items": [
+        {
+          "name": "Crew (4)",
+          "mass_t": 0.32,
+          "x": 2.2,
+          "y": 0.0,
+          "z": 2.7
+        },
+        {
+          "name": "Fresh water, 150 l",
+          "mass_t": 0.15,
+          "x": 4.6,
+          "y": 0.0,
+          "z": 1.75
+        },
+        {
+          "name": "Fuel, 60 l",
+          "mass_t": 0.05,
+          "x": 2.8,
+          "y": 0.0,
+          "z": 1.75
+        },
+        {
+          "name": "Stores and gear",
+          "mass_t": 0.2,
+          "x": 5.0,
+          "y": 0.0,
+          "z": 2.1
+        }
+      ],
+      "tanks": [],
+      "windage_extra": [],
+      "bilge": "round",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [],
+  "damage_cases": [],
+  "windage": [
+    {
+      "name": "Coachroof and sprayhood (representative)",
+      "area_m2": 2.0,
+      "z_centroid": 3.1,
+      "profile": {
+        "x_min": 2.2,
+        "x_max": 6.2,
+        "z_min": 2.85,
+        "z_max": 3.35
+      }
+    },
+    {
+      "name": "Mast, 13.5 m above deck (representative)",
+      "area_m2": 2.43,
+      "z_centroid": 9.61,
+      "profile": {
+        "x_min": 5.55,
+        "x_max": 5.73,
+        "z_min": 2.86,
+        "z_max": 16.36
+      }
+    },
+    {
+      "name": "Standing rigging, equivalent area (representative)",
+      "area_m2": 1.2,
+      "z_centroid": 9.0
+    },
+    {
+      "name": "Furled genoa and stowed mainsail (representative)",
+      "area_m2": 3.0,
+      "z_centroid": 6.5
+    }
+  ],
+  "report": {
+    "kg": 1.76,
+    "lcg_x": 4.161,
+    "speeds_kn": [
+      4.0,
+      5.0,
+      6.0,
+      6.5,
+      7.0,
+      7.5
+    ]
+  },
+  "requirements": {
+    "name": "10 m cruising yacht",
+    "lwl": 9.0,
+    "bwl": 2.9,
+    "draft": 1.85,
+    "depth": 1.45,
+    "displacement_t": 5.0,
+    "lcb_frac": 0.465,
+    "design_speed_kn": 6.5
+  },
+  "kg": 1.76
+}

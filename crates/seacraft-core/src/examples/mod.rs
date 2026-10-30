@@ -51,6 +51,7 @@ mod kayik;
 mod runabout;
 mod trawler;
 mod wigley;
+mod yacht;
 
 /// The example hulls. Variants whose hull file has not landed yet are not
 /// available (see the module documentation).
@@ -87,7 +88,7 @@ impl Example {
     /// The hull's builder, or `None` while its file has not landed.
     fn builder(self) -> Option<fn() -> Built> {
         match self {
-            Example::Yacht10m => None,
+            Example::Yacht10m => Some(yacht::build),
             Example::Kayik9m => Some(kayik::build),
             Example::Runabout6m => Some(runabout::build),
             Example::Container230m => None,
