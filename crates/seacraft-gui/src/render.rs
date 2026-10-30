@@ -37,8 +37,21 @@ pub struct DisplayOptions {
     pub windage: bool,
     /// Draw the ground grid.
     pub grid: bool,
-    /// Draw station/buttock/waterline section curves and curvature combs.
+    /// Draw the station, buttock and waterline intersection curves.
+    pub curves: bool,
+    /// Draw curvature combs (porcupines) along those curves. Independent of
+    /// `curves`: the combs alone show the curvature without the lines.
     pub combs: bool,
+    /// Stations (x = const cuts) across the length, ends included.
+    pub stations: usize,
+    /// Buttocks (y = const cuts) across the beam, sides included.
+    pub buttocks: usize,
+    /// Waterlines (z = const cuts) across the depth, keel and top included.
+    pub waterlines: usize,
+    /// Comb gain: metres of spike a curvature of 1/m draws.
+    pub comb_scale: f64,
+    /// Comb density: draw every `comb_stride`-th spike (1 draws them all).
+    pub comb_stride: usize,
     /// Shading mode. Anything but `Shaded` renders the viewport through the
     /// CPU rasterizer, which is the only way to get per-pixel zebra stripes
     /// and curvature maps.
@@ -46,7 +59,11 @@ pub struct DisplayOptions {
 }
 
 impl Default for DisplayOptions {
+    /// The section counts and comb gain start at the linesplan's defaults
+    /// (11 stations, 5 buttocks, 7 waterlines, gain 0.6): the viewports show
+    /// what the drawing draws.
     fn default() -> Self {
+        let lines = seacraft_core::linesplan::LinesplanOptions::default();
         Self {
             shaded: true,
             wireframe: false,
@@ -56,9 +73,66 @@ impl Default for DisplayOptions {
             volumes: true,
             windage: true,
             grid: true,
+            curves: false,
             combs: false,
+            stations: lines.stations,
+            buttocks: lines.buttocks,
+            waterlines: lines.waterlines,
+            comb_scale: lines.comb_scale,
+            comb_stride: 1,
             analysis: AnalysisMode::Shaded,
         }
+    }
+}
+
+/// The ranges the section counts and comb settings are kept in (the
+/// toolbar, the View menu and the control channel all clamp to them).
+pub const STATIONS_RANGE: std::ops::RangeInclusive<usize> = 2..=60;
+pub const BUTTOCKS_RANGE: std::ops::RangeInclusive<usize> = 2..=30;
+pub const WATERLINES_RANGE: std::ops::RangeInclusive<usize> = 2..=40;
+pub const COMB_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.05..=10.0;
+pub const COMB_STRIDE_RANGE: std::ops::RangeInclusive<usize> = 1..=8;
+
+impl DisplayOptions {
+    /// Whether the section curves have to be cut at all (for the lines or
+    /// for their combs).
+    pub fn wants_sections(&self) -> bool {
+        self.curves || self.combs
+    }
+
+    /// The linesplan options the viewport curves are cut with (and the
+    /// linesplan export draws with): these counts and gain at `level`.
+    pub fn section_options(
+        &self,
+        level: u8,
+        mode: seacraft_core::subdiv::SubdivisionMode,
+    ) -> seacraft_core::linesplan::LinesplanOptions {
+        seacraft_core::linesplan::LinesplanOptions {
+            stations: self.stations,
+            buttocks: self.buttocks,
+            waterlines: self.waterlines,
+            level,
+            mode,
+            combs: self.combs,
+            comb_scale: self.comb_scale,
+        }
+    }
+
+    /// The same options with every count and the comb settings clamped to
+    /// their ranges.
+    pub fn clamped(mut self) -> Self {
+        let clamp = |v: usize, r: &std::ops::RangeInclusive<usize>| v.clamp(*r.start(), *r.end());
+        self.stations = clamp(self.stations, &STATIONS_RANGE);
+        self.buttocks = clamp(self.buttocks, &BUTTOCKS_RANGE);
+        self.waterlines = clamp(self.waterlines, &WATERLINES_RANGE);
+        self.comb_stride = clamp(self.comb_stride, &COMB_STRIDE_RANGE);
+        self.comb_scale = if self.comb_scale.is_finite() {
+            self.comb_scale
+                .clamp(*COMB_SCALE_RANGE.start(), *COMB_SCALE_RANGE.end())
+        } else {
+            seacraft_core::linesplan::LinesplanOptions::default().comb_scale
+        };
+        self
     }
 }
 
@@ -212,9 +286,9 @@ pub fn viewport_with_texture(
     if opts.windage && camera.kind == crate::camera::ViewKind::Profile {
         draw_windage(&painter, &view, rect, scene.windage);
     }
-    if opts.combs {
+    if opts.wants_sections() {
         if let Some(curves) = scene.curves {
-            draw_combs(&painter, &view, camera.kind, rect, curves);
+            draw_sections(&painter, &view, camera.kind, rect, curves, opts);
         }
     }
     if opts.control_net {
@@ -737,13 +811,19 @@ fn draw_waterplane(
     }
 }
 
-fn draw_combs(
+/// The intersection curves (`opts.curves`) and their curvature combs
+/// (`opts.combs`, every `comb_stride`-th spike) each view shows: the body
+/// plan its stations, the profile its buttocks, the plan its waterlines and
+/// the perspective all three.
+fn draw_sections(
     painter: &egui::Painter,
     view: &ViewTransform,
     kind: crate::camera::ViewKind,
     rect: Rect,
     curves: &seacraft_core::linesplan::LinesplanCurves3d,
+    opts: &DisplayOptions,
 ) {
+    let stride = opts.comb_stride.max(1);
     let groups: &[&[seacraft_core::linesplan::CurveWithCombs]] = match kind {
         crate::camera::ViewKind::Profile => &[&curves.buttocks],
         crate::camera::ViewKind::Plan => &[&curves.waterlines],
@@ -754,21 +834,27 @@ fn draw_combs(
     };
     for group in groups {
         for curve in *group {
-            for w in curve.points.windows(2) {
-                if let (Some(p), Some(q)) = (view.project(w[0], rect), view.project(w[1], rect)) {
-                    painter.line_segment([p, q], Stroke::new(1.0, theme::SECTION_CURVE));
+            if opts.curves {
+                for w in curve.points.windows(2) {
+                    if let (Some(p), Some(q)) = (view.project(w[0], rect), view.project(w[1], rect))
+                    {
+                        painter.line_segment([p, q], Stroke::new(1.0, theme::SECTION_CURVE));
+                    }
+                }
+                if curve.closed && curve.points.len() >= 3 {
+                    if let (Some(p), Some(q)) = (
+                        view.project(*curve.points.last().unwrap(), rect),
+                        view.project(curve.points[0], rect),
+                    ) {
+                        painter.line_segment([p, q], Stroke::new(1.0, theme::SECTION_CURVE));
+                    }
                 }
             }
-            if curve.closed && curve.points.len() >= 3 {
-                if let (Some(p), Some(q)) = (
-                    view.project(*curve.points.last().unwrap(), rect),
-                    view.project(curve.points[0], rect),
-                ) {
-                    painter.line_segment([p, q], Stroke::new(1.0, theme::SECTION_CURVE));
-                }
+            if !opts.combs {
+                continue;
             }
-            let mut tips: Vec<Pos2> = Vec::with_capacity(curve.spikes.len());
-            for &(base, tip) in &curve.spikes {
+            let mut tips: Vec<Pos2> = Vec::with_capacity(curve.spikes.len() / stride + 1);
+            for &(base, tip) in curve.spikes.iter().step_by(stride) {
                 if let (Some(b), Some(t)) = (view.project(base, rect), view.project(tip, rect)) {
                     painter.line_segment([b, t], Stroke::new(0.8, theme::COMB_SPIKE));
                     tips.push(t);
@@ -1028,6 +1114,27 @@ pub fn frame_key(
 ) -> u64 {
     let mut h = view_key(camera, rect, scene, opts);
     mix(&mut h, revision as f64);
+    mix(&mut h, sections_key(opts) as f64);
+    h
+}
+
+/// A hash of the section overlay settings: the curve and comb toggles and,
+/// while either is on, the counts; while the combs are on, their gain and
+/// density. Part of [`frame_key`], so a view's cached frame never outlives
+/// the overlay it was drawn with, and keys the viewport curve cache.
+pub fn sections_key(opts: &DisplayOptions) -> u64 {
+    let mut h: u64 = 0x6c62_272e_07bb_0142;
+    mix(&mut h, if opts.curves { 1.0 } else { 0.0 });
+    mix(&mut h, if opts.combs { 1.0 } else { 0.0 });
+    if opts.wants_sections() {
+        mix(&mut h, opts.stations as f64);
+        mix(&mut h, opts.buttocks as f64);
+        mix(&mut h, opts.waterlines as f64);
+    }
+    if opts.combs {
+        mix(&mut h, opts.comb_scale);
+        mix(&mut h, opts.comb_stride as f64);
+    }
     h
 }
 

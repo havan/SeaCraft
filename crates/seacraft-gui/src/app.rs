@@ -24,8 +24,10 @@ use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 use crate::camera::{Camera, ViewKind};
 use crate::history::History;
 use crate::jobs::{revision_key, Job, Track};
+use crate::messages::{Level, MessageLog, MessagesAction};
 use crate::panels;
 use crate::picking::{self, PICK_RADIUS};
+use crate::recent::{RecentAction, RecentFiles};
 use crate::render::{self, DisplayOptions, Scene};
 
 /// The built-in demo hull's KG above the keel (m): part of the demo, like
@@ -42,11 +44,28 @@ struct RenderCache {
     mode: SubdivisionMode,
     mesh: RenderMesh,
     curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
+    /// The section settings `curves` were cut with ([`SectionCut`]).
+    curves_for: Option<SectionCut>,
     /// The curves were carried over from before a drag began: they are
     /// rebuilt on release, not on every drag frame.
     curves_stale: bool,
     min: Vec3,
     max: Vec3,
+}
+
+/// What the viewport section curves are cut with: the station, buttock and
+/// waterline counts, whether combs are sampled, and the comb gain (bits).
+/// The comb density only thins the drawing, so it is not part of the cut.
+type SectionCut = (usize, usize, usize, bool, u64);
+
+fn section_cut(d: &DisplayOptions) -> SectionCut {
+    (
+        d.stations,
+        d.buttocks,
+        d.waterlines,
+        d.combs,
+        d.comb_scale.to_bits(),
+    )
 }
 
 impl RenderCache {
@@ -391,6 +410,8 @@ enum PendingAction {
     /// The New design dialog on *Example*.
     NewExample,
     Open,
+    /// File > Open recent (the path waits in `App::pending_recent`).
+    OpenRecent,
     Quit,
 }
 
@@ -715,6 +736,37 @@ impl Default for PerformanceState {
 /// irregular-sea responses computed from them.
 type RaoResult = (SeakeepingReport, Option<IrregularReport>);
 
+/// Why a model could not be opened: the open dialog and the control
+/// channel decide on this, never on the status text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenError {
+    /// The file could not be read (missing, unreadable, not text).
+    Read { path: PathBuf, reason: String },
+    /// The file was read but is not a valid `.fef`.
+    Parse { path: PathBuf, reason: String },
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Read { path, reason } => {
+                write!(f, "Cannot read {}: {reason}", path.display())
+            }
+            OpenError::Parse { path, reason } => {
+                write!(f, "Parse error in {}: {reason}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+impl From<OpenError> for String {
+    fn from(err: OpenError) -> Self {
+        err.to_string()
+    }
+}
+
 pub struct App {
     surface: Option<Surface>,
     path: Option<PathBuf>,
@@ -723,6 +775,23 @@ pub struct App {
     /// Why the sidecar could not be read; while set, saving leaves it alone.
     project_error: Option<String>,
     status: String,
+    /// How serious the status line is: a logged warning or error keeps its
+    /// colour until the next status replaces it.
+    status_level: Level,
+    /// Errors and warnings from file actions and jobs, with their times
+    /// (View > Messages, or a click on the status text).
+    messages: MessageLog,
+    /// The Messages window is open.
+    show_messages: bool,
+    /// Where the status text was drawn last frame (test hook).
+    status_rect: egui::Rect,
+    /// File > Open recent, most recent first.
+    recent: RecentFiles,
+    /// Where the recent list is kept between runs; `None` for headless apps,
+    /// which must never touch the user's list.
+    storage: Option<Box<dyn eframe::Storage>>,
+    /// The recent file an Open recent waiting on the unsaved prompt opens.
+    pending_recent: Option<PathBuf>,
     /// Bumped by every edit; keys all derived state.
     revision: u64,
     level: u8,
@@ -885,6 +954,17 @@ impl App {
         let mut app = Self::new_detached();
         app.status =
             "No model loaded — start a new design (Ctrl+N) or open a .fef (Ctrl+O).".to_owned();
+        // The recent list lives in the user's data directory. eframe's own
+        // storage (`cc.storage`) exists only with its `persistence` feature;
+        // a list kept there is taken over when ours is empty.
+        if let Some(storage) = crate::recent::JsonFileStorage::open_default() {
+            app.set_storage(Box::new(storage));
+        }
+        if app.recent.is_empty() {
+            if let Some(storage) = cc.storage {
+                app.recent = RecentFiles::load(storage);
+            }
+        }
         if let Some(p) = open {
             app.load(p);
         }
@@ -916,6 +996,13 @@ impl App {
             project: Project::default(),
             project_error: None,
             status: String::new(),
+            status_level: Level::Info,
+            messages: MessageLog::default(),
+            show_messages: false,
+            status_rect: egui::Rect::NOTHING,
+            recent: RecentFiles::default(),
+            storage: None,
+            pending_recent: None,
             revision: 0,
             level: 3,
             mode: SubdivisionMode::Loop,
@@ -996,59 +1083,75 @@ impl App {
         }
     }
 
-    /// Load a `.fef` model, reporting failures in the status bar instead of
-    /// panicking: a bad file must never take the application down.
+    /// Load a `.fef` model, reporting failures in the status bar and the
+    /// message log instead of panicking: a bad file must never take the
+    /// application down.
     pub fn load(&mut self, path: PathBuf) {
         let _ = self.open_model(&path);
     }
 
-    /// Load a `.fef` model, returning the status-bar message on failure.
-    pub fn open_model(&mut self, path: &std::path::Path) -> Result<(), String> {
+    /// Load a `.fef` model. A failure is logged (and shown in the status
+    /// bar) and leaves the current model as it was; the typed error says
+    /// whether the file could not be read or not parsed.
+    pub fn open_model(&mut self, path: &std::path::Path) -> Result<(), OpenError> {
         let parsed = std::fs::read_to_string(path)
-            .map_err(|err| format!("Cannot read {}: {err}", path.display()))
+            .map_err(|err| OpenError::Read {
+                path: path.to_path_buf(),
+                reason: err.to_string(),
+            })
             .and_then(|text| {
-                fef::parse(&text).map_err(|err| format!("Parse error in {}: {err}", path.display()))
+                fef::parse(&text).map_err(|err| OpenError::Parse {
+                    path: path.to_path_buf(),
+                    reason: err.to_string(),
+                })
             });
-        match parsed {
-            Ok(surface) => {
-                let (project, project_error) = match Project::load_for_model(path) {
-                    Ok(p) => (p.unwrap_or_default(), None),
-                    Err(e) => (Project::default(), Some(e)),
-                };
-                let layers_word = if surface.layers.len() == 1 {
-                    "layer"
-                } else {
-                    "layers"
-                };
-                self.status = format!(
-                    "{} — {} points, {} faces, {} {}",
-                    surface.settings.name,
-                    surface.points.len(),
-                    surface.faces.len(),
-                    surface.layers.len(),
-                    layers_word
-                );
-                if let Some(e) = &project_error {
-                    self.status = format!("{} — project file not loaded: {e}", self.status);
-                } else if !project.is_empty() {
-                    self.status.push_str(" + project");
-                }
-                self.saved_state = Some((fef::write(&surface), project.clone()));
-                self.surface = Some(surface);
-                self.path = Some(path.to_path_buf());
-                self.project = project;
-                self.project_error = project_error;
-                self.dirty = false;
-                self.adopt_project_kg();
-                self.adopt();
-                self.apply_requirement_defaults();
-                Ok(())
-            }
+        let surface = match parsed {
+            Ok(surface) => surface,
             Err(err) => {
-                self.status = err.clone();
-                Err(err)
+                self.log(Level::Error, err.to_string());
+                return Err(err);
             }
-        }
+        };
+        let (project, project_error) = match Project::load_for_model(path) {
+            Ok(p) => (p.unwrap_or_default(), None),
+            Err(e) => (Project::default(), Some(e)),
+        };
+        let layers_word = if surface.layers.len() == 1 {
+            "layer"
+        } else {
+            "layers"
+        };
+        let mut summary = format!(
+            "{} — {} points, {} faces, {} {}",
+            surface.settings.name,
+            surface.points.len(),
+            surface.faces.len(),
+            surface.layers.len(),
+            layers_word
+        );
+        let level = if let Some(e) = &project_error {
+            summary = format!("{summary} — project file not loaded: {e}");
+            Level::Warning
+        } else {
+            if !project.is_empty() {
+                summary.push_str(" + project");
+            }
+            Level::Info
+        };
+        self.log(level, format!("opened {}: {summary}", path.display()));
+        // The status line keeps the model summary it always showed.
+        self.status = summary;
+        self.saved_state = Some((fef::write(&surface), project.clone()));
+        self.surface = Some(surface);
+        self.path = Some(path.to_path_buf());
+        self.project = project;
+        self.project_error = project_error;
+        self.dirty = false;
+        self.adopt_project_kg();
+        self.adopt();
+        self.apply_requirement_defaults();
+        self.remember_recent(path);
+        Ok(())
     }
 
     pub fn load_demo(&mut self) {
@@ -1060,12 +1163,12 @@ impl App {
     pub fn load_demo_shape(&mut self, symmetric: bool) {
         let surface = demo::demo_hull(symmetric);
         let half = if symmetric { " (symmetric)" } else { "" };
-        self.status = format!(
+        self.set_status(format!(
             "{} — built-in demo hull{half} ({} points, {} faces)",
             surface.settings.name,
             surface.points.len(),
             surface.faces.len()
-        );
+        ));
         self.surface = Some(surface);
         self.path = None;
         self.project = Project::default();
@@ -1080,12 +1183,12 @@ impl App {
 
     /// Replace the current model with a newly generated parametric hull.
     pub fn load_generated(&mut self, surface: Surface) {
-        self.status = format!(
+        self.set_status(format!(
             "{} — parametric hull ({} points, {} faces)",
             surface.settings.name,
             surface.points.len(),
             surface.faces.len()
-        );
+        ));
         self.surface = Some(surface);
         self.path = None;
         self.project = Project::default();
@@ -1116,14 +1219,14 @@ impl App {
         surface: Surface,
         project: Project,
     ) {
-        self.status = format!(
+        self.set_status(format!(
             "{} — example `{}` ({} points, {} faces, {} layers) + project",
             kind.title(),
             kind.slug(),
             surface.points.len(),
             surface.faces.len(),
             surface.layers.len()
-        );
+        ));
         self.surface = Some(surface);
         self.path = None;
         self.project = project;
@@ -1224,31 +1327,41 @@ impl App {
             // Section curves and combs cost more than the refinement: a drag
             // keeps the ones from before it and rebuilds them on release.
             let carried = match self.drag {
-                Some(_) => self.cache.take().and_then(|c| c.curves),
+                Some(_) => self
+                    .cache
+                    .take()
+                    .and_then(|c| c.curves.map(|curves| (curves, c.curves_for))),
                 None => None,
+            };
+            let (curves, curves_for) = match carried {
+                Some((curves, cut)) => (Some(curves), cut),
+                None => (None, None),
             };
             self.cache = Some(RenderCache {
                 revision: self.revision,
                 level,
                 mode: self.mode,
                 mesh,
-                curves_stale: carried.is_some(),
-                curves: carried,
+                curves_stale: curves.is_some(),
+                curves,
+                curves_for,
                 min,
                 max,
             });
         }
-        if self.display.combs {
+        if self.display.wants_sections() {
             let dragging = self.drag.is_some();
+            let want = section_cut(&self.display);
             if let Some(cache) = self.cache.as_mut() {
-                if cache.curves.is_none() || (cache.curves_stale && !dragging) {
+                // New counts or comb gain re-cut at once; a drag's carried
+                // curves wait for the release.
+                if cache.curves.is_none()
+                    || cache.curves_for != Some(want)
+                    || (cache.curves_stale && !dragging)
+                {
                     cache.curves_stale = false;
-                    let opts = seacraft_core::linesplan::LinesplanOptions {
-                        level,
-                        mode: self.mode,
-                        combs: true,
-                        ..Default::default()
-                    };
+                    cache.curves_for = Some(want);
+                    let opts = self.display.section_options(level, self.mode);
                     cache.curves = Some(seacraft_core::linesplan::curves_3d(surface, opts));
                 }
             }
@@ -1501,7 +1614,38 @@ impl App {
                 if self.dirty {
                     ui.colored_label(crate::theme::WARN, "● unsaved");
                 }
-                ui.label(&self.status);
+                // The latest message, coloured by its level; a click lists
+                // them all (View > Messages).
+                let status = ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(&self.status).color(self.status_level.colour()),
+                        )
+                        .truncate()
+                        .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("Click for the message log");
+                self.status_rect = status.rect;
+                if status.clicked() {
+                    self.show_messages = !self.show_messages;
+                }
+                let errors = self.messages.count(Level::Error);
+                if errors > 0 {
+                    let word = if errors == 1 { "error" } else { "errors" };
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("{errors} {word}"))
+                                    .color(crate::theme::FAIL),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("Open the message log")
+                        .clicked()
+                    {
+                        self.show_messages = true;
+                    }
+                }
                 let stale = self.stale_count();
                 if stale > 0 {
                     ui.separator();
@@ -1608,6 +1752,7 @@ impl App {
         self.project_settings_window(ui);
         self.dialog_window(ui);
         self.report_options_window(ui);
+        self.messages_window(ui);
         self.poll_report(ui.ctx());
         self.intercept_close(ui.ctx());
         self.pending_window(ui);
@@ -1791,6 +1936,18 @@ impl App {
                         self.request(PendingAction::Open);
                         ui.close();
                     }
+                    let entries = self.recent.entries();
+                    let mut recent = RecentAction::None;
+                    ui.menu_button("Open recent", |ui| {
+                        recent = crate::recent::recent_menu(ui, &entries);
+                        if recent != RecentAction::None {
+                            ui.close();
+                        }
+                    });
+                    if recent != RecentAction::None {
+                        self.apply_recent_action(recent);
+                        ui.close();
+                    }
                     ui.separator();
                     if ui
                         .add_enabled(
@@ -1888,7 +2045,14 @@ impl App {
                     ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
                     ui.checkbox(&mut self.display.windage, "Windage outlines");
                     ui.checkbox(&mut self.display.grid, "Grid");
+                    ui.checkbox(&mut self.display.curves, "Intersection curves");
                     ui.checkbox(&mut self.display.combs, "Curvature combs");
+                    ui.menu_button("Curves and combs", |ui| {
+                        let mut display = self.display.clone();
+                        if panels::section_settings(ui, &mut display) {
+                            self.display = display;
+                        }
+                    });
                     ui.separator();
                     ui.label("Surface analysis");
                     ui.horizontal_wrapped(|ui| {
@@ -1916,6 +2080,7 @@ impl App {
                     });
                     ui.separator();
                     ui.checkbox(&mut self.show_layers, "Layer panel");
+                    ui.checkbox(&mut self.show_messages, "Messages");
                     // One right-hand dock with tabs: several right-hand panels
                     // leave no room for the viewports.
                     ui.checkbox(&mut self.show_analysis, "Analysis dock");
@@ -2027,10 +2192,11 @@ impl App {
 
     /// The central area with no model: the start card.
     fn start_screen(&mut self, ui: &mut egui::Ui) {
+        let recent = self.recent.entries();
         let (action, rects) = egui::CentralPanel::default()
             .show(ui, |ui| {
                 self.central_rect = ui.available_rect_before_wrap();
-                crate::new_design::start_card(ui)
+                crate::new_design::start_card(ui, &recent)
             })
             .inner;
         self.start_rects = Some(rects);
@@ -2039,6 +2205,11 @@ impl App {
             crate::new_design::StartAction::Example => self.request(PendingAction::NewExample),
             crate::new_design::StartAction::Open => self.request(PendingAction::Open),
             crate::new_design::StartAction::Demo => self.request(PendingAction::NewDemo),
+            crate::new_design::StartAction::OpenRecent(i) => {
+                if let Some(entry) = recent.get(i) {
+                    self.request_open_recent(entry.path.clone());
+                }
+            }
             crate::new_design::StartAction::None => {}
         }
     }
@@ -2115,7 +2286,7 @@ impl App {
                     _ => match crate::commands::generate(self, &spec) {
                         Ok(r) => r,
                         Err(e) => {
-                            self.status = format!("New design failed: {e}");
+                            self.log(Level::Error, format!("New design failed: {e}"));
                             return;
                         }
                     },
@@ -2133,10 +2304,10 @@ impl App {
                 self.apply_requirement_defaults();
                 self.reset_cameras();
                 self.history.snapshot(&before);
-                self.status = format!(
+                self.set_status(format!(
                     "{name} — new {} design ({} points, {} faces)",
                     spec.kind, result.points, result.faces
-                );
+                ));
             }
         }
     }
@@ -2262,7 +2433,7 @@ impl App {
                 self.apply_requirement_defaults();
             }
         }
-        self.status = "project settings applied".to_owned();
+        self.set_status("project settings applied".to_owned());
     }
 
     /// The New design dialog is open.
@@ -2322,6 +2493,11 @@ impl App {
             PendingAction::NewDesign => self.open_new_design(),
             PendingAction::NewExample => self.open_new_design_on_example(),
             PendingAction::Open => self.open_dialog(DialogKind::Open),
+            PendingAction::OpenRecent => {
+                if let Some(path) = self.pending_recent.take() {
+                    self.load(path);
+                }
+            }
             PendingAction::Quit => self.close_requested = true,
         }
     }
@@ -2395,67 +2571,77 @@ impl App {
         }
     }
 
-    /// Write the model as `.fef`. Returns whether it was written.
+    /// Write the model as `.fef`. Returns whether it was written; the
+    /// outcome is logged (see [`App::write_model`]).
     pub fn save_to(&mut self, path: &std::path::Path) -> bool {
-        let Some(surface) = &self.surface else {
-            return false;
-        };
-        let text = fef::write(surface);
-        match seacraft_core::io::write_atomic(path, &text) {
-            Ok(()) => {
-                self.path = Some(path.to_path_buf());
-                self.status = format!("saved {}", path.display());
-                let sidecar = project::sidecar_path(path);
-                if let Some(e) = &self.project_error {
-                    self.status = format!(
-                        "saved {}; project file left as it was ({e})",
-                        path.display()
-                    );
-                    // The sidecar on disk could not be read, so it is not
-                    // overwritten; design data entered since stays unsaved.
-                    self.saved_state = Some((text, Project::default()));
-                    self.refresh_dirty();
-                    if self.dirty {
-                        self.status
-                            .push_str(" — design data NOT saved: fix or remove the project file");
-                    }
-                    return true;
-                } else if !self.project.is_empty() || sidecar.exists() {
-                    if let Err(e) = self
-                        .project
-                        .validate()
-                        .and_then(|()| self.project.save(&sidecar))
-                    {
-                        self.status = format!("saved {}, but {e}", path.display());
-                        return false;
-                    }
-                    self.status.push_str(" + project");
-                }
-                self.dirty = false;
-                self.saved_state = Some((text, self.project.clone()));
-                true
-            }
-            Err(err) => {
-                self.status = format!("cannot write {}: {err}", path.display());
-                false
-            }
-        }
+        self.write_model(path).is_ok()
     }
 
-    /// Write one of the export formats. Returns whether it was written.
+    /// Write the model as `.fef` (and its project sidecar). A failure is
+    /// logged as an error and returned; a model written without its design
+    /// data (an unreadable sidecar left alone) is a logged warning.
+    pub fn write_model(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let Some(surface) = &self.surface else {
+            return Err("No model loaded.".to_owned());
+        };
+        let text = fef::write(surface);
+        if let Err(err) = seacraft_core::io::write_atomic(path, &text) {
+            let msg = format!("cannot write {}: {err}", path.display());
+            self.log(Level::Error, msg.clone());
+            return Err(msg);
+        }
+        self.path = Some(path.to_path_buf());
+        self.remember_recent(path);
+        let sidecar = project::sidecar_path(path);
+        if let Some(e) = &self.project_error {
+            let mut msg = format!(
+                "saved {}; project file left as it was ({e})",
+                path.display()
+            );
+            // The sidecar on disk could not be read, so it is not
+            // overwritten; design data entered since stays unsaved.
+            self.saved_state = Some((text, Project::default()));
+            self.refresh_dirty();
+            if self.dirty {
+                msg.push_str(" — design data NOT saved: fix or remove the project file");
+            }
+            self.log(Level::Warning, msg);
+            return Ok(());
+        }
+        let mut msg = format!("saved {}", path.display());
+        if !self.project.is_empty() || sidecar.exists() {
+            if let Err(e) = self
+                .project
+                .validate()
+                .and_then(|()| self.project.save(&sidecar))
+            {
+                let msg = format!("saved {}, but {e}", path.display());
+                self.log(Level::Error, msg.clone());
+                return Err(msg);
+            }
+            msg.push_str(" + project");
+        }
+        self.dirty = false;
+        self.saved_state = Some((text, self.project.clone()));
+        self.log(Level::Info, msg);
+        Ok(())
+    }
+
+    /// Write one of the export formats. Returns whether it was written; the
+    /// outcome is logged (see [`App::write_export`]).
     pub fn export_to(&mut self, kind: ExportKind, path: &std::path::Path) -> bool {
+        self.write_export(kind, path).is_ok()
+    }
+
+    /// Write one of the export formats; a failure is logged and returned.
+    pub fn write_export(&mut self, kind: ExportKind, path: &std::path::Path) -> Result<(), String> {
         use seacraft_core::io::write_atomic;
         let Some(surface) = &self.surface else {
-            return false;
+            return Err("No model loaded.".to_owned());
         };
-        // The drawing shows what the viewports show: their refinement and
-        // combs, as the CLI does with its flags.
-        let linesplan_opts = seacraft_core::linesplan::LinesplanOptions {
-            level: self.level,
-            mode: self.mode,
-            combs: self.display.combs,
-            ..Default::default()
-        };
+        // The drawing shows what the viewports show: their refinement,
+        // section counts and combs, as the CLI does with its flags.
+        let linesplan_opts = self.display.section_options(self.level, self.mode);
         let written = match kind {
             ExportKind::Obj => write_atomic(
                 path,
@@ -2485,16 +2671,20 @@ impl App {
         };
         match written {
             Ok(()) => {
-                self.status = format!(
-                    "exported {} ({})",
-                    path.display(),
-                    kind.label().trim_end_matches('…')
+                self.log(
+                    Level::Info,
+                    format!(
+                        "exported {} ({})",
+                        path.display(),
+                        kind.label().trim_end_matches('…')
+                    ),
                 );
-                true
+                Ok(())
             }
             Err(err) => {
-                self.status = format!("cannot write {}: {err}", path.display());
-                false
+                let msg = format!("cannot write {}: {err}", path.display());
+                self.log(Level::Error, msg.clone());
+                Err(msg)
             }
         }
     }
@@ -2556,28 +2746,27 @@ impl App {
             return;
         }
         let path = std::path::PathBuf::from(dialog.path.trim());
-        let ok = match dialog.kind {
-            DialogKind::Open => {
-                self.load(path);
-                self.dialog_open_error()
-            }
-            DialogKind::SaveAs => self.save_to(&path),
-            DialogKind::Export(kind) => self.export_to(kind, &path),
+        // Each action's typed result decides: the dialog stays open on the
+        // error it returned (also logged), and closes on success.
+        let result = match dialog.kind {
+            DialogKind::Open => self.open_model(&path).map_err(|e| e.to_string()),
+            DialogKind::SaveAs => self.write_model(&path),
+            DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
         };
-        if !ok {
-            dialog.error = Some(self.status.clone());
-            self.dialog = Some(dialog);
-        } else if let Some(action) = dialog.then {
-            if !self.dirty {
-                self.perform(action);
+        match result {
+            Err(err) => {
+                dialog.error = Some(err);
+                self.dialog = Some(dialog);
+            }
+            Ok(()) => {
+                if let Some(action) = dialog.then {
+                    if !self.dirty {
+                        self.perform(action);
+                    }
+                }
             }
         }
-    }
-
-    /// `load` reports failure in the status bar; turn that into a flag.
-    fn dialog_open_error(&self) -> bool {
-        !self.status.starts_with("Parse error") && !self.status.starts_with("Cannot read")
     }
 
     fn pending_window(&mut self, ui: &mut egui::Ui) {
@@ -2690,11 +2879,11 @@ impl App {
         if let Some(previous) = self.history.undo(&current) {
             let moved = previous.surface.as_ref().map_or(0, |s| s.points.len());
             self.restore_snapshot(previous);
-            self.status = if whole {
+            self.set_status(if whole {
                 "undo — previous model restored".to_owned()
             } else {
                 format!("undo — {moved} control points restored")
-            };
+            });
         }
     }
 
@@ -2703,7 +2892,7 @@ impl App {
         let current = self.current_snapshot(whole);
         if let Some(next) = self.history.redo(&current) {
             self.restore_snapshot(next);
-            self.status = "redo".to_owned();
+            self.set_status("redo".to_owned());
         }
     }
 
@@ -2740,7 +2929,7 @@ impl App {
         self.selected = None;
         self.mark_geometry_changed();
         self.refresh_dirty();
-        self.status = format!("restored to mark {id}");
+        self.set_status(format!("restored to mark {id}"));
         Ok(())
     }
 
@@ -2851,7 +3040,7 @@ impl App {
                             // automatic recomputes count from the release.
                             self.revision += 1;
                             self.touch_geometry();
-                            self.status = "control point moved".to_owned();
+                            self.set_status("control point moved".to_owned());
                         } else {
                             self.history.discard_last();
                         }
@@ -3196,7 +3385,7 @@ impl App {
             }
         };
         if let Err(e) = result {
-            self.status = e;
+            self.set_status(e);
         }
     }
 
@@ -3237,7 +3426,9 @@ impl App {
         }
         self.selected = Some(point);
         self.active = index;
-        self.status = format!("dragging control point {point} · hold X, Y or Z to lock an axis");
+        self.set_status(format!(
+            "dragging control point {point} · hold X, Y or Z to lock an axis"
+        ));
         self.drag = Some(DragState {
             point,
             plane,
@@ -3271,13 +3462,13 @@ impl App {
             target = crate::model_menu::lock_to_axis(drag.original, target, axis);
         }
         if lock != self.axis_lock {
-            self.status = match lock {
+            self.set_status(match lock {
                 Some(axis) => format!(
                     "dragging control point {point} along {} (locked)",
                     crate::model_menu::axis_name(axis)
                 ),
                 None => format!("dragging control point {point} · hold X, Y or Z to lock an axis"),
-            };
+            });
         }
         self.axis_lock = lock;
         if let Some(surface) = self.surface.as_mut() {
@@ -3418,27 +3609,27 @@ impl App {
         let key = self.hydro_key();
         match self.hydro.track.poll(key) {
             Some(Ok(out)) => self.install_hydro(out),
-            Some(Err(e)) => self.status = format!("Hydrostatics failed: {e}"),
+            Some(Err(e)) => self.log(Level::Error, format!("Hydrostatics failed: {e}")),
             None => {}
         }
         match self.hydro.curves_track.poll(key) {
             Some(Ok(out)) => self.install_curves(out, key),
-            Some(Err(e)) => self.status = format!("GZ curves failed: {e}"),
+            Some(Err(e)) => self.log(Level::Error, format!("GZ curves failed: {e}")),
             None => {}
         }
         match self.loading_track.poll(self.loading_key()) {
             Some(Ok(r)) => self.loading_result = Some(r),
-            Some(Err(e)) => self.status = format!("Loading compute failed: {e}"),
+            Some(Err(e)) => self.log(Level::Error, format!("Loading compute failed: {e}")),
             None => {}
         }
         match self.damage_track.poll(self.damage_key()) {
             Some(Ok(r)) => self.damage_result = Some(r),
-            Some(Err(e)) => self.status = format!("Damage compute failed: {e}"),
+            Some(Err(e)) => self.log(Level::Error, format!("Damage compute failed: {e}")),
             None => {}
         }
         match self.resistance_track.poll(self.resistance_key()) {
             Some(Ok(r)) => self.perf_state.resistance = Some(r),
-            Some(Err(e)) => self.status = format!("Resistance compute failed: {e}"),
+            Some(Err(e)) => self.log(Level::Error, format!("Resistance compute failed: {e}")),
             None => {}
         }
         match self.raos_track.poll(self.raos_key()) {
@@ -3446,7 +3637,7 @@ impl App {
                 self.perf_state.raos = Some(r);
                 self.perf_state.sea_result = irr;
             }
-            Some(Err(e)) => self.status = format!("Seakeeping compute failed: {e}"),
+            Some(Err(e)) => self.log(Level::Error, format!("Seakeeping compute failed: {e}")),
             None => {}
         }
         self.poll_analysis_views();
@@ -3503,7 +3694,7 @@ impl App {
             return;
         };
         let key = self.hydro_key();
-        self.status = "computing GZ cross curves…".to_owned();
+        self.set_status("computing GZ cross curves…".to_owned());
         self.hydro
             .curves_track
             .start(key, move || Ok(compute_cross_curves_for(inputs)));
@@ -3513,7 +3704,7 @@ impl App {
     /// Returns true when the curves were refused.
     fn refuse_curves_without_kg(&mut self) -> bool {
         if self.surface.is_some() && self.hydro.kg.is_none() {
-            self.status = format!("GZ curves: {KG_UNSET_HINT}");
+            self.set_status(format!("GZ curves: {KG_UNSET_HINT}"));
             return true;
         }
         false
@@ -3529,7 +3720,7 @@ impl App {
         }
         let free = self.hydro.free_trim;
         self.hydro.curves = out.curves;
-        self.status = if self.hydro.curves.is_none() {
+        self.set_status(if self.hydro.curves.is_none() {
             "GZ curves: nothing is submerged at this draft".to_owned()
         } else if free {
             format!(
@@ -3539,7 +3730,7 @@ impl App {
             )
         } else {
             format!("GZ cross curves for {:.2} t and ±30 %", out.displacement_t)
-        };
+        });
     }
 
     /// F5: recompute every stale result that is shown — the automatic ones
@@ -3805,20 +3996,22 @@ impl App {
             seacraft_core::report::design_report_with_project(surface, &opts, &self.project)?;
         seacraft_core::io::write_atomic(path, html)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        self.status = format!("wrote report {}", path.display());
+        self.set_status(format!("wrote report {}", path.display()));
         Ok(())
     }
 
     /// Start writing the design report on a worker thread; the status bar
-    /// reports when it is done. Returns false when nothing could be started.
-    fn start_report(&mut self, path: &std::path::Path) -> bool {
+    /// reports when it is done (a failure is logged). Fails when nothing
+    /// could be started.
+    fn start_report(&mut self, path: &std::path::Path) -> Result<(), String> {
         let (Some(opts), Some(surface)) = (self.report_options(), self.surface.clone()) else {
-            self.status = "No model loaded.".into();
-            return false;
+            let msg = "No model loaded.".to_owned();
+            self.log(Level::Error, msg.clone());
+            return Err(msg);
         };
         let project = self.project.clone();
         let path = path.to_path_buf();
-        self.status = format!("writing report {}…", path.display());
+        self.set_status(format!("writing report {}…", path.display()));
         let target = path.clone();
         let job = Job::spawn(self.revision, move || {
             seacraft_core::report::design_report_with_project(&surface, &opts, &project).and_then(
@@ -3829,7 +4022,7 @@ impl App {
             )
         });
         self.report_job = Some((path, job));
-        true
+        Ok(())
     }
 
     /// Collect a finished report job, if any.
@@ -3837,15 +4030,30 @@ impl App {
         let Some((path, job)) = &self.report_job else {
             return;
         };
-        self.status = match job.poll() {
+        let (level, msg) = match job.poll() {
             crate::jobs::Poll::Running => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
                 return;
             }
-            crate::jobs::Poll::Done(()) => format!("wrote report {}", path.display()),
-            crate::jobs::Poll::Failed(e) => format!("report failed: {e}"),
+            crate::jobs::Poll::Done(()) => {
+                (Level::Info, format!("wrote report {}", path.display()))
+            }
+            crate::jobs::Poll::Failed(e) => (Level::Error, format!("report failed: {e}")),
         };
+        self.log(level, msg);
         self.report_job = None;
+    }
+
+    /// View > Messages: the log, newest first, with Clear.
+    fn messages_window(&mut self, ui: &mut egui::Ui) {
+        if !self.show_messages {
+            return;
+        }
+        match crate::messages::messages_window(ui.ctx(), &self.messages) {
+            MessagesAction::None => {}
+            MessagesAction::Clear => self.messages.clear(),
+            MessagesAction::Close => self.show_messages = false,
+        }
     }
 
     /// The File > Report options window, editing the project's report settings.
@@ -4121,11 +4329,11 @@ impl App {
 
     pub fn start_loading_compute(&mut self) {
         let Some(surface) = self.surface.clone() else {
-            self.status = "No model loaded.".into();
+            self.set_status("No model loaded.");
             return;
         };
         if self.project.loading_conditions.is_empty() {
-            self.status = "No loading condition in project.".into();
+            self.set_status("No loading condition in project.");
             return;
         }
         let sel = self
@@ -4136,7 +4344,7 @@ impl App {
         let key = self.loading_key();
         if let Err(e) = seacraft_core::loading::validate(&with_windage) {
             let msg = format!("Loading condition invalid: {e}");
-            self.status = msg.clone();
+            self.log(Level::Error, msg.clone());
             // Remembered, so the automatic recompute does not retry it.
             self.loading_track.fail(key, msg);
             return;
@@ -4190,11 +4398,11 @@ impl App {
 
     pub fn start_damage_compute(&mut self) {
         let Some(surface) = self.surface.clone() else {
-            self.status = "No model loaded.".into();
+            self.set_status("No model loaded.");
             return;
         };
         if self.project.damage_cases.is_empty() {
-            self.status = "No damage case in project.".into();
+            self.set_status("No damage case in project.");
             return;
         }
         let sel = self
@@ -4400,7 +4608,7 @@ impl App {
         let spec = match self.seakeeping_spec() {
             Ok(spec) => spec,
             Err(e) => {
-                self.status = e;
+                self.set_status(e);
                 return;
             }
         };
@@ -4625,6 +4833,26 @@ impl App {
         &self.display
     }
 
+    /// How many station, buttock and waterline curves the viewports have
+    /// cut, and how many comb spikes they carry in all (`None` before the
+    /// sections are first needed).
+    pub fn section_curve_counts(&self) -> Option<(usize, usize, usize, usize)> {
+        let curves = self.cache.as_ref()?.curves.as_ref()?;
+        let spikes = curves
+            .stations
+            .iter()
+            .chain(&curves.buttocks)
+            .chain(&curves.waterlines)
+            .map(|c| c.spikes.len())
+            .sum();
+        Some((
+            curves.stations.len(),
+            curves.buttocks.len(),
+            curves.waterlines.len(),
+            spikes,
+        ))
+    }
+
     pub fn display_mut(&mut self) -> &mut DisplayOptions {
         &mut self.display
     }
@@ -4817,7 +5045,7 @@ impl App {
             return;
         }
         if let Err(e) = self.move_point(index, to) {
-            self.status = e;
+            self.set_status(e);
         }
     }
 
@@ -4846,7 +5074,102 @@ impl App {
 
     /// A status line for an action that changed nothing about the model.
     pub fn status_note(&mut self, text: impl Into<String>) {
+        self.set_status(text);
+    }
+
+    /// Replace the status line with an informational message (not logged).
+    fn set_status(&mut self, text: impl Into<String>) {
         self.status = text.into();
+        self.status_level = Level::Info;
+    }
+
+    /// Log a message and show it in the status bar, coloured by its level.
+    pub fn log(&mut self, level: Level, text: impl Into<String>) {
+        let text = text.into();
+        self.messages.push(level, text.clone());
+        self.status = text;
+        self.status_level = level;
+    }
+
+    /// The level of the status line: a logged warning or error, or info.
+    pub fn status_level(&self) -> Level {
+        self.status_level
+    }
+
+    /// The message log, oldest first.
+    pub fn messages(&self) -> &MessageLog {
+        &self.messages
+    }
+
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+    }
+
+    /// The Messages window is open.
+    pub fn show_messages(&self) -> bool {
+        self.show_messages
+    }
+
+    pub fn set_show_messages(&mut self, show: bool) {
+        self.show_messages = show;
+    }
+
+    /// Where the status text was drawn last frame (a click opens Messages).
+    pub fn status_rect(&self) -> egui::Rect {
+        self.status_rect
+    }
+
+    // ---- recent files --------------------------------------------------
+
+    /// Keep the recent list in `storage` from now on, starting from the list
+    /// already stored there. Headless apps have none until a test gives one.
+    pub fn set_storage(&mut self, storage: Box<dyn eframe::Storage>) {
+        self.recent = RecentFiles::load(storage.as_ref());
+        self.storage = Some(storage);
+    }
+
+    /// Take the storage back (tests: to read what was written).
+    pub fn take_storage(&mut self) -> Option<Box<dyn eframe::Storage>> {
+        self.storage.take()
+    }
+
+    /// File > Open recent, most recent first.
+    pub fn recent_files(&self) -> &RecentFiles {
+        &self.recent
+    }
+
+    /// Put `path` on top of the recent list and keep the list.
+    fn remember_recent(&mut self, path: &std::path::Path) {
+        self.recent.push(path);
+        self.persist_recent();
+    }
+
+    /// Empty the recent list (File > Open recent > Clear list).
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.persist_recent();
+    }
+
+    /// Write the recent list to the storage now, so a crash does not lose it.
+    fn persist_recent(&mut self) {
+        if let Some(storage) = self.storage.as_mut() {
+            self.recent.save(storage.as_mut());
+            storage.flush();
+        }
+    }
+
+    /// Open a recent file, through the unsaved-changes prompt.
+    pub fn request_open_recent(&mut self, path: PathBuf) {
+        self.pending_recent = Some(path);
+        self.request(PendingAction::OpenRecent);
+    }
+
+    fn apply_recent_action(&mut self, action: RecentAction) {
+        match action {
+            RecentAction::None => {}
+            RecentAction::Open(path) => self.request_open_recent(path),
+            RecentAction::Clear => self.clear_recent(),
+        }
     }
 
     /// Ask the window to close (the control socket's `app.quit`).
@@ -5226,7 +5549,7 @@ impl App {
             }
         };
         if let Err(e) = result {
-            self.status = e;
+            self.set_status(e);
         }
     }
 
@@ -5315,13 +5638,13 @@ impl App {
                     d.error = None;
                     d.result = None;
                 }
-                self.status = "optimising the hull…".to_owned();
+                self.set_status("optimising the hull…".to_owned());
             }
             Err(e) => {
                 if let Some(d) = self.optimise_dialog.as_mut() {
                     d.error = Some(e.clone());
                 }
-                self.status = e;
+                self.log(Level::Error, e);
             }
         }
     }
@@ -5372,7 +5695,7 @@ impl App {
                 if let Some(d) = self.optimise_dialog.as_mut() {
                     d.error = Some(e.clone());
                 }
-                self.status = e;
+                self.log(Level::Error, e);
             }
         }
     }
@@ -5408,12 +5731,12 @@ impl App {
             OptimiseAction::Close => {
                 self.optimise_dialog = None;
                 if self.optimise_job.take().is_some() {
-                    self.status = "optimisation stopped; the hull is unchanged".to_owned();
+                    self.set_status("optimisation stopped; the hull is unchanged".to_owned());
                 }
             }
             OptimiseAction::Stop => {
                 self.optimise_job = None;
-                self.status = "optimisation stopped; the hull is unchanged".to_owned();
+                self.set_status("optimisation stopped; the hull is unchanged".to_owned());
             }
             OptimiseAction::Run(spec, level) => self.start_optimise(*spec, level),
         }
@@ -5481,6 +5804,13 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Keep the recent list in eframe's storage (called on shutdown and
+    /// periodically when eframe has its `persistence` feature), and in ours.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.recent.save(storage);
+        self.persist_recent();
+    }
+
     /// Serve the control socket's queue before the UI runs.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_control(ctx);
@@ -5594,7 +5924,7 @@ impl App {
         let key = self.analysis_key(view);
         let model = crate::commands::ModelSnapshot::of(self);
         let inputs = self.analysis.inputs.clone();
-        self.status = format!("computing {}…", view.label().to_lowercase());
+        self.set_status(format!("computing {}…", view.label().to_lowercase()));
         self.analysis.slot_mut(view).track.start(key, move || {
             crate::analysis_views::compute(view, &inputs, &model)
         });
@@ -5607,7 +5937,7 @@ impl App {
             let key = self.analysis_key(view);
             match self.analysis.slot_mut(view).track.poll(key) {
                 Some(Ok(r)) => self.install_analysis_view(view, r),
-                Some(Err(e)) => self.status = format!("{} failed: {e}", view.label()),
+                Some(Err(e)) => self.log(Level::Error, format!("{} failed: {e}", view.label())),
                 None => {}
             }
         }
@@ -5620,7 +5950,7 @@ impl App {
     ) {
         let rows = crate::analysis_views::table(&result).rows.len();
         self.analysis.slot_mut(view).result = Some(result);
-        self.status = format!("{}: {rows} rows", view.label());
+        self.set_status(format!("{}: {rows} rows", view.label()));
     }
 
     /// Block until a view's job ends and take its result (tests).
@@ -5628,7 +5958,7 @@ impl App {
         let key = self.analysis_key(view);
         match self.analysis.slot_mut(view).track.wait(key) {
             Some(Ok(r)) => self.install_analysis_view(view, r),
-            Some(Err(e)) => self.status = format!("{} failed: {e}", view.label()),
+            Some(Err(e)) => self.log(Level::Error, format!("{} failed: {e}", view.label())),
             None => {}
         }
     }
@@ -5721,7 +6051,7 @@ impl App {
                 if let Some(csv) = self.analysis_view_csv(view) {
                     let rows = csv.lines().count().saturating_sub(1);
                     ctx.copy_text(csv);
-                    self.status = format!("{}: {rows} rows copied as CSV", view.label());
+                    self.set_status(format!("{}: {rows} rows copied as CSV", view.label()));
                 }
             }
             ViewAction::Close => self.analysis.open = None,

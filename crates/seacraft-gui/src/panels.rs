@@ -4654,6 +4654,77 @@ pub fn no_model_note(ui: &mut egui::Ui) {
     );
 }
 
+/// The intersection-curve counts and the comb settings, for the toolbar's
+/// "…" menu and View > Curves and combs. Edits `display` and returns whether
+/// anything changed; the caller applies it.
+pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool {
+    use crate::render::{
+        BUTTOCKS_RANGE, COMB_SCALE_RANGE, COMB_STRIDE_RANGE, STATIONS_RANGE, WATERLINES_RANGE,
+    };
+    let mut changed = false;
+    ui.label(egui::RichText::new("Intersection curves").color(theme::TEXT_SECONDARY));
+    egui::Grid::new("section_counts")
+        .num_columns(2)
+        .show(ui, |ui| {
+            for (label, value, range, tip) in [
+                (
+                    "stations",
+                    &mut display.stations,
+                    STATIONS_RANGE,
+                    "Stations (x = const) from stern to bow, ends included",
+                ),
+                (
+                    "waterlines",
+                    &mut display.waterlines,
+                    WATERLINES_RANGE,
+                    "Waterlines (z = const) from keel to top, both included",
+                ),
+                (
+                    "buttocks",
+                    &mut display.buttocks,
+                    BUTTOCKS_RANGE,
+                    "Buttocks (y = const) across the beam, sides included",
+                ),
+            ] {
+                ui.label(label);
+                changed |= ui
+                    .add(egui::DragValue::new(value).range(range).speed(0.1))
+                    .on_hover_text(tip)
+                    .changed();
+                ui.end_row();
+            }
+        });
+    ui.separator();
+    ui.label(egui::RichText::new("Curvature combs").color(theme::TEXT_SECONDARY));
+    egui::Grid::new("comb_settings")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("scale");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut display.comb_scale)
+                        .range(COMB_SCALE_RANGE)
+                        .speed(0.01)
+                        .max_decimals(2),
+                )
+                .on_hover_text("Comb gain: metres of spike for a curvature of 1/m")
+                .changed();
+            ui.end_row();
+            ui.label("density");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut display.comb_stride)
+                        .range(COMB_STRIDE_RANGE)
+                        .speed(0.05)
+                        .prefix("1/"),
+                )
+                .on_hover_text("Draw every n-th comb spike: 1/1 draws them all")
+                .changed();
+            ui.end_row();
+        });
+    changed
+}
+
 /// What the user asked the toolbar for; `App::draw` applies it.
 #[derive(Debug, Clone, Default)]
 pub struct ToolbarOutput {
@@ -4669,8 +4740,9 @@ pub struct ToolbarOutput {
     pub toggle_maximise: bool,
     /// Where each control was drawn, by name (a test hook): `shaded`,
     /// `zebra`, `curvature`, `draft`, `param`, `net`, `points`,
-    /// `waterplane`, `combs`, `wireframe`, `level`, `level:N` (while the
-    /// list is open), `mode`, `fit`, `maximise`.
+    /// `waterplane`, `curves`, `combs`, `sections` (the counts menu),
+    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`,
+    /// `fit`, `maximise`.
     pub rects: Vec<(&'static str, egui::Rect)>,
 }
 
@@ -4830,9 +4902,15 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     &mut display.waterplane,
                 ),
                 (
+                    "curves",
+                    "Curves",
+                    "Station, buttock and waterline intersection curves",
+                    &mut display.curves,
+                ),
+                (
                     "combs",
                     "Combs",
-                    "Stations, buttocks and waterlines with curvature combs",
+                    "Curvature combs along the stations, buttocks and waterlines",
                     &mut display.combs,
                 ),
                 (
@@ -4849,6 +4927,16 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 }
                 out.rects.push((name, response.rect));
             }
+            // The curve counts and comb settings, in a small menu.
+            let menu = ui
+                .menu_button("…", |ui| {
+                    if section_settings(ui, &mut display) {
+                        toggled = true;
+                    }
+                })
+                .response
+                .on_hover_text("Section counts (stations, waterlines, buttocks) and comb scale and density");
+            out.rects.push(("sections", menu.rect));
         });
         if toggled {
             out.display = Some(display);

@@ -140,6 +140,8 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let mut app = App::new(cc, open.clone());
             app.set_analysis(analysis);
+            // `--combs` overlays the curves with their combs, as it always did.
+            app.display_mut().curves = combs;
             app.display_mut().combs = combs;
             app.set_control_roots(control_roots.clone());
             app.set_token_file(token_file);

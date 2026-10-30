@@ -75,6 +75,8 @@ pub enum StartAction {
     Example,
     Open,
     Demo,
+    /// The recent file at this index of the list the card was given.
+    OpenRecent(usize),
 }
 
 /// The start card's buttons, from the last frame (test hook).
@@ -84,6 +86,8 @@ pub struct StartRects {
     pub example: egui::Rect,
     pub open: egui::Rect,
     pub demo: egui::Rect,
+    /// The recent files listed (as many as fit), in list order.
+    pub recent: [egui::Rect; crate::recent::RECENT_CAP],
 }
 
 impl Default for StartRects {
@@ -93,17 +97,34 @@ impl Default for StartRects {
             example: egui::Rect::NOTHING,
             open: egui::Rect::NOTHING,
             demo: egui::Rect::NOTHING,
+            recent: [egui::Rect::NOTHING; crate::recent::RECENT_CAP],
         }
     }
 }
 
 /// The central area with no model: a card with the ways to start.
-pub fn start_card(ui: &mut egui::Ui) -> (StartAction, StartRects) {
+pub fn start_card(
+    ui: &mut egui::Ui,
+    recent: &[crate::recent::RecentEntry],
+) -> (StartAction, StartRects) {
     let mut action = StartAction::None;
     let mut rects = StartRects::default();
     let full = ui.available_rect_before_wrap();
     ui.painter().rect_filled(full, 0.0, theme::CANVAS);
-    let size = egui::vec2(340.0, 268.0);
+    // The recent files under the buttons, as many as the window has room
+    // for (a heading and one row each).
+    const ROW: f32 = 22.0;
+    const BASE: f32 = 268.0;
+    let room = ((full.height() - BASE - 40.0 - 28.0) / ROW)
+        .floor()
+        .max(0.0) as usize;
+    let shown = recent.len().min(room).min(crate::recent::RECENT_CAP);
+    let extra = if shown > 0 {
+        28.0 + ROW * shown as f32
+    } else {
+        0.0
+    };
+    let size = egui::vec2(340.0, BASE + extra);
     let card = egui::Rect::from_center_size(full.center(), size).intersect(full);
     let ctx = ui.ctx().clone();
     let keys = |key: egui::Key| {
@@ -152,6 +173,27 @@ pub fn start_card(ui: &mut egui::Ui) -> (StartAction, StartRects) {
                 rects.demo = r.rect;
                 if r.clicked() {
                     action = StartAction::Demo;
+                }
+                if shown > 0 {
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Recent").color(theme::TEXT_SECONDARY));
+                    for (i, entry) in recent.iter().take(shown).enumerate() {
+                        let full_path = entry.path.display().to_string();
+                        let r = ui.add_enabled(
+                            entry.exists,
+                            egui::Button::new(entry.label())
+                                .frame(false)
+                                .min_size(egui::vec2(size.x - 40.0, ROW - 4.0)),
+                        );
+                        rects.recent[i] = r.rect;
+                        if entry.exists {
+                            if r.on_hover_text(full_path).clicked() {
+                                action = StartAction::OpenRecent(i);
+                            }
+                        } else {
+                            r.on_disabled_hover_text(format!("{full_path}\nThe file is missing."));
+                        }
+                    }
                 }
                 ui.add_space(8.0);
                 ui.label(

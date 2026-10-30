@@ -101,6 +101,8 @@ crates/seacraft-gui/
   src/theme.rs              colour tokens (the only colour literals), type scale, spacing
   src/picking.rs            screen-space picking, drag plane
   src/history.rs            snapshot undo/redo (64)
+  src/messages.rs           typed message log (level, text, time) + Messages window
+  src/recent.rs             File > Open recent list, JSON eframe::Storage in the data dir
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
   tests/                    drag, files, hydro, smoke (all headless)
 xtask/                      cargo xtask ci: fmt, clippy, tests, version check, demo numbers

@@ -10,10 +10,12 @@ pub mod commands;
 pub mod control;
 pub mod history;
 pub mod jobs;
+pub mod messages;
 pub mod model_menu;
 pub mod new_design;
 pub mod panels;
 pub mod picking;
+pub mod recent;
 pub mod render;
 pub mod theme;
 

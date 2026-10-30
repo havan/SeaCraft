@@ -696,6 +696,7 @@ fn handle_inner(
             let mut dock_tab: Option<crate::app::DesignDock> = None;
             let mut dock_wide: Option<bool> = None;
             let mut maximised: Option<bool> = None;
+            let mut messages: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -731,6 +732,41 @@ fn handle_inner(
                     }
                     "combs" => {
                         display.combs = value.as_bool().ok_or("`combs` must be true or false")?
+                    }
+                    "curves" => {
+                        display.curves = value.as_bool().ok_or("`curves` must be true or false")?
+                    }
+                    "stations" => {
+                        display.stations =
+                            whole_in(value, "stations", crate::render::STATIONS_RANGE)?
+                    }
+                    "buttocks" => {
+                        display.buttocks =
+                            whole_in(value, "buttocks", crate::render::BUTTOCKS_RANGE)?
+                    }
+                    "waterlines" => {
+                        display.waterlines =
+                            whole_in(value, "waterlines", crate::render::WATERLINES_RANGE)?
+                    }
+                    "comb_density" => {
+                        display.comb_stride =
+                            whole_in(value, "comb_density", crate::render::COMB_STRIDE_RANGE)?
+                    }
+                    "comb_scale" => {
+                        let range = crate::render::COMB_SCALE_RANGE;
+                        display.comb_scale = value
+                            .as_f64()
+                            .filter(|x| range.contains(x))
+                            .ok_or_else(|| {
+                                format!(
+                                    "`comb_scale` must be a number from {} to {}",
+                                    range.start(),
+                                    range.end()
+                                )
+                            })?
+                    }
+                    "messages" => {
+                        messages = Some(value.as_bool().ok_or("`messages` must be true or false")?)
                     }
                     "analysis" => {
                         let name = value.as_str().ok_or("`analysis` must be a string")?;
@@ -817,6 +853,9 @@ fn handle_inner(
                 }
             }
             *app.display_mut() = display;
+            if let Some(show) = messages {
+                app.set_show_messages(show);
+            }
             if let Some(show) = loading_panel {
                 app.set_show_loading(show);
             }
@@ -1104,9 +1143,7 @@ fn handle_inner(
                 .ok_or("missing `path`")?;
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
-            if !app.save_to(&validated) {
-                return Err(app.status().to_string());
-            }
+            app.write_model(&validated)?;
             Ok(json!({ "path": validated.to_string_lossy(), "dirty": app.is_dirty() }))
         }
         "project.get" => serde_json::to_value(app.project()).map_err(|e| e.to_string()),
@@ -1128,9 +1165,7 @@ fn handle_inner(
             })?;
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
-            if !app.export_to(kind, &validated) {
-                return Err(app.status().to_string());
-            }
+            app.write_export(kind, &validated)?;
             let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
             Ok(json!({
                 "path": validated.to_string_lossy(),
@@ -2209,6 +2244,29 @@ fn handle_inner(
     }
 }
 
+/// A whole number in `range` for setting `key`.
+fn whole_in(
+    value: &Value,
+    key: &str,
+    range: std::ops::RangeInclusive<usize>,
+) -> Result<usize, String> {
+    value
+        .as_f64()
+        .filter(|x| {
+            x.is_finite()
+                && x.fract() == 0.0
+                && (*range.start() as f64..=*range.end() as f64).contains(x)
+        })
+        .map(|x| x as usize)
+        .ok_or_else(|| {
+            format!(
+                "`{key}` must be a whole number from {} to {}",
+                range.start(),
+                range.end()
+            )
+        })
+}
+
 /// Everything `ui.inspect` reports.
 fn inspect(app: &App) -> Value {
     let d = app.display();
@@ -2259,9 +2317,31 @@ fn inspect(app: &App) -> Value {
             "volumes": d.volumes,
             "windage": d.windage,
             "grid": d.grid,
+            "curves": d.curves,
             "combs": d.combs,
+            "stations": d.stations,
+            "buttocks": d.buttocks,
+            "waterlines": d.waterlines,
+            "comb_scale": d.comb_scale,
+            "comb_density": d.comb_stride,
             "analysis": d.analysis.label(),
         },
+        "status_level": app.status_level().label(),
+        "messages_open": app.show_messages(),
+        // The newest 20 messages, newest first.
+        "messages": app
+            .messages()
+            .entries()
+            .rev()
+            .take(20)
+            .map(|m| json!({ "level": m.level.label(), "text": m.text, "time": m.clock() }))
+            .collect::<Vec<_>>(),
+        "recent_files": app
+            .recent_files()
+            .entries()
+            .iter()
+            .map(|e| json!({ "path": e.path.to_string_lossy(), "exists": e.exists }))
+            .collect::<Vec<_>>(),
         "hydro": {
             "draft": h.draft,
             "trim": h.trim,
@@ -3962,6 +4042,78 @@ mod tests {
         let restore = call(&mut app, &ctx, "history.restore", json!({"mark": mark}));
         assert_eq!(restore["ok"], true);
         assert!((app.surface().unwrap().points[0].p.z - original_z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ui_set_curve_and_comb_keys_are_separate_and_checked() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        let d = &v["result"]["display"];
+        assert_eq!(d["curves"], false, "{v}");
+        assert_eq!(d["combs"], false);
+        assert_eq!(d["stations"], 11);
+        assert_eq!(d["buttocks"], 5);
+        assert_eq!(d["waterlines"], 7);
+        assert_eq!(d["comb_density"], 1);
+
+        // The old key still switches the combs; the curves have their own.
+        let r = call(&mut app, &ctx, "ui.set", json!({ "combs": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.display().combs && !app.display().curves);
+        let r = call(
+            &mut app,
+            &ctx,
+            "ui.set",
+            json!({ "curves": true, "stations": 21, "buttocks": 9, "waterlines": 13,
+                    "comb_scale": 1.5, "comb_density": 2, "messages": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let d = &r["result"]["display"];
+        assert_eq!(d["curves"], true);
+        assert_eq!(d["stations"], 21);
+        assert_eq!(d["buttocks"], 9);
+        assert_eq!(d["waterlines"], 13);
+        assert_eq!(d["comb_scale"], 1.5);
+        assert_eq!(d["comb_density"], 2);
+        assert_eq!(r["result"]["messages_open"], true);
+        for bad in [
+            json!({ "stations": 1 }),
+            json!({ "stations": 2.5 }),
+            json!({ "buttocks": 99 }),
+            json!({ "waterlines": "many" }),
+            json!({ "comb_scale": 0.0 }),
+            json!({ "comb_density": 0 }),
+            json!({ "curves": "yes" }),
+            json!({ "curves": false, "stations": 0 }),
+        ] {
+            let r = call(&mut app, &ctx, "ui.set", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        assert!(app.display().curves, "a refused batch changed nothing");
+        assert_eq!(app.display().stations, 21);
+    }
+
+    #[test]
+    fn a_failed_model_open_is_a_logged_error_in_inspect() {
+        let (mut app, ctx) = demo();
+        let missing = std::env::temp_dir().join(format!(
+            "seacraft-control-missing-{}.fef",
+            std::process::id()
+        ));
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.open",
+            json!({ "path": missing.to_string_lossy() }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            r["error"].as_str().unwrap().starts_with("Cannot read"),
+            "{r}"
+        );
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["status_level"], "error", "{v}");
+        assert_eq!(v["result"]["messages"][0]["level"], "error", "{v}");
     }
 
     #[test]
