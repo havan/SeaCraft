@@ -613,7 +613,12 @@ fn default_name(kind: HullKind, lwl: f64) -> String {
 }
 
 /// A name / value / unit row in a dialog grid.
-fn field(ui: &mut egui::Ui, name: &str, widget: impl egui::Widget, unit: &str) -> egui::Response {
+pub(crate) fn field(
+    ui: &mut egui::Ui,
+    name: &str,
+    widget: impl egui::Widget,
+    unit: &str,
+) -> egui::Response {
     ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY));
     let r = ui.add(widget);
     ui.label(egui::RichText::new(unit).color(theme::TEXT_MUTED));
@@ -622,7 +627,7 @@ fn field(ui: &mut egui::Ui, name: &str, widget: impl egui::Widget, unit: &str) -
 
 /// An optional target: a checkbox that turns it on (at `default`) and its
 /// value. Returns whether anything changed.
-fn optional(
+pub(crate) fn optional(
     ui: &mut egui::Ui,
     name: &str,
     value: &mut Option<f64>,

@@ -288,17 +288,67 @@ pub struct OptimizeResult {
     pub undo_len: usize,
 }
 
-/// Run the optimiser and replace the hull with its result: one undo step.
-/// Synchronous; a long run blocks the caller.
-pub fn optimize(app: &mut App, params: &OptimizeParams) -> Result<OptimizeResult, String> {
+/// Everything one optimisation needs, copied out of the app so it can run
+/// on a background thread (the Model menu's job) or in place (the control
+/// channel).
+#[derive(Debug, Clone)]
+pub struct OptimizeRun {
+    surface: seacraft_core::Surface,
+    opts: seacraft_core::hydro::HydroOptions,
+    spec: OptimizeSpec,
+    /// The subdivision level the run measures at.
+    pub level: u8,
+}
+
+impl OptimizeRun {
+    /// Run the optimiser; touches no app state.
+    pub fn run(&self) -> Result<(seacraft_core::Surface, OptimizeReport), String> {
+        seacraft_core::optimize::optimize_hull(&self.surface, &self.opts, &self.spec)
+            .map_err(|e| format!("model.optimize: {e}"))
+    }
+
+    /// The `KG` the run was given.
+    pub fn kg(&self) -> Option<f64> {
+        self.spec.kg
+    }
+}
+
+/// Copy the model and its measuring options out of the app for an
+/// optimisation.
+pub fn prepare_optimize(app: &App, params: &OptimizeParams) -> Result<OptimizeRun, String> {
     let level = level_or_app(app, params.level);
     let mut opts = app.hydro_options().clone();
     opts.subdivision = subdivision_at(app, level);
     let surface = app
         .surface()
-        .ok_or_else(|| "model.optimize: no model is loaded".to_string())?;
-    let (out, report) = seacraft_core::optimize::optimize_hull(surface, &opts, &params.spec)
-        .map_err(|e| format!("model.optimize: {e}"))?;
+        .ok_or_else(|| "model.optimize: no model is loaded".to_string())?
+        .clone();
+    Ok(OptimizeRun {
+        surface,
+        opts,
+        spec: params.spec.clone(),
+        level,
+    })
+}
+
+/// Run the optimiser and replace the hull with its result: one undo step.
+/// Synchronous; a long run blocks the caller (the Model menu runs
+/// [`OptimizeRun::run`] as a job and then [`install_optimized`]).
+pub fn optimize(app: &mut App, params: &OptimizeParams) -> Result<OptimizeResult, String> {
+    let run = prepare_optimize(app, params)?;
+    let (out, report) = run.run()?;
+    Ok(install_optimized(app, out, report, run.level, run.kg()))
+}
+
+/// Replace the hull with an optimiser's result: one undo step, and the app
+/// measures at the draft that holds the original displacement.
+pub fn install_optimized(
+    app: &mut App,
+    out: seacraft_core::Surface,
+    report: OptimizeReport,
+    level: u8,
+    kg: Option<f64>,
+) -> OptimizeResult {
     app.snapshot_undo();
     if let Some(surface) = app.surface_mut() {
         *surface = out;
@@ -312,15 +362,15 @@ pub fn optimize(app: &mut App, params: &OptimizeParams) -> Result<OptimizeResult
         "hull optimised at {:.1} kn: RT {:+.1} %",
         report.speed_kn, report.rt_change_pct
     ));
-    Ok(OptimizeResult {
+    OptimizeResult {
         level,
-        kg: params.spec.kg,
+        kg,
         report,
         faces: app.face_count(),
         points: app.control_point_count(),
         draft: app.hydro_options().draft,
         undo_len: app.undo_len(),
-    })
+    }
 }
 
 // ---- hydro.table ---------------------------------------------------------

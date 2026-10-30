@@ -93,6 +93,8 @@ crates/seacraft-gui/
   src/commands.rs           typed model/analysis operations (transform, optimise, topology,
                             crease, generate, hydro table, trim scan, Bonjean, offsets,
                             unfold) shared by the control channel and the menus
+  src/model_menu.rs         Model menu items + disabled reasons, Transform/Optimise dialogs,
+                            topology-tool targets (Shift+click pair, picked face), axis lock
   src/control.rs            loopback TCP JSON-lines control channel
   src/camera.rs             ViewKind, Camera, ViewTransform, Ray
   src/render.rs             viewport painter: grid, shading, control net

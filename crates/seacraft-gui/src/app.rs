@@ -842,6 +842,25 @@ pub struct App {
     control_roots: seacraft_core::control_auth::ControlRoots,
     /// Token file removed on clean shutdown.
     token_file: Option<seacraft_core::control_auth::TokenFile>,
+    /// The control point picked before `selected` (Shift+click): with it,
+    /// the two picked points the Model menu's edge tools act on.
+    second_pick: Option<usize>,
+    /// Model > Transform…, while open.
+    transform_dialog: Option<crate::model_menu::TransformDialog>,
+    /// Model > Optimise…, while open.
+    optimise_dialog: Option<crate::model_menu::OptimiseDialog>,
+    /// The optimisation running for the Optimise window, stamped with the
+    /// model revision it started from, and its level and KG.
+    optimise_job: Option<OptimiseJob>,
+    /// The world axis the point drag is locked to this frame (X, Y or Z held).
+    axis_lock: Option<seacraft_core::transform::Axis>,
+}
+
+/// An optimisation on the job layer and what installing its result needs.
+struct OptimiseJob {
+    job: Job<(Surface, seacraft_core::optimize::OptimizeReport)>,
+    level: u8,
+    kg: Option<f64>,
 }
 
 /// Whether control point `point` belongs to a face on a symmetric layer
@@ -965,6 +984,11 @@ impl App {
             synthetic: Vec::new(),
             control_roots: seacraft_core::control_auth::ControlRoots::default(),
             token_file: None,
+            second_pick: None,
+            transform_dialog: None,
+            optimise_dialog: None,
+            optimise_job: None,
+            axis_lock: None,
         }
     }
 
@@ -1545,6 +1569,7 @@ impl App {
             self.start_screen(ui);
         }
         self.new_design_window(ui);
+        self.model_windows(ui);
         self.project_settings_window(ui);
         self.dialog_window(ui);
         self.report_options_window(ui);
@@ -1571,7 +1596,10 @@ impl App {
         }
         // A modal dialog owns the keyboard: nothing reaches the model
         // behind it.
-        if self.new_design.is_some() || self.project_settings.is_some() {
+        if self.new_design.is_some()
+            || self.project_settings.is_some()
+            || self.transform_dialog.is_some()
+        {
             return;
         }
         // Read the modifiers from the key event itself: `InputState::modifiers`
@@ -1663,6 +1691,7 @@ impl App {
         });
         if escape {
             self.selected = None;
+            self.second_pick = None;
             self.selected_volume = None;
             self.selected_windage = None;
         }
@@ -1877,20 +1906,15 @@ impl App {
                         // hydrostatics key on the revision.
                         self.set_subdivision_level(level as u8);
                     }
+                    // Radio buttons, not a combo box: a click inside a menu
+                    // closes it, and the combo's list closed with it before
+                    // a mode could be chosen.
                     let mut mode = self.mode;
-                    egui::ComboBox::from_label("mode")
-                        .selected_text(match mode {
-                            SubdivisionMode::Loop => "Loop",
-                            SubdivisionMode::CatmullClark => "Catmull-Clark",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
-                            ui.selectable_value(
-                                &mut mode,
-                                SubdivisionMode::CatmullClark,
-                                "Catmull-Clark",
-                            );
-                        });
+                    ui.horizontal(|ui| {
+                        ui.label("mode");
+                        ui.radio_value(&mut mode, SubdivisionMode::Loop, "Loop");
+                        ui.radio_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
+                    });
                     if mode != self.mode {
                         self.set_subdivision_mode(mode);
                     }
@@ -1916,6 +1940,7 @@ impl App {
                         ui.close();
                     }
                 });
+                self.model_menu(ui);
                 ui.menu_button("Help", |ui| {
                     ui.label(format!("SeaCraft {}", seacraft_core::VERSION));
                     ui.label("A Rust reimplementation of FREE!ship.");
@@ -2779,6 +2804,7 @@ impl App {
                 }
                 if ui.input(|i| i.pointer.any_released()) {
                     if let Some(drag) = self.drag.take_if(|d| d.view == index) {
+                        self.axis_lock = None;
                         let moved = self
                             .surface
                             .as_ref()
@@ -2799,6 +2825,11 @@ impl App {
             if response.clicked() {
                 self.active = index;
                 self.selected = self.pick_at(ui, &view, cell);
+                // The press (`begin_drag`) already decided whether this
+                // click adds a second point; a click on nothing drops both.
+                if self.selected.is_none() || self.second_pick == self.selected {
+                    self.second_pick = None;
+                }
                 self.picked_face = self.pick_face_at(ui, &view, cell);
                 if self.selected.is_none() {
                     let cursor = ui.input(|i| i.pointer.interact_pos());
@@ -2944,6 +2975,7 @@ impl App {
                     None,
                 );
             }
+            self.draw_pick_overlays(ui, cell, index);
         }
         for (index, frame) in fresh {
             self.analysis_frames[index] = Some(frame);
@@ -3157,9 +3189,19 @@ impl App {
             .unwrap_or(Vec3::ZERO);
         let snap = Snapshot::edit(surface, self.hydro.options.draft);
         self.history.snapshot(&snap);
+        // Shift+press keeps the point selected so far as the first of two
+        // picked points (the Model menu's edge tools); a plain press picks
+        // one point.
+        if pointer_shift(ui) {
+            if self.selected != Some(point) {
+                self.second_pick = self.selected;
+            }
+        } else {
+            self.second_pick = None;
+        }
         self.selected = Some(point);
         self.active = index;
-        self.status = format!("dragging control point {point}");
+        self.status = format!("dragging control point {point} · hold X, Y or Z to lock an axis");
         self.drag = Some(DragState {
             point,
             plane,
@@ -3181,6 +3223,27 @@ impl App {
         };
         let mut target = hit + drag.offset;
         let point = drag.point;
+        // X, Y or Z held: only that coordinate follows the cursor. A key
+        // typed into a text field is text, never a lock.
+        let typing = self.keyboard_taken || ui.ctx().egui_wants_keyboard_input();
+        let lock = if typing {
+            None
+        } else {
+            ui.input(crate::model_menu::held_axis)
+        };
+        if let Some(axis) = lock {
+            target = crate::model_menu::lock_to_axis(drag.original, target, axis);
+        }
+        if lock != self.axis_lock {
+            self.status = match lock {
+                Some(axis) => format!(
+                    "dragging control point {point} along {} (locked)",
+                    crate::model_menu::axis_name(axis)
+                ),
+                None => format!("dragging control point {point} · hold X, Y or Z to lock an axis"),
+            };
+        }
+        self.axis_lock = lock;
         if let Some(surface) = self.surface.as_mut() {
             if point_on_symmetric_layer(surface, point) {
                 target.y = target.y.max(0.0);
@@ -4649,6 +4712,7 @@ impl App {
     /// Select a control point (`None` clears the selection).
     pub fn select_point(&mut self, index: Option<usize>) {
         self.selected = index;
+        self.second_pick = None;
     }
 
     /// Record the current model on the undo stack, as a drag does on grab.
@@ -5051,6 +5115,321 @@ fn compute_resistance_impl(
                 rt_label: "R_T (kN)".to_string(),
             })
         }
+    }
+}
+
+/// Whether Shift is held for this frame's pointer press or release (read
+/// from the button event too: a synthesised frame need not send
+/// `ModifiersChanged`).
+fn pointer_shift(ui: &egui::Ui) -> bool {
+    ui.input(|i| {
+        i.modifiers.shift
+            || i.events.iter().any(
+                |e| matches!(e, egui::Event::PointerButton { modifiers, .. } if modifiers.shift),
+            )
+    })
+}
+
+// ---- Model menu: transform, optimise, topology tools (R5-7) -------------
+
+impl App {
+    /// The Model menu, between View and Help; its action is applied after
+    /// the menu has drawn.
+    fn model_menu(&mut self, ui: &mut egui::Ui) {
+        let mut action = crate::model_menu::ModelAction::None;
+        ui.menu_button("Model", |ui| {
+            let targets = self.model_targets();
+            action = crate::model_menu::menu_body(ui, &targets);
+        });
+        self.apply_model_action(action);
+    }
+
+    /// What each Model menu item would act on now, or why it is disabled.
+    pub fn model_targets(&self) -> crate::model_menu::ModelTargets {
+        crate::model_menu::ModelTargets::compute(
+            self.surface.as_ref(),
+            self.picked_points(),
+            self.picked_face(),
+            self.optimise_job.is_some(),
+        )
+    }
+
+    /// Apply a Model menu action: the dialogs open, the topology tools go
+    /// through the typed commands (one undo step each; a refusal goes to
+    /// the status bar).
+    pub fn apply_model_action(&mut self, action: crate::model_menu::ModelAction) {
+        use crate::commands as c;
+        use crate::model_menu::ModelAction as A;
+        let result = match action {
+            A::None => return,
+            A::Transform => {
+                self.open_transform_dialog();
+                return;
+            }
+            A::Optimise => {
+                self.open_optimise_dialog();
+                return;
+            }
+            A::InsertEdge { face, a, b } => {
+                c::insert_edge(self, &c::InsertEdgeParams { face, a, b }).map(|_| ())
+            }
+            A::SplitFace(face) => c::split_face(self, &c::SplitFaceParams { face }).map(|_| ()),
+            A::Crease { edge, crease } => {
+                c::set_crease(self, &c::CreaseParams { edge, crease }).map(|_| ())
+            }
+        };
+        if let Err(e) = result {
+            self.status = e;
+        }
+    }
+
+    /// Open Model > Transform…, its fit defaults measured on the hull now.
+    pub fn open_transform_dialog(&mut self) {
+        let subdiv = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let current = self
+            .surface
+            .as_ref()
+            .and_then(|s| seacraft_core::transform::MainDimensions::measure(s, subdiv));
+        self.transform_dialog = Some(crate::model_menu::TransformDialog::new(current));
+    }
+
+    /// Open Model > Optimise… (a running optimisation keeps its window).
+    pub fn open_optimise_dialog(&mut self) {
+        if self.optimise_dialog.is_some() {
+            return;
+        }
+        let speed = self
+            .project
+            .requirements
+            .as_ref()
+            .and_then(|r| r.design_speed_kn)
+            .unwrap_or(8.0);
+        self.optimise_dialog = Some(crate::model_menu::OptimiseDialog::new(
+            speed,
+            self.level.min(4),
+            self.hydro.kg,
+        ));
+    }
+
+    /// The Transform dialog's fields while it is open (tests).
+    pub fn transform_dialog_mut(&mut self) -> Option<&mut crate::model_menu::TransformDialog> {
+        self.transform_dialog.as_mut()
+    }
+
+    /// The Optimise window's fields while it is open (tests).
+    pub fn optimise_dialog_mut(&mut self) -> Option<&mut crate::model_menu::OptimiseDialog> {
+        self.optimise_dialog.as_mut()
+    }
+
+    /// An optimisation is running on the job layer.
+    pub fn optimise_running(&self) -> bool {
+        self.optimise_job.is_some()
+    }
+
+    /// The two picked control points, first then second (click one,
+    /// Shift+click the other).
+    pub fn picked_points(&self) -> Option<[usize; 2]> {
+        let count = self.surface.as_ref().map_or(0, |s| s.points.len());
+        match (self.second_pick, self.selected) {
+            (Some(a), Some(b)) if a != b && a < count && b < count => Some([a, b]),
+            _ => None,
+        }
+    }
+
+    /// Pick two control points as a click and a Shift+click would (tests,
+    /// scripts); `None` clears both.
+    pub fn set_picked_points(&mut self, points: Option<[usize; 2]>) {
+        self.second_pick = points.map(|[a, _]| a);
+        self.selected = points.map(|[_, b]| b);
+    }
+
+    /// The world axis the point drag is locked to, while X, Y or Z is held.
+    pub fn axis_lock(&self) -> Option<seacraft_core::transform::Axis> {
+        self.axis_lock
+    }
+
+    /// Start an optimisation on the job layer; its result is installed by
+    /// [`App::poll_optimise`] as one undo step.
+    pub fn start_optimise(&mut self, spec: seacraft_core::optimize::OptimizeSpec, level: u8) {
+        let kg = spec.kg;
+        let params = crate::commands::OptimizeParams {
+            spec,
+            level: Some(level),
+        };
+        match crate::commands::prepare_optimize(self, &params) {
+            Ok(run) => {
+                let level = run.level;
+                let job = Job::spawn(self.revision, move || run.run());
+                self.optimise_job = Some(OptimiseJob { job, level, kg });
+                if let Some(d) = self.optimise_dialog.as_mut() {
+                    d.error = None;
+                    d.result = None;
+                }
+                self.status = "optimising the hull…".to_owned();
+            }
+            Err(e) => {
+                if let Some(d) = self.optimise_dialog.as_mut() {
+                    d.error = Some(e.clone());
+                }
+                self.status = e;
+            }
+        }
+    }
+
+    /// Collect a finished optimisation. A result for a model edited since
+    /// the run started is discarded rather than installed over the edit.
+    fn poll_optimise(&mut self, ctx: &egui::Context) {
+        let Some(running) = self.optimise_job.as_ref() else {
+            return;
+        };
+        let outcome = match running.job.poll() {
+            crate::jobs::Poll::Running => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                return;
+            }
+            crate::jobs::Poll::Done(v) => Ok(v),
+            crate::jobs::Poll::Failed(e) => Err(e),
+        };
+        let Some(OptimiseJob { job, level, kg }) = self.optimise_job.take() else {
+            return;
+        };
+        let message = match outcome {
+            Ok((surface, report)) if job.revision() == self.revision => {
+                let r = crate::commands::install_optimized(self, surface, report, level, kg);
+                Ok(format!(
+                    "R_T {:+.1} % at {:.1} kn after {} evaluations{}; draft now {:.3} m",
+                    r.report.rt_change_pct,
+                    r.report.speed_kn,
+                    r.report.evaluations,
+                    if r.report.converged {
+                        ""
+                    } else {
+                        " (not converged)"
+                    },
+                    r.draft
+                ))
+            }
+            Ok(_) => Err("the model changed while optimising; the result was discarded".to_owned()),
+            Err(e) => Err(e),
+        };
+        match message {
+            Ok(m) => {
+                if let Some(d) = self.optimise_dialog.as_mut() {
+                    d.result = Some(m);
+                }
+            }
+            Err(e) => {
+                if let Some(d) = self.optimise_dialog.as_mut() {
+                    d.error = Some(e.clone());
+                }
+                self.status = e;
+            }
+        }
+    }
+
+    /// The Transform and Optimise dialogs; what they ask for is applied
+    /// here, after they have drawn.
+    fn model_windows(&mut self, ui: &mut egui::Ui) {
+        use crate::model_menu::{DialogAction, OptimiseAction};
+        self.poll_optimise(ui.ctx());
+        let transform = match self.transform_dialog.as_mut() {
+            Some(state) => crate::model_menu::transform_dialog(ui.ctx(), state),
+            None => DialogAction::None,
+        };
+        match transform {
+            DialogAction::None => {}
+            DialogAction::Cancel => self.transform_dialog = None,
+            DialogAction::Apply(request) => match crate::commands::transform(self, &request) {
+                Ok(_) => self.transform_dialog = None,
+                Err(e) => {
+                    if let Some(d) = self.transform_dialog.as_mut() {
+                        d.error = Some(e);
+                    }
+                }
+            },
+        }
+        let running = self.optimise_job.is_some();
+        let optimise = match self.optimise_dialog.as_mut() {
+            Some(state) => crate::model_menu::optimise_dialog(ui.ctx(), state, running),
+            None => OptimiseAction::None,
+        };
+        match optimise {
+            OptimiseAction::None => {}
+            OptimiseAction::Close => {
+                self.optimise_dialog = None;
+                if self.optimise_job.take().is_some() {
+                    self.status = "optimisation stopped; the hull is unchanged".to_owned();
+                }
+            }
+            OptimiseAction::Stop => {
+                self.optimise_job = None;
+                self.status = "optimisation stopped; the hull is unchanged".to_owned();
+            }
+            OptimiseAction::Run(spec, level) => self.start_optimise(*spec, level),
+        }
+    }
+
+    /// What the Model menu's tools would act on, drawn over one viewport:
+    /// the picked face's outline, a ring on the first of two picked points,
+    /// and the axis a locked drag follows with its caption.
+    fn draw_pick_overlays(&self, ui: &egui::Ui, cell: egui::Rect, index: usize) {
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let view = self.cameras[index].transform();
+        let painter = ui.painter_at(cell);
+        if let Some(face) = self.picked_face() {
+            let pts: Vec<egui::Pos2> = surface.faces[face]
+                .iter()
+                .filter_map(|&i| view.project(surface.points[i].p, cell))
+                .collect();
+            if pts.len() >= 3 && pts.len() == surface.faces[face].len() {
+                painter.add(egui::Shape::closed_line(
+                    pts,
+                    egui::Stroke::new(1.5, crate::theme::FACE_PICKED),
+                ));
+            }
+        }
+        if self.display.points {
+            if let Some(s) = self
+                .picked_points()
+                .and_then(|[first, _]| view.project(surface.points[first].p, cell))
+            {
+                painter.circle_stroke(s, 7.0, egui::Stroke::new(1.5, crate::theme::POINT_PICKED));
+            }
+        }
+        let (Some(axis), Some(drag)) = (self.axis_lock, self.drag.as_ref()) else {
+            return;
+        };
+        if drag.view != index {
+            return;
+        }
+        let span = self
+            .cache
+            .as_ref()
+            .map_or(10.0, |c| (c.max - c.min).length().max(1.0));
+        let dir = crate::model_menu::axis_vector(axis) * span;
+        if let (Some(a), Some(b)) = (
+            view.project(drag.original - dir, cell),
+            view.project(drag.original + dir, cell),
+        ) {
+            painter.line_segment(
+                [a, b],
+                egui::Stroke::new(1.0, crate::model_menu::axis_colour(axis)),
+            );
+        }
+        render::hud_caption(
+            &painter,
+            cell.center_bottom() + egui::vec2(0.0, -8.0),
+            egui::Align2::CENTER_BOTTOM,
+            format!(
+                "Locked to {} — release the key to drag freely",
+                crate::model_menu::axis_name(axis)
+            ),
+        );
     }
 }
 

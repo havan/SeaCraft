@@ -62,6 +62,15 @@ pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
 /// The picked control point and its outline.
 pub const POINT_SELECTED: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
 pub const POINT_SELECTED_OUTLINE: Color32 = Color32::BLACK;
+/// The first of two picked control points (Shift+click), ringed for the
+/// Model menu's edge tools.
+pub const POINT_PICKED: Color32 = POINT_SELECTED;
+/// Outline of the control face the last click picked (Model > Split face).
+pub const FACE_PICKED: Color32 = Color32::from_rgba_unmultiplied_const(0x5a, 0xd0, 0x6a, 0x90);
+/// The world axis a locked drag follows: x red, y green, z blue.
+pub const AXIS_X: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
+pub const AXIS_Y: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
+pub const AXIS_Z: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 /// Waterplane quad fill (premultiplied) and its border.
 pub const WATERPLANE_FILL: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
 pub const WATERPLANE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x5c, 0xa8, 0xf0, 0x80);
@@ -271,7 +280,7 @@ mod tests {
     use super::*;
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 12] = [
+    const SOURCES: [(&str, &str); 13] = [
         ("app.rs", include_str!("app.rs")),
         ("camera.rs", include_str!("camera.rs")),
         ("commands.rs", include_str!("commands.rs")),
@@ -280,6 +289,7 @@ mod tests {
         ("jobs.rs", include_str!("jobs.rs")),
         ("lib.rs", include_str!("lib.rs")),
         ("main.rs", include_str!("main.rs")),
+        ("model_menu.rs", include_str!("model_menu.rs")),
         ("new_design.rs", include_str!("new_design.rs")),
         ("panels.rs", include_str!("panels.rs")),
         ("picking.rs", include_str!("picking.rs")),
