@@ -10,7 +10,8 @@
 //! ```json
 //! { "format": "seacraft-project", "version": 1,
 //!   "loading_conditions": [ ... ], "compartments": [ ... ],
-//!   "damage_cases": [ ... ], "windage": [ ... ], "report": { ... } }
+//!   "damage_cases": [ ... ], "windage": [ ... ], "report": { ... },
+//!   "requirements": { ... } }
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -46,6 +47,10 @@ pub struct Project {
     pub windage: Vec<WindageItem>,
     #[serde(default)]
     pub report: ReportSettings,
+    /// The design brief the hull was created from: targets the GUI shows
+    /// measured values against. Targets never move geometry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<Requirements>,
     /// Keys written by a newer SeaCraft, kept for the round trip.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -61,8 +66,68 @@ impl Default for Project {
             damage_cases: Vec::new(),
             windage: Vec::new(),
             report: ReportSettings::default(),
+            requirements: None,
             extra: serde_json::Map::new(),
         }
+    }
+}
+
+/// Design requirements: the principal dimensions and targets a design was
+/// started from. Every field is optional; a `None` is "no target". Lengths in
+/// metres, displacement in tonnes, `lcb_frac` as a fraction of `LWL` from its
+/// aft end, `kg` above the keel.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Requirements {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lwl: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bwl: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub displacement_t: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lcb_frac: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design_speed_kn: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kg: Option<f64>,
+}
+
+impl Requirements {
+    /// Every number given is finite and positive (`lcb_frac` in `0..1`).
+    pub fn validate(&self) -> Result<(), String> {
+        let fields = [
+            ("lwl", self.lwl),
+            ("bwl", self.bwl),
+            ("draft", self.draft),
+            ("depth", self.depth),
+            ("displacement_t", self.displacement_t),
+            ("cb", self.cb),
+            ("design_speed_kn", self.design_speed_kn),
+            ("kg", self.kg),
+        ];
+        for (name, value) in fields {
+            if let Some(v) = value {
+                if !(v.is_finite() && v > 0.0) {
+                    return Err(format!("requirements: `{name}` must be > 0, got {v}"));
+                }
+            }
+        }
+        if let Some(v) = self.lcb_frac {
+            if !(v.is_finite() && v > 0.0 && v < 1.0) {
+                return Err(format!(
+                    "requirements: `lcb_frac` must be between 0 and 1, got {v}"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -154,6 +219,7 @@ impl Project {
             && self.damage_cases.is_empty()
             && self.windage.is_empty()
             && self.report.is_empty()
+            && self.requirements.is_none()
             && self.extra.is_empty()
     }
 
@@ -235,6 +301,9 @@ impl Project {
                     w.name
                 ));
             }
+        }
+        if let Some(r) = &self.requirements {
+            r.validate()?;
         }
         if let Some(sk) = &self.report.seakeeping {
             if let Some(sea) = &sk.sea {
@@ -483,6 +552,39 @@ mod tests {
         assert_eq!(opts.speeds_kn, vec![5.0, 7.0]);
         assert_eq!(opts.draft, base.draft);
         assert_eq!(opts.heels, base.heels);
+    }
+
+    #[test]
+    fn requirements_round_trip_and_alone_make_a_project_worth_writing() {
+        let p = Project {
+            requirements: Some(Requirements {
+                name: "Motor launch 12".into(),
+                lwl: Some(12.0),
+                bwl: Some(3.6),
+                draft: Some(0.75),
+                depth: Some(1.8),
+                displacement_t: Some(12.0),
+                cb: Some(0.36),
+                lcb_frac: Some(0.52),
+                design_speed_kn: Some(8.0),
+                kg: Some(1.2),
+            }),
+            ..Default::default()
+        };
+        assert!(!p.is_empty(), "requirements alone must be saved");
+        let back = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(back, p);
+        // An old sidecar has no `requirements` key and still loads.
+        let old = r#"{ "format": "seacraft-project", "version": 1, "windage": [] }"#;
+        assert_eq!(Project::from_json(old).unwrap().requirements, None);
+        // And a project without them does not write the key.
+        assert!(!Project::default().to_json().contains("requirements"));
+        // Nonsense targets are refused.
+        let mut bad = p.clone();
+        bad.requirements.as_mut().unwrap().lcb_frac = Some(1.5);
+        assert!(Project::from_json(&bad.to_json())
+            .unwrap_err()
+            .contains("lcb_frac"));
     }
 
     #[test]

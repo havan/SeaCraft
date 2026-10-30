@@ -237,7 +237,7 @@ mod tests {
     use super::*;
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 10] = [
+    const SOURCES: [(&str, &str); 11] = [
         ("app.rs", include_str!("app.rs")),
         ("camera.rs", include_str!("camera.rs")),
         ("commands.rs", include_str!("commands.rs")),
@@ -245,6 +245,7 @@ mod tests {
         ("history.rs", include_str!("history.rs")),
         ("lib.rs", include_str!("lib.rs")),
         ("main.rs", include_str!("main.rs")),
+        ("new_design.rs", include_str!("new_design.rs")),
         ("panels.rs", include_str!("panels.rs")),
         ("picking.rs", include_str!("picking.rs")),
         ("render.rs", include_str!("render.rs")),

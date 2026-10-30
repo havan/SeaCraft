@@ -6,7 +6,7 @@ use seacraft_core::damage::{Compartment, CompartmentSpec, DamageCase, DamageResu
 use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
 use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
 use seacraft_core::math::Vec3;
-use seacraft_core::project::{Project, ReportSeakeeping, ReportSettings};
+use seacraft_core::project::{Project, ReportSeakeeping, ReportSettings, Requirements};
 use seacraft_core::seastate::WaveSpectrum;
 use seacraft_core::stability::CrossCurve;
 use seacraft_core::weather::{WeatherResult, WindageItem, WindageRect};
@@ -335,6 +335,126 @@ pub fn live_strip(
         });
     }
     toggle
+}
+
+/// A measured value against its design target, e.g.
+/// `Δ 12.15 t (12.00 +1.3 %)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TargetReadout {
+    pub name: &'static str,
+    pub actual: f64,
+    pub target: f64,
+    pub decimals: usize,
+    pub unit: &'static str,
+}
+
+impl TargetReadout {
+    /// Deviation of the actual from the target, per cent of the target.
+    pub fn deviation_pct(&self) -> f64 {
+        if self.target.abs() > 1e-12 {
+            100.0 * (self.actual - self.target) / self.target
+        } else {
+            0.0
+        }
+    }
+
+    /// Within the ± [`crate::new_design::TARGET_TOLERANCE_PCT`] band.
+    pub fn on_target(&self) -> bool {
+        self.deviation_pct().abs() <= crate::new_design::TARGET_TOLERANCE_PCT
+    }
+
+    /// `Δ 12.15 t (12.00 +1.3 %)`.
+    pub fn text(&self) -> String {
+        let unit = if self.unit.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", self.unit)
+        };
+        format!(
+            "{} {:.*}{unit} ({:.*} {:+.1} %)",
+            self.name,
+            self.decimals,
+            self.actual,
+            self.decimals,
+            self.target,
+            self.deviation_pct()
+        )
+    }
+}
+
+/// The measured quantities that have a target in `req`: LWL, BWL, T, Δ, Cb
+/// and LCB (per cent of LWL from the waterline's aft end).
+pub fn target_readouts(h: &Hydrostatics, req: &Requirements) -> Vec<TargetReadout> {
+    let lcb_pct = if h.lwl > 1e-9 {
+        100.0 * (h.lcb.x - h.wl_aft_x) / h.lwl
+    } else {
+        0.0
+    };
+    let rows: [(&'static str, Option<f64>, f64, usize, &'static str); 6] = [
+        ("Δ", req.displacement_t, h.displacement_t, 2, "t"),
+        ("LWL", req.lwl, h.lwl, 2, "m"),
+        ("BWL", req.bwl, h.bwl, 2, "m"),
+        ("T", req.draft, h.draft, 3, "m"),
+        ("Cb", req.cb, h.block_coefficient, 3, ""),
+        ("LCB", req.lcb_frac.map(|f| 100.0 * f), lcb_pct, 1, "%"),
+    ];
+    rows.into_iter()
+        .filter_map(|(name, target, actual, decimals, unit)| {
+            target.map(|target| TargetReadout {
+                name,
+                actual,
+                target,
+                decimals,
+                unit,
+            })
+        })
+        .collect()
+}
+
+/// The pinned strip's targets: each measured value with its target in the
+/// target colour and the deviation in the ok or warn colour (grey while the
+/// hydrostatics are being recomputed).
+pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
+    if targets.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        for t in targets {
+            let value = if stale {
+                theme::STALE
+            } else {
+                theme::TEXT_PRIMARY
+            };
+            let deviation = if stale {
+                theme::STALE
+            } else if t.on_target() {
+                theme::OK
+            } else {
+                theme::WARN
+            };
+            let font = theme::caption_font();
+            let mut job = egui::text::LayoutJob::default();
+            let mut push = |text: String, colour: egui::Color32| {
+                job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), colour));
+            };
+            push(format!("{} ", t.name), theme::TEXT_SECONDARY);
+            push(format!("{:.*}", t.decimals, t.actual), value);
+            if !t.unit.is_empty() {
+                push(format!(" {}", t.unit), theme::TEXT_MUTED);
+            }
+            push(format!(" ({:.*}", t.decimals, t.target), theme::TARGET);
+            push(format!(" {:+.1} %", t.deviation_pct()), deviation);
+            push(")".to_owned(), theme::TARGET);
+            ui.label(job).on_hover_text(format!(
+                "{} — target {:.*}, ±{} % tolerance; targets never move the hull",
+                t.text(),
+                t.decimals,
+                t.target,
+                crate::new_design::TARGET_TOLERANCE_PCT
+            ));
+        }
+    });
 }
 
 /// Widths of the pinned strip's cells: name, value (right-aligned) and unit.
@@ -2538,6 +2658,9 @@ pub struct LoadingPanel<'a> {
     pub busy: bool,
     pub highlight: Option<usize>,
     pub scroll_to: bool,
+    /// The lightship a new condition starts from (the measured Δ at its
+    /// LCB, at the design KG).
+    pub lightship: WeightItem,
 }
 
 fn unique_condition_name(base: &str, existing: &[LoadingCondition]) -> String {
@@ -2639,13 +2762,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         let name = unique_condition_name("Condition 1", &panel.project.loading_conditions);
         panel.project.loading_conditions.push(LoadingCondition {
             name,
-            lightship: WeightItem {
-                name: "Lightship".into(),
-                mass_t: 10.0,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
+            lightship: panel.lightship.clone(),
             items: Vec::new(),
             tanks: Vec::new(),
             windage_extra: Vec::new(),
@@ -4002,6 +4119,13 @@ mod tests {
                     busy: false,
                     highlight: None,
                     scroll_to: false,
+                    lightship: WeightItem {
+                        name: "Lightship".into(),
+                        mass_t: 10.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                 },
             );
             assert_eq!(action, LoadingAction::None);
@@ -4053,6 +4177,13 @@ mod tests {
                     busy: false,
                     highlight: None,
                     scroll_to: false,
+                    lightship: WeightItem {
+                        name: "Lightship".into(),
+                        mass_t: 10.0,
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
                 },
             );
             assert_eq!(action, LoadingAction::None);

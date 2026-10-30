@@ -54,13 +54,23 @@ pub struct GenerateResult {
 /// Replace the model with a parametric hull built from `spec`.
 pub fn generate(app: &mut App, spec: &HullSpec) -> Result<GenerateResult, String> {
     let (surface, report) = seacraft_core::parametric::generate(spec)?;
+    Ok(install_generated(app, surface, report))
+}
+
+/// Replace the model with a hull [`seacraft_core::parametric::generate`]
+/// already built (the New design dialog's preview), as [`generate`] does.
+pub fn install_generated(
+    app: &mut App,
+    surface: seacraft_core::Surface,
+    report: GenerateReport,
+) -> GenerateResult {
     app.load_generated(surface);
-    Ok(GenerateResult {
+    GenerateResult {
         report,
         points: app.control_point_count(),
         faces: app.face_count(),
         layers: app.layer_count(),
-    })
+    }
 }
 
 // ---- edge.crease ---------------------------------------------------------

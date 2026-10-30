@@ -69,6 +69,16 @@ impl<T: Clone> History<T> {
         !self.redo.is_empty()
     }
 
+    /// The state an undo would return to.
+    pub fn peek_undo(&self) -> Option<&T> {
+        self.undo.last()
+    }
+
+    /// The state a redo would return to.
+    pub fn peek_redo(&self) -> Option<&T> {
+        self.redo.last()
+    }
+
     pub fn undo_len(&self) -> usize {
         self.undo.len()
     }

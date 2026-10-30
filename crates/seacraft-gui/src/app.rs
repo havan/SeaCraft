@@ -210,8 +210,33 @@ impl ExportKind {
 /// transform or an optimisation moves both.
 #[derive(Debug, Clone)]
 struct Snapshot {
-    surface: Surface,
+    /// `None` before the first model: undoing a New design made from the
+    /// start screen goes back to it.
+    surface: Option<Surface>,
     draft: f64,
+    /// A step that replaced the whole model (New design, demo from the
+    /// dialog): the project, path and saved state go back with it.
+    model: Option<Box<ModelState>>,
+}
+
+impl Snapshot {
+    /// An edit of the model in place.
+    fn edit(surface: &Surface, draft: f64) -> Self {
+        Self {
+            surface: Some(surface.clone()),
+            draft,
+            model: None,
+        }
+    }
+}
+
+/// What travels with a model besides its geometry.
+#[derive(Debug, Clone)]
+struct ModelState {
+    project: Project,
+    project_error: Option<String>,
+    path: Option<PathBuf>,
+    saved_state: Option<(String, Project)>,
 }
 
 /// Which file dialog is open.
@@ -228,6 +253,8 @@ enum DialogKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingAction {
     NewDemo,
+    /// The New design dialog (it replaces the model and the project).
+    NewDesign,
     Open,
     Quit,
 }
@@ -610,6 +637,13 @@ pub struct App {
     inspector_rects: [egui::Rect; 3],
     /// The File > Report options window is open.
     show_report_options: bool,
+    /// The New design dialog, while it is open.
+    new_design: Option<crate::new_design::NewDesignState>,
+    /// The File > Project settings dialog, while it is open.
+    project_settings: Option<crate::new_design::ProjectSettingsState>,
+    /// The start card's buttons from the last frame; `None` when a model is
+    /// shown instead (test hook).
+    start_rects: Option<crate::new_design::StartRects>,
     /// A design report being written on a worker thread: its path and result.
     report_worker: Option<std::sync::mpsc::Receiver<(PathBuf, Result<(), String>)>>,
     loading_selected: usize,
@@ -684,7 +718,7 @@ impl App {
         crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::new_detached();
         app.status =
-            "No model loaded. File > New demo hull, or File > Open .fef… (Ctrl+O).".to_owned();
+            "No model loaded — start a new design (Ctrl+N) or open a .fef (Ctrl+O).".to_owned();
         if let Some(p) = open {
             app.load(p);
         }
@@ -699,6 +733,13 @@ impl App {
             Some(p) => app.load(PathBuf::from(p)),
             None => app.load_demo(),
         }
+        app
+    }
+
+    /// An app with no model, as a launch without `--open` starts (tests).
+    pub fn headless_empty() -> Self {
+        let mut app = Self::new_detached();
+        app.status = "No model loaded.".to_owned();
         app
     }
 
@@ -743,6 +784,9 @@ impl App {
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
             show_report_options: false,
+            new_design: None,
+            project_settings: None,
+            start_rects: None,
             report_worker: None,
             loading_selected: 0,
             loading_result: None,
@@ -822,6 +866,7 @@ impl App {
                 self.project_error = project_error;
                 self.dirty = false;
                 self.adopt();
+                self.apply_requirement_defaults();
                 Ok(())
             }
             Err(err) => {
@@ -874,6 +919,14 @@ impl App {
 
     /// Reset the derived state after a model change.
     fn adopt(&mut self) {
+        self.history.clear();
+        self.marks.clear();
+        self.reset_derived();
+    }
+
+    /// Everything derived from the model, reset for a new one (the undo
+    /// history is the caller's business).
+    fn reset_derived(&mut self) {
         self.revision += 1;
         self.selected = None;
         self.selected_volume = None;
@@ -883,8 +936,6 @@ impl App {
         self.drag = None;
         self.inspector_pending = None;
         self.cache = None;
-        self.history.clear();
-        self.marks.clear();
         self.hydro.result = None;
         self.hydro.curves = None;
         self.hydro.hull = None;
@@ -1010,6 +1061,8 @@ impl App {
         let mut tab = self.dock_tab;
         let mut toggle_wide = false;
         let mut action = DockAction::None;
+        let targets = self.target_readouts();
+        let lightship = self.lightship_seed();
         panel.show(ui, |ui| {
             toggle_wide = panels::live_strip(
                 ui,
@@ -1018,6 +1071,7 @@ impl App {
                 self.hydro_dirty,
                 self.dock_wide,
             );
+            panels::target_strip(ui, &targets, self.hydro_dirty);
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 // Tight enough that the five tabs fit one row at 360 px.
@@ -1056,6 +1110,7 @@ impl App {
                             busy: self.loading_worker.is_some(),
                             highlight: tank_highlight,
                             scroll_to: scroll_to_tank,
+                            lightship: lightship.clone(),
                         },
                     ));
                 }
@@ -1352,7 +1407,14 @@ impl App {
             }
         }
 
-        egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
+        if self.surface.is_some() {
+            self.start_rects = None;
+            egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
+        } else {
+            self.start_screen(ui);
+        }
+        self.new_design_window(ui);
+        self.project_settings_window(ui);
         self.dialog_window(ui);
         self.report_options_window(ui);
         self.poll_report(ui.ctx());
@@ -1373,6 +1435,12 @@ impl App {
             save: bool,
             save_as: bool,
             maximise: bool,
+            new_design: bool,
+        }
+        // A modal dialog owns the keyboard: nothing reaches the model
+        // behind it.
+        if self.new_design.is_some() || self.project_settings.is_some() {
+            return;
         }
         // Read the modifiers from the key event itself: `InputState::modifiers`
         // is only refreshed by a `ModifiersChanged` event, which a synthesised
@@ -1401,7 +1469,7 @@ impl App {
                         // Not Tab (egui's focus key), not plain Space
                         // (shading); a held key toggles once.
                         egui::Key::Space if !repeat => pressed.maximise = true,
-                        // Ctrl+N is kept for the New design dialog.
+                        egui::Key::N => pressed.new_design = true,
                         _ => {}
                     }
                 }
@@ -1418,6 +1486,9 @@ impl App {
         }
         if pressed.open {
             self.request(PendingAction::Open);
+        }
+        if pressed.new_design {
+            self.request(PendingAction::NewDesign);
         }
         if pressed.save_as && self.surface.is_some() {
             self.open_dialog(DialogKind::SaveAs);
@@ -1488,6 +1559,16 @@ impl App {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new("New design…")
+                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
+                        )
+                        .clicked()
+                    {
+                        self.request(PendingAction::NewDesign);
+                        ui.close();
+                    }
                     if ui.button("New demo hull").clicked() {
                         self.request(PendingAction::NewDemo);
                         ui.close();
@@ -1538,6 +1619,16 @@ impl App {
                     }
                     if ui.button("Report options…").clicked() {
                         self.show_report_options = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new("Project settings…"),
+                        )
+                        .clicked()
+                    {
+                        self.open_project_settings();
                         ui.close();
                     }
                     ui.add_enabled_ui(self.surface.is_some(), |ui| {
@@ -1726,6 +1817,242 @@ impl App {
         self.toolbar_rects = out.rects;
     }
 
+    // ---- start screen, New design, Project settings ---------------------
+
+    /// The central area with no model: the start card.
+    fn start_screen(&mut self, ui: &mut egui::Ui) {
+        let (action, rects) = egui::CentralPanel::default()
+            .show(ui, crate::new_design::start_card)
+            .inner;
+        self.start_rects = Some(rects);
+        match action {
+            crate::new_design::StartAction::NewDesign => self.request(PendingAction::NewDesign),
+            crate::new_design::StartAction::Open => self.request(PendingAction::Open),
+            crate::new_design::StartAction::Demo => self.request(PendingAction::NewDemo),
+            crate::new_design::StartAction::None => {}
+        }
+    }
+
+    /// Open the New design dialog (callers go through the unsaved-changes
+    /// prompt first: Ctrl+N, File > New design…, the start card).
+    pub fn open_new_design(&mut self) {
+        self.new_design = Some(crate::new_design::NewDesignState::new(
+            crate::new_design::SEA_WATER_T_M3,
+        ));
+    }
+
+    /// Ask for the New design dialog as Ctrl+N does: through the
+    /// unsaved-changes prompt when there are unsaved edits.
+    pub fn request_new_design(&mut self) {
+        self.request(PendingAction::NewDesign);
+    }
+
+    fn new_design_window(&mut self, ui: &mut egui::Ui) {
+        let Some(state) = self.new_design.as_mut() else {
+            return;
+        };
+        match crate::new_design::new_design_dialog(ui.ctx(), state) {
+            crate::new_design::NewDesignAction::None => {}
+            crate::new_design::NewDesignAction::Cancel => self.new_design = None,
+            crate::new_design::NewDesignAction::Create(request) => {
+                self.new_design = None;
+                self.apply_new_design(request);
+            }
+        }
+    }
+
+    /// Carry out the New design dialog's *Create*: a new model and project
+    /// as one undo step (an import is a plain Open).
+    pub fn apply_new_design(&mut self, request: crate::new_design::NewDesignRequest) {
+        use crate::new_design::NewDesignRequest;
+        match request {
+            NewDesignRequest::Import => self.open_dialog(DialogKind::Open),
+            NewDesignRequest::Demo { half } => {
+                let before = self.current_snapshot(true);
+                self.load_demo_shape(half);
+                self.history.snapshot(&before);
+            }
+            NewDesignRequest::Parametric(design) => {
+                let crate::new_design::ParametricDesign {
+                    spec,
+                    name,
+                    requirements,
+                    built,
+                } = *design;
+                let before = self.current_snapshot(true);
+                let result = match built {
+                    Some(p) if p.spec == spec => {
+                        crate::commands::install_generated(self, p.surface, p.report)
+                    }
+                    _ => match crate::commands::generate(self, &spec) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.status = format!("New design failed: {e}");
+                            return;
+                        }
+                    },
+                };
+                if let Some(s) = self.surface.as_mut() {
+                    if !name.is_empty() {
+                        s.settings.name = name.clone();
+                    }
+                }
+                // The design waterline is the requested draft.
+                self.hydro.options.draft = spec.draft;
+                if let Some(kg) = requirements.kg {
+                    self.hydro.kg = kg;
+                }
+                self.project.requirements = Some(requirements);
+                self.apply_requirement_defaults();
+                self.reset_cameras();
+                self.history.snapshot(&before);
+                self.status = format!(
+                    "{name} — new {} design ({} points, {} faces)",
+                    spec.kind, result.points, result.faces
+                );
+            }
+        }
+    }
+
+    /// Inputs that follow the design requirements: the Performance speed
+    /// range centres on the design speed.
+    fn apply_requirement_defaults(&mut self) {
+        let speed = self
+            .project
+            .requirements
+            .as_ref()
+            .and_then(|r| r.design_speed_kn)
+            .filter(|v| v.is_finite() && *v > 0.0);
+        if let Some(v) = speed {
+            self.perf_state.speeds_kn = crate::new_design::speed_range(v);
+            self.perf_state.sk_speed_kn = v;
+            self.perf_state.resistance_stale = true;
+            self.perf_state.raos_stale = true;
+        }
+    }
+
+    /// The lightship a new loading condition starts from: the measured
+    /// displacement at its LCB, at the requirements' KG estimate (the dock's
+    /// KG without one) above the keel.
+    pub fn lightship_seed(&self) -> seacraft_core::loading::WeightItem {
+        let keel = self
+            .surface
+            .as_ref()
+            .map_or(0.0, |s| s.lowest_hydrostatics_point());
+        let kg = self
+            .project
+            .requirements
+            .as_ref()
+            .and_then(|r| r.kg)
+            .unwrap_or(self.hydro.kg);
+        let (mass_t, x) = match &self.hydro.result {
+            Some(h) if h.displacement_t > 0.0 => (h.displacement_t, h.lcb.x),
+            _ => (10.0, 0.0),
+        };
+        seacraft_core::loading::WeightItem {
+            name: "Lightship".into(),
+            mass_t,
+            x,
+            y: 0.0,
+            z: keel + kg,
+        }
+    }
+
+    /// The measured values the pinned strip shows against the design
+    /// requirements (empty without requirements or hydrostatics).
+    pub fn target_readouts(&self) -> Vec<panels::TargetReadout> {
+        match (&self.hydro.result, &self.project.requirements) {
+            (Some(h), Some(r)) => panels::target_readouts(h, r),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Open File > Project settings for the current model.
+    pub fn open_project_settings(&mut self) {
+        if let Some(s) = &self.surface {
+            self.project_settings = Some(crate::new_design::ProjectSettingsState::new(
+                s,
+                self.project.requirements.as_ref(),
+            ));
+        }
+    }
+
+    fn project_settings_window(&mut self, ui: &mut egui::Ui) {
+        let Some(state) = self.project_settings.as_mut() else {
+            return;
+        };
+        match crate::new_design::project_settings_dialog(ui.ctx(), state) {
+            crate::new_design::ProjectSettingsAction::None => {}
+            crate::new_design::ProjectSettingsAction::Cancel => self.project_settings = None,
+            crate::new_design::ProjectSettingsAction::Apply(edit) => {
+                self.project_settings = None;
+                let e = *edit;
+                self.apply_project_settings(e.name, e.designer, e.water_density, e.requirements);
+            }
+        }
+    }
+
+    /// Apply File > Project settings. The name, designer and density live in
+    /// the `.fef` and are one undo step; the requirements live in the
+    /// project and, like every dock edit of it, mark the model unsaved.
+    pub fn apply_project_settings(
+        &mut self,
+        name: String,
+        designer: String,
+        water_density: f64,
+        requirements: Option<seacraft_core::project::Requirements>,
+    ) {
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let st = &surface.settings;
+        let settings_changed =
+            st.name != name || st.designer != designer || st.water_density != water_density;
+        if settings_changed {
+            self.snapshot_undo();
+            if let Some(s) = self.surface.as_mut() {
+                s.settings.name = name;
+                s.settings.designer = designer;
+                s.settings.water_density = water_density;
+            }
+            self.hydro.options.water_density = water_density;
+            self.mark_geometry_changed();
+        }
+        if requirements != self.project.requirements {
+            let speed = |r: &Option<seacraft_core::project::Requirements>| {
+                r.as_ref().and_then(|r| r.design_speed_kn)
+            };
+            let speed_changed = speed(&requirements) != speed(&self.project.requirements);
+            self.project.requirements = requirements;
+            self.dirty = true;
+            if speed_changed {
+                self.apply_requirement_defaults();
+            }
+        }
+        self.status = "project settings applied".to_owned();
+    }
+
+    /// The New design dialog is open.
+    pub fn new_design_open(&self) -> bool {
+        self.new_design.is_some()
+    }
+
+    /// The New design dialog's state (tests and the control channel).
+    pub fn new_design_mut(&mut self) -> Option<&mut crate::new_design::NewDesignState> {
+        self.new_design.as_mut()
+    }
+
+    /// The Project settings dialog's state, while it is open.
+    pub fn project_settings_mut(&mut self) -> Option<&mut crate::new_design::ProjectSettingsState> {
+        self.project_settings.as_mut()
+    }
+
+    /// The start card's buttons from the last frame; `None` while a model
+    /// is shown (test hook).
+    pub fn start_rects(&self) -> Option<crate::new_design::StartRects> {
+        self.start_rects
+    }
+
     // ---- file actions --------------------------------------------------
 
     /// Run `action`, asking first when there are unsaved edits.
@@ -1759,6 +2086,7 @@ impl App {
     fn perform(&mut self, action: PendingAction) {
         match action {
             PendingAction::NewDemo => self.load_demo(),
+            PendingAction::NewDesign => self.open_new_design(),
             PendingAction::Open => self.open_dialog(DialogKind::Open),
             PendingAction::Quit => self.close_requested = true,
         }
@@ -2080,39 +2408,65 @@ impl App {
         self.history.can_redo()
     }
 
-    /// The model and its measurement draft, as the history stores them.
-    fn current_snapshot(&self) -> Option<Snapshot> {
-        Some(Snapshot {
-            surface: self.surface.clone()?,
+    /// The model and its measurement draft, as the history stores them;
+    /// with `whole`, also the project and path (the other side of a step
+    /// that replaced the whole model).
+    fn current_snapshot(&self, whole: bool) -> Snapshot {
+        Snapshot {
+            surface: self.surface.clone(),
             draft: self.hydro.options.draft,
-        })
+            model: whole.then(|| {
+                Box::new(ModelState {
+                    project: self.project.clone(),
+                    project_error: self.project_error.clone(),
+                    path: self.path.clone(),
+                    saved_state: self.saved_state.clone(),
+                })
+            }),
+        }
+    }
+
+    /// Put a snapshot back as the current model.
+    fn restore_snapshot(&mut self, snap: Snapshot) {
+        let density = |s: &Option<Surface>| s.as_ref().map(|s| s.settings.water_density);
+        if let Some(d) = density(&snap.surface).filter(|d| Some(*d) != density(&self.surface)) {
+            // A Project settings density change undone.
+            self.hydro.options.water_density = d;
+        }
+        self.surface = snap.surface;
+        if let Some(m) = snap.model {
+            self.project = m.project;
+            self.project_error = m.project_error;
+            self.path = m.path;
+            self.saved_state = m.saved_state;
+            self.reset_derived();
+            self.apply_requirement_defaults();
+        }
+        self.hydro.options.draft = snap.draft;
+        self.revision += 1;
+        self.refresh_dirty();
+        self.touch_geometry();
     }
 
     pub fn undo(&mut self) {
-        let Some(current) = self.current_snapshot() else {
-            return;
-        };
+        let whole = self.history.peek_undo().is_some_and(|s| s.model.is_some());
+        let current = self.current_snapshot(whole);
         if let Some(previous) = self.history.undo(&current) {
-            let moved = previous.surface.points.len();
-            self.surface = Some(previous.surface);
-            self.hydro.options.draft = previous.draft;
-            self.revision += 1;
-            self.refresh_dirty();
-            self.touch_geometry();
-            self.status = format!("undo — {moved} control points restored");
+            let moved = previous.surface.as_ref().map_or(0, |s| s.points.len());
+            self.restore_snapshot(previous);
+            self.status = if whole {
+                "undo — previous model restored".to_owned()
+            } else {
+                format!("undo — {moved} control points restored")
+            };
         }
     }
 
     pub fn redo(&mut self) {
-        let Some(current) = self.current_snapshot() else {
-            return;
-        };
+        let whole = self.history.peek_redo().is_some_and(|s| s.model.is_some());
+        let current = self.current_snapshot(whole);
         if let Some(next) = self.history.redo(&current) {
-            self.surface = Some(next.surface);
-            self.hydro.options.draft = next.draft;
-            self.revision += 1;
-            self.refresh_dirty();
-            self.touch_geometry();
+            self.restore_snapshot(next);
             self.status = "redo".to_owned();
         }
     }
@@ -2573,10 +2927,7 @@ impl App {
         let offset = picking::ray_plane(&view.ray(cursor, cell), &plane)
             .map(|hit| center - hit)
             .unwrap_or(Vec3::ZERO);
-        let snap = Snapshot {
-            surface: surface.clone(),
-            draft: self.hydro.options.draft,
-        };
+        let snap = Snapshot::edit(surface, self.hydro.options.draft);
         self.history.snapshot(&snap);
         self.selected = Some(point);
         self.active = index;
@@ -2632,7 +2983,11 @@ impl App {
                 }
             }
         }
-        let Some(surface) = &self.surface else { return };
+        let Some(surface) = &self.surface else {
+            // Nothing to measure (the start screen): not "recomputing".
+            self.hydro_dirty = false;
+            return;
+        };
         let subdiv = seacraft_core::SubdivisionOptions {
             level: self.level,
             mode: self.mode,
@@ -3487,6 +3842,8 @@ impl App {
             (Some((fef_text, project)), Some(surface)) => {
                 *project != self.project || fef::write(surface) != *fef_text
             }
+            // Back on the start screen: nothing to save.
+            (_, None) => false,
             _ => true,
         };
     }
@@ -3681,10 +4038,7 @@ impl App {
     /// Record the current model on the undo stack, as a drag does on grab.
     pub fn snapshot_undo(&mut self) {
         if let Some(surface) = self.surface.as_ref() {
-            let snap = Snapshot {
-                surface: surface.clone(),
-                draft: self.hydro.options.draft,
-            };
+            let snap = Snapshot::edit(surface, self.hydro.options.draft);
             self.history.snapshot(&snap);
         }
     }
