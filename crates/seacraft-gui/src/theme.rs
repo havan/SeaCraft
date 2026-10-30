@@ -121,6 +121,8 @@ pub const FAIL: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
 pub const WARN: Color32 = Color32::from_rgb(0xe8, 0x9d, 0x3a);
 /// A result older than the last edit.
 pub const STALE: Color32 = Color32::from_rgb(0x8e, 0x9e, 0xae);
+/// The opacity a stale result is drawn at (with the "out of date" chip).
+pub const STALE_OPACITY: f32 = 0.55;
 /// A design target (requirements), as opposed to an actual.
 pub const TARGET: Color32 = Color32::from_rgb(0x40, 0xd0, 0xd0);
 /// Focus and the active viewport.
@@ -244,12 +246,13 @@ mod tests {
     use super::*;
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 11] = [
+    const SOURCES: [(&str, &str); 12] = [
         ("app.rs", include_str!("app.rs")),
         ("camera.rs", include_str!("camera.rs")),
         ("commands.rs", include_str!("commands.rs")),
         ("control.rs", include_str!("control.rs")),
         ("history.rs", include_str!("history.rs")),
+        ("jobs.rs", include_str!("jobs.rs")),
         ("lib.rs", include_str!("lib.rs")),
         ("main.rs", include_str!("main.rs")),
         ("new_design.rs", include_str!("new_design.rs")),

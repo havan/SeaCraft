@@ -307,6 +307,10 @@ pub fn hydrostatics_free_trim(
 }
 
 /// Compute `KN` and `GZ` for every (heel, displacement) pair.
+///
+/// The pairs are independent solves and run on every available core; each is
+/// computed by the same code as [`cross_curves_serial`], so the two return
+/// the same numbers bit for bit.
 pub fn cross_curves(
     hull: &Hull,
     heels_deg: &[f64],
@@ -314,66 +318,102 @@ pub fn cross_curves(
     cond: &StabilityCondition,
     base: &HydroOptions,
 ) -> Vec<CrossCurve> {
-    let mut out = Vec::with_capacity(heels_deg.len());
-    for &heel in heels_deg {
-        let mut points = Vec::with_capacity(displacements_t.len());
-        for &disp_t in displacements_t {
-            // The hull's own volume carries Δ / appendage coefficient, as in
-            // `hydro::compute` and the loading-condition solve.
-            let target_volume =
-                disp_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6));
-            let solved = match cond.lcg_x {
-                Some(lcg) => solve_floating(hull, target_volume, heel, lcg, cond.trim),
-                None => solve_draft(hull, target_volume, cond.trim, heel).map(|draft| {
-                    FloatingCondition {
-                        draft,
-                        trim: cond.trim,
-                    }
-                }),
-            };
-            let Some(fc) = solved else {
-                points.push(CrossCurvePoint {
-                    displacement_t: disp_t,
-                    draft: None,
-                    trim_m: None,
-                    kn: None,
-                    gz: None,
-                });
-                continue;
-            };
-            // Only the centre of buoyancy is needed, so take the fast path:
-            // a full `hydrostatics` call would also chain the waterline and cut
-            // every station, none of which a righting lever uses.
-            let (_, b) = hull.buoyancy(fc.draft, fc.trim, heel);
-            let wp = waterplane_for(hull.keel, hull.length, fc.draft, fc.trim, heel);
-            let t = wp.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
-            let g = Vec3::new(0.0, 0.0, hull.keel + cond.kg);
-            let gz = (b - g).dot(t);
-            let kn = gz + cond.kg * deg_to_rad(heel).sin();
-            if gz.is_finite() && kn.is_finite() {
-                points.push(CrossCurvePoint {
-                    displacement_t: disp_t,
-                    draft: Some(fc.draft),
-                    trim_m: Some(fc.trim),
-                    kn: Some(kn),
-                    gz: Some(gz),
-                });
-            } else {
-                points.push(CrossCurvePoint {
-                    displacement_t: disp_t,
-                    draft: None,
-                    trim_m: None,
-                    kn: None,
-                    gz: None,
-                });
-            }
-        }
-        out.push(CrossCurve {
+    let pairs: Vec<(f64, f64)> = heels_deg
+        .iter()
+        .flat_map(|&heel| displacements_t.iter().map(move |&d| (heel, d)))
+        .collect();
+    let points = crate::par::par_map(&pairs, |&(heel, disp_t)| {
+        cross_curve_point(hull, heel, disp_t, cond, base)
+    });
+    group_cross_curves(heels_deg, displacements_t.len(), points)
+}
+
+/// [`cross_curves`] on the calling thread only, one pair after another (the
+/// reference the parallel version is checked against).
+pub fn cross_curves_serial(
+    hull: &Hull,
+    heels_deg: &[f64],
+    displacements_t: &[f64],
+    cond: &StabilityCondition,
+    base: &HydroOptions,
+) -> Vec<CrossCurve> {
+    let points = heels_deg
+        .iter()
+        .flat_map(|&heel| {
+            displacements_t
+                .iter()
+                .map(move |&disp_t| cross_curve_point(hull, heel, disp_t, cond, base))
+        })
+        .collect();
+    group_cross_curves(heels_deg, displacements_t.len(), points)
+}
+
+/// Split the heel-major list of points into one curve per heel.
+fn group_cross_curves(
+    heels_deg: &[f64],
+    per_heel: usize,
+    points: Vec<CrossCurvePoint>,
+) -> Vec<CrossCurve> {
+    let mut points = points.into_iter();
+    heels_deg
+        .iter()
+        .map(|&heel| CrossCurve {
             heel_deg: heel,
-            points,
-        });
+            points: points.by_ref().take(per_heel).collect(),
+        })
+        .collect()
+}
+
+/// `KN` and `GZ` at one heel and displacement (`None`s when no floating
+/// condition is found or the lever is not finite).
+fn cross_curve_point(
+    hull: &Hull,
+    heel: f64,
+    disp_t: f64,
+    cond: &StabilityCondition,
+    base: &HydroOptions,
+) -> CrossCurvePoint {
+    let none = CrossCurvePoint {
+        displacement_t: disp_t,
+        draft: None,
+        trim_m: None,
+        kn: None,
+        gz: None,
+    };
+    // The hull's own volume carries Δ / appendage coefficient, as in
+    // `hydro::compute` and the loading-condition solve.
+    let target_volume =
+        disp_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6));
+    let solved = match cond.lcg_x {
+        Some(lcg) => solve_floating(hull, target_volume, heel, lcg, cond.trim),
+        None => solve_draft(hull, target_volume, cond.trim, heel).map(|draft| FloatingCondition {
+            draft,
+            trim: cond.trim,
+        }),
+    };
+    let Some(fc) = solved else {
+        return none;
+    };
+    // Only the centre of buoyancy is needed, so take the fast path:
+    // a full `hydrostatics` call would also chain the waterline and cut
+    // every station, none of which a righting lever uses.
+    let (_, b) = hull.buoyancy(fc.draft, fc.trim, heel);
+    let wp = waterplane_for(hull.keel, hull.length, fc.draft, fc.trim, heel);
+    let t = wp.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
+    let g = Vec3::new(0.0, 0.0, hull.keel + cond.kg);
+    let gz = (b - g).dot(t);
+    let kn = gz + cond.kg * deg_to_rad(heel).sin();
+    if gz.is_finite() && kn.is_finite() {
+        CrossCurvePoint {
+            displacement_t: disp_t,
+            draft: Some(fc.draft),
+            trim_m: Some(fc.trim),
+            kn: Some(kn),
+            gz: Some(gz),
+        }
+    } else {
+        none
     }
-    out
 }
 
 /// IMO A.749 / 2008 IS Code general intact stability criteria for a GZ curve.
@@ -613,6 +653,41 @@ mod tests {
             bare[0].points[0].draft.unwrap(),
         );
         assert!((a - b).abs() < 1e-6, "{a} vs {b}");
+    }
+
+    /// The parallel cross curves are the serial ones bit for bit, fixed
+    /// and free to trim (round-5 decision: `to_bits`, not a tolerance).
+    #[test]
+    fn parallel_cross_curves_equal_the_serial_ones_bit_for_bit() {
+        let surface = crate::demo::demo_hull(false);
+        let hull = Hull::new(&surface, Default::default());
+        let base = HydroOptions::from_surface(&surface, Default::default());
+        let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
+        let disps = [8.0, 10.0, 12.0, 14.0, 1.0e6];
+        let bits = |v: Option<f64>| v.map(f64::to_bits);
+        for lcg in [None, Some(upright_lcb(&hull, 0.62))] {
+            let cond = StabilityCondition {
+                kg: 2.2,
+                trim: 0.0,
+                lcg_x: lcg,
+            };
+            let par = cross_curves(&hull, &heels, &disps, &cond, &base);
+            let ser = cross_curves_serial(&hull, &heels, &disps, &cond, &base);
+            assert_eq!(par.len(), ser.len());
+            for (a, b) in par.iter().zip(&ser) {
+                assert_eq!(a.heel_deg.to_bits(), b.heel_deg.to_bits());
+                assert_eq!(a.points.len(), b.points.len());
+                for (p, q) in a.points.iter().zip(&b.points) {
+                    assert_eq!(p.displacement_t.to_bits(), q.displacement_t.to_bits());
+                    assert_eq!(bits(p.draft), bits(q.draft), "draft at {}°", a.heel_deg);
+                    assert_eq!(bits(p.trim_m), bits(q.trim_m), "trim at {}°", a.heel_deg);
+                    assert_eq!(bits(p.kn), bits(q.kn), "KN at {}°", a.heel_deg);
+                    assert_eq!(bits(p.gz), bits(q.gz), "GZ at {}°", a.heel_deg);
+                }
+            }
+            // The realistic displacements solved.
+            assert!(par[1].points[2].gz.is_some());
+        }
     }
 
     #[test]

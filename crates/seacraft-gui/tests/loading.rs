@@ -111,21 +111,43 @@ fn loading_worker_thread_computes_in_background() {
 
 #[test]
 fn a_result_for_an_edited_hull_is_not_taken_as_fresh() {
-    let (mut app, ctx, _) = setup_demo_with_loadcase();
+    let (mut app, ctx, cond) = setup_demo_with_loadcase();
+    let with_windage = app.project().with_windage(&cond);
+    let mut opts = app.hydro_options().clone();
+    opts.subdivision.level = app.subdivision_level();
+    opts.subdivision.mode = app.subdivision_mode();
+    let old = seacraft_core::loading::evaluate(app.surface().unwrap(), &opts, &with_windage);
     app.start_loading_compute();
     assert!(app.loading_busy());
     // Edit the hull while the worker measures the old one.
     app.snapshot_undo();
     app.surface_mut().unwrap().points[3].p.z += 0.05;
     app.mark_geometry_changed();
+    let new = seacraft_core::loading::evaluate(app.surface().unwrap(), &opts, &with_windage);
+    assert_ne!(
+        old.floating.draft.to_bits(),
+        new.floating.draft.to_bits(),
+        "the edit moves the waterline (the test can tell the results apart)"
+    );
+    // The old worker's answer is discarded; the automatic recompute
+    // (U11: 300 ms after the edit) then measures the edited hull. Whatever
+    // result is shown on the way must be the edited hull's.
     let t0 = Instant::now();
-    while app.loading_busy() && t0.elapsed() < Duration::from_secs(60) {
+    loop {
         frame(&ctx, &mut app);
+        if let Some(res) = app.loading_result() {
+            assert_eq!(
+                res.floating.draft.to_bits(),
+                new.floating.draft.to_bits(),
+                "a result for the hull before the edit was shown as current"
+            );
+            break;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(120),
+            "timed out waiting for the automatic recompute"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(!app.loading_busy(), "the worker finished");
-    assert!(
-        app.loading_result().is_none(),
-        "a result for the hull before the edit was shown as current"
-    );
+    assert!(!app.stale_results().contains(&"loading"));
 }

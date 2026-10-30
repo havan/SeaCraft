@@ -23,6 +23,7 @@ use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
 use crate::camera::{Camera, ViewKind};
 use crate::history::History;
+use crate::jobs::{revision_key, Job, Track};
 use crate::panels;
 use crate::picking::{self, PICK_RADIUS};
 use crate::render::{self, DisplayOptions, Scene};
@@ -62,11 +63,13 @@ struct HydroState {
     lcg: Option<f64>,
     result: Option<Hydrostatics>,
     curves: Option<Vec<CrossCurve>>,
-    hull: Option<Hull>,
-    /// Revision the cached hull was built from.
-    hull_revision: u64,
-    /// When the geometry last changed, for the recompute debounce.
-    last_edit: Option<std::time::Instant>,
+    /// The hull `result` was measured on (the GZ curves reuse it while it
+    /// is current).
+    hull: Option<Arc<Hull>>,
+    /// Revision stamp and job of `result` (and `hull`).
+    track: Track<HydroOut>,
+    /// Revision stamp and job of `curves`.
+    curves_track: Track<CurvesOut>,
 }
 
 impl HydroState {
@@ -88,9 +91,123 @@ impl HydroState {
             result: None,
             curves: None,
             hull: None,
-            hull_revision: u64::MAX,
-            last_edit: None,
+            track: Track::default(),
+            curves_track: Track::default(),
         }
+    }
+
+    /// Everything a measurement needs, cloned off the app for a job.
+    fn inputs(&self, surface: &Surface, level: u8, mode: SubdivisionMode) -> HydroInputs {
+        HydroInputs {
+            surface: surface.clone(),
+            subdiv: seacraft_core::SubdivisionOptions { level, mode },
+            options: self.options.clone(),
+            free_trim: self.free_trim,
+            lcg: self.lcg,
+        }
+    }
+}
+
+/// The inputs of a hydrostatics measurement.
+struct HydroInputs {
+    surface: Surface,
+    subdiv: seacraft_core::SubdivisionOptions,
+    options: HydroOptions,
+    free_trim: bool,
+    lcg: Option<f64>,
+}
+
+/// A hydrostatics measurement: the report, the hull it was measured on and,
+/// free to trim, the solved trim (written back to the floating condition).
+struct HydroOut {
+    result: Hydrostatics,
+    hull: Arc<Hull>,
+    trim: Option<f64>,
+}
+
+/// Refine and measure (the hydrostatics job, and its synchronous twin).
+fn measure_hydro(i: &HydroInputs) -> HydroOut {
+    let hull = Hull::new(&i.surface, i.subdiv);
+    let (result, trim) = if i.free_trim {
+        let (res, fc) = stability::hydrostatics_free_trim(&hull, &i.options, i.lcg);
+        (res, Some(fc.trim))
+    } else {
+        (hull.hydrostatics(&i.options), None)
+    };
+    HydroOut {
+        result,
+        hull: Arc::new(hull),
+        trim,
+    }
+}
+
+/// The inputs of the GZ cross curves: the measurement's inputs, KG and,
+/// when the measurement is current, its hull and displacement.
+struct CurvesInputs {
+    hydro: HydroInputs,
+    kg: f64,
+    measured: Option<(Arc<Hull>, f64)>,
+}
+
+/// The GZ cross curves (`None` when nothing floats), the LCG they were
+/// solved about and, when the job had to measure first, that measurement.
+struct CurvesOut {
+    curves: Option<Vec<CrossCurve>>,
+    displacement_t: f64,
+    lcg: Option<f64>,
+    hydro: Option<HydroOut>,
+}
+
+/// GZ cross curves for the displacement and a ±30 % spread around it.
+fn compute_cross_curves_for(i: CurvesInputs) -> CurvesOut {
+    let (hull, displacement_t, trim, lcg, hydro) = match i.measured {
+        Some((hull, d)) => (hull, d, i.hydro.options.trim, i.hydro.lcg, None),
+        None => {
+            let out = measure_hydro(&i.hydro);
+            let trim = out.trim.unwrap_or(i.hydro.options.trim);
+            // As the dock's measurement: free to trim without an LCG, the
+            // measured LCB is the LCG.
+            let lcg = match (i.hydro.free_trim, i.hydro.lcg) {
+                (true, None) => Some(out.result.lcb.x),
+                (_, lcg) => lcg,
+            };
+            (
+                out.hull.clone(),
+                out.result.displacement_t,
+                trim,
+                lcg,
+                Some(out),
+            )
+        }
+    };
+    if displacement_t <= 0.0 {
+        return CurvesOut {
+            curves: None,
+            displacement_t,
+            lcg,
+            hydro,
+        };
+    }
+    let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
+    let factors = [0.7, 0.85, 1.0, 1.15, 1.3];
+    let displacements: Vec<f64> = factors.iter().map(|f| displacement_t * f).collect();
+    // Free trim needs a longitudinal centre of gravity. A bare model
+    // carries none, so the upright LCB is the natural stand-in.
+    let lcg = match (i.hydro.free_trim, lcg) {
+        (true, None) => Some(stability::upright_lcb(&hull, i.hydro.options.draft)),
+        (_, lcg) => lcg,
+    };
+    let cond = stability::StabilityCondition {
+        kg: i.kg,
+        trim,
+        lcg_x: if i.hydro.free_trim { lcg } else { None },
+    };
+    let curves = stability::cross_curves(&hull, &heels, &displacements, &cond, &i.hydro.options);
+    CurvesOut {
+        curves: Some(curves),
+        displacement_t,
+        lcg,
+        hydro,
     }
 }
 
@@ -553,8 +670,6 @@ pub struct PerformanceState {
     pub points: usize,
     pub resistance: Option<ResistanceResult>,
     pub raos: Option<SeakeepingReport>,
-    pub resistance_stale: bool,
-    pub raos_stale: bool,
     /// Input of the sea-state section.
     pub sea_input: SeaStateInput,
     /// Irregular-sea responses from the same run as `raos` (None unless a sea state was set).
@@ -572,17 +687,15 @@ impl Default for PerformanceState {
             points: 30,
             resistance: None,
             raos: None,
-            resistance_stale: true,
-            raos_stale: true,
             sea_input: SeaStateInput::default(),
             sea_result: None,
         }
     }
 }
 
-/// What the RAO worker sends back: the RAOs and, with a sea state, the
+/// What the RAO job hands back: the RAOs and, with a sea state, the
 /// irregular-sea responses computed from them.
-type RaoOutcome = Result<(SeakeepingReport, Option<IrregularReport>), String>;
+type RaoResult = (SeakeepingReport, Option<IrregularReport>);
 
 pub struct App {
     surface: Option<Surface>,
@@ -648,28 +761,29 @@ pub struct App {
     /// The start card's buttons from the last frame; `None` when a model is
     /// shown instead (test hook).
     start_rects: Option<crate::new_design::StartRects>,
-    /// A design report being written on a worker thread: its path and result.
-    report_worker: Option<std::sync::mpsc::Receiver<(PathBuf, Result<(), String>)>>,
+    /// A design report being written on a worker thread, and its path.
+    report_job: Option<(PathBuf, Job<()>)>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
-    loading_stale: bool,
-    loading_worker: Option<std::sync::mpsc::Receiver<(u64, LoadingResult)>>,
-    loading_generation: u64,
+    loading_track: Track<LoadingResult>,
     damage_selected: usize,
     damage_result: Option<DamageResult>,
-    damage_stale: bool,
-    damage_worker: Option<std::sync::mpsc::Receiver<(u64, Result<DamageResult, String>)>>,
-    damage_generation: u64,
+    damage_track: Track<DamageResult>,
     perf_state: PerformanceState,
-    perf_resistance_worker:
-        Option<std::sync::mpsc::Receiver<(u64, Result<ResistanceResult, String>)>>,
-    perf_resistance_generation: u64,
-    perf_raos_worker: Option<std::sync::mpsc::Receiver<(u64, RaoOutcome)>>,
-    perf_raos_generation: u64,
+    resistance_track: Track<ResistanceResult>,
+    raos_track: Track<RaoResult>,
+    /// Bumped by every change of the floating condition (draft, trim, heel,
+    /// KG, free trim, LCG). With `revision` and the counters below it keys
+    /// every result: a result is current while its key is unchanged.
+    hydro_rev: u64,
+    /// Bumped by every edit of the project (loading, damage, windage).
+    project_rev: u64,
+    /// Bumped by every edit of the Performance inputs.
+    perf_rev: u64,
+    /// When an input last changed, for the automatic recompute's debounce.
+    last_change: Option<std::time::Instant>,
     /// Cursor position on the active viewport's focal plane, for the status bar.
     cursor_world: Option<Vec3>,
-    /// Geometry changed since the hydrostatics were last computed.
-    hydro_dirty: bool,
     hydro: HydroState,
     /// Viewport rectangles from the last frame, so tests can aim the pointer.
     /// A view hidden by a maximised one has `Rect::NOTHING`.
@@ -793,24 +907,21 @@ impl App {
             new_design: None,
             project_settings: None,
             start_rects: None,
-            report_worker: None,
+            report_job: None,
             loading_selected: 0,
             loading_result: None,
-            loading_stale: true,
-            loading_worker: None,
-            loading_generation: 0,
+            loading_track: Track::default(),
             damage_selected: 0,
             damage_result: None,
-            damage_stale: true,
-            damage_worker: None,
-            damage_generation: 0,
+            damage_track: Track::default(),
             perf_state: PerformanceState::default(),
-            perf_resistance_worker: None,
-            perf_resistance_generation: 0,
-            perf_raos_worker: None,
-            perf_raos_generation: 0,
+            resistance_track: Track::default(),
+            raos_track: Track::default(),
+            hydro_rev: 0,
+            project_rev: 0,
+            perf_rev: 0,
+            last_change: None,
             cursor_world: None,
-            hydro_dirty: true,
             hydro: HydroState::new(),
             viewport_rects: [egui::Rect::NOTHING; 4],
             title_rects: [egui::Rect::NOTHING; 4],
@@ -945,31 +1056,20 @@ impl App {
         self.hydro.result = None;
         self.hydro.curves = None;
         self.hydro.hull = None;
-        self.hydro.hull_revision = u64::MAX;
-        self.hydro_dirty = true;
-        self.hydro.last_edit = Some(std::time::Instant::now());
-        self.loading_stale = true;
+        self.hydro.track.reset();
+        self.hydro.curves_track.reset();
         self.loading_selected = 0;
         self.loading_result = None;
-        self.loading_worker = None;
-        self.damage_stale = true;
+        self.loading_track.reset();
         self.damage_selected = 0;
-        self.perf_state.resistance_stale = true;
-        self.perf_state.resistance = None;
-        self.perf_resistance_worker = None;
-        self.perf_state.raos_stale = true;
-        self.perf_state.raos = None;
-        self.perf_state.sea_result = None;
-        self.perf_raos_worker = None;
         self.damage_result = None;
-        self.damage_worker = None;
-        self.perf_state.resistance_stale = true;
+        self.damage_track.reset();
         self.perf_state.resistance = None;
-        self.perf_resistance_worker = None;
-        self.perf_state.raos_stale = true;
+        self.resistance_track.reset();
         self.perf_state.raos = None;
         self.perf_state.sea_result = None;
-        self.perf_raos_worker = None;
+        self.raos_track.reset();
+        self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
         if let Some(s) = &self.surface {
@@ -1069,27 +1169,49 @@ impl App {
         let mut action = DockAction::None;
         let targets = self.target_readouts();
         let lightship = self.lightship_seed();
+        let tab_stale = DesignDock::ALL.map(|t| self.tab_stale(t));
+        let failure = self.tab_failure(tab);
+        let hydro_stale = self.hydro_stale();
+        let curves_stale = self.curves_stale();
+        let hydro_busy = self.hydro.track.busy() || self.hydro.curves_track.busy();
+        let loading_stale = self.loading_stale();
+        let loading_busy = self.loading_track.busy();
+        let damage_stale = self.damage_stale();
+        let damage_busy = self.damage_track.busy();
+        let resistance_stale = self.resistance_stale();
+        let raos_stale = self.raos_stale();
+        let busy_resistance = self.resistance_track.busy();
+        let busy_raos = self.raos_track.busy();
+        let default_kg = self.effective_performance_kg_default();
+        let kg_source = self.performance_kg_source();
         panel.show(ui, |ui| {
             toggle_wide = panels::live_strip(
                 ui,
                 self.hydro.result.as_ref(),
                 self.hydro.kg,
-                self.hydro_dirty,
+                hydro_stale,
                 self.dock_wide,
             );
-            panels::target_strip(ui, &targets, self.hydro_dirty);
+            panels::target_strip(ui, &targets, hydro_stale);
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 // Tight enough that the five tabs fit one row at 360 px.
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
-                for t in DesignDock::ALL {
-                    if ui.selectable_label(tab == t, t.label()).clicked() {
+                for (i, t) in DesignDock::ALL.into_iter().enumerate() {
+                    let response = ui.selectable_label(tab == t, t.label());
+                    if tab_stale[i] {
+                        panels::stale_dot(ui, response.rect);
+                    }
+                    if response.clicked() {
                         tab = t;
                     }
                 }
             });
             ui.separator();
+            if let Some(msg) = &failure {
+                ui.colored_label(crate::theme::FAIL, format!("⚠ {msg}"));
+            }
             egui::ScrollArea::vertical().show(ui, |ui| match tab {
                 DesignDock::Hydrostatics => {
                     action = DockAction::Hydro(panels::hydrostatics(
@@ -1100,8 +1222,10 @@ impl App {
                             free_trim: &mut self.hydro.free_trim,
                             lcg: &mut self.hydro.lcg,
                             result: self.hydro.result.as_ref(),
-                            stale: self.hydro_dirty,
+                            stale: hydro_stale,
+                            busy: hydro_busy,
                             curves: self.hydro.curves.as_deref(),
+                            curves_stale,
                         },
                     ));
                 }
@@ -1112,8 +1236,8 @@ impl App {
                             project: &mut self.project,
                             selected: &mut self.loading_selected,
                             result: self.loading_result.as_ref(),
-                            stale: self.loading_stale,
-                            busy: self.loading_worker.is_some(),
+                            stale: loading_stale,
+                            busy: loading_busy,
                             highlight: tank_highlight,
                             scroll_to: scroll_to_tank,
                             lightship: lightship.clone(),
@@ -1127,8 +1251,8 @@ impl App {
                             project: &mut self.project,
                             selected: &mut self.damage_selected,
                             result: self.damage_result.as_ref(),
-                            stale: self.damage_stale,
-                            busy: self.damage_worker.is_some(),
+                            stale: damage_stale,
+                            busy: damage_busy,
                             highlight: comp_highlight,
                             scroll_to: scroll_to_comp,
                         },
@@ -1143,34 +1267,22 @@ impl App {
                                 .loading_result
                                 .as_ref()
                                 .and_then(|r| r.weather.as_ref()),
-                            stale: self.loading_stale,
+                            stale: loading_stale,
                             selected: &mut self.selected_windage,
                         },
                     ));
                 }
                 DesignDock::Performance => {
-                    let default_kg = if !self.loading_stale {
-                        self.loading_result
-                            .as_ref()
-                            .map_or(self.hydro.kg, |r| r.kg_fluid)
-                    } else {
-                        self.hydro.kg
-                    };
-                    let kg_source = if self.perf_state.kg.is_some() {
-                        "Manual"
-                    } else if !self.loading_stale && self.loading_result.is_some() {
-                        "Loading (KG_fluid)"
-                    } else {
-                        "Hydro dock"
-                    };
                     action = DockAction::Performance(panels::performance(
                         ui,
                         panels::PerformancePanel {
                             state: &mut self.perf_state,
                             default_kg,
                             kg_source,
-                            busy_resistance: self.perf_resistance_worker.is_some(),
-                            busy_raos: self.perf_raos_worker.is_some(),
+                            busy_resistance,
+                            busy_raos,
+                            stale_resistance: resistance_stale,
+                            stale_raos: raos_stale,
                         },
                     ));
                 }
@@ -1185,32 +1297,29 @@ impl App {
 
         match action {
             DockAction::None => {}
-            DockAction::Hydro(panels::HydroAction::Recompute) => {
-                self.hydro_dirty = true;
-                self.refresh_hydro(true);
-            }
-            DockAction::Hydro(panels::HydroAction::CrossCurves) => self.compute_curves(),
+            DockAction::Hydro(panels::HydroAction::Changed) => self.hydro_inputs_changed(),
+            DockAction::Hydro(panels::HydroAction::Recompute) => self.start_hydro_job(),
+            DockAction::Hydro(panels::HydroAction::CrossCurves) => self.start_curves_job(),
             DockAction::Hydro(panels::HydroAction::None) => {}
             DockAction::Loading(panels::LoadingAction::Changed) => {
                 self.dirty = true;
-                self.loading_stale = true;
+                self.project_changed();
             }
             DockAction::Loading(panels::LoadingAction::Compute) => self.start_loading_compute(),
             DockAction::Loading(panels::LoadingAction::None) => {}
             DockAction::Damage(panels::DamageAction::Changed) => {
                 self.dirty = true;
-                self.damage_stale = true;
+                self.project_changed();
             }
             DockAction::Damage(panels::DamageAction::Compute) => self.start_damage_compute(),
             DockAction::Damage(panels::DamageAction::None) => {}
             DockAction::Windage(panels::WindageAction::Changed) => {
                 self.dirty = true;
-                self.loading_stale = true;
+                self.project_changed();
             }
             DockAction::Windage(panels::WindageAction::None) => {}
             DockAction::Performance(panels::PerformanceAction::Changed) => {
-                self.perf_state.resistance_stale = true;
-                self.perf_state.raos_stale = true;
+                self.performance_changed();
             }
             DockAction::Performance(panels::PerformanceAction::Compute) => {
                 self.start_performance_compute()
@@ -1232,6 +1341,15 @@ impl App {
                     ui.colored_label(crate::theme::WARN, "● unsaved");
                 }
                 ui.label(&self.status);
+                let stale = self.stale_count();
+                if stale > 0 {
+                    ui.separator();
+                    let word = if stale == 1 { "result" } else { "results" };
+                    ui.colored_label(
+                        crate::theme::STALE,
+                        format!("{stale} {word} out of date · F5"),
+                    );
+                }
                 ui.separator();
                 ui.label(format!(
                     "L{} {}",
@@ -1304,125 +1422,7 @@ impl App {
         if self.show_analysis {
             self.analysis_dock(ui);
         }
-        if self.hydro_dirty {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(120));
-        }
-        self.refresh_hydro(false);
-
-        if let Some(rx) = &self.loading_worker {
-            let mut done = false;
-            match rx.try_recv() {
-                Ok((gen, res)) => {
-                    done = true;
-                    if gen == self.loading_generation {
-                        self.loading_result = Some(res);
-                        self.loading_stale = false;
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done = true;
-                }
-            }
-            if done {
-                self.loading_worker = None;
-            }
-        }
-
-        if let Some(rx) = &self.damage_worker {
-            let mut done = false;
-            match rx.try_recv() {
-                Ok((gen, res)) => {
-                    done = true;
-                    if gen == self.damage_generation {
-                        match res {
-                            Ok(r) => {
-                                self.damage_result = Some(r);
-                                self.damage_stale = false;
-                            }
-                            Err(e) => {
-                                self.status = format!("Damage compute failed: {e}");
-                            }
-                        }
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done = true;
-                }
-            }
-            if done {
-                self.damage_worker = None;
-            }
-        }
-
-        if let Some(rx) = &self.perf_resistance_worker {
-            let mut done = false;
-            match rx.try_recv() {
-                Ok((gen, res)) => {
-                    done = true;
-                    if gen == self.perf_resistance_generation {
-                        match res {
-                            Ok(r) => {
-                                self.perf_state.resistance = Some(r);
-                                self.perf_state.resistance_stale = false;
-                            }
-                            Err(e) => {
-                                self.status = format!("Resistance compute failed: {e}");
-                            }
-                        }
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done = true;
-                }
-            }
-            if done {
-                self.perf_resistance_worker = None;
-            }
-        }
-
-        if let Some(rx) = &self.perf_raos_worker {
-            let mut done = false;
-            match rx.try_recv() {
-                Ok((gen, res)) => {
-                    done = true;
-                    if gen == self.perf_raos_generation {
-                        match res {
-                            Ok((r, irr)) => {
-                                self.perf_state.raos = Some(r);
-                                self.perf_state.sea_result = irr;
-                                self.perf_state.raos_stale = false;
-                            }
-                            Err(e) => {
-                                self.status = format!("Seakeeping compute failed: {e}");
-                            }
-                        }
-                    }
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(100));
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    done = true;
-                }
-            }
-            if done {
-                self.perf_raos_worker = None;
-            }
-        }
+        self.run_jobs(ui.ctx());
 
         if self.surface.is_some() {
             self.start_rects = None;
@@ -1453,6 +1453,7 @@ impl App {
             save_as: bool,
             maximise: bool,
             new_design: bool,
+            recompute: bool,
         }
         // A modal dialog owns the keyboard: nothing reaches the model
         // behind it.
@@ -1473,6 +1474,9 @@ impl App {
                     ..
                 } = event
                 {
+                    if *key == egui::Key::F5 && !repeat && modifiers.is_none() {
+                        pressed.recompute = true;
+                    }
                     if !(modifiers.command || modifiers.ctrl) {
                         continue;
                     }
@@ -1515,6 +1519,9 @@ impl App {
         }
         if pressed.maximise && !typing {
             self.toggle_maximised();
+        }
+        if pressed.recompute {
+            self.recompute_stale();
         }
 
         // Single keys are text while a field (or any focused widget) has the
@@ -1626,7 +1633,7 @@ impl App {
                     ui.separator();
                     if ui
                         .add_enabled(
-                            self.surface.is_some() && self.report_worker.is_none(),
+                            self.surface.is_some() && self.report_job.is_none(),
                             egui::Button::new("Design report…"),
                         )
                         .clicked()
@@ -1943,8 +1950,7 @@ impl App {
         if let Some(v) = speed {
             self.perf_state.speeds_kn = crate::new_design::speed_range(v);
             self.perf_state.sk_speed_kn = v;
-            self.perf_state.resistance_stale = true;
-            self.perf_state.raos_stale = true;
+            self.performance_changed();
         }
     }
 
@@ -2627,8 +2633,10 @@ impl App {
                             .map(|s| (s.points[drag.point].p - drag.original).length() > 1e-12)
                             .unwrap_or(false);
                         if moved {
-                            // Full refinement and measurement again.
+                            // Full refinement and measurement again; the
+                            // automatic recomputes count from the release.
                             self.revision += 1;
+                            self.touch_geometry();
                             self.status = "control point moved".to_owned();
                         } else {
                             self.history.discard_last();
@@ -2984,114 +2992,431 @@ impl App {
         self.sync_cache();
     }
 
-    /// Rebuild the hull and the report once the drag has ended and 120 ms have
-    /// passed since the last change, so a drag does not measure every frame.
-    fn refresh_hydro(&mut self, force: bool) {
-        if self.drag.is_some() {
-            return;
-        }
-        if !force {
-            if !self.hydro_dirty {
-                return;
+    // ---- background jobs and the recompute rule -----------------------
+    //
+    // One rule for every result (round-4 U11): each carries the revision
+    // key it was computed for, and is stale while the key has moved on.
+    // Hydrostatics recompute automatically 120 ms after the last change,
+    // the loading condition and resistance 300 ms after it, never while a
+    // point is dragged. The heavier results (GZ curves, damage, RAOs and sea
+    // state) wait for F5 or their button. Every computation runs as a
+    // [`Job`]; a result for an old key is discarded.
+
+    /// The key of the hydrostatics and the GZ curves.
+    fn hydro_key(&self) -> u64 {
+        revision_key(&[self.revision, self.hydro_rev])
+    }
+
+    fn loading_key(&self) -> u64 {
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            self.project_rev,
+            self.loading_selected as u64,
+        ])
+    }
+
+    fn damage_key(&self) -> u64 {
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            self.project_rev,
+            self.damage_selected as u64,
+        ])
+    }
+
+    fn resistance_key(&self) -> u64 {
+        revision_key(&[self.revision, self.hydro_rev, self.perf_rev])
+    }
+
+    fn raos_key(&self) -> u64 {
+        // The KG may come from the loading condition.
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            self.perf_rev,
+            self.project_rev,
+            self.loading_selected as u64,
+        ])
+    }
+
+    /// The floating condition changed (draft, trim, heel, KG, free trim).
+    fn hydro_inputs_changed(&mut self) {
+        self.hydro_rev += 1;
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// The project's loading conditions, damage cases or windage changed.
+    fn project_changed(&mut self) {
+        self.project_rev += 1;
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// The Performance tab's inputs changed.
+    fn performance_changed(&mut self) {
+        self.perf_rev += 1;
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// Note that the geometry moved (the caller bumped `revision`): the
+    /// automatic recomputes wait for the debounce from now.
+    fn touch_geometry(&mut self) {
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// Collect finished jobs, then start the automatic recomputes that are
+    /// due. Called once per frame; never blocks.
+    fn run_jobs(&mut self, ctx: &egui::Context) {
+        self.poll_jobs();
+        let quiet = |ms: u64| {
+            self.last_change
+                .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(ms))
+        };
+        let (hydro_quiet, quiet) = (quiet(120), quiet(300));
+        let mut waiting = false;
+        if self.drag.is_none() && self.surface.is_some() {
+            if self.hydro.track.due(self.hydro_key()) {
+                if hydro_quiet {
+                    self.start_hydro_job();
+                } else {
+                    waiting = true;
+                }
             }
-            if let Some(then) = self.hydro.last_edit {
-                if then.elapsed() < std::time::Duration::from_millis(120) {
-                    return;
+            let loading_due = !self.project.loading_conditions.is_empty()
+                && self.loading_track.due(self.loading_key());
+            let resistance_due = self.resistance_track.due(self.resistance_key());
+            if loading_due || resistance_due {
+                if !quiet {
+                    waiting = true;
+                } else {
+                    if loading_due {
+                        self.start_loading_compute();
+                    }
+                    if resistance_due {
+                        self.start_resistance_compute();
+                    }
                 }
             }
         }
+        let busy = self.hydro.track.busy()
+            || self.hydro.curves_track.busy()
+            || self.loading_track.busy()
+            || self.damage_track.busy()
+            || self.resistance_track.busy()
+            || self.raos_track.busy();
+        if busy || waiting {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Take the results of finished jobs. A failure goes to the status line
+    /// (and stays on its tab until the inputs change).
+    fn poll_jobs(&mut self) {
+        let key = self.hydro_key();
+        match self.hydro.track.poll(key) {
+            Some(Ok(out)) => self.install_hydro(out),
+            Some(Err(e)) => self.status = format!("Hydrostatics failed: {e}"),
+            None => {}
+        }
+        match self.hydro.curves_track.poll(key) {
+            Some(Ok(out)) => self.install_curves(out, key),
+            Some(Err(e)) => self.status = format!("GZ curves failed: {e}"),
+            None => {}
+        }
+        match self.loading_track.poll(self.loading_key()) {
+            Some(Ok(r)) => self.loading_result = Some(r),
+            Some(Err(e)) => self.status = format!("Loading compute failed: {e}"),
+            None => {}
+        }
+        match self.damage_track.poll(self.damage_key()) {
+            Some(Ok(r)) => self.damage_result = Some(r),
+            Some(Err(e)) => self.status = format!("Damage compute failed: {e}"),
+            None => {}
+        }
+        match self.resistance_track.poll(self.resistance_key()) {
+            Some(Ok(r)) => self.perf_state.resistance = Some(r),
+            Some(Err(e)) => self.status = format!("Resistance compute failed: {e}"),
+            None => {}
+        }
+        match self.raos_track.poll(self.raos_key()) {
+            Some(Ok((r, irr))) => {
+                self.perf_state.raos = Some(r);
+                self.perf_state.sea_result = irr;
+            }
+            Some(Err(e)) => self.status = format!("Seakeeping compute failed: {e}"),
+            None => {}
+        }
+    }
+
+    /// Measure the hydrostatics on a job (the previous report stays shown,
+    /// dimmed, until it lands).
+    fn start_hydro_job(&mut self) {
         let Some(surface) = &self.surface else {
-            // Nothing to measure (the start screen): not "recomputing".
-            self.hydro_dirty = false;
             return;
         };
-        let subdiv = seacraft_core::SubdivisionOptions {
-            level: self.level,
-            mode: self.mode,
-        };
-        let hull = Hull::new(surface, subdiv);
-        let result = if self.hydro.free_trim {
-            let (res, fc) =
-                stability::hydrostatics_free_trim(&hull, &self.hydro.options, self.hydro.lcg);
-            self.hydro.options.trim = fc.trim;
+        let inputs = self.hydro.inputs(surface, self.level, self.mode);
+        let key = self.hydro_key();
+        self.hydro
+            .track
+            .start(key, move || Ok(measure_hydro(&inputs)));
+    }
+
+    fn install_hydro(&mut self, out: HydroOut) {
+        if let Some(trim) = out.trim {
+            self.hydro.options.trim = trim;
             if self.hydro.lcg.is_none() {
-                self.hydro.lcg = Some(res.lcb.x);
+                self.hydro.lcg = Some(out.result.lcb.x);
             }
-            res
-        } else {
-            hull.hydrostatics(&self.hydro.options)
-        };
-        self.hydro.result = Some(result);
-        self.hydro.hull = Some(hull);
-        self.hydro.hull_revision = self.revision;
-        self.hydro.curves = None;
-        self.hydro_dirty = false;
+        }
+        self.hydro.result = Some(out.result);
+        self.hydro.hull = Some(out.hull);
     }
 
-    /// GZ cross curves for the current displacement and a spread around it.
-    fn compute_curves(&mut self) {
-        if self.hydro.result.is_none()
-            || self.hydro.hull_revision != self.revision
-            || self.hydro_dirty
-        {
-            self.refresh_hydro(true);
-        }
-        let Some(hull) = self.hydro.hull.take() else {
+    /// The GZ curves' inputs: the current measurement's hull when there is
+    /// one, otherwise the job measures first.
+    fn curves_inputs(&self) -> Option<CurvesInputs> {
+        let surface = self.surface.as_ref()?;
+        let measured = match (&self.hydro.hull, &self.hydro.result) {
+            (Some(hull), Some(h)) if self.hydro.track.is_current(self.hydro_key()) => {
+                Some((hull.clone(), h.displacement_t))
+            }
+            _ => None,
+        };
+        Some(CurvesInputs {
+            hydro: self.hydro.inputs(surface, self.level, self.mode),
+            kg: self.hydro.kg,
+            measured,
+        })
+    }
+
+    /// Compute the GZ cross curves on a job ("GZ curves", F5).
+    fn start_curves_job(&mut self) {
+        let Some(inputs) = self.curves_inputs() else {
             return;
         };
-        let displacement_t = self.hydro.result.as_ref().map_or(0.0, |r| r.displacement_t);
-        if displacement_t > 0.0 {
-            let heels: Vec<f64> = (0..=8).map(|i| i as f64 * 10.0).collect();
-            let factors = [0.7, 0.85, 1.0, 1.15, 1.3];
-            let displacements: Vec<f64> = factors.iter().map(|f| displacement_t * f).collect();
-            // Free trim needs a longitudinal centre of gravity. A bare model
-            // carries none, so the upright LCB is the natural stand-in.
-            if self.hydro.free_trim && self.hydro.lcg.is_none() {
-                self.hydro.lcg = Some(stability::upright_lcb(&hull, self.hydro.options.draft));
-            }
-            let cond = stability::StabilityCondition {
-                kg: self.hydro.kg,
-                trim: self.hydro.options.trim,
-                lcg_x: if self.hydro.free_trim {
-                    self.hydro.lcg
-                } else {
-                    None
-                },
-            };
-            self.hydro.curves = Some(stability::cross_curves(
-                &hull,
-                &heels,
-                &displacements,
-                &cond,
-                &self.hydro.options,
-            ));
-            self.status = if cond.lcg_x.is_some() {
-                format!(
-                    "GZ cross curves for {:.2} t and ±30 %, free to trim about {:.3} m",
-                    displacement_t,
-                    cond.lcg_x.unwrap_or_default()
-                )
-            } else {
-                format!("GZ cross curves for {:.2} t and ±30 %", displacement_t)
-            };
-        }
-        self.hydro.hull = Some(hull);
+        let key = self.hydro_key();
+        self.status = "computing GZ cross curves…".to_owned();
+        self.hydro
+            .curves_track
+            .start(key, move || Ok(compute_cross_curves_for(inputs)));
     }
 
-    /// Note that the geometry moved: a measurement is due after the debounce.
-    fn touch_geometry(&mut self) {
-        self.hydro_dirty = true;
-        self.hydro.last_edit = Some(std::time::Instant::now());
-        self.loading_stale = true;
-        self.damage_stale = true;
-        self.perf_state.resistance_stale = true;
-        self.perf_state.raos_stale = true;
-        // A worker still running measures the old hull: its answer must not
-        // land as fresh, so the generations it carries no longer match.
-        self.loading_generation += 1;
-        self.damage_generation += 1;
-        self.perf_resistance_generation += 1;
-        self.perf_raos_generation += 1;
+    fn install_curves(&mut self, out: CurvesOut, key: u64) {
+        if let Some(h) = out.hydro {
+            self.install_hydro(h);
+            self.hydro.track.stamp(key);
+        }
+        if self.hydro.free_trim && self.hydro.lcg.is_none() {
+            self.hydro.lcg = out.lcg;
+        }
+        let free = self.hydro.free_trim;
+        self.hydro.curves = out.curves;
+        self.status = if self.hydro.curves.is_none() {
+            "GZ curves: nothing is submerged at this draft".to_owned()
+        } else if free {
+            format!(
+                "GZ cross curves for {:.2} t and ±30 %, free to trim about {:.3} m",
+                out.displacement_t,
+                out.lcg.unwrap_or_default()
+            )
+        } else {
+            format!("GZ cross curves for {:.2} t and ±30 %", out.displacement_t)
+        };
+    }
+
+    /// F5: recompute every stale result that is shown — the automatic ones
+    /// at once, without the debounce, and the heavy ones of the open tab.
+    pub fn recompute_stale(&mut self) {
+        if self.drag.is_some() || self.surface.is_none() {
+            return;
+        }
+        let wanted =
+            |current: bool, running: Option<u64>, key: u64| !current && running != Some(key);
+        let key = self.hydro_key();
+        if wanted(
+            self.hydro.track.is_current(key),
+            self.hydro.track.running_for(),
+            key,
+        ) {
+            self.start_hydro_job();
+        }
+        let key = self.loading_key();
+        if !self.project.loading_conditions.is_empty()
+            && wanted(
+                self.loading_track.is_current(key),
+                self.loading_track.running_for(),
+                key,
+            )
+        {
+            self.start_loading_compute();
+        }
+        let key = self.resistance_key();
+        if wanted(
+            self.resistance_track.is_current(key),
+            self.resistance_track.running_for(),
+            key,
+        ) {
+            self.start_resistance_compute();
+        }
+        if !self.show_analysis {
+            return;
+        }
+        match self.dock_tab {
+            DesignDock::Hydrostatics => {
+                let key = self.hydro_key();
+                if self.curves_stale() && self.hydro.curves_track.running_for() != Some(key) {
+                    self.start_curves_job();
+                }
+            }
+            DesignDock::Damage => {
+                if self.damage_stale() && self.damage_track.running_for() != Some(self.damage_key())
+                {
+                    self.start_damage_compute();
+                }
+            }
+            DesignDock::Performance => {
+                if self.raos_stale() && self.raos_track.running_for() != Some(self.raos_key()) {
+                    self.start_raos_compute();
+                }
+            }
+            DesignDock::Loading | DesignDock::Windage => {}
+        }
+    }
+
+    fn hydro_stale(&self) -> bool {
+        self.hydro.result.is_some() && !self.hydro.track.is_current(self.hydro_key())
+    }
+
+    fn curves_stale(&self) -> bool {
+        self.hydro.curves.is_some() && !self.hydro.curves_track.is_current(self.hydro_key())
+    }
+
+    fn loading_stale(&self) -> bool {
+        self.loading_result.is_some() && !self.loading_track.is_current(self.loading_key())
+    }
+
+    /// A loading result for the current inputs is shown.
+    fn loading_current(&self) -> bool {
+        self.loading_result.is_some() && self.loading_track.is_current(self.loading_key())
+    }
+
+    fn damage_stale(&self) -> bool {
+        self.damage_result.is_some() && !self.damage_track.is_current(self.damage_key())
+    }
+
+    fn resistance_stale(&self) -> bool {
+        self.perf_state.resistance.is_some()
+            && !self.resistance_track.is_current(self.resistance_key())
+    }
+
+    fn raos_stale(&self) -> bool {
+        (self.perf_state.raos.is_some() || self.perf_state.sea_result.is_some())
+            && !self.raos_track.is_current(self.raos_key())
+    }
+
+    /// The results shown out of date, by name (status bar, tests).
+    pub fn stale_results(&self) -> Vec<&'static str> {
+        [
+            (self.hydro_stale(), "hydrostatics"),
+            (self.curves_stale(), "GZ curves"),
+            (self.loading_stale(), "loading"),
+            (self.damage_stale(), "damage"),
+            (self.resistance_stale(), "resistance"),
+            (self.raos_stale(), "RAOs"),
+        ]
+        .into_iter()
+        .filter_map(|(stale, name)| stale.then_some(name))
+        .collect()
+    }
+
+    /// How many results are shown out of date (the status bar's count).
+    pub fn stale_count(&self) -> usize {
+        self.stale_results().len()
+    }
+
+    /// A tab shows a stale result (its tab gets a dot).
+    pub fn tab_stale(&self, tab: DesignDock) -> bool {
+        match tab {
+            DesignDock::Hydrostatics => self.hydro_stale() || self.curves_stale(),
+            DesignDock::Loading => self.loading_stale(),
+            DesignDock::Damage => self.damage_stale(),
+            DesignDock::Windage => {
+                self.loading_stale()
+                    && self
+                        .loading_result
+                        .as_ref()
+                        .is_some_and(|r| r.weather.is_some())
+            }
+            DesignDock::Performance => self.resistance_stale() || self.raos_stale(),
+        }
+    }
+
+    /// Why a tab's computation failed for the current inputs, if it did.
+    pub fn tab_failure(&self, tab: DesignDock) -> Option<String> {
+        let key = self.hydro_key();
+        let failures: Vec<(&str, Option<&str>)> = match tab {
+            DesignDock::Hydrostatics => vec![
+                ("Hydrostatics", self.hydro.track.failure(key)),
+                ("GZ curves", self.hydro.curves_track.failure(key)),
+            ],
+            DesignDock::Loading | DesignDock::Windage => vec![(
+                "Loading compute",
+                self.loading_track.failure(self.loading_key()),
+            )],
+            DesignDock::Damage => vec![(
+                "Damage compute",
+                self.damage_track.failure(self.damage_key()),
+            )],
+            DesignDock::Performance => vec![
+                (
+                    "Resistance compute",
+                    self.resistance_track.failure(self.resistance_key()),
+                ),
+                (
+                    "Seakeeping compute",
+                    self.raos_track.failure(self.raos_key()),
+                ),
+            ],
+        };
+        failures
+            .into_iter()
+            .find_map(|(what, e)| e.map(|e| format!("{what} failed: {e}")))
+    }
+
+    /// Whether a hydrostatics job is running (test hook).
+    pub fn hydro_busy(&self) -> bool {
+        self.hydro.track.busy()
+    }
+
+    /// Whether a GZ-curves job is running (test hook).
+    pub fn curves_busy(&self) -> bool {
+        self.hydro.curves_track.busy()
+    }
+
+    /// Whether a resistance job is running (test hook).
+    pub fn resistance_busy(&self) -> bool {
+        self.resistance_track.busy()
+    }
+
+    /// Whether any analysis job is running (test hook).
+    pub fn jobs_busy(&self) -> bool {
+        self.hydro.track.busy()
+            || self.hydro.curves_track.busy()
+            || self.loading_track.busy()
+            || self.damage_track.busy()
+            || self.resistance_track.busy()
+            || self.raos_track.busy()
+    }
+
+    /// Run `work` as the loading job, as a worker that fails would (test
+    /// hook for the failure path: a panic must reach the user).
+    #[doc(hidden)]
+    pub fn start_loading_job_for_test(
+        &mut self,
+        work: impl FnOnce() -> Result<LoadingResult, String> + Send + 'static,
+    ) {
+        let key = self.loading_key();
+        self.loading_track.start(key, work);
     }
 
     // ---- accessors (tests and dock panels) -----------------------------
@@ -3114,19 +3439,14 @@ impl App {
         self.selected_windage = None;
         self.last_highlighted_tank = None;
         self.last_highlighted_compartment = None;
-        self.loading_stale = true;
         self.loading_selected = 0;
-        self.loading_generation += 1;
-        self.damage_stale = true;
         self.damage_selected = 0;
-        self.damage_generation += 1;
-        self.perf_state.resistance_stale = true;
         self.perf_state.resistance = None;
-        self.perf_resistance_worker = None;
-        self.perf_state.raos_stale = true;
+        self.resistance_track.reset();
         self.perf_state.raos = None;
         self.perf_state.sea_result = None;
-        self.perf_raos_worker = None;
+        self.raos_track.reset();
+        self.project_changed();
     }
 
     /// Show or hide the loading panel; showing it shows only it in the design dock.
@@ -3164,42 +3484,34 @@ impl App {
         };
         let project = self.project.clone();
         let path = path.to_path_buf();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.report_worker = Some(rx);
         self.status = format!("writing report {}…", path.display());
-        std::thread::spawn(move || {
-            let result =
-                seacraft_core::report::design_report_with_project(&surface, &opts, &project)
-                    .and_then(|html| {
-                        seacraft_core::io::write_atomic(&path, html)
-                            .map_err(|e| format!("cannot write {}: {e}", path.display()))
-                    });
-            let _ = tx.send((path, result));
+        let target = path.clone();
+        let job = Job::spawn(self.revision, move || {
+            seacraft_core::report::design_report_with_project(&surface, &opts, &project).and_then(
+                |html| {
+                    seacraft_core::io::write_atomic(&target, html)
+                        .map_err(|e| format!("cannot write {}: {e}", target.display()))
+                },
+            )
         });
+        self.report_job = Some((path, job));
         true
     }
 
-    /// Collect a finished report worker, if any.
+    /// Collect a finished report job, if any.
     fn poll_report(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.report_worker else {
+        let Some((path, job)) = &self.report_job else {
             return;
         };
-        match rx.try_recv() {
-            Ok((path, result)) => {
-                self.status = match result {
-                    Ok(()) => format!("wrote report {}", path.display()),
-                    Err(e) => format!("report failed: {e}"),
-                };
-                self.report_worker = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
+        self.status = match job.poll() {
+            crate::jobs::Poll::Running => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                return;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.status = "report failed: the worker stopped".into();
-                self.report_worker = None;
-            }
-        }
+            crate::jobs::Poll::Done(()) => format!("wrote report {}", path.display()),
+            crate::jobs::Poll::Failed(e) => format!("report failed: {e}"),
+        };
+        self.report_job = None;
     }
 
     /// The File > Report options window, editing the project's report settings.
@@ -3406,7 +3718,7 @@ impl App {
                 .min(self.project.loading_conditions.len() - 1);
             let cond = &self.project.loading_conditions[cond_idx];
             for (t_idx, tank) in cond.tanks.iter().enumerate() {
-                let liquid_z = if !self.loading_stale {
+                let liquid_z = if self.loading_current() {
                     self.loading_result
                         .as_ref()
                         .and_then(|res| res.tanks.iter().find(|t| t.name == tank.name))
@@ -3468,9 +3780,9 @@ impl App {
         self.loading_result.as_ref()
     }
 
-    /// Whether a loading-condition worker is still running.
+    /// Whether a loading-condition job is still running.
     pub fn loading_busy(&self) -> bool {
-        self.loading_worker.is_some()
+        self.loading_track.busy()
     }
 
     pub fn start_loading_compute(&mut self) {
@@ -3487,22 +3799,23 @@ impl App {
             .min(self.project.loading_conditions.len() - 1);
         let cond = &self.project.loading_conditions[sel];
         let with_windage = self.project.with_windage(cond);
+        let key = self.loading_key();
         if let Err(e) = seacraft_core::loading::validate(&with_windage) {
-            self.status = format!("Loading condition invalid: {e}");
+            let msg = format!("Loading condition invalid: {e}");
+            self.status = msg.clone();
+            // Remembered, so the automatic recompute does not retry it.
+            self.loading_track.fail(key, msg);
             return;
         }
         let mut opts = self.hydro.options.clone();
         opts.subdivision.level = self.level;
         opts.subdivision.mode = self.mode;
-
-        self.loading_generation += 1;
-        let gen = self.loading_generation;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.loading_worker = Some(rx);
-
-        std::thread::spawn(move || {
-            let res = seacraft_core::loading::evaluate(&surface, &opts, &with_windage);
-            let _ = tx.send((gen, res));
+        self.loading_track.start(key, move || {
+            Ok(seacraft_core::loading::evaluate(
+                &surface,
+                &opts,
+                &with_windage,
+            ))
         });
     }
 
@@ -3526,16 +3839,14 @@ impl App {
         {
             self.loading_selected = i;
         }
-        self.loading_generation += 1;
-        self.loading_worker = None;
-
         let mut opts = self.hydro.options.clone();
         opts.subdivision.level = self.level;
         opts.subdivision.mode = self.mode;
 
         let res = seacraft_core::loading::evaluate(surface, &opts, &with_windage);
         self.loading_result = Some(res);
-        self.loading_stale = false;
+        // Supersedes any job: the result shown is this one.
+        self.loading_track.stamp(self.loading_key());
         Ok(self.loading_result.as_ref().unwrap())
     }
 
@@ -3562,18 +3873,11 @@ impl App {
         opts.subdivision.level = self.level;
         opts.subdivision.mode = self.mode;
 
-        self.damage_generation += 1;
-        let gen = self.damage_generation;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.damage_worker = Some(rx);
-
-        std::thread::spawn(move || {
-            let res: Result<DamageResult, String> = (|| {
-                let resolved = project.resolve_damage_case(&raw_case)?;
-                seacraft_core::damage::validate(&resolved)?;
-                seacraft_core::damage::evaluate(&surface, &opts, &resolved)
-            })();
-            let _ = tx.send((gen, res));
+        let key = self.damage_key();
+        self.damage_track.start(key, move || {
+            let resolved = project.resolve_damage_case(&raw_case)?;
+            seacraft_core::damage::validate(&resolved)?;
+            seacraft_core::damage::evaluate(&surface, &opts, &resolved)
         });
     }
 
@@ -3593,16 +3897,13 @@ impl App {
         {
             self.damage_selected = i;
         }
-        self.damage_generation += 1;
-        self.damage_worker = None;
-
         let mut opts = self.hydro.options.clone();
         opts.subdivision.level = self.level;
         opts.subdivision.mode = self.mode;
 
         let res = seacraft_core::damage::evaluate(surface, &opts, &case)?;
         self.damage_result = Some(res);
-        self.damage_stale = false;
+        self.damage_track.stamp(self.damage_key());
         Ok(self.damage_result.as_ref().unwrap())
     }
 
@@ -3610,7 +3911,10 @@ impl App {
         &self.perf_state
     }
 
+    /// The Performance inputs and results, edited in place (tests): the
+    /// results become out of date.
     pub fn performance_state_mut(&mut self) -> &mut PerformanceState {
+        self.performance_changed();
         &mut self.perf_state
     }
 
@@ -3631,21 +3935,24 @@ impl App {
     }
 
     pub fn effective_performance_kg(&self) -> f64 {
-        if let Some(kg) = self.perf_state.kg {
-            kg
-        } else if !self.loading_stale {
-            self.loading_result
-                .as_ref()
-                .map_or(self.hydro.kg, |r| r.kg_fluid)
-        } else {
-            self.hydro.kg
+        self.perf_state
+            .kg
+            .unwrap_or_else(|| self.effective_performance_kg_default())
+    }
+
+    /// The Performance KG without a manual value: the current loading
+    /// condition's fluid KG, else the hydro dock's.
+    fn effective_performance_kg_default(&self) -> f64 {
+        match &self.loading_result {
+            Some(r) if self.loading_current() => r.kg_fluid,
+            _ => self.hydro.kg,
         }
     }
 
     pub fn performance_kg_source(&self) -> &'static str {
         if self.perf_state.kg.is_some() {
             "Manual"
-        } else if !self.loading_stale && self.loading_result.is_some() {
+        } else if self.loading_current() {
             "Loading (KG_fluid)"
         } else {
             "Hydro dock"
@@ -3701,10 +4008,8 @@ impl App {
         opts.subdivision.level = self.level;
         opts.subdivision.mode = self.mode;
         let res = self.compute_resistance_for(method, &speeds, &opts)?;
-        self.perf_resistance_generation += 1;
-        self.perf_resistance_worker = None;
         self.perf_state.resistance = Some(res);
-        self.perf_state.resistance_stale = false;
+        self.resistance_track.stamp(self.resistance_key());
         Ok(self.perf_state.resistance.as_ref().unwrap())
     }
 
@@ -3716,11 +4021,9 @@ impl App {
         let spec = self.seakeeping_spec();
         let sea = self.sea_for_job();
         let (rep, irr) = compute_raos_with_sea(surface, &spec, sea.as_ref())?;
-        self.perf_raos_generation += 1;
-        self.perf_raos_worker = None;
         self.perf_state.raos = Some(rep);
         self.perf_state.sea_result = irr;
-        self.perf_state.raos_stale = false;
+        self.raos_track.stamp(self.raos_key());
         Ok(self.perf_state.raos.as_ref().unwrap())
     }
 
@@ -3743,14 +4046,9 @@ impl App {
         opts.subdivision.level = self.level;
         opts.subdivision.mode = self.mode;
 
-        self.perf_resistance_generation += 1;
-        let gen = self.perf_resistance_generation;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.perf_resistance_worker = Some(rx);
-
-        std::thread::spawn(move || {
-            let res = compute_resistance_impl(&surface, method, &speeds, &opts);
-            let _ = tx.send((gen, res));
+        let key = self.resistance_key();
+        self.resistance_track.start(key, move || {
+            compute_resistance_impl(&surface, method, &speeds, &opts)
         });
     }
 
@@ -3762,14 +4060,9 @@ impl App {
         let spec = self.seakeeping_spec();
         let sea = self.sea_for_job();
 
-        self.perf_raos_generation += 1;
-        let gen = self.perf_raos_generation;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.perf_raos_worker = Some(rx);
-
-        std::thread::spawn(move || {
-            let rep = compute_raos_with_sea(&surface, &spec, sea.as_ref());
-            let _ = tx.send((gen, rep));
+        let key = self.raos_key();
+        self.raos_track.start(key, move || {
+            compute_raos_with_sea(&surface, &spec, sea.as_ref())
         });
     }
 
@@ -3788,10 +4081,10 @@ impl App {
 
     pub fn set_performance_results(&mut self, res: ResistanceResult, raos: SeakeepingReport) {
         self.perf_state.resistance = Some(res);
-        self.perf_state.resistance_stale = false;
+        self.resistance_track.stamp(self.resistance_key());
         self.perf_state.raos = Some(raos);
         self.perf_state.sea_result = None;
-        self.perf_state.raos_stale = false;
+        self.raos_track.stamp(self.raos_key());
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {
@@ -3845,6 +4138,7 @@ impl App {
     #[doc(hidden)]
     pub fn project_mut_for_test(&mut self) -> &mut Project {
         self.dirty = true;
+        self.project_changed();
         &mut self.project
     }
 
@@ -3875,18 +4169,27 @@ impl App {
         self.hydro.result.as_ref()
     }
 
-    /// Recompute now, without waiting for the debounce (test hook).
+    /// Recompute now on this thread, without waiting for the debounce or a
+    /// job (tests and the control channel). A running job is superseded.
     pub fn recompute_hydrostatics(&mut self) {
-        self.refresh_hydro(true);
+        let Some(surface) = &self.surface else {
+            return;
+        };
+        let out = measure_hydro(&self.hydro.inputs(surface, self.level, self.mode));
+        self.install_hydro(out);
+        self.hydro.track.stamp(self.hydro_key());
     }
 
+    /// The floating condition, edited in place: the hydrostatics become out
+    /// of date.
     pub fn hydro_options_mut(&mut self) -> &mut HydroOptions {
+        self.hydro_inputs_changed();
         &mut self.hydro.options
     }
 
     pub fn set_kg(&mut self, kg: f64) {
         self.hydro.kg = kg;
-        self.hydro_dirty = true;
+        self.hydro_inputs_changed();
     }
 
     pub fn kg(&self) -> f64 {
@@ -3913,7 +4216,7 @@ impl App {
     pub fn set_free_trim(&mut self, free: bool, lcg: Option<f64>) {
         self.hydro.free_trim = free;
         self.hydro.lcg = lcg;
-        self.hydro_dirty = true;
+        self.hydro_inputs_changed();
     }
 
     pub fn free_trim(&self) -> bool {
@@ -3925,9 +4228,24 @@ impl App {
         self.hydro.curves.as_deref()
     }
 
-    /// Rebuild the GZ curves now instead of waiting for the dock button.
+    /// Rebuild the GZ curves now, on this thread, instead of waiting for
+    /// the dock button's job (tests and the control channel).
     pub fn compute_cross_curves(&mut self) {
-        self.compute_curves();
+        let Some(inputs) = self.curves_inputs() else {
+            return;
+        };
+        let key = self.hydro_key();
+        let out = compute_cross_curves_for(inputs);
+        if out.curves.is_none() {
+            // Nothing floats: as before, the curves are left alone.
+            if let Some(h) = out.hydro {
+                self.install_hydro(h);
+                self.hydro.track.stamp(key);
+            }
+            return;
+        }
+        self.install_curves(out, key);
+        self.hydro.curves_track.stamp(key);
     }
 
     pub fn undo_len(&self) -> usize {

@@ -42,6 +42,7 @@ pub mod mesh;
 pub mod michell;
 pub mod offsets;
 pub mod optimize;
+mod par;
 pub mod parametric;
 pub mod planing;
 pub mod project;

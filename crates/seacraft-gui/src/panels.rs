@@ -462,6 +462,9 @@ const STRIP_UNIT_WIDTH: f32 = 16.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HydroAction {
     None,
+    /// The floating condition was edited: recompute after the debounce.
+    Changed,
+    /// Recompute now.
     Recompute,
     CrossCurves,
 }
@@ -475,9 +478,13 @@ pub struct HydroPanel<'a> {
     /// Longitudinal centre of gravity for the free-trim solve.
     pub lcg: &'a mut Option<f64>,
     pub result: Option<&'a Hydrostatics>,
-    /// The geometry changed and the report has not been rebuilt yet.
+    /// The report predates the last change of the model or the condition.
     pub stale: bool,
+    /// A hydrostatics or GZ-curves job is running.
+    pub busy: bool,
     pub curves: Option<&'a [CrossCurve]>,
+    /// The GZ curves predate the last change (F5 recomputes them).
+    pub curves_stale: bool,
 }
 
 /// The text and colour of a criteria badge: never colour alone. The colours
@@ -496,6 +503,43 @@ pub fn criteria_badge_style(passed: bool, stale: bool) -> (&'static str, egui::C
 pub fn criteria_badge(ui: &mut egui::Ui, passed: bool, stale: bool) -> egui::Response {
     let (text, colour) = criteria_badge_style(passed, stale);
     ui.label(egui::RichText::new(text).monospace().strong().color(colour))
+}
+
+/// The shared "out of date" chip: a result computed for inputs that have
+/// changed since. F5 recomputes it.
+pub fn stale_chip(ui: &mut egui::Ui) -> egui::Response {
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, theme::STALE))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(6, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("out of date — F5")
+                    .size(theme::SMALL_SIZE)
+                    .color(theme::STALE),
+            )
+        })
+        .response
+}
+
+/// Draw `add` with the stale look when `stale`: the chip first, then the
+/// content dimmed to [`theme::STALE_OPACITY`]. One look for every result.
+pub fn stale_section<R>(ui: &mut egui::Ui, stale: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        if stale {
+            stale_chip(ui);
+            ui.multiply_opacity(theme::STALE_OPACITY);
+        }
+        add(ui)
+    })
+    .inner
+}
+
+/// The dot on a dock tab whose results are out of date, at the top right of
+/// the tab's label.
+pub fn stale_dot(ui: &egui::Ui, tab: egui::Rect) {
+    ui.painter()
+        .circle_filled(tab.right_top() + egui::vec2(-3.0, 3.0), 2.5, theme::WARN);
 }
 
 /// One numeric readout: a quantity's name, its value at a fixed precision
@@ -879,9 +923,9 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         }
     });
     if changed {
-        action = HydroAction::Recompute;
+        action = HydroAction::Changed;
     }
-    if panel.stale {
+    if panel.busy {
         ui.horizontal(|ui| {
             ui.spinner();
             ui.small("recomputing…");
@@ -900,43 +944,48 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     ui.separator();
     ui.add_space(2.0);
 
-    match panel.result {
-        Some(h) if h.volume_m3 > 0.0 => {
-            let [form, centres, stability, areas] = hydrostatic_groups(h, *panel.kg);
-            if two_columns {
-                // Side by side, so SAC and the cross curves stay above the
-                // fold at 1600 × 1000.
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    grouped_grid(ui, "hydro_readouts", &[form, centres], true);
-                    grouped_grid(ui, "hydro_readouts_2", &[stability, areas], true);
-                });
-            } else {
-                grouped_readouts(ui, "hydro_readouts", &[form, centres, stability, areas]);
+    let kg = *panel.kg;
+    stale_section(ui, panel.stale && panel.result.is_some(), |ui| {
+        match panel.result {
+            Some(h) if h.volume_m3 > 0.0 => {
+                let [form, centres, stability, areas] = hydrostatic_groups(h, kg);
+                if two_columns {
+                    // Side by side, so SAC and the cross curves stay above the
+                    // fold at 1600 × 1000.
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        grouped_grid(ui, "hydro_readouts", &[form, centres], true);
+                        grouped_grid(ui, "hydro_readouts_2", &[stability, areas], true);
+                    });
+                } else {
+                    grouped_readouts(ui, "hydro_readouts", &[form, centres, stability, areas]);
+                }
+                ui.add_space(2.0);
+                plot_sac(ui, h);
+                for warning in &h.warnings {
+                    ui.colored_label(theme::FAIL, &warning.message);
+                }
+                if h.gm(kg) < 0.0 {
+                    ui.colored_label(theme::FAIL, "negative GM: the hull is unstable upright");
+                }
             }
-            ui.add_space(2.0);
-            plot_sac(ui, h);
-            for warning in &h.warnings {
-                ui.colored_label(theme::FAIL, &warning.message);
+            Some(_) => {
+                ui.colored_label(theme::WARN, "nothing is submerged at this draft");
             }
-            if h.gm(*panel.kg) < 0.0 {
-                ui.colored_label(theme::FAIL, "negative GM: the hull is unstable upright");
+            None => {
+                ui.small("no measurement yet");
             }
         }
-        Some(_) => {
-            ui.colored_label(theme::WARN, "nothing is submerged at this draft");
-        }
-        None => {
-            ui.small("no measurement yet");
-        }
-    }
+    });
 
     if let Some(curves) = panel.curves {
         // No criteria verdict here: these curves are the bare hull at the
         // dock KG over a synthetic ±30 % displacement range, not a condition
         // anyone defined. The per-criterion table lives in Loading.
         ui.separator();
-        plot_cross_curves(ui, curves, *panel.kg);
+        stale_section(ui, panel.curves_stale, |ui| {
+            plot_cross_curves(ui, curves, kg);
+        });
     }
     action
 }
@@ -1303,6 +1352,11 @@ pub struct PerformancePanel<'a> {
     pub kg_source: &'static str,
     pub busy_resistance: bool,
     pub busy_raos: bool,
+    /// The resistance curve predates the last change (recomputed
+    /// automatically).
+    pub stale_resistance: bool,
+    /// The RAOs and sea-state responses predate the last change (F5).
+    pub stale_raos: bool,
 }
 
 pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
@@ -1311,7 +1365,6 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     ui.add_space(4.0);
 
     let is_busy = panel.busy_resistance || panel.busy_raos;
-    let is_stale = panel.state.resistance_stale || panel.state.raos_stale;
 
     ui.horizontal(|ui| {
         let btn = ui.add_enabled(!is_busy, egui::Button::new("Compute"));
@@ -1327,8 +1380,6 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
             } else {
                 ui.label("Computing RAOs…");
             }
-        } else if is_stale {
-            ui.colored_label(theme::WARN, "Results out of date");
         }
     });
 
@@ -1381,28 +1432,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     });
 
     if let Some(res) = &panel.state.resistance {
-        for w in &res.warnings {
-            ui.colored_label(theme::WARN, format!("⚠ {w}"));
-        }
-
-        let series = vec![(
-            res.method.clone(),
-            res.rows.iter().map(|r| (r.speed_kn, r.rt_kn)).collect(),
-        )];
-        plot_xy(ui, "Resistance", "Speed (kn)", &res.rt_label, &series);
-
-        ui.add_space(2.0);
-        let (rt, rt_unit) = split_unit(&res.rt_label);
-        eng_table(
-            ui,
-            &[
-                EngColumn::number("V", "kn"),
-                EngColumn::number("Fn", ""),
-                EngColumn::number(rt, rt_unit),
-                EngColumn::number("P_E", "kW"),
-            ],
-            &resistance_table(res),
-        );
+        stale_section(ui, panel.stale_resistance, |ui| resistance_results(ui, res));
     }
 
     ui.add_space(4.0);
@@ -1464,75 +1494,109 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     });
 
     if let Some(rep) = &panel.state.raos {
-        let tn_heave = if rep.natural_heave_omega > 1e-4 {
-            format!(
-                "{:.2} s",
-                2.0 * std::f64::consts::PI / rep.natural_heave_omega
-            )
-        } else {
-            "-".to_string()
-        };
-        let tn_pitch = if rep.natural_pitch_omega > 1e-4 {
-            format!(
-                "{:.2} s",
-                2.0 * std::f64::consts::PI / rep.natural_pitch_omega
-            )
-        } else {
-            "-".to_string()
-        };
-        ui.label(format!(
-            "Natural periods: Heave T_n = {}, Pitch T_n = {}",
-            tn_heave, tn_pitch
-        ));
-
-        for w in &rep.warnings {
-            ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
-        }
-
-        // A sea-state run puts the RAOs on the spectrum's ω grid, which can reach
-        // λ/L > 100; past a few hull lengths both curves are flat at 1 and only
-        // squash the interesting part, so the plot stops at λ/L = 5.
-        const PLOT_LAMBDA_MAX: f64 = 5.0;
-        let shown = rep
-            .frequencies
-            .iter()
-            .filter(|p| p.lambda_over_l <= PLOT_LAMBDA_MAX)
-            .count();
-        let in_plot = |p: &&seacraft_core::seakeeping::RaoPoint| {
-            shown < 3 || p.lambda_over_l <= PLOT_LAMBDA_MAX
-        };
-        let heave_pts: Vec<(f64, f64)> = rep
-            .frequencies
-            .iter()
-            .filter(in_plot)
-            .map(|p| (p.lambda_over_l, p.heave_amp))
-            .collect();
-        let pitch_pts: Vec<(f64, f64)> = rep
-            .frequencies
-            .iter()
-            .filter(in_plot)
-            .map(|p| (p.lambda_over_l, p.pitch_amp))
-            .collect();
-        let series = vec![
-            ("Heave z/ζ".to_string(), heave_pts),
-            ("Pitch θ/kζ".to_string(), pitch_pts),
-        ];
-        plot_xy(ui, "Motion RAOs", "λ / L", "RAO", &series);
+        stale_section(ui, panel.stale_raos, |ui| rao_results(ui, rep));
     }
 
     ui.add_space(4.0);
     ui.separator();
-    if sea_state_section(ui, panel.state) {
+    if sea_state_section(ui, panel.state, panel.stale_raos) {
         action = PerformanceAction::Changed;
     }
 
     action
 }
 
+/// The resistance curve and its table.
+fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult) {
+    for w in &res.warnings {
+        ui.colored_label(theme::WARN, format!("⚠ {w}"));
+    }
+
+    let series = vec![(
+        res.method.clone(),
+        res.rows.iter().map(|r| (r.speed_kn, r.rt_kn)).collect(),
+    )];
+    plot_xy(ui, "Resistance", "Speed (kn)", &res.rt_label, &series);
+
+    ui.add_space(2.0);
+    let (rt, rt_unit) = split_unit(&res.rt_label);
+    eng_table(
+        ui,
+        &[
+            EngColumn::number("V", "kn"),
+            EngColumn::number("Fn", ""),
+            EngColumn::number(rt, rt_unit),
+            EngColumn::number("P_E", "kW"),
+        ],
+        &resistance_table(res),
+    );
+}
+
+/// The natural periods and the motion RAO plot.
+fn rao_results(ui: &mut egui::Ui, rep: &seacraft_core::seakeeping::SeakeepingReport) {
+    let tn_heave = if rep.natural_heave_omega > 1e-4 {
+        format!(
+            "{:.2} s",
+            2.0 * std::f64::consts::PI / rep.natural_heave_omega
+        )
+    } else {
+        "-".to_string()
+    };
+    let tn_pitch = if rep.natural_pitch_omega > 1e-4 {
+        format!(
+            "{:.2} s",
+            2.0 * std::f64::consts::PI / rep.natural_pitch_omega
+        )
+    } else {
+        "-".to_string()
+    };
+    ui.label(format!(
+        "Natural periods: Heave T_n = {}, Pitch T_n = {}",
+        tn_heave, tn_pitch
+    ));
+
+    for w in &rep.warnings {
+        ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
+    }
+
+    // A sea-state run puts the RAOs on the spectrum's ω grid, which can reach
+    // λ/L > 100; past a few hull lengths both curves are flat at 1 and only
+    // squash the interesting part, so the plot stops at λ/L = 5.
+    const PLOT_LAMBDA_MAX: f64 = 5.0;
+    let shown = rep
+        .frequencies
+        .iter()
+        .filter(|p| p.lambda_over_l <= PLOT_LAMBDA_MAX)
+        .count();
+    let in_plot =
+        |p: &&seacraft_core::seakeeping::RaoPoint| shown < 3 || p.lambda_over_l <= PLOT_LAMBDA_MAX;
+    let heave_pts: Vec<(f64, f64)> = rep
+        .frequencies
+        .iter()
+        .filter(in_plot)
+        .map(|p| (p.lambda_over_l, p.heave_amp))
+        .collect();
+    let pitch_pts: Vec<(f64, f64)> = rep
+        .frequencies
+        .iter()
+        .filter(in_plot)
+        .map(|p| (p.lambda_over_l, p.pitch_amp))
+        .collect();
+    let series = vec![
+        ("Heave z/ζ".to_string(), heave_pts),
+        ("Pitch θ/kζ".to_string(), pitch_pts),
+    ];
+    plot_xy(ui, "Motion RAOs", "λ / L", "RAO", &series);
+}
+
 /// The Performance tab's "Sea state" section: spectrum input, response points and
 /// (after Compute) the significant-response table with MSI. Returns whether an input
 /// changed (the results are then out of date).
-fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState) -> bool {
+fn sea_state_section(
+    ui: &mut egui::Ui,
+    state: &mut crate::app::PerformanceState,
+    stale: bool,
+) -> bool {
     use crate::app::{SeaPoint, SeaPointPos, SeaSpectrumKind, SeaStateInput};
     let mut changed = false;
     ui.strong("Sea state (irregular head seas)");
@@ -1652,12 +1716,16 @@ fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState
         }
     }
 
-    let stale = state.raos_stale;
     if let Some(r) = &state.sea_result {
         ui.add_space(4.0);
-        if stale {
-            ui.colored_label(theme::WARN, "Sea-state results out of date");
-        }
+        stale_section(ui, stale, |ui| sea_state_results(ui, r));
+    }
+    changed
+}
+
+/// The irregular-sea responses: spectrum, significant motions, MSI.
+fn sea_state_results(ui: &mut egui::Ui, r: &seacraft_core::seastate::IrregularReport) {
+    {
         let sea = match r.sea {
             seacraft_core::seastate::WaveSpectrum::Bretschneider { hs, tp } => {
                 format!("Bretschneider Hs {hs:.2} m, Tp {tp:.2} s")
@@ -1728,7 +1796,6 @@ fn sea_state_section(ui: &mut egui::Ui, state: &mut crate::app::PerformanceState
              (O'Hanlon & McCauley 1974).",
         );
     }
-    changed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2241,14 +2308,17 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         if panel.busy {
             ui.spinner();
             ui.label("computing…");
-        } else if panel.stale {
-            ui.colored_label(theme::WARN, "stale — press Compute");
         }
     });
 
     // Results
     if let Some(r) = panel.result {
         ui.separator();
+        if panel.stale {
+            stale_chip(ui);
+            // The results close the panel: the dimming ends with it.
+            ui.multiply_opacity(theme::STALE_OPACITY);
+        }
         ui.heading("Damaged equilibrium");
         if !r.equilibrium_found {
             ui.colored_label(
@@ -3562,14 +3632,17 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         if panel.busy {
             ui.spinner();
             ui.label("computing…");
-        } else if panel.stale {
-            ui.colored_label(theme::WARN, "stale — press Compute");
         }
     });
 
     // Results
     if let Some(r) = panel.result {
         ui.separator();
+        if panel.stale {
+            stale_chip(ui);
+            // The results close the panel: the dimming ends with it.
+            ui.multiply_opacity(theme::STALE_OPACITY);
+        }
         ui.heading("Equilibrium & hydrostatics");
         readouts(ui, "loading_readouts", &loading_rows(r));
 
@@ -3900,6 +3973,11 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     ui.add_space(8.0);
     ui.separator();
     if let Some(w) = panel.weather {
+        if panel.stale {
+            stale_chip(ui);
+            // The summary closes the panel: the dimming ends with it.
+            ui.multiply_opacity(theme::STALE_OPACITY);
+        }
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Weather criterion summary (§2.3)").strong());
             criteria_badge(ui, w.passed, panel.stale);
@@ -4961,7 +5039,9 @@ mod tests {
                         lcg: &mut lcg,
                         result: Some(&h),
                         stale: false,
+                        busy: false,
                         curves: Some(&curves),
+                        curves_stale: false,
                     },
                 );
             });
@@ -5118,7 +5198,9 @@ mod tests {
                                         lcg: &mut lcg,
                                         result: Some(&h),
                                         stale: false,
+                                        busy: false,
                                         curves: None,
+                                        curves_stale: false,
                                     },
                                 );
                             });

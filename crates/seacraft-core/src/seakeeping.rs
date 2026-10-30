@@ -1006,42 +1006,6 @@ fn resample_contour(pts: &[(f64, f64)], count: usize) -> Vec<(f64, f64)> {
     resampled
 }
 
-/// `items.iter().map(f).collect()` on every available core, order kept.
-/// Workers take one item at a time, so uneven costs still balance.
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(items.len());
-    if threads <= 1 {
-        return items.iter().map(f).collect();
-    }
-    let next = AtomicUsize::new(0);
-    let (next, f) = (&next, &f);
-    let mut tagged: Vec<(usize, R)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..threads)
-            .map(|_| {
-                scope.spawn(move || {
-                    let mut out = Vec::new();
-                    loop {
-                        let k = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(item) = items.get(k) else { break };
-                        out.push((k, f(item)));
-                    }
-                    out
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("seakeeping worker panicked"))
-            .collect()
-    });
-    tagged.sort_unstable_by_key(|(k, _)| *k);
-    tagged.into_iter().map(|(_, r)| r).collect()
-}
-
 fn trapz(xs: &[f64], ys: &[f64]) -> f64 {
     let mut sum = 0.0;
     for i in 0..xs.len().saturating_sub(1) {
@@ -1233,7 +1197,7 @@ pub(crate) fn head_sea_raos_detailed(
             sec.valid && sec.area >= 1e-6 && sec.half_beam >= 1e-4 && sec.draft >= 1e-4
         })
         .collect();
-    let solved = par_map(&jobs, |&(j, i)| {
+    let solved = crate::par::par_map(&jobs, |&(j, i)| {
         let w = omegas[j];
         let w_e = w + w * w * u_speed / spec.g;
         heave_2d_section(&station_contours[i].1.contour, w_e, spec.rho, spec.g)

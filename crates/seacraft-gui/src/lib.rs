@@ -8,6 +8,7 @@ pub mod camera;
 pub mod commands;
 pub mod control;
 pub mod history;
+pub mod jobs;
 pub mod new_design;
 pub mod panels;
 pub mod picking;
