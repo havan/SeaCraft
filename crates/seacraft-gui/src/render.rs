@@ -5,6 +5,8 @@
 //! viewport draws, in order, a background, a 1 m grid, the refined hull, the
 //! control net, the control points, the waterplane and a caption.
 
+use std::sync::Arc;
+
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 use seacraft_core::analysis::AnalysisMode;
 use seacraft_core::export::{self, RenderMesh};
@@ -125,11 +127,12 @@ pub fn viewport(
     active: bool,
     selected: Option<usize>,
 ) {
-    viewport_with_texture(ui, rect, camera, scene, opts, active, selected, None)
+    viewport_with_texture(ui, rect, camera, scene, opts, active, selected, None, None)
 }
 
 /// Draw a viewport, optionally using `texture` (a rasterizer frame) in place
-/// of the painter's shaded hull.
+/// of the painter's shaded hull, or `hull`, the [`shaded_hull`] mesh built
+/// for this view on an earlier frame.
 #[allow(clippy::too_many_arguments)]
 pub fn viewport_with_texture(
     ui: &mut egui::Ui,
@@ -140,6 +143,7 @@ pub fn viewport_with_texture(
     active: bool,
     selected: Option<usize>,
     texture: Option<&egui::TextureHandle>,
+    hull: Option<Arc<egui::Mesh>>,
 ) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::CANVAS);
@@ -176,7 +180,7 @@ pub fn viewport_with_texture(
         }
         None => {
             if opts.shaded || opts.wireframe {
-                draw_hull(&painter, &view, rect, scene, opts);
+                draw_hull(&painter, &view, rect, scene, opts, hull);
             }
         }
     }
@@ -490,88 +494,120 @@ fn draw_combs(
     }
 }
 
+/// The flat-shaded hull as one triangle mesh, farthest face first, for the
+/// painter. It depends only on the refined mesh, the layer colours and the
+/// view, so a viewport keeps it while none of them change ([`hull_key`]).
+pub fn shaded_hull(view: &ViewTransform, rect: Rect, scene: &Scene) -> egui::Mesh {
+    let mesh = scene.mesh;
+    let mut tri_mesh = egui::Mesh::default();
+    if mesh.faces.is_empty() {
+        return tri_mesh;
+    }
+    // A key light from over the viewer's shoulder: the hull reads as a
+    // solid form instead of a silhouette.
+    let light = (-view.forward + view.up * 0.45 + view.right * 0.35).norm();
+    let mut items: Vec<(f64, Vec<Pos2>, Color32)> = Vec::with_capacity(mesh.faces.len());
+    let mut poly: Vec<Vec3> = Vec::new();
+    for (fi, f) in mesh.faces.iter().enumerate() {
+        if f.len() < 3 {
+            continue;
+        }
+        let mut pts: Vec<Pos2> = Vec::with_capacity(f.len());
+        let mut center = Vec3::ZERO;
+        let mut depth = 0.0;
+        let mut complete = true;
+        for &i in f {
+            match view.project(mesh.verts[i], rect) {
+                Some(p) => pts.push(p),
+                None => {
+                    complete = false;
+                    break;
+                }
+            }
+            center += mesh.verts[i];
+            depth += (mesh.verts[i] - view.eye).dot(view.forward);
+        }
+        if !complete {
+            continue;
+        }
+        let n = f.len() as f64;
+        center = center / n;
+        depth /= n;
+
+        poly.clear();
+        poly.extend(f.iter().map(|&i| mesh.verts[i]));
+        let normal = export::newell_normal(&poly);
+        if normal.length() < 1e-12 {
+            continue;
+        }
+        let normal = normal.norm();
+        let to_eye = if view.perspective {
+            (view.eye - center).norm()
+        } else {
+            -view.forward
+        };
+        // Render both sides of open hull shells (such as the top-down Plan view),
+        // dimming the interior slightly so the outside remains distinct.
+        let facing = normal.dot(to_eye);
+        let side_factor = if facing >= 0.0 { 1.0 } else { 0.82 };
+
+        let base = layer_color(scene.surface, mesh.face_layer.get(fi).copied());
+        let shade = ((0.35 + 0.65 * normal.dot(light).abs()) * side_factor) as f32;
+        items.push((depth, pts, base.gamma_multiply(shade)));
+    }
+    // Painter's algorithm: farthest face first, emitted into one triangle
+    // mesh so epaint's path miter-join extruder never shoots spikes on
+    // near-silhouette faces.
+    items.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for (_, pts, color) in items {
+        if pts.len() < 3 {
+            continue;
+        }
+        let base_idx = tri_mesh.vertices.len() as u32;
+        for &p in &pts {
+            tri_mesh.colored_vertex(p, color);
+        }
+        for k in 1..(pts.len() as u32 - 1) {
+            tri_mesh.add_triangle(base_idx, base_idx + k, base_idx + k + 1);
+        }
+    }
+    tri_mesh
+}
+
+/// The key a [`shaded_hull`] mesh is kept under: the view and the mesh
+/// `stamp` ([`frame_key`]), where the cell sits on screen (the mesh is in
+/// screen coordinates) and the layer colours.
+pub fn hull_key(
+    stamp: u64,
+    camera: &Camera,
+    rect: Rect,
+    scene: &Scene,
+    opts: &DisplayOptions,
+) -> u64 {
+    let mut h = frame_key(stamp, camera, rect, scene, opts);
+    mix(&mut h, rect.min.x as f64);
+    mix(&mut h, rect.min.y as f64);
+    for layer in &scene.surface.layers {
+        mix(&mut h, layer.color as f64);
+    }
+    h
+}
+
 fn draw_hull(
     painter: &egui::Painter,
     view: &ViewTransform,
     rect: Rect,
     scene: &Scene,
     opts: &DisplayOptions,
+    hull: Option<Arc<egui::Mesh>>,
 ) {
     let mesh = scene.mesh;
 
     // ---- flat-shaded faces ------------------------------------------------
-    if opts.shaded && !mesh.faces.is_empty() {
-        // A key light from over the viewer's shoulder: the hull reads as a
-        // solid form instead of a silhouette.
-        let light = (-view.forward + view.up * 0.45 + view.right * 0.35).norm();
-        let mut items: Vec<(f64, Vec<Pos2>, Color32)> = Vec::with_capacity(mesh.faces.len());
-        let mut poly: Vec<Vec3> = Vec::new();
-        for (fi, f) in mesh.faces.iter().enumerate() {
-            if f.len() < 3 {
-                continue;
-            }
-            let mut pts: Vec<Pos2> = Vec::with_capacity(f.len());
-            let mut center = Vec3::ZERO;
-            let mut depth = 0.0;
-            let mut complete = true;
-            for &i in f {
-                match view.project(mesh.verts[i], rect) {
-                    Some(p) => pts.push(p),
-                    None => {
-                        complete = false;
-                        break;
-                    }
-                }
-                center += mesh.verts[i];
-                depth += (mesh.verts[i] - view.eye).dot(view.forward);
-            }
-            if !complete {
-                continue;
-            }
-            let n = f.len() as f64;
-            center = center / n;
-            depth /= n;
-
-            poly.clear();
-            poly.extend(f.iter().map(|&i| mesh.verts[i]));
-            let normal = export::newell_normal(&poly);
-            if normal.length() < 1e-12 {
-                continue;
-            }
-            let normal = normal.norm();
-            let to_eye = if view.perspective {
-                (view.eye - center).norm()
-            } else {
-                -view.forward
-            };
-            // Render both sides of open hull shells (such as the top-down Plan view),
-            // dimming the interior slightly so the outside remains distinct.
-            let facing = normal.dot(to_eye);
-            let side_factor = if facing >= 0.0 { 1.0 } else { 0.82 };
-
-            let base = layer_color(scene.surface, mesh.face_layer.get(fi).copied());
-            let shade = ((0.35 + 0.65 * normal.dot(light).abs()) * side_factor) as f32;
-            items.push((depth, pts, base.gamma_multiply(shade)));
-        }
-        // Painter's algorithm: farthest face first, emitted into one triangle
-        // mesh so epaint's path miter-join extruder never shoots spikes on
-        // near-silhouette faces.
-        items.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut tri_mesh = egui::Mesh::default();
-        for (_, pts, color) in items {
-            if pts.len() < 3 {
-                continue;
-            }
-            let base_idx = tri_mesh.vertices.len() as u32;
-            for &p in &pts {
-                tri_mesh.colored_vertex(p, color);
-            }
-            for k in 1..(pts.len() as u32 - 1) {
-                tri_mesh.add_triangle(base_idx, base_idx + k, base_idx + k + 1);
-            }
-        }
-        if !tri_mesh.is_empty() {
-            painter.add(egui::Shape::mesh(tri_mesh));
+    if opts.shaded {
+        let hull = hull.unwrap_or_else(|| Arc::new(shaded_hull(view, rect, scene)));
+        if !hull.is_empty() {
+            painter.add(egui::Shape::Mesh(hull));
         }
     }
 
@@ -653,22 +689,18 @@ fn draw_points(
     }
 }
 
-/// A hash of everything a rasterized frame depends on, so the texture is only
-/// rebuilt when the model, the camera, the viewport size or the mode changes.
-pub fn frame_key(
-    revision: u64,
-    camera: &Camera,
-    rect: Rect,
-    scene: &Scene,
-    opts: &DisplayOptions,
-) -> u64 {
-    fn mix(h: &mut u64, x: f64) {
-        *h ^= x.to_bits();
-        *h = h.wrapping_mul(0x0100_0000_01b3);
-    }
+fn mix(h: &mut u64, x: f64) {
+    *h ^= x.to_bits();
+    *h = h.wrapping_mul(0x0100_0000_01b3);
+}
+
+/// A hash of what one view's rasterized frame looks like from: the camera,
+/// the viewport size, the analysis mode and the waterplane. It leaves out the
+/// model, so a view whose camera did not move can keep its frame while the
+/// geometry is being dragged in another view.
+pub fn view_key(camera: &Camera, rect: Rect, scene: &Scene, opts: &DisplayOptions) -> u64 {
     let view = camera.transform();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    mix(&mut h, revision as f64);
     mix(&mut h, rect.width() as f64);
     mix(&mut h, rect.height() as f64);
     for p in [view.eye, view.right, view.up, view.forward] {
@@ -694,6 +726,21 @@ pub fn frame_key(
         mix(&mut h, scene.trim);
         mix(&mut h, scene.heel_deg);
     }
+    h
+}
+
+/// A hash of everything a rasterized frame depends on, so the texture is only
+/// rebuilt when the model, the camera, the viewport size or the mode changes:
+/// the [`view_key`] plus `revision`, the stamp of the refined mesh drawn.
+pub fn frame_key(
+    revision: u64,
+    camera: &Camera,
+    rect: Rect,
+    scene: &Scene,
+    opts: &DisplayOptions,
+) -> u64 {
+    let mut h = view_key(camera, rect, scene, opts);
+    mix(&mut h, revision as f64);
     h
 }
 
@@ -723,6 +770,24 @@ pub fn raster_view(view: &ViewTransform, width: usize, height: usize) -> raster:
     }
 }
 
+/// The rasterizer's background gradient, top and bottom.
+const RASTER_BACKGROUND: ([f64; 3], [f64; 3]) = (
+    [
+        0x13 as f64 / 255.0,
+        0x19 as f64 / 255.0,
+        0x21 as f64 / 255.0,
+    ],
+    [
+        0x0d as f64 / 255.0,
+        0x12 as f64 / 255.0,
+        0x18 as f64 / 255.0,
+    ],
+);
+
+/// The waterplane tint the rasterizer lays over the background (away from
+/// the hull) in a perspective view, and its opacity (`raster::render`).
+const RASTER_WATERPLANE_TINT: ([f64; 3], f64) = ([48.0, 108.0, 184.0], 0.22);
+
 /// Render one viewport with the CPU rasterizer. Returns the RGBA pixels.
 pub fn raster_frame(
     view: &ViewTransform,
@@ -736,18 +801,7 @@ pub fn raster_frame(
         width,
         height,
         mode,
-        background: (
-            [
-                0x13 as f64 / 255.0,
-                0x19 as f64 / 255.0,
-                0x21 as f64 / 255.0,
-            ],
-            [
-                0x0d as f64 / 255.0,
-                0x12 as f64 / 255.0,
-                0x18 as f64 / 255.0,
-            ],
-        ),
+        background: RASTER_BACKGROUND,
         supersample: 1,
         wireframe: false,
         two_sided: true,
@@ -762,6 +816,53 @@ pub fn raster_frame(
         &opts,
     );
     (canvas.w, canvas.h, canvas.rgba)
+}
+
+/// A viewport's analysis frame: [`raster_frame`] with the background made
+/// see-through, so the grid drawn under it shows around the hull as it does
+/// in the shaded mode.
+pub fn analysis_image(
+    view: &ViewTransform,
+    scene: &Scene,
+    mode: AnalysisMode,
+    waterplane: bool,
+    width: usize,
+    height: usize,
+) -> (usize, usize, Vec<u8>) {
+    let (w, h, mut rgba) = raster_frame(view, scene, mode, waterplane, width, height);
+    clear_background(w, h, &mut rgba);
+    (w, h, rgba)
+}
+
+/// Clear the rasterizer's background. A pixel is background when it carries
+/// exactly its row's gradient colour (the rasterizer's own formula, one
+/// sample per pixel); where the perspective waterplane tinted the background,
+/// the tint keeps its own opacity. A hull pixel would have to match the
+/// gradient in all three channels to be lost, and then shows the canvas.
+fn clear_background(w: usize, h: usize, rgba: &mut [u8]) {
+    let (top, bottom) = RASTER_BACKGROUND;
+    let (tint, alpha) = RASTER_WATERPLANE_TINT;
+    let tint_rgba = [
+        tint[0] as u8,
+        tint[1] as u8,
+        tint[2] as u8,
+        (alpha * 255.0).round() as u8,
+    ];
+    for (y, row) in rgba.chunks_exact_mut(w.max(1) * 4).take(h).enumerate() {
+        let t = y as f64 / h.max(1) as f64;
+        let bg: [u8; 3] = std::array::from_fn(|k| {
+            ((top[k] + (bottom[k] - top[k]) * t).clamp(0.0, 1.0) * 255.0).round() as u8
+        });
+        let tinted: [u8; 3] =
+            std::array::from_fn(|k| (bg[k] as f64 * (1.0 - alpha) + tint[k] * alpha).round() as u8);
+        for px in row.as_chunks_mut::<4>().0 {
+            if px[..3] == bg {
+                px[3] = 0;
+            } else if px[..3] == tinted {
+                px.copy_from_slice(&tint_rgba);
+            }
+        }
+    }
 }
 
 /// Screen-space rectangle of a viewport inside `rect`, split 2×2.
@@ -1165,6 +1266,62 @@ mod tests {
         }
         assert!(captions.iter().any(|(t, _)| t == "Profile"));
         assert!(captions.iter().any(|(t, _)| t.ends_with("m/px")));
+    }
+
+    #[test]
+    fn an_analysis_image_is_see_through_around_the_hull_only() {
+        let s = seacraft_core::demo::demo_hull(false);
+        let mesh = export::render_mesh(&s, 1, Default::default());
+        let (min, max) = s.extents();
+        let scene = Scene {
+            surface: &s,
+            mesh: &mesh,
+            curves: None,
+            volumes: &[],
+            windage: &[],
+            min,
+            max,
+            draft: 0.62,
+            trim: 0.0,
+            heel_deg: 0.0,
+        };
+        let zebra = AnalysisMode::Zebra { stripes: 14.0 };
+        let alpha = |rgba: &[u8], w: usize, x: usize, y: usize| rgba[(y * w + x) * 4 + 3];
+
+        let mut camera = Camera::new(ViewKind::Profile, (min + max) * 0.5, max - min);
+        camera.frame(min, max);
+        let (w, h, rgba) = analysis_image(&camera.transform(), &scene, zebra, false, 160, 100);
+        let (_, _, opaque) = raster_frame(&camera.transform(), &scene, zebra, false, 160, 100);
+        assert_eq!(alpha(&rgba, w, 1, 1), 0, "the background is cleared");
+        assert_eq!(alpha(&rgba, w, w - 2, h - 2), 0);
+        assert_eq!(alpha(&rgba, w, w / 2, h / 2), 255, "the hull is opaque");
+        // The colours are the rasterizer's own wherever a pixel stays opaque.
+        for (a, b) in rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(opaque.as_chunks::<4>().0)
+        {
+            if a[3] == 255 {
+                assert_eq!(a, b);
+            }
+        }
+
+        // In perspective the waterplane around the hull keeps its tint, at
+        // its own opacity, over the grid.
+        let mut camera = Camera::new(ViewKind::Perspective, (min + max) * 0.5, max - min);
+        camera.frame(min, max);
+        let (_, _, rgba) = analysis_image(&camera.transform(), &scene, zebra, true, 160, 100);
+        let tinted = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] == 56)
+            .count();
+        assert!(
+            tinted > 100,
+            "{tinted} waterplane pixels over the background"
+        );
     }
 
     #[test]

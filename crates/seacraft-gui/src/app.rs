@@ -6,6 +6,7 @@
 //! delegation.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui;
 use seacraft_core::damage::DamageResult;
@@ -33,8 +34,19 @@ struct RenderCache {
     mode: SubdivisionMode,
     mesh: RenderMesh,
     curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
+    /// The curves were carried over from before a drag began: they are
+    /// rebuilt on release, not on every drag frame.
+    curves_stale: bool,
     min: Vec3,
     max: Vec3,
+}
+
+impl RenderCache {
+    /// Identifies the refined mesh: the revision it was built from and the
+    /// level (the drag preview refines less without a new revision).
+    fn stamp(&self) -> u64 {
+        (self.revision << 4) | u64::from(self.level)
+    }
 }
 
 /// Live hydrostatics: the floating condition, the last report and the hull
@@ -84,8 +96,45 @@ impl HydroState {
 
 /// One viewport's rasterized frame, kept until the geometry or camera moves.
 struct AnalysisFrame {
+    /// [`render::frame_key`]: the view and the mesh it was rastered from.
     key: u64,
+    /// [`render::view_key`]: the view alone. While a point is dragged in
+    /// another view, a frame whose view is unchanged is kept until release.
+    view_key: u64,
     texture: egui::TextureHandle,
+}
+
+/// A rasterized analysis image waiting to be uploaded as a texture.
+struct RasterImage {
+    /// The [`render::frame_key`] it was rastered for.
+    key: u64,
+    size: [usize; 2],
+    rgba: Vec<u8>,
+}
+
+impl RasterImage {
+    /// Rasterize `camera`'s analysis image at `cell`'s size.
+    fn render(
+        camera: &Camera,
+        cell: egui::Rect,
+        scene: &Scene,
+        display: &DisplayOptions,
+        key: u64,
+    ) -> Self {
+        let (w, h, rgba) = render::analysis_image(
+            &camera.transform(),
+            scene,
+            display.analysis,
+            display.waterplane,
+            cell.width().round().max(1.0) as usize,
+            cell.height().round().max(1.0) as usize,
+        );
+        Self {
+            key,
+            size: [w, h],
+            rgba,
+        }
+    }
 }
 
 /// A control point being dragged in one viewport.
@@ -600,6 +649,11 @@ pub struct App {
     toolbar_rects: Vec<(&'static str, egui::Rect)>,
     /// Rasterized frames for the analysis modes, one per viewport.
     analysis_frames: [Option<AnalysisFrame>; 4],
+    /// How many analysis frames each viewport has rasterized (test hook).
+    raster_counts: [u64; 4],
+    /// Each viewport's painter-shaded hull and the [`render::hull_key`] it
+    /// was built for.
+    shaded_hulls: [Option<(u64, Arc<egui::Mesh>)>; 4],
     /// Requests from the loopback control socket (`--control`), served once
     /// per frame by [`App::process_control`].
     control: Option<std::sync::mpsc::Receiver<crate::control::ControlRequest>>,
@@ -715,6 +769,8 @@ impl App {
             analysis_params: panels::AnalysisParams::default(),
             toolbar_rects: Vec::new(),
             analysis_frames: [None, None, None, None],
+            raster_counts: [0; 4],
+            shaded_hulls: Default::default(),
             control: None,
             synthetic: Vec::new(),
             control_roots: seacraft_core::control_auth::ControlRoots::default(),
@@ -892,19 +948,28 @@ impl App {
         if stale {
             let mesh = export::render_mesh(surface, level, self.mode);
             let (min, max) = surface.extents();
+            // Section curves and combs cost more than the refinement: a drag
+            // keeps the ones from before it and rebuilds them on release.
+            let carried = match self.drag {
+                Some(_) => self.cache.take().and_then(|c| c.curves),
+                None => None,
+            };
             self.cache = Some(RenderCache {
                 revision: self.revision,
                 level,
                 mode: self.mode,
                 mesh,
-                curves: None,
+                curves_stale: carried.is_some(),
+                curves: carried,
                 min,
                 max,
             });
         }
         if self.display.combs {
+            let dragging = self.drag.is_some();
             if let Some(cache) = self.cache.as_mut() {
-                if cache.curves.is_none() {
+                if cache.curves.is_none() || (cache.curves_stale && !dragging) {
+                    cache.curves_stale = false;
                     let opts = seacraft_core::linesplan::LinesplanOptions {
                         level,
                         mode: self.mode,
@@ -2113,6 +2178,7 @@ impl App {
         self.title_rects = [egui::Rect::NOTHING; 4];
         let mut toggle_maximise = false;
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
+        let mut fresh_hulls: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
         let overlays = self.volume_overlays();
         let mut volume_overlays: Vec<render::VolumeOverlay> =
             overlays.iter().map(|(_, o)| o.clone()).collect();
@@ -2124,6 +2190,11 @@ impl App {
             .enumerate()
             .filter_map(|(idx, item)| item.profile.map(|_| idx))
             .collect();
+        // Whether a point drag was under way when the frame began: views
+        // other than the dragged one keep their analysis frame until the
+        // frame after release, which refreshes all of them once.
+        let drag_view = self.drag.as_ref().map(|d| d.view);
+        let mut ready = self.raster_stale_views(&cells, &volume_overlays, &windage_overlays);
 
         for (cell, index) in cells {
             self.viewport_rects[index] = cell;
@@ -2259,67 +2330,66 @@ impl App {
                 self.cursor_world = None;
             }
 
-            if let (Some(surface), Some(cache)) = (&self.surface, &self.cache) {
-                let scene = Scene {
-                    surface,
-                    mesh: &cache.mesh,
-                    curves: cache.curves.as_ref(),
-                    volumes: &volume_overlays,
-                    windage: &windage_overlays,
-                    min: cache.min,
-                    max: cache.max,
-                    draft: self.hydro.options.draft,
-                    trim: self.hydro.options.trim,
-                    heel_deg: self.hydro.options.heel_deg,
-                };
+            if let Some(scene) = self.scene(&volume_overlays, &windage_overlays) {
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
                 // until the model, camera, size or mode changes.
-                let mode = self.display.analysis;
-                let texture = if mode.is_shaded() {
+                let texture = if self.display.analysis.is_shaded() {
                     None
                 } else {
-                    let key = render::frame_key(
-                        self.revision,
-                        &self.cameras[index],
-                        cell,
-                        &scene,
-                        &self.display,
-                    );
-                    if let Some(frame) = self.analysis_frames[index]
-                        .as_ref()
-                        .filter(|f| f.key == key)
-                    {
-                        Some(frame.texture.clone())
+                    let (key, view_key) = self.analysis_keys(index, cell, &scene);
+                    if self.frame_current(index, key, view_key, drag_view) {
+                        self.analysis_frames[index]
+                            .as_ref()
+                            .map(|f| f.texture.clone())
                     } else {
-                        let (w, h) = (
-                            cell.width().round().max(1.0) as usize,
-                            cell.height().round().max(1.0) as usize,
-                        );
-                        let (w, h, rgba) = render::raster_frame(
-                            &self.cameras[index].transform(),
-                            &scene,
-                            mode,
-                            self.display.waterplane,
-                            w,
-                            h,
-                        );
-                        let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                        // Rastered before the loop unless this view's camera
+                        // or mesh changed since.
+                        let image =
+                            ready[index]
+                                .take()
+                                .filter(|r| r.key == key)
+                                .unwrap_or_else(|| {
+                                    RasterImage::render(
+                                        &self.cameras[index],
+                                        cell,
+                                        &scene,
+                                        &self.display,
+                                        key,
+                                    )
+                                });
                         let texture = ui.ctx().load_texture(
                             format!("analysis-{index}"),
-                            image,
+                            egui::ColorImage::from_rgba_unmultiplied(image.size, &image.rgba),
                             egui::TextureOptions::LINEAR,
                         );
                         fresh.push((
                             index,
                             AnalysisFrame {
                                 key,
+                                view_key,
                                 texture: texture.clone(),
                             },
                         ));
                         Some(texture)
                     }
                 };
+                // The painter's shaded hull, kept while the view, the mesh
+                // and the layer colours stay the same.
+                let hull = (texture.is_none() && self.display.shaded).then(|| {
+                    let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
+                    let camera = &self.cameras[index];
+                    let key = render::hull_key(stamp, camera, cell, &scene, &self.display);
+                    match &self.shaded_hulls[index] {
+                        Some((k, hull)) if *k == key => hull.clone(),
+                        _ => {
+                            let hull =
+                                Arc::new(render::shaded_hull(&camera.transform(), cell, &scene));
+                            fresh_hulls.push((index, key, hull.clone()));
+                            hull
+                        }
+                    }
+                });
                 render::viewport_with_texture(
                     ui,
                     cell,
@@ -2329,6 +2399,7 @@ impl App {
                     self.active == index,
                     self.selected,
                     texture.as_ref(),
+                    hull,
                 );
             } else {
                 render::viewport(
@@ -2344,10 +2415,122 @@ impl App {
         }
         for (index, frame) in fresh {
             self.analysis_frames[index] = Some(frame);
+            self.raster_counts[index] += 1;
+        }
+        for (index, key, hull) in fresh_hulls {
+            self.shaded_hulls[index] = Some((key, hull));
         }
         if toggle_maximise {
             self.toggle_maximised();
         }
+    }
+
+    /// The scene the viewports draw, once a model is loaded and refined.
+    fn scene<'a>(
+        &'a self,
+        volumes: &'a [render::VolumeOverlay],
+        windage: &'a [render::WindageOverlay],
+    ) -> Option<Scene<'a>> {
+        let (surface, cache) = (self.surface.as_ref()?, self.cache.as_ref()?);
+        Some(Scene {
+            surface,
+            mesh: &cache.mesh,
+            curves: cache.curves.as_ref(),
+            volumes,
+            windage,
+            min: cache.min,
+            max: cache.max,
+            draft: self.hydro.options.draft,
+            trim: self.hydro.options.trim,
+            heel_deg: self.hydro.options.heel_deg,
+        })
+    }
+
+    /// View `index`'s analysis frame key and view key for `cell`.
+    fn analysis_keys(&self, index: usize, cell: egui::Rect, scene: &Scene) -> (u64, u64) {
+        let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
+        let camera = &self.cameras[index];
+        (
+            render::frame_key(stamp, camera, cell, scene, &self.display),
+            render::view_key(camera, cell, scene, &self.display),
+        )
+    }
+
+    /// Whether view `index`'s analysis frame can be shown as it is: it was
+    /// rastered for this view and mesh, or a point is being dragged in
+    /// another view (`drag_view`) and this view's camera has not moved.
+    fn frame_current(
+        &self,
+        index: usize,
+        key: u64,
+        view_key: u64,
+        drag_view: Option<usize>,
+    ) -> bool {
+        let keep = drag_view.is_some_and(|v| v != index);
+        self.analysis_frames[index]
+            .as_ref()
+            .is_some_and(|f| f.key == key || (keep && f.view_key == view_key))
+    }
+
+    /// Rasterize, in parallel, the analysis frames that are out of date as
+    /// the frame begins (a new mode, a resize, the refresh after a drag).
+    /// The view being dragged in is left to the loop, where its mesh
+    /// changes; a view whose camera moves this frame is rastered there too.
+    fn raster_stale_views(
+        &self,
+        cells: &[(egui::Rect, usize)],
+        volumes: &[render::VolumeOverlay],
+        windage: &[render::WindageOverlay],
+    ) -> [Option<RasterImage>; 4] {
+        let mut ready: [Option<RasterImage>; 4] = Default::default();
+        if self.display.analysis.is_shaded() {
+            return ready;
+        }
+        let Some(scene) = self.scene(volumes, windage) else {
+            return ready;
+        };
+        let drag_view = self.drag.as_ref().map(|d| d.view);
+        let stale: Vec<(egui::Rect, usize, u64)> = cells
+            .iter()
+            .filter(|&&(_, index)| drag_view != Some(index))
+            .filter_map(|&(cell, index)| {
+                let (key, view_key) = self.analysis_keys(index, cell, &scene);
+                (!self.frame_current(index, key, view_key, drag_view)).then_some((cell, index, key))
+            })
+            .collect();
+        let (cameras, display) = (&self.cameras, &self.display);
+        let images: Vec<(usize, RasterImage)> = if stale.len() < 2 {
+            stale
+                .iter()
+                .map(|&(cell, index, key)| {
+                    let image = RasterImage::render(&cameras[index], cell, &scene, display, key);
+                    (index, image)
+                })
+                .collect()
+        } else {
+            std::thread::scope(|s| {
+                let scene = &scene;
+                let jobs: Vec<_> = stale
+                    .iter()
+                    .map(|&(cell, index, key)| {
+                        s.spawn(move || {
+                            let camera = &cameras[index];
+                            (
+                                index,
+                                RasterImage::render(camera, cell, scene, display, key),
+                            )
+                        })
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .map(|job| job.join().expect("analysis raster thread"))
+                    .collect()
+            })
+        };
+        for (index, image) in images {
+            ready[index] = Some(image);
+        }
+        ready
     }
 
     fn pick_at(
@@ -2428,6 +2611,9 @@ impl App {
         self.dirty = true;
         self.revision += 1;
         self.touch_geometry();
+        // Refine now (at the drag level), so the dragged view shows the point
+        // under the cursor this frame instead of the next.
+        self.sync_cache();
     }
 
     /// Rebuild the hull and the report once the drag has ended and 120 ms have
@@ -3400,6 +3586,11 @@ impl App {
         self.analysis_frames[view].as_ref().map(|f| f.key)
     }
 
+    /// How many analysis frames each view has rasterized so far (test hook).
+    pub fn raster_counts(&self) -> [u64; 4] {
+        self.raster_counts
+    }
+
     pub fn subdivision_level(&self) -> u8 {
         self.level
     }
@@ -3421,9 +3612,24 @@ impl App {
         self.maximised
     }
 
-    /// Maximise the active view (`true`) or restore the four views.
+    /// Maximise the active view (`true`) or restore the four views. The view
+    /// that grows or shrinks back is refitted to its new cell, as F does.
     pub fn set_maximised(&mut self, maximised: bool) {
+        let before = self.maximised;
         self.maximised = maximised.then_some(self.active);
+        if self.maximised != before {
+            if let Some(view) = self.maximised.or(before) {
+                self.fit_view(view);
+            }
+        }
+    }
+
+    /// Frame the model in view `index` alone.
+    fn fit_view(&mut self, index: usize) {
+        if let Some(s) = &self.surface {
+            let (min, max) = s.extents();
+            self.cameras[index].frame(min, max);
+        }
     }
 
     /// Toolbar button, Ctrl+Space and a double-click on a view's title.
