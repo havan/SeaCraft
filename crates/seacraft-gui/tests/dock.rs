@@ -146,7 +146,7 @@ fn the_pinned_strip_shows_the_displacement_on_every_tab() {
         );
     }
     // Before any measurement the strip shows dashes, not zeros.
-    let empty = panels::live_strip_rows(None, 2.2);
+    let empty = panels::live_strip_rows(None, Some(2.2));
     assert!(empty.iter().flatten().all(|r| r.value == "—"));
 }
 

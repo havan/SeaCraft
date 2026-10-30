@@ -32,6 +32,10 @@ fn frame(ctx: &egui::Context, app: &mut App) {
 fn performance_tab_and_computations() {
     let mut app = App::headless_for_test(Some(&demo_path()));
     app.set_subdivision_level(2);
+    // R5-3: a .fef opened without a project KG has none; the seakeeping
+    // below needs the demo's.
+    assert!(app.seakeeping_spec().is_err(), "no KG, no seakeeping");
+    app.set_kg(seacraft_gui::app::DEMO_KG);
     let ctx = egui::Context::default();
 
     // Settle docks with two frames
@@ -77,7 +81,7 @@ fn performance_tab_and_computations() {
 
     // 3. compute_raos_blocking frequencies equal seakeeping::head_sea_raos with the same SeakeepingSpec exactly
     let rep = app.compute_raos_blocking().expect("compute raos").clone();
-    let spec = app.seakeeping_spec();
+    let spec = app.seakeeping_spec().expect("the demo has a KG");
     let expected_rep = seakeeping::head_sea_raos(&surface, &spec).expect("head sea raos");
     assert_eq!(rep.frequencies, expected_rep.frequencies);
     assert_eq!(

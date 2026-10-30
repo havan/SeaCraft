@@ -234,9 +234,17 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
     out
 }
 
+/// GM at `kg` as a readout value: a dash while KG is unset.
+pub fn gm_text(h: &Hydrostatics, kg: Option<f64>) -> String {
+    match kg {
+        Some(kg) => format!("{:+.3}", h.gm(kg)),
+        None => "—".to_owned(),
+    }
+}
+
 /// The pinned live strip's two rows: displacement, draft and trim; GM
-/// and LCB. A dash stands for a quantity not measured yet.
-pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: f64) -> [Vec<Readout>; 2] {
+/// and LCB. A dash stands for a quantity not measured yet (GM: or no KG).
+pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readout>; 2] {
     let r = Readout::new;
     match h {
         Some(h) => [
@@ -246,7 +254,7 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: f64) -> [Vec<Readout>; 2] {
                 r("trim", format!("{:+.3}", h.trim_m), "m"),
             ],
             vec![
-                r("GM", format!("{:+.3}", h.gm(kg)), "m"),
+                r("GM", gm_text(h, kg), "m"),
                 r("LCB", format!("{:.3}", h.lcb.x), "m"),
             ],
         ],
@@ -267,7 +275,7 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: f64) -> [Vec<Readout>; 2] {
 pub fn live_strip(
     ui: &mut egui::Ui,
     h: Option<&Hydrostatics>,
-    kg: f64,
+    kg: Option<f64>,
     stale: bool,
     wide: bool,
 ) -> bool {
@@ -467,12 +475,62 @@ pub enum HydroAction {
     /// Recompute now.
     Recompute,
     CrossCurves,
+    /// The user set KG (it now goes into the project): recompute after the
+    /// debounce, as [`HydroAction::Changed`].
+    KgSet,
+}
+
+/// The largest values the floating-condition fields accept, scaled with
+/// the hull so a 200 m ship is as editable as a 12 m launch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HydroLimits {
+    /// Draft, from 0.
+    pub draft: f64,
+    /// Trim, either way.
+    pub trim: f64,
+    /// KG above the keel, from 0.
+    pub kg: f64,
+}
+
+impl Default for HydroLimits {
+    /// The fixed limits the dock had before they scaled with the hull.
+    fn default() -> Self {
+        Self {
+            draft: 20.0,
+            trim: 5.0,
+            kg: 10.0,
+        }
+    }
+}
+
+impl HydroLimits {
+    /// The limits for a hull spanning `extents` (min, max): draft and KG up
+    /// to twice its depth, trim to a fifth of its length, never below the
+    /// fixed [`Default`] limits.
+    pub fn for_extents(extents: Option<(Vec3, Vec3)>) -> Self {
+        let base = Self::default();
+        let Some((min, max)) = extents.filter(|(a, b)| (*b - *a).length().is_finite()) else {
+            return base;
+        };
+        let depth = (max.z - min.z).max(0.0);
+        let length = (max.x - min.x).max(0.0);
+        Self {
+            draft: base.draft.max(2.0 * depth),
+            trim: base.trim.max(0.2 * length),
+            kg: base.kg.max(2.0 * depth),
+        }
+    }
 }
 
 /// Everything the hydrostatics dock draws.
 pub struct HydroPanel<'a> {
     pub options: &'a mut HydroOptions,
-    pub kg: &'a mut f64,
+    /// KG above the keel; `None` until set, drawn as an empty field.
+    pub kg: &'a mut Option<f64>,
+    /// `kg` is the design requirements' estimate (marked "est.").
+    pub kg_estimate: bool,
+    /// How far the draft, trim and KG fields go.
+    pub limits: HydroLimits,
     /// Solve the GZ curves free to trim about `lcg` instead of holding `trim`.
     pub free_trim: &'a mut bool,
     /// Longitudinal centre of gravity for the free-trim solve.
@@ -587,7 +645,7 @@ pub struct ReadoutGroup {
 /// tested without a frame: `TPC` and `MTC` are table quantities computed here
 /// from the measured waterplane, with the kilogram-to-tonne factor the core's
 /// kg/m³ density needs.
-pub fn hydrostatic_groups(h: &Hydrostatics, kg: f64) -> [ReadoutGroup; 4] {
+pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4] {
     let rho_t = h.water_density / 1000.0;
     let tpc = h.waterplane_area_m2 * rho_t / 100.0;
     let mtc = if h.lwl > 1e-9 {
@@ -621,7 +679,7 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: f64) -> [ReadoutGroup; 4] {
             rows: vec![
                 r("BM(t)", format!("{:.3}", h.bm_transverse), "m"),
                 r("KM(t)", format!("{:.3}", h.km_transverse), "m"),
-                r("GM", format!("{:+.3}", h.gm(kg)), "m"),
+                r("GM", gm_text(h, kg), "m"),
                 r("TPC", format!("{:.3}", tpc), "t/cm"),
                 r("MTC", format!("{:.3}", mtc), "t·m/cm"),
             ],
@@ -641,7 +699,7 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: f64) -> [ReadoutGroup; 4] {
 
 /// The readouts as the two columns of the wide layout: volume, form and
 /// centres on the left, stability, dimensions and areas on the right.
-pub fn hydrostatic_rows(h: &Hydrostatics, kg: f64) -> [Vec<Readout>; 2] {
+pub fn hydrostatic_rows(h: &Hydrostatics, kg: Option<f64>) -> [Vec<Readout>; 2] {
     let [form, centres, stability, areas] = hydrostatic_groups(h, kg);
     [
         [form.rows, centres.rows].concat(),
@@ -822,6 +880,64 @@ pub fn last_plot_rect(ctx: &egui::Context, key: &'static str) -> Option<egui::Re
     ctx.data(|d| d.get_temp(egui::Id::unique(("plot_rect", key))))
 }
 
+/// What a KG-dependent control says while KG is unset.
+pub const KG_UNSET: &str = "set KG first";
+
+/// The dock's KG field. Set, a drag value up to `max` (marked "est." when it
+/// is the requirements' estimate); unset, an empty text field with a hint,
+/// so no number stands in for a KG nobody gave. Returns true when the user
+/// set a value.
+fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, width: f32) -> bool {
+    match kg {
+        Some(value) => ui
+            .add_sized(
+                [width, 20.0],
+                egui::DragValue::new(value)
+                    .speed(0.02)
+                    .range(0.0..=max)
+                    .fixed_decimals(2)
+                    .suffix(if estimate { " m est." } else { " m" }),
+            )
+            .on_hover_text(if estimate {
+                "KG estimate from the design requirements: set the real KG here"
+            } else {
+                "KG above the keel"
+            })
+            .changed(),
+        None => {
+            let id = ui.scope_id().with("kg_unset_text");
+            let mut text: String = ui.data(|d| d.get_temp(id)).unwrap_or_default();
+            let response = ui
+                .add_sized(
+                    [width, 20.0],
+                    egui::TextEdit::singleline(&mut text).hint_text("— set KG"),
+                )
+                .on_hover_text("KG above the keel: GM and the GZ curves need it");
+            // Enter or a click elsewhere commits (a single-line field loses
+            // focus on Enter).
+            let entered = response.lost_focus();
+            let parsed = text
+                .trim()
+                .trim_end_matches('m')
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v >= 0.0);
+            match parsed {
+                Some(v) if entered => {
+                    ui.data_mut(|d| d.remove::<String>(id));
+                    *kg = Some(v.min(max));
+                    true
+                }
+                _ => {
+                    ui.data_mut(|d| d.insert_temp(id, text));
+                    false
+                }
+            }
+        }
+    }
+}
+
 /// Draft, trim, heel and KG controls plus the measurement readout.
 pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     let mut action = HydroAction::None;
@@ -833,6 +949,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     let two_columns = hydro_two_columns(ui.available_width());
     let field_width = if two_columns { 84.0 } else { 96.0 };
     let mut changed = false;
+    let mut kg_set = false;
     egui::Grid::new("floating_condition")
         .num_columns(if two_columns { 4 } else { 2 })
         .min_col_width(if two_columns { 36.0 } else { 56.0 })
@@ -844,7 +961,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     [field_width, 20.0],
                     egui::DragValue::new(&mut panel.options.draft)
                         .speed(0.01)
-                        .range(0.0..=20.0)
+                        .range(0.0..=panel.limits.draft)
                         .fixed_decimals(2)
                         .suffix(" m"),
                 )
@@ -858,7 +975,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     [field_width, 20.0],
                     egui::DragValue::new(&mut panel.options.trim)
                         .speed(0.01)
-                        .range(-5.0..=5.0)
+                        .range(-panel.limits.trim..=panel.limits.trim)
                         .fixed_decimals(2)
                         .suffix(" m"),
                 )
@@ -879,16 +996,13 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                 ui.end_row();
             }
             ui.label("KG");
-            changed |= ui
-                .add_sized(
-                    [field_width, 20.0],
-                    egui::DragValue::new(panel.kg)
-                        .speed(0.02)
-                        .range(0.0..=10.0)
-                        .fixed_decimals(2)
-                        .suffix(" m"),
-                )
-                .changed();
+            kg_set |= kg_field(
+                ui,
+                panel.kg,
+                panel.kg_estimate,
+                panel.limits.kg,
+                field_width,
+            );
             ui.end_row();
         });
     ui.add_space(4.0);
@@ -925,6 +1039,9 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     if changed {
         action = HydroAction::Changed;
     }
+    if kg_set {
+        action = HydroAction::KgSet;
+    }
     if panel.busy {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -936,8 +1053,12 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         if ui.button("Recompute").clicked() {
             action = HydroAction::Recompute;
         }
-        if ui.button("GZ curves").clicked() {
+        let gz = ui.button("GZ curves");
+        if gz.clicked() {
             action = HydroAction::CrossCurves;
+        }
+        if panel.kg.is_none() {
+            ui.label(egui::RichText::new(KG_UNSET).color(theme::TEXT_MUTED));
         }
     });
     ui.add_space(2.0);
@@ -965,7 +1086,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                 for warning in &h.warnings {
                     ui.colored_label(theme::FAIL, &warning.message);
                 }
-                if h.gm(kg) < 0.0 {
+                if kg.is_some_and(|kg| h.gm(kg) < 0.0) {
                     ui.colored_label(theme::FAIL, "negative GM: the hull is unstable upright");
                 }
             }
@@ -978,7 +1099,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         }
     });
 
-    if let Some(curves) = panel.curves {
+    if let (Some(curves), Some(kg)) = (panel.curves, kg) {
         // No criteria verdict here: these curves are the bare hull at the
         // dock KG over a synthetic ±30 % displacement range, not a condition
         // anyone defined. The per-criterion table lives in Loading.
@@ -1348,7 +1469,8 @@ pub enum PerformanceAction {
 
 pub struct PerformancePanel<'a> {
     pub state: &'a mut crate::app::PerformanceState,
-    pub default_kg: f64,
+    /// The KG without a manual value; `None` while no KG is known.
+    pub default_kg: Option<f64>,
     pub kg_source: &'static str,
     pub busy_resistance: bool,
     pub busy_raos: bool,
@@ -1450,29 +1572,26 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     }
 
     ui.horizontal(|ui| {
-        let mut cur_kg = panel.state.kg.unwrap_or(panel.default_kg);
-        let kg_resp = ui.add(
-            egui::DragValue::new(&mut cur_kg)
-                .speed(0.01)
-                .range(0.0..=50.0)
-                .prefix("KG: ")
-                .suffix(" m"),
-        );
-        if kg_resp.changed() {
-            panel.state.kg = Some(cur_kg);
+        ui.label("KG");
+        let mut cur_kg = panel.state.kg.or(panel.default_kg);
+        if kg_field(ui, &mut cur_kg, false, 50.0, 84.0) {
+            panel.state.kg = cur_kg;
             action = PerformanceAction::Changed;
         }
+        let default = match panel.default_kg {
+            Some(kg) => format!("{kg:.2} m"),
+            None => KG_UNSET.to_owned(),
+        };
         if panel.state.kg.is_some() {
             if ui.small_button("Reset").clicked() {
                 panel.state.kg = None;
                 action = PerformanceAction::Changed;
             }
-            ui.label(format!(
-                "(default: {:.2} m, {})",
-                panel.default_kg, panel.kg_source
-            ));
-        } else {
+            ui.label(format!("(default: {default}, {})", panel.kg_source));
+        } else if panel.default_kg.is_some() {
             ui.label(format!("({})", panel.kg_source));
+        } else {
+            ui.label(egui::RichText::new(format!("({default})")).color(theme::TEXT_MUTED));
         }
     });
 
@@ -4090,6 +4209,30 @@ pub struct ToolbarState<'a> {
     pub level: u8,
     pub mode: SubdivisionMode,
     pub maximised: bool,
+    /// A model is loaded. Without one the view controls (analysis mode,
+    /// display toggles, Fit, Maximise) are disabled; the subdivision level
+    /// and scheme stay editable, as settings the next model is shown with.
+    pub has_model: bool,
+}
+
+/// The one line a dock shows with no model loaded, in place of controls
+/// that would have nothing to act on.
+pub const NO_MODEL_NOTE: &str = "No model — start a new design or open one";
+
+/// Draw [`NO_MODEL_NOTE`], muted and small enough for one line in the
+/// layer dock, at the top of a dock. The dock keeps its width: a panel
+/// would otherwise shrink to the note and widen again when a model arrives.
+pub fn no_model_note(ui: &mut egui::Ui) {
+    ui.set_min_width(ui.available_width());
+    ui.add_space(4.0);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(NO_MODEL_NOTE)
+                .small()
+                .color(theme::TEXT_MUTED),
+        )
+        .truncate(),
+    );
 }
 
 /// What the user asked the toolbar for; `App::draw` applies it.
@@ -4132,6 +4275,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         // Analysis mode: a segmented control.
         let current = state.display.analysis;
         ui.horizontal(|ui| {
+            if !state.has_model {
+                ui.disable();
+            }
             ui.spacing_mut().item_spacing.x = 0.0;
             for (name, kind, label, tip) in [
                 (
@@ -4176,6 +4322,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             slot,
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
+                if !state.has_model {
+                    ui.disable();
+                }
                 ui.set_min_size(slot);
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let param = match current {
@@ -4238,6 +4387,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         let mut display = state.display.clone();
         let mut toggled = false;
         ui.horizontal(|ui| {
+            if !state.has_model {
+                ui.disable();
+            }
             ui.spacing_mut().item_spacing.x = 2.0;
             for (name, label, tip, flag) in [
                 (
@@ -4323,14 +4475,15 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.separator();
 
         let fit = ui
-            .button("Fit")
+            .add_enabled(state.has_model, egui::Button::new("Fit"))
             .on_hover_text(format!("Frame the model in every view ({fit_key})"));
         out.fit = fit.clicked();
         out.rects.push(("fit", fit.rect));
         // A framed button like Fit (an action, not a display toggle),
         // highlighted while a view is maximised.
         let max = ui
-            .add(
+            .add_enabled(
+                state.has_model,
                 egui::Button::new(if state.maximised {
                     "Restore"
                 } else {
@@ -4371,7 +4524,7 @@ mod tests {
     #[test]
     fn the_dock_shows_both_columns_with_the_table_quantities() {
         let h = measured();
-        let [left, right] = hydrostatic_rows(&h, 1.5);
+        let [left, right] = hydrostatic_rows(&h, Some(1.5));
         // LWL and BWL are rows of their own now (R5-5): 9 and 10 rows.
         assert!(
             left.len().abs_diff(right.len()) <= 1,
@@ -4443,7 +4596,7 @@ mod tests {
     #[test]
     fn readouts_split_value_and_unit_without_changing_a_number() {
         let h = measured();
-        let rows = hydrostatic_rows(&h, 2.2).concat();
+        let rows = hydrostatic_rows(&h, Some(2.2)).concat();
         let before = glued_rows(&h, 2.2);
         assert_eq!(rows.len(), before.len());
         for (r, (name, glued)) in rows.iter().zip(&before) {
@@ -4479,7 +4632,7 @@ mod tests {
     #[test]
     fn readout_values_align_right_and_names_are_body_size() {
         let h = measured();
-        let rows = hydrostatic_rows(&h, 2.2).concat();
+        let rows = hydrostatic_rows(&h, Some(2.2)).concat();
         let ctx = egui::Context::default();
         theme::apply(&ctx);
         let mut texts = Vec::new();
@@ -5026,7 +5179,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut options =
             HydroOptions::from_surface(&demo::demo_hull(false), SubdivisionOptions::default());
-        let (mut kg, mut free_trim, mut lcg) = (1.5, false, None);
+        let (mut kg, mut free_trim, mut lcg) = (Some(1.5), false, None);
         let mut text = Vec::new();
         for _ in 0..2 {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -5035,6 +5188,8 @@ mod tests {
                     HydroPanel {
                         options: &mut options,
                         kg: &mut kg,
+                        kg_estimate: false,
+                        limits: HydroLimits::default(),
                         free_trim: &mut free_trim,
                         lcg: &mut lcg,
                         result: Some(&h),
@@ -5119,7 +5274,7 @@ mod tests {
     #[test]
     fn the_readout_has_separate_lwl_and_bwl_rows() {
         let h = measured();
-        let groups = hydrostatic_groups(&h, 2.2);
+        let groups = hydrostatic_groups(&h, Some(2.2));
         let titles: Vec<&str> = groups.iter().map(|g| g.title).collect();
         assert_eq!(
             titles,
@@ -5146,7 +5301,7 @@ mod tests {
             assert!(r.value.chars().count() <= 7, "{} = {:?}", r.name, r.value);
         }
         // The columns are the groups, two by two.
-        let [left, right] = hydrostatic_rows(&h, 2.2);
+        let [left, right] = hydrostatic_rows(&h, Some(2.2));
         assert_eq!(left.len(), groups[0].rows.len() + groups[1].rows.len());
         assert_eq!(right.len(), groups[2].rows.len() + groups[3].rows.len());
         // Drawn: names, subheads and both values on screen.
@@ -5170,7 +5325,7 @@ mod tests {
         theme::apply(&ctx);
         let mut options =
             HydroOptions::from_surface(&demo::demo_hull(false), SubdivisionOptions::default());
-        let (mut kg, mut free_trim, mut lcg) = (2.2, false, None);
+        let (mut kg, mut free_trim, mut lcg) = (Some(2.2), false, None);
         // Both widths drawn the way the dock draws them: a panel of that
         // width with a vertical scroll area inside.
         let mut layout = |width: f32| {
@@ -5194,6 +5349,8 @@ mod tests {
                                     HydroPanel {
                                         options: &mut options,
                                         kg: &mut kg,
+                                        kg_estimate: false,
+                                        limits: HydroLimits::default(),
                                         free_trim: &mut free_trim,
                                         lcg: &mut lcg,
                                         result: Some(&h),

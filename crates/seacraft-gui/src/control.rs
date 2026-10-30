@@ -1205,6 +1205,9 @@ fn handle_inner(
         }
         "stability.cross_curves" => {
             apply_stability_inputs(app, p)?;
+            if app.kg().is_none() {
+                return Err("stability.cross_curves: set KG first (pass `kg`)".into());
+            }
             app.compute_cross_curves();
             let curves = app
                 .cross_curves()
@@ -1304,7 +1307,9 @@ fn handle_inner(
                 mode: app.subdivision_mode(),
             };
             let kg = match p.get("kg") {
-                None | Some(Value::Null) => app.kg(),
+                None | Some(Value::Null) => app
+                    .kg()
+                    .ok_or_else(|| "stability.weather: set KG first (or pass `kg`)".to_string())?,
                 Some(_) => number_in(p, "kg", 0.0..=1.0e3)?
                     .ok_or_else(|| "stability.weather: `kg` must be >= 0".to_string())?,
             };
@@ -1445,7 +1450,9 @@ fn handle_inner(
             let speed_kn = number(p, "speed_kn")?
                 .or(number(p, "speed")?)
                 .unwrap_or(0.0);
-            let kg = number(p, "kg")?.unwrap_or_else(|| app.kg());
+            let kg = number(p, "kg")?
+                .or(app.kg())
+                .ok_or("seakeeping.compute: set KG first (or pass `kg`)")?;
             let kyy = number(p, "kyy")?;
             let stations = number_in(p, "stations", 3.0..=200.0)?
                 .map(|n| n.round() as usize)
@@ -1592,10 +1599,9 @@ fn handle_inner(
             let speed_kn = number(p, "speed_kn")?
                 .or(number(p, "speed")?)
                 .unwrap_or(app.performance_state().sk_speed_kn);
-            let kg = match number(p, "kg")? {
-                Some(k) => k,
-                None => app.effective_performance_kg(),
-            };
+            let kg = number(p, "kg")?
+                .or(app.effective_performance_kg())
+                .ok_or("performance.compute: set KG first (or pass `kg`)")?;
             let kyy = number(p, "kyy")?;
             let stations = number_in(p, "stations", 3.0..=200.0)?
                 .map(|n| n.round() as usize)
@@ -1852,7 +1858,7 @@ fn handle_inner(
             // Reshape the hull for lower resistance at a speed. It is an edit:
             // one undo snapshot, the whole optimised hull replaces the model.
             let params = p.as_object().cloned().unwrap_or_default();
-            let spec = seacraft_core::optimize::OptimizeSpec::from_params(&params, Some(app.kg()))
+            let spec = seacraft_core::optimize::OptimizeSpec::from_params(&params, app.kg())
                 .map_err(|e| format!("model.optimize: {e}"))?;
             let level = level_arg(p)?;
             reply_app(commands::optimize(
@@ -2164,7 +2170,9 @@ fn explicit_cross_curves(app: &mut App, p: &Value) -> Result<Value, String> {
     if !(base.draft.is_finite() && base.draft > 0.0) {
         return Err("`draft` must be positive".into());
     }
-    let kg = number_in(p, "kg", 0.0..=10_000.0)?.unwrap_or_else(|| app.kg());
+    let kg = number_in(p, "kg", 0.0..=10_000.0)?
+        .or(app.kg())
+        .ok_or("stability.cross_curves: set KG first (or pass `kg`)")?;
     let lcg = number(p, "lcg")?;
     let free = boolean(p, "free_trim")?.unwrap_or(false) || lcg.is_some();
     let hull = seacraft_core::hydro::Hull::new(&surface, base.subdivision);

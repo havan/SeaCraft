@@ -51,6 +51,11 @@ pub struct Project {
     /// measured values against. Targets never move geometry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements: Option<Requirements>,
+    /// The vertical centre of gravity above the keel (m) the user set for
+    /// the bare-hull stability (GM, GZ cross curves). `None` until set: a
+    /// model carries no KG of its own, and none is invented for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kg: Option<f64>,
     /// Keys written by a newer SeaCraft, kept for the round trip.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -67,6 +72,7 @@ impl Default for Project {
             windage: Vec::new(),
             report: ReportSettings::default(),
             requirements: None,
+            kg: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -220,6 +226,7 @@ impl Project {
             && self.windage.is_empty()
             && self.report.is_empty()
             && self.requirements.is_none()
+            && self.kg.is_none()
             && self.extra.is_empty()
     }
 
@@ -284,6 +291,11 @@ impl Project {
         )?;
         unique("compartment", self.compartments.iter().map(|c| &c.name))?;
         unique("damage case", self.damage_cases.iter().map(|c| &c.name))?;
+        if let Some(kg) = self.kg {
+            if !(kg.is_finite() && kg >= 0.0) {
+                return Err(format!("`kg` must be a finite height >= 0, got {kg}"));
+            }
+        }
         for c in &self.loading_conditions {
             crate::loading::validate(c)
                 .map_err(|e| format!("loading condition `{}`: {e}", c.name))?;
@@ -552,6 +564,23 @@ mod tests {
         assert_eq!(opts.speeds_kn, vec![5.0, 7.0]);
         assert_eq!(opts.draft, base.draft);
         assert_eq!(opts.heels, base.heels);
+    }
+
+    #[test]
+    fn a_set_kg_round_trips_and_alone_makes_a_project_worth_writing() {
+        let p = Project {
+            kg: Some(1.3),
+            ..Default::default()
+        };
+        assert!(!p.is_empty(), "a KG alone must be saved");
+        assert!(p.to_json().contains("\"kg\": 1.3"));
+        assert_eq!(Project::from_json(&p.to_json()).unwrap(), p);
+        // Unset, nothing is written; an old file without it reads as unset.
+        assert!(!Project::default().to_json().contains("\"kg\""));
+        let old = r#"{ "format": "seacraft-project", "version": 1 }"#;
+        assert_eq!(Project::from_json(old).unwrap().kg, None);
+        let bad = r#"{ "format": "seacraft-project", "version": 1, "kg": -1.0 }"#;
+        assert!(Project::from_json(bad).is_err());
     }
 
     #[test]

@@ -188,7 +188,7 @@ fn create_builds_the_requested_hull_as_one_undo_step() {
 
     // The design waterline is T, and the hull measures as asked there.
     assert_eq!(app.hydro_options().draft, 0.6);
-    assert_eq!(app.kg(), 1.1);
+    assert_eq!(app.kg(), Some(1.1));
     app.recompute_hydrostatics();
     let h = app.hydrostatics().expect("hydrostatics");
     assert!((h.lwl - 11.0).abs() / 11.0 < 0.01, "LWL {}", h.lwl);
@@ -427,4 +427,231 @@ fn project_settings_edit_the_requirements() {
     app.undo();
     assert_eq!(app.surface().unwrap().settings.name, "Planing hull 11 m");
     assert_eq!(app.hydro_options().water_density, 1025.0);
+}
+
+// ---- R5-3: no fabricated KG -------------------------------------------
+
+/// A displacement hull created through the dialog without a KG estimate.
+fn created_without_kg() -> (App, egui::Context) {
+    let (mut app, ctx) = empty();
+    open_dialog(&ctx, &mut app);
+    assert_eq!(app.new_design_mut().unwrap().kg, None);
+    click_create(&ctx, &mut app);
+    assert!(!app.new_design_open(), "Create closes the dialog");
+    (app, ctx)
+}
+
+/// The painted texts of a settled frame, at the Hydro tab.
+fn settled_texts(ctx: &egui::Context, app: &mut App) -> Vec<String> {
+    app.set_dock_tab(seacraft_gui::app::DesignDock::Hydrostatics);
+    frame(ctx, app, Vec::new());
+    let out = frame(ctx, app, Vec::new());
+    texts(&out).into_iter().map(|(t, _)| t).collect()
+}
+
+#[test]
+fn a_new_design_without_a_kg_estimate_has_no_kg() {
+    let (mut app, ctx) = created_without_kg();
+    assert_eq!(app.kg(), None, "no KG was given, none is invented");
+    app.recompute_hydrostatics();
+    let h = app.hydrostatics().expect("hydrostatics").clone();
+    assert!(h.displacement_t > 0.0);
+
+    // GM is a dash on the strip and in the readout; no stability verdict.
+    let rows = seacraft_gui::panels::live_strip_rows(Some(&h), app.kg());
+    let gm = rows.iter().flatten().find(|r| r.name == "GM").unwrap();
+    assert_eq!(gm.value, "—");
+    let painted = settled_texts(&ctx, &mut app);
+    assert!(
+        !painted.iter().any(|t| t.contains("negative GM")),
+        "{painted:?}"
+    );
+    assert!(
+        !painted.iter().any(|t| t.contains("2.20")),
+        "the demo KG is gone: {painted:?}"
+    );
+    // The KG field is empty with a hint, and the GZ button says why it
+    // will not run.
+    assert!(painted.iter().any(|t| t == "— set KG"), "{painted:?}");
+    assert!(painted.iter().any(|t| t == "set KG first"), "{painted:?}");
+
+    // The GZ curves refuse, synchronously and through the dock button.
+    app.compute_cross_curves();
+    assert!(app.cross_curves().is_none());
+    assert!(app.status().contains("set KG first"), "{}", app.status());
+    let out = frame(&ctx, &mut app, Vec::new());
+    let (_, gz) = texts(&out)
+        .into_iter()
+        .find(|(t, _)| t == "GZ curves")
+        .expect("the GZ curves button");
+    app.status_note("-");
+    click(&ctx, &mut app, gz.center());
+    assert!(app.status().contains("set KG first"), "{}", app.status());
+    assert!(!app.curves_busy(), "no job was started");
+    assert!(app.cross_curves().is_none());
+
+    // The seakeeping KG has no default either.
+    assert_eq!(app.effective_performance_kg(), None);
+    assert!(app.seakeeping_spec().is_err());
+}
+
+#[test]
+fn a_kg_estimate_is_the_kg_and_says_so() {
+    let (mut app, ctx) = created();
+    assert_eq!(app.kg(), Some(1.1));
+    assert!(app.kg_is_estimate());
+    app.recompute_hydrostatics();
+    let painted = settled_texts(&ctx, &mut app);
+    // The drag value paints its suffix apart from the number.
+    assert!(painted.iter().any(|t| t == "1.10"), "{painted:?}");
+    assert!(painted.iter().any(|t| t == " m est."), "{painted:?}");
+
+    // Setting KG in the dock makes it the user's.
+    app.set_kg(1.25);
+    assert!(!app.kg_is_estimate());
+    assert_eq!(app.project().kg, Some(1.25));
+    let painted = settled_texts(&ctx, &mut app);
+    assert!(painted.iter().any(|t| t == "1.25"), "{painted:?}");
+    assert!(!painted.iter().any(|t| t.contains("est.")), "{painted:?}");
+    app.compute_cross_curves();
+    assert!(app.cross_curves().is_some(), "{}", app.status());
+}
+
+#[test]
+fn the_kg_travels_in_the_sidecar() {
+    // Set by the user: saved as the project's KG and back on reopening.
+    let (mut app, _ctx) = created_without_kg();
+    app.set_kg(1.3);
+    assert!(app.is_dirty());
+    let path = scratch("with-kg.fef");
+    let _ = std::fs::remove_file(project::sidecar_path(&path));
+    assert!(app.save_to(&path), "{}", app.status());
+    let back = App::headless_for_test(Some(path.to_str().unwrap()));
+    assert_eq!(back.kg(), Some(1.3));
+    assert!(!back.kg_is_estimate());
+    assert_eq!(back.project().kg, Some(1.3));
+    assert!(!back.is_dirty());
+
+    // An estimate stays an estimate (it lives in the requirements).
+    let (mut app, _ctx) = created();
+    let path = scratch("with-estimate.fef");
+    assert!(app.save_to(&path), "{}", app.status());
+    let back = App::headless_for_test(Some(path.to_str().unwrap()));
+    assert_eq!(back.kg(), Some(1.1));
+    assert!(back.kg_is_estimate());
+    assert_eq!(back.project().kg, None);
+
+    // A .fef without a project KG opens without one.
+    let bare = App::headless_for_test(Some(&demo_path()));
+    assert_eq!(bare.kg(), None);
+}
+
+#[test]
+fn the_demo_keeps_its_kg_and_gm() {
+    let mut app = App::headless_for_test(None);
+    assert_eq!(app.kg(), Some(seacraft_gui::app::DEMO_KG));
+    assert_eq!(seacraft_gui::app::DEMO_KG, 2.2);
+    assert!(!app.kg_is_estimate());
+    app.recompute_hydrostatics();
+    let h = app.hydrostatics().unwrap().clone();
+    // AGENTS.md reference: KM ≈ 2.63 m at T = 0.62 m, so GM ≈ +0.43 m.
+    let gm = h.gm(2.2);
+    assert!(
+        (h.km_transverse - 2.63).abs() < 0.03,
+        "KM {}",
+        h.km_transverse
+    );
+    assert!((gm - 0.425).abs() < 0.02, "GM {gm}");
+    let rows = seacraft_gui::panels::live_strip_rows(Some(&h), app.kg());
+    let shown = rows.iter().flatten().find(|r| r.name == "GM").unwrap();
+    assert_eq!(shown.value, format!("{gm:+.3}"));
+    // The demo's KG is not written into its (empty) project.
+    assert!(app.project().is_empty());
+    // A generated hull after the demo does not inherit it.
+    app.load_generated(seacraft_core::demo::demo_hull(false));
+    assert_eq!(app.kg(), None);
+}
+
+#[test]
+fn the_dock_limits_scale_with_the_hull() {
+    use seacraft_core::math::Vec3;
+    use seacraft_gui::panels::HydroLimits;
+    // A 200 m hull, 18 m deep: KG 12 m and 30 m of trim are ordinary.
+    let mut big = seacraft_core::demo::demo_hull(false);
+    let (min, max) = big.extents();
+    let k = 200.0 / (max.x - min.x);
+    for p in &mut big.points {
+        p.p = Vec3::new(p.p.x * k, p.p.y * k, p.p.z * k);
+    }
+    let limits = HydroLimits::for_extents(Some(big.extents()));
+    assert!(limits.kg >= 12.0 && limits.trim >= 30.0, "{limits:?}");
+    // The small demo keeps the old limits.
+    let small = HydroLimits::for_extents(Some(seacraft_core::demo::demo_hull(false).extents()));
+    assert_eq!(small, HydroLimits::default());
+
+    // Through the dock: the drawn fields leave KG 12 m and trim 30 m alone
+    // (a drag value clamps what it shows to its range).
+    let (mut app, ctx) = empty();
+    app.load_generated(big);
+    app.set_kg(12.0);
+    app.hydro_options_mut().trim = 30.0;
+    settled_texts(&ctx, &mut app);
+    assert_eq!(app.kg(), Some(12.0));
+    assert_eq!(app.hydro_options().trim, 30.0);
+}
+
+// ---- no model: quiet docks --------------------------------------------
+
+#[test]
+fn with_no_model_the_docks_say_so_in_one_line() {
+    let (mut app, ctx) = empty();
+    let out = frame(&ctx, &mut app, Vec::new());
+    let painted: Vec<String> = texts(&out).into_iter().map(|(t, _)| t).collect();
+    let note = seacraft_gui::panels::NO_MODEL_NOTE;
+    assert_eq!(
+        painted.iter().filter(|t| *t == note).count(),
+        2,
+        "both docks: {painted:?}"
+    );
+    // ("Draft" is also the toolbar's analysis mode.)
+    for gone in [
+        "Trim",
+        "Heel",
+        "KG",
+        "no measurement yet",
+        "Inspector",
+        "Hydro",
+        "GZ curves",
+    ] {
+        assert!(
+            !painted.iter().any(|t| t == gone),
+            "{gone} with no model: {painted:?}"
+        );
+    }
+    // The view controls do nothing without a model.
+    let zebra = app.toolbar_rect("zebra").expect("the Zebra button");
+    click(&ctx, &mut app, zebra.center());
+    assert_eq!(
+        app.display().analysis,
+        seacraft_core::AnalysisMode::Shaded,
+        "a disabled toolbar"
+    );
+    // The docks keep their frames: the start card sits where the
+    // viewports will, so nothing jumps when a model arrives.
+    let central = app.central_rect();
+
+    // With a model, the controls are back.
+    let mut demo = App::headless_for_test(None);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut demo, Vec::new());
+    let out = frame(&ctx, &mut demo, Vec::new());
+    let with_model = demo.central_rect();
+    assert!(
+        (central.left() - with_model.left()).abs() <= 1.0
+            && (central.right() - with_model.right()).abs() <= 1.0,
+        "no model {central:?} vs model {with_model:?}"
+    );
+    let painted: Vec<String> = texts(&out).into_iter().map(|(t, _)| t).collect();
+    assert!(!painted.iter().any(|t| t == note));
+    assert!(painted.iter().any(|t| t == "Trim"));
 }

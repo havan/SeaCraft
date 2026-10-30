@@ -4,8 +4,8 @@
 //! The palette keeps the app's identity (dark slate canvas, sea-blue hull,
 //! amber control net, red creases) and fixes contrast and consistency: a FAIL
 //! is the same red in every dock, and the grid has three tiers: quiet minor
-//! lines (≈ 1.4:1 against the canvas, so they never compete with the hull),
-//! stronger major lines every 5 m, and the datums strongest of all.
+//! lines (≈ 1.25:1 against the canvas, so they never compete with the hull),
+//! stronger major lines (≈ 1.7:1) every 5 m, and the datums strongest of all.
 //!
 //! No other module writes a colour literal (`Color32::from_rgb` and friends);
 //! the test at the bottom of this file reads the sources and enforces it.
@@ -40,11 +40,12 @@ pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x6f, 0x7f, 0x90);
 
 // ---- viewport ----------------------------------------------------------
 
-/// Minor grid lines (1 m at the usual zoom): about 1.4:1 against [`CANVAS`]
-/// (WCAG relative luminance), there when looked for and quiet otherwise.
-pub const GRID_MINOR: Color32 = Color32::from_rgb(0x2a, 0x36, 0x44);
-/// Major grid lines (every 5 m at the usual zoom): about 2:1.
-pub const GRID_MAJOR: Color32 = Color32::from_rgb(0x40, 0x50, 0x64);
+/// Minor grid lines (1 m at the usual zoom): about 1.25:1 against
+/// [`CANVAS`] (WCAG relative luminance), there when looked for and quiet
+/// otherwise.
+pub const GRID_MINOR: Color32 = Color32::from_rgb(0x22, 0x2c, 0x38);
+/// Major grid lines (every 5 m at the usual zoom): about 1.7:1.
+pub const GRID_MAJOR: Color32 = Color32::from_rgb(0x34, 0x41, 0x52);
 /// Datum lines: centreline (y = 0), baseline (z = 0), x = 0, midship and the
 /// design waterline. Above 3:1.
 pub const GRID_DATUM: Color32 = Color32::from_rgb(0x5f, 0x74, 0x8a);
@@ -332,15 +333,17 @@ mod tests {
 
     #[test]
     fn the_grid_reads_against_the_canvas() {
-        // R5-5: the minor lines went quiet (≥ 2:1 before; now ≈ 1.4:1) so
+        // R5-5: the minor lines went quiet (≥ 2:1 before; then ≈ 1.4:1) so
         // they stop competing with the hull; majors and datums carry the
-        // structure.
+        // structure. R6-1, "a little quieter": one notch down for both,
+        // minor ≈ 1.25:1 and major ≈ 1.7:1, still 0.4 apart; datums as they
+        // were.
         let minor = contrast_ratio(GRID_MINOR, CANVAS);
         let major = contrast_ratio(GRID_MAJOR, CANVAS);
         let datum = contrast_ratio(GRID_DATUM, CANVAS);
-        assert!((1.3..=1.6).contains(&minor), "minor grid {minor:.2}:1");
+        assert!((1.2..=1.3).contains(&minor), "minor grid {minor:.2}:1");
         assert!(
-            major >= 1.9 && major > minor + 0.4,
+            (1.6..=1.8).contains(&major) && major > minor + 0.4,
             "major {major:.2}:1 vs minor {minor:.2}:1"
         );
         assert!(

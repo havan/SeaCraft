@@ -79,6 +79,9 @@ fn demo_with_loadcase() -> (App, egui::Context) {
         loading_conditions: vec![cond],
         ..Default::default()
     });
+    // R5-3: a .fef opened without a project KG has none; the GZ curves
+    // below need the demo's.
+    app.set_kg(seacraft_gui::app::DEMO_KG);
     let ctx = egui::Context::default();
     frame(&ctx, &mut app, Vec::new());
     frame(&ctx, &mut app, Vec::new());

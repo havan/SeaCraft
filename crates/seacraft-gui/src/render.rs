@@ -231,13 +231,23 @@ pub fn viewport_with_texture(
         Align2::LEFT_TOP,
         camera.kind.label().to_owned(),
     );
-    let world_per_px = view.world_per_px(rect, camera.distance);
-    hud_caption(
-        &painter,
-        rect.right_top() + egui::vec2(-8.0, 6.0),
-        Align2::RIGHT_TOP,
-        format!("{world_per_px:.3} m/px"),
-    );
+    // The scale in metres rather than m/px: the side of a grid square is
+    // what the eye judges a length against.
+    let (minor, major) = view_grid_steps(&view, rect, scene.min, scene.max);
+    if let Some(text) = grid_caption(view.perspective, opts.grid, minor, major) {
+        hud_caption(
+            &painter,
+            rect.right_top() + egui::vec2(-8.0, 6.0),
+            Align2::RIGHT_TOP,
+            text,
+        );
+    }
+    if !view.perspective {
+        draw_scale_bar(
+            &painter,
+            &scale_bar(rect, view.world_per_px(rect, 1.0), minor),
+        );
+    }
     painter.rect_stroke(
         rect,
         0.0,
@@ -282,6 +292,97 @@ pub fn hud_caption(painter: &egui::Painter, pos: Pos2, align: Align2, text: Stri
     painter.rect_filled(backing, 2.0, theme::HUD_BACKING);
     painter.galley(text_rect.min, galley, theme::TEXT_SECONDARY);
     backing
+}
+
+/// A length in metres as a grid label: `0.5 m`, `1 m`, `50 m`, `1 km`.
+pub fn format_length(m: f64) -> String {
+    let (value, unit) = if m >= 1000.0 {
+        (m / 1000.0, "km")
+    } else {
+        (m, "m")
+    };
+    // The ladder's steps are round numbers: no trailing zeros.
+    let text = format!("{value:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text} {unit}")
+}
+
+/// The minor and major grid steps a view draws (see [`grid_segments`]): an
+/// orthographic view's at its own scale, the perspective view's ground grid
+/// at the depth of the model's centre.
+pub fn view_grid_steps(view: &ViewTransform, rect: Rect, min: Vec3, max: Vec3) -> (f64, f64) {
+    let world_per_px = if view.perspective {
+        let centre = (min + max) * 0.5;
+        let depth = (centre - view.eye).dot(view.forward).max(1e-3);
+        view.world_per_px(rect, depth)
+    } else {
+        view.world_per_px(rect, 1.0)
+    };
+    grid_steps(1.0 / world_per_px)
+}
+
+/// The scale caption of a view: `grid 1 m · major 5 m` (the perspective
+/// view: `ground grid …`). Without the grid an orthographic view's scale bar
+/// carries the scale alone and the perspective view shows none: `None`.
+pub fn grid_caption(perspective: bool, grid: bool, minor: f64, major: f64) -> Option<String> {
+    grid.then(|| {
+        format!(
+            "{}grid {} · major {}",
+            if perspective { "ground " } else { "" },
+            format_length(minor),
+            format_length(major)
+        )
+    })
+}
+
+/// The scale bar in an orthographic view's bottom-left corner: one minor
+/// grid step long, `├──┤ 1 m`, on a caption backing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScaleBar {
+    /// The bar's two ends on screen (`b.x - a.x` is the step in pixels).
+    pub a: Pos2,
+    pub b: Pos2,
+    /// Its length, as [`format_length`] writes it.
+    pub label: String,
+    /// The label's left edge, level with the bar.
+    pub label_pos: Pos2,
+}
+
+/// Height of the scale bar's end ticks.
+const SCALE_BAR_TICK: f32 = 6.0;
+
+/// The scale bar of a view drawn in `rect` at `world_per_px`, one `step`
+/// (the minor grid step) long.
+pub fn scale_bar(rect: Rect, world_per_px: f64, step: f64) -> ScaleBar {
+    let length = (step / world_per_px.max(1e-12)) as f32;
+    let a = rect.left_bottom() + egui::vec2(14.0, -14.0);
+    let b = a + egui::vec2(length, 0.0);
+    ScaleBar {
+        a,
+        b,
+        label: format_length(step),
+        label_pos: b + egui::vec2(6.0, 0.0),
+    }
+}
+
+/// Draw a [`ScaleBar`]: the bar with an end tick each side and its label,
+/// on one semi-opaque backing.
+fn draw_scale_bar(painter: &egui::Painter, bar: &ScaleBar) {
+    let galley = painter.layout_no_wrap(
+        bar.label.clone(),
+        theme::caption_font(),
+        theme::TEXT_SECONDARY,
+    );
+    let text_rect = Align2::LEFT_CENTER.anchor_size(bar.label_pos, galley.size());
+    let tick = egui::vec2(0.0, 0.5 * SCALE_BAR_TICK);
+    let bar_rect = Rect::from_min_max(bar.a - tick, bar.b + tick);
+    let backing = caption_backing(bar_rect.union(text_rect)).expand2(egui::vec2(2.0, 1.0));
+    painter.rect_filled(backing, 2.0, theme::HUD_BACKING);
+    let stroke = Stroke::new(1.0, theme::TEXT_SECONDARY);
+    painter.line_segment([bar.a, bar.b], stroke);
+    painter.line_segment([bar.a - tick, bar.a + tick], stroke);
+    painter.line_segment([bar.b - tick, bar.b + tick], stroke);
+    painter.galley(text_rect.min, galley, theme::TEXT_SECONDARY);
 }
 
 /// The three tiers of the viewport grid, weakest first (the drawing order).
@@ -411,7 +512,7 @@ fn ortho_grid(
 ) -> Vec<GridLine> {
     let mut out = Vec::new();
     let world_per_px = view.world_per_px(rect, 1.0);
-    let (minor, major) = grid_steps(1.0 / world_per_px);
+    let (minor, major) = view_grid_steps(view, rect, min, max);
     // The screen centre is the camera target; the eye sits on its axis.
     let (base, up_base) = (view.eye.dot(view.right), view.eye.dot(view.up));
     let half_w = 0.5 * rect.width() as f64 * world_per_px + minor;
@@ -467,9 +568,7 @@ fn ortho_grid(
 fn ground_grid(view: &ViewTransform, rect: Rect, min: Vec3, max: Vec3) -> Vec<GridLine> {
     let mut out = Vec::new();
     // Scale at the depth of the model's centre, where the eye looks.
-    let centre = (min + max) * 0.5;
-    let depth = (centre - view.eye).dot(view.forward).max(1e-3);
-    let (minor, major) = grid_steps(1.0 / view.world_per_px(rect, depth));
+    let (minor, major) = view_grid_steps(view, rect, min, max);
     // The model's plan plus half its length all round, so the grid frames
     // the hull and stops well before the horizon.
     let size = (max.x - min.x).max(max.y - min.y).max(1.0);
@@ -1386,6 +1485,45 @@ mod tests {
     }
 
     #[test]
+    fn grid_captions_name_the_steps_in_metres() {
+        assert_eq!(format_length(0.1), "0.1 m");
+        assert_eq!(format_length(0.5), "0.5 m");
+        assert_eq!(format_length(1.0), "1 m");
+        assert_eq!(format_length(10.0), "10 m");
+        assert_eq!(format_length(100.0), "100 m");
+        assert_eq!(format_length(5000.0), "5 km");
+        assert_eq!(
+            grid_caption(false, true, 1.0, 5.0).as_deref(),
+            Some("grid 1 m · major 5 m")
+        );
+        assert_eq!(
+            grid_caption(true, true, 5.0, 10.0).as_deref(),
+            Some("ground grid 5 m · major 10 m")
+        );
+        assert_eq!(grid_caption(false, false, 1.0, 5.0), None);
+    }
+
+    #[test]
+    fn the_scale_bar_is_one_minor_step_long() {
+        let rect = Rect::from_min_size(Pos2::new(100.0, 50.0), egui::vec2(600.0, 400.0));
+        for world_per_px in [0.002, 0.005, 0.03, 0.07, 0.2, 0.5] {
+            let (minor, _) = grid_steps(1.0 / world_per_px);
+            let bar = scale_bar(rect, world_per_px, minor);
+            let want = (minor / world_per_px) as f32;
+            assert!(
+                ((bar.b.x - bar.a.x) - want).abs() <= 1.0,
+                "{world_per_px}: {} px vs {want}",
+                bar.b.x - bar.a.x
+            );
+            assert_eq!(bar.a.y, bar.b.y, "horizontal");
+            assert_eq!(bar.label, format_length(minor));
+            // Bottom-left corner, inside the view.
+            assert!(rect.contains(bar.a) && rect.contains(bar.b));
+            assert!(bar.a.x - rect.left() < 20.0 && rect.bottom() - bar.a.y < 20.0);
+        }
+    }
+
+    #[test]
     fn grid_steps_keep_minor_lines_apart_and_majors_every_5_m() {
         // The usual zoom (~0.03 m/px): 1 m minors, 5 m majors.
         assert_eq!(grid_steps(1.0 / 0.03), (1.0, 5.0));
@@ -1562,7 +1700,13 @@ mod tests {
         assert!(major >= 2, "{major} major lines");
         // Profile: baseline z = 0, x = 0, midship and the design waterline.
         assert_eq!(datum, 4, "datum lines in the profile view");
-        assert_eq!(backings.len(), 2, "view name and scale each get a backing");
+        // R6-1: the m/px caption became the grid step, and the scale bar
+        // brought a third backing.
+        assert_eq!(
+            backings.len(),
+            3,
+            "view name, grid caption and scale bar each get a backing"
+        );
         for (text, pos) in &captions {
             assert!(
                 backings.iter().any(|b| b.contains(*pos)),
@@ -1570,7 +1714,10 @@ mod tests {
             );
         }
         assert!(captions.iter().any(|(t, _)| t == "Profile"));
-        assert!(captions.iter().any(|(t, _)| t.ends_with("m/px")));
+        assert!(
+            captions.iter().any(|(t, _)| t.starts_with("grid ")),
+            "{captions:?}"
+        );
     }
 
     #[test]

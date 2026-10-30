@@ -28,6 +28,13 @@ use crate::panels;
 use crate::picking::{self, PICK_RADIUS};
 use crate::render::{self, DisplayOptions, Scene};
 
+/// The built-in demo hull's KG above the keel (m): part of the demo, like
+/// its reference numbers. No other model gets a KG it was not given.
+pub const DEMO_KG: f64 = 2.2;
+
+/// What a KG-dependent result says while KG is unset.
+pub const KG_UNSET_HINT: &str = "set KG first";
+
 /// Cached refined mesh, invalidated by the revision counter, level or mode.
 struct RenderCache {
     revision: u64,
@@ -54,7 +61,13 @@ impl RenderCache {
 /// cache they were measured from.
 struct HydroState {
     options: HydroOptions,
-    kg: f64,
+    /// KG above the keel for GM and the GZ cross curves. `None` until the
+    /// user sets it (or the design requirements carry an estimate): no
+    /// model is given a KG it does not have.
+    kg: Option<f64>,
+    /// `kg` is the design requirements' estimate, not a value the user set
+    /// (the dock marks it "est.").
+    kg_estimate: bool,
     /// Compute the GZ curves free to trim about `lcg`.
     free_trim: bool,
     /// Longitudinal centre of gravity in model x (the station the LCB is held
@@ -85,7 +98,8 @@ impl HydroState {
                 stations: 11,
                 subdivision: seacraft_core::SubdivisionOptions::default(),
             },
-            kg: 2.2,
+            kg: None,
+            kg_estimate: false,
             free_trim: false,
             lcg: None,
             result: None,
@@ -351,6 +365,8 @@ impl Snapshot {
 #[derive(Debug, Clone)]
 struct ModelState {
     project: Project,
+    /// The dock KG and whether it is an estimate.
+    kg: (Option<f64>, bool),
     project_error: Option<String>,
     path: Option<PathBuf>,
     saved_state: Option<(String, Project)>,
@@ -982,6 +998,7 @@ impl App {
                 self.project = project;
                 self.project_error = project_error;
                 self.dirty = false;
+                self.adopt_project_kg();
                 self.adopt();
                 self.apply_requirement_defaults();
                 Ok(())
@@ -1014,6 +1031,9 @@ impl App {
         self.project_error = None;
         self.dirty = true;
         self.saved_state = None;
+        // The demo's KG is part of the demo, as its reference numbers are.
+        self.hydro.kg = Some(DEMO_KG);
+        self.hydro.kg_estimate = false;
         self.adopt();
     }
 
@@ -1031,7 +1051,21 @@ impl App {
         self.project_error = None;
         self.dirty = true;
         self.saved_state = None;
+        // A generated hull has no mass distribution: no KG until one is
+        // given (the New design dialog passes its estimate on).
+        self.adopt_project_kg();
         self.adopt();
+    }
+
+    /// The dock KG of the project just adopted: the KG the user set, else
+    /// the requirements' estimate, else unset.
+    fn adopt_project_kg(&mut self) {
+        let estimate = self.project.requirements.as_ref().and_then(|r| r.kg);
+        (self.hydro.kg, self.hydro.kg_estimate) = match (self.project.kg, estimate) {
+            (Some(kg), _) => (Some(kg), false),
+            (None, Some(kg)) => (Some(kg), true),
+            (None, None) => (None, false),
+        };
     }
 
     /// Reset the derived state after a model change.
@@ -1184,6 +1218,14 @@ impl App {
         let busy_raos = self.raos_track.busy();
         let default_kg = self.effective_performance_kg_default();
         let kg_source = self.performance_kg_source();
+        let kg_estimate = self.kg_is_estimate();
+        let limits = self.hydro_limits();
+        if self.surface.is_none() {
+            // Nothing to measure: the dock keeps its frame (the layout does
+            // not jump when a model arrives) but not its empty controls.
+            panel.show(ui, panels::no_model_note);
+            return;
+        }
         panel.show(ui, |ui| {
             toggle_wide = panels::live_strip(
                 ui,
@@ -1219,6 +1261,8 @@ impl App {
                         panels::HydroPanel {
                             options: &mut self.hydro.options,
                             kg: &mut self.hydro.kg,
+                            kg_estimate,
+                            limits,
                             free_trim: &mut self.hydro.free_trim,
                             lcg: &mut self.hydro.lcg,
                             result: self.hydro.result.as_ref(),
@@ -1300,6 +1344,11 @@ impl App {
             DockAction::Hydro(panels::HydroAction::Changed) => self.hydro_inputs_changed(),
             DockAction::Hydro(panels::HydroAction::Recompute) => self.start_hydro_job(),
             DockAction::Hydro(panels::HydroAction::CrossCurves) => self.start_curves_job(),
+            DockAction::Hydro(panels::HydroAction::KgSet) => {
+                if let Some(kg) = self.hydro.kg {
+                    self.set_kg(kg);
+                }
+            }
             DockAction::Hydro(panels::HydroAction::None) => {}
             DockAction::Loading(panels::LoadingAction::Changed) => {
                 self.dirty = true;
@@ -1378,12 +1427,15 @@ impl App {
                     // The selection Inspector sits directly under the layer
                     // list, both in one scroll area, so the eye does not
                     // travel the height of the window between them.
+                    if self.surface.is_none() {
+                        // No layers to list and nothing to inspect.
+                        panels::no_model_note(ui);
+                        return;
+                    }
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let top = ui.cursor().top();
                         if let Some(surface) = self.surface.as_mut() {
                             changed = panels::layers(ui, surface);
-                        } else {
-                            ui.label("No model loaded.");
                         }
                         self.layer_list_rect = egui::Rect::from_x_y_ranges(
                             ui.max_rect().x_range(),
@@ -1410,6 +1462,10 @@ impl App {
                 self.revision += 1;
                 self.dirty = true;
                 self.touch_geometry();
+            }
+            if self.surface.is_none() {
+                self.layer_list_rect = egui::Rect::NOTHING;
+                self.inspector_rect = egui::Rect::NOTHING;
             }
             self.inspector_rects = inspector.fields;
             self.apply_inspector_action(inspector.action);
@@ -1813,6 +1869,7 @@ impl App {
             level: self.level,
             mode: self.mode,
             maximised: self.maximised.is_some(),
+            has_model: self.surface.is_some(),
         };
         let out = egui::Panel::top("toolbar")
             .frame(
@@ -1846,7 +1903,10 @@ impl App {
     /// The central area with no model: the start card.
     fn start_screen(&mut self, ui: &mut egui::Ui) {
         let (action, rects) = egui::CentralPanel::default()
-            .show(ui, crate::new_design::start_card)
+            .show(ui, |ui| {
+                self.central_rect = ui.available_rect_before_wrap();
+                crate::new_design::start_card(ui)
+            })
             .inner;
         self.start_rects = Some(rects);
         match action {
@@ -1923,10 +1983,9 @@ impl App {
                 }
                 // The design waterline is the requested draft.
                 self.hydro.options.draft = spec.draft;
-                if let Some(kg) = requirements.kg {
-                    self.hydro.kg = kg;
-                }
                 self.project.requirements = Some(requirements);
+                // The requirements' KG estimate when one was given, else none.
+                self.adopt_project_kg();
                 self.apply_requirement_defaults();
                 self.reset_cameras();
                 self.history.snapshot(&before);
@@ -1955,19 +2014,20 @@ impl App {
     }
 
     /// The lightship a new loading condition starts from: the measured
-    /// displacement at its LCB, at the requirements' KG estimate (the dock's
-    /// KG without one) above the keel.
+    /// displacement at its LCB, at the dock KG above the keel.
     pub fn lightship_seed(&self) -> seacraft_core::loading::WeightItem {
         let keel = self
             .surface
             .as_ref()
             .map_or(0.0, |s| s.lowest_hydrostatics_point());
-        let kg = self
-            .project
-            .requirements
-            .as_ref()
-            .and_then(|r| r.kg)
-            .unwrap_or(self.hydro.kg);
+        // The dock KG (the user's, else the requirements' estimate). With
+        // neither the seed sits at the deck: a placeholder on the safe side
+        // (the highest the centre of gravity of a bare hull could be) that
+        // the user replaces, not a KG the model is credited with.
+        let z = match self.hydro.kg {
+            Some(kg) => keel + kg,
+            None => self.surface.as_ref().map_or(keel, |s| s.extents().1.z),
+        };
         let (mass_t, x) = match &self.hydro.result {
             Some(h) if h.displacement_t > 0.0 => (h.displacement_t, h.lcb.x),
             _ => (10.0, 0.0),
@@ -1977,7 +2037,7 @@ impl App {
             mass_t,
             x,
             y: 0.0,
-            z: keel + kg,
+            z,
         }
     }
 
@@ -2048,6 +2108,12 @@ impl App {
             let speed_changed = speed(&requirements) != speed(&self.project.requirements);
             self.project.requirements = requirements;
             self.dirty = true;
+            if self.project.kg.is_none() && (self.hydro.kg.is_none() || self.hydro.kg_estimate) {
+                // The dock follows the estimate until the user sets a KG
+                // (the demo's own KG is not an estimate and stays).
+                self.adopt_project_kg();
+                self.hydro_inputs_changed();
+            }
             if speed_changed {
                 self.apply_requirement_defaults();
             }
@@ -2441,6 +2507,7 @@ impl App {
             model: whole.then(|| {
                 Box::new(ModelState {
                     project: self.project.clone(),
+                    kg: (self.hydro.kg, self.hydro.kg_estimate),
                     project_error: self.project_error.clone(),
                     path: self.path.clone(),
                     saved_state: self.saved_state.clone(),
@@ -2462,6 +2529,7 @@ impl App {
             self.project_error = m.project_error;
             self.path = m.path;
             self.saved_state = m.saved_state;
+            (self.hydro.kg, self.hydro.kg_estimate) = m.kg;
             self.reset_derived();
             self.apply_requirement_defaults();
         }
@@ -3173,9 +3241,10 @@ impl App {
     }
 
     /// The GZ curves' inputs: the current measurement's hull when there is
-    /// one, otherwise the job measures first.
+    /// one, otherwise the job measures first. `None` without a model or a KG.
     fn curves_inputs(&self) -> Option<CurvesInputs> {
         let surface = self.surface.as_ref()?;
+        let kg = self.hydro.kg?;
         let measured = match (&self.hydro.hull, &self.hydro.result) {
             (Some(hull), Some(h)) if self.hydro.track.is_current(self.hydro_key()) => {
                 Some((hull.clone(), h.displacement_t))
@@ -3184,13 +3253,16 @@ impl App {
         };
         Some(CurvesInputs {
             hydro: self.hydro.inputs(surface, self.level, self.mode),
-            kg: self.hydro.kg,
+            kg,
             measured,
         })
     }
 
     /// Compute the GZ cross curves on a job ("GZ curves", F5).
     fn start_curves_job(&mut self) {
+        if self.refuse_curves_without_kg() {
+            return;
+        }
         let Some(inputs) = self.curves_inputs() else {
             return;
         };
@@ -3199,6 +3271,16 @@ impl App {
         self.hydro
             .curves_track
             .start(key, move || Ok(compute_cross_curves_for(inputs)));
+    }
+
+    /// The GZ curves need a KG: without one, say so instead of computing.
+    /// Returns true when the curves were refused.
+    fn refuse_curves_without_kg(&mut self) -> bool {
+        if self.surface.is_some() && self.hydro.kg.is_none() {
+            self.status = format!("GZ curves: {KG_UNSET_HINT}");
+            return true;
+        }
+        false
     }
 
     fn install_curves(&mut self, out: CurvesOut, key: u64) {
@@ -3432,7 +3514,14 @@ impl App {
 
     /// Replace the design data; the model becomes unsaved.
     pub fn set_project(&mut self, project: Project) {
+        // A project that carries a KG brings it to the dock; one without
+        // leaves the dock's KG as it is.
+        let carries_kg = project.kg.is_some();
         self.project = project;
+        if carries_kg {
+            self.adopt_project_kg();
+            self.hydro_inputs_changed();
+        }
         self.project_error = None;
         self.dirty = true;
         self.selected_volume = None;
@@ -3934,17 +4023,19 @@ impl App {
         speeds
     }
 
-    pub fn effective_performance_kg(&self) -> f64 {
+    /// The seakeeping KG: the manual value, else the default; `None` while
+    /// no KG is known anywhere.
+    pub fn effective_performance_kg(&self) -> Option<f64> {
         self.perf_state
             .kg
-            .unwrap_or_else(|| self.effective_performance_kg_default())
+            .or_else(|| self.effective_performance_kg_default())
     }
 
     /// The Performance KG without a manual value: the current loading
-    /// condition's fluid KG, else the hydro dock's.
-    fn effective_performance_kg_default(&self) -> f64 {
+    /// condition's fluid KG, else the hydro dock's (which may be unset).
+    fn effective_performance_kg_default(&self) -> Option<f64> {
         match &self.loading_result {
-            Some(r) if self.loading_current() => r.kg_fluid,
+            Some(r) if self.loading_current() => Some(r.kg_fluid),
             _ => self.hydro.kg,
         }
     }
@@ -3959,9 +4050,13 @@ impl App {
         }
     }
 
-    pub fn seakeeping_spec(&self) -> SeakeepingSpec {
+    /// The seakeeping inputs; an error while no KG is known (the pitch
+    /// restoring moment needs one).
+    pub fn seakeeping_spec(&self) -> Result<SeakeepingSpec, String> {
         let draft = self.hydro.options.draft;
-        let kg = self.effective_performance_kg();
+        let kg = self
+            .effective_performance_kg()
+            .ok_or_else(|| format!("seakeeping: {KG_UNSET_HINT}"))?;
         let kyy = if (self.perf_state.kyy_frac - 0.25).abs() < 1e-6 {
             None
         } else {
@@ -3978,14 +4073,14 @@ impl App {
                 .unwrap_or(0.0);
             Some(self.perf_state.kyy_frac * lwl)
         };
-        SeakeepingSpec {
+        Ok(SeakeepingSpec {
             draft,
             speed_kn: self.perf_state.sk_speed_kn,
             kg,
             kyy,
             points: Some(self.perf_state.points),
             ..Default::default()
-        }
+        })
     }
 
     pub fn compute_resistance_for(
@@ -4018,7 +4113,7 @@ impl App {
             .surface
             .as_ref()
             .ok_or_else(|| "no model loaded".to_string())?;
-        let spec = self.seakeeping_spec();
+        let spec = self.seakeeping_spec()?;
         let sea = self.sea_for_job();
         let (rep, irr) = compute_raos_with_sea(surface, &spec, sea.as_ref())?;
         self.perf_state.raos = Some(rep);
@@ -4057,7 +4152,13 @@ impl App {
             Some(s) => s.clone(),
             None => return,
         };
-        let spec = self.seakeeping_spec();
+        let spec = match self.seakeeping_spec() {
+            Ok(spec) => spec,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
         let sea = self.sea_for_job();
 
         let key = self.raos_key();
@@ -4187,13 +4288,33 @@ impl App {
         &mut self.hydro.options
     }
 
+    /// Set the dock KG as the user does: no longer an estimate, and saved
+    /// in the project sidecar.
     pub fn set_kg(&mut self, kg: f64) {
-        self.hydro.kg = kg;
+        self.hydro.kg = Some(kg);
+        self.hydro.kg_estimate = false;
+        if self.project.kg != Some(kg) {
+            self.project.kg = Some(kg);
+            self.dirty = true;
+        }
         self.hydro_inputs_changed();
     }
 
-    pub fn kg(&self) -> f64 {
+    /// The dock KG above the keel; `None` until set (see [`DEMO_KG`]).
+    pub fn kg(&self) -> Option<f64> {
         self.hydro.kg
+    }
+
+    /// The dock KG is the design requirements' estimate.
+    pub fn kg_is_estimate(&self) -> bool {
+        self.hydro.kg.is_some() && self.hydro.kg_estimate
+    }
+
+    /// The largest KG and trim the dock accepts for the current hull: KG up
+    /// to twice its depth, trim to a fifth of its length, never below the
+    /// old fixed limits (10 m, 5 m).
+    pub fn hydro_limits(&self) -> panels::HydroLimits {
+        panels::HydroLimits::for_extents(self.surface.as_ref().map(|s| s.extents()))
     }
 
     /// Refinement level used for display and measurement. Tests drop it to keep
@@ -4231,6 +4352,9 @@ impl App {
     /// Rebuild the GZ curves now, on this thread, instead of waiting for
     /// the dock button's job (tests and the control channel).
     pub fn compute_cross_curves(&mut self) {
+        if self.refuse_curves_without_kg() {
+            return;
+        }
         let Some(inputs) = self.curves_inputs() else {
             return;
         };
