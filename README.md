@@ -264,6 +264,7 @@ waterline:
 | name | vessel | LWL × BWL × T (m) | Δ (t) | Cb | Cp | Cm | Cwp | LCB (% LWL) | KG (m) | source of the targets |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `runabout-6m` | 6.5 m hard-chine outboard runabout, flat transom raked 12° | 5.60 × 2.21 × 0.38 | 1.92 | 0.399 | 0.683 | 0.585 | 0.789 | 41.7 | 0.65 (assumed) | representative of production boats of this size |
+| `trawler-22m` | 22 m steel stern trawler, skeg over the aft third, immersed transom raked 25°, deck, 1 m bulwark (not in hydrostatics); GM 0.83 m, IMO A.749 passes in the Design condition | 19.50 × 6.41 × 2.60 | 173.9 | 0.522 | 0.621 | 0.840 | 0.813 | 47.2 | 2.50 (assumed) | representative of vessels of this size |
 | `wigley` (CLI and tests) | Wigley parabolic hull, L 10 m, B 1 m, D 1 m | 10.00 × 1.00 × 0.625 | 2.83 | 0.442 | 0.666 | 0.664 | 0.666 | 50.0 | 0.35 | closed form: Cb 4/9, Cp = Cm = Cwp 2/3, KB 0.625 T, BM 0.0857 B²/T |
 
 ```console

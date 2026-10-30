@@ -1,0 +1,92 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Lightship (steel hull, machinery, outfit, gantry)",
+        "mass_t": 128.37,
+        "x": 9.136,
+        "y": 0.0,
+        "z": 2.799
+      },
+      "items": [
+        {
+          "name": "Fuel oil",
+          "mass_t": 14.0,
+          "x": 7.0,
+          "y": 0.0,
+          "z": 1.0
+        },
+        {
+          "name": "Fresh water",
+          "mass_t": 3.0,
+          "x": 16.0,
+          "y": 0.0,
+          "z": 1.2
+        },
+        {
+          "name": "Catch in hold",
+          "mass_t": 18.0,
+          "x": 11.0,
+          "y": 0.0,
+          "z": 1.5
+        },
+        {
+          "name": "Ice",
+          "mass_t": 5.0,
+          "x": 11.0,
+          "y": 0.0,
+          "z": 1.6
+        },
+        {
+          "name": "Fishing gear (nets, doors)",
+          "mass_t": 4.0,
+          "x": 1.5,
+          "y": 0.0,
+          "z": 4.0
+        },
+        {
+          "name": "Crew (6) and stores",
+          "mass_t": 1.5,
+          "x": 14.0,
+          "y": 0.0,
+          "z": 4.5
+        }
+      ],
+      "tanks": [],
+      "windage_extra": [],
+      "bilge": "round",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [],
+  "damage_cases": [],
+  "windage": [],
+  "report": {
+    "kg": 2.5,
+    "lcg_x": 9.195,
+    "speeds_kn": [
+      7.0,
+      8.0,
+      9.0,
+      10.0,
+      11.0,
+      12.0
+    ],
+    "include_resistance": true
+  },
+  "requirements": {
+    "name": "22 m stern trawler",
+    "lwl": 19.5,
+    "bwl": 6.4,
+    "draft": 2.6,
+    "depth": 3.4,
+    "displacement_t": 173.0,
+    "cb": 0.52,
+    "lcb_frac": 0.47,
+    "design_speed_kn": 11.0
+  },
+  "kg": 2.5
+}

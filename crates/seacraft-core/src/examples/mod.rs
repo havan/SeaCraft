@@ -48,6 +48,7 @@ use crate::mesh::{ordered, Layer, ProjectSettings, Surface};
 use crate::project::Project;
 
 mod runabout;
+mod trawler;
 mod wigley;
 
 /// The example hulls. Variants whose hull file has not landed yet are not
@@ -89,7 +90,7 @@ impl Example {
             Example::Kayik9m => None,
             Example::Runabout6m => Some(runabout::build),
             Example::Container230m => None,
-            Example::Trawler22m => None,
+            Example::Trawler22m => Some(trawler::build),
             Example::Wigley => Some(wigley::build),
         }
     }
@@ -129,7 +130,9 @@ impl Example {
                 "Hard-chine V-bottom planing boat, flat raked transom for an outboard, 30 kn; KG 0.65 m assumed"
             }
             Example::Container230m => "Bulbous bow and transom stern, KCS particulars, own lines",
-            Example::Trawler22m => "Steel round-bilge fishing vessel with a skeg",
+            Example::Trawler22m => {
+                "Steel round-bilge stern trawler: skeg, raked transom, bulwark; KG 2.50 m assumed"
+            }
             Example::Wigley => {
                 "Parabolic benchmark hull, L 10 m, B 1 m, T 0.625 m; closed-form hydrostatics"
             }
@@ -141,6 +144,7 @@ impl Example {
         match self {
             Example::Kayik9m => "Turan (2022), mean of 12 piyade boats",
             Example::Container230m => "KCS benchmark particulars; lines our own",
+            Example::Trawler22m => "representative of vessels of this size",
             Example::Wigley => "closed form",
             _ => "representative of production boats of this size",
         }
