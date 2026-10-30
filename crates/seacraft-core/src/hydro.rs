@@ -202,6 +202,29 @@ pub fn waterplane_for(keel_z: f64, length: f64, draft: f64, trim: f64, heel_deg:
     Plane::with_normal_point(n, p1)
 }
 
+/// Unit normal of the waterplane at heel `heel_deg` and *level trim*
+/// `level_trim`: the rise of the bow over the stern across `length` measured
+/// against the water surface, so the ship's x axis slopes at
+/// `atan(level_trim / length)` to it.
+///
+/// It is the normal of [`waterplane_for`] with `level_trim = trim · cos φ`,
+/// written so that it stays defined at every heel: `waterplane_for`'s trim is
+/// the waterplane's slope along the hull's own vertical, which no longer
+/// tilts the plane at 90° heel (the plane then contains that vertical).
+pub fn waterplane_normal(length: f64, level_trim: f64, heel_deg: f64) -> Vec3 {
+    let length = length.max(1e-6);
+    let heel = deg_to_rad(heel_deg);
+    Vec3::new(level_trim, -length * heel.sin(), length * heel.cos()).norm()
+}
+
+/// The waterplane with unit normal `n` at signed offset `offset` along it:
+/// points with `n · p <= offset` are submerged. Unlike a draft above the keel,
+/// the offset submerges more of the hull as it grows at *every* heel, past
+/// 90° and at exactly 90° included.
+pub fn waterplane_at_offset(n: Vec3, offset: f64) -> Plane {
+    Plane { n, d: -offset }
+}
+
 /// Clip a triangle to the half space `side <= 0`.
 fn clip_below(tri: [Vec3; 3], plane: &Plane) -> Vec<Vec3> {
     let s = [plane.side(tri[0]), plane.side(tri[1]), plane.side(tri[2])];
@@ -620,15 +643,38 @@ impl Hull {
     /// [`Hull::hydrostatics`] builds. This is what a floating-condition solver
     /// iterates on; `b` is in model coordinates.
     pub fn buoyancy(&self, draft: f64, trim: f64, heel_deg: f64) -> (f64, Vec3) {
-        let wp = waterplane_for(self.keel, self.length, draft, trim, heel_deg);
+        self.buoyancy_in(&waterplane_for(
+            self.keel,
+            self.length,
+            draft,
+            trim,
+            heel_deg,
+        ))
+    }
+
+    /// [`Hull::buoyancy`] below an arbitrary waterplane (`side <= 0` is
+    /// submerged), for planes a draft above the keel cannot describe.
+    pub fn buoyancy_in(&self, wp: &Plane) -> (f64, Vec3) {
         let origin = wp.project(Vec3::ZERO);
-        let (volume, moment, _, _, _) = integrate(&self.verts, &self.tris, &wp);
+        let (volume, moment, _, _, _) = integrate(&self.verts, &self.tris, wp);
         let b = if volume > 1e-12 {
             moment / volume + origin
         } else {
             Vec3::ZERO
         };
         (volume, b)
+    }
+
+    /// Lowest and highest `n · p` over the refined hull: the waterplane
+    /// offsets ([`waterplane_at_offset`]) at which it is dry and fully
+    /// submerged.
+    pub fn extent_along(&self, n: Vec3) -> (f64, f64) {
+        self.verts
+            .iter()
+            .map(|p| n.dot(*p))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), s| {
+                (lo.min(s), hi.max(s))
+            })
     }
 
     fn hydrostatics_inner(&self, opts: &HydroOptions) -> Hydrostatics {

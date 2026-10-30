@@ -542,3 +542,48 @@ the irregular frequencies in the theory of oscillating bodies in a free surface"
 ### Provenance
 Derived by Claude for the round-3 fixes (2026-10-24); hand and Python checks, not published values. Savitsky,
 "Hydrodynamic design of planing hulls", Marine Technology 1(1), 1964.
+
+---
+
+## 20. Large-Angle GZ of a Box: Past 90° and at Exactly 90° (R8-1a)
+
+### Formula
+Closed box section, beam $b$, depth $d$, floating half full ($T = d/2$) with $G$ at the centre $C$ of the section
+($KG = d/2$), heel $\phi$:
+
+- The section is point-symmetric about $C$, so every line through $C$ halves its area: the waterline passes through
+  $C$ at every heel.
+- Wall-sided, $\tan\phi \le d/b$: $GZ = \sin\phi\,(GM + \tfrac12 BM \tan^2\phi)$, $BM = b^2/(6d)$, $GM = b^2/(6d) - d/4$.
+- Deck and bottom cut, $\tan\phi \ge d/b$: the body turned 90° is a box of beam $d$, depth $b$ heeled by
+  $\psi = \phi - 90^\circ$, and the righting moment does not depend on how the body axes are labelled, so
+  $GZ = -\cos\phi\,(GM' + \tfrac12 BM'\cot^2\phi)$ with $BM' = d^2/(6b)$, $GM' = d^2/(6b) - b/4$. Both forms equal
+  $\sin\phi\,(b^2 - d^2)/(6d)$ at $\tan\phi = d/b$, so the curve is continuous ($\sin\phi$ for $b = 4$, $d = 2$).
+- Turning any box 180° about its axis maps it and a mid-depth $G$ onto themselves: $GZ(\phi + 180^\circ) = GZ(\phi)$ at
+  every displacement; with $GZ(-\phi) = -GZ(\phi)$, $GZ(180^\circ - \phi) = -GZ(\phi)$ and $GZ(90^\circ) = GZ(180^\circ) = 0$.
+- On its side (90°) the half-full box floats at $T' = b/2$; free to trim about an $LCG$ off $L/2$ it needs the level
+  trim (bow over stern, against the water) $(L/2 - LCG)\cdot 12\,T'/L$ (§3 with $T'$), and every slice is a rectangle
+  centred across the water surface, so $GZ = 0$, $KN = KG$.
+- $GZ$ is measured along $t = n \times \hat x$ (across the hull, in the water surface), positive towards smaller heel at
+  every heel; $KN = GZ + KG \sin\phi$.
+
+### Test Locations
+- [`crates/seacraft-core/tests/analytic.rs::a_half_full_box_has_the_analytic_gz_from_0_to_180_degrees`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/tests/analytic.rs::a_light_box_with_g_at_mid_depth_rights_symmetrically_past_90_degrees`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/tests/analytic.rs::a_box_on_its_side_trims_freely_at_exactly_90_degrees`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/tests/analytic.rs::the_half_full_box_oracle_is_continuous_and_symmetric`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/src/examples/yacht.rs::yacht_vanishing_stability_is_past_110_degrees`](../crates/seacraft-core/src/examples/yacht.rs)
+  (cross curves to 180° against the hull turned upside down, $GZ(h) = -GZ_{inv}(180^\circ - h)$, within $10^{-4}$ m)
+
+### Numbers Used
+- Box $10 \times 4 \times 2$ m, $T = 1$ m, $KG = 1$ m, 40 t at $\rho = 1000$: heels 0°–180° every 5°, the knee
+  $\arctan(1/2) = 26.565^\circ$ and $153.435^\circ$, 89°, 90°, 91°, 135.001°; fixed and free to trim ($LCG = 5$ m);
+  $|GZ - GZ_{\text{analytic}}| < 10^{-6}$ m. Samples: $GZ(45^\circ) = 0.530330$, $GZ(60^\circ) = 0.402778$,
+  $GZ(91^\circ) = -0.014543$, $GZ(120^\circ) = -0.402778$ m.
+- Light box $T = 0.6$ m, $KG = 1$ m: $|GZ(\phi) + GZ(180^\circ - \phi)| < 10^{-6}$ for $\phi = 0, 5, \dots, 180^\circ$,
+  wall-sided values at 5°, 10°, 15° ($\tan\phi \le 2T/b$) and their mirrors.
+- On its side, $LCG = 4$ m: level trim $2.4$ m, $|LCB - 4| < 10^{-5}$, $GZ = 0$, $KN = 1$ m.
+
+### Provenance
+Derived by Claude for R8-1a (2026-10-31). The closed form and both symmetries were checked against an independent
+Python script that clips the rectangular section by the heeled waterline and bisects the offset for the area
+(agreement $2 \times 10^{-16}$ at 18 heels from 0° to 180°; light-box symmetry $6 \times 10^{-16}$). Not published values.

@@ -444,10 +444,7 @@ mod tests {
                 100.0 * o / h.volume_m3
             );
         }
-        let heels: Vec<f64> = (0..=18)
-            .map(|k| (10.0 * k as f64).min(179.0))
-            .map(|h| if h == 90.0 { 89.0 } else { h })
-            .collect();
+        let heels: Vec<f64> = (0..=18).map(|k| 10.0 * k as f64).collect();
         let gz: Vec<String> = gz_curve(&s, h.displacement_t, h.lcb.x, &heels)
             .iter()
             .map(|(a, g)| format!("{a:.0}:{g:.3}"))
@@ -511,41 +508,52 @@ mod tests {
         assert!((2.0 * max.y - 3.4).abs() < 1e-9, "BOA {}", 2.0 * max.y);
     }
 
+    /// GZ free to trim at `disp_t`, `kg` and `lcg`, straight from the cross
+    /// curves at every heel — 90° and past it included.
+    fn gz_at_heels(s: &Surface, disp_t: f64, kg: f64, lcg: f64, heels: &[f64]) -> Vec<f64> {
+        let hull = Hull::new(s, checks::level3());
+        let base = HydroOptions::from_surface(s, checks::level3());
+        cross_curves(
+            &hull,
+            heels,
+            &[disp_t],
+            &StabilityCondition::free_to_trim(kg, lcg),
+            &base,
+        )
+        .iter()
+        .map(|c| {
+            c.points[0]
+                .gz
+                .unwrap_or_else(|| panic!("no GZ at {}°", c.heel_deg))
+        })
+        .collect()
+    }
+
     /// The GZ curve free to trim at `disp_t`, KG and `lcg` from 0° to 180°.
-    /// The stability solver places the waterplane by a draft above the keel,
-    /// which only works up to 90° (past it the water moves down the hull as
-    /// the "draft" grows). Past 90° the curve is read off the same hull
-    /// turned upside down (rotated 180° about x, so its keel datum is the
-    /// old deck top): heel `h` of the yacht is heel `h − 180°` of the
-    /// inverted hull. GZ is the lever towards smaller heel, so
-    /// `GZ(h) = GZ_inv(h − 180°)`, and as GZ is odd in heel,
-    /// `GZ(h) = −GZ_inv(180° − h)`.
     fn gz_curve(s: &Surface, disp_t: f64, lcg: f64, heels: &[f64]) -> Vec<(f64, f64)> {
+        let gz = gz_at_heels(s, disp_t, KG, lcg, heels);
+        heels.iter().copied().zip(gz).collect()
+    }
+
+    /// The same curve read off the hull turned upside down (rotated 180°
+    /// about x, so its keel datum is the old deck top): heel `h` of the yacht
+    /// is heel `h − 180°` of the inverted hull. GZ is the lever towards
+    /// smaller heel, so `GZ(h) = GZ_inv(h − 180°)`, and as GZ is odd in heel,
+    /// `GZ(h) = −GZ_inv(180° − h)`. Each heel is then solved on the other
+    /// side of 90°, an independent check of the large-angle solve.
+    fn gz_curve_inverted(s: &Surface, disp_t: f64, lcg: f64, heels: &[f64]) -> Vec<(f64, f64)> {
         let mut inv = s.clone();
         for p in &mut inv.points {
             p.p = Vec3::new(p.p.x, -p.p.y, -p.p.z);
         }
-        let curve = |s: &Surface, kg: f64, heels: &[f64]| -> Vec<f64> {
-            let hull = Hull::new(s, checks::level3());
-            let base = HydroOptions::from_surface(s, checks::level3());
-            cross_curves(
-                &hull,
-                heels,
-                &[disp_t],
-                &StabilityCondition::free_to_trim(kg, lcg),
-                &base,
-            )
-            .iter()
-            .map(|c| c.points[0].gz.expect("GZ"))
-            .collect()
-        };
-        let (up, down): (Vec<f64>, Vec<f64>) = heels.iter().partition(|&&h| h < 90.0);
         let kg_inv = s.highest_hydrostatics_point() - KG;
-        let down_inv: Vec<f64> = down.iter().map(|h| 180.0 - h).collect();
-        let gz = curve(s, KG, &up)
-            .into_iter()
-            .chain(curve(&inv, kg_inv, &down_inv).into_iter().map(|g| -g));
-        up.iter().chain(&down).copied().zip(gz).collect()
+        let mirrored: Vec<f64> = heels.iter().map(|h| 180.0 - h).collect();
+        let gz = gz_at_heels(&inv, disp_t, kg_inv, lcg, &mirrored);
+        heels
+            .iter()
+            .copied()
+            .zip(gz.into_iter().map(|g| -g))
+            .collect()
     }
 
     /// The angle of vanishing stability with the deck closed, free to trim
@@ -553,21 +561,26 @@ mod tests {
     #[test]
     fn yacht_vanishing_stability_is_past_110_degrees() {
         let (s, _) = build();
-        // 90° itself has no waterplane draft; 89° and 91° straddle the
-        // switch to the inverted hull, so they also check that it is seamless.
-        let heels: Vec<f64> = (0..=36)
-            .map(|k| 5.0 * k as f64)
-            .flat_map(|h| if h == 90.0 { vec![89.0, 91.0] } else { vec![h] })
-            .collect();
+        // Every 5° from 0° to 180°, 90° itself included, with 89° and 91°
+        // either side of it to check the curve is continuous there.
+        let mut heels: Vec<f64> = (0..=36).map(|k| 5.0 * k as f64).collect();
+        heels.extend([89.0, 91.0]);
+        heels.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let gz = gz_curve(&s, DESIGN_DISPLACEMENT_T, DESIGN_LCG, &heels);
-        for (h, g) in &gz {
-            println!("yacht GZ({h:5.1}°) = {g:+.4}");
+        let inverted = gz_curve_inverted(&s, DESIGN_DISPLACEMENT_T, DESIGN_LCG, &heels);
+        for ((h, g), (_, gi)) in gz.iter().zip(&inverted) {
+            println!("yacht GZ({h:5.1}°) = {g:+.4}  (inverted hull {gi:+.4})");
+            assert!(
+                (g - gi).abs() < 1e-4,
+                "{h}°: GZ {g} but the inverted hull gives {gi}"
+            );
         }
         let at = |h: f64| gz.iter().find(|p| p.0 == h).unwrap().1;
         assert!(
-            (at(89.0) - at(91.0)).abs() < 0.05,
-            "GZ jumps across 90°: {} vs {}",
+            (at(89.0) - at(90.0)).abs() < 0.03 && (at(91.0) - at(90.0)).abs() < 0.03,
+            "GZ jumps across 90°: {} / {} / {}",
             at(89.0),
+            at(90.0),
             at(91.0)
         );
         let avs = gz

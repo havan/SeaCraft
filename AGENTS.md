@@ -208,6 +208,17 @@ These were real failures in this codebase; the fixes are load-bearing.
   the old fixed-trim behaviour for speed and compatibility. The check is the
   analytic box: at 2 m draft, asking a 10 m box for `LCB` 4.0 m must trim 2.4 m
   bow-up (see `tests/analytic.rs`).
+* **A draft above the keel cannot place every waterplane.** Past 90° heel the
+  submerged volume *falls* as that draft grows (the solve returned draft 0 and
+  a plausible GZ); at 90° the draft does not move the plane (no solution); a
+  light hull at a steep heel needs the plane below the keel on the centreline
+  (clamped to 0: the demo at 30 % of its displacement lost 0.15 m of GZ at
+  55–60°); and
+  `waterplane_for`'s trim stops tilting the plane at 90°. `stability` falls
+  back to the plane offset along its normal, bracketed by
+  `Hull::extent_along`, with the free-trim loop on the *level* trim
+  (`hydro::waterplane_normal`). The check is the half-full box with `G` at
+  its centre: closed-form GZ, `GZ(180° − φ) = −GZ(φ)` (`docs/oracles.md` §20).
 * **Chained loops come out in arbitrary directions.** Two pontoons walked
   opposite ways cancelled each other's waterplane. `hydro::loop_moments` and
   `clipped_loop_moments` take each loop's sign from its nesting

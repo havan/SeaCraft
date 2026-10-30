@@ -19,9 +19,20 @@
 //!
 //! Both use the same fast path (`Hull::buoyancy`), so a free-trim curve costs
 //! about four draft solves instead of one.
+//!
+//! **Large angles.** A draft above the keel places the waterplane only while
+//! the plane faces up and cuts the hull's vertical above the keel. Past 90°
+//! the submerged volume *falls* as that draft grows, at 90° the draft does
+//! not move the plane at all, and a light hull at a steep heel needs the
+//! plane to cross the centreline below the keel. Those conditions are solved
+//! on the plane's offset along its own normal instead, bracketed by the
+//! hull's extent along it — the volume grows with the offset at every heel —
+//! with the free-trim loop on the *level* trim ([`waterplane_normal`]), which
+//! still tilts the plane at 90°. Every condition the draft solve handles is
+//! left on it, bit for bit.
 
-use crate::hydro::{waterplane_for, Hull, HydroOptions};
-use crate::math::{deg_to_rad, Vec3};
+use crate::hydro::{waterplane_at_offset, waterplane_for, waterplane_normal, Hull, HydroOptions};
+use crate::math::{deg_to_rad, Plane, Vec3};
 use serde::Serialize;
 
 pub use crate::weather::{
@@ -35,11 +46,15 @@ pub use crate::weather::{
 pub struct CrossCurvePoint {
     /// Displacement in tonnes.
     pub displacement_t: f64,
-    /// Draft required to float at this displacement and heel.
+    /// Draft required to float at this displacement and heel, as
+    /// [`waterplane_for`] takes it: negative when the waterplane cuts the
+    /// hull's vertical below the keel, and `None` (with `kn`/`gz` still set)
+    /// within [`MIN_COS_HEEL`] of ±90°, where no draft describes the plane.
+    /// See [`Waterline`] for its meaning past 90°.
     pub draft: Option<f64>,
     /// Trim required to float at this displacement and heel, in metres and
-    /// positive bow-up. Equal to the requested trim unless the curve is free
-    /// to trim.
+    /// positive bow-up (bow-down past 90°, see [`Waterline`]). Equal to the
+    /// requested trim unless the curve is free to trim; `None` with `draft`.
     pub trim_m: Option<f64>,
     /// Righting lever from the keel, in metres.
     pub kn: Option<f64>,
@@ -98,8 +113,62 @@ pub struct FloatingCondition {
     pub trim: f64,
 }
 
-/// Solve the draft on a bracket that is already known to straddle the target.
-/// Returns `None` when it does not, so the caller can widen.
+/// Below this `|cos φ|` — within about 6e-5° of ±90° heel — a draft above
+/// the keel no longer places the waterplane: the plane (nearly) contains the
+/// hull's vertical, so moving along it does not move the plane.
+pub const MIN_COS_HEEL: f64 = 1e-6;
+
+/// A solved floating waterplane at one heel.
+///
+/// The plane exists at every heel. The `(draft, trim)` pair that describes it
+/// to [`waterplane_for`] — the plane's height above the keel at `x = L/2` on
+/// the centreline and its slope, both along the hull's own vertical — does
+/// not within [`MIN_COS_HEEL`] of ±90°, where `floating` is `None`. Past 90°
+/// the pair still describes the plane, in the hull's frame: the hull is
+/// submerged *above* that height, and a positive trim puts the bow down.
+#[derive(Debug, Clone, Copy)]
+pub struct Waterline {
+    /// The waterplane in model coordinates; `side <= 0` is submerged.
+    pub plane: Plane,
+    /// The same plane as a [`waterplane_for`] draft and trim, where it has one.
+    pub floating: Option<FloatingCondition>,
+}
+
+impl Waterline {
+    /// The plane [`waterplane_for`] places at `draft` and `trim`.
+    fn from_draft(hull: &Hull, draft: f64, trim: f64, heel_deg: f64) -> Self {
+        Self {
+            plane: waterplane_for(hull.keel, hull.length, draft, trim, heel_deg),
+            floating: Some(FloatingCondition { draft, trim }),
+        }
+    }
+
+    /// The plane at level trim `level_trim` ([`waterplane_normal`]) and offset
+    /// `s`. `trim` is the [`waterplane_for`] trim when the caller holds one;
+    /// otherwise it is `level_trim / cos φ`.
+    fn from_offset(hull: &Hull, level_trim: f64, heel_deg: f64, s: f64, trim: Option<f64>) -> Self {
+        let n = waterplane_normal(hull.length, level_trim, heel_deg);
+        let cos = deg_to_rad(heel_deg).cos();
+        let floating = (cos.abs() >= MIN_COS_HEEL).then(|| {
+            let trim = trim.unwrap_or(level_trim / cos);
+            // `waterplane_for` puts (0, 0, keel + draft + trim/2) on the
+            // plane, where `n · p = n.z · z = s`.
+            FloatingCondition {
+                draft: s / n.z - hull.keel - 0.5 * trim,
+                trim,
+            }
+        });
+        Self {
+            plane: waterplane_at_offset(n, s),
+            floating,
+        }
+    }
+}
+
+/// Solve `volume(s) = target_volume` for a volume that never falls as `s`
+/// grows, on a bracket hoped to straddle it. Returns `None` when it does not,
+/// so the caller can widen — except that a target already met at `lo` returns
+/// `Some(floor)` when `lo` is at or below `floor` (the dry hull).
 ///
 /// Displacement is monotone in draft and, for a wall-sided hull, very nearly
 /// linear, so a secant step inside the bracket converges in a handful of
@@ -107,18 +176,17 @@ pub struct FloatingCondition {
 /// safe: a secant landing outside the middle 90 % of the interval is replaced
 /// by the bisection midpoint, so a volume jump (a chine at the waterline)
 /// cannot stall it.
-fn draft_on_bracket(
-    hull: &Hull,
+fn root_on_bracket(
+    volume: impl Fn(f64) -> f64,
     target_volume: f64,
-    trim: f64,
-    heel_deg: f64,
     mut lo: f64,
     mut hi: f64,
+    floor: Option<f64>,
 ) -> Option<f64> {
-    let mut vlo = hull.displaced_volume(lo, trim, heel_deg);
-    let mut vhi = hull.displaced_volume(hi, trim, heel_deg);
+    let mut vlo = volume(lo);
+    let mut vhi = volume(hi);
     if vlo >= target_volume {
-        return if lo <= 0.0 { Some(0.0) } else { None };
+        return floor.filter(|&f| lo <= f);
     }
     if vhi < target_volume {
         return None;
@@ -130,7 +198,7 @@ fn draft_on_bracket(
         if !d.is_finite() || d <= lo + margin || d >= hi - margin {
             d = 0.5 * (lo + hi);
         }
-        let v = hull.displaced_volume(d, trim, heel_deg);
+        let v = volume(d);
         if (v - target_volume).abs() <= tol {
             return Some(d);
         }
@@ -148,8 +216,29 @@ fn draft_on_bracket(
     Some(0.5 * (lo + hi))
 }
 
-/// Find the draft at which the hull displaces `target_volume` (m3).
-pub fn solve_draft(hull: &Hull, target_volume: f64, trim: f64, heel_deg: f64) -> Option<f64> {
+/// The draft solve on a bracket that must straddle a solution above `lo`.
+/// A target already met at `lo` is `None`, not a clamp to `lo`: the real
+/// waterplane then cuts the hull's vertical lower down — below the keel for
+/// a light hull at a steep heel or a trimmed one — and the offset solve
+/// ([`offset_solve`]) finds it.
+fn draft_on_bracket(
+    hull: &Hull,
+    target_volume: f64,
+    trim: f64,
+    heel_deg: f64,
+    lo: f64,
+    hi: f64,
+) -> Option<f64> {
+    let volume = |d: f64| hull.displaced_volume(d, trim, heel_deg);
+    root_on_bracket(volume, target_volume, lo, hi, None)
+}
+
+/// The draft above the keel that floats `target_volume`, searched upwards
+/// from zero. This is the fast path for a waterplane that faces up and cuts
+/// the hull's vertical above the keel — every upright and moderately heeled
+/// condition — and the reference every earlier result was computed with.
+/// `None` when no such draft exists.
+fn draft_above_keel(hull: &Hull, target_volume: f64, trim: f64, heel_deg: f64) -> Option<f64> {
     let lo = 0.0f64;
     let mut hi = (hull.model_max.z - hull.keel).max(0.1) * 2.0 + 1.0;
     // Expand until the hull floats the target displacement.
@@ -162,13 +251,76 @@ pub fn solve_draft(hull: &Hull, target_volume: f64, trim: f64, heel_deg: f64) ->
     draft_on_bracket(hull, target_volume, trim, heel_deg, lo, hi)
 }
 
+/// The offset along the unit normal `n` ([`waterplane_at_offset`]) at which
+/// the hull floats `target_volume`. The bracket is the hull's own extent
+/// along `n` — dry at one end, fully submerged at the other — and the volume
+/// grows with the offset at every heel, so this solves whenever the hull can
+/// float the volume at all: past 90°, at exactly 90°, and below the keel. A
+/// `hint` from a neighbouring solve is tried on a narrow bracket first.
+fn offset_solve(hull: &Hull, target_volume: f64, n: Vec3, hint: Option<f64>) -> Option<f64> {
+    let (dry, full) = hull.extent_along(n);
+    let volume = |s: f64| hull.buoyancy_in(&waterplane_at_offset(n, s)).0;
+    if let Some(s) = hint {
+        let w = (0.25 * (s - dry)).clamp(0.02, 0.5);
+        let (lo, hi) = ((s - w).max(dry), (s + w).min(full));
+        if let Some(s) = root_on_bracket(volume, target_volume, lo, hi, Some(dry)) {
+            return Some(s);
+        }
+    }
+    root_on_bracket(volume, target_volume, dry, full, Some(dry))
+}
+
+/// Float `target_volume` at heel `heel_deg` holding the [`waterplane_for`]
+/// trim: the draft above the keel where that works, the plane offset
+/// everywhere else.
+fn solve_fixed(hull: &Hull, target_volume: f64, trim: f64, heel_deg: f64) -> Option<Waterline> {
+    let cos = deg_to_rad(heel_deg).cos();
+    if cos > MIN_COS_HEEL {
+        if let Some(draft) = draft_above_keel(hull, target_volume, trim, heel_deg) {
+            return Some(Waterline::from_draft(hull, draft, trim, heel_deg));
+        }
+    }
+    let level = trim * cos;
+    let n = waterplane_normal(hull.length, level, heel_deg);
+    let s = offset_solve(hull, target_volume, n, None)?;
+    Some(Waterline::from_offset(hull, level, heel_deg, s, Some(trim)))
+}
+
+/// Find the draft at which the hull displaces `target_volume` (m3) at the
+/// given trim and heel. The draft is negative when the waterplane cuts the
+/// hull's vertical below the keel. `None` when the hull cannot float the
+/// volume, or within [`MIN_COS_HEEL`] of ±90° heel, where no draft describes
+/// the waterplane — [`solve_waterline`] covers that heel.
+pub fn solve_draft(hull: &Hull, target_volume: f64, trim: f64, heel_deg: f64) -> Option<f64> {
+    solve_fixed(hull, target_volume, trim, heel_deg)?
+        .floating
+        .map(|f| f.draft)
+}
+
+/// Float `target_volume` at heel `heel_deg`, holding the trim or free to trim
+/// as `cond` says, and return the waterplane — which, unlike a draft, exists
+/// at every heel.
+pub fn solve_waterline(
+    hull: &Hull,
+    target_volume: f64,
+    heel_deg: f64,
+    cond: &StabilityCondition,
+) -> Option<Waterline> {
+    match cond.lcg_x {
+        Some(lcg) => solve_free(hull, target_volume, heel_deg, lcg, cond.trim),
+        None => solve_fixed(hull, target_volume, cond.trim, heel_deg),
+    }
+}
+
 /// Solve draft *and* trim so the hull floats `target_volume` with the
 /// longitudinal centre of buoyancy at `lcg_x`.
 ///
 /// Outer secant on the trim (the `LCB`/trim relation is almost linear), inner
 /// bisection on the draft for each trim. Returns `None` when no trim within
 /// ±45 % of the length puts `LCB` on `lcg_x` — an unreachable centre of
-/// gravity, not a solver wobble.
+/// gravity, not a solver wobble — and within [`MIN_COS_HEEL`] of ±90° heel,
+/// where no draft and trim describe the waterplane ([`solve_waterline`]
+/// covers that heel).
 pub fn solve_floating(
     hull: &Hull,
     target_volume: f64,
@@ -176,7 +328,46 @@ pub fn solve_floating(
     lcg_x: f64,
     trim_hint: f64,
 ) -> Option<FloatingCondition> {
-    let max_trim = (0.45 * hull.length).max(0.01);
+    solve_free(hull, target_volume, heel_deg, lcg_x, trim_hint)?.floating
+}
+
+/// The free-to-trim solve at any heel: on the [`waterplane_for`] draft and
+/// trim where they work, otherwise on the plane offset and the level trim
+/// ([`waterplane_normal`]). The level trim is the one that still tilts the
+/// plane near 90° heel, where `waterplane_for`'s trim needs `1 / cos φ` times
+/// as much for the same tilt and stops tilting it at all at 90°.
+fn solve_free(
+    hull: &Hull,
+    target_volume: f64,
+    heel_deg: f64,
+    lcg_x: f64,
+    trim_hint: f64,
+) -> Option<Waterline> {
+    let cos = deg_to_rad(heel_deg).cos();
+    if cos > MIN_COS_HEEL {
+        if let Some(fc) = free_by_draft(hull, target_volume, heel_deg, lcg_x, trim_hint) {
+            return Some(Waterline::from_draft(hull, fc.draft, fc.trim, heel_deg));
+        }
+    }
+    // One (level trim -> offset, residual) sample, as in `free_by_draft`.
+    let sample = |level: f64, hint: Option<f64>| -> Option<(f64, f64)> {
+        let n = waterplane_normal(hull.length, level, heel_deg);
+        let s = offset_solve(hull, target_volume, n, hint)?;
+        let (_, b) = hull.buoyancy_in(&waterplane_at_offset(n, s));
+        Some((s, b.x - lcg_x))
+    };
+    let (s, level) = secant_on_trim(hull.length, trim_hint * cos, sample)?;
+    Some(Waterline::from_offset(hull, level, heel_deg, s, None))
+}
+
+/// The free-to-trim solve on the [`waterplane_for`] draft and trim.
+fn free_by_draft(
+    hull: &Hull,
+    target_volume: f64,
+    heel_deg: f64,
+    lcg_x: f64,
+    trim_hint: f64,
+) -> Option<FloatingCondition> {
     // One (trim -> draft, residual) sample: solve the volume first, then read
     // the LCB. A `draft_hint` from the previous trim keeps the draft bracket
     // tight, which halves the integrations a free-trim curve costs.
@@ -190,18 +381,28 @@ pub fn solve_floating(
         let (_, b) = hull.buoyancy(draft, trim, heel_deg);
         Some((draft, b.x - lcg_x))
     };
+    secant_on_trim(hull.length, trim_hint, sample)
+        .map(|(draft, trim)| FloatingCondition { draft, trim })
+}
 
+/// The outer loop of a free-to-trim solve: find the trim at which
+/// `sample(trim, hint) = (state, LCB − LCG)` has a zero residual, with the
+/// trim kept within ±45 % of `length`. `hint` is the previous sample's state
+/// (its draft or offset). Returns `(state, trim)`.
+fn secant_on_trim(
+    length: f64,
+    trim_hint: f64,
+    sample: impl Fn(f64, Option<f64>) -> Option<(f64, f64)>,
+) -> Option<(f64, f64)> {
+    let max_trim = (0.45 * length).max(0.01);
     let mut t0 = trim_hint.clamp(-max_trim, max_trim);
     let (d0, mut r0) = sample(t0, None)?;
     if r0.abs() < 1e-6 {
-        return Some(FloatingCondition {
-            draft: d0,
-            trim: t0,
-        });
+        return Some((d0, t0));
     }
     // Probe in one direction, then the other if the first is blocked by the
     // clamp, to get a secant pair.
-    let step = (0.05 * hull.length).clamp(1e-3, max_trim);
+    let step = (0.05 * length).clamp(1e-3, max_trim);
     let mut t1 = (t0 + step).clamp(-max_trim, max_trim);
     if (t1 - t0).abs() < 1e-9 {
         t1 = (t0 - step).clamp(-max_trim, max_trim);
@@ -230,17 +431,14 @@ pub fn solve_floating(
             t2 = if lo.is_finite() && hi.is_finite() {
                 0.5 * (lo + hi)
             } else if lo.is_finite() {
-                (lo + 0.25 * hull.length).min(max_trim)
+                (lo + 0.25 * length).min(max_trim)
             } else {
-                (hi - 0.25 * hull.length).max(-max_trim)
+                (hi - 0.25 * length).max(-max_trim)
             };
         }
         let (d2, r2) = sample(t2, Some(d1))?;
         if r2.abs() < 1e-6 {
-            return Some(FloatingCondition {
-                draft: d2,
-                trim: t2,
-            });
+            return Some((d2, t2));
         }
         if r2 <= 0.0 {
             lo = t2;
@@ -384,30 +582,24 @@ fn cross_curve_point(
     // `hydro::compute` and the loading-condition solve.
     let target_volume =
         disp_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6));
-    let solved = match cond.lcg_x {
-        Some(lcg) => solve_floating(hull, target_volume, heel, lcg, cond.trim),
-        None => solve_draft(hull, target_volume, cond.trim, heel).map(|draft| FloatingCondition {
-            draft,
-            trim: cond.trim,
-        }),
-    };
-    let Some(fc) = solved else {
+    let Some(wl) = solve_waterline(hull, target_volume, heel, cond) else {
         return none;
     };
     // Only the centre of buoyancy is needed, so take the fast path:
     // a full `hydrostatics` call would also chain the waterline and cut
     // every station, none of which a righting lever uses.
-    let (_, b) = hull.buoyancy(fc.draft, fc.trim, heel);
-    let wp = waterplane_for(hull.keel, hull.length, fc.draft, fc.trim, heel);
-    let t = wp.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
+    let (_, b) = hull.buoyancy_in(&wl.plane);
+    // The lever arm runs along the water surface, across the hull: `GZ > 0`
+    // turns the hull back towards smaller heel at any heel, past 90° too.
+    let t = wl.plane.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
     let g = Vec3::new(0.0, 0.0, hull.keel + cond.kg);
     let gz = (b - g).dot(t);
     let kn = gz + cond.kg * deg_to_rad(heel).sin();
     if gz.is_finite() && kn.is_finite() {
         CrossCurvePoint {
             displacement_t: disp_t,
-            draft: Some(fc.draft),
-            trim_m: Some(fc.trim),
+            draft: wl.floating.map(|f| f.draft),
+            trim_m: wl.floating.map(|f| f.trim),
             kn: Some(kn),
             gz: Some(gz),
         }

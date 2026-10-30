@@ -423,3 +423,226 @@ fn parabola_interpolated_angle_of_max_gz_on_synthetic_curve() {
         c.max_gz_30_plus_m
     );
 }
+
+/// Analytic `GZ` of a closed box section (beam `b`, depth `d`) floating half
+/// full (`T = d/2`) with `G` at the centre of the section, `KG = d/2`, at any
+/// heel `φ` (degrees, either sign, any turn). See `docs/oracles.md` §20.
+///
+/// * The section is point-symmetric about its centre `C`, so every line
+///   through `C` halves its area: half full, the waterline passes through `C`
+///   at every heel.
+/// * Wall-sided regime, `tan φ ≤ d/b` (the waterline meets both sides):
+///   `GZ = sin φ (GM + ½ BM tan² φ)`, with `BM = b²/(12T) = b²/(6d)`,
+///   `KB = T/2 = d/4` and `GM = KB + BM − KG = b²/(6d) − d/4`.
+/// * Past it, `tan φ ≥ d/b`, the waterline meets the deck and the bottom.
+///   Turned 90° the same body is a box of beam `d` and depth `b` heeled by
+///   `ψ = φ − 90°`, and the physical righting moment does not depend on how
+///   the body axes are labelled: `GZ(φ) = GZ'(φ − 90°)`, the primed box in its
+///   own wall-sided regime with `GM' = d²/(6b) − b/4`, `BM' = d²/(6b)`:
+///   `GZ = −cos φ (GM' + ½ BM' cot² φ)`. The two forms agree at
+///   `tan φ = d/b`, so the curve is continuous.
+/// * Turning the box 180° about its axis maps it and `G` onto themselves, so
+///   `GZ(φ + 180°) = GZ(φ)`; with the mirror symmetry `GZ(−φ) = −GZ(φ)` that
+///   is `GZ(180° − φ) = −GZ(φ)`, hence `GZ(90°) = GZ(180°) = 0`.
+fn half_full_box_gz(b: f64, d: f64, heel_deg: f64) -> f64 {
+    // Reduce to [0°, 90°] with the two symmetries.
+    let mut phi = heel_deg.rem_euclid(360.0);
+    let mut sign = 1.0;
+    if phi > 180.0 {
+        phi -= 180.0; // GZ(φ + 180°) = GZ(φ)
+    }
+    if phi > 90.0 {
+        phi = 180.0 - phi; // GZ(180° − φ) = −GZ(φ)
+        sign = -1.0;
+    }
+    let r = phi.to_radians();
+    let gz = if r.tan() <= d / b {
+        let bm = b * b / (6.0 * d);
+        let gm = bm - d / 4.0;
+        r.sin() * (gm + 0.5 * bm * r.tan().powi(2))
+    } else {
+        let bm = d * d / (6.0 * b);
+        let gm = bm - b / 4.0;
+        let cot = r.cos() / r.sin();
+        -r.cos() * (gm + 0.5 * bm * cot * cot)
+    };
+    sign * gz
+}
+
+#[test]
+fn the_half_full_box_oracle_is_continuous_and_symmetric() {
+    let (b, d): (f64, f64) = (4.0, 2.0);
+    let knee = (d / b).atan().to_degrees();
+    let below = half_full_box_gz(b, d, knee - 1e-9);
+    let above = half_full_box_gz(b, d, knee + 1e-9);
+    assert!((below - above).abs() < 1e-6, "{below} vs {above}");
+    // At the knee both forms give sin φ · (GM + ½ BM tan² φ) = sin φ here.
+    assert!((below - knee.to_radians().sin()).abs() < 1e-9);
+    for h in [0.0, 10.0, 40.0, 75.0, 90.0] {
+        let (a, m) = (half_full_box_gz(b, d, h), half_full_box_gz(b, d, 180.0 - h));
+        assert!((a + m).abs() < 1e-12, "{h}°");
+        assert!((half_full_box_gz(b, d, -h) + a).abs() < 1e-12);
+    }
+    assert!(half_full_box_gz(b, d, 90.0).abs() < 1e-12);
+}
+
+/// Heels 0° … 180° every 5°, with the regime change at `atan(d/b)` and its
+/// mirror, either side of 90°, and exactly 90°.
+fn full_circle_heels(b: f64, d: f64) -> Vec<f64> {
+    let knee = (d / b).atan().to_degrees();
+    let mut heels: Vec<f64> = (0..=36).map(|k| 5.0 * k as f64).collect();
+    heels.extend([knee, 180.0 - knee, 89.0, 91.0, 135.001]);
+    heels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    heels
+}
+
+/// The large-angle oracle: a half-full box with `G` at its centre, heeled
+/// from 0° to 180°, fixed and free to trim, must give the closed-form `GZ`
+/// everywhere — past 90° and at exactly 90° included. A solver that places
+/// the waterplane by a draft above the keel cannot: past 90° the volume falls
+/// as that draft grows, and at 90° the draft does not move the plane at all.
+#[test]
+fn a_half_full_box_has_the_analytic_gz_from_0_to_180_degrees() {
+    let (l, b, depth) = (10.0, 4.0, 2.0);
+    let (t, kg) = (depth / 2.0, depth / 2.0);
+    let surface = barge(l, b, depth);
+    let base = options(&surface, t);
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = l * b * t;
+    let heels = full_circle_heels(b, depth);
+    for cond in [
+        stability::StabilityCondition::fixed(kg, 0.0),
+        stability::StabilityCondition::free_to_trim(kg, l / 2.0),
+    ] {
+        let curves = stability::cross_curves(&hull, &heels, &[target], &cond, &base);
+        for c in &curves {
+            let p = &c.points[0];
+            let want = half_full_box_gz(b, depth, c.heel_deg);
+            let gz = p.gz.unwrap_or_else(|| panic!("no GZ at {}°", c.heel_deg));
+            let kn = p.kn.expect("KN with GZ");
+            assert!(
+                (gz - want).abs() < 1e-6,
+                "{}° ({}): GZ {gz} vs the analytic {want}",
+                c.heel_deg,
+                if cond.is_free() { "free" } else { "fixed" }
+            );
+            let want_kn = want + kg * c.heel_deg.to_radians().sin();
+            assert!((kn - want_kn).abs() < 1e-6, "{}°: KN {kn}", c.heel_deg);
+            // Where a draft exists it reproduces the displacement.
+            if let (Some(d), Some(tr)) = (p.draft, p.trim_m) {
+                let (v, _) = hull.buoyancy(d, tr, c.heel_deg);
+                assert!(
+                    (v - target).abs() < 1e-6 * target,
+                    "{}°: draft {d} trim {tr} floats {v}, not {target}",
+                    c.heel_deg
+                );
+            }
+        }
+    }
+}
+
+/// Free trim at exactly 90°. On its side the half-full box (`L` 10, `b` 4,
+/// `d` 2) is a box of beam `d` and depth `b` floating at `T' = b/2 = 2 m`, so
+/// the free-trim oracle of `free_trim_moves_the_lcb_to_the_requested_station`
+/// applies with `T'`: an `LCG` of 4 m needs a level trim (bow over stern,
+/// against the water) of `(L/2 − LCG)·12 T'/L = 2.4 m`. Every slice is then a
+/// rectangle centred across the water surface, so `GZ = 0` and `KN = KG`.
+/// `waterplane_for`'s trim, measured along the hull's own vertical, cannot
+/// tilt the plane at 90° at all, so there is no draft or trim to report.
+#[test]
+fn a_box_on_its_side_trims_freely_at_exactly_90_degrees() {
+    let (l, b, depth) = (10.0, 4.0, 2.0);
+    let kg = depth / 2.0;
+    let surface = barge(l, b, depth);
+    let base = options(&surface, depth / 2.0);
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = l * b * depth / 2.0;
+    let (lcg, t_side) = (4.0, b / 2.0);
+    let cond = stability::StabilityCondition::free_to_trim(kg, lcg);
+
+    let wl = stability::solve_waterline(&hull, target, 90.0, &cond).expect("floats at 90°");
+    assert!(wl.floating.is_none(), "no waterplane_for draft at 90°");
+    let (v, cb) = hull.buoyancy_in(&wl.plane);
+    assert!((v - target).abs() < 1e-6 * target, "volume {v}");
+    assert!((cb.x - lcg).abs() < 1e-5, "LCB {} vs LCG {lcg}", cb.x);
+    let n = wl.plane.n;
+    let level_trim = l * n.x / n.y.hypot(n.z);
+    let want = (l / 2.0 - lcg) * 12.0 * t_side / l;
+    assert!(
+        (level_trim - want).abs() < 1e-4,
+        "level trim {level_trim} vs the analytic {want}"
+    );
+
+    let curves = stability::cross_curves(&hull, &[90.0], &[target], &cond, &base);
+    let p = &curves[0].points[0];
+    assert!(p.gz.expect("GZ at 90°").abs() < 1e-6, "GZ {:?}", p.gz);
+    assert!(
+        (p.kn.expect("KN at 90°") - kg).abs() < 1e-6,
+        "KN {:?}",
+        p.kn
+    );
+    assert!(p.draft.is_none() && p.trim_m.is_none());
+}
+
+/// The same symmetry without the half-full shortcut: a light box (`T` well
+/// under half the depth) with `G` at mid-depth still maps onto itself when
+/// turned 180°, so `GZ(180° − φ) = −GZ(φ)` and `GZ(90°) = GZ(180°) = 0` at
+/// any displacement. The wall-sided formula covers the first and last
+/// degrees, and at steep heels the waterline crosses the centreline below
+/// the keel (a negative draft), which a draft bracket starting at zero
+/// clamps away.
+#[test]
+fn a_light_box_with_g_at_mid_depth_rights_symmetrically_past_90_degrees() {
+    let (l, b, depth, t) = (10.0, 4.0, 2.0, 0.6);
+    let kg = depth / 2.0;
+    let surface = barge(l, b, depth);
+    let base = options(&surface, t);
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = l * b * t;
+    let heels: Vec<f64> = (0..=36).map(|k| 5.0 * k as f64).collect();
+    let curves = stability::cross_curves(
+        &hull,
+        &heels,
+        &[target],
+        &stability::StabilityCondition::fixed(kg, 0.0),
+        &base,
+    );
+    let gz = |h: f64| -> f64 {
+        let c = curves.iter().find(|c| c.heel_deg == h).unwrap();
+        c.points[0]
+            .gz
+            .unwrap_or_else(|| panic!("no GZ at {h}° for the light box"))
+    };
+    for &h in &heels {
+        let (a, m) = (gz(h), gz(180.0 - h));
+        assert!(
+            (a + m).abs() < 1e-6,
+            "GZ({h}°) = {a} but GZ({}°) = {m}",
+            180.0 - h
+        );
+    }
+    assert!(gz(90.0).abs() < 1e-6 && gz(180.0).abs() < 1e-6);
+    // Wall-sided while the deck edge stays dry and the bilge wet:
+    // tan φ ≤ 2T/b, here φ ≤ 16.7°.
+    let bm = b * b / (12.0 * t);
+    let gm = t / 2.0 + bm - kg;
+    for h in [5.0, 10.0, 15.0] {
+        let r = f64::to_radians(h);
+        let want = r.sin() * (gm + 0.5 * bm * r.tan().powi(2));
+        assert!((gz(h) - want).abs() < 1e-6, "{h}°: {} vs {want}", gz(h));
+        assert!((gz(180.0 - h) + want).abs() < 1e-6, "{}°", 180.0 - h);
+    }
+    // Every solved waterplane floats the displacement, the negative drafts of
+    // the steep heels included.
+    for c in &curves {
+        let p = &c.points[0];
+        if let (Some(d), Some(tr)) = (p.draft, p.trim_m) {
+            let (v, _) = hull.buoyancy(d, tr, c.heel_deg);
+            assert!(
+                (v - target).abs() < 1e-6 * target,
+                "{}°: draft {d} floats {v}, not {target}",
+                c.heel_deg
+            );
+        }
+    }
+}
