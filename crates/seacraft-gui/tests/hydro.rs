@@ -65,7 +65,9 @@ fn clearing_the_hydrostatics_flag_empties_the_displacement() {
 
     {
         let surface = app.surface_mut().expect("model");
-        surface.layers[0].use_in_hydrostatics = false;
+        for layer in &mut surface.layers {
+            layer.use_in_hydrostatics = false;
+        }
     }
     app.mark_geometry_changed();
     app.recompute_hydrostatics();
@@ -77,7 +79,9 @@ fn clearing_the_hydrostatics_flag_empties_the_displacement() {
 
     {
         let surface = app.surface_mut().expect("model");
-        surface.layers[0].use_in_hydrostatics = true;
+        for layer in &mut surface.layers {
+            layer.use_in_hydrostatics = true;
+        }
     }
     app.mark_geometry_changed();
     app.recompute_hydrostatics();
@@ -170,7 +174,9 @@ fn a_hidden_layer_leaves_the_measurement_alone() {
     let before = app.hydrostatics().unwrap().volume_m3;
     {
         let surface = app.surface_mut().expect("model");
-        surface.layers[0].visible = false;
+        for layer in &mut surface.layers {
+            layer.visible = false;
+        }
     }
     app.mark_geometry_changed();
     app.recompute_hydrostatics();

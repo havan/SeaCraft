@@ -753,6 +753,14 @@ pub struct App {
     /// selection.
     keyboard_taken: bool,
     show_layers: bool,
+    /// The active layer (index): the one the layer panel edits, as in
+    /// FREE!ship's layer box. Clamped to the model's layers when read.
+    active_layer: usize,
+    /// The control face under the last primary click in a viewport, for
+    /// the layer panel's "Move picked face to this layer".
+    picked_face: Option<usize>,
+    /// The layer panel's typing and dragging state.
+    layer_panel: panels::LayerPanelState,
     /// The right-hand Analysis dock (pinned strip + tabs) is shown.
     show_analysis: bool,
     /// The Analysis dock's tab.
@@ -912,6 +920,9 @@ impl App {
             close_requested: false,
             keyboard_taken: false,
             show_layers: true,
+            active_layer: 0,
+            picked_face: None,
+            layer_panel: panels::LayerPanelState::default(),
             show_analysis: true,
             dock_tab: DesignDock::Hydrostatics,
             dock_wide: false,
@@ -1086,6 +1097,9 @@ impl App {
         self.last_highlighted_compartment = None;
         self.drag = None;
         self.inspector_pending = None;
+        self.active_layer = 0;
+        self.picked_face = None;
+        self.layer_panel = panels::LayerPanelState::default();
         self.cache = None;
         self.hydro.result = None;
         self.hydro.curves = None;
@@ -1418,8 +1432,9 @@ impl App {
         });
 
         if self.show_layers {
-            let mut changed = false;
+            let mut layer_action = panels::LayerAction::None;
             let mut inspector = panels::InspectorOutput::default();
+            let active_layer = self.active_layer();
             egui::Panel::left("layer_panel")
                 .resizable(true)
                 .default_size(250.0)
@@ -1434,8 +1449,16 @@ impl App {
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let top = ui.cursor().top();
-                        if let Some(surface) = self.surface.as_mut() {
-                            changed = panels::layers(ui, surface);
+                        if let Some(surface) = self.surface.as_ref() {
+                            layer_action = panels::layers(
+                                ui,
+                                panels::LayersPanel {
+                                    surface,
+                                    active: active_layer,
+                                    picked_face: self.picked_face,
+                                    state: &mut self.layer_panel,
+                                },
+                            );
                         }
                         self.layer_list_rect = egui::Rect::from_x_y_ranges(
                             ui.max_rect().x_range(),
@@ -1458,11 +1481,7 @@ impl App {
                         );
                     });
                 });
-            if changed {
-                self.revision += 1;
-                self.dirty = true;
-                self.touch_geometry();
-            }
+            self.apply_layer_action(layer_action);
             if self.surface.is_none() {
                 self.layer_list_rect = egui::Rect::NOTHING;
                 self.inspector_rect = egui::Rect::NOTHING;
@@ -2715,6 +2734,7 @@ impl App {
             if response.clicked() {
                 self.active = index;
                 self.selected = self.pick_at(ui, &view, cell);
+                self.picked_face = self.pick_face_at(ui, &view, cell);
                 if self.selected.is_none() {
                     let cursor = ui.input(|i| i.pointer.interact_pos());
                     let mut hit_windage = false;
@@ -2995,6 +3015,56 @@ impl App {
         let surface = self.surface.as_ref()?;
         let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
         picking::pick_point(view, cell, cursor, &pts, PICK_RADIUS)
+    }
+
+    /// The control face under the cursor (see [`picking::pick_face`]).
+    fn pick_face_at(
+        &self,
+        ui: &egui::Ui,
+        view: &crate::camera::ViewTransform,
+        cell: egui::Rect,
+    ) -> Option<usize> {
+        let cursor = ui.input(|i| i.pointer.interact_pos())?;
+        let surface = self.surface.as_ref()?;
+        picking::pick_face(&view.ray(cursor, cell), surface)
+    }
+
+    /// Apply what the layer panel asked for, through the typed commands (one
+    /// undo step per edit). A refusal goes to the status bar.
+    fn apply_layer_action(&mut self, action: panels::LayerAction) {
+        use crate::commands as c;
+        use panels::LayerAction as A;
+        let result = match action {
+            A::None => return,
+            A::Activate(layer) => c::set_active_layer(self, layer),
+            A::Add => c::add_layer(self, &c::AddLayerParams::default()),
+            A::Delete {
+                layer,
+                move_faces_to,
+            } => c::delete_layer(
+                self,
+                &c::DeleteLayerParams {
+                    layer,
+                    move_faces_to,
+                },
+            ),
+            A::Rename { layer, name } => c::rename_layer(self, layer, &name),
+            A::Reorder { layer, dir } => c::move_layer(self, layer, dir),
+            A::Set { layer, props } => c::set_layer(
+                self,
+                &c::SetLayerParams {
+                    layer,
+                    props,
+                    reorder: None,
+                },
+            ),
+            A::AssignFaces { faces, layer } => {
+                c::assign_faces(self, &c::AssignFacesParams { faces, layer })
+            }
+        };
+        if let Err(e) = result {
+            self.status = e;
+        }
     }
 
     /// A primary drag starts either a point drag (when it grabs a point) or a
@@ -4483,6 +4553,28 @@ impl App {
 
     pub fn layer_count(&self) -> usize {
         self.surface.as_ref().map_or(0, |s| s.layers.len())
+    }
+
+    /// The active layer's index, clamped to the model's layers (an undo may
+    /// have taken the layer it pointed at away).
+    pub fn active_layer(&self) -> usize {
+        self.active_layer.min(self.layer_count().saturating_sub(1))
+    }
+
+    /// Set the active layer (the commands check the index).
+    pub fn set_active_layer_index(&mut self, layer: usize) {
+        self.active_layer = layer;
+    }
+
+    /// The control face under the last click in a viewport.
+    pub fn picked_face(&self) -> Option<usize> {
+        self.picked_face
+            .filter(|&f| f < self.surface.as_ref().map_or(0, |s| s.faces.len()))
+    }
+
+    /// Set the picked face as a click would (tests, the control channel).
+    pub fn set_picked_face(&mut self, face: Option<usize>) {
+        self.picked_face = face;
     }
 
     pub fn cameras_mut(&mut self) -> &mut [Camera; 4] {

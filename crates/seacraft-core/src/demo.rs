@@ -4,6 +4,15 @@
 //! transom plate and a hard transom edge, which exercises every part of the
 //! kernel (quads, large polygons, creases, model boundaries, subdivision and
 //! hydrostatics).
+//!
+//! The faces sit on three layers, the way a designer would split this hull
+//! for plating and paint: **Bottom** (keel to the turn of the bilge, the
+//! first three girth strips), **Topsides** (turn of the bilge to the sheer)
+//! and **Transom**. Every layer counts in the hydrostatics and shares the
+//! model's symmetry, so the layers change no number: subdivision does not
+//! look at layers, and measurement only reads those two flags. There is no
+//! deck: the hull is open at the sheer, as FREE!ship hulls usually are, so
+//! there is no lid to keep out of the hydrostatics.
 
 use crate::math::Vec3;
 use crate::mesh::{Layer, ProjectSettings, Surface};
@@ -32,15 +41,21 @@ fn section_offsets(half_beam: f64, keel: f64, sheer: f64, t: f64) -> (f64, f64) 
     (y, z)
 }
 
-/// Build the demo hull. When `symmetric` is true only the starboard half is
-/// modelled and the layer is flagged symmetric, which is how FREE!ship models
-/// are usually drawn.
-pub fn demo_hull(symmetric: bool) -> Surface {
-    let mut s = Surface::new();
-    s.layers = vec![Layer {
-        name: "Hull".into(),
-        id: 1,
-        color: 0x2f7fd0,
+/// Girth strips (counted from the keel) that belong to the bottom; the rest
+/// are topsides. Strip 2 ends at `t = 0.55`, where the section turns from
+/// the flat of the bottom into the side.
+const BOTTOM_STRIPS: usize = 3;
+
+/// Layer indices of the demo hull.
+pub const LAYER_BOTTOM: usize = 0;
+pub const LAYER_TOPSIDES: usize = 1;
+pub const LAYER_TRANSOM: usize = 2;
+
+fn demo_layer(name: &str, id: i32, color: i32, symmetric: bool, thickness: f64) -> Layer {
+    Layer {
+        name: name.into(),
+        id,
+        color,
         visible: true,
         developable: false,
         symmetric,
@@ -48,8 +63,21 @@ pub fn demo_hull(symmetric: bool) -> Surface {
         use_in_hydrostatics: true,
         show_in_linesplan: true,
         density: 2400.0,
-        thickness: 0.012,
-    }];
+        thickness,
+    }
+}
+
+/// Build the demo hull. When `symmetric` is true only the starboard half is
+/// modelled and the layers are flagged symmetric, which is how FREE!ship
+/// models are usually drawn.
+pub fn demo_hull(symmetric: bool) -> Surface {
+    let mut s = Surface::new();
+    s.layers = vec![
+        // Antifouling red, sea blue, varnished teak.
+        demo_layer("Bottom", 1, 0xb0_4a_3c, symmetric, 0.014),
+        demo_layer("Topsides", 2, 0x2f_7f_d0, symmetric, 0.010),
+        demo_layer("Transom", 3, 0xc8_8f_3a, symmetric, 0.016),
+    ];
     s.settings = ProjectSettings {
         name: "SeaCraft 12".into(),
         designer: "SeaCraft".into(),
@@ -99,14 +127,19 @@ pub fn demo_hull(symmetric: bool) -> Surface {
     // Hull plating.
     for i in 0..ns - 1 {
         for j in 0..np {
+            let layer = if j < BOTTOM_STRIPS {
+                LAYER_BOTTOM
+            } else {
+                LAYER_TOPSIDES
+            };
             s.add_face(
                 vec![sb[i][j], sb[i][j + 1], sb[i + 1][j + 1], sb[i + 1][j]],
-                0,
+                layer,
             );
             if !symmetric {
                 s.add_face(
                     vec![pt[i + 1][j], pt[i + 1][j + 1], pt[i][j + 1], pt[i][j]],
-                    0,
+                    layer,
                 );
             }
         }
@@ -124,7 +157,7 @@ pub fn demo_hull(symmetric: bool) -> Surface {
         if normal.x > 0.0 {
             transom.reverse();
         }
-        s.add_face(transom.clone(), 0);
+        s.add_face(transom.clone(), LAYER_TRANSOM);
         crease_loop(&mut s, &transom);
     } else {
         // Half model: close the stern from the keel up the starboard side and
@@ -141,7 +174,7 @@ pub fn demo_hull(symmetric: bool) -> Surface {
         if normal.x > 0.0 {
             half.reverse();
         }
-        s.add_face(half.clone(), 0);
+        s.add_face(half.clone(), LAYER_TRANSOM);
         crease_loop(&mut s, &half);
     }
 
@@ -175,4 +208,69 @@ fn polygon_normal(s: &Surface, idx: &[usize]) -> Vec3 {
         n.z += (a.x - b.x) * (a.y + b.y);
     }
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hydro::{compute, HydroOptions};
+    use crate::subdiv::SubdivisionOptions;
+
+    /// Lowest and highest control point z over the faces of `layer`.
+    fn z_range(s: &Surface, layer: usize) -> (f64, f64) {
+        s.faces
+            .iter()
+            .zip(&s.face_layer)
+            .filter(|(_, &l)| l == layer)
+            .flat_map(|(f, _)| f.iter().map(|&p| s.points[p].p.z))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), z| {
+                (lo.min(z), hi.max(z))
+            })
+    }
+
+    #[test]
+    fn the_demo_has_named_layers_that_each_own_faces() {
+        for symmetric in [false, true] {
+            let s = demo_hull(symmetric);
+            s.validate().expect("valid");
+            let names: Vec<&str> = s.layers.iter().map(|l| l.name.as_str()).collect();
+            assert_eq!(names, ["Bottom", "Topsides", "Transom"]);
+            let counts = s.layer_face_counts();
+            assert!(counts.iter().all(|&c| c > 0), "{counts:?}");
+            assert_eq!(counts[LAYER_TRANSOM], 1, "one transom face");
+            assert_eq!(counts.iter().sum::<usize>(), s.faces.len());
+            let ids: std::collections::HashSet<i32> = s.layers.iter().map(|l| l.id).collect();
+            assert_eq!(ids.len(), 3, "unique ids");
+            let colours: std::collections::HashSet<i32> =
+                s.layers.iter().map(|l| l.color).collect();
+            assert_eq!(colours.len(), 3, "distinct colours");
+            assert!(s.layers.iter().all(|l| l.symmetric == symmetric));
+            assert!(s.layers.iter().all(|l| l.use_in_hydrostatics && l.visible));
+            // The bottom is below the topsides.
+            let (bottom_lo, bottom_hi) = z_range(&s, LAYER_BOTTOM);
+            let (top_lo, top_hi) = z_range(&s, LAYER_TOPSIDES);
+            assert!(bottom_lo < top_lo && bottom_hi < top_hi);
+        }
+    }
+
+    #[test]
+    fn the_layers_change_no_number() {
+        // The same hull on one layer measures bit for bit the same: layers
+        // only decide which faces are mirrored and measured, and all of them
+        // are, with the model's symmetry.
+        for symmetric in [false, true] {
+            let layered = demo_hull(symmetric);
+            let mut single = layered.clone();
+            single.layers.truncate(1);
+            single.face_layer.iter_mut().for_each(|l| *l = 0);
+            let opts = HydroOptions::from_surface(&layered, SubdivisionOptions::default());
+            let a = compute(&layered, &opts);
+            let b = compute(&single, &opts);
+            assert_eq!(format!("{a:?}"), format!("{b:?}"));
+            if !symmetric {
+                // The AGENTS.md reference (the full model, as in examples/).
+                assert!((a.volume_m3 - 11.851).abs() < 0.001, "{}", a.volume_m3);
+            }
+        }
+    }
 }

@@ -129,6 +129,30 @@ pub const TARGET: Color32 = Color32::from_rgb(0x40, 0xd0, 0xd0);
 /// Focus and the active viewport.
 pub const ACCENT: Color32 = FRAME_ACTIVE;
 
+/// Colours a new layer takes (`.fef` `0xRRGGBB`), in order: the first one no
+/// layer uses yet. Mid-tone and well apart, so neighbouring layers read as
+/// different under the viewport's shading.
+pub const LAYER_PALETTE: [i32; 8] = [
+    0x2f_7f_d0, // sea blue
+    0xb0_4a_3c, // antifouling red
+    0xc8_8f_3a, // teak
+    0x4f_a8_6a, // green
+    0x8a_6c_c8, // violet
+    0x3a_a8_b0, // teal
+    0xc8_6a_9a, // rose
+    0x9a_a0_a8, // grey
+];
+
+/// The palette colour for a new layer: the first [`LAYER_PALETTE`] entry
+/// none of `used` has, or the next one round when every entry is taken.
+pub fn next_layer_colour(used: &[i32]) -> i32 {
+    LAYER_PALETTE
+        .iter()
+        .copied()
+        .find(|c| !used.contains(c))
+        .unwrap_or(LAYER_PALETTE[used.len() % LAYER_PALETTE.len()])
+}
+
 /// A `.fef` layer colour (`0xRRGGBB`) as a paint colour.
 pub fn layer_colour(rgb: i32) -> Color32 {
     let c = rgb.max(0) as u32;
@@ -364,6 +388,20 @@ mod tests {
         assert!(p > s && s > m, "{p:.2} > {s:.2} > {m:.2}");
         assert!(m >= 3.0, "muted text {m:.2}:1");
         assert!(s >= 4.5, "secondary text {s:.2}:1");
+    }
+
+    #[test]
+    fn a_new_layer_takes_the_first_unused_palette_colour() {
+        let p = LAYER_PALETTE;
+        assert_eq!(next_layer_colour(&[]), p[0]);
+        assert_eq!(next_layer_colour(&[p[0], p[1], 0x123456]), p[2]);
+        // The palette is distinct and every entry a valid 0xRRGGBB.
+        for (i, a) in p.iter().enumerate() {
+            assert!((0..=0xff_ff_ff).contains(a));
+            assert!(p[i + 1..].iter().all(|b| b != a));
+        }
+        // All taken: round the palette again rather than fail.
+        assert!(p.contains(&next_layer_colour(&p)));
     }
 
     #[test]

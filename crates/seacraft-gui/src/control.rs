@@ -449,6 +449,52 @@ fn index_at(p: &Value, key: &str, max: usize) -> Result<Option<usize>, String> {
     }
 }
 
+/// The layer a request is about: `layer` (an index) or `layer_id` (the
+/// layer's `.fef` id), not both.
+fn layer_arg(app: &App, p: &Value) -> Result<Option<usize>, String> {
+    let index = index_at(p, "layer", app.layer_count())?;
+    let by_id = match p.get("layer_id") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let id = v
+                .as_f64()
+                .filter(|x| x.is_finite() && x.fract() == 0.0)
+                .ok_or("`layer_id` must be a whole number")?;
+            let found = app
+                .surface()
+                .and_then(|s| s.layers.iter().position(|l| l.id as f64 == id))
+                .ok_or_else(|| format!("no layer has id {id}"))?;
+            Some(found)
+        }
+    };
+    match (index, by_id) {
+        (Some(_), Some(_)) => Err("give `layer` or `layer_id`, not both".into()),
+        (a, b) => Ok(a.or(b)),
+    }
+}
+
+/// A layer colour: `0xRRGGBB` as a number, or a `"#rrggbb"` string.
+fn layer_colour_arg(p: &Value) -> Result<Option<i32>, String> {
+    let bad = || "`color` must be 0xRRGGBB as a number, or \"#rrggbb\"".to_string();
+    match p.get("color") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => {
+            let hex = s.strip_prefix('#').ok_or_else(bad)?;
+            if hex.len() != 6 {
+                return Err(bad());
+            }
+            i32::from_str_radix(hex, 16).map(Some).map_err(|_| bad())
+        }
+        Some(v) => {
+            let x = v
+                .as_f64()
+                .filter(|x| x.fract() == 0.0 && (0.0..=16_777_215.0).contains(x))
+                .ok_or_else(bad)?;
+            Ok(Some(x as i32))
+        }
+    }
+}
+
 fn u64_arg(p: &Value, key: &str) -> Result<Option<u64>, String> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1499,6 +1545,128 @@ fn handle_inner(
             }
             Ok(v)
         }
+        "layer.list" => reply(commands::list_layers(app)?),
+        "layer.add" => {
+            let name = text(p, "name")?.map(str::to_owned);
+            reply(commands::add_layer(
+                app,
+                &commands::AddLayerParams { name },
+            )?)
+        }
+        "layer.delete" => {
+            let layer =
+                layer_arg(app, p)?.ok_or("layer.delete: give `layer` (an index) or `layer_id`")?;
+            let move_faces_to = index_at(p, "move_faces_to", app.layer_count())?;
+            reply(commands::delete_layer(
+                app,
+                &commands::DeleteLayerParams {
+                    layer,
+                    move_faces_to,
+                },
+            )?)
+        }
+        "layer.set" => {
+            const KEYS: [&str; 15] = [
+                "layer",
+                "layer_id",
+                "name",
+                "id",
+                "color",
+                "visible",
+                "developable",
+                "symmetric",
+                "use_for_intersections",
+                "use_in_hydrostatics",
+                "show_in_linesplan",
+                "density_kg_m3",
+                "thickness_m",
+                "move",
+                "active",
+            ];
+            let object = p.as_object().ok_or("`params` must be a JSON object")?;
+            if let Some(key) = object.keys().find(|k| !KEYS.contains(&k.as_str())) {
+                return Err(format!(
+                    "layer.set: unknown key `{key}` (known: {})",
+                    KEYS.join(", ")
+                ));
+            }
+            let layer =
+                layer_arg(app, p)?.ok_or("layer.set: give `layer` (an index) or `layer_id`")?;
+            let id = match number(p, "id")? {
+                None => None,
+                Some(x) if x.fract() == 0.0 && (1.0..=i32::MAX as f64).contains(&x) => {
+                    Some(x as i32)
+                }
+                Some(_) => return Err("`id` must be a whole number from 1".into()),
+            };
+            let props = commands::LayerProps {
+                name: text(p, "name")?.map(str::to_owned),
+                id,
+                color: layer_colour_arg(p)?,
+                visible: boolean(p, "visible")?,
+                developable: boolean(p, "developable")?,
+                symmetric: boolean(p, "symmetric")?,
+                use_for_intersections: boolean(p, "use_for_intersections")?,
+                use_in_hydrostatics: boolean(p, "use_in_hydrostatics")?,
+                show_in_linesplan: boolean(p, "show_in_linesplan")?,
+                density: number(p, "density_kg_m3")?,
+                thickness: number(p, "thickness_m")?,
+            };
+            let reorder = match text(p, "move")? {
+                None => None,
+                Some("up") => Some(commands::LayerDirection::Up),
+                Some("down") => Some(commands::LayerDirection::Down),
+                Some(_) => return Err("`move` must be \"up\" or \"down\"".into()),
+            };
+            let activate = boolean(p, "active")?;
+            if activate == Some(false) {
+                return Err("`active` can only be true (activate another layer instead)".into());
+            }
+            let r = commands::set_layer(
+                app,
+                &commands::SetLayerParams {
+                    layer,
+                    props,
+                    reorder,
+                },
+            )?;
+            if activate == Some(true) {
+                // Not an edit: the reply's undo_len stays the same.
+                return reply(commands::set_active_layer(app, r.layer)?);
+            }
+            reply(r)
+        }
+        "layer.assign_faces" => {
+            let layer = layer_arg(app, p)?
+                .ok_or("layer.assign_faces: give `layer` (an index) or `layer_id`")?;
+            let count = app.face_count();
+            let faces = match (numbers(p, "faces")?, index_at(p, "face", count)?) {
+                (Some(list), None) => list
+                    .into_iter()
+                    .map(|x| {
+                        (x.fract() == 0.0 && x >= 0.0 && x < count as f64)
+                            .then_some(x as usize)
+                            .ok_or_else(|| {
+                                format!(
+                                    "a `faces` entry must be a whole number from 0 to {}",
+                                    count.saturating_sub(1)
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                (None, Some(face)) => vec![face],
+                (None, None) => {
+                    return Err("layer.assign_faces: give `faces` (a list) or `face`".into())
+                }
+                (Some(_), Some(_)) => {
+                    return Err("layer.assign_faces: give `faces` or `face`, not both".into())
+                }
+            };
+            reply(commands::assign_faces(
+                app,
+                &commands::AssignFacesParams { faces, layer },
+            )?)
+        }
         "model.split_face" => {
             // A topology edit: snapshot first, so Ctrl+Z in the window undoes it
             // exactly like a drag does.
@@ -2062,6 +2230,8 @@ fn inspect(app: &App) -> Value {
         "points": app.control_point_count(),
         "faces": app.face_count(),
         "layers": app.layer_count(),
+        "active_layer": app.active_layer(),
+        "picked_face": app.picked_face(),
         "display": {
             "shaded": d.shaded,
             "wireframe": d.wireframe,
@@ -2381,7 +2551,9 @@ mod tests {
         assert_eq!(v["undo_len"], 0);
         assert!(v["points"].as_u64().unwrap() > 10, "{v}");
         assert!(v["faces"].as_u64().unwrap() > 5, "{v}");
-        assert_eq!(v["layers"], 1);
+        assert_eq!(v["layers"], 3, "the demo: bottom, topsides, transom");
+        assert_eq!(v["active_layer"], 0);
+        assert_eq!(v["picked_face"], Value::Null);
         assert_eq!(v["selected_point"], Value::Null);
         assert_eq!(v["display"]["shaded"], true);
         assert_eq!(v["display"]["analysis"], "shaded");
@@ -3376,6 +3548,11 @@ mod tests {
             "seakeeping.irregular",
             "point.move",
             "edge.crease",
+            "layer.list",
+            "layer.add",
+            "layer.delete",
+            "layer.set",
+            "layer.assign_faces",
             "hydro.compute",
             "stability.cross_curves",
             "stability.weather",
@@ -4056,5 +4233,140 @@ mod tests {
             app.project().windage.is_empty(),
             "the project edit was rolled back"
         );
+    }
+
+    #[test]
+    fn layer_methods_list_add_set_assign_and_delete() {
+        let (mut app, ctx) = demo();
+        let list = call(&mut app, &ctx, "layer.list", json!({}));
+        assert_eq!(list["ok"], true, "{list}");
+        let layers = list["result"]["layers"].as_array().unwrap();
+        let names: Vec<&str> = layers.iter().map(|l| l["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["Bottom", "Topsides", "Transom"]);
+        assert_eq!(list["result"]["active"], 0);
+        assert!(layers.iter().all(|l| l["faces"].as_u64().unwrap() > 0));
+        assert_eq!(layers[0]["density_kg_m3"], 2400.0);
+
+        // Add: a new active layer, one undo step.
+        let r = call(&mut app, &ctx, "layer.add", json!({ "name": "Spray rail" }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["layer"], 3);
+        assert_eq!(r["result"]["active"], 3);
+        assert_eq!(r["result"]["undo_len"], 1);
+        let r = call(&mut app, &ctx, "layer.add", json!({ "name": "Bottom" }));
+        assert_eq!(r["ok"], false, "a taken name: {r}");
+
+        // Set: every property in one step, by index or by id.
+        let r = call(
+            &mut app,
+            &ctx,
+            "layer.set",
+            json!({
+                "layer": 3, "name": "Rubbing strake", "color": "#4fa86a",
+                "visible": false, "developable": true, "symmetric": false,
+                "use_for_intersections": false, "use_in_hydrostatics": true,
+                "show_in_linesplan": false, "density_kg_m3": 1500, "thickness_m": 0.02,
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["undo_len"], 2);
+        let l = &app.surface().unwrap().layers[3];
+        assert_eq!(l.name, "Rubbing strake");
+        assert_eq!(l.color, 0x4f_a8_6a);
+        assert!(!l.visible && l.developable && !l.symmetric);
+        assert!(!l.use_for_intersections && !l.show_in_linesplan);
+        assert_eq!((l.density, l.thickness), (1500.0, 0.02));
+        let id = l.id;
+        let r = call(
+            &mut app,
+            &ctx,
+            "layer.set",
+            json!({ "layer_id": id, "move": "up", "active": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["layer"], 2);
+        assert_eq!(r["result"]["active"], 2);
+        assert_eq!(app.surface().unwrap().layers[2].name, "Rubbing strake");
+        // Refusals leave nothing behind.
+        let undo = app.undo_len();
+        for bad in [
+            json!({ "layer": 2, "colour": 5 }),
+            json!({ "layer": 2, "color": "green" }),
+            json!({ "layer": 2, "color": 16_777_216 }),
+            json!({ "layer": 2, "move": "sideways" }),
+            json!({ "layer": 2, "density_kg_m3": -1 }),
+            json!({ "layer": 2, "visible": "yes" }),
+            json!({ "layer": 2, "layer_id": id }),
+            json!({ "layer": 9 }),
+            json!({ "layer_id": 999 }),
+            json!({ "name": "no layer given" }),
+        ] {
+            let r = call(&mut app, &ctx, "layer.set", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        assert_eq!(app.undo_len(), undo);
+
+        // Assign faces: the hydrostatics do not move when the layers share
+        // the flags that matter.
+        app.recompute_hydrostatics();
+        let volume = app.hydrostatics().unwrap().volume_m3;
+        let r = call(
+            &mut app,
+            &ctx,
+            "layer.assign_faces",
+            json!({ "faces": [0, 2], "layer": 1 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["moved_faces"], 2);
+        assert_eq!(app.surface().unwrap().face_layer[0], 1);
+        app.recompute_hydrostatics();
+        assert_eq!(app.hydrostatics().unwrap().volume_m3, volume);
+        let r = call(
+            &mut app,
+            &ctx,
+            "layer.assign_faces",
+            json!({ "face": 4, "layer_id": id }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        for bad in [
+            json!({ "faces": [0.5], "layer": 0 }),
+            json!({ "faces": [100000], "layer": 0 }),
+            json!({ "faces": [0], "face": 1, "layer": 0 }),
+            json!({ "layer": 0 }),
+            json!({ "faces": [0] }),
+        ] {
+            let r = call(&mut app, &ctx, "layer.assign_faces", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+
+        // Delete: refused while the layer has faces, unless they move.
+        let r = call(&mut app, &ctx, "layer.delete", json!({ "layer": 0 }));
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            r["error"].as_str().unwrap().contains("move_faces_to"),
+            "{r}"
+        );
+        let r = call(
+            &mut app,
+            &ctx,
+            "layer.delete",
+            json!({ "layer": 2, "move_faces_to": 3 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let list = call(&mut app, &ctx, "layer.list", json!({}));
+        let names: Vec<&str> = list["result"]["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Bottom", "Topsides", "Transom"]);
+        app.surface().unwrap().validate().expect("consistent");
+        // Ctrl+Z walks the whole session back.
+        while app.undo_len() > 0 {
+            app.undo();
+        }
+        assert_eq!(app.layer_count(), 3);
+        assert_eq!(app.surface().unwrap().layer_face_counts()[1], 32);
     }
 }

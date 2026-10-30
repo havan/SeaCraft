@@ -15,70 +15,489 @@ use seacraft_core::{AnalysisMode, SubdivisionMode, Surface};
 use crate::render::DisplayOptions;
 use crate::theme;
 
-/// Draw one row per layer. Returns whether any flag or colour changed.
+/// What the user asked the layer panel to do. The app applies it through
+/// [`crate::commands`], one undo step per edit.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum LayerAction {
+    #[default]
+    None,
+    /// Make a layer active (the one the properties show and new faces get).
+    Activate(usize),
+    /// Add a layer.
+    Add,
+    /// Delete a layer, moving its faces to `move_faces_to`.
+    Delete {
+        layer: usize,
+        move_faces_to: Option<usize>,
+    },
+    Rename {
+        layer: usize,
+        name: String,
+    },
+    Reorder {
+        layer: usize,
+        dir: crate::commands::LayerDirection,
+    },
+    /// Change one or more properties.
+    Set {
+        layer: usize,
+        props: crate::commands::LayerProps,
+    },
+    /// Move faces onto a layer.
+    AssignFaces {
+        faces: Vec<usize>,
+        layer: usize,
+    },
+}
+
+/// A numeric layer property being edited in the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerField {
+    Density,
+    Thickness,
+}
+
+/// The panel's own editing state, kept by the app between frames.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LayerPanelState {
+    /// The name being typed for a layer; committed when the field loses
+    /// focus.
+    pub name_edit: Option<(usize, String)>,
+    /// A density or thickness being dragged (layer, field, value in the
+    /// panel's units): committed on release, so a drag is one edit.
+    pub pending: Option<(usize, LayerField, f64)>,
+}
+
+/// Everything the layer panel draws.
+pub struct LayersPanel<'a> {
+    pub surface: &'a Surface,
+    /// The active layer (clamped by the caller).
+    pub active: usize,
+    /// The control face under the last click in a viewport.
+    pub picked_face: Option<usize>,
+    pub state: &'a mut LayerPanelState,
+}
+
+/// A small filled square in a layer's colour.
+fn layer_swatch(ui: &mut egui::Ui, color: i32, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    ui.painter()
+        .rect_filled(rect, 2.0, theme::layer_colour(color));
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, theme::FRAME),
+        egui::StrokeKind::Inside,
+    );
+    response
+}
+
+/// The layer manager, after FREE!ship's layer dialog: a list (colour,
+/// name, visibility, face count) with the active layer highlighted, Add /
+/// Delete / ↑ / ↓, and the active layer's properties underneath, including
+/// "Move picked face to this layer".
 ///
 /// Hiding every layer is allowed: the viewports then show no hull and the
-/// status bar says so, which is easier to undo than a refusal.
-pub fn layers(ui: &mut egui::Ui, surface: &mut Surface) -> bool {
-    let mut changed = false;
-    ui.heading("Layers");
-    ui.add_space(4.0);
-    let mut counts = vec![0usize; surface.layers.len()];
-    for &l in &surface.face_layer {
-        if let Some(c) = counts.get_mut(l) {
-            *c += 1;
-        }
-    }
-    for (index, layer) in surface.layers.iter_mut().enumerate() {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let mut rgb = [
-                    ((layer.color >> 16) & 0xff) as u8,
-                    ((layer.color >> 8) & 0xff) as u8,
-                    (layer.color & 0xff) as u8,
-                ];
-                if ui.color_edit_button_srgb(&mut rgb).changed() {
-                    layer.color = ((rgb[0] as i32) << 16) | ((rgb[1] as i32) << 8) | rgb[2] as i32;
-                    changed = true;
-                }
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut layer.name)
-                            .desired_width(ui.available_width()),
-                    )
-                    .changed()
-                {
-                    changed = true;
-                }
-            });
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                changed |= ui.checkbox(&mut layer.visible, "visible").changed();
-                changed |= ui.checkbox(&mut layer.symmetric, "symmetric").changed();
-            });
-            changed |= ui
-                .checkbox(&mut layer.use_in_hydrostatics, "in hydrostatics")
-                .changed();
-            ui.horizontal(|ui| {
-                ui.small(format!(
-                    "{} faces · id {} · {:+.3} m plate",
-                    counts.get(index).copied().unwrap_or(0),
-                    layer.id,
-                    layer.thickness
+/// panel says so, which is easier to undo than a refusal.
+pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
+    use crate::commands::{LayerDirection, LayerProps};
+    let LayersPanel {
+        surface,
+        active,
+        picked_face,
+        state,
+    } = panel;
+    let mut action = LayerAction::None;
+    let set = |layer: usize, props: LayerProps| LayerAction::Set { layer, props };
+    let counts = surface.layer_face_counts();
+    let n = surface.layers.len();
+    let active = active.min(n.saturating_sub(1));
+
+    // ---- heading and buttons, on one row ------------------------------------
+    ui.horizontal(|ui| {
+        ui.heading("Layers");
+        // Right to left: added last-first, they read Add, Delete, ↑, ↓.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().button_padding.x = 5.0;
+            if ui
+                .add_enabled(active + 1 < n, egui::Button::new("↓"))
+                .on_hover_text("Move the layer down the list")
+                .clicked()
+            {
+                action = LayerAction::Reorder {
+                    layer: active,
+                    dir: LayerDirection::Down,
+                };
+            }
+            if ui
+                .add_enabled(active > 0, egui::Button::new("↑"))
+                .on_hover_text("Move the layer up the list")
+                .clicked()
+            {
+                action = LayerAction::Reorder {
+                    layer: active,
+                    dir: LayerDirection::Up,
+                };
+            }
+            // Delete: the faces go to the neighbouring layer (the one above,
+            // or below for the first), so the button never strands a face.
+            let neighbour = if active > 0 { active - 1 } else { 1 };
+            let owned = counts.get(active).copied().unwrap_or(0);
+            let tip = if n < 2 {
+                "The last layer cannot be deleted".to_owned()
+            } else if owned > 0 {
+                format!(
+                    "Delete \"{}\"; its {owned} face{} move to \"{}\"",
+                    surface.layers[active].name,
+                    if owned == 1 { "" } else { "s" },
+                    surface.layers[neighbour].name
+                )
+            } else {
+                format!(
+                    "Delete \"{}\" (it has no faces)",
+                    surface.layers[active].name
+                )
+            };
+            if ui
+                .add_enabled(n > 1, egui::Button::new("Delete"))
+                .on_hover_text(&tip)
+                .on_disabled_hover_text(&tip)
+                .clicked()
+            {
+                action = LayerAction::Delete {
+                    layer: active,
+                    move_faces_to: (owned > 0).then_some(neighbour),
+                };
+            }
+            if ui
+                .button("Add")
+                .on_hover_text("Add an empty layer and make it active")
+                .clicked()
+            {
+                action = LayerAction::Add;
+            }
+        });
+    });
+
+    // ---- the list -----------------------------------------------------------
+    for (index, layer) in surface.layers.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if layer_swatch(ui, layer.color, 14.0)
+                .on_hover_text("Click to make this layer active")
+                .clicked()
+            {
+                action = LayerAction::Activate(index);
+            }
+            let count = counts.get(index).copied().unwrap_or(0);
+            // Right to left: the face count and the eye stay in a column.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_sized(
+                    [28.0, 18.0],
+                    egui::Label::new(
+                        egui::RichText::new(count.to_string())
+                            .monospace()
+                            .color(theme::TEXT_SECONDARY),
+                    ),
+                )
+                .on_hover_text(format!(
+                    "{count} control face{}",
+                    if count == 1 { "" } else { "s" }
                 ));
+                let eye = if layer.visible {
+                    egui::RichText::new("👁").color(theme::TEXT_PRIMARY)
+                } else {
+                    egui::RichText::new("👁")
+                        .color(theme::TEXT_MUTED)
+                        .strikethrough()
+                };
+                if ui
+                    .add(egui::Button::new(eye).frame(false))
+                    .on_hover_text(if layer.visible {
+                        "Visible: click to hide"
+                    } else {
+                        "Hidden: click to show"
+                    })
+                    .clicked()
+                {
+                    action = set(
+                        index,
+                        LayerProps {
+                            visible: Some(!layer.visible),
+                            ..Default::default()
+                        },
+                    );
+                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let name = egui::RichText::new(&layer.name).color(if layer.visible {
+                        theme::TEXT_PRIMARY
+                    } else {
+                        theme::TEXT_MUTED
+                    });
+                    let r = ui.add_sized(
+                        [ui.available_width(), 18.0],
+                        egui::Button::selectable(index == active, (name, egui::Atom::grow())),
+                    );
+                    if r.on_hover_text("Make this layer active").clicked() {
+                        action = LayerAction::Activate(index);
+                    }
+                });
             });
         });
     }
     if counts.iter().all(|&c| c == 0) {
-        ui.separator();
-        ui.label("the model has no faces");
+        ui.label(egui::RichText::new("The model has no faces").color(theme::TEXT_MUTED));
     }
     if !surface.layers.iter().any(|l| l.visible) {
-        ui.separator();
-        ui.colored_label(theme::WARN, "no visible layers");
+        ui.colored_label(theme::WARN, "No visible layers");
     }
-    changed
+
+    // ---- the active layer's properties -----------------------------------
+    let Some(layer) = surface.layers.get(active) else {
+        return action;
+    };
+    ui.separator();
+
+    // Name: typed, committed when the field loses focus (Enter or a click
+    // elsewhere). Escape abandons it.
+    if state.name_edit.as_ref().is_none_or(|(i, _)| *i != active) {
+        state.name_edit = Some((active, layer.name.clone()));
+    }
+    let mut commit_name: Option<String> = None;
+    if let Some((_, buffer)) = state.name_edit.as_mut() {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Name").color(theme::TEXT_SECONDARY));
+            let r = ui.add(
+                egui::TextEdit::singleline(buffer)
+                    .desired_width(ui.available_width())
+                    .id_salt("layer_name"),
+            );
+            let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if r.lost_focus() && !escaped && *buffer != layer.name {
+                commit_name = Some(buffer.clone());
+            } else if !r.has_focus() && *buffer != layer.name {
+                // Undo, a refusal or a control-channel rename: show the model.
+                *buffer = layer.name.clone();
+            }
+        });
+    }
+    if let Some(name) = commit_name {
+        action = LayerAction::Rename {
+            layer: active,
+            name,
+        };
+    }
+
+    // Colour: the theme's layer palette, one click one step.
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new("Colour").color(theme::TEXT_SECONDARY));
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for c in theme::LAYER_PALETTE {
+            let r = layer_swatch(ui, c, if c == layer.color { 16.0 } else { 13.0 });
+            if c == layer.color {
+                ui.painter().rect_stroke(
+                    r.rect.expand(1.5),
+                    2.0,
+                    egui::Stroke::new(1.5, theme::TEXT_PRIMARY),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if r.on_hover_text(format!("#{c:06x}")).clicked() && c != layer.color {
+                action = set(
+                    active,
+                    LayerProps {
+                        color: Some(c),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+    });
+
+    // Flags, in FREE!ship's order.
+    type Flag = (&'static str, bool, &'static str, fn(bool) -> LayerProps);
+    let flags: [Flag; 5] = [
+        (
+            "Symmetric",
+            layer.symmetric,
+            "Only y ≥ 0 is modelled; the faces are mirrored across the centreline",
+            |v| LayerProps {
+                symmetric: Some(v),
+                ..Default::default()
+            },
+        ),
+        (
+            "Developable",
+            layer.developable,
+            "The plating is meant to be developable (bent, not pressed)",
+            |v| LayerProps {
+                developable: Some(v),
+                ..Default::default()
+            },
+        ),
+        (
+            "Intersections",
+            layer.use_for_intersections,
+            "Use for intersections: stations, buttocks and waterlines are cut through this layer",
+            |v| LayerProps {
+                use_for_intersections: Some(v),
+                ..Default::default()
+            },
+        ),
+        (
+            "Hydrostatics",
+            layer.use_in_hydrostatics,
+            "Use in hydrostatics: the faces count in displacement, stability and every measurement",
+            |v| LayerProps {
+                use_in_hydrostatics: Some(v),
+                ..Default::default()
+            },
+        ),
+        (
+            "Lines plan",
+            layer.show_in_linesplan,
+            "Show in lines plan: the layer's curves are drawn in the lines plan",
+            |v| LayerProps {
+                show_in_linesplan: Some(v),
+                ..Default::default()
+            },
+        ),
+    ];
+    egui::Grid::new("layer_flags")
+        .num_columns(2)
+        .spacing(egui::vec2(8.0, 2.0))
+        .show(ui, |ui| {
+            for (i, (label, on, tip, props)) in flags.into_iter().enumerate() {
+                let mut v = on;
+                if ui.checkbox(&mut v, label).on_hover_text(tip).changed() {
+                    action = set(active, props(v));
+                }
+                if i % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+
+    // Density (t/m³) and plate thickness (mm); the model keeps kg/m³ and m.
+    if state.pending.is_some_and(|(i, _, _)| i != active) {
+        state.pending = None;
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(egui::RichText::new("Plating").color(theme::TEXT_SECONDARY))
+            .on_hover_text("Material density and plate thickness, for a weight estimate");
+        for (field, label, unit, model, speed, tip) in [
+            (
+                LayerField::Density,
+                "Density",
+                "t/m³",
+                layer.density / 1000.0,
+                0.01,
+                "Material density of the plating, for a weight estimate",
+            ),
+            (
+                LayerField::Thickness,
+                "Thickness",
+                "mm",
+                layer.thickness * 1000.0,
+                0.1,
+                "Plate thickness, for a weight estimate",
+            ),
+        ] {
+            let mut v = match state.pending {
+                Some((_, f, v)) if f == field => v,
+                _ => model,
+            };
+            let r = ui
+                .add_sized(
+                    [52.0, 20.0],
+                    egui::DragValue::new(&mut v)
+                        .speed(speed)
+                        .range(match field {
+                            LayerField::Density => 0.0..=25.0,
+                            LayerField::Thickness => 0.0..=1000.0,
+                        })
+                        .fixed_decimals(match field {
+                            LayerField::Density => 3,
+                            LayerField::Thickness => 1,
+                        })
+                        .update_while_editing(false),
+                )
+                .on_hover_text(format!("{label}: {tip}"));
+            let mut commit: Option<f64> = None;
+            if r.changed() {
+                if r.dragged() {
+                    state.pending = Some((active, field, v));
+                } else {
+                    commit = Some(v);
+                }
+            }
+            if r.drag_stopped() {
+                commit = state
+                    .pending
+                    .filter(|(_, f, _)| *f == field)
+                    .map(|(_, _, p)| p)
+                    .or(commit);
+                state.pending = None;
+            }
+            if let Some(v) = commit.filter(|v| (v - model).abs() > 1e-12) {
+                state.pending = None;
+                action = set(
+                    active,
+                    match field {
+                        LayerField::Density => LayerProps {
+                            density: Some(v * 1000.0),
+                            ..Default::default()
+                        },
+                        LayerField::Thickness => LayerProps {
+                            thickness: Some(v / 1000.0),
+                            ..Default::default()
+                        },
+                    },
+                );
+            }
+            ui.label(egui::RichText::new(unit).color(theme::TEXT_MUTED));
+        }
+    });
+
+    // Move to layer: the face under the last click.
+    let picked = picked_face.filter(|&f| f < surface.faces.len());
+    let picked_layer = picked.and_then(|f| surface.face_layer.get(f).copied());
+    let picked_text = match (picked, picked_layer.and_then(|l| surface.layers.get(l))) {
+        (Some(f), Some(l)) => format!("picked face {f} on {}", l.name),
+        _ => "no face picked".to_owned(),
+    };
+    ui.label(
+        egui::RichText::new(format!(
+            "id {} · {} face{} · {picked_text}",
+            layer.id,
+            counts[active],
+            if counts[active] == 1 { "" } else { "s" }
+        ))
+        .small()
+        .color(theme::TEXT_MUTED),
+    );
+    let can_move = picked.is_some() && picked_layer != Some(active);
+    let tip = "Click a control face in any view (inside the amber control net, \
+               away from the points), then move it onto this layer. One undo step.";
+    if ui
+        .add_enabled(
+            can_move,
+            egui::Button::new("Move picked face to this layer"),
+        )
+        .on_hover_text(tip)
+        .on_disabled_hover_text(tip)
+        .clicked()
+    {
+        if let Some(f) = picked {
+            action = LayerAction::AssignFaces {
+                faces: vec![f],
+                layer: active,
+            };
+        }
+    }
+    action
 }
 
 /// What the user asked the selection Inspector to do.

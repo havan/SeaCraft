@@ -578,8 +578,18 @@ Plan        | Body plan
   **Maximise**. **Ctrl+Space**, the toolbar button or a double-click on a
   view's title makes the active view fill the whole viewport area (control
   `ui.set {"maximised": true}`); **1**–**4** then switch the maximised view.
-* The left dock manages layers (colour, name, visible, symmetric, use in
-  hydrostatics) and, below them, the selection **Inspector**: the selected
+* The left dock manages layers, after FREE!ship's layer dialog: a list
+  (colour, name, visibility eye, face count) whose highlighted entry is the
+  active layer, **Add** / **Delete** / **↑** / **↓**, and the active layer's
+  properties (name, palette colour, symmetric, developable, use for
+  intersections, in hydrostatics, show in lines plan, density in t/m³, plate
+  thickness in mm). Delete hands a layer's faces to its neighbour. A click on a
+  control face in any view picks it; **Move picked face to this layer** moves
+  it. Each edit is one undo step; control `layer.list`, `layer.add`,
+  `layer.delete` (`move_faces_to`), `layer.set` (any property, `"move": "up"`,
+  `"active": true`) and `layer.assign_faces`. The demo hull comes on three
+  layers: Bottom, Topsides and Transom. Below the layers sits the selection
+  **Inspector**: the selected
   control point's layer, editable x/y/z in metres (one undo step per typed
   value or drag, clamped to `y >= 0` on a symmetric layer, as control
   `point.move`), its vertex kind and crease edges.

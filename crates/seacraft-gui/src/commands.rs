@@ -739,6 +739,517 @@ pub fn unfold(app: &App, params: &UnfoldParams) -> Result<UnfoldResult, String> 
     })
 }
 
+// ---- layers --------------------------------------------------------------
+//
+// FREE!ship's layer dialog: add, delete, rename, reorder, the per-layer flags
+// and plating properties, the active layer, and "Move to layer" for faces.
+// Layers are addressed by index (their place in the list, which is what a
+// face's layer refers to); ids are the `.fef` identity and stay unique.
+
+/// One layer as the control channel and the tests see it. `density_kg_m3`
+/// and `thickness_m` are the core's units (the panel shows t/m³ and mm).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LayerInfo {
+    pub index: usize,
+    pub id: i32,
+    pub name: String,
+    /// `0xRRGGBB`.
+    pub color: i32,
+    pub visible: bool,
+    pub developable: bool,
+    pub symmetric: bool,
+    pub use_for_intersections: bool,
+    pub use_in_hydrostatics: bool,
+    pub show_in_linesplan: bool,
+    pub density_kg_m3: f64,
+    pub thickness_m: f64,
+    /// Control faces on the layer.
+    pub faces: usize,
+}
+
+/// Every layer, the active one and the face total.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LayerList {
+    pub layers: Vec<LayerInfo>,
+    pub active: usize,
+    pub faces: usize,
+}
+
+/// The layers of the app's model.
+pub fn list_layers(app: &App) -> Result<LayerList, String> {
+    let surface = app.surface().ok_or("no model loaded")?;
+    let counts = surface.layer_face_counts();
+    Ok(LayerList {
+        layers: surface
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(index, l)| LayerInfo {
+                index,
+                id: l.id,
+                name: l.name.clone(),
+                color: l.color,
+                visible: l.visible,
+                developable: l.developable,
+                symmetric: l.symmetric,
+                use_for_intersections: l.use_for_intersections,
+                use_in_hydrostatics: l.use_in_hydrostatics,
+                show_in_linesplan: l.show_in_linesplan,
+                density_kg_m3: l.density,
+                thickness_m: l.thickness,
+                faces: counts[index],
+            })
+            .collect(),
+        active: app.active_layer(),
+        faces: surface.faces.len(),
+    })
+}
+
+/// The answer of every layer edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LayerEditResult {
+    /// The layer the edit was about, at its index after the edit (the
+    /// receiving layer for a delete).
+    pub layer: usize,
+    pub layers: usize,
+    pub active: usize,
+    /// Faces whose layer changed.
+    pub moved_faces: usize,
+    /// `false` when the request asked for what the model already had: no
+    /// undo entry, nothing marked changed.
+    pub changed: bool,
+    pub undo_len: usize,
+}
+
+/// Run `edit` on a copy of the model and keep it as one undo step when it
+/// succeeds and changed the layers or the face assignment. A refused or
+/// empty edit leaves the model and the undo stack as they were.
+fn edit_layers<T>(
+    app: &mut App,
+    what: &str,
+    edit: impl FnOnce(&mut seacraft_core::Surface) -> Result<T, String>,
+) -> Result<(T, bool), String> {
+    let current = app.surface().ok_or("no model loaded")?;
+    let mut edited = current.clone();
+    let out = edit(&mut edited).map_err(|e| format!("{what}: {e}"))?;
+    let changed = edited.layers != current.layers || edited.face_layer != current.face_layer;
+    if changed {
+        app.snapshot_undo();
+        if let Some(surface) = app.surface_mut() {
+            *surface = edited;
+        }
+        app.mark_geometry_changed();
+    }
+    Ok((out, changed))
+}
+
+fn layer_index(surface: &seacraft_core::Surface, layer: usize) -> Result<usize, String> {
+    if layer < surface.layers.len() {
+        Ok(layer)
+    } else {
+        Err(format!(
+            "`layer` must be from 0 to {}",
+            surface.layers.len().saturating_sub(1)
+        ))
+    }
+}
+
+/// A layer name as it will be stored: one line, trimmed, not empty and not
+/// another layer's name.
+fn clean_layer_name(
+    surface: &seacraft_core::Surface,
+    layer: Option<usize>,
+    name: &str,
+) -> Result<String, String> {
+    let name = name.replace(['\r', '\n', '\t'], " ").trim().to_owned();
+    if name.is_empty() {
+        return Err("a layer name cannot be empty".into());
+    }
+    if name.chars().count() > 64 {
+        return Err("a layer name has at most 64 characters".into());
+    }
+    if surface
+        .layers
+        .iter()
+        .enumerate()
+        .any(|(i, l)| Some(i) != layer && l.name == name)
+    {
+        return Err(format!("a layer named \"{name}\" already exists"));
+    }
+    Ok(name)
+}
+
+/// Add a layer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AddLayerParams {
+    /// The new layer's name; `None` gives the first free "Layer N".
+    pub name: Option<String>,
+}
+
+/// Add an empty layer after the others and make it active: the first free
+/// "Layer N" name, the next free id, the first palette colour no layer
+/// uses, and the active layer's symmetry (a symmetric layer in a full model
+/// would mirror its faces onto the other half). One undo step.
+pub fn add_layer(app: &mut App, params: &AddLayerParams) -> Result<LayerEditResult, String> {
+    let template = app
+        .surface()
+        .and_then(|s| s.layers.get(app.active_layer()).cloned());
+    let ((index, name), _) = edit_layers(app, "layer.add", |s| {
+        let name = match &params.name {
+            Some(n) => clean_layer_name(s, None, n)?,
+            None => (s.layers.len() + 1..)
+                .map(|n| format!("Layer {n}"))
+                .find(|n| !s.layers.iter().any(|l| &l.name == n))
+                .expect("an unused name"),
+        };
+        let id = s.layers.iter().map(|l| l.id).max().unwrap_or(0).max(0) + 1;
+        let used: Vec<i32> = s.layers.iter().map(|l| l.color).collect();
+        let base = template.unwrap_or_default();
+        s.layers.push(seacraft_core::mesh::Layer {
+            name: name.clone(),
+            id,
+            color: crate::theme::next_layer_colour(&used),
+            visible: true,
+            symmetric: base.symmetric,
+            ..Default::default()
+        });
+        Ok((s.layers.len() - 1, name))
+    })?;
+    app.set_active_layer_index(index);
+    app.status_note(format!("layer \"{name}\" added"));
+    Ok(layer_result(app, index, 0, true))
+}
+
+fn layer_result(app: &App, layer: usize, moved_faces: usize, changed: bool) -> LayerEditResult {
+    LayerEditResult {
+        layer,
+        layers: app.layer_count(),
+        active: app.active_layer(),
+        moved_faces,
+        changed,
+        undo_len: app.undo_len(),
+    }
+}
+
+/// Delete a layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeleteLayerParams {
+    pub layer: usize,
+    /// Where the layer's faces go. A layer that still owns faces is not
+    /// deleted without one.
+    pub move_faces_to: Option<usize>,
+}
+
+/// Delete a layer, moving its faces to `move_faces_to` first. The last
+/// layer is never deleted, and a layer with faces needs somewhere to put
+/// them. One undo step.
+pub fn delete_layer(app: &mut App, params: &DeleteLayerParams) -> Result<LayerEditResult, String> {
+    let active = app.active_layer();
+    let ((target, moved, name), _) = edit_layers(app, "layer.delete", |s| {
+        let k = layer_index(s, params.layer)?;
+        if s.layers.len() == 1 {
+            return Err("the last layer cannot be deleted".into());
+        }
+        let owned = s.layer_face_counts()[k];
+        let target = match params.move_faces_to {
+            Some(t) if t == k => return Err("`move_faces_to` is the layer being deleted".into()),
+            Some(t) => Some(layer_index(s, t).map_err(|_| {
+                format!(
+                    "`move_faces_to` must be from 0 to {}",
+                    s.layers.len().saturating_sub(1)
+                )
+            })?),
+            None if owned > 0 => {
+                return Err(format!(
+                    "\"{}\" still owns {owned} face{}; give `move_faces_to`",
+                    s.layers[k].name,
+                    if owned == 1 { "" } else { "s" }
+                ))
+            }
+            None => None,
+        };
+        if let Some(t) = target {
+            for l in s.face_layer.iter_mut().filter(|l| **l == k) {
+                *l = t;
+            }
+        }
+        let name = s.layers.remove(k).name;
+        for l in s.face_layer.iter_mut().filter(|l| **l > k) {
+            *l -= 1;
+        }
+        let shift = |i: usize| if i > k { i - 1 } else { i };
+        Ok((target.map(shift), owned, name))
+    })?;
+    let k = params.layer;
+    // The active layer follows its own entry; deleting it activates the
+    // layer that received its faces (or the one now in its place).
+    let next_active = if active == k {
+        target.unwrap_or(k.min(app.layer_count().saturating_sub(1)))
+    } else if active > k {
+        active - 1
+    } else {
+        active
+    };
+    app.set_active_layer_index(next_active);
+    app.status_note(match target {
+        Some(_) if moved > 0 => format!("layer \"{name}\" deleted, {moved} faces moved"),
+        _ => format!("layer \"{name}\" deleted"),
+    });
+    Ok(layer_result(
+        app,
+        target.unwrap_or(next_active),
+        moved,
+        true,
+    ))
+}
+
+/// Up or down the layer list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerDirection {
+    Up,
+    Down,
+}
+
+/// Every property of a layer; `None` leaves it as it is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LayerProps {
+    pub name: Option<String>,
+    pub id: Option<i32>,
+    /// `0xRRGGBB`.
+    pub color: Option<i32>,
+    pub visible: Option<bool>,
+    pub developable: Option<bool>,
+    pub symmetric: Option<bool>,
+    pub use_for_intersections: Option<bool>,
+    pub use_in_hydrostatics: Option<bool>,
+    pub show_in_linesplan: Option<bool>,
+    /// kg/m³, from 0 to 25 000.
+    pub density: Option<f64>,
+    /// Metres, from 0 to 1.
+    pub thickness: Option<f64>,
+}
+
+/// Change a layer's properties and/or its place in the list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SetLayerParams {
+    pub layer: usize,
+    pub props: LayerProps,
+    /// Move the layer one place up or down the list.
+    pub reorder: Option<LayerDirection>,
+}
+
+fn apply_layer_props(
+    s: &mut seacraft_core::Surface,
+    k: usize,
+    p: &LayerProps,
+) -> Result<(), String> {
+    let name = match &p.name {
+        Some(n) => Some(clean_layer_name(s, Some(k), n)?),
+        None => None,
+    };
+    if let Some(id) = p.id {
+        if id < 1 {
+            return Err("`id` must be a whole number from 1".into());
+        }
+        if s.layers
+            .iter()
+            .enumerate()
+            .any(|(i, l)| i != k && l.id == id)
+        {
+            return Err(format!("another layer already has id {id}"));
+        }
+    }
+    if p.color.is_some_and(|c| !(0..=0xff_ff_ff).contains(&c)) {
+        return Err("`color` must be 0xRRGGBB, from 0 to 16777215".into());
+    }
+    if p.density
+        .is_some_and(|d| !d.is_finite() || !(0.0..=25_000.0).contains(&d))
+    {
+        return Err("`density` must be from 0 to 25000 kg/m³".into());
+    }
+    if p.thickness
+        .is_some_and(|t| !t.is_finite() || !(0.0..=1.0).contains(&t))
+    {
+        return Err("`thickness` must be from 0 to 1 m".into());
+    }
+    let l = &mut s.layers[k];
+    if let Some(name) = name {
+        l.name = name;
+    }
+    if let Some(v) = p.id {
+        l.id = v;
+    }
+    if let Some(v) = p.color {
+        l.color = v;
+    }
+    if let Some(v) = p.visible {
+        l.visible = v;
+    }
+    if let Some(v) = p.developable {
+        l.developable = v;
+    }
+    if let Some(v) = p.symmetric {
+        l.symmetric = v;
+    }
+    if let Some(v) = p.use_for_intersections {
+        l.use_for_intersections = v;
+    }
+    if let Some(v) = p.use_in_hydrostatics {
+        l.use_in_hydrostatics = v;
+    }
+    if let Some(v) = p.show_in_linesplan {
+        l.show_in_linesplan = v;
+    }
+    if let Some(v) = p.density {
+        l.density = v;
+    }
+    if let Some(v) = p.thickness {
+        l.thickness = v;
+    }
+    Ok(())
+}
+
+/// Swap layer `k` with its neighbour, carrying the faces of both along.
+/// Returns the layer's new index.
+fn reorder_layer(
+    s: &mut seacraft_core::Surface,
+    k: usize,
+    dir: LayerDirection,
+) -> Result<usize, String> {
+    let j = match dir {
+        LayerDirection::Up if k > 0 => k - 1,
+        LayerDirection::Down if k + 1 < s.layers.len() => k + 1,
+        LayerDirection::Up => return Err("the layer is already first".into()),
+        LayerDirection::Down => return Err("the layer is already last".into()),
+    };
+    s.layers.swap(k, j);
+    for l in &mut s.face_layer {
+        if *l == k {
+            *l = j;
+        } else if *l == j {
+            *l = k;
+        }
+    }
+    Ok(j)
+}
+
+/// Set any of a layer's properties and/or move it up or down the list: one
+/// undo step for the whole request, none when nothing changes.
+pub fn set_layer(app: &mut App, params: &SetLayerParams) -> Result<LayerEditResult, String> {
+    let active = app.active_layer();
+    let (index, changed) = edit_layers(app, "layer.set", |s| {
+        let k = layer_index(s, params.layer)?;
+        apply_layer_props(s, k, &params.props)?;
+        match params.reorder {
+            Some(dir) => reorder_layer(s, k, dir),
+            None => Ok(k),
+        }
+    })?;
+    // The active layer stays the same layer, wherever it now sits.
+    let k = params.layer;
+    if index != k {
+        if active == k {
+            app.set_active_layer_index(index);
+        } else if active == index {
+            app.set_active_layer_index(k);
+        }
+    }
+    if changed {
+        let name = app
+            .surface()
+            .and_then(|s| s.layers.get(index))
+            .map(|l| l.name.clone())
+            .unwrap_or_default();
+        app.status_note(format!("layer \"{name}\" changed"));
+    }
+    Ok(layer_result(app, index, 0, changed))
+}
+
+/// Rename a layer (a [`set_layer`] with only the name).
+pub fn rename_layer(app: &mut App, layer: usize, name: &str) -> Result<LayerEditResult, String> {
+    set_layer(
+        app,
+        &SetLayerParams {
+            layer,
+            props: LayerProps {
+                name: Some(name.to_owned()),
+                ..Default::default()
+            },
+            reorder: None,
+        },
+    )
+}
+
+/// Move a layer one place up or down the list (a [`set_layer`] with only
+/// the reorder).
+pub fn move_layer(
+    app: &mut App,
+    layer: usize,
+    dir: LayerDirection,
+) -> Result<LayerEditResult, String> {
+    set_layer(
+        app,
+        &SetLayerParams {
+            layer,
+            reorder: Some(dir),
+            ..Default::default()
+        },
+    )
+}
+
+/// Make `layer` the active layer: the one the panel edits and new faces go
+/// to. A view setting, not a model edit: no undo step.
+pub fn set_active_layer(app: &mut App, layer: usize) -> Result<LayerEditResult, String> {
+    layer_index(app.surface().ok_or("no model loaded")?, layer)?;
+    app.set_active_layer_index(layer);
+    Ok(layer_result(app, layer, 0, false))
+}
+
+/// Move control faces to a layer ("Move to layer").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AssignFacesParams {
+    pub faces: Vec<usize>,
+    pub layer: usize,
+}
+
+/// Put `faces` on `layer`: one undo step, none when they are all there
+/// already. Moving faces between layers with the same symmetry and
+/// hydrostatics flags changes no number.
+pub fn assign_faces(app: &mut App, params: &AssignFacesParams) -> Result<LayerEditResult, String> {
+    let (moved, changed) = edit_layers(app, "layer.assign_faces", |s| {
+        let k = layer_index(s, params.layer)?;
+        if params.faces.is_empty() {
+            return Err("give at least one face".into());
+        }
+        if let Some(&bad) = params.faces.iter().find(|&&f| f >= s.faces.len()) {
+            return Err(format!(
+                "face {bad} does not exist (the model has {} faces)",
+                s.faces.len()
+            ));
+        }
+        let mut moved = 0;
+        for &f in &params.faces {
+            if s.face_layer[f] != k {
+                s.face_layer[f] = k;
+                moved += 1;
+            }
+        }
+        Ok(moved)
+    })?;
+    if changed {
+        let name = app
+            .surface()
+            .and_then(|s| s.layers.get(params.layer))
+            .map(|l| l.name.clone())
+            .unwrap_or_default();
+        app.status_note(format!(
+            "{moved} face{} moved to layer \"{name}\"",
+            if moved == 1 { "" } else { "s" }
+        ));
+    }
+    Ok(layer_result(app, params.layer, moved, changed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,5 +1412,335 @@ mod tests {
         let r = generate(&mut app, &spec).expect("generate");
         assert_eq!(r.points, app.control_point_count());
         assert!(r.faces > 0);
+    }
+
+    // ---- layers ----------------------------------------------------------
+
+    fn names(app: &App) -> Vec<String> {
+        app.surface()
+            .unwrap()
+            .layers
+            .iter()
+            .map(|l| l.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn add_layer_is_one_undo_step_with_a_fresh_name_id_and_colour() {
+        let mut app = demo();
+        assert_eq!(names(&app), ["Bottom", "Topsides", "Transom"]);
+        let undo = app.undo_len();
+        let r = add_layer(&mut app, &AddLayerParams::default()).expect("add");
+        assert_eq!(r.layers, 4);
+        assert_eq!(r.layer, 3);
+        assert_eq!(r.active, 3, "the new layer is active");
+        assert_eq!(app.undo_len(), undo + 1);
+        let s = app.surface().unwrap();
+        let new = &s.layers[3];
+        assert_eq!(new.name, "Layer 4");
+        assert_eq!(new.id, 4);
+        assert!(s.layers[..3].iter().all(|l| l.color != new.color));
+        assert!(crate::theme::LAYER_PALETTE.contains(&new.color));
+        assert_eq!(new.symmetric, s.layers[0].symmetric, "the model's symmetry");
+        assert!(new.use_in_hydrostatics && new.visible);
+        assert_eq!(s.layer_face_counts()[3], 0);
+        // A second one gets the next name and colour; a taken name is refused.
+        add_layer(&mut app, &AddLayerParams::default()).expect("add");
+        assert_eq!(names(&app)[4], "Layer 5");
+        let undo = app.undo_len();
+        let err = add_layer(
+            &mut app,
+            &AddLayerParams {
+                name: Some("Bottom".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+        assert_eq!(app.undo_len(), undo);
+        // Undo takes the layer away again.
+        app.undo();
+        assert_eq!(app.layer_count(), 4);
+    }
+
+    #[test]
+    fn a_layer_with_faces_is_deleted_only_with_somewhere_to_put_them() {
+        let mut app = demo();
+        let faces = app.face_count();
+        let undo = app.undo_len();
+        let err = delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: 1,
+                move_faces_to: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("still owns"), "{err}");
+        assert_eq!(app.undo_len(), undo, "a refusal leaves no undo entry");
+        assert_eq!(app.layer_count(), 3);
+        // Moving them onto the layer itself is refused too.
+        assert!(delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: 1,
+                move_faces_to: Some(1),
+            },
+        )
+        .is_err());
+        let before = app.surface().unwrap().layer_face_counts();
+        let r = delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: 1,
+                move_faces_to: Some(2),
+            },
+        )
+        .expect("delete with a move");
+        assert_eq!(app.undo_len(), undo + 1);
+        assert_eq!(names(&app), ["Bottom", "Transom"]);
+        assert_eq!(r.layer, 1, "Transom, now at index 1, took the faces");
+        assert_eq!(r.moved_faces, before[1]);
+        let s = app.surface().unwrap();
+        s.validate().expect("every face points at a layer");
+        assert_eq!(s.faces.len(), faces);
+        assert_eq!(
+            s.layer_face_counts(),
+            vec![before[0], before[1] + before[2]]
+        );
+        // An empty layer goes without a move; the last one never goes.
+        add_layer(&mut app, &AddLayerParams::default()).unwrap();
+        let empty = app.layer_count() - 1;
+        delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: empty,
+                move_faces_to: None,
+            },
+        )
+        .expect("an empty layer");
+        delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: 0,
+                move_faces_to: Some(1),
+            },
+        )
+        .expect("down to one layer");
+        let undo = app.undo_len();
+        let err = delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: 0,
+                move_faces_to: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("last layer"), "{err}");
+        assert_eq!(app.undo_len(), undo);
+        assert_eq!(app.surface().unwrap().layer_face_counts(), vec![faces]);
+    }
+
+    #[test]
+    fn rename_and_reorder_keep_the_faces_with_their_layer() {
+        let mut app = demo();
+        let undo = app.undo_len();
+        rename_layer(&mut app, 0, "  Underwater\nbody ").expect("rename");
+        assert_eq!(names(&app)[0], "Underwater body", "one trimmed line");
+        assert_eq!(app.undo_len(), undo + 1);
+        assert!(rename_layer(&mut app, 0, "   ").is_err());
+        assert!(rename_layer(&mut app, 0, "Transom").is_err(), "duplicate");
+        assert_eq!(app.undo_len(), undo + 1);
+        // Renaming to the same name changes nothing and records nothing.
+        let r = rename_layer(&mut app, 0, "Underwater body").unwrap();
+        assert!(!r.changed);
+        assert_eq!(app.undo_len(), undo + 1);
+
+        let transom_faces: Vec<usize> = (0..app.face_count())
+            .filter(|&f| app.surface().unwrap().face_layer[f] == 2)
+            .collect();
+        set_active_layer(&mut app, 2).unwrap();
+        let r = move_layer(&mut app, 2, LayerDirection::Up).expect("up");
+        assert_eq!(r.layer, 1);
+        assert_eq!(r.active, 1, "the active layer moves with it");
+        assert_eq!(names(&app), ["Underwater body", "Transom", "Topsides"]);
+        let s = app.surface().unwrap();
+        assert!(transom_faces.iter().all(|&f| s.face_layer[f] == 1));
+        assert_eq!(app.undo_len(), undo + 2);
+        let undo = app.undo_len();
+        assert!(move_layer(&mut app, 0, LayerDirection::Up).is_err());
+        assert!(move_layer(&mut app, 2, LayerDirection::Down).is_err());
+        assert_eq!(app.undo_len(), undo);
+        move_layer(&mut app, 1, LayerDirection::Down).expect("down");
+        assert_eq!(names(&app), ["Underwater body", "Topsides", "Transom"]);
+        assert_eq!(app.active_layer(), 2);
+    }
+
+    #[test]
+    fn layer_properties_reach_the_model_and_the_measurement() {
+        let mut app = demo();
+        app.recompute_hydrostatics();
+        let full = app.hydrostatics().unwrap().volume_m3;
+        let undo = app.undo_len();
+        let r = set_layer(
+            &mut app,
+            &SetLayerParams {
+                layer: 0,
+                props: LayerProps {
+                    id: Some(42),
+                    color: Some(0x10_20_30),
+                    visible: Some(false),
+                    developable: Some(true),
+                    use_for_intersections: Some(false),
+                    use_in_hydrostatics: Some(false),
+                    show_in_linesplan: Some(false),
+                    density: Some(1500.0),
+                    thickness: Some(0.008),
+                    ..Default::default()
+                },
+                reorder: None,
+            },
+        )
+        .expect("set");
+        assert!(r.changed);
+        assert_eq!(app.undo_len(), undo + 1, "the whole set is one step");
+        let l = &app.surface().unwrap().layers[0];
+        assert_eq!(
+            (l.id, l.color, l.visible, l.developable),
+            (42, 0x10_20_30, false, true)
+        );
+        assert!(!l.use_for_intersections && !l.use_in_hydrostatics && !l.show_in_linesplan);
+        assert_eq!((l.density, l.thickness), (1500.0, 0.008));
+        // Taking the bottom out of the hydrostatics drops the displacement.
+        app.recompute_hydrostatics();
+        assert!(app.hydrostatics().unwrap().volume_m3 < full - 1.0);
+        // Bad values are refused whole: nothing of the request is applied.
+        for bad in [
+            LayerProps {
+                id: Some(2),
+                visible: Some(true),
+                ..Default::default()
+            },
+            LayerProps {
+                color: Some(0x1_00_00_00),
+                ..Default::default()
+            },
+            LayerProps {
+                density: Some(f64::NAN),
+                ..Default::default()
+            },
+            LayerProps {
+                thickness: Some(-0.001),
+                ..Default::default()
+            },
+        ] {
+            let undo = app.undo_len();
+            assert!(set_layer(
+                &mut app,
+                &SetLayerParams {
+                    layer: 0,
+                    props: bad.clone(),
+                    reorder: None
+                }
+            )
+            .is_err());
+            assert_eq!(app.undo_len(), undo, "{bad:?}");
+            assert!(!app.surface().unwrap().layers[0].visible);
+        }
+        assert!(set_layer(
+            &mut app,
+            &SetLayerParams {
+                layer: 9,
+                ..Default::default()
+            }
+        )
+        .is_err());
+        app.undo();
+        app.recompute_hydrostatics();
+        assert!((app.hydrostatics().unwrap().volume_m3 - full).abs() < 1e-12);
+    }
+
+    #[test]
+    fn assigning_faces_moves_them_and_leaves_the_numbers_alone() {
+        let mut app = demo();
+        app.recompute_hydrostatics();
+        let before = app.hydrostatics().unwrap().clone();
+        let undo = app.undo_len();
+        add_layer(&mut app, &AddLayerParams::default()).unwrap();
+        let r = assign_faces(
+            &mut app,
+            &AssignFacesParams {
+                faces: vec![0, 1, 1, 7],
+                layer: 3,
+            },
+        )
+        .expect("assign");
+        assert_eq!(r.moved_faces, 3, "a repeated face moves once");
+        assert_eq!(app.undo_len(), undo + 2);
+        let s = app.surface().unwrap();
+        assert_eq!(s.face_layer[0], 3);
+        assert_eq!(s.face_layer[7], 3);
+        assert_eq!(s.layer_face_counts()[3], 3);
+        app.recompute_hydrostatics();
+        let after = app.hydrostatics().unwrap();
+        assert_eq!(format!("{before:?}"), format!("{after:?}"));
+        // Already there: no step. Out of range, or no faces: refused.
+        let undo = app.undo_len();
+        let r = assign_faces(
+            &mut app,
+            &AssignFacesParams {
+                faces: vec![0],
+                layer: 3,
+            },
+        )
+        .unwrap();
+        assert!(!r.changed);
+        let n = app.face_count();
+        for bad in [
+            AssignFacesParams {
+                faces: vec![n],
+                layer: 0,
+            },
+            AssignFacesParams {
+                faces: vec![],
+                layer: 0,
+            },
+            AssignFacesParams {
+                faces: vec![0],
+                layer: 4,
+            },
+        ] {
+            assert!(assign_faces(&mut app, &bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(app.undo_len(), undo);
+    }
+
+    #[test]
+    fn the_active_layer_is_not_an_edit() {
+        let mut app = demo();
+        let undo = app.undo_len();
+        set_active_layer(&mut app, 2).unwrap();
+        assert_eq!(app.active_layer(), 2);
+        assert!(set_active_layer(&mut app, 3).is_err());
+        assert_eq!(app.active_layer(), 2);
+        assert_eq!(app.undo_len(), undo);
+        let list = list_layers(&app).unwrap();
+        assert_eq!(list.active, 2);
+        assert_eq!(list.layers.len(), 3);
+        assert_eq!(
+            list.layers.iter().map(|l| l.faces).sum::<usize>(),
+            list.faces
+        );
+        // Deleting a layer above the active one keeps the same layer active.
+        add_layer(&mut app, &AddLayerParams::default()).unwrap();
+        set_active_layer(&mut app, 2).unwrap();
+        delete_layer(
+            &mut app,
+            &DeleteLayerParams {
+                layer: 0,
+                move_faces_to: Some(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(names(&app)[app.active_layer()], "Transom");
     }
 }

@@ -297,7 +297,17 @@ pub fn write(surface: &Surface) -> String {
 
     let _ = writeln!(out, "{}", surface.layers.len());
     for l in &surface.layers {
-        let _ = writeln!(out, "{}", if l.name.is_empty() { "Layer" } else { &l.name });
+        // The name owns one line, like the header's text fields.
+        let name = l.name.replace(['\r', '\n'], " ");
+        let _ = writeln!(
+            out,
+            "{}",
+            if name.trim().is_empty() {
+                "Layer"
+            } else {
+                &name
+            }
+        );
         let _ = writeln!(
             out,
             "{} {} {} {} {} {} {} {} {:.8} {:.8}",
@@ -402,6 +412,49 @@ mod tests {
         assert_eq!(back.faces.len(), 1);
         assert_eq!(back.points[3].kind, VertexKind::Corner);
         assert!((back.settings.length - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn layers_round_trip_with_ids_colours_flags_and_faces() {
+        let mut s = crate::demo::demo_hull(true);
+        // A fourth layer with every flag the other way round, and faces moved
+        // onto it, so each field is seen to travel on its own.
+        s.layers.push(Layer {
+            name: "Deck house".into(),
+            id: 17,
+            color: 0x12_34_56,
+            visible: false,
+            developable: true,
+            symmetric: true,
+            use_for_intersections: false,
+            use_in_hydrostatics: false,
+            show_in_linesplan: false,
+            density: 1450.5,
+            thickness: 0.0065,
+        });
+        s.face_layer[0] = 3;
+        s.face_layer[5] = 3;
+        let back = parse(&write(&s)).expect("parse");
+        assert_eq!(back.layers.len(), 4);
+        for (a, b) in s.layers.iter().zip(&back.layers) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.color, b.color);
+            assert_eq!(a.visible, b.visible);
+            assert_eq!(a.developable, b.developable);
+            assert_eq!(a.symmetric, b.symmetric);
+            assert_eq!(a.use_for_intersections, b.use_for_intersections);
+            assert_eq!(a.use_in_hydrostatics, b.use_in_hydrostatics);
+            assert_eq!(a.show_in_linesplan, b.show_in_linesplan);
+            assert!((a.density - b.density).abs() < 1e-9);
+            assert!((a.thickness - b.thickness).abs() < 1e-9);
+        }
+        assert_eq!(back.face_layer, s.face_layer);
+        // A line break in a layer name cannot shift the rest of the file.
+        s.layers[1].name = "Top\nsides".into();
+        let back = parse(&write(&s)).expect("parse");
+        assert_eq!(back.layers[1].name, "Top sides");
+        assert_eq!(back.face_layer, s.face_layer);
     }
 
     #[test]

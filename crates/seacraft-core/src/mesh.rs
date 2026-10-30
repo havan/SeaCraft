@@ -62,7 +62,10 @@ impl ControlEdge {
     }
 }
 
-#[derive(Debug, Clone)]
+/// A group of control faces with shared display and measurement flags, as
+/// in FREE!ship's layer dialog. `density` is in kg/m³ and `thickness` in
+/// metres (the plating, for a weight estimate); `color` is `0xRRGGBB`.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layer {
     pub name: String,
     pub id: i32,
@@ -254,8 +257,18 @@ impl Surface {
         }
     }
 
-    /// Lowest point of the hydrostatic layers, the datum FREE!ship uses to
-    /// place the waterline when a draft is specified.
+    /// Number of faces on each layer, indexed like `self.layers`. A face
+    /// whose layer index is out of range is not counted.
+    pub fn layer_face_counts(&self) -> Vec<usize> {
+        let mut counts = vec![0usize; self.layers.len()];
+        for &l in &self.face_layer {
+            if let Some(c) = counts.get_mut(l) {
+                *c += 1;
+            }
+        }
+        counts
+    }
+
     /// Whether face `fi` counts for hydrostatics. A face whose layer is
     /// missing (an unvalidated surface) counts, rather than panicking.
     fn face_in_hydrostatics(&self, fi: usize) -> bool {
@@ -265,6 +278,8 @@ impl Surface {
             .is_none_or(|l| l.use_in_hydrostatics)
     }
 
+    /// Lowest point of the hydrostatic layers, the datum FREE!ship uses to
+    /// place the waterline when a draft is specified.
     pub fn lowest_hydrostatics_point(&self) -> f64 {
         let mut z = f64::INFINITY;
         for (fi, f) in self.faces.iter().enumerate() {
