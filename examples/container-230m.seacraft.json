@@ -1,0 +1,136 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Lightship (hull, machinery, outfit)",
+        "mass_t": 16235.848,
+        "x": 109.127,
+        "y": 0.0,
+        "z": 12.815
+      },
+      "items": [
+        {
+          "name": "Containers in the holds and on deck (2 600 TEU at 12 t)",
+          "mass_t": 31200.0,
+          "x": 120.0,
+          "y": 0.0,
+          "z": 16.5
+        },
+        {
+          "name": "HFO in the double-bottom and wing tanks",
+          "mass_t": 3200.0,
+          "x": 75.0,
+          "y": 0.0,
+          "z": 3.0
+        },
+        {
+          "name": "Diesel oil and lubricants",
+          "mass_t": 350.0,
+          "x": 30.0,
+          "y": 0.0,
+          "z": 6.0
+        },
+        {
+          "name": "Stores, fresh water, crew and provisions",
+          "mass_t": 450.0,
+          "x": 25.0,
+          "y": 0.0,
+          "z": 18.0
+        }
+      ],
+      "tanks": [
+        {
+          "name": "No. 3 double-bottom water ballast (C)",
+          "x_min": 103.5,
+          "x_max": 126.5,
+          "y_min": -12.0,
+          "y_max": 12.0,
+          "z_min": 0.0,
+          "z_max": 2.0,
+          "fill": 1.0,
+          "density_t_m3": 1.025,
+          "permeability": 0.98,
+          "clip_to_hull": false
+        },
+        {
+          "name": "HFO deep tank (C)",
+          "x_min": 50.0,
+          "x_max": 60.0,
+          "y_min": -4.0,
+          "y_max": 4.0,
+          "z_min": 2.0,
+          "z_max": 14.0,
+          "fill": 0.9,
+          "density_t_m3": 0.95,
+          "permeability": 0.98,
+          "clip_to_hull": false
+        }
+      ],
+      "windage_extra": [],
+      "bilge": "round",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [
+    {
+      "name": "No. 1 hold",
+      "x_min": 190.0,
+      "x_max": 213.0,
+      "y_min": -16.1,
+      "y_max": 16.1,
+      "z_min": 2.0,
+      "z_max": 19.0,
+      "permeability": 0.7,
+      "clip_to_hull": true
+    }
+  ],
+  "damage_cases": [
+    {
+      "name": "No. 1 hold flooded",
+      "compartments": [
+        "No. 1 hold"
+      ],
+      "kg": null,
+      "displacement_t": null,
+      "lcg": null,
+      "tcg": null,
+      "loading_condition_name": "Design",
+      "loading_condition": null,
+      "water_density": null
+    }
+  ],
+  "windage": [],
+  "report": {
+    "kg": 14.053,
+    "lcg_x": 111.516,
+    "speeds_kn": [
+      16.0,
+      18.0,
+      20.0,
+      22.0,
+      24.0,
+      26.0
+    ],
+    "loading_conditions": [
+      "Design"
+    ],
+    "damage_cases": [
+      "No. 1 hold flooded"
+    ]
+  },
+  "requirements": {
+    "name": "230 m container ship (KCS-like); KG = measured KM − 0.60 m",
+    "lwl": 232.5,
+    "bwl": 32.2,
+    "draft": 10.8,
+    "depth": 19.0,
+    "displacement_t": 53331.0,
+    "cb": 0.644,
+    "lcb_frac": 0.4907,
+    "design_speed_kn": 24.0
+  },
+  "kg": 14.053
+}

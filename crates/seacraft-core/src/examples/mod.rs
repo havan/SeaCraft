@@ -47,6 +47,7 @@ use crate::math::Vec3;
 use crate::mesh::{ordered, Layer, ProjectSettings, Surface};
 use crate::project::Project;
 
+mod container;
 mod kayik;
 mod runabout;
 mod trawler;
@@ -91,7 +92,7 @@ impl Example {
             Example::Yacht10m => Some(yacht::build),
             Example::Kayik9m => Some(kayik::build),
             Example::Runabout6m => Some(runabout::build),
-            Example::Container230m => None,
+            Example::Container230m => Some(container::build),
             Example::Trawler22m => Some(trawler::build),
             Example::Wigley => Some(wigley::build),
         }
