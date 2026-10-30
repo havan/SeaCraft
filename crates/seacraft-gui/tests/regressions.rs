@@ -141,10 +141,15 @@ impl Window {
         self.frame(vec![]);
     }
 
-    /// Let the hydrostatics job for the current inputs finish.
+    /// Let the hydrostatics job for the current inputs finish. Before the
+    /// first result nothing counts as stale and the debounced job may not
+    /// have started yet, so wait for a result too.
     fn settle_hydro(&mut self) {
         let t0 = Instant::now();
-        while self.app.stale_results().contains(&"hydrostatics") || self.app.hydro_busy() {
+        while self.app.hydrostatics().is_none()
+            || self.app.stale_results().contains(&"hydrostatics")
+            || self.app.hydro_busy()
+        {
             assert!(
                 t0.elapsed() < Duration::from_secs(60),
                 "hydro never settled"
