@@ -47,6 +47,7 @@ use crate::math::Vec3;
 use crate::mesh::{ordered, Layer, ProjectSettings, Surface};
 use crate::project::Project;
 
+mod kayik;
 mod runabout;
 mod trawler;
 mod wigley;
@@ -87,7 +88,7 @@ impl Example {
     fn builder(self) -> Option<fn() -> Built> {
         match self {
             Example::Yacht10m => None,
-            Example::Kayik9m => None,
+            Example::Kayik9m => Some(kayik::build),
             Example::Runabout6m => Some(runabout::build),
             Example::Container230m => None,
             Example::Trawler22m => Some(trawler::build),
@@ -124,7 +125,7 @@ impl Example {
         match self {
             Example::Yacht10m => "Fin-keel cruiser with spade rudder and deck",
             Example::Kayik9m => {
-                "Round-bilge workboat on a deep keel, raked stem, small transom, inboard diesel"
+                "Round-bilge workboat on a deep keel, raked stem, small transom, inboard diesel, 7 kn; means of 12 surveyed piyade boats (Turan 2022), lines our own; KG 0.95 m estimated"
             }
             Example::Runabout6m => {
                 "Hard-chine V-bottom planing boat, flat raked transom for an outboard, 30 kn; KG 0.65 m assumed"

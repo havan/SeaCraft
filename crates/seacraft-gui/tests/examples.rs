@@ -74,6 +74,15 @@ fn dialog_on_example() -> (App, egui::Context) {
     (app, ctx)
 }
 
+/// The dialog on the runabout, whatever the first example is.
+fn dialog_on_runabout() -> (App, egui::Context) {
+    let (mut app, ctx) = dialog_on_example();
+    app.new_design_mut()
+        .unwrap()
+        .set_example(Example::Runabout6m);
+    (app, ctx)
+}
+
 fn click_create(ctx: &egui::Context, app: &mut App) {
     frame(ctx, app, Vec::new());
     frame(ctx, app, Vec::new());
@@ -104,9 +113,10 @@ fn the_start_card_opens_the_dialog_on_an_example_with_its_preview() {
         assert!(painted.iter().any(|t| t == want), "{want} in {painted:?}");
     }
     assert!(painted.iter().any(|t| t == "Example"), "{painted:?}");
+    let kg = rows.iter().find(|r| r.name == "KG").unwrap();
     assert!(
-        painted.iter().any(|t| t == "0.65 m"),
-        "the runabout's KG row: {painted:?}"
+        painted.contains(&kg.value),
+        "the example's KG row: {painted:?}"
     );
 }
 
@@ -132,7 +142,7 @@ fn the_picker_offers_the_gui_examples_only() {
 
 #[test]
 fn create_loads_the_example_and_its_project_as_one_undo_step() {
-    let (mut app, ctx) = dialog_on_example();
+    let (mut app, ctx) = dialog_on_runabout();
     click_create(&ctx, &mut app);
     assert!(!app.new_design_open(), "Create closes the dialog");
     let (want_surface, want_project) = seacraft_core::examples::build(Example::Runabout6m).unwrap();
@@ -182,7 +192,7 @@ fn create_loads_the_example_and_its_project_as_one_undo_step() {
 
 #[test]
 fn an_example_saves_with_its_sidecar_and_reopens_with_its_kg() {
-    let (mut app, ctx) = dialog_on_example();
+    let (mut app, ctx) = dialog_on_runabout();
     click_create(&ctx, &mut app);
     let path = scratch("runabout.fef");
     let _ = std::fs::remove_file(project::sidecar_path(&path));

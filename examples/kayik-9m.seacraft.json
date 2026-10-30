@@ -1,0 +1,78 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Lightship (hull, keel, half deck, inboard diesel)",
+        "mass_t": 3.849,
+        "x": 3.958,
+        "y": 0.0,
+        "z": 0.918
+      },
+      "items": [
+        {
+          "name": "Crew (2)",
+          "mass_t": 0.16,
+          "x": 1.2,
+          "y": 0.0,
+          "z": 1.7
+        },
+        {
+          "name": "Diesel, 100 l",
+          "mass_t": 0.085,
+          "x": 1.4,
+          "y": 0.0,
+          "z": 0.7
+        },
+        {
+          "name": "Fresh water and stores",
+          "mass_t": 0.06,
+          "x": 2.5,
+          "y": 0.0,
+          "z": 1.0
+        },
+        {
+          "name": "Fishing gear and catch",
+          "mass_t": 0.45,
+          "x": 4.0,
+          "y": 0.0,
+          "z": 1.0
+        }
+      ],
+      "tanks": [],
+      "windage_extra": [],
+      "bilge": "round",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [],
+  "damage_cases": [],
+  "windage": [],
+  "report": {
+    "kg": 0.95,
+    "lcg_x": 3.8,
+    "speeds_kn": [
+      4.0,
+      5.0,
+      6.0,
+      7.0,
+      8.0
+    ],
+    "include_resistance": true,
+    "include_planing": false
+  },
+  "requirements": {
+    "name": "9 m piyade kayık (Turan 2022 means)",
+    "lwl": 7.97,
+    "bwl": 2.85,
+    "draft": 0.907,
+    "depth": 1.62,
+    "displacement_t": 4.6,
+    "cb": 0.218,
+    "lcb_frac": 0.474,
+    "design_speed_kn": 7.0
+  },
+  "kg": 0.95
+}
