@@ -36,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Write the built-in demo hull to a .fef file
+    /// Write the built-in demo hull to a .fef file and its sidecar (KG 2.2 m)
     Demo(DemoArgs),
     /// Write a ready-made example hull and its project sidecar (--list shows them)
     Example(ExampleArgs),
@@ -1305,9 +1305,16 @@ fn cmd_demo(a: DemoArgs) -> Result<()> {
     let surface = demo::demo_hull(a.symmetric);
     seacraft_core::io::write_atomic(&a.output, fef::write(&surface))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
+    // The demo's KG travels with it, as for the examples, so opening the
+    // file gives the same stability as the built-in demo.
+    let sidecar = project::sidecar_path(&a.output);
+    demo::demo_project()
+        .save(&sidecar)
+        .map_err(|e| anyhow::anyhow!(e))?;
     println!(
-        "wrote {} ({} control points, {} faces, {} layer{})",
+        "wrote {} and {} ({} control points, {} faces, {} layer{})",
         a.output.display(),
+        sidecar.display(),
         surface.points.len(),
         surface.faces.len(),
         surface.layers.len(),

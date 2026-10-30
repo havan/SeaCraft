@@ -30,12 +30,22 @@ fn frame(ctx: &egui::Context, app: &mut App) {
 
 #[test]
 fn performance_tab_and_computations() {
+    // R5-3: a .fef opened without a project KG has none, and no KG means no
+    // seakeeping (a copy of the demo without its sidecar).
+    let dir = std::env::temp_dir().join(format!("seacraft-performance-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bare = dir.join("bare-demo.fef");
+    std::fs::copy(demo_path(), &bare).unwrap();
+    let _ = std::fs::remove_file(seacraft_core::project::sidecar_path(&bare));
+    let mut no_kg = App::headless_for_test(Some(bare.to_str().unwrap()));
+    no_kg.set_subdivision_level(2);
+    assert!(no_kg.seakeeping_spec().is_err(), "no KG, no seakeeping");
+
+    // The committed demo brings the demo's KG in its sidecar; the
+    // seakeeping below needs it.
     let mut app = App::headless_for_test(Some(&demo_path()));
     app.set_subdivision_level(2);
-    // R5-3: a .fef opened without a project KG has none; the seakeeping
-    // below needs the demo's.
-    assert!(app.seakeeping_spec().is_err(), "no KG, no seakeeping");
-    app.set_kg(seacraft_gui::app::DEMO_KG);
+    assert_eq!(app.kg(), Some(seacraft_gui::app::DEMO_KG));
     let ctx = egui::Context::default();
 
     // Settle docks with two frames

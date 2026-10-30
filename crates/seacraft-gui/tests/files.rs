@@ -129,9 +129,12 @@ fn undo_back_to_the_saved_state_is_clean_again() {
 fn the_project_sidecar_travels_with_the_model() {
     use seacraft_core::project::{sidecar_path, Project};
     let mut app = App::headless_for_test(Some(&demo_path()));
-    assert!(app.project().is_empty(), "the demo has no sidecar");
+    // The committed demo's sidecar carries only its KG.
+    assert_eq!(app.project(), &seacraft_core::demo::demo_project());
 
     // An empty project writes no sidecar.
+    app.set_project(Project::default());
+    assert!(app.project().is_empty());
     let bare = scratch("bare.fef");
     assert!(app.save_to(&bare), "{}", app.status());
     assert!(!sidecar_path(&bare).exists());
@@ -174,6 +177,29 @@ fn the_project_sidecar_travels_with_the_model() {
     // A new demo starts with an empty project.
     app.load_demo();
     assert!(app.project().is_empty());
+}
+
+/// Opening the committed `examples/demo-hull.fef` directly gives the demo's
+/// KG from its sidecar, as *New → Demo hull* does, so GM and the GZ curves
+/// are there without typing a KG.
+#[test]
+fn opening_the_committed_demo_gives_kg_2_2() {
+    use seacraft_core::project::sidecar_path;
+    assert!(sidecar_path(std::path::Path::new(&demo_path())).exists());
+    let mut app = App::headless_for_test(None);
+    app.open_model(std::path::Path::new(&demo_path())).unwrap();
+    assert_eq!(app.kg(), Some(2.2));
+    assert_eq!(app.kg(), Some(seacraft_gui::app::DEMO_KG));
+    assert!(!app.is_dirty(), "the sidecar's KG is saved state");
+    assert!(app.status().ends_with("+ project"), "{}", app.status());
+
+    let mut built_in = App::headless_for_test(None);
+    built_in.load_demo();
+    assert_eq!(
+        built_in.kg(),
+        app.kg(),
+        "the file and New → Demo hull agree"
+    );
 }
 
 #[test]

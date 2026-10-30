@@ -42,7 +42,7 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    round, round_to_fef, settings, station_grid, Built, Example,
+    plating, round, round_to_fef, settings, station_grid, Built, Example, STEEL,
 };
 use crate::damage::{Compartment, CompartmentSpec, DamageCase};
 use crate::loading::{evaluate_tank, Tank, WeightItem};
@@ -210,9 +210,9 @@ pub(super) fn build() -> Built {
 fn build_with(sections: &[Sec]) -> Built {
     let mut s = Surface::new();
     s.layers = vec![
-        layer(1, "Hull", 0x3a_3a_3a, false),
-        layer(2, "Transom", 0x7a_20_20, false),
-        layer(3, "Deck", 0x9c_2a_2a, false),
+        layer(1, "Hull", 0x3a_3a_3a, false, plating(STEEL, 18.0)),
+        layer(2, "Transom", 0x7a_20_20, false, plating(STEEL, 18.0)),
+        layer(3, "Deck", 0x9c_2a_2a, false, plating(STEEL, 15.0)),
     ];
     s.settings = settings(Example::Container230m, LWL, B, T);
 

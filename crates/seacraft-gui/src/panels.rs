@@ -869,13 +869,16 @@ pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
             push(format!(" ({:.*}", t.decimals, t.target), theme::TARGET);
             push(format!(" {:+.1} %", t.deviation_pct()), deviation);
             push(")".to_owned(), theme::TARGET);
-            ui.label(job).on_hover_text(format!(
-                "{} — target {:.*}, ±{} % tolerance; targets never move the hull",
-                t.text(),
-                t.decimals,
-                t.target,
-                crate::new_design::TARGET_TOLERANCE_PCT
-            ));
+            // An item never wraps inside itself: one that does not fit the
+            // rest of the row starts the next one.
+            ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend))
+                .on_hover_text(format!(
+                    "{} — target {:.*}, ±{} % tolerance; targets never move the hull",
+                    t.text(),
+                    t.decimals,
+                    t.target,
+                    crate::new_design::TARGET_TOLERANCE_PCT
+                ));
         }
     });
 }

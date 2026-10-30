@@ -25,8 +25,8 @@
 //! which the kernel pins, so L and T need no correction.
 
 use super::{
-    close_half_deck, crease_path, design_condition, item, layer, round, round_to_fef, settings,
-    station_grid, Built, Example,
+    close_half_deck, crease_path, design_condition, item, layer, plating, round, round_to_fef,
+    settings, station_grid, Built, Example, STEEL,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -67,8 +67,8 @@ pub(super) fn build() -> Built {
 fn build_with(row_scale: &[f64; 9]) -> Built {
     let mut s = Surface::new();
     s.layers = vec![
-        layer(1, "Hull", 0x9a_b8_d8, false),
-        layer(2, "Deck", 0xc8_b4_8c, false),
+        layer(1, "Hull", 0x9a_b8_d8, false, plating(STEEL, 5.0)),
+        layer(2, "Deck", 0xc8_b4_8c, false, plating(STEEL, 5.0)),
     ];
     s.settings = settings(Example::Wigley, L, B, T);
     let stations: Vec<Vec<Vec3>> = (0..STATIONS)

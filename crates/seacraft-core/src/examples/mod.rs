@@ -210,8 +210,39 @@ pub fn build(kind: Example) -> Result<Built, String> {
 
 // ---- net primitives -------------------------------------------------------
 
-/// A symmetric hydrostatic layer.
-pub(crate) fn layer(id: i32, name: &str, color: i32, developable: bool) -> Layer {
+// ---- plating materials (kg/m³), for a layer's weight estimate -------------
+//
+// A layer's density and thickness feed only the plating weight estimate
+// (area × thickness × density); no hydrostatic number depends on them.
+
+/// Mild and high-tensile shipbuilding steel.
+pub(crate) const STEEL: f64 = 7850.0;
+/// Hand-laid glass-reinforced polyester laminate.
+pub(crate) const GRP: f64 = 1900.0;
+/// Planking timber (larch, pine, iroko).
+pub(crate) const TIMBER: f64 = 600.0;
+/// Heavy structural timber for keels and deadwood (oak).
+pub(crate) const OAK: f64 = 800.0;
+/// Cast lead, for a ballast keel.
+pub(crate) const LEAD: f64 = 11300.0;
+
+/// Plating of a layer: material density (kg/m³) and thickness (mm).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Plating {
+    pub density: f64,
+    pub thickness_mm: f64,
+}
+
+/// `density` kg/m³, `thickness_mm` millimetres.
+pub(crate) const fn plating(density: f64, thickness_mm: f64) -> Plating {
+    Plating {
+        density,
+        thickness_mm,
+    }
+}
+
+/// A symmetric hydrostatic layer with its plating.
+pub(crate) fn layer(id: i32, name: &str, color: i32, developable: bool, plate: Plating) -> Layer {
     Layer {
         name: name.into(),
         id,
@@ -222,8 +253,8 @@ pub(crate) fn layer(id: i32, name: &str, color: i32, developable: bool) -> Layer
         use_for_intersections: true,
         use_in_hydrostatics: true,
         show_in_linesplan: true,
-        density: 7850.0,
-        thickness: 0.005,
+        density: plate.density,
+        thickness: plate.thickness_mm / 1000.0,
     }
 }
 
@@ -512,5 +543,77 @@ mod tests {
         let x = all.iter().map(|w| w.mass_t * w.x).sum::<f64>() / m;
         let z = all.iter().map(|w| w.mass_t * w.z).sum::<f64>() / m;
         assert!((m - 2.0).abs() < 1e-3 && (x - 2.4).abs() < 2e-3 && (z - 0.7).abs() < 2e-3);
+    }
+
+    /// Plating weight per layer, t: refined area (both sides, level 3)
+    /// times thickness times density.
+    fn plating_weights(s: &Surface) -> Vec<f64> {
+        let m = crate::export::render_mesh(s, 3, crate::subdiv::SubdivisionMode::Loop);
+        let mut area = vec![0.0; s.layers.len()];
+        for (f, &l) in m.faces.iter().zip(&m.face_layer) {
+            let poly: Vec<Vec3> = f.iter().map(|&i| m.verts[i]).collect();
+            area[l] += crate::math::polygon_area3(&poly);
+        }
+        s.layers
+            .iter()
+            .zip(&area)
+            .map(|(l, a)| a * l.thickness * l.density / 1000.0)
+            .collect()
+    }
+
+    /// Every GUI example carries its own plating from the material table
+    /// (only steel layers may keep the default density), and the plating
+    /// weight is a plausible share of the lightship: more than a tenth, less
+    /// than three quarters (the yacht's share includes its lead keel).
+    #[test]
+    fn examples_carry_realistic_plating() {
+        let default = Layer::default();
+        for e in Example::all() {
+            let (s, p) = build(e).unwrap();
+            for l in &s.layers {
+                assert!(
+                    [STEEL, GRP, TIMBER, OAK, LEAD].contains(&l.density),
+                    "{e} {}: density {}",
+                    l.name,
+                    l.density
+                );
+                assert!(
+                    l.density == STEEL || l.density != default.density,
+                    "{e} {}: default plating",
+                    l.name
+                );
+                assert!(
+                    (0.004..=0.08).contains(&l.thickness),
+                    "{e} {}: {} m",
+                    l.name,
+                    l.thickness
+                );
+            }
+            let shell: f64 = plating_weights(&s).iter().sum();
+            let light = p.loading_conditions[0].lightship.mass_t;
+            let share = shell / light;
+            println!(
+                "{e}: plating {shell:.3} t of lightship {light:.3} t ({:.0} %)",
+                100.0 * share
+            );
+            assert!((0.10..0.75).contains(&share), "{e}: plating share {share}");
+        }
+    }
+
+    /// Layer density and thickness are only for the weight estimate: every
+    /// example measures the same with the default plating.
+    #[test]
+    fn plating_does_not_change_the_hydrostatics() {
+        let d = Layer::default();
+        for e in Example::with_benchmarks() {
+            let (s, _) = build(e).unwrap();
+            let mut plain = s.clone();
+            for l in &mut plain.layers {
+                (l.density, l.thickness) = (d.density, d.thickness);
+            }
+            let a = serde_json::to_string(&checks::measure(&s)).unwrap();
+            let b = serde_json::to_string(&checks::measure(&plain)).unwrap();
+            assert_eq!(a, b, "{e}");
+        }
     }
 }

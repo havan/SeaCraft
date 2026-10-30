@@ -67,6 +67,20 @@ fn demo_layer(name: &str, id: i32, color: i32, symmetric: bool, thickness: f64) 
     }
 }
 
+/// The demo hull's KG above the keel (m): part of the demo, like its
+/// reference numbers. No other model gets a KG it was not given.
+pub const DEMO_KG: f64 = 2.2;
+
+/// The demo's design sidecar: its KG and nothing else, so it changes no
+/// number but GM and the GZ curves, which need a KG. `seacraft demo` writes
+/// it next to the `.fef` (`examples/demo-hull.seacraft.json`).
+pub fn demo_project() -> crate::project::Project {
+    crate::project::Project {
+        kg: Some(DEMO_KG),
+        ..Default::default()
+    }
+}
+
 /// Build the demo hull. When `symmetric` is true only the starboard half is
 /// modelled and the layers are flagged symmetric, which is how FREE!ship
 /// models are usually drawn.
@@ -272,5 +286,39 @@ mod tests {
                 assert!((a.volume_m3 - 11.851).abs() < 0.001, "{}", a.volume_m3);
             }
         }
+    }
+
+    /// The committed `examples/demo-hull.fef` is the full demo hull (up to
+    /// the version in its "created by" line) and its sidecar carries the
+    /// demo's KG and nothing else: `seacraft demo -o examples/demo-hull.fef`
+    /// writes both.
+    #[test]
+    fn committed_demo_files_match_the_demo() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let fef_path = dir.join("demo-hull.fef");
+        let text = std::fs::read_to_string(&fef_path)
+            .unwrap_or_else(|e| panic!("{}: {e}", fef_path.display()));
+        let mut on_disk = crate::fef::parse(&text).expect("demo-hull.fef parses");
+        let built = demo_hull(false);
+        on_disk.settings.created_by = built.settings.created_by.clone();
+        assert!(
+            crate::fef::write(&on_disk) == crate::fef::write(&built),
+            "{} differs from demo_hull(false); run `seacraft demo -o examples/demo-hull.fef`",
+            fef_path.display()
+        );
+        let sidecar = crate::project::sidecar_path(&fef_path);
+        let json = std::fs::read_to_string(&sidecar)
+            .unwrap_or_else(|e| panic!("{}: {e}", sidecar.display()));
+        assert_eq!(json, demo_project().to_json(), "{}", sidecar.display());
+        let project = crate::project::Project::from_json(&json).unwrap();
+        assert_eq!(project.kg, Some(DEMO_KG));
+        assert_eq!(
+            crate::project::Project {
+                kg: None,
+                ..project
+            },
+            crate::project::Project::default(),
+            "the demo sidecar carries only KG"
+        );
     }
 }

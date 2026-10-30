@@ -29,7 +29,7 @@
 
 use super::{
     add_oriented, close_half_deck, close_half_transom, crease_loop, crease_path, design_condition,
-    item, layer, round_to_fef, settings, station_grid, Built, Example,
+    item, layer, plating, round_to_fef, settings, station_grid, Built, Example, Plating, GRP, LEAD,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -124,6 +124,13 @@ const FIN: Foil = Foil {
     thickness: 0.12,
 };
 
+/// The fin is a solid lead casting (the ballast keel), not a plated shell.
+/// Its weight estimate uses the equivalent plate: the casting's volume
+/// (about 0.12 m³ for this NACA 0012 planform, both sides) over its skin
+/// area (about 3.05 m² at level 3) is 40 mm, so area × 40 mm × lead gives
+/// the casting's mass, about 1.4 t.
+const FIN_KEEL_PLATING: Plating = plating(LEAD, 40.0);
+
 /// Spade rudder: chord 0.50 m at the root, 0.40 m at the tip, about 1.05 m
 /// of span below the hull, leading edge 0.97 m forward of the aft end of the
 /// LWL, 12 % thick; its root cap follows the rising buttock 0.04 m inside
@@ -210,10 +217,10 @@ pub(super) fn build() -> Built {
 fn build_from(table: &[Station], stem: &[(f64, f64)], fin: &Foil, rudder: &Foil) -> Built {
     let mut s = Surface::new();
     s.layers = vec![
-        layer(1, "Hull", 0xf2_f2_ee, false),
-        layer(2, "Deck", 0xc8_b4_8c, false),
-        layer(3, "Fin keel", 0x40_40_40, false),
-        layer(4, "Rudder", 0xb0_30_30, false),
+        layer(1, "Hull", 0xf2_f2_ee, false, plating(GRP, 10.0)),
+        layer(2, "Deck", 0xc8_b4_8c, false, plating(GRP, 8.0)),
+        layer(3, "Fin keel", 0x40_40_40, false, FIN_KEEL_PLATING),
+        layer(4, "Rudder", 0xb0_30_30, false, plating(GRP, 8.0)),
     ];
     s.settings = settings(Example::Yacht10m, LWL, BWL, T);
 

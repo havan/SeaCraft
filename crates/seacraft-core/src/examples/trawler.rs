@@ -27,7 +27,7 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    round_to_fef, settings, station_grid, Built, Example,
+    plating, round_to_fef, settings, station_grid, Built, Example, STEEL,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -109,10 +109,10 @@ fn section(st: &[f64; 10]) -> [(f64, f64); 8] {
 pub(super) fn build() -> Built {
     let mut s = Surface::new();
     s.layers = vec![
-        layer(1, "Hull", 0x1f_4e_79, false),
-        layer(2, "Transom", 0x7a_20_20, false),
-        layer(3, "Deck", 0xc8_b4_8c, false),
-        layer(4, "Bulwark", 0xe6_e6_e6, false),
+        layer(1, "Hull", 0x1f_4e_79, false, plating(STEEL, 8.0)),
+        layer(2, "Transom", 0x7a_20_20, false, plating(STEEL, 8.0)),
+        layer(3, "Deck", 0xc8_b4_8c, false, plating(STEEL, 6.0)),
+        layer(4, "Bulwark", 0xe6_e6_e6, false, plating(STEEL, 5.0)),
     ];
     s.layers[3].use_in_hydrostatics = false;
     s.settings = settings(Example::Trawler22m, LWL, BWL, T);

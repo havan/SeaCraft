@@ -31,8 +31,9 @@ use crate::recent::{RecentAction, RecentFiles};
 use crate::render::{self, DisplayOptions, Scene};
 
 /// The built-in demo hull's KG above the keel (m): part of the demo, like
-/// its reference numbers. No other model gets a KG it was not given.
-pub const DEMO_KG: f64 = 2.2;
+/// its reference numbers. No other model gets a KG it was not given. The
+/// committed `examples/demo-hull.seacraft.json` carries the same value.
+pub const DEMO_KG: f64 = seacraft_core::demo::DEMO_KG;
 
 /// What a KG-dependent result says while KG is unset.
 pub const KG_UNSET_HINT: &str = "set KG first";

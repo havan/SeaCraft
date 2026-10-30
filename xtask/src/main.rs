@@ -374,8 +374,9 @@ fn step_demo_reference(root: &Path) {
         .output()
         .unwrap_or_else(|e| fail("demo reference", &format!("cannot run seacraft hydro: {e}")));
 
-    // Clean up temporary file
+    // Clean up the temporary model and the sidecar `demo` writes beside it
     let _ = fs::remove_file(&tmp_demo);
+    let _ = fs::remove_file(tmp_demo.with_extension("seacraft.json"));
 
     if !hydro_out.status.success() {
         std::io::stderr().write_all(&hydro_out.stderr).ok();

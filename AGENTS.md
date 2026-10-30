@@ -111,7 +111,7 @@ docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell mul
 docs/oracles/heave_2d_lid.py  Frank panels with the irregular-frequency lid vs Ursell (E3)
 docs/oracles/irregular_seas.py  spectrum moments, response moments, MSI oracle for seastate.rs (E2)
 skills/                     agent skills for the MCP server (CI-checked tool names)
-examples/demo-hull.fef      generated demo model, safe to regenerate
+examples/demo-hull.fef      generated demo model + .seacraft.json (KG 2.2); `seacraft demo -o` writes both
 README.md                   user-facing docs + FREE!ship investigation notes
 ATTRIBUTION.md              provenance of code ported from ../resource/*
 ```

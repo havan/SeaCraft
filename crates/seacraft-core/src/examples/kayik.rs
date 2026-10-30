@@ -58,7 +58,7 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    round_to_fef, settings, station_grid, Built, Example,
+    plating, round_to_fef, settings, station_grid, Built, Example, Plating, OAK, TIMBER,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -92,6 +92,11 @@ const DESIGN_DISPLACEMENT_T: f64 = 4.604;
 /// LCB of the refined hull at T (model x, m), measured and frozen: the
 /// Design condition's LCG.
 const DESIGN_LCG: f64 = 3.800;
+/// The Keel layer wraps a solid oak keel and deadwood about 0.14 m thick,
+/// not a planked shell. Its weight estimate uses the equivalent plate:
+/// a slab of thickness `w` has twice its side area as skin, so half the
+/// keel's thickness, 70 mm, over the skin gives the timber's mass.
+const KEEL_PLATING: Plating = plating(OAK, 70.0);
 
 /// Stations between the sternpost and the stem, aft to forward:
 /// `(x, keel z, keel half-width, root z, waterline y, bilge exponent,
@@ -174,10 +179,10 @@ type Station = (f64, f64, f64, f64, f64, f64, f64, f64);
 pub(super) fn build() -> Built {
     let mut s = Surface::new();
     s.layers = vec![
-        layer(1, "Hull", 0xe8_e0_d0, false),
-        layer(2, "Keel", 0x8a_6a_4a, false),
-        layer(3, "Transom", 0x80_90_a0, false),
-        layer(4, "Deck", 0xc8_b4_8c, false),
+        layer(1, "Hull", 0xe8_e0_d0, false, plating(TIMBER, 25.0)),
+        layer(2, "Keel", 0x8a_6a_4a, false, KEEL_PLATING),
+        layer(3, "Transom", 0x80_90_a0, false, plating(TIMBER, 30.0)),
+        layer(4, "Deck", 0xc8_b4_8c, false, plating(TIMBER, 20.0)),
     ];
     s.settings = settings(Example::Kayik9m, LWL, BWL, T);
 

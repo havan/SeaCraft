@@ -541,9 +541,17 @@ fn the_kg_travels_in_the_sidecar() {
     assert!(back.kg_is_estimate());
     assert_eq!(back.project().kg, None);
 
-    // A .fef without a project KG opens without one.
-    let bare = App::headless_for_test(Some(&demo_path()));
+    // A .fef without a project KG opens without one (a copy of the demo
+    // without the sidecar the committed one ships with).
+    let path = scratch("bare-demo.fef");
+    std::fs::copy(demo_path(), &path).unwrap();
+    let _ = std::fs::remove_file(project::sidecar_path(&path));
+    let bare = App::headless_for_test(Some(path.to_str().unwrap()));
     assert_eq!(bare.kg(), None);
+    // The committed demo carries the demo's KG in its sidecar.
+    let committed = App::headless_for_test(Some(&demo_path()));
+    assert_eq!(committed.kg(), Some(seacraft_gui::app::DEMO_KG));
+    assert!(!committed.kg_is_estimate());
 }
 
 #[test]

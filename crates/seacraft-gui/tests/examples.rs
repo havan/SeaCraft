@@ -222,3 +222,74 @@ fn cancel_on_the_example_changes_nothing() {
     assert!(app.surface().is_none());
     assert_eq!(app.undo_len(), 0);
 }
+
+/// A painted text, its galley's row count and where it was painted.
+type PaintedText = (String, usize, egui::Rect);
+
+/// Every painted text with its galley's row count and rect.
+fn text_rows(out: &egui::FullOutput) -> Vec<PaintedText> {
+    fn walk(shape: &egui::Shape, acc: &mut Vec<PaintedText>) {
+        match shape {
+            egui::Shape::Text(t) => acc.push((
+                t.galley.text().to_owned(),
+                t.galley.rows.len(),
+                shape.visual_bounding_rect(),
+            )),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+            _ => {}
+        }
+    }
+    let mut acc = Vec::new();
+    for clipped in &out.shapes {
+        walk(&clipped.shape, &mut acc);
+    }
+    acc
+}
+
+/// The targets strip under the hydro readout wraps between items, never
+/// inside one: on the container ship (long numbers, every target set) each
+/// item, e.g. `LWL 232.62 m (232.50 +0.1 %)`, is painted on a single row.
+#[test]
+fn the_targets_strip_keeps_each_item_on_one_line() {
+    let path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut app = App::headless_for_test(Some(&path));
+    app.recompute_hydrostatics();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+    let items: Vec<PaintedText> = text_rows(&out)
+        .into_iter()
+        .filter(|(t, _, _)| t.contains(" %)") && t.contains(" ("))
+        .collect();
+    let names: Vec<&str> = items
+        .iter()
+        .filter_map(|(t, _, _)| t.split_whitespace().next())
+        .collect();
+    for want in ["Δ", "LWL", "BWL", "T"] {
+        assert!(names.contains(&want), "no {want} item among {items:?}");
+    }
+    for (text, rows, rect) in &items {
+        assert_eq!(*rows, 1, "`{text}` is split over {rows} rows");
+        assert!(!text.contains('\n'), "`{text}`");
+        assert!(
+            rect.right() <= 1600.0,
+            "`{text}` runs off the window: {rect:?}"
+        );
+    }
+    // The strip does wrap, between items: they sit on more than one row,
+    // every one of them a single text line high.
+    let mut tops: Vec<f32> = items.iter().map(|(_, _, r)| r.top().round()).collect();
+    tops.dedup();
+    assert!(tops.len() > 1, "the items fit one row: {items:?}");
+    let line = items[0].2.height();
+    assert!(
+        items
+            .iter()
+            .all(|(_, _, r)| (r.height() - line).abs() < 1.0),
+        "{items:?}"
+    );
+}

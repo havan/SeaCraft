@@ -18,7 +18,7 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    round_to_fef, settings, station_grid, Built, Example,
+    plating, round_to_fef, settings, station_grid, Built, Example, GRP,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -79,10 +79,10 @@ fn section(zk: f64, yc: f64, zc: f64, ys: f64, zs: f64) -> [(f64, f64); 5] {
 pub(super) fn build() -> Built {
     let mut s = Surface::new();
     s.layers = vec![
-        layer(1, "Bottom", 0xd0_d0_d0, true),
-        layer(2, "Topsides", 0xff_ff_ff, true),
-        layer(3, "Transom", 0x80_90_a0, false),
-        layer(4, "Deck", 0x6a_8c_af, false),
+        layer(1, "Bottom", 0xd0_d0_d0, true, plating(GRP, 10.0)),
+        layer(2, "Topsides", 0xff_ff_ff, true, plating(GRP, 8.0)),
+        layer(3, "Transom", 0x80_90_a0, false, plating(GRP, 10.0)),
+        layer(4, "Deck", 0x6a_8c_af, false, plating(GRP, 6.0)),
     ];
     s.settings = settings(Example::Runabout6m, LWL, BWL, T);
 
