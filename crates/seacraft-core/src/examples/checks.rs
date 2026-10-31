@@ -1,16 +1,17 @@
 //! Acceptance checks shared by the example hulls' tests (the examples
 //! board's "Acceptance" list). Every check measures at level 3, Loop.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use super::polygon_normal;
 use crate::fef;
 use crate::hydro::{Hull, HydroOptions, Hydrostatics};
 use crate::loading::evaluate_tank;
 use crate::math::Vec3;
-use crate::mesh::Surface;
+use crate::mesh::{ordered, Surface};
 use crate::project::Project;
 use crate::stability::{cross_curves, solve_floating, StabilityCondition};
-use crate::subdiv::{evaluate_full, SubdivisionMode, SubdivisionOptions};
+use crate::subdiv::{evaluate, evaluate_full, SubdivisionMode, SubdivisionOptions};
 
 pub fn level3() -> SubdivisionOptions {
     SubdivisionOptions {
@@ -225,6 +226,201 @@ pub fn assert_free_trim(s: &Surface, p: &Project) -> (f64, f64) {
         fc.trim
     );
     (fc.draft, fc.trim)
+}
+
+/// The transom face of a half model: the largest control face whose edges
+/// are all creases (its outline and the centreline) and that faces aft.
+fn transom_face(s: &Surface) -> usize {
+    let creased: HashSet<(usize, usize)> = s
+        .edges
+        .iter()
+        .filter(|e| e.crease)
+        .map(|e| e.key())
+        .collect();
+    (0..s.faces.len())
+        .filter(|&fi| {
+            let f = &s.faces[fi];
+            (0..f.len()).all(|k| creased.contains(&ordered(f[k], f[(k + 1) % f.len()])))
+        })
+        .map(|fi| (fi, polygon_normal(s, &s.faces[fi])))
+        .filter(|(_, n)| n.x < -0.5 * n.length())
+        .max_by(|a, b| a.1.length().total_cmp(&b.1.length()))
+        .map(|(fi, _)| fi)
+        .expect("a transom face")
+}
+
+/// Fan triangles of `faces`.
+fn fan(faces: &[Vec<usize>]) -> Vec<[usize; 3]> {
+    faces
+        .iter()
+        .flat_map(|f| (1..f.len().saturating_sub(1)).map(move |i| [f[0], f[i], f[i + 1]]))
+        .collect()
+}
+
+/// The largest `y` where the line through `(x, ·, z)` along the y axis
+/// meets one of `tris` (a half model's half-breadth there), or `None`.
+/// Triangles seen edge-on from the side (a flat deck, a transom whose plane
+/// contains the y axis) are skipped.
+fn half_breadth_at(verts: &[Vec3], tris: &[[usize; 3]], x: f64, z: f64) -> Option<f64> {
+    let cross = |u: Vec3, v: Vec3| u.x * v.z - u.z * v.x;
+    let mut best: Option<f64> = None;
+    for t in tris {
+        let a = verts[t[0]];
+        let (ab, ac, ap) = (verts[t[1]] - a, verts[t[2]] - a, Vec3::new(x, 0.0, z) - a);
+        let d = cross(ab, ac);
+        if d.abs() <= 1e-12 * ab.length() * ac.length() {
+            continue;
+        }
+        let (l1, l2) = (cross(ap, ac) / d, cross(ab, ap) / d);
+        if l1 < -1e-9 || l2 < -1e-9 || l1 + l2 > 1.0 + 1e-9 {
+            continue;
+        }
+        let y = a.y + l1 * ab.y + l2 * ac.y;
+        best = Some(best.map_or(y, |m| m.max(y)));
+    }
+    best
+}
+
+/// Where the edges of `faces` cross the height `z`: the crossing with the
+/// largest `y`, as `(x, y)` (the transom outline at that height).
+fn outline_at(verts: &[Vec3], faces: &[Vec<usize>], z: f64) -> Option<(f64, f64)> {
+    let mut best: Option<(f64, f64)> = None;
+    for f in faces {
+        for k in 0..f.len() {
+            let (p, q) = (verts[f[k]], verts[f[(k + 1) % f.len()]]);
+            if p.z == q.z || (p.z - z) * (q.z - z) > 0.0 {
+                continue;
+            }
+            let t = (z - p.z) / (q.z - p.z);
+            let (x, y) = (p.x + t * (q.x - p.x), p.y + t * (q.y - p.y));
+            if best.is_none_or(|b| y > b.1) {
+                best = Some((x, y));
+            }
+        }
+    }
+    best
+}
+
+/// The transom keeps its shape through refinement (level 3, half model).
+/// Every corner of its outline — a control point where three or more
+/// crease edges meet, the chine or the sheer on the transom — stays within
+/// 5 mm of the control net; and between the transom and the station at
+/// `next_x` the hull is nowhere narrower than the refined transom outline
+/// at the same height by more than 5 mm, wherever neither the control net
+/// nor the refined station at `next_x` is narrower than the transom there.
+/// Returns the largest narrowing found (m).
+pub fn assert_transom_outline(s: &Surface, next_x: f64) -> f64 {
+    let ring = s.faces[transom_face(s)].clone();
+    let mut creases = vec![0usize; s.points.len()];
+    for e in s.edges.iter().filter(|e| e.crease) {
+        creases[e.a] += 1;
+        creases[e.b] += 1;
+    }
+    let fine = evaluate(s, level3());
+    let corners: Vec<usize> = ring.iter().copied().filter(|&p| creases[p] >= 3).collect();
+    assert!(
+        corners.iter().any(|&p| s.points[p].p.y > 1e-9),
+        "no chine or sheer corner on the transom outline"
+    );
+    for &p in &corners {
+        let moved = (fine.verts[p] - s.points[p].p).length();
+        println!("transom corner {:?} moved {moved:.2e} m", s.points[p].p);
+        assert!(
+            moved < 5e-3,
+            "transom corner {:?} moved {moved} m on refinement",
+            s.points[p].p
+        );
+    }
+
+    // The refined transom is every face in the (planar) transom's plane;
+    // the deck is left out of the breadths (near the sheer a ray would
+    // find the deck where the refined sheer runs below the net's).
+    let net: Vec<Vec3> = s.points.iter().map(|p| p.p).collect();
+    let n = polygon_normal(s, &ring);
+    let n = n / n.length();
+    let c = ring.iter().fold(Vec3::ZERO, |c, &p| c + net[p]) / ring.len() as f64;
+    let on_plane = |p: Vec3| (p - c).dot(n).abs() < 1e-4;
+    let deck = |l: usize| s.layers.get(l).is_some_and(|l| l.name == "Deck");
+    let mut fine_transom: Vec<Vec<usize>> = Vec::new();
+    let mut fine_hull: Vec<Vec<usize>> = Vec::new();
+    for (f, &l) in fine.faces.iter().zip(&fine.face_layer) {
+        if f.iter().all(|&p| on_plane(fine.verts[p])) {
+            fine_transom.push(f.clone());
+        } else if !deck(l) {
+            fine_hull.push(f.clone());
+        }
+    }
+    assert!(
+        !fine_transom.is_empty(),
+        "the refined transom is not planar"
+    );
+    let net_hull: Vec<Vec<usize>> = s
+        .faces
+        .iter()
+        .zip(&s.face_layer)
+        .filter(|(f, &l)| **f != ring && !deck(l))
+        .map(|(f, _)| f.clone())
+        .collect();
+    let mut net_verts = net.clone();
+    let mut net_tris: Vec<[usize; 3]> = Vec::new();
+    for f in &net_hull {
+        if f.len() == 3 {
+            net_tris.push([f[0], f[1], f[2]]);
+        } else {
+            let c = f.iter().fold(Vec3::ZERO, |sum, &p| sum + net_verts[p]) / f.len() as f64;
+            let ci = net_verts.len();
+            net_verts.push(c);
+            for i in 0..f.len() {
+                net_tris.push([f[i], f[(i + 1) % f.len()], ci]);
+            }
+        }
+    }
+    let fine_tris = fan(&fine_hull);
+    let net_transom = [ring.clone()];
+
+    let zs: Vec<f64> = ring.iter().map(|&p| net[p].z).collect();
+    let (z0, z1) = zs
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &z| {
+            (a.min(z), b.max(z))
+        });
+    let mut worst = 0.0f64;
+    for i in 1..40 {
+        let z = z0 + (z1 - z0) * i as f64 / 40.0;
+        let (Some((xa, ya)), Some((_, yn))) = (
+            outline_at(&fine.verts, &fine_transom, z),
+            outline_at(&net, &net_transom, z),
+        ) else {
+            continue;
+        };
+        // A pinch is a dip below both ends of the bay: compare only where
+        // the refined next station is at least as wide as the transom.
+        let ahead = half_breadth_at(&fine.verts, &fine_tris, next_x, z);
+        if ahead.is_none_or(|y| y < ya) {
+            continue;
+        }
+        for k in 1..8 {
+            let x = xa + (next_x - xa) * k as f64 / 8.0;
+            let widens =
+                half_breadth_at(&net_verts, &net_tris, x, z).is_some_and(|y| y >= yn - 1e-9);
+            let Some(y) = half_breadth_at(&fine.verts, &fine_tris, x, z) else {
+                continue;
+            };
+            if !widens {
+                continue;
+            }
+            if ya - y > worst {
+                worst = ya - y;
+            }
+            assert!(
+                ya - y <= 5e-3,
+                "at x {x:.3}, z {z:.3} the hull is {:.4} m narrower than the transom ({ya:.4} m)",
+                ya - y
+            );
+        }
+    }
+    println!("transom: largest narrowing forward of it {worst:.2e} m");
+    worst
 }
 
 /// `.fef` written, read and written again is the same text, and the read

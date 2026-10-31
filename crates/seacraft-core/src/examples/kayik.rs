@@ -58,7 +58,8 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    plating, round_to_fef, settings, station_grid, Built, Example, Plating, OAK, TIMBER,
+    pin_crease_junctions, plating, round_to_fef, settings, station_grid, Built, Example, Plating,
+    OAK, TIMBER,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -217,6 +218,7 @@ pub(super) fn build() -> Built {
     crease_path(&mut s, &keel_corner);
     crease_path(&mut s, &sheer);
     crease_loop(&mut s, &transom);
+    pin_crease_junctions(&mut s);
 
     let project = Project {
         kg: Some(KG),
@@ -263,6 +265,14 @@ mod tests {
     use super::*;
     use crate::hydro::{plane_segments, waterplane, Hull, HydroOptions};
     use crate::stability::{cross_curves, solve_floating, StabilityCondition};
+
+    /// The refined transom keeps its sheer corner and the topsides do not
+    /// pinch in towards it.
+    #[test]
+    fn kayik_keeps_its_transom_outline() {
+        let (s, _) = build();
+        checks::assert_transom_outline(&s, STATIONS[0].0);
+    }
     use crate::subdiv::evaluate_full;
 
     fn layer_index(s: &Surface, name: &str) -> usize {

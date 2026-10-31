@@ -27,7 +27,7 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    plating, round_to_fef, settings, station_grid, Built, Example, STEEL,
+    pin_crease_junctions, plating, round_to_fef, settings, station_grid, Built, Example, STEEL,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -167,6 +167,7 @@ pub(super) fn build() -> Built {
     crease_loop(&mut s, &transom);
     let top: Vec<usize> = bulwark.iter().map(|st| st[1]).collect();
     crease_path(&mut s, &top);
+    pin_crease_junctions(&mut s);
 
     let project = Project {
         kg: Some(KG),
@@ -213,6 +214,14 @@ mod tests {
     use super::super::checks;
     use super::*;
     use crate::hydro::HydroOptions;
+
+    /// The refined transom keeps its sheer corner and the side does not
+    /// pinch in towards it (the first station forward is at 1.2 m).
+    #[test]
+    fn trawler_keeps_its_transom_outline() {
+        let (s, _) = build();
+        checks::assert_transom_outline(&s, STATIONS[1][0]);
+    }
 
     #[test]
     fn trawler_meets_the_board_targets() {

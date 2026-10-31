@@ -29,7 +29,8 @@
 
 use super::{
     add_oriented, close_half_deck, close_half_transom, crease_loop, crease_path, design_condition,
-    item, layer, plating, round_to_fef, settings, station_grid, Built, Example, Plating, GRP, LEAD,
+    item, layer, pin_crease_junctions, plating, round_to_fef, settings, station_grid, Built,
+    Example, Plating, GRP, LEAD,
 };
 use crate::math::Vec3;
 use crate::mesh::Surface;
@@ -251,6 +252,7 @@ fn build_from(table: &[Station], stem: &[(f64, f64)], fin: &Foil, rudder: &Foil)
     for ring in [&fin_tip, &fin_root, &rudder_tip, &rudder_root] {
         crease_loop(&mut s, ring);
     }
+    pin_crease_junctions(&mut s);
 
     let project = Project {
         kg: Some(KG),
@@ -341,6 +343,14 @@ mod tests {
     use super::*;
     use crate::hydro::{Hull, HydroOptions};
     use crate::stability::{cross_curves, StabilityCondition};
+
+    /// The refined transom keeps its sheer corner and the counter does not
+    /// pinch in towards it.
+    #[test]
+    fn yacht_keeps_its_transom_outline() {
+        let (s, _) = build();
+        checks::assert_transom_outline(&s, STATIONS[1].0);
+    }
     use crate::subdiv::evaluate;
 
     /// The canoe body alone: the appendage layers out of the hydrostatics

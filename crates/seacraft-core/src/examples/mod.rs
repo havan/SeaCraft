@@ -409,6 +409,29 @@ pub(crate) fn crease_loop(s: &mut Surface, ring: &[usize]) {
     crease_path(s, &path);
 }
 
+/// Make every point where three or more crease edges meet a corner: the
+/// chine or the sheer meeting the transom outline. Call after the creases.
+///
+/// The kernel's crease rule only moves a point with exactly two crease
+/// edges; a control point with more keeps its own kind, and a `Regular`
+/// one is averaged as a smooth point, pulled towards the centres of the
+/// transom, side and bottom faces around it. On the runabout that rounded
+/// the transom's chine corner off by 0.2 m and rolled the bottom and side
+/// inward towards the transom. The kind is stored in the `.fef`, so
+/// FREE!ship keeps the corner too.
+pub(crate) fn pin_crease_junctions(s: &mut Surface) {
+    let mut creases = vec![0usize; s.points.len()];
+    for e in s.edges.iter().filter(|e| e.crease) {
+        creases[e.a] += 1;
+        creases[e.b] += 1;
+    }
+    for (p, &n) in s.points.iter_mut().zip(&creases) {
+        if n >= 3 {
+            p.kind = crate::mesh::VertexKind::Corner;
+        }
+    }
+}
+
 /// Round every coordinate to the five decimals a `.fef` stores, so a
 /// written example reads back to exactly the same numbers.
 pub(crate) fn round_to_fef(s: &mut Surface) {

@@ -42,7 +42,8 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    plating, round, round_to_fef, settings, station_grid, Built, Example, STEEL,
+    pin_crease_junctions, plating, round, round_to_fef, settings, station_grid, Built, Example,
+    STEEL,
 };
 use crate::damage::{Compartment, CompartmentSpec, DamageCase};
 use crate::loading::{evaluate_tank, Tank, WeightItem};
@@ -277,6 +278,7 @@ fn build_with(sections: &[Sec]) -> Built {
     s.initialize_trace();
     crease_path(&mut s, &sheer);
     crease_loop(&mut s, &transom);
+    pin_crease_junctions(&mut s);
 
     (s, project())
 }
@@ -427,6 +429,14 @@ fn project() -> Project {
 mod tests {
     use super::super::checks;
     use super::*;
+
+    /// The refined transom keeps its deck-edge corner and the counter does
+    /// not pinch in towards it (the first station is at x = 0).
+    #[test]
+    fn container_keeps_its_transom_outline() {
+        let (s, _) = build();
+        checks::assert_transom_outline(&s, SECTIONS[0].0);
+    }
 
     /// Target sectional-area curve `(x, A / Am)` (authoring only): Cp 0.654
     /// on LWL, centroid 1.5 % Lpp aft of midship, parallel midbody from
