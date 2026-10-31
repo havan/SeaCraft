@@ -975,6 +975,23 @@ pub fn design_report_with_project(
 
             let res = loading::evaluate(surface, &h_opts, &cond);
 
+            if !res.equilibrium_found {
+                out.push_str("  <div class=\"warn-box\">\n");
+                let _ = writeln!(
+                    out,
+                    "    <strong>Warning: {}.</strong>",
+                    html_escape(loading::NO_EQUILIBRIUM_NOTE)
+                );
+                if !res.warnings.is_empty() {
+                    out.push_str("    <ul>\n");
+                    for w in &res.warnings {
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                    }
+                    out.push_str("    </ul>\n");
+                }
+                out.push_str("  </div>\n");
+            }
+
             out.push_str("  <table>\n");
             out.push_str("    <thead>\n");
             out.push_str("      <tr><th>&Delta; [t]</th><th>LCG [m]</th><th>TCG [m]</th><th>KG solid [m]</th><th>FSC [m]</th><th>KG fluid [m]</th><th>Draft [m]</th><th>Trim [m]</th><th>List [&deg;]</th><th>GM fluid [m]</th></tr>\n");
@@ -2308,6 +2325,41 @@ mod tests {
         assert!(!html_sk.contains("Loading Conditions"));
         assert!(!html_sk.contains("Damage Cases"));
         assert!(html_sk.contains("Seakeeping"));
+    }
+
+    /// R8-3 (A08 follow-up). A loading condition the hull cannot float is
+    /// reported with a warning box, not as if its figures were an
+    /// equilibrium; a condition that floats carries no such box. The
+    /// runabout is closed at the deck, so 1000 t sinks it.
+    #[test]
+    fn report_warns_when_a_loading_condition_has_no_equilibrium() {
+        let (surface, mut project) =
+            crate::examples::build(crate::examples::Example::Runabout6m).unwrap();
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 1;
+        opts.include_resistance = false;
+        project.report.damage_cases = Some(vec![]);
+        project.report.seakeeping = None;
+        let fine = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(fine.contains("Loading Conditions"));
+        assert!(!fine.contains(loading::NO_EQUILIBRIUM_NOTE));
+
+        project.loading_conditions[0].lightship.mass_t = 1000.0;
+        let html = design_report_with_project(&surface, &opts, &project).unwrap();
+        let note = format!(
+            "<strong>Warning: {}.</strong>",
+            loading::NO_EQUILIBRIUM_NOTE
+        );
+        let at = html.find(&note).expect("the warning box");
+        let open = html[..at].rfind("<section").expect("a section");
+        let rest = &html[at..];
+        let close = rest.find("</section>").expect("closed");
+        assert!(
+            html[open..].starts_with("<section id=\"loading\">")
+                && rest.find("<section").is_none_or(|n| n > close),
+            "the warning sits in the loading section"
+        );
+        assert!(html[at..].contains("cannot float"), "the specific warning");
     }
 
     #[test]

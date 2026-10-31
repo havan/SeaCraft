@@ -134,6 +134,10 @@ pub struct TankSummary {
     pub fsm_t_m: f64,
 }
 
+/// What every front end says about a [`LoadingResult`] whose
+/// `equilibrium_found` is `false`, before its specific `warnings`.
+pub const NO_EQUILIBRIUM_NOTE: &str = "no equilibrium — values measured at the input draft/trim";
+
 /// Full loading-condition evaluation: weight breakdown, solid and fluid KG/GM,
 /// solved floating condition, GZ cross curves and IMO A.749 criteria.
 #[derive(Debug, Clone, Serialize)]

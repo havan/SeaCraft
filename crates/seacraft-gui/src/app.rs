@@ -1446,6 +1446,7 @@ impl App {
         let kg_source = self.performance_kg_source();
         let kg_estimate = self.kg_is_estimate();
         let limits = self.hydro_limits();
+        let keel_z = self.keel_z();
         let open_view = self.analysis.open;
         let view_panel = open_view.map(|v| self.analysis_view_panel_inputs(v));
         let mut close_view = false;
@@ -1565,6 +1566,7 @@ impl App {
                                 .and_then(|r| r.weather.as_ref()),
                             stale: loading_stale,
                             selected: &mut self.selected_windage,
+                            keel_z,
                         },
                     ));
                 }
@@ -2360,13 +2362,26 @@ impl App {
         }
     }
 
+    /// Model `z` of the keel: the lowest hydrostatic point, the datum KG,
+    /// KB and the weather criterion's windage heights are measured from
+    /// (0 without a model).
+    pub fn keel_z(&self) -> f64 {
+        self.surface
+            .as_ref()
+            .map_or(0.0, |s| s.lowest_hydrostatics_point())
+    }
+
+    /// The Windage tab's totals: area (m²) and area-weighted centroid above
+    /// the keel (m) of the project's windage items, on the weather
+    /// criterion's datum.
+    pub fn windage_totals(&self) -> (f64, f64) {
+        panels::windage_totals(&self.project.windage, self.keel_z())
+    }
+
     /// The lightship a new loading condition starts from: the measured
     /// displacement at its LCB, at the dock KG above the keel.
     pub fn lightship_seed(&self) -> seacraft_core::loading::WeightItem {
-        let keel = self
-            .surface
-            .as_ref()
-            .map_or(0.0, |s| s.lowest_hydrostatics_point());
+        let keel = self.keel_z();
         // The dock KG (the user's, else the requirements' estimate). With
         // neither the seed sits at the deck: a placeholder on the safe side
         // (the highest the centre of gravity of a bare hull could be) that
@@ -3693,7 +3708,7 @@ impl App {
             None => {}
         }
         match self.loading_track.poll(self.loading_key()) {
-            Some(Ok(r)) => self.loading_result = Some(r),
+            Some(Ok(r)) => self.install_loading(r),
             Some(Err(e)) => self.log(Level::Error, format!("Loading compute failed: {e}")),
             None => {}
         }
@@ -4461,10 +4476,32 @@ impl App {
         opts.subdivision.mode = self.mode;
 
         let res = seacraft_core::loading::evaluate(surface, &opts, &with_windage);
-        self.loading_result = Some(res);
+        self.install_loading(res);
         // Supersedes any job: the result shown is this one.
         self.loading_track.stamp(self.loading_key());
         Ok(self.loading_result.as_ref().unwrap())
+    }
+
+    /// Show a finished loading computation. One that found no equilibrium
+    /// is logged once, here, as a warning: its figures describe the hull
+    /// at the input draft/trim, not a floating condition.
+    fn install_loading(&mut self, res: LoadingResult) {
+        if !res.equilibrium_found {
+            let why = if res.warnings.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", res.warnings.join("; "))
+            };
+            self.log(
+                Level::Warning,
+                format!(
+                    "Loading condition \"{}\": {}{why}",
+                    res.name,
+                    seacraft_core::loading::NO_EQUILIBRIUM_NOTE
+                ),
+            );
+        }
+        self.loading_result = Some(res);
     }
 
     pub fn damage_result(&self) -> Option<&DamageResult> {

@@ -157,3 +157,87 @@ fn test_windage_profile_and_selection() {
     assert!(!app.show_loading(), "loading panel is hidden");
     assert!(!app.show_damage(), "damage panel is hidden");
 }
+
+/// R8-3 (A04 follow-up). The Windage tab's totals refer a profiled item's
+/// model-`z` centroid to the keel, as the weather criterion does: the demo
+/// moved 1.5 m up (its loads and the deckhouse with it) shows the same
+/// centroid as at its own keel, and both agree with the extra windage the
+/// weather result was built from. Before, the totals averaged model `z`
+/// (profiled) with height above the keel (plain) and rose with the model.
+#[test]
+fn windage_totals_follow_the_keel_and_match_the_weather_criterion() {
+    let base = seacraft_core::fef::parse(&std::fs::read_to_string(demo_path()).unwrap()).unwrap();
+    let cond0: LoadingCondition =
+        serde_json::from_str(&std::fs::read_to_string(loadcase_path()).unwrap()).unwrap();
+    let dir = std::env::temp_dir().join(format!("seacraft-r8-3-windage-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let keel0 = base.lowest_hydrostatics_point();
+
+    let mut totals = Vec::new();
+    for (i, dz) in [0.0, 1.5].into_iter().enumerate() {
+        let mut s = base.clone();
+        for p in &mut s.points {
+            p.p.z += dz;
+        }
+        let path = dir.join(format!("shifted-{i}.fef"));
+        std::fs::write(&path, seacraft_core::fef::write(&s)).unwrap();
+        let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+        assert!(
+            (app.keel_z() - (keel0 + dz)).abs() < 1e-9,
+            "keel {}",
+            app.keel_z()
+        );
+
+        let mut cond = cond0.clone();
+        cond.lightship.z += dz;
+        for item in &mut cond.items {
+            item.z += dz;
+        }
+        for t in &mut cond.tanks {
+            t.z_min += dz;
+            t.z_max += dz;
+        }
+        let deckhouse = WindageItem::from_profile(
+            "Deckhouse",
+            WindageRect {
+                x_min: 3.0,
+                x_max: 6.0,
+                z_min: keel0 + 1.6 + dz,
+                z_max: keel0 + 2.4 + dz,
+            },
+        );
+        let mast = WindageItem {
+            name: "Mast".into(),
+            area_m2: 1.2,
+            z_centroid: 3.0,
+            profile: None,
+        };
+        app.set_project(Project {
+            loading_conditions: vec![cond],
+            windage: vec![deckhouse, mast],
+            ..Default::default()
+        });
+
+        let (area, z) = app.windage_totals();
+        assert!((area - 3.6).abs() < 1e-9, "dz {dz}: area {area}");
+        let want = (2.4 * 2.0 + 1.2 * 3.0) / 3.6;
+        assert!((z - want).abs() < 1e-9, "dz {dz}: z {z} vs {want}");
+
+        // The weather result's lever, less the hull's own windage, is the
+        // extra items' centroid above the keel: the same figure.
+        let res = app.compute_loading_blocking(None).expect("compute loading");
+        assert!(res.equilibrium_found, "dz {dz}: {:?}", res.warnings);
+        let w = res.weather.as_ref().expect("weather result");
+        assert!((w.extra_windage_area_m2 - area).abs() < 1e-9);
+        let windage_z = w.z_m + w.underwater_z_m;
+        let extra_z = (windage_z * w.area_m2 - w.hull_windage_area_m2 * w.hull_windage_z_m)
+            / w.extra_windage_area_m2;
+        assert!(
+            (extra_z - z).abs() < 1e-6,
+            "dz {dz}: weather's extra windage at {extra_z} m vs the totals' {z} m"
+        );
+        totals.push(z);
+    }
+    assert!((totals[0] - totals[1]).abs() < 1e-12, "{totals:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

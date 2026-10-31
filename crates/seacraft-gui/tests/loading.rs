@@ -151,3 +151,68 @@ fn a_result_for_an_edited_hull_is_not_taken_as_fresh() {
     }
     assert!(!app.stale_results().contains(&"loading"));
 }
+
+/// R8-3 (A08 follow-up). A condition the hull cannot float is logged once as
+/// a warning per computation, by the worker and by the blocking compute the
+/// control channel uses, and not again on the frames that follow. The
+/// runabout is closed at the deck, so 1000 t sinks it (the demo is open at
+/// the deck and its waterplane lid floats any weight).
+#[test]
+fn an_unfloatable_condition_is_logged_once_per_computation() {
+    use seacraft_gui::messages::Level;
+    let (surface, mut project) =
+        seacraft_core::examples::build(seacraft_core::examples::Example::Runabout6m).unwrap();
+    let dir = std::env::temp_dir().join(format!("seacraft-r8-3-loading-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("runabout.fef");
+    std::fs::write(&path, seacraft_core::fef::write(&surface)).unwrap();
+    let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+    project.loading_conditions[0].lightship.mass_t = 1000.0;
+    app.set_project(project);
+    app.set_show_loading(true);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app);
+    let note = seacraft_core::loading::NO_EQUILIBRIUM_NOTE;
+    let logged = |app: &App| {
+        app.messages()
+            .entries()
+            .filter(|m| m.level == Level::Warning && m.text.contains(note))
+            .count()
+    };
+    assert_eq!(logged(&app), 0);
+
+    app.start_loading_compute();
+    let start = Instant::now();
+    while app.loading_result().is_none() {
+        assert!(
+            start.elapsed() < Duration::from_secs(120),
+            "timed out waiting for the loading worker"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        frame(&ctx, &mut app);
+    }
+    let r = app.loading_result().unwrap();
+    assert!(
+        !r.equilibrium_found,
+        "{} t: draft {} {:?}",
+        r.displacement_t, r.draft, r.warnings
+    );
+    for _ in 0..5 {
+        frame(&ctx, &mut app);
+    }
+    assert_eq!(logged(&app), 1, "once, not per frame");
+    let last = app
+        .messages()
+        .entries()
+        .rfind(|m| m.text.contains(note))
+        .unwrap();
+    assert!(last.text.contains("cannot float"), "{}", last.text);
+
+    let res = app.compute_loading_blocking(None).expect("compute");
+    assert!(!res.equilibrium_found);
+    for _ in 0..5 {
+        frame(&ctx, &mut app);
+    }
+    assert_eq!(logged(&app), 2, "the blocking compute logs its own");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -4185,6 +4185,15 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
         ui.heading("Equilibrium & hydrostatics");
+        if !r.equilibrium_found {
+            ui.colored_label(
+                theme::WARN,
+                format!("⚠ {}", seacraft_core::loading::NO_EQUILIBRIUM_NOTE),
+            );
+            for w in &r.warnings {
+                ui.colored_label(theme::WARN, w);
+            }
+        }
         readouts(ui, "loading_readouts", &loading_rows(r));
 
         if !r.tanks.is_empty() {
@@ -4299,6 +4308,19 @@ pub struct WindagePanel<'a> {
     pub weather: Option<&'a WeatherResult>,
     pub stale: bool,
     pub selected: &'a mut Option<usize>,
+    /// Model `z` of the keel (the lowest hydrostatic point), the datum the
+    /// totals refer a profiled item's model-`z` centroid to.
+    pub keel_z: f64,
+}
+
+/// Total area (m²) and area-weighted centroid above the keel (m) of the
+/// windage `items`, the keel at model `z` `keel_z`: the datum the weather
+/// criterion uses ([`seacraft_core::weather::extra_windage_moment`]), so
+/// the totals do not move with the model.
+pub fn windage_totals(items: &[WindageItem], keel_z: f64) -> (f64, f64) {
+    let (area, moment) = seacraft_core::weather::extra_windage_moment(items, keel_z);
+    let z = if area > 1e-9 { moment / area } else { 0.0 };
+    (area, z)
 }
 
 pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
@@ -4488,25 +4510,14 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     ui.add_space(8.0);
     ui.separator();
     ui.label(egui::RichText::new("Windage totals").strong());
-    let total_area: f64 = panel.project.windage.iter().map(|w| w.area_m2).sum();
-    let total_az: f64 = panel
-        .project
-        .windage
-        .iter()
-        .map(|w| w.area_m2 * w.z_centroid)
-        .sum();
-    let z_centroid = if total_area > 1e-9 {
-        total_az / total_area
-    } else {
-        0.0
-    };
+    let (total_area, z_centroid) = windage_totals(&panel.project.windage, panel.keel_z);
     egui::Grid::new("windage_totals_grid")
         .num_columns(2)
         .show(ui, |ui| {
             ui.label("Total windage area (ΣA):");
             ui.label(format!("{:.2} m²", total_area));
             ui.end_row();
-            ui.label("Area-weighted z centroid:");
+            ui.label("Area-weighted z above keel:");
             ui.label(format!("{:.2} m", z_centroid));
             ui.end_row();
         });
@@ -5461,6 +5472,7 @@ mod tests {
                     weather: None,
                     stale: false,
                     selected: &mut selected,
+                    keel_z: 0.0,
                 },
             );
             assert_eq!(action, WindageAction::None);
@@ -5491,6 +5503,7 @@ mod tests {
                     weather: None,
                     stale: true,
                     selected: &mut selected,
+                    keel_z: 0.0,
                 },
             );
             assert_eq!(action, WindageAction::None);
@@ -6193,5 +6206,135 @@ mod tests {
         let body = src.split("#[cfg(test)]").next().unwrap();
         assert_eq!(body.matches("\"FAIL").count(), 2, "FAIL outside the badge");
         assert_eq!(body.matches("\"PASS").count(), 2, "PASS outside the badge");
+    }
+
+    /// R8-3 (A08 follow-up): a loading result without an equilibrium says
+    /// so in the warning colour, with the reason; one with an equilibrium
+    /// carries no such line.
+    #[test]
+    fn the_loading_dock_warns_when_no_equilibrium_was_found() {
+        use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
+        let (surface, mut project) =
+            seacraft_core::examples::build(seacraft_core::examples::Example::Runabout6m).unwrap();
+        let opts = seacraft_core::hydro::HydroOptions::from_surface(
+            &surface,
+            SubdivisionOptions {
+                level: 1,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        let fine =
+            seacraft_core::loading::evaluate(&surface, &opts, &project.loading_conditions[0]);
+        let mut heavy = project.loading_conditions[0].clone();
+        heavy.lightship.mass_t = 1000.0;
+        let sunk = seacraft_core::loading::evaluate(&surface, &opts, &heavy);
+        assert!(fine.equilibrium_found && !sunk.equilibrium_found);
+
+        let ctx = egui::Context::default();
+        let mut draw = |result: &LoadingResult| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(900.0, 6000.0),
+                )),
+                ..Default::default()
+            };
+            let mut selected = 0;
+            let mut out = ctx.run_ui(input, |ui| {
+                loading(
+                    ui,
+                    LoadingPanel {
+                        project: &mut project,
+                        selected: &mut selected,
+                        result: Some(result),
+                        stale: false,
+                        busy: false,
+                        highlight: None,
+                        scroll_to: false,
+                        lightship: WeightItem {
+                            name: "Lightship".into(),
+                            mass_t: 10.0,
+                            x: 0.0,
+                            y: 0.0,
+                            z: 0.0,
+                        },
+                    },
+                );
+            });
+            out.textures_delta.clear();
+            painted_text(&out.shapes)
+        };
+        let note = format!("⚠ {}", seacraft_core::loading::NO_EQUILIBRIUM_NOTE);
+        let text = draw(&sunk);
+        assert!(text.contains(&(note.clone(), theme::WARN)), "{text:?}");
+        assert!(
+            text.iter()
+                .any(|(t, c)| t.contains("cannot float") && *c == theme::WARN),
+            "{text:?}"
+        );
+        let text = draw(&fine);
+        assert!(!text.iter().any(|(t, _)| *t == note), "{text:?}");
+    }
+
+    /// R8-3 (A04 follow-up): the windage totals refer a profiled item's
+    /// model-`z` centroid to the keel, like the weather criterion, so moving
+    /// the model (and the items drawn on it) does not move them.
+    #[test]
+    fn windage_totals_are_above_the_keel_wherever_it_sits() {
+        let items = |dz: f64| {
+            vec![
+                WindageItem::from_profile(
+                    "Deckhouse",
+                    WindageRect {
+                        x_min: 3.0,
+                        x_max: 7.0,
+                        z_min: 3.0 + dz,
+                        z_max: 5.0 + dz,
+                    },
+                ),
+                WindageItem {
+                    name: "Mast".into(),
+                    area_m2: 1.0,
+                    z_centroid: 8.0,
+                    profile: None,
+                },
+            ]
+        };
+        let want = (9.0, (8.0 * 4.0 + 8.0) / 9.0);
+        for dz in [0.0, 1.5, -2.0] {
+            let (a, z) = windage_totals(&items(dz), dz);
+            assert!((a - want.0).abs() < 1e-12, "dz {dz}: A {a}");
+            assert!((z - want.1).abs() < 1e-12, "dz {dz}: z {z} vs {}", want.1);
+        }
+        // The panel prints that figure.
+        let ctx = egui::Context::default();
+        let mut project = Project {
+            windage: items(1.5),
+            ..Default::default()
+        };
+        let mut selected = None;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 3000.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            windage(
+                ui,
+                WindagePanel {
+                    project: &mut project,
+                    weather: None,
+                    stale: false,
+                    selected: &mut selected,
+                    keel_z: 1.5,
+                },
+            );
+        });
+        out.textures_delta.clear();
+        let text = painted_text(&out.shapes);
+        let shown = format!("{:.2} m", want.1);
+        assert!(text.iter().any(|(t, _)| *t == shown), "{shown} in {text:?}");
     }
 }

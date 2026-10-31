@@ -2700,7 +2700,9 @@ pub fn tool_definitions() -> Vec<Value> {
              KG_fluid, solves the free-trim floating condition (draft, trim, list angle), and evaluates GZ cross \
              curves and IMO A.749 intact-stability criteria at KG_fluid. Pass `case` (inline LoadingCondition \
              JSON object), `case_path` (path to a JSON file), or `name` (name of a condition in the project sidecar; \
-             when neither case nor case_path is given, defaults to the project's named condition or the first condition).",
+             when neither case nor case_path is given, defaults to the project's named condition or the first condition). \
+             Check `equilibrium_found`: when false (the reason is in `warnings`) no floating equilibrium exists and \
+             the figures are measured at the input draft/trim.",
             obj(
                 json!({
                     "case": {"type": "object", "description": "Inline LoadingCondition object {name, lightship, items, tanks}"},
@@ -4993,6 +4995,30 @@ mod tests {
         );
 
         fails(&mut s, 3, "loading_condition", json!({}));
+    }
+
+    /// R8-3 (A08 follow-up): the reply says when no equilibrium was found
+    /// instead of passing off the figures at the input draft as one.
+    #[test]
+    fn loading_condition_reports_a_missing_equilibrium() {
+        // The runabout is closed at the deck: 1000 t sinks it.
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "runabout-6m"}));
+        let fine = ok(&mut s, 2, "loading_condition", json!({"name": "Design"}));
+        assert_eq!(fine["equilibrium_found"], json!(true), "{fine}");
+        assert_eq!(fine["warnings"], json!([]), "{fine}");
+
+        let case = json!({ "name": "Weight check", "lightship": {
+            "name": "Lightship", "mass_t": 1000.0, "x": 2.5, "y": 0.0, "z": 0.6,
+        }});
+        let sunk = ok(&mut s, 3, "loading_condition", json!({ "case": case }));
+        assert_eq!(sunk["equilibrium_found"], json!(false), "{sunk}");
+        assert!(
+            sunk["warnings"][0]
+                .as_str()
+                .is_some_and(|w| w.contains("cannot float")),
+            "{sunk}"
+        );
     }
 
     #[test]

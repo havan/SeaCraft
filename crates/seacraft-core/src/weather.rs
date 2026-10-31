@@ -73,6 +73,17 @@ impl WindageItem {
         }
     }
 
+    /// The vertical centroid above the keel at model `z` `keel_z`: a
+    /// profiled item is in model `z`, like the hull it is drawn on; an item
+    /// without a profile is already above the keel.
+    pub fn z_above_keel(&self, keel_z: f64) -> f64 {
+        if self.profile.is_some() {
+            self.z_centroid - keel_z
+        } else {
+            self.z_centroid
+        }
+    }
+
     /// Parse a `name:area:z` specification string (used by the CLI).
     pub fn parse_spec(spec: &str) -> Result<Self, String> {
         let parts: Vec<&str> = spec.rsplitn(3, ':').collect();
@@ -694,6 +705,23 @@ fn integrate_positive<F: Fn(f64) -> f64>(pts: &[(f64, f64)], a_deg: f64, b_deg: 
     deg_to_rad(area_deg)
 }
 
+/// Total area (m²) and first moment about the keel (m³) of the windage
+/// `items` that count (finite, positive area and a finite centroid), with
+/// the keel at model `z` `keel_z` (see [`WindageItem::z_above_keel`]). The
+/// sum [`evaluate_weather`] adds to the hull's own windage; the GUI's
+/// windage totals use it too, so both refer every item to the same datum.
+pub fn extra_windage_moment(items: &[WindageItem], keel_z: f64) -> (f64, f64) {
+    let mut area = 0.0;
+    let mut moment = 0.0;
+    for item in items {
+        if item.area_m2.is_finite() && item.area_m2 > 0.0 && item.z_centroid.is_finite() {
+            area += item.area_m2;
+            moment += item.area_m2 * item.z_above_keel(keel_z);
+        }
+    }
+    (area, moment)
+}
+
 /// Evaluate the IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather)
 /// criterion on a tabulated `curve_gz` (`&[(heel_deg, gz)]`).
 ///
@@ -710,20 +738,7 @@ pub fn evaluate_weather(
     let (hull_a, hull_z, uw_a, uw_z_raw) = windage;
     let hull_area = hull_a.max(0.0);
 
-    let mut extra_area = 0.0;
-    let mut extra_mz = 0.0;
-    for item in &input.windage_extra {
-        if item.area_m2.is_finite() && item.area_m2 > 0.0 && item.z_centroid.is_finite() {
-            // A profiled item sits in model `z`, like the hull it is drawn on.
-            let z = if item.profile.is_some() {
-                item.z_centroid - hydro.keel_z
-            } else {
-                item.z_centroid
-            };
-            extra_area += item.area_m2;
-            extra_mz += item.area_m2 * z;
-        }
-    }
+    let (extra_area, extra_mz) = extra_windage_moment(&input.windage_extra, hydro.keel_z);
 
     let area_m2 = hull_area + extra_area;
     let windage_z_m = if area_m2 > 1e-12 {

@@ -3362,6 +3362,9 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     }
 
     println!("{}  -  loading condition: {}", s.settings.name, res.name);
+    for line in loading_equilibrium_lines(&res) {
+        println!("  {line}");
+    }
     println!();
     println!(
         "  {:<34} {:<10} {:>9} {:>9} {:>9} {:>9} {:>10}",
@@ -3447,6 +3450,18 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
         print_weather_summary(w);
     }
     Ok(())
+}
+
+/// The warning lines a loading table opens with when no equilibrium was
+/// found (none when it was): its figures are the hull at the input
+/// draft/trim. `--json` carries the same as `equilibrium_found`/`warnings`.
+fn loading_equilibrium_lines(res: &loading::LoadingResult) -> Vec<String> {
+    if res.equilibrium_found {
+        return Vec::new();
+    }
+    std::iter::once(format!("WARNING: {}", loading::NO_EQUILIBRIUM_NOTE))
+        .chain(res.warnings.iter().map(|w| format!("  {w}")))
+        .collect()
 }
 
 fn cmd_damage(a: DamageArgs) -> Result<()> {
@@ -3956,6 +3971,41 @@ mod tests {
             report.before.lcb_pct,
             moved.after.lcb_pct
         );
+    }
+
+    /// R8-3 (A08 follow-up): a loading condition the hull cannot float says
+    /// so in the table and in `--json`; one that floats prints no warning.
+    #[test]
+    fn loadcase_reports_a_missing_equilibrium_in_table_and_json() {
+        let kind = seacraft_core::examples::Example::Runabout6m;
+        let (s, project) = seacraft_core::examples::build(kind).expect("runabout");
+        let opts = HydroOptions::from_surface(
+            &s,
+            SubdivisionOptions {
+                level: 1,
+                mode: seacraft_core::subdiv::SubdivisionMode::Loop,
+            },
+        );
+        let cond = project.with_windage(&project.loading_conditions[0]);
+        let fine = loading::evaluate(&s, &opts, &cond);
+        assert!(fine.equilibrium_found);
+        assert!(loading_equilibrium_lines(&fine).is_empty());
+        let json = serde_json::to_value(&fine).unwrap();
+        assert_eq!(json["equilibrium_found"], serde_json::json!(true));
+        assert_eq!(json["warnings"], serde_json::json!([]));
+
+        let mut heavy = cond.clone();
+        heavy.lightship.mass_t = 1000.0;
+        let res = loading::evaluate(&s, &opts, &heavy);
+        let lines = loading_equilibrium_lines(&res);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("WARNING: no equilibrium"), "{lines:?}");
+        assert!(lines[1].contains("cannot float"), "{lines:?}");
+        let json = serde_json::to_value(&res).unwrap();
+        assert_eq!(json["equilibrium_found"], serde_json::json!(false));
+        assert!(json["warnings"][0]
+            .as_str()
+            .is_some_and(|w| w.contains("cannot float")));
     }
 
     fn parse_export(args: &[&str]) -> ExportArgs {

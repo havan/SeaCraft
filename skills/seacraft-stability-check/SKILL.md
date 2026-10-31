@@ -25,7 +25,7 @@ Ask for, or state as an assumption, KG, the draft or displacement, the LCG, and 
 ## Cross curves and IMO A.749
 
 `stability_cross_curves {"draft": 0.62, "kg": 2.2, "free_trim": true, "heels": [0, 10, 20, 30, 40, 60, 80], "displacements": [6, 12, 15]}`
-- For a full loaded ship (lightship, deadweight items, and slack tanks with free-surface correction `FSC = FSM / Δ`), run `loading_condition {"case_path": "examples/demo-loadcase.json"}` (or pass `"case"` inline) to evaluate `kg_fluid`, `gm_fluid`, the free-trim floating condition and IMO A.749 criteria directly.
+- For a full loaded ship (lightship, deadweight items, and slack tanks with free-surface correction `FSC = FSM / Δ`), run `loading_condition {"case_path": "examples/demo-loadcase.json"}` (or pass `"case"` inline) to evaluate `kg_fluid`, `gm_fluid`, the free-trim floating condition and IMO A.749 criteria directly. If `equilibrium_found` is false, report its `warnings`: the figures are measured at the input draft/trim, not at an equilibrium.
 - For the IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather) criterion, run `weather_criterion {"draft": 0.62, "kg": 1.0, "free_trim": true, "bilge": "round"}` (optionally with `windage_extra` and `downflooding_deg`) to check steady-wind heel `phi0_deg <= 16` and gust energy balance `area_b_m_rad >= area_a_m_rad`.
 - For deterministic damage stability by the lost-buoyancy method, run `damage_stability {"case_path": "examples/demo-damage.json"}` (or pass `"case"` inline) to evaluate damaged equilibrium (draft, trim, heel/list), check deck-edge freeboard, and assess residual GZ curves and indicative SOLAS-style criteria.
 - `condition.lcg_x` is the LCG used (defaults to the LCB at the given draft, 4.297 m on the demo).
