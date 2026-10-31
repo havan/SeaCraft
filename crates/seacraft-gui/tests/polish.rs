@@ -145,3 +145,144 @@ fn a_half_model_is_framed_whole_and_centred() {
         );
     }
 }
+
+#[test]
+fn perspective_view_framing_fills_and_centres_bbox() {
+    // Check both demo hull and long slender container ship
+    for model_path in [
+        None,
+        Some(format!(
+            "{}/../../examples/container-230m.fef",
+            env!("CARGO_MANIFEST_DIR")
+        )),
+    ] {
+        let mut app = App::headless_for_test(model_path.as_deref());
+        let ctx = egui::Context::default();
+        frame(&ctx, &mut app);
+        frame(&ctx, &mut app);
+        app.refresh_cache();
+
+        let verts = app.render_cache().expect("refined hull").verts.clone();
+        let cell = app.viewport_rect(0);
+        let view = app.cameras()[0].transform();
+        let mut bbox = egui::Rect::NOTHING;
+        for v in &verts {
+            if let Some(p) = view.project(*v, cell) {
+                bbox.extend_with(p);
+            }
+        }
+
+        assert!(
+            cell.expand(1.0).contains_rect(bbox),
+            "perspective hull bbox {bbox:?} leaves viewport {cell:?}"
+        );
+
+        let smaller_dim = cell.width().min(cell.height());
+        let max_dim = bbox.width().max(bbox.height());
+        let fill_frac = max_dim / smaller_dim;
+        assert!(
+            fill_frac >= 0.60,
+            "perspective hull bbox fills {fill_frac:.2} of smaller viewport dim (expected >= 0.60)"
+        );
+
+        let off = bbox.center() - cell.center();
+        assert!(
+            off.x.abs() <= 0.10 * cell.width() && off.y.abs() <= 0.10 * cell.height(),
+            "perspective hull bbox centred at {:?}, cell at {:?}, offset {:?}",
+            bbox.center(),
+            cell.center(),
+            off
+        );
+    }
+}
+
+#[test]
+fn profile_view_framing_includes_windage_profile_mast() {
+    let yacht_path = format!(
+        "{}/../../examples/yacht-10m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut app = App::headless_for_test(Some(&yacht_path));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app);
+    frame(&ctx, &mut app);
+
+    // Mast tip at z = 16.36 m
+    let mast_tip = seacraft_core::math::Vec3::new(5.64, 0.0, 16.36);
+    let cell_profile = app.viewport_rect(1);
+    let view_profile = app.cameras()[1].transform();
+
+    let p = view_profile
+        .project(mast_tip, cell_profile)
+        .expect("mast tip projects in Profile view");
+    assert!(
+        cell_profile.contains(p),
+        "mast tip at {p:?} should be visible inside Profile viewport {cell_profile:?}"
+    );
+
+    // When windage display is toggled off, refit only frames canoe body (z <= 3.5 m)
+    app.display_mut().windage = false;
+    app.reset_cameras();
+    frame(&ctx, &mut app);
+    let view_profile_nowindage = app.cameras()[1].transform();
+    let p_nowindage = view_profile_nowindage
+        .project(mast_tip, cell_profile)
+        .expect("project");
+    assert!(
+        p_nowindage.y < cell_profile.top(),
+        "without windage framing, mast tip {p_nowindage:?} shoots off top of viewport ({cell_profile:?})"
+    );
+}
+
+#[test]
+fn compartment_with_clip_to_hull_renders_clipped_mesh_and_dashed_edges() {
+    let container_path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut app = App::headless_for_test(Some(&container_path));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app);
+    frame(&ctx, &mut app);
+
+    let overlays = app.volume_overlays();
+    let hold1 = overlays
+        .iter()
+        .find(|(_, o)| o.name == "No. 1 hold")
+        .map(|(_, o)| o)
+        .expect("No. 1 hold compartment overlay found");
+
+    assert!(
+        hold1.clip_to_hull,
+        "No. 1 hold must have clip_to_hull: true"
+    );
+    let (clipped_verts, clipped_tris) = hold1
+        .clipped_mesh
+        .as_ref()
+        .expect("clipped mesh generated for No. 1 hold");
+    assert!(!clipped_verts.is_empty(), "clipped mesh has vertices");
+    assert!(!clipped_tris.is_empty(), "clipped mesh has triangles");
+
+    // The unclipped raw box reaches y = +/- 16.1 m.
+    // In the forward flared bow at x in [190, 213], hull half-beam is clipped
+    // inside the box (at the fwd boundary x >= 210 m, half-beam is < 10.0 m,
+    // and overall max_y is 14.82 m < 16.1 m).
+    let max_y = clipped_verts
+        .iter()
+        .map(|v| v.y.abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        max_y < 15.5,
+        "clipped compartment solid half-beam is {max_y:.2} m (must be clipped inside 16.1 m box)"
+    );
+
+    let fwd_max_y = clipped_verts
+        .iter()
+        .filter(|v| v.x >= 210.0)
+        .map(|v| v.y.abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        fwd_max_y < 12.0,
+        "at forward end of hold (x >= 210), clipped half-beam is {fwd_max_y:.2} m (well inside 16.1 m box)"
+    );
+}

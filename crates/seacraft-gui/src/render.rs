@@ -151,6 +151,8 @@ pub struct VolumeOverlay {
     pub max: Vec3,
     pub kind: VolumeKind,
     pub selected: bool,
+    pub clip_to_hull: bool,
+    pub clipped_mesh: Option<(Vec<Vec3>, Vec<[usize; 3]>)>,
 }
 
 /// A 2D lateral windage profile outline in the model's y = 0 plane.
@@ -1408,41 +1410,12 @@ fn draw_volumes(
             continue;
         }
 
-        // 1. Translucent fill of the projected 2-D convex hull of the 8 corners (alpha ~25)
-        let hull = convex_hull_2d(&valid_pts);
-        if hull.len() >= 3 {
-            let base_fill = match vol.kind {
-                VolumeKind::Tank { .. } => theme::TANK_FILL,
-                VolumeKind::Compartment { flooded: false } => theme::COMPARTMENT_FILL,
-                VolumeKind::Compartment { flooded: true } => theme::FLOODED_FILL,
-            };
-            painter.add(egui::Shape::convex_polygon(hull, base_fill, Stroke::NONE));
-        }
+        let base_fill = match vol.kind {
+            VolumeKind::Tank { .. } => theme::TANK_FILL,
+            VolumeKind::Compartment { flooded: false } => theme::COMPARTMENT_FILL,
+            VolumeKind::Compartment { flooded: true } => theme::FLOODED_FILL,
+        };
 
-        // 2. Translucent fill for liquid level in tanks (alpha ~70, liquid blue)
-        if let VolumeKind::Tank { liquid_z: Some(lz) } = vol.kind {
-            let top_z = lz.clamp(vol.min.z, vol.max.z);
-            if top_z > vol.min.z + 1e-6 {
-                let sub_corners = box_corners(vol.min, Vec3::new(vol.max.x, vol.max.y, top_z));
-                let sub_valid: Vec<Pos2> = sub_corners
-                    .iter()
-                    .filter_map(|c| view.project(*c, rect))
-                    .collect();
-                if sub_valid.len() >= 3 {
-                    let sub_hull = convex_hull_2d(&sub_valid);
-                    if sub_hull.len() >= 3 {
-                        let liquid_blue = theme::TANK_LIQUID;
-                        painter.add(egui::Shape::convex_polygon(
-                            sub_hull,
-                            liquid_blue,
-                            Stroke::NONE,
-                        ));
-                    }
-                }
-            }
-        }
-
-        // 3. 12 box edges
         let (edge_color, edge_width) = match (&vol.kind, vol.selected) {
             (VolumeKind::Tank { .. }, false) => (theme::TANK_EDGE, 1.0),
             (VolumeKind::Tank { .. }, true) => (theme::TANK_EDGE_SELECTED, 2.0),
@@ -1456,9 +1429,95 @@ fn draw_volumes(
             }
         };
         let stroke = Stroke::new(edge_width, edge_color);
-        for &(i, j) in &BOX_EDGES {
-            if let (Some(p), Some(q)) = (projected[i], projected[j]) {
-                painter.line_segment([p, q], stroke);
+
+        if vol.clip_to_hull {
+            // Draw filled clipped solid and liquid fill if available
+            if let Some((verts, tris)) = &vol.clipped_mesh {
+                let proj_verts: Vec<Option<Pos2>> =
+                    verts.iter().map(|v| view.project(*v, rect)).collect();
+                let mut mesh = egui::Mesh::default();
+                for t in tris {
+                    if let (Some(p0), Some(p1), Some(p2)) =
+                        (proj_verts[t[0]], proj_verts[t[1]], proj_verts[t[2]])
+                    {
+                        let idx = mesh.vertices.len() as u32;
+                        mesh.colored_vertex(p0, base_fill);
+                        mesh.colored_vertex(p1, base_fill);
+                        mesh.colored_vertex(p2, base_fill);
+                        mesh.add_triangle(idx, idx + 1, idx + 2);
+                    }
+                }
+                if !mesh.is_empty() {
+                    painter.add(egui::Shape::mesh(mesh));
+                }
+
+                if let VolumeKind::Tank { liquid_z: Some(lz) } = vol.kind {
+                    let top_z = lz.clamp(vol.min.z, vol.max.z);
+                    if top_z > vol.min.z + 1e-6 {
+                        let liquid_blue = theme::TANK_LIQUID;
+                        let mut liq_mesh = egui::Mesh::default();
+                        for t in tris {
+                            let z_avg = (verts[t[0]].z + verts[t[1]].z + verts[t[2]].z) / 3.0;
+                            if z_avg <= top_z {
+                                if let (Some(p0), Some(p1), Some(p2)) =
+                                    (proj_verts[t[0]], proj_verts[t[1]], proj_verts[t[2]])
+                                {
+                                    let idx = liq_mesh.vertices.len() as u32;
+                                    liq_mesh.colored_vertex(p0, liquid_blue);
+                                    liq_mesh.colored_vertex(p1, liquid_blue);
+                                    liq_mesh.colored_vertex(p2, liquid_blue);
+                                    liq_mesh.add_triangle(idx, idx + 1, idx + 2);
+                                }
+                            }
+                        }
+                        if !liq_mesh.is_empty() {
+                            painter.add(egui::Shape::mesh(liq_mesh));
+                        }
+                    }
+                }
+            }
+
+            // Outside part of bounding box drawn as dashed outline
+            for &(i, j) in &BOX_EDGES {
+                if let (Some(p), Some(q)) = (projected[i], projected[j]) {
+                    painter.extend(egui::Shape::dashed_line(&[p, q], stroke, 6.0, 4.0));
+                }
+            }
+        } else {
+            // Unclipped volume: translucent fill of projected convex hull
+            let hull = convex_hull_2d(&valid_pts);
+            if hull.len() >= 3 {
+                painter.add(egui::Shape::convex_polygon(hull, base_fill, Stroke::NONE));
+            }
+
+            // Translucent fill for liquid level in tanks
+            if let VolumeKind::Tank { liquid_z: Some(lz) } = vol.kind {
+                let top_z = lz.clamp(vol.min.z, vol.max.z);
+                if top_z > vol.min.z + 1e-6 {
+                    let sub_corners = box_corners(vol.min, Vec3::new(vol.max.x, vol.max.y, top_z));
+                    let sub_valid: Vec<Pos2> = sub_corners
+                        .iter()
+                        .filter_map(|c| view.project(*c, rect))
+                        .collect();
+                    if sub_valid.len() >= 3 {
+                        let sub_hull = convex_hull_2d(&sub_valid);
+                        if sub_hull.len() >= 3 {
+                            let liquid_blue = theme::TANK_LIQUID;
+                            painter.add(egui::Shape::convex_polygon(
+                                sub_hull,
+                                liquid_blue,
+                                Stroke::NONE,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // 12 solid box edges
+            for &(i, j) in &BOX_EDGES {
+                if let (Some(p), Some(q)) = (projected[i], projected[j]) {
+                    painter.line_segment([p, q], stroke);
+                }
             }
         }
 
@@ -1917,6 +1976,8 @@ mod tests {
             max: Vec3::new(10.0, 10.0, 5.0),
             kind: VolumeKind::Compartment { flooded: false },
             selected: false,
+            clip_to_hull: false,
+            clipped_mesh: None,
         };
         let inner = VolumeOverlay {
             name: "Inner".into(),
@@ -1924,6 +1985,8 @@ mod tests {
             max: Vec3::new(2.0, 2.0, 2.0),
             kind: VolumeKind::Tank { liquid_z: None },
             selected: false,
+            clip_to_hull: false,
+            clipped_mesh: None,
         };
         let volumes = vec![outer, inner];
 

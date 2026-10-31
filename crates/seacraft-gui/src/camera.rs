@@ -87,7 +87,12 @@ impl Camera {
             fov_deg: 45.0,
         };
         let half = size * 0.5;
-        camera.frame(target - half, target + half);
+        let aspect = if kind.is_perspective() {
+            Some(1.25)
+        } else {
+            None
+        };
+        camera.frame_aspect(target - half, target + half, aspect);
         camera
     }
 
@@ -205,6 +210,15 @@ impl Camera {
     /// view, with a 10 % margin on each side, fills the cell's height or its
     /// width, whichever is tighter.
     pub fn frame(&mut self, min: Vec3, max: Vec3) {
+        self.frame_aspect(min, max, None);
+    }
+
+    /// Frame a model with an optional viewport aspect ratio (w / h).
+    ///
+    /// For perspective cameras, providing the viewport aspect ratio avoids
+    /// compounding the model's bounding aspect ratio into the field-of-view scale,
+    /// so the model fills ~70–85 % of the viewport centered on the target.
+    pub fn frame_aspect(&mut self, min: Vec3, max: Vec3, aspect: Option<f64>) {
         let centre = (min + max) * 0.5;
         self.target = centre;
         // The basis depends on the kind and orbit angles only.
@@ -225,25 +239,42 @@ impl Camera {
             half_w = half_w.max(r.dot(view.right).abs());
             half_h = half_h.max(r.dot(view.up).abs());
         }
-        self.fit_aspect = half_w / half_h;
-        self.ortho_height = (2.0 * half_h * FRAME_MARGIN).clamp(MIN_EXTENT, MAX_EXTENT);
 
-        // Perspective: the nearest eye at which every corner lies inside the
-        // vertical field of view and the `fit_aspect` times wider horizontal
-        // one, margin included. A corner `toward` metres nearer the eye than
-        // the target sits at depth `distance - toward`.
-        let tan_v = view.fov_tan / FRAME_MARGIN;
-        let tan_h = tan_v * self.fit_aspect;
-        let extent = (max - min).length().max(MIN_EXTENT);
-        let mut distance = MIN_EXTENT;
-        for r in &corners {
-            let toward = -r.dot(view.forward);
-            let need = (r.dot(view.up).abs() / tan_v)
-                .max(r.dot(view.right).abs() / tan_h)
-                .max(0.1 * extent);
-            distance = distance.max(toward + need);
+        if self.kind.is_perspective() {
+            let eff_aspect = aspect.unwrap_or(half_w / half_h).clamp(0.2, 5.0);
+            self.fit_aspect = eff_aspect;
+            self.ortho_height = (2.0 * half_h * FRAME_MARGIN).clamp(MIN_EXTENT, MAX_EXTENT);
+
+            let tan_v = view.fov_tan / FRAME_MARGIN;
+            let tan_h = tan_v * eff_aspect;
+            let extent = (max - min).length().max(MIN_EXTENT);
+            let mut distance = MIN_EXTENT;
+            for r in &corners {
+                let toward = -r.dot(view.forward);
+                let need = (r.dot(view.up).abs() / tan_v)
+                    .max(r.dot(view.right).abs() / tan_h)
+                    .max(0.1 * extent);
+                distance = distance.max(toward + need);
+            }
+            self.distance = distance.clamp(MIN_EXTENT, MAX_EXTENT);
+        } else {
+            self.fit_aspect = half_w / half_h;
+            self.ortho_height = (2.0 * half_h * FRAME_MARGIN).clamp(MIN_EXTENT, MAX_EXTENT);
+
+            // Perspective fallback (not reached for orthographic kinds)
+            let tan_v = view.fov_tan / FRAME_MARGIN;
+            let tan_h = tan_v * self.fit_aspect;
+            let extent = (max - min).length().max(MIN_EXTENT);
+            let mut distance = MIN_EXTENT;
+            for r in &corners {
+                let toward = -r.dot(view.forward);
+                let need = (r.dot(view.up).abs() / tan_v)
+                    .max(r.dot(view.right).abs() / tan_h)
+                    .max(0.1 * extent);
+                distance = distance.max(toward + need);
+            }
+            self.distance = distance.clamp(MIN_EXTENT, MAX_EXTENT);
         }
-        self.distance = distance.clamp(MIN_EXTENT, MAX_EXTENT);
     }
 }
 

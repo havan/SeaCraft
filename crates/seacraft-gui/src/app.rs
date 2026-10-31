@@ -963,7 +963,12 @@ pub struct App {
     optimise_job: Option<OptimiseJob>,
     /// The world axis the point drag is locked to this frame (X, Y or Z held).
     axis_lock: Option<seacraft_core::transform::Axis>,
+    /// Cache of triangulated solids for clip_to_hull compartments and tanks.
+    clipped_volumes_cache: std::sync::Mutex<Vec<ClippedMeshEntry>>,
 }
+
+/// Name, model revision and box bounds (bits) of a cached clipped solid.
+type ClippedMeshEntry = (String, [u64; 7], (Vec<Vec3>, Vec<[usize; 3]>));
 
 /// An optimisation on the job layer and what installing its result needs.
 struct OptimiseJob {
@@ -1119,6 +1124,7 @@ impl App {
             optimise_dialog: None,
             optimise_job: None,
             axis_lock: None,
+            clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -1343,16 +1349,16 @@ impl App {
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
+        if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
+            guard.clear();
+        }
         if let Some(s) = &self.surface {
             let subdiv = seacraft_core::SubdivisionOptions {
                 level: self.level,
                 mode: self.mode,
             };
             self.hydro.options = HydroOptions::from_surface(s, subdiv);
-            let (min, max) = crate::render::display_extents(s);
-            for cam in &mut self.cameras {
-                cam.frame(min, max);
-            }
+            self.refit_all_cameras();
         }
     }
 
@@ -2929,11 +2935,8 @@ impl App {
     }
 
     pub fn reset_cameras(&mut self) {
-        if let Some(s) = &self.surface {
-            let (min, max) = crate::render::display_extents(s);
-            for cam in &mut self.cameras {
-                cam.frame(min, max);
-            }
+        if self.surface.is_some() {
+            self.refit_all_cameras();
         }
     }
 
@@ -4529,6 +4532,15 @@ impl App {
                 .unwrap_or(tank.z_min + tank.fill * (tank.z_max - tank.z_min));
 
                 let selected = self.selected_volume == Some(VolumeRef::Tank(t_idx));
+                let clipped_mesh = if tank.clip_to_hull {
+                    self.clipped_volume_mesh(
+                        &tank.name,
+                        Vec3::new(tank.x_min, tank.y_min, tank.z_min),
+                        Vec3::new(tank.x_max, tank.y_max, tank.z_max),
+                    )
+                } else {
+                    None
+                };
                 out.push((
                     VolumeRef::Tank(t_idx),
                     render::VolumeOverlay {
@@ -4539,6 +4551,8 @@ impl App {
                             liquid_z: Some(liquid_z),
                         },
                         selected,
+                        clip_to_hull: tank.clip_to_hull,
+                        clipped_mesh,
                     },
                 ));
             }
@@ -4561,6 +4575,15 @@ impl App {
                 })
             });
             let selected = self.selected_volume == Some(VolumeRef::Compartment(c_idx));
+            let clipped_mesh = if comp.clip_to_hull {
+                self.clipped_volume_mesh(
+                    &comp.name,
+                    Vec3::new(comp.x_min, comp.y_min, comp.z_min),
+                    Vec3::new(comp.x_max, comp.y_max, comp.z_max),
+                )
+            } else {
+                None
+            };
             out.push((
                 VolumeRef::Compartment(c_idx),
                 render::VolumeOverlay {
@@ -4569,6 +4592,8 @@ impl App {
                     max: Vec3::new(comp.x_max, comp.y_max, comp.z_max),
                     kind: render::VolumeKind::Compartment { flooded },
                     selected,
+                    clip_to_hull: comp.clip_to_hull,
+                    clipped_mesh,
                 },
             ));
         }
@@ -4999,6 +5024,9 @@ impl App {
     pub fn mark_geometry_changed(&mut self) {
         self.revision += 1;
         self.dirty = true;
+        if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
+            guard.clear();
+        }
         self.touch_geometry();
     }
 
@@ -5196,11 +5224,103 @@ impl App {
         }
     }
 
+    /// Bounding extents for camera framing. When windage display is on,
+    /// includes visible windage profile outlines for views that show them (Profile).
+    pub fn framing_extents(&self, kind: ViewKind) -> (Vec3, Vec3) {
+        let (mut min, mut max) = self
+            .surface
+            .as_ref()
+            .map(crate::render::display_extents)
+            .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+
+        if self.display.windage && kind == ViewKind::Profile {
+            for item in &self.project.windage {
+                if let Some(r) = &item.profile {
+                    min.x = min.x.min(r.x_min);
+                    max.x = max.x.max(r.x_max);
+                    min.z = min.z.min(r.z_min);
+                    max.z = max.z.max(r.z_max);
+                }
+            }
+        }
+        (min, max)
+    }
+
+    /// Refit camera `index` using framing extents and viewport aspect ratio.
+    pub fn refit_camera(&mut self, index: usize) {
+        if self.surface.is_some() {
+            let (min, max) = self.framing_extents(self.cameras[index].kind);
+            let cell = self.viewport_rect(index);
+            let aspect = if cell.width() > 10.0 && cell.height() > 10.0 {
+                Some(cell.width() as f64 / cell.height() as f64)
+            } else {
+                Some(1.25)
+            };
+            self.cameras[index].frame_aspect(min, max, aspect);
+        }
+    }
+
+    /// Refit all 4 viewport cameras.
+    pub fn refit_all_cameras(&mut self) {
+        for i in 0..4 {
+            self.refit_camera(i);
+        }
+    }
+
+    /// Build or fetch cached triangulated mesh for a clip_to_hull volume.
+    fn clipped_volume_mesh(
+        &self,
+        name: &str,
+        min: Vec3,
+        max: Vec3,
+    ) -> Option<(Vec<Vec3>, Vec<[usize; 3]>)> {
+        let bounds = [
+            self.revision,
+            min.x.to_bits(),
+            min.y.to_bits(),
+            min.z.to_bits(),
+            max.x.to_bits(),
+            max.y.to_bits(),
+            max.z.to_bits(),
+        ];
+        if let Ok(guard) = self.clipped_volumes_cache.lock() {
+            if let Some((_, _, mesh)) = guard.iter().find(|(n, b, _)| n == name && b == &bounds) {
+                return Some(mesh.clone());
+            }
+        }
+        let surface = self.surface.as_ref()?;
+        let hull = seacraft_core::hydro::Hull::new(
+            surface,
+            seacraft_core::SubdivisionOptions {
+                level: 2,
+                mode: self.mode,
+            },
+        );
+        let comp = seacraft_core::damage::Compartment {
+            name: name.to_string(),
+            x_min: min.x,
+            x_max: max.x,
+            y_min: min.y,
+            y_max: max.y,
+            z_min: min.z,
+            z_max: max.z,
+            permeability: 1.0,
+            clip_to_hull: true,
+        };
+        let solid = seacraft_core::damage::CompartmentSolid::build(&comp, &hull);
+        let mesh = (solid.verts, solid.tris);
+        // One entry per volume name: a newer revision or new bounds replace it.
+        if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
+            guard.retain(|(n, _, _)| n != name);
+            guard.push((name.to_string(), bounds, mesh.clone()));
+        }
+        Some(mesh)
+    }
+
     /// Frame the model in view `index` alone.
     fn fit_view(&mut self, index: usize) {
-        if let Some(s) = &self.surface {
-            let (min, max) = crate::render::display_extents(s);
-            self.cameras[index].frame(min, max);
+        if self.surface.is_some() {
+            self.refit_camera(index);
         }
     }
 
