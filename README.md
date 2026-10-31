@@ -598,8 +598,11 @@ Plan        | Body plan
 
 * Drag a control point to deform the hull; the preview refines at level 2
   while dragging and at the full level on release. **Ctrl+Z** / **Ctrl+Shift+Z**
-  undo and redo (64 snapshots), **Esc** clears the selection, **F** frames the
-  model, **1**–**4** activate a viewport, **Space** toggles shading.
+  undo and redo (64 snapshots across control-net edits and project edits in the
+  design docks, Report options and Project settings, with continuous drags and
+  text-field typing coalesced into single steps), **Esc** clears the selection,
+  **F** frames the model, **1**–**4** activate a viewport, **Space** toggles
+  shading.
 * Primary drag on empty space pans, secondary drag in the perspective view
   orbits, the wheel zooms.
 * A slim toolbar under the menu bar carries the surface-analysis mode

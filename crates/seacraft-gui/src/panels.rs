@@ -1610,29 +1610,26 @@ pub fn report_options(
             // re-formatting the parsed list every frame would eat a comma
             // or a trailing "." the moment it is typed.
             let buffer_id = ui.make_persistent_id("report_speeds_text");
-            let mut speeds_text =
-                ui.data(|d| d.get_temp::<String>(buffer_id))
-                    .unwrap_or_else(|| {
-                        report
-                            .speeds_kn
-                            .as_ref()
-                            .map(|v| {
-                                v.iter()
-                                    .map(|s| s.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            })
-                            .unwrap_or_default()
-                    });
+            let mut speeds_text = ui
+                .data(|d| d.get_temp::<(Option<Vec<f64>>, String)>(buffer_id))
+                .filter(|(saved, _)| *saved == report.speeds_kn)
+                .map(|(_, text)| text)
+                .unwrap_or_else(|| {
+                    report
+                        .speeds_kn
+                        .as_ref()
+                        .map(|v| {
+                            v.iter()
+                                .map(|s| s.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default()
+                });
             let response = ui.add(
                 egui::TextEdit::singleline(&mut speeds_text)
                     .hint_text("Default (e.g. 6, 8, 10, 12, 14)"),
             );
-            if response.has_focus() {
-                ui.data_mut(|d| d.insert_temp(buffer_id, speeds_text.clone()));
-            } else {
-                ui.data_mut(|d| d.remove::<String>(buffer_id));
-            }
             if response.changed() {
                 let parsed: Vec<f64> = speeds_text
                     .split(',')
@@ -1645,6 +1642,13 @@ pub fn report_options(
                     Some(parsed)
                 };
                 changed = true;
+            }
+            if response.has_focus() {
+                ui.data_mut(|d| {
+                    d.insert_temp(buffer_id, (report.speeds_kn.clone(), speeds_text));
+                });
+            } else {
+                ui.data_mut(|d| d.remove::<(Option<Vec<f64>>, String)>(buffer_id));
             }
             ui.end_row();
         });

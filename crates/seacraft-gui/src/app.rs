@@ -380,9 +380,9 @@ struct Snapshot {
     /// A step that replaced the whole model (New design, demo from the
     /// dialog): the project, path and saved state go back with it.
     model: Option<Box<ModelState>>,
-    /// A Project settings step that changed the design requirements: they
-    /// go back with it (the rest of the project is not in the history).
-    requirements: Option<Option<seacraft_core::project::Requirements>>,
+    /// A dock, Report options or Project settings step that edited the
+    /// project: the project and the dock KG go back with it.
+    project: Option<(Project, (Option<f64>, bool))>,
 }
 
 impl Snapshot {
@@ -392,7 +392,22 @@ impl Snapshot {
             surface: Some(surface.clone()),
             draft,
             model: None,
-            requirements: None,
+            project: None,
+        }
+    }
+
+    /// An edit of the project in place.
+    fn project_edit(
+        surface: &Surface,
+        draft: f64,
+        project: Project,
+        kg: (Option<f64>, bool),
+    ) -> Self {
+        Self {
+            surface: Some(surface.clone()),
+            draft,
+            model: None,
+            project: Some((project, kg)),
         }
     }
 }
@@ -825,6 +840,9 @@ pub struct App {
     last_highlighted_tank: Option<usize>,
     last_highlighted_compartment: Option<usize>,
     history: History<Snapshot>,
+    /// The widget whose continuous project edit (a drag value or a focused
+    /// text field) already has an undo snapshot on the stack.
+    project_edit_source: Option<egui::Id>,
     marks: Vec<(u64, Option<Surface>, Project, usize)>,
     next_mark_id: u64,
     drag: Option<DragState>,
@@ -1041,6 +1059,7 @@ impl App {
             last_highlighted_tank: None,
             last_highlighted_compartment: None,
             history: History::new(UNDO_LIMIT),
+            project_edit_source: None,
             marks: Vec::new(),
             next_mark_id: 1,
             drag: None,
@@ -1272,6 +1291,7 @@ impl App {
     /// does; the steps before this one are kept instead, so undo can go on
     /// past the previous model's restore.
     fn replace_model_undoably(&mut self, install: impl FnOnce(&mut Self)) {
+        self.project_edit_source = None;
         let before = self.current_snapshot(true);
         let history = std::mem::replace(&mut self.history, History::new(UNDO_LIMIT));
         install(self);
@@ -1283,6 +1303,7 @@ impl App {
     /// starts afresh (a file opened, a hull installed by a script).
     fn adopt(&mut self) {
         self.history.clear();
+        self.project_edit_source = None;
         self.marks.clear();
         self.reset_derived();
     }
@@ -1451,6 +1472,16 @@ impl App {
         let view_panel = open_view.map(|v| self.analysis_view_panel_inputs(v));
         let mut close_view = false;
         let mut view_action = crate::analysis_views::ViewAction::None;
+        let pre_drag = ui.ctx().dragged_id();
+        let pre_focus = ui
+            .ctx()
+            .text_edit_focused()
+            .then(|| ui.ctx().memory(|m| m.focused()))
+            .flatten();
+        let before = (
+            self.project.clone(),
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
         if self.surface.is_none() {
             // Nothing to measure: the dock keeps its frame (the layout does
             // not jump when a model arrives) but not its empty controls.
@@ -1633,6 +1664,7 @@ impl App {
             }
             DockAction::Performance(panels::PerformanceAction::None) => {}
         }
+        self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);
     }
 
     pub fn draw(&mut self, ui: &mut egui::Ui) {
@@ -1785,6 +1817,7 @@ impl App {
         self.project_settings_window(ui);
         self.dialog_window(ui);
         self.report_options_window(ui);
+        self.finish_project_edit_frame(ui.ctx());
         self.messages_window(ui);
         self.poll_report(ui.ctx());
         self.intercept_close(ui.ctx());
@@ -2456,9 +2489,13 @@ impl App {
         let requirements_changed = requirements != self.project.requirements;
         if settings_changed || requirements_changed {
             // One Apply, one undo step, whatever it changed.
+            self.project_edit_source = None;
             let mut snap = Snapshot::edit(surface, self.hydro.options.draft);
             if requirements_changed {
-                snap.requirements = Some(self.project.requirements.clone());
+                snap.project = Some((
+                    self.project.clone(),
+                    (self.hydro.kg, self.hydro.kg_estimate),
+                ));
             }
             self.history.snapshot(&snap);
         }
@@ -2924,7 +2961,7 @@ impl App {
                     saved_state: self.saved_state.clone(),
                 })
             }),
-            requirements: None,
+            project: None,
         }
     }
 
@@ -2932,10 +2969,123 @@ impl App {
     /// swap like for like.
     fn current_snapshot_like(&self, other: Option<&Snapshot>) -> Snapshot {
         let mut snap = self.current_snapshot(other.is_some_and(|s| s.model.is_some()));
-        if other.is_some_and(|s| s.requirements.is_some()) {
-            snap.requirements = Some(self.project.requirements.clone());
+        if other.is_some_and(|s| s.project.is_some()) {
+            snap.project = Some((
+                self.project.clone(),
+                (self.hydro.kg, self.hydro.kg_estimate),
+            ));
         }
         snap
+    }
+
+    /// Record a dock or Report options edit on the undo stack. Continuous
+    /// edits on one widget (dragging a `DragValue` or typing in a `TextEdit`)
+    /// share the snapshot taken on the first frame that changed the project.
+    fn record_project_edit(
+        &mut self,
+        ctx: &egui::Context,
+        before: (Project, (Option<f64>, bool)),
+        pre_drag: Option<egui::Id>,
+        pre_focus: Option<egui::Id>,
+    ) {
+        let current_kg = (self.hydro.kg, self.hydro.kg_estimate);
+        if self.project == before.0 && current_kg == before.1 {
+            return;
+        }
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let post_drag = ctx.dragged_id();
+        let post_focus = ctx
+            .text_edit_focused()
+            .then(|| ctx.memory(|m| m.focused()))
+            .flatten();
+        let pointer_button = ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_released());
+        let continuous_id = if let Some(id) = post_drag.or(pre_drag) {
+            Some(id)
+        } else if !pointer_button {
+            post_focus.or(pre_focus)
+        } else {
+            None
+        };
+        if continuous_id.is_none() || continuous_id != self.project_edit_source {
+            let snap =
+                Snapshot::project_edit(surface, self.hydro.options.draft, before.0, before.1);
+            self.history.snapshot(&snap);
+        }
+        self.project_edit_source = continuous_id;
+        self.refresh_dirty();
+    }
+
+    /// Clear `project_edit_source` once the drag or text-field focus that
+    /// started the continuous edit has ended.
+    fn finish_project_edit_frame(&mut self, ctx: &egui::Context) {
+        let Some(active) = self.project_edit_source else {
+            return;
+        };
+        let still_dragging =
+            ctx.dragged_id() == Some(active) && !ctx.input(|i| i.pointer.any_released());
+        let still_typing = ctx.text_edit_focused() && ctx.memory(|m| m.focused()) == Some(active);
+        if !still_dragging && !still_typing {
+            self.project_edit_source = None;
+        }
+    }
+
+    /// Put a snapshot's project and dock KG back, marking every result that
+    /// depends on what changed out of date.
+    fn restore_project(&mut self, project: Project, kg: (Option<f64>, bool)) {
+        let kg_changed =
+            (self.hydro.kg, self.hydro.kg_estimate) != kg || self.project.kg != project.kg;
+        let speed = |p: &Project| p.requirements.as_ref().and_then(|r| r.design_speed_kn);
+        let speed_changed = speed(&project) != speed(&self.project);
+        let data_changed = self.project.loading_conditions != project.loading_conditions
+            || self.project.compartments != project.compartments
+            || self.project.damage_cases != project.damage_cases
+            || self.project.windage != project.windage;
+        self.project = project;
+        (self.hydro.kg, self.hydro.kg_estimate) = kg;
+        if self.project.loading_conditions.is_empty() {
+            self.loading_selected = 0;
+        } else {
+            self.loading_selected = self
+                .loading_selected
+                .min(self.project.loading_conditions.len() - 1);
+        }
+        if self.project.damage_cases.is_empty() {
+            self.damage_selected = 0;
+        } else {
+            self.damage_selected = self
+                .damage_selected
+                .min(self.project.damage_cases.len() - 1);
+        }
+        if self
+            .selected_windage
+            .is_some_and(|i| i >= self.project.windage.len())
+        {
+            self.selected_windage = None;
+        }
+        let tanks_len = self
+            .project
+            .loading_conditions
+            .get(self.loading_selected)
+            .map_or(0, |c| c.tanks.len());
+        let volume_gone = match self.selected_volume {
+            Some(VolumeRef::Tank(i)) => i >= tanks_len,
+            Some(VolumeRef::Compartment(i)) => i >= self.project.compartments.len(),
+            None => false,
+        };
+        if volume_gone {
+            self.selected_volume = None;
+        }
+        if kg_changed {
+            self.hydro_inputs_changed();
+        }
+        if speed_changed {
+            self.apply_requirement_defaults();
+        }
+        if data_changed {
+            self.project_changed();
+        }
     }
 
     /// Put a snapshot back as the current model.
@@ -2945,6 +3095,10 @@ impl App {
             // A Project settings density change undone.
             self.hydro.options.water_density = d;
         }
+        let geometry_changed = self.surface.as_ref().map(fef::write)
+            != snap.surface.as_ref().map(fef::write)
+            || self.hydro.options.draft != snap.draft
+            || snap.model.is_some();
         self.surface = snap.surface;
         if let Some(m) = snap.model {
             self.project = m.project;
@@ -2955,16 +3109,19 @@ impl App {
             self.reset_derived();
             self.apply_requirement_defaults();
         }
-        if let Some(requirements) = snap.requirements {
-            self.set_requirements(requirements);
+        if let Some((project, kg)) = snap.project {
+            self.restore_project(project, kg);
         }
         self.hydro.options.draft = snap.draft;
-        self.revision += 1;
+        if geometry_changed {
+            self.revision += 1;
+            self.touch_geometry();
+        }
         self.refresh_dirty();
-        self.touch_geometry();
     }
 
     pub fn undo(&mut self) {
+        self.project_edit_source = None;
         let whole = self.history.peek_undo().is_some_and(|s| s.model.is_some());
         let current = self.current_snapshot_like(self.history.peek_undo());
         if let Some(previous) = self.history.undo(&current) {
@@ -2979,6 +3136,7 @@ impl App {
     }
 
     pub fn redo(&mut self) {
+        self.project_edit_source = None;
         let current = self.current_snapshot_like(self.history.peek_redo());
         if let Some(next) = self.history.redo(&current) {
             self.restore_snapshot(next);
@@ -3014,6 +3172,7 @@ impl App {
             self.set_project(project);
         }
         self.surface = surface;
+        self.project_edit_source = None;
         self.history.truncate_undo(undo_len);
         self.history.clear_redo();
         self.selected = None;
@@ -3503,6 +3662,7 @@ impl App {
             .map(|hit| center - hit)
             .unwrap_or(Vec3::ZERO);
         let snap = Snapshot::edit(surface, self.hydro.options.draft);
+        self.project_edit_source = None;
         self.history.snapshot(&snap);
         // Shift+press keeps the point selected so far as the first of two
         // picked points (the Model menu's edge tools); a plain press picks
@@ -4040,6 +4200,7 @@ impl App {
 
     /// Replace the design data; the model becomes unsaved.
     pub fn set_project(&mut self, project: Project) {
+        self.project_edit_source = None;
         // A project that carries a KG brings it to the dock; one without
         // leaves the dock's KG as it is.
         let carries_kg = project.kg.is_some();
@@ -4164,7 +4325,16 @@ impl App {
             .map(|c| c.name.clone())
             .collect();
         let mut open = true;
-        let mut changed = false;
+        let pre_drag = ui.ctx().dragged_id();
+        let pre_focus = ui
+            .ctx()
+            .text_edit_focused()
+            .then(|| ui.ctx().memory(|m| m.focused()))
+            .flatten();
+        let before = (
+            self.project.clone(),
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
         egui::Window::new("Report options")
             .open(&mut open)
             .resizable(true)
@@ -4173,7 +4343,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(560.0)
                     .show(ui, |ui| {
-                        changed = panels::report_options(
+                        let _ = panels::report_options(
                             ui,
                             &mut self.project.report,
                             &conditions,
@@ -4181,9 +4351,7 @@ impl App {
                         );
                     });
             });
-        if changed {
-            self.dirty = true;
-        }
+        self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);
         self.show_report_options = open;
     }
 
@@ -5107,6 +5275,7 @@ impl App {
 
     /// Record the current model on the undo stack, as a drag does on grab.
     pub fn snapshot_undo(&mut self) {
+        self.project_edit_source = None;
         if let Some(surface) = self.surface.as_ref() {
             let snap = Snapshot::edit(surface, self.hydro.options.draft);
             self.history.snapshot(&snap);

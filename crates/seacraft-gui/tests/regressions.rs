@@ -141,6 +141,49 @@ impl Window {
         self.frame(vec![]);
     }
 
+    /// Replace the text of the field showing `old` with `new`, typing one
+    /// character per frame so continuous-edit coalescing is exercised.
+    fn retype_char_by_char(&mut self, old: &str, new: &str) {
+        let field = self.find(
+            |w| w.role == Role::TextInput && w.value == old,
+            &format!("a text field showing `{old}`"),
+        );
+        self.click_at(field.rect.center());
+        let select_all = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let mut chars = new.chars();
+        if let Some(first) = chars.next() {
+            self.frame(vec![select_all, egui::Event::Text(first.to_string())]);
+        }
+        for ch in chars {
+            self.frame(vec![egui::Event::Text(ch.to_string())]);
+        }
+        self.frame(vec![]);
+    }
+
+    /// Drag horizontally from `start` across several frames before releasing.
+    fn drag_horizontal(&mut self, start: egui::Pos2, steps: &[f32]) {
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.frame(vec![egui::Event::PointerMoved(start), button(start, true)]);
+        let mut last = start;
+        for &dx in steps {
+            last = start + egui::vec2(dx, 0.0);
+            self.frame(vec![egui::Event::PointerMoved(last)]);
+        }
+        self.frame(vec![button(last, false)]);
+        self.frame(vec![]);
+    }
+
     /// Let the hydrostatics job for the current inputs finish. Before the
     /// first result nothing counts as stale and the debounced job may not
     /// have started yet, so wait for a result too.
@@ -312,4 +355,251 @@ fn c13_renaming_a_compartment_follows_into_damage_cases() {
         w.app.save_to(&scratch("compartment.fef")),
         "the project saves"
     );
+}
+
+// ---- Dock undo/redo --------------------------------------------------------
+
+/// Save `demo_with_cases` and reopen it so history is empty and `dirty` is false.
+fn saved_demo_with_cases(tag: &str) -> (App, LoadingCondition, String) {
+    let (mut app, cond, comp) = demo_with_cases();
+    let path = scratch(tag);
+    assert!(app.save_to(&path));
+    let mut reopened = App::headless_for_test(Some(path.to_str().unwrap()));
+    reopened.set_subdivision_level(1);
+    assert!(!reopened.is_dirty());
+    assert_eq!(reopened.undo_len(), 0);
+    (reopened, cond, comp)
+}
+
+#[test]
+fn dock_rename_and_delete_condition_undo_and_redo_in_one_step() {
+    let (mut app, cond, comp) = saved_demo_with_cases("dock-undo-rename.fef");
+    app.set_show_loading(true);
+    let mut w = Window::new(app);
+    w.app.compute_loading_blocking(None).unwrap();
+    w.app.compute_damage_blocking(None).unwrap();
+    assert!(!w.app.stale_results().contains(&"loading"));
+    assert!(!w.app.stale_results().contains(&"damage"));
+
+    // Typing "Arrival" character by character across frames is coalesced into
+    // a single undo step, and cascades into the damage case reference.
+    w.retype_char_by_char(&cond.name, "Arrival");
+    assert_eq!(w.app.undo_len(), 1, "multi-frame typing is one undo step");
+    assert!(w.app.is_dirty());
+    assert_eq!(w.app.project().loading_conditions[0].name, "Arrival");
+    assert_eq!(
+        w.app.project().damage_cases[1]
+            .loading_condition_name
+            .as_deref(),
+        Some("Arrival")
+    );
+    assert!(w.app.stale_results().contains(&"loading"));
+    assert!(w.app.stale_results().contains(&"damage"));
+
+    // Recompute at the renamed state so we can verify undo marks results stale.
+    w.app.compute_loading_blocking(None).unwrap();
+    w.app.compute_damage_blocking(None).unwrap();
+    assert!(!w.app.stale_results().contains(&"loading"));
+    assert!(!w.app.stale_results().contains(&"damage"));
+
+    // Undo restores both the condition name and the damage case reference in one step.
+    w.app.undo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 0);
+    assert!(w.app.can_redo());
+    assert!(!w.app.is_dirty(), "back at saved state");
+    assert_eq!(w.app.project().loading_conditions[0].name, cond.name);
+    assert_eq!(
+        w.app.project().damage_cases[1]
+            .loading_condition_name
+            .as_deref(),
+        Some(cond.name.as_str())
+    );
+    assert!(w.app.stale_results().contains(&"loading"));
+    assert!(w.app.stale_results().contains(&"damage"));
+
+    // Redo reapplies both the condition name and the damage case reference in one step.
+    w.app.compute_loading_blocking(None).unwrap();
+    w.app.compute_damage_blocking(None).unwrap();
+    w.app.redo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 1);
+    assert!(w.app.is_dirty());
+    assert_eq!(w.app.project().loading_conditions[0].name, "Arrival");
+    assert_eq!(
+        w.app.project().damage_cases[1]
+            .loading_condition_name
+            .as_deref(),
+        Some("Arrival")
+    );
+    assert!(w.app.stale_results().contains(&"loading"));
+    assert!(w.app.stale_results().contains(&"damage"));
+
+    // Deleting the condition cascades to the damage case and undoes in one step.
+    let middle = w.app.central_rect().center().x;
+    let delete = w.find(
+        |x| x.role == Role::Button && x.label == "Delete" && x.rect.center().x > middle,
+        "the loading dock's Delete",
+    );
+    w.click_at(delete.rect.center());
+    assert_eq!(w.app.undo_len(), 2);
+    assert!(w.app.project().loading_conditions.is_empty());
+    assert_eq!(w.app.project().damage_cases[1].loading_condition_name, None);
+
+    w.app.undo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 1);
+    assert_eq!(w.app.project().loading_conditions.len(), 1);
+    assert_eq!(w.app.project().loading_conditions[0].name, "Arrival");
+    assert_eq!(
+        w.app.project().damage_cases[1]
+            .loading_condition_name
+            .as_deref(),
+        Some("Arrival")
+    );
+
+    // Renaming a compartment in the Damage tab cascades to damage cases and
+    // undoes in one step too.
+    w.app.set_show_damage(true);
+    w.frame(vec![]);
+    w.retype_char_by_char(&comp, "Engine room");
+    assert_eq!(w.app.undo_len(), 2);
+    assert_eq!(w.app.project().compartments[0].name, "Engine room");
+    assert!(
+        matches!(&w.app.project().damage_cases[0].compartments[0], CompartmentSpec::Named(n) if n == "Engine room")
+    );
+    w.app.undo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 1);
+    assert_eq!(w.app.project().compartments[0].name, comp);
+    assert!(
+        matches!(&w.app.project().damage_cases[0].compartments[0], CompartmentSpec::Named(n) if n == &comp)
+    );
+}
+
+#[test]
+fn dock_numeric_field_drag_is_one_undo_step() {
+    let (mut app, cond, _) = saved_demo_with_cases("dock-undo-drag.fef");
+    app.set_show_loading(true);
+    let mut w = Window::new(app);
+    let mass0 = cond.lightship.mass_t;
+    let shown0 = format!("{mass0:.2}");
+
+    // Find the Lightship mass DragValue (SpinButton) in the Loading dock and
+    // drag it across several frames.
+    let middle = w.app.central_rect().center().x;
+    let spin = w.find(
+        |x| {
+            x.role == Role::SpinButton && x.value.starts_with(&shown0) && x.rect.center().x > middle
+        },
+        "the lightship mass DragValue",
+    );
+    w.drag_horizontal(spin.rect.center(), &[8.0, 20.0, 35.0, 50.0]);
+
+    let mass1 = w.app.project().loading_conditions[0].lightship.mass_t;
+    assert!(
+        (mass1 - mass0).abs() > 1e-6,
+        "drag changed mass from {mass0} to {mass1}"
+    );
+    assert_eq!(
+        w.app.undo_len(),
+        1,
+        "a multi-frame DragValue drag is one undo step"
+    );
+    assert!(w.app.is_dirty());
+
+    w.app.undo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 0);
+    assert!(!w.app.is_dirty());
+    assert!(
+        (w.app.project().loading_conditions[0].lightship.mass_t - mass0).abs() < 1e-9,
+        "undo restored the original mass"
+    );
+
+    w.app.redo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 1);
+    assert!(w.app.is_dirty());
+    assert!(
+        (w.app.project().loading_conditions[0].lightship.mass_t - mass1).abs() < 1e-9,
+        "redo reapplied the dragged mass"
+    );
+}
+
+#[test]
+fn control_point_drag_followed_by_dock_edit_undoes_in_reverse_order() {
+    let (mut app, cond, _) = saved_demo_with_cases("dock-undo-order.fef");
+    app.set_show_loading(true);
+    let mut w = Window::new(app);
+
+    // Step 1: drag a control point in the profile viewport (view 1).
+    let index = {
+        let surface = w.app.surface().expect("model loaded");
+        surface
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+            .map(|(i, _)| i)
+            .expect("a sheer point")
+    };
+    let pt_before = w.app.surface().unwrap().points[index].p;
+    let rect = w.app.viewport_rect(1);
+    let screen = w.app.cameras()[1]
+        .transform()
+        .project(pt_before, rect)
+        .expect("point visible");
+    w.drag_horizontal(screen, &[10.0, 45.0]);
+    let pt_after = w.app.surface().unwrap().points[index].p;
+    assert!(
+        (pt_after - pt_before).length() > 1e-3,
+        "control point moved"
+    );
+    assert_eq!(w.app.undo_len(), 1);
+
+    // Step 2: rename the loading condition in the dock.
+    w.retype(&cond.name, "Ballast");
+    assert_eq!(w.app.project().loading_conditions[0].name, "Ballast");
+    assert_eq!(w.app.undo_len(), 2);
+
+    // First undo: reverses the dock edit, leaving the control point moved.
+    w.app.undo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 1);
+    assert_eq!(w.app.project().loading_conditions[0].name, cond.name);
+    assert!(
+        (w.app.surface().unwrap().points[index].p - pt_after).length() < 1e-9,
+        "the control-point move is still in place after undoing the dock edit"
+    );
+
+    // Second undo: reverses the control-point drag.
+    w.app.undo();
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 0);
+    assert!(!w.app.is_dirty());
+    assert!(
+        (w.app.surface().unwrap().points[index].p - pt_before).length() < 1e-9,
+        "the control point is back where it started"
+    );
+
+    // Redo in forward order: first the control point, then the dock edit.
+    w.app.redo();
+    w.frame(vec![]);
+    assert!(
+        (w.app.surface().unwrap().points[index].p - pt_after).length() < 1e-9,
+        "first redo restores the control-point move"
+    );
+    assert_eq!(w.app.project().loading_conditions[0].name, cond.name);
+
+    w.app.redo();
+    w.frame(vec![]);
+    assert_eq!(w.app.project().loading_conditions[0].name, "Ballast");
+
+    // Opening/creating a model clears the history as before.
+    w.app.load_demo();
+    assert_eq!(w.app.undo_len(), 0);
+    assert!(!w.app.can_undo());
+    assert!(!w.app.can_redo());
 }
