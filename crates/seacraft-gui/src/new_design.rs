@@ -569,7 +569,12 @@ impl NewDesignState {
                     }
                 }
                 Err(TryRecvError::Empty) => return Some(Duration::from_millis(60)),
-                Err(TryRecvError::Disconnected) => self.worker = None,
+                Err(TryRecvError::Disconnected) => {
+                    // A worker gone without an answer must not be restarted
+                    // on the next frame for the same fields: that loops.
+                    self.worker = None;
+                    self.preview_error = Some(PREVIEW_STOPPED.to_owned());
+                }
             }
         }
         if self.start != StartFrom::Parametric || spec.validate().is_err() {
@@ -611,7 +616,7 @@ impl NewDesignState {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send((gen, build(spec)));
+            let _ = tx.send((gen, catch_preview(move || build(spec))));
         });
         self.worker = Some(rx);
         Some(Duration::from_millis(60))
@@ -643,6 +648,15 @@ impl NewDesignState {
             StartFrom::Import => NewDesignRequest::Import,
         }
     }
+}
+
+/// The dialog's error when the preview worker ended without an answer.
+const PREVIEW_STOPPED: &str = "the preview stopped without a result; change a field to retry";
+
+/// Run a preview build, turning a panic in the generator into an error.
+fn catch_preview(build: impl FnOnce() -> Result<Preview, String>) -> Result<Preview, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+        .unwrap_or_else(|payload| Err(crate::jobs::panic_message(payload.as_ref())))
 }
 
 fn default_name(kind: HullKind, lwl: f64) -> String {
@@ -1513,5 +1527,42 @@ mod tests {
         assert_eq!(rows[0].name, "LWL");
         assert_eq!(rows[0].target, Some(14.0));
         assert_eq!(rows[3].target, None, "no Δ target without a Cb target");
+    }
+
+    /// B01 (round 8): a preview worker that died without an answer (a panic
+    /// in the generator) left no error, so the next frame started another
+    /// worker, and the next, for ever. It is now an error shown in the
+    /// dialog, and nothing is retried until the fields change.
+    #[test]
+    fn a_dead_preview_worker_is_an_error_not_a_respawn_loop() {
+        let mut s = NewDesignState::new(SEA_WATER_T_M3);
+        let t0 = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel::<PreviewOutcome>();
+        drop(tx);
+        s.last_spec = Some(s.spec());
+        s.generation = 1;
+        s.worker = Some(rx);
+        assert_eq!(s.tick(t0), None, "no new worker for the same fields");
+        assert!(s.worker.is_none(), "nothing was respawned");
+        let e = s.preview_error.clone().expect("an error");
+        assert!(e.contains("stopped"), "{e}");
+        assert_eq!(s.tick(t0 + Duration::from_secs(1)), None);
+        assert!(s.worker.is_none(), "still nothing respawned");
+        // An edit tries again.
+        s.lwl = 13.0;
+        s.tick(t0 + Duration::from_secs(2));
+        let wait = PREVIEW_DEBOUNCE + Duration::from_secs(3);
+        assert!(s.tick(t0 + wait).is_some(), "a new worker runs");
+        assert!(s.preview_busy());
+    }
+
+    /// B01: a panic inside the generator becomes the dialog's error.
+    #[test]
+    fn a_panicking_preview_build_is_caught() {
+        let out = catch_preview(|| -> Result<Preview, String> { panic!("boom") });
+        let Err(e) = out else {
+            panic!("a panic must become an error");
+        };
+        assert!(e.contains("boom"), "{e}");
     }
 }

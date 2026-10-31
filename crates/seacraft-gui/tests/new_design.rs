@@ -424,6 +424,10 @@ fn project_settings_edit_the_requirements() {
     click(&ctx, &mut app, apply.center());
     assert!(app.project_settings_mut().is_none());
     assert_eq!(app.project().requirements.as_ref().unwrap().kg, Some(1.4));
+    // A requirements-only Apply is an undo step of its own (R8 B06).
+    app.undo();
+    assert_eq!(app.project().requirements.as_ref().unwrap().kg, Some(1.1));
+    assert_eq!(app.surface().unwrap().settings.name, "Launch");
     app.undo();
     assert_eq!(app.surface().unwrap().settings.name, "Planing hull 11 m");
     assert_eq!(app.hydro_options().water_density, 1025.0);

@@ -140,7 +140,15 @@ pub struct JsonFileStorage {
     path: PathBuf,
     values: BTreeMap<String, String>,
     dirty: bool,
+    /// Why the last flush could not write the file (read back through
+    /// [`FLUSH_ERROR_KEY`]).
+    flush_error: Option<String>,
 }
+
+/// The key under which a storage reports why its last flush failed: not a
+/// stored value, but readable through `dyn eframe::Storage`, so the app can
+/// log the failure instead of losing the list silently.
+pub const FLUSH_ERROR_KEY: &str = "seacraft.flush_error";
 
 impl JsonFileStorage {
     /// The file name inside [`eframe::storage_dir`].
@@ -158,6 +166,7 @@ impl JsonFileStorage {
             path,
             values,
             dirty: false,
+            flush_error: None,
         }
     }
 
@@ -200,6 +209,9 @@ pub fn data_dir() -> Option<PathBuf> {
 
 impl eframe::Storage for JsonFileStorage {
     fn get_string(&self, key: &str) -> Option<String> {
+        if key == FLUSH_ERROR_KEY {
+            return self.flush_error.clone();
+        }
         self.values.get(key).cloned()
     }
 
@@ -217,7 +229,8 @@ impl eframe::Storage for JsonFileStorage {
     }
 
     /// Write the file if anything changed. A failure is not fatal: the
-    /// list is a convenience, and it stays in memory for this run.
+    /// list is a convenience, and it stays in memory for this run; the
+    /// reason is kept under [`FLUSH_ERROR_KEY`] for the app to log.
     fn flush(&mut self) {
         if !self.dirty {
             return;
@@ -226,8 +239,14 @@ impl eframe::Storage for JsonFileStorage {
             let _ = std::fs::create_dir_all(dir);
         }
         let text = serde_json::to_string_pretty(&self.values).unwrap_or_else(|_| "{}".to_owned());
-        if seacraft_core::io::write_atomic(&self.path, text).is_ok() {
-            self.dirty = false;
+        match seacraft_core::io::write_atomic(&self.path, text) {
+            Ok(()) => {
+                self.dirty = false;
+                self.flush_error = None;
+            }
+            Err(e) => {
+                self.flush_error = Some(format!("cannot write {}: {e}", self.path.display()));
+            }
         }
     }
 }

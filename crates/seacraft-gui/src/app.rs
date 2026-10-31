@@ -38,6 +38,9 @@ pub const DEMO_KG: f64 = seacraft_core::demo::DEMO_KG;
 /// What a KG-dependent result says while KG is unset.
 pub const KG_UNSET_HINT: &str = "set KG first";
 
+/// Undo steps kept.
+const UNDO_LIMIT: usize = 64;
+
 /// Cached refined mesh, invalidated by the revision counter, level or mode.
 struct RenderCache {
     revision: u64,
@@ -377,6 +380,9 @@ struct Snapshot {
     /// A step that replaced the whole model (New design, demo from the
     /// dialog): the project, path and saved state go back with it.
     model: Option<Box<ModelState>>,
+    /// A Project settings step that changed the design requirements: they
+    /// go back with it (the rest of the project is not in the history).
+    requirements: Option<Option<seacraft_core::project::Requirements>>,
 }
 
 impl Snapshot {
@@ -386,6 +392,7 @@ impl Snapshot {
             surface: Some(surface.clone()),
             draft,
             model: None,
+            requirements: None,
         }
     }
 }
@@ -800,6 +807,8 @@ pub struct App {
     /// Where the recent list is kept between runs; `None` for headless apps,
     /// which must never touch the user's list.
     storage: Option<Box<dyn eframe::Storage>>,
+    /// The storage's last flush failure, already logged.
+    recent_failure: Option<String>,
     /// The recent file an Open recent waiting on the unsaved prompt opens.
     pending_recent: Option<PathBuf>,
     /// Bumped by every edit; keys all derived state.
@@ -1012,6 +1021,7 @@ impl App {
             status_rect: egui::Rect::NOTHING,
             recent: RecentFiles::default(),
             storage: None,
+            recent_failure: None,
             pending_recent: None,
             revision: 0,
             level: 3,
@@ -1030,7 +1040,7 @@ impl App {
             selected_windage: None,
             last_highlighted_tank: None,
             last_highlighted_compartment: None,
-            history: History::new(64),
+            history: History::new(UNDO_LIMIT),
             marks: Vec::new(),
             next_mark_id: 1,
             drag: None,
@@ -1215,9 +1225,7 @@ impl App {
     /// (the control channel's `model.example`).
     pub fn open_example(&mut self, kind: seacraft_core::examples::Example) -> Result<(), String> {
         let (surface, project) = seacraft_core::examples::build(kind)?;
-        let before = self.current_snapshot(true);
-        self.install_example(kind, surface, project);
-        self.history.snapshot(&before);
+        self.replace_model_undoably(|app| app.install_example(kind, surface, project));
         Ok(())
     }
 
@@ -1259,7 +1267,20 @@ impl App {
         };
     }
 
-    /// Reset the derived state after a model change.
+    /// Replace the whole model as one undo step back to the current one
+    /// (New design, an example). `install` starts a fresh history, as Open
+    /// does; the steps before this one are kept instead, so undo can go on
+    /// past the previous model's restore.
+    fn replace_model_undoably(&mut self, install: impl FnOnce(&mut Self)) {
+        let before = self.current_snapshot(true);
+        let history = std::mem::replace(&mut self.history, History::new(UNDO_LIMIT));
+        install(self);
+        self.history = history;
+        self.history.snapshot(&before);
+    }
+
+    /// Reset the derived state after a model change; the undo history
+    /// starts afresh (a file opened, a hull installed by a script).
     fn adopt(&mut self) {
         self.history.clear();
         self.marks.clear();
@@ -2267,9 +2288,7 @@ impl App {
         match request {
             NewDesignRequest::Import => self.open_dialog(DialogKind::Open),
             NewDesignRequest::Demo { half } => {
-                let before = self.current_snapshot(true);
-                self.load_demo_shape(half);
-                self.history.snapshot(&before);
+                self.replace_model_undoably(|app| app.load_demo_shape(half));
             }
             NewDesignRequest::Example(design) => {
                 let crate::new_design::ExampleDesign {
@@ -2277,9 +2296,7 @@ impl App {
                     surface,
                     project,
                 } = *design;
-                let before = self.current_snapshot(true);
-                self.install_example(kind, surface, project);
-                self.history.snapshot(&before);
+                self.replace_model_undoably(|app| app.install_example(kind, surface, project));
             }
             NewDesignRequest::Parametric(design) => {
                 let crate::new_design::ParametricDesign {
@@ -2289,6 +2306,9 @@ impl App {
                     built,
                 } = *design;
                 let before = self.current_snapshot(true);
+                // Installing a hull starts a fresh history; this one is an
+                // undo step, so the steps before it stay.
+                let history = std::mem::replace(&mut self.history, History::new(UNDO_LIMIT));
                 let result = match built {
                     Some(p) if p.spec == spec => {
                         crate::commands::install_generated(self, p.surface, p.report)
@@ -2296,11 +2316,13 @@ impl App {
                     _ => match crate::commands::generate(self, &spec) {
                         Ok(r) => r,
                         Err(e) => {
+                            self.history = history;
                             self.log(Level::Error, format!("New design failed: {e}"));
                             return;
                         }
                     },
                 };
+                self.history = history;
                 if let Some(s) = self.surface.as_mut() {
                     if !name.is_empty() {
                         s.settings.name = name.clone();
@@ -2416,8 +2438,16 @@ impl App {
         let st = &surface.settings;
         let settings_changed =
             st.name != name || st.designer != designer || st.water_density != water_density;
+        let requirements_changed = requirements != self.project.requirements;
+        if settings_changed || requirements_changed {
+            // One Apply, one undo step, whatever it changed.
+            let mut snap = Snapshot::edit(surface, self.hydro.options.draft);
+            if requirements_changed {
+                snap.requirements = Some(self.project.requirements.clone());
+            }
+            self.history.snapshot(&snap);
+        }
         if settings_changed {
-            self.snapshot_undo();
             if let Some(s) = self.surface.as_mut() {
                 s.settings.name = name;
                 s.settings.designer = designer;
@@ -2426,24 +2456,33 @@ impl App {
             self.hydro.options.water_density = water_density;
             self.mark_geometry_changed();
         }
-        if requirements != self.project.requirements {
-            let speed = |r: &Option<seacraft_core::project::Requirements>| {
-                r.as_ref().and_then(|r| r.design_speed_kn)
-            };
-            let speed_changed = speed(&requirements) != speed(&self.project.requirements);
-            self.project.requirements = requirements;
-            self.dirty = true;
-            if self.project.kg.is_none() && (self.hydro.kg.is_none() || self.hydro.kg_estimate) {
-                // The dock follows the estimate until the user sets a KG
-                // (the demo's own KG is not an estimate and stays).
-                self.adopt_project_kg();
-                self.hydro_inputs_changed();
-            }
-            if speed_changed {
-                self.apply_requirement_defaults();
-            }
+        if requirements_changed {
+            self.set_requirements(requirements);
         }
         self.set_status("project settings applied".to_owned());
+    }
+
+    /// Replace the design requirements (Project settings, or its undo): the
+    /// dock KG follows a changed estimate, the speed range a changed speed.
+    fn set_requirements(&mut self, requirements: Option<seacraft_core::project::Requirements>) {
+        if requirements == self.project.requirements {
+            return;
+        }
+        let speed = |r: &Option<seacraft_core::project::Requirements>| {
+            r.as_ref().and_then(|r| r.design_speed_kn)
+        };
+        let speed_changed = speed(&requirements) != speed(&self.project.requirements);
+        self.project.requirements = requirements;
+        self.dirty = true;
+        if self.project.kg.is_none() && (self.hydro.kg.is_none() || self.hydro.kg_estimate) {
+            // The dock follows the estimate until the user sets a KG
+            // (the demo's own KG is not an estimate and stays).
+            self.adopt_project_kg();
+            self.hydro_inputs_changed();
+        }
+        if speed_changed {
+            self.apply_requirement_defaults();
+        }
     }
 
     /// The New design dialog is open.
@@ -2870,7 +2909,18 @@ impl App {
                     saved_state: self.saved_state.clone(),
                 })
             }),
+            requirements: None,
         }
+    }
+
+    /// The current state with what `other` carries, so that undo and redo
+    /// swap like for like.
+    fn current_snapshot_like(&self, other: Option<&Snapshot>) -> Snapshot {
+        let mut snap = self.current_snapshot(other.is_some_and(|s| s.model.is_some()));
+        if other.is_some_and(|s| s.requirements.is_some()) {
+            snap.requirements = Some(self.project.requirements.clone());
+        }
+        snap
     }
 
     /// Put a snapshot back as the current model.
@@ -2890,6 +2940,9 @@ impl App {
             self.reset_derived();
             self.apply_requirement_defaults();
         }
+        if let Some(requirements) = snap.requirements {
+            self.set_requirements(requirements);
+        }
         self.hydro.options.draft = snap.draft;
         self.revision += 1;
         self.refresh_dirty();
@@ -2898,7 +2951,7 @@ impl App {
 
     pub fn undo(&mut self) {
         let whole = self.history.peek_undo().is_some_and(|s| s.model.is_some());
-        let current = self.current_snapshot(whole);
+        let current = self.current_snapshot_like(self.history.peek_undo());
         if let Some(previous) = self.history.undo(&current) {
             let moved = previous.surface.as_ref().map_or(0, |s| s.points.len());
             self.restore_snapshot(previous);
@@ -2911,8 +2964,7 @@ impl App {
     }
 
     pub fn redo(&mut self) {
-        let whole = self.history.peek_redo().is_some_and(|s| s.model.is_some());
-        let current = self.current_snapshot(whole);
+        let current = self.current_snapshot_like(self.history.peek_redo());
         if let Some(next) = self.history.redo(&current) {
             self.restore_snapshot(next);
             self.set_status("redo".to_owned());
@@ -3375,8 +3427,8 @@ impl App {
     }
 
     /// Apply what the layer panel asked for, through the typed commands (one
-    /// undo step per edit). A refusal goes to the status bar.
-    fn apply_layer_action(&mut self, action: panels::LayerAction) {
+    /// undo step per edit). A refusal is logged as an error.
+    pub fn apply_layer_action(&mut self, action: panels::LayerAction) {
         use crate::commands as c;
         use panels::LayerAction as A;
         let result = match action {
@@ -3408,7 +3460,7 @@ impl App {
             }
         };
         if let Err(e) = result {
-            self.set_status(e);
+            self.log(Level::Error, e);
         }
     }
 
@@ -4631,6 +4683,9 @@ impl App {
         let spec = match self.seakeeping_spec() {
             Ok(spec) => spec,
             Err(e) => {
+                // A missing input (KG unset), not a failure: the open
+                // Performance dock retries every frame, so a logged line
+                // would flood the message log (as for the GZ curves).
                 self.set_status(e);
                 return;
             }
@@ -5068,7 +5123,7 @@ impl App {
             return;
         }
         if let Err(e) = self.move_point(index, to) {
-            self.set_status(e);
+            self.log(Level::Error, e);
         }
     }
 
@@ -5175,10 +5230,21 @@ impl App {
 
     /// Write the recent list to the storage now, so a crash does not lose it.
     fn persist_recent(&mut self) {
-        if let Some(storage) = self.storage.as_mut() {
-            self.recent.save(storage.as_mut());
-            storage.flush();
+        let Some(storage) = self.storage.as_mut() else {
+            return;
+        };
+        self.recent.save(storage.as_mut());
+        storage.flush();
+        let failure = storage.get_string(crate::recent::FLUSH_ERROR_KEY);
+        // Warn once per distinct failure, not on every open.
+        if failure.is_some() && failure != self.recent_failure {
+            let e = failure.clone().unwrap_or_default();
+            self.log(
+                Level::Warning,
+                format!("the recent files list is kept for this session only: {e}"),
+            );
         }
+        self.recent_failure = failure;
     }
 
     /// Open a recent file, through the unsaved-changes prompt.
@@ -5548,8 +5614,8 @@ impl App {
     }
 
     /// Apply a Model menu action: the dialogs open, the topology tools go
-    /// through the typed commands (one undo step each; a refusal goes to
-    /// the status bar).
+    /// through the typed commands (one undo step each; a refusal is logged
+    /// as an error).
     pub fn apply_model_action(&mut self, action: crate::model_menu::ModelAction) {
         use crate::commands as c;
         use crate::model_menu::ModelAction as A;
@@ -5572,7 +5638,7 @@ impl App {
             }
         };
         if let Err(e) = result {
-            self.set_status(e);
+            self.log(Level::Error, e);
         }
     }
 

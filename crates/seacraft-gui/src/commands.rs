@@ -1635,6 +1635,23 @@ mod tests {
         assert_eq!(app.layer_count(), 4);
     }
 
+    /// R8 B08 (rejected): a new layer takes only the active layer's
+    /// symmetry, as `add_layer` documents; it starts as an ordinary hull
+    /// layer even when the active one is left out of the hydrostatics.
+    #[test]
+    fn a_new_layer_takes_only_the_symmetry_of_the_active_one() {
+        let mut app = demo();
+        let s = app.surface_mut().unwrap();
+        s.layers[1].use_in_hydrostatics = false;
+        s.layers[1].show_in_linesplan = false;
+        let symmetric = s.layers[1].symmetric;
+        app.set_active_layer_index(1);
+        add_layer(&mut app, &AddLayerParams::default()).expect("add");
+        let l = app.surface().unwrap().layers.last().unwrap().clone();
+        assert_eq!(l.symmetric, symmetric);
+        assert!(l.use_in_hydrostatics && l.show_in_linesplan && l.visible);
+    }
+
     #[test]
     fn a_layer_with_faces_is_deleted_only_with_somewhere_to_put_them() {
         let mut app = demo();
