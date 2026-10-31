@@ -45,7 +45,9 @@ Key practical consequences that SeaCraft mirrors:
 * Faces must be consistently wound and normals must point **outward** —
   hydrostatics integrates the volume "behind" the faces.
 * Edges should have exactly two adjacent faces except at deliberate boundary
-  edges. A submerged boundary edge makes the volume integral meaningless.
+  edges. An open deck is closed with flat lids over each boundary loop, so
+  it stays buoyant when the sheer goes under (heel, overload) and a warning
+  says so; any other submerged opening is a leak the lids only paper over.
 * Crease edges keep a knuckle sharp; corner points are pinned.
 * Layers group faces and carry per-layer flags (visible, symmetric,
   use-in-hydrostatics, material density, plate thickness).

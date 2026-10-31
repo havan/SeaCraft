@@ -569,7 +569,7 @@ pub fn damaged_buoyancy(
 /// submerged), for planes a draft above the keel cannot describe.
 pub fn damaged_buoyancy_in(hull: &Hull, solids: &[CompartmentSolid], wp: &Plane) -> (f64, Vec3) {
     let origin = wp.project(Vec3::ZERO);
-    let (intact_vol, intact_moment, _, _, _) = crate::hydro::integrate(&hull.verts, &hull.tris, wp);
+    let (intact_vol, intact_moment, _, _, _) = hull.integrate(wp);
 
     let mut net_vol = intact_vol;
     let mut net_moment = intact_moment;
@@ -662,7 +662,10 @@ pub fn solve_damaged_draft(
         let lo = 0.0f64;
         let mut hi = (hull.model_max.z - hull.keel).max(0.1) * 2.0 + 1.0;
         for _ in 0..40 {
-            if damaged_buoyancy(hull, solids, hi, trim, heel_deg).0 >= target_volume {
+            let wp = waterplane_for(hull.keel, hull.length, hi, trim, heel_deg);
+            if damaged_buoyancy_in(hull, solids, &wp).0 >= target_volume
+                || hull.fully_submerged(&wp)
+            {
                 break;
             }
             hi *= 1.6;

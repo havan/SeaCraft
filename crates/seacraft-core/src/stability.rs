@@ -241,9 +241,13 @@ fn draft_on_bracket(
 fn draft_above_keel(hull: &Hull, target_volume: f64, trim: f64, heel_deg: f64) -> Option<f64> {
     let lo = 0.0f64;
     let mut hi = (hull.model_max.z - hull.keel).max(0.1) * 2.0 + 1.0;
-    // Expand until the hull floats the target displacement.
+    // Expand until the hull floats the target displacement, or is fully
+    // submerged: a deeper plane displaces no more, and integrating about an
+    // origin far above the hull only loses digits.
     for _ in 0..40 {
-        if hull.displaced_volume(hi, trim, heel_deg) >= target_volume {
+        if hull.displaced_volume(hi, trim, heel_deg) >= target_volume
+            || hull.fully_submerged(&waterplane_for(hull.keel, hull.length, hi, trim, heel_deg))
+        {
             break;
         }
         hi *= 1.6;

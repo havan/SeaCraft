@@ -246,9 +246,27 @@ fn clip_below(tri: [Vec3; 3], plane: &Plane) -> Vec<Vec3> {
 }
 
 /// Integrate volume, moments and wetted surface of the submerged hull.
+///
+/// The surface must be closed below the waterplane (Invariant 3): the
+/// waterplane lid contributes nothing because the origin lies in it, and any
+/// other opening is simply missing from the divergence integral. A hull open
+/// at the deck is closed by [`boundary_lids`]; [`Hull`] does that, and
+/// [`integrate_closed`] takes the lid triangles alongside the hull's.
 pub fn integrate(
     verts: &[Vec3],
     tris: &[[usize; 3]],
+    plane: &Plane,
+) -> (f64, Vec3, f64, Vec3, Vec3) {
+    integrate_closed(verts, tris, &[], plane)
+}
+
+/// [`integrate`] over the hull panels `tris` closed by the lid triangles
+/// `lids` ([`boundary_lids`]). The lids count towards the volume and its
+/// moment only: wetted surface and submerged extents are the hull's own.
+pub fn integrate_closed(
+    verts: &[Vec3],
+    tris: &[[usize; 3]],
+    lids: &[[usize; 3]],
     plane: &Plane,
 ) -> (f64, Vec3, f64, Vec3, Vec3) {
     let origin = plane.project(Vec3::ZERO);
@@ -259,7 +277,11 @@ pub fn integrate(
     let mut smax = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
     let mut any_submerged = false;
 
-    for t in tris {
+    let panels = tris
+        .iter()
+        .map(|t| (t, true))
+        .chain(lids.iter().map(|t| (t, false)));
+    for (t, hull_panel) in panels {
         let tri = [verts[t[0]], verts[t[1]], verts[t[2]]];
         let inside = tri.iter().filter(|p| plane.side(**p) <= CLIP_EPS).count();
         if inside == 0 {
@@ -269,12 +291,14 @@ pub fn integrate(
         if poly.len() < 3 {
             continue;
         }
-        any_submerged = true;
-        for p in &poly {
-            smin = smin.min(*p);
-            smax = smax.max(*p);
+        if hull_panel {
+            any_submerged = true;
+            for p in &poly {
+                smin = smin.min(*p);
+                smax = smax.max(*p);
+            }
+            wetted += polygon_area3(&poly);
         }
-        wetted += polygon_area3(&poly);
         let p0 = poly[0] - origin;
         for i in 1..poly.len() - 1 {
             let p1 = poly[i] - origin;
@@ -295,6 +319,215 @@ pub fn integrate(
         smax = Vec3::ZERO;
     }
     (volume, moment, wetted, smin, smax)
+}
+
+/// Triangles that close every open boundary loop of the surface `tris` with
+/// a lid, wound so that the hull and its lids form one consistently oriented
+/// closed surface.
+///
+/// A FREE!ship hull usually has no deck faces: its surface ends at the
+/// sheer. The divergence integral of [`integrate`] is a volume only for a
+/// closed surface, so once the waterplane rises over any part of that open
+/// edge — heeled past deck-edge immersion, or overloaded — the submerged
+/// part of the opening is missing, and the integral counts the cone from the
+/// waterplane origin to the open edge instead: a volume that grows without
+/// bound with the draft. The lid is the usual intact-stability assumption
+/// that the deck is watertight: while the sheer is dry it changes nothing,
+/// past it the hull floats exactly like the same hull with a deck.
+///
+/// Boundary edges are those used by one triangle once vertices are welded by
+/// position (a mirrored half model shares its centreline with the other
+/// half). Each loop of them is triangulated by ear clipping in the plane of
+/// its Newell normal, so the lid passes through the loop's own vertices and
+/// is planar for a planar loop (a flat sheer, a transom top). A loop that
+/// does not project to a simple polygon falls back to a fan around its
+/// centroid, which is appended to `verts`.
+pub fn boundary_lids(verts: &mut Vec<Vec3>, tris: &[[usize; 3]]) -> Vec<[usize; 3]> {
+    if tris.is_empty() || verts.is_empty() {
+        return Vec::new();
+    }
+    let inf = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let (lo, hi) = verts
+        .iter()
+        .fold((inf, -inf), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+    let welded = weld_by_position(verts, 1e-9 * (hi - lo).length().max(1.0));
+
+    // Count every undirected edge; a boundary edge is used once and keeps
+    // the direction its triangle runs along it.
+    let mut edges: HashMap<(usize, usize), (u32, usize, usize)> = HashMap::new();
+    for t in tris {
+        for i in 0..3 {
+            let (a, b) = (welded[t[i]], welded[t[(i + 1) % 3]]);
+            if a != b {
+                edges.entry((a.min(b), a.max(b))).or_insert((0, a, b)).0 += 1;
+            }
+        }
+    }
+    let mut boundary: Vec<(usize, usize)> = edges
+        .values()
+        .filter(|e| e.0 == 1)
+        .map(|e| (e.1, e.2))
+        .collect();
+    if boundary.is_empty() {
+        return Vec::new();
+    }
+    boundary.sort_unstable();
+    let mut next: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &(a, b) in boundary.iter().rev() {
+        next.entry(a).or_default().push(b);
+    }
+
+    // Walk the boundary half-edges into loops. On an oriented surface every
+    // boundary vertex has as many outgoing as incoming boundary edges, so a
+    // walk returns to its start; one that does not is dropped.
+    let mut lids = Vec::new();
+    for &(start, _) in &boundary {
+        while let Some(first) = next.get_mut(&start).and_then(|v| v.pop()) {
+            let mut ring = vec![start];
+            let mut cur = first;
+            let mut closed = false;
+            for _ in 0..=boundary.len() {
+                if cur == start {
+                    closed = true;
+                    break;
+                }
+                ring.push(cur);
+                match next.get_mut(&cur).and_then(|v| v.pop()) {
+                    Some(n) => cur = n,
+                    None => break,
+                }
+            }
+            if !closed || ring.len() < 3 {
+                continue;
+            }
+            // The hull runs along the loop one way; its lid runs the other.
+            ring.reverse();
+            match ear_clip(verts, &ring) {
+                Some(tris) => lids.extend(tris),
+                None => {
+                    let sum = ring.iter().fold(Vec3::ZERO, |s, &i| s + verts[i]);
+                    verts.push(sum / ring.len() as f64);
+                    let c = verts.len() - 1;
+                    for i in 0..ring.len() {
+                        lids.push([c, ring[i], ring[(i + 1) % ring.len()]]);
+                    }
+                }
+            }
+        }
+    }
+    lids
+}
+
+/// For each vertex, the index of the first vertex within `eps` of it.
+fn weld_by_position(verts: &[Vec3], eps: f64) -> Vec<usize> {
+    let cell = |p: Vec3| {
+        (
+            (p.x / eps).floor() as i64,
+            (p.y / eps).floor() as i64,
+            (p.z / eps).floor() as i64,
+        )
+    };
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    let mut out = Vec::with_capacity(verts.len());
+    for (i, &p) in verts.iter().enumerate() {
+        let (kx, ky, kz) = cell(p);
+        let mut found = None;
+        'search: for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let near = grid.get(&(kx + dx, ky + dy, kz + dz));
+                    for &j in near.into_iter().flatten() {
+                        if verts[j].dist(p) <= eps {
+                            found = Some(j);
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        out.push(found.unwrap_or_else(|| {
+            grid.entry((kx, ky, kz)).or_default().push(i);
+            i
+        }));
+    }
+    out
+}
+
+/// Ear-clip the closed loop `ring` (vertex indices, in the lid's winding)
+/// projected onto the plane of its Newell normal. The triangles keep the
+/// loop's winding. `None` when the projection is not a simple polygon.
+fn ear_clip(verts: &[Vec3], ring: &[usize]) -> Option<Vec<[usize; 3]>> {
+    let n = ring.len();
+    let mut normal = Vec3::ZERO;
+    for i in 0..n {
+        let (p, q) = (verts[ring[i]], verts[ring[(i + 1) % n]]);
+        normal.x += (p.y - q.y) * (p.z + q.z);
+        normal.y += (p.z - q.z) * (p.x + q.x);
+        normal.z += (p.x - q.x) * (p.y + q.y);
+    }
+    if normal.length() < 1e-300 {
+        return None;
+    }
+    // `basis` gives u × v = n: the loop projects counter-clockwise.
+    let (u, v) = Plane {
+        n: normal.norm(),
+        d: 0.0,
+    }
+    .basis();
+    let pts: Vec<(f64, f64)> = ring
+        .iter()
+        .map(|&i| (u.dot(verts[i]), v.dot(verts[i])))
+        .collect();
+    let (mut lo, mut hi) = (pts[0], pts[0]);
+    for &(a, b) in &pts {
+        lo = (lo.0.min(a), lo.1.min(b));
+        hi = (hi.0.max(a), hi.1.max(b));
+    }
+    let size = (hi.0 - lo.0).max(hi.1 - lo.1).max(1e-300);
+    let eps = 1e-12 * size * size;
+    let cross = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() + (a.1 - b.1).abs() <= 1e-12 * size;
+
+    let mut idx: Vec<usize> = (0..n).collect();
+    let mut out = Vec::with_capacity(n.saturating_sub(2));
+    while idx.len() > 3 {
+        let m = idx.len();
+        let corner = |k: usize| (idx[(k + m - 1) % m], idx[k], idx[(k + 1) % m]);
+        let ear = (0..m).find(|&k| {
+            let (ia, ib, ic) = corner(k);
+            let (a, b, c) = (pts[ia], pts[ib], pts[ic]);
+            if cross(a, b, c) <= eps {
+                return false;
+            }
+            !idx.iter().any(|&j| {
+                let p = pts[j];
+                j != ia
+                    && j != ib
+                    && j != ic
+                    && !same(p, a)
+                    && !same(p, b)
+                    && !same(p, c)
+                    && cross(a, b, p) >= -eps
+                    && cross(b, c, p) >= -eps
+                    && cross(c, a, p) >= -eps
+            })
+        });
+        // No convex ear: drop a vertex on the line through its neighbours
+        // (a zero-area triangle), or give up on a polygon that is not simple.
+        let k = ear.or_else(|| {
+            (0..m).find(|&k| {
+                let (ia, ib, ic) = corner(k);
+                cross(pts[ia], pts[ib], pts[ic]).abs() <= eps
+            })
+        })?;
+        let (ia, ib, ic) = corner(k);
+        out.push([ring[ia], ring[ib], ring[ic]]);
+        idx.remove(k);
+    }
+    out.push([ring[idx[0]], ring[idx[1]], ring[idx[2]]]);
+    Some(out)
 }
 
 /// Segments where the mesh crosses a plane.
@@ -591,7 +824,13 @@ pub fn section_area(verts: &[Vec3], tris: &[[usize; 3]], x: f64, wp: &Plane) -> 
 /// is what the stability solver does.
 pub struct Hull {
     pub verts: Vec<Vec3>,
+    /// The hull's own panels: what is wetted, plated and drawn.
     pub tris: Vec<[usize; 3]>,
+    /// Lids over the open boundary loops of `tris` ([`boundary_lids`]) — the
+    /// deck of a hull modelled without one. Empty for a closed hull. They
+    /// close the volume integral and the waterline, sections and profile cut
+    /// once the open edge is under water, and are never wetted surface.
+    pub lids: Vec<[usize; 3]>,
     pub keel: f64,
     pub length: f64,
     pub model_min: Vec3,
@@ -599,6 +838,61 @@ pub struct Hull {
 }
 
 impl Hull {
+    /// A hull from its refined panels, its open boundary closed by
+    /// [`boundary_lids`].
+    pub fn from_panels(
+        mut verts: Vec<Vec3>,
+        tris: Vec<[usize; 3]>,
+        keel: f64,
+        length: f64,
+        model_min: Vec3,
+        model_max: Vec3,
+    ) -> Self {
+        let lids = boundary_lids(&mut verts, &tris);
+        Self {
+            verts,
+            tris,
+            lids,
+            keel,
+            length,
+            model_min,
+            model_max,
+        }
+    }
+
+    /// The hull panels followed by the lids: the closed surface every
+    /// section, waterline and volume is measured on.
+    pub fn closed_tris(&self) -> std::borrow::Cow<'_, [[usize; 3]]> {
+        if self.lids.is_empty() {
+            std::borrow::Cow::Borrowed(&self.tris)
+        } else {
+            std::borrow::Cow::Owned([self.tris.as_slice(), &self.lids].concat())
+        }
+    }
+
+    /// Whether any lid ([`Hull::lids`]) reaches below the waterplane `wp`:
+    /// the open edge of the hull is under water and the result relies on the
+    /// deck being watertight.
+    pub fn lid_submerged(&self, wp: &Plane) -> bool {
+        self.lids
+            .iter()
+            .flatten()
+            .any(|&i| wp.side(self.verts[i]) < -CLIP_EPS)
+    }
+
+    /// Volume, moment about the waterplane origin, wetted surface and
+    /// submerged extents below `wp` ([`integrate_closed`] over the hull and
+    /// its lids).
+    pub fn integrate(&self, wp: &Plane) -> (f64, Vec3, f64, Vec3, Vec3) {
+        integrate_closed(&self.verts, &self.tris, &self.lids, wp)
+    }
+
+    /// Whether every vertex lies at or below `wp`: the hull is fully
+    /// submerged, and a deeper plane displaces no more.
+    pub fn fully_submerged(&self, wp: &Plane) -> bool {
+        self.verts.iter().all(|&p| wp.side(p) <= 0.0)
+    }
+
     pub fn new(surface: &Surface, subdiv: SubdivisionOptions) -> Self {
         let (verts, tris) = hull_triangles(
             surface,
@@ -619,14 +913,14 @@ impl Hull {
         } else {
             max.x - min.x
         };
-        Self {
+        Self::from_panels(
             verts,
             tris,
-            keel: surface.lowest_hydrostatics_point(),
+            surface.lowest_hydrostatics_point(),
             length,
-            model_min: min,
-            model_max: max,
-        }
+            min,
+            max,
+        )
     }
 
     pub fn hydrostatics(&self, opts: &HydroOptions) -> Hydrostatics {
@@ -656,7 +950,7 @@ impl Hull {
     /// submerged), for planes a draft above the keel cannot describe.
     pub fn buoyancy_in(&self, wp: &Plane) -> (f64, Vec3) {
         let origin = wp.project(Vec3::ZERO);
-        let (volume, moment, _, _, _) = integrate(&self.verts, &self.tris, wp);
+        let (volume, moment, _, _, _) = self.integrate(wp);
         let b = if volume > 1e-12 {
             moment / volume + origin
         } else {
@@ -679,7 +973,10 @@ impl Hull {
 
     fn hydrostatics_inner(&self, opts: &HydroOptions) -> Hydrostatics {
         let verts = &self.verts;
-        let tris = &self.tris;
+        // Waterline, sections and profile are cut from the closed surface, so
+        // an immersed deck edge bounds them along the lid.
+        let closed = self.closed_tris();
+        let tris: &[[usize; 3]] = &closed;
         let wp = waterplane_for(self.keel, self.length, opts.draft, opts.trim, opts.heel_deg);
         let mut result = Hydrostatics {
             draft: opts.draft,
@@ -696,7 +993,16 @@ impl Hull {
         result.model_max = model_max;
 
         let origin = wp.project(Vec3::ZERO);
-        let (volume, moment, wetted, smin, smax) = integrate(verts, tris, &wp);
+        let (volume, moment, wetted, smin, smax) = self.integrate(&wp);
+        if self.lid_submerged(&wp) {
+            result.warnings.push(Warning {
+                code: "open_hull_lid_submerged",
+                message: "the hull is open (no deck faces) and its open edge is below the \
+                          waterline; it is measured closed by a lid, as if the deck were \
+                          watertight"
+                    .into(),
+            });
+        }
         result.volume_m3 = volume * opts.appendage_coefficient;
         result.wetted_surface_m2 = wetted;
         result.displacement_kg = volume * opts.appendage_coefficient * opts.water_density;
@@ -908,6 +1214,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// R8-4. The demo hull has no deck faces. Its lids must close it: once
+    /// vertices are welded by position every edge of hull plus lids belongs to
+    /// exactly two triangles, run in opposite directions (one oriented closed
+    /// surface), and the closed volume is the volume fully submerged.
+    #[test]
+    fn the_demo_hulls_open_deck_is_closed_by_consistently_wound_lids() {
+        let surface = crate::demo::demo_hull(false);
+        let hull = Hull::new(&surface, SubdivisionOptions::default());
+        assert!(!hull.lids.is_empty(), "the demo hull is open at the deck");
+        let welded = weld_by_position(&hull.verts, 1e-9 * 20.0);
+        let mut directed: HashMap<(usize, usize), i32> = HashMap::new();
+        for t in hull.tris.iter().chain(&hull.lids) {
+            for i in 0..3 {
+                let (a, b) = (welded[t[i]], welded[t[(i + 1) % 3]]);
+                if a != b {
+                    *directed.entry((a, b)).or_default() += 1;
+                }
+            }
+        }
+        for (&(a, b), &n) in &directed {
+            assert_eq!(n, 1, "edge {a}->{b} used {n} times one way");
+            assert_eq!(
+                directed.get(&(b, a)),
+                Some(&1),
+                "edge {a}->{b} has no opposite: still open"
+            );
+        }
+        // Fully submerged, every depth floats the same closed volume.
+        let (v1, _) = hull.buoyancy(10.0, 0.0, 0.0);
+        let (v2, _) = hull.buoyancy(40.0, 0.0, 0.0);
+        assert!(v1 > 11.85, "closed volume {v1}");
+        assert!((v1 - v2).abs() < 1e-9 * v1, "{v1} vs {v2}");
+        // Upright at the design draft the sheer is dry: no lid, no warning.
+        let mut opts = HydroOptions::from_surface(&surface, SubdivisionOptions::default());
+        opts.draft = 0.62;
+        assert!(hull.hydrostatics(&opts).warnings.is_empty());
     }
 
     #[test]

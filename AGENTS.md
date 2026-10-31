@@ -166,7 +166,9 @@ Breaking any of these produces plausible-looking but wrong numbers.
 3. **Closed below the waterline.** Edges must have two adjacent faces except
    deliberate model boundaries. A submerged boundary edge is a leak. A
    symmetric half model also needs a transom face, otherwise its waterplane
-   never closes.
+   never closes. `Hull` closes every open boundary loop (the sheer of a hull
+   without deck faces) with `Hull::lids` (`hydro::boundary_lids`); measure
+   with `Hull::integrate` / `closed_tris`, not `integrate(&hull.tris)`.
 4. **Integration origin lives in the waterplane.** `integrate` projects the
    world origin onto the plane so the waterplane lid contributes zero; the
    centroid is shifted back by that origin afterwards.
@@ -222,6 +224,18 @@ These were real failures in this codebase; the fixes are load-bearing.
   `damage::solve_damaged_draft` had the same clamp and uses the same offset
   fallback (`damaged_buoyancy_in`); its check is the light barge's
   bilge-out triangle (`damage.rs` tests).
+* **An open deck is a leak once it is wet.** The demo hull and most
+  FREE!ship models end at the sheer. With the origin in the waterplane the
+  divergence integral over an open surface counts the cone from that origin
+  to the opening, so past deck-edge immersion the volume was wrong in either
+  direction (open 10×4×2 box at 40°: 46.68 m³ for 51.92), and overloaded it
+  grew without bound (`L·B·D + A_deck·h/3`): 1000 t on the demo floated at
+  74.6 m with `equilibrium_found = true`. `Hull::new` closes each boundary
+  loop with lid triangles (deck taken as watertight; never wetted surface),
+  hydrostatics warns `open_hull_lid_submerged` when one is under water, and
+  the draft searches stop expanding once the hull is fully submerged. The
+  check is the open box against the half-full-box GZ oracle and its
+  overload (`docs/oracles.md` §22).
 * **The free-trim residual falls as the trim grows.** Bow up moves the LCB
   aft, so ordering the secant bracket by trim mixed its signs.
   `stability::secant_on_trim` (shared by intact and damage) keeps the bracket

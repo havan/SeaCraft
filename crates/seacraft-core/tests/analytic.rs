@@ -17,6 +17,12 @@ use seacraft_core::{Layer, ProjectSettings, Surface};
 /// the draft in every test: floating it exactly at its own depth would put the
 /// waterplane in the top face, which is a degenerate cut and says nothing.
 fn barge(length: f64, beam: f64, depth: f64) -> Surface {
+    box_surface(length, beam, depth, true)
+}
+
+/// The [`barge`], with or without its deck face. Without it the box is open
+/// at the sheer, as a FREE!ship hull without deck faces is.
+fn box_surface(length: f64, beam: f64, depth: f64, deck: bool) -> Surface {
     let mut s = Surface::new();
     s.layers = vec![Layer {
         name: "Hull".into(),
@@ -61,6 +67,9 @@ fn barge(length: f64, beam: f64, depth: f64) -> Surface {
         vec![2, 3, 7, 6],
         vec![3, 0, 4, 7],
     ] {
+        if !deck && face == [4, 5, 6, 7] {
+            continue;
+        }
         s.add_face(face, 0);
     }
     s.initialize_trace();
@@ -645,4 +654,191 @@ fn a_light_box_with_g_at_mid_depth_rights_symmetrically_past_90_degrees() {
             );
         }
     }
+}
+
+// ---- R8-4: a hull open at the deck ------------------------------------------
+//
+// A FREE!ship hull usually has no deck faces: its surface ends at the sheer.
+// Hydrostatics treats the open sheer as closed by a lid (the deck is
+// watertight, the intact-stability assumption), so an open box must measure
+// exactly like the closed one at every waterplane, and can never float more
+// than its closed volume.
+
+/// Area and centroid `(y, z)` of the `b × d` box section (`|y| ≤ b/2`,
+/// `0 ≤ z ≤ d`) below the heeled waterline `z ≤ t + y tan φ` — the
+/// [`hydro::waterplane_for`] plane at draft `t`, no trim, heel `φ` — by
+/// clipping the rectangle against the half-plane and the shoelace formula.
+fn heeled_box_section(b: f64, d: f64, t: f64, heel_deg: f64) -> (f64, f64, f64) {
+    let tan = heel_deg.to_radians().tan();
+    let side = |p: (f64, f64)| p.1 - t - p.0 * tan; // <= 0 is submerged
+    let rect = [(-b / 2.0, 0.0), (b / 2.0, 0.0), (b / 2.0, d), (-b / 2.0, d)];
+    let mut poly: Vec<(f64, f64)> = Vec::new();
+    for i in 0..4 {
+        let (p, q) = (rect[i], rect[(i + 1) % 4]);
+        let (sp, sq) = (side(p), side(q));
+        if sp <= 0.0 {
+            poly.push(p);
+        }
+        if (sp < 0.0 && sq > 0.0) || (sp > 0.0 && sq < 0.0) {
+            let s = sp / (sp - sq);
+            poly.push((p.0 + (q.0 - p.0) * s, p.1 + (q.1 - p.1) * s));
+        }
+    }
+    let (mut a, mut cy, mut cz) = (0.0, 0.0, 0.0);
+    for i in 0..poly.len() {
+        let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+        let cross = p.0 * q.1 - q.0 * p.1;
+        a += 0.5 * cross;
+        cy += (p.0 + q.0) * cross / 6.0;
+        cz += (p.1 + q.1) * cross / 6.0;
+    }
+    (a, cy / a, cz / a)
+}
+
+/// (a) Upright with the sheer dry the lid is out of the water: the open box
+/// measures exactly like the closed one, without a warning.
+#[test]
+fn an_open_box_measures_like_the_closed_one_while_its_sheer_is_dry() {
+    let (l, b, depth, t) = (10.0, 4.0, 4.0, 2.0);
+    let open = box_surface(l, b, depth, false);
+    let closed = barge(l, b, depth);
+    let ho = hydro::compute(&open, &options(&open, t));
+    let hc = hydro::compute(&closed, &options(&closed, t));
+    for (name, o, c) in [
+        ("volume", ho.volume_m3, hc.volume_m3),
+        ("KB", ho.kb, hc.kb),
+        ("BM", ho.bm_transverse, hc.bm_transverse),
+        ("Awp", ho.waterplane_area_m2, hc.waterplane_area_m2),
+        ("wetted", ho.wetted_surface_m2, hc.wetted_surface_m2),
+        ("Am", ho.mainframe_area_m2, hc.mainframe_area_m2),
+        ("lateral", ho.lateral_area_m2, hc.lateral_area_m2),
+    ] {
+        assert!(
+            (o - c).abs() < 1e-9 * c.abs().max(1.0),
+            "{name}: {o} vs {c}"
+        );
+    }
+    assert!((ho.volume_m3 - l * b * t).abs() < 1e-6);
+    assert!(ho.warnings.is_empty(), "{:?}", ho.warnings);
+}
+
+/// (b) Heeled 40° at draft 1.5 m the 2 m deep box has its starboard deck
+/// edge 0.18 m under water (`tan 40° · b/2 = 1.68 m`). With the deck taken
+/// as watertight the open box displaces the analytic clipped section times
+/// its length, the closed box's volume and centre; the divergence integral
+/// without a lid instead counts a cone from the waterplane to the open sheer.
+/// The waterline closes across the lid, and hydrostatics warns that a lid
+/// was needed below the water.
+#[test]
+fn an_open_box_heeled_past_deck_edge_immersion_keeps_its_deck_watertight() {
+    let (l, b, depth, t, heel) = (10.0, 4.0, 2.0, 1.5, 40.0);
+    let (area, cy, cz) = heeled_box_section(b, depth, t, heel);
+    let want = l * area;
+    for deck in [true, false] {
+        let surface = box_surface(l, b, depth, deck);
+        let opts = options(&surface, t);
+        let hull = Hull::new(&surface, opts.subdivision);
+        let (v, c) = hull.buoyancy(t, 0.0, heel);
+        assert!(
+            (v - want).abs() < 1e-9 * want,
+            "deck {deck}: volume {v} vs the analytic {want}"
+        );
+        assert!((c.x - l / 2.0).abs() < 1e-9, "deck {deck}: LCB {}", c.x);
+        assert!((c.y - cy).abs() < 1e-9, "deck {deck}: TCB {} vs {cy}", c.y);
+        assert!((c.z - cz).abs() < 1e-9, "deck {deck}: VCB {} vs {cz}", c.z);
+
+        let mut opts = opts;
+        opts.heel_deg = heel;
+        let h = hull.hydrostatics(&opts);
+        assert!((h.volume_m3 - want).abs() < 1e-9 * want);
+        // The waterline runs from the bottom (y = −t / tan φ) to the deck
+        // (y = (d − t) / tan φ), along the whole length of the box.
+        let r = f64::to_radians(heel);
+        let run = depth / r.tan() / r.cos();
+        assert!(
+            (h.waterplane_area_m2 - l * run).abs() < 1e-6,
+            "deck {deck}: Awp {} vs {}",
+            h.waterplane_area_m2,
+            l * run
+        );
+        let lid = h
+            .warnings
+            .iter()
+            .any(|w| w.code == "open_hull_lid_submerged");
+        assert_eq!(lid, !deck, "deck {deck}: {:?}", h.warnings);
+    }
+}
+
+/// (b) The large-angle oracle on the open box: half full with `G` at its
+/// centre, it has the analytic `GZ` from 0° to 180°, fixed and free to trim.
+/// Past `atan(d/b)` = 26.6° the deck edge is under water, past 90° most of
+/// the deck is, so every one of those levers depends on the lid.
+#[test]
+fn a_half_full_open_box_has_the_analytic_gz_from_0_to_180_degrees() {
+    let (l, b, depth) = (10.0, 4.0, 2.0);
+    let (t, kg) = (depth / 2.0, depth / 2.0);
+    let surface = box_surface(l, b, depth, false);
+    let base = options(&surface, t);
+    let hull = Hull::new(&surface, base.subdivision);
+    let target = l * b * t;
+    let heels = full_circle_heels(b, depth);
+    for cond in [
+        stability::StabilityCondition::fixed(kg, 0.0),
+        stability::StabilityCondition::free_to_trim(kg, l / 2.0),
+    ] {
+        let curves = stability::cross_curves(&hull, &heels, &[target], &cond, &base);
+        for c in &curves {
+            let want = half_full_box_gz(b, depth, c.heel_deg);
+            let gz = c.points[0]
+                .gz
+                .unwrap_or_else(|| panic!("no GZ at {}°", c.heel_deg));
+            assert!(
+                (gz - want).abs() < 1e-6,
+                "{}° ({}): GZ {gz} vs the analytic {want}",
+                c.heel_deg,
+                if cond.is_free() { "free" } else { "fixed" }
+            );
+        }
+    }
+}
+
+/// (c) Overload. Fully submerged, the open box displaces its closed volume
+/// `L·B·D` — not a volume that keeps growing with the draft — so a target
+/// above it has no waterline, upright or heeled, fixed or free to trim, and
+/// a target just below it floats at the analytic draft.
+#[test]
+fn an_overloaded_open_box_has_no_waterline() {
+    let (l, b, depth) = (10.0, 4.0, 2.0);
+    let full = l * b * depth;
+    let surface = box_surface(l, b, depth, false);
+    let base = options(&surface, 1.0);
+    let hull = Hull::new(&surface, base.subdivision);
+    for draft in [2.5, 10.0, 75.0] {
+        let (v, c) = hull.buoyancy(draft, 0.0, 0.0);
+        assert!((v - full).abs() < 1e-9 * full, "draft {draft}: volume {v}");
+        assert!(
+            (c.z - depth / 2.0).abs() < 1e-9,
+            "draft {draft}: VCB {}",
+            c.z
+        );
+    }
+    let over = 1.01 * full;
+    for heel in [0.0, 30.0, 120.0] {
+        assert!(
+            stability::solve_draft(&hull, over, 0.0, heel).is_none(),
+            "{heel}°: an overloaded box has no draft"
+        );
+        for cond in [
+            stability::StabilityCondition::fixed(1.0, 0.0),
+            stability::StabilityCondition::free_to_trim(1.0, l / 2.0),
+        ] {
+            assert!(
+                stability::solve_waterline(&hull, over, heel, &cond).is_none(),
+                "{heel}°: an overloaded box has no waterline"
+            );
+        }
+    }
+    let near = 0.99 * full;
+    let d = stability::solve_draft(&hull, near, 0.0, 0.0).expect("floats just below full");
+    assert!((d - near / (l * b)).abs() < 1e-6, "draft {d}");
 }

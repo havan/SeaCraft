@@ -812,14 +812,14 @@ pub fn canoe_body(hull: &Hull, wp: &crate::math::Plane) -> Option<Hull> {
         .flatten()
         .map(|&i| hull.verts[i].z)
         .fold(f64::INFINITY, f64::min);
-    Some(Hull {
-        verts: hull.verts.clone(),
+    Some(Hull::from_panels(
+        hull.verts.clone(),
         tris,
         keel,
-        length: hull.length,
-        model_min: hull.model_min,
-        model_max: hull.model_max,
-    })
+        hull.length,
+        hull.model_min,
+        hull.model_max,
+    ))
 }
 
 impl DsyhsInput {

@@ -1080,4 +1080,33 @@ mod tests {
         );
         assert_eq!(res.draft, opts.draft);
     }
+
+    /// R8-4. The demo hull is open at the deck (no deck faces, as in
+    /// FREE!ship). Its open sheer is closed by a lid, so 1000 t — far more
+    /// than the closed hull displaces — cannot float either: the old
+    /// lid-less integral kept growing with the draft and floated it at
+    /// 74.6 m with `equilibrium_found = true`.
+    #[test]
+    fn an_overloaded_open_deck_hull_is_flagged_not_floated_at_a_huge_draft() {
+        let surface = crate::demo::demo_hull(false);
+        let opts = HydroOptions::from_surface(
+            &surface,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        let json_text = include_str!("../../../examples/demo-loadcase.json");
+        let mut cond: LoadingCondition =
+            serde_json::from_str(json_text).expect("valid demo-loadcase.json");
+        cond.lightship.mass_t = 1000.0;
+        let res = evaluate(&surface, &opts, &cond);
+        assert!(!res.equilibrium_found, "draft {}", res.draft);
+        assert!(
+            res.warnings.iter().any(|w| w.contains("cannot float")),
+            "{:?}",
+            res.warnings
+        );
+        assert_eq!(res.draft, opts.draft);
+    }
 }

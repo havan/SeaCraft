@@ -613,3 +613,50 @@ residual curve must equal it.
 Derived by Claude for R8-2a (2026-10-31); checked against an independent Python script that clips the
 rectangular section by the heeled waterline and bisects its offset for the area (agreement $\le 5 \times 10^{-16}$
 at 16°, 30°, 32°, 40°, 50°, 58°). Not published values.
+
+## 22. A Hull Open at the Deck: Watertight-Deck Lid, Deck-Edge Immersion and Overload (R8-4)
+
+### Formula
+Model: an open boundary loop of the hull (the sheer of a hull without deck faces, as most FREE!ship models are)
+is closed by a lid through the loop's own vertices (`hydro::boundary_lids`, ear-clipped in the plane of the loop's
+Newell normal; planar for a planar sheer). The deck is taken as watertight, the usual intact-stability
+assumption, so an open hull measures exactly like the same hull with a deck:
+
+- Sheer dry: the lid is out of the water and contributes nothing; every number equals the closed hull's.
+- Box $b \times d$, waterplane $z \le T + y\tan\phi$ (draft $T$, heel $\phi$, no trim): the submerged section is
+  the rectangle clipped by that half-plane, $\nabla = L \cdot A$, centre at its centroid. The waterline runs from
+  the bottom to the deck when $T/\tan\phi \le b/2$ and $(d - T)/\tan\phi \le b/2$: $A_{wp} = L\,d/(\tan\phi\cos\phi)$.
+- Half full with $G$ at the centre: the §20 closed-form $GZ$ from 0° to 180°.
+- Fully submerged: $\nabla = L b d$ at every deeper waterplane, so a larger target has no waterline.
+
+Without the lid the divergence integral about the waterplane origin $O$ misses the submerged part of the opening,
+$\tfrac13 \int_{\text{lid}} (p - O)\cdot n \, dA$: overloaded upright it reports $Lbd + A_{deck}\,h/3$ ($h$ the
+waterplane height over the deck), a volume that grows without bound, and heeled past deck-edge immersion it is
+wrong in either direction.
+
+### Tests
+- [`crates/seacraft-core/tests/analytic.rs::an_open_box_measures_like_the_closed_one_while_its_sheer_is_dry`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/tests/analytic.rs::an_open_box_heeled_past_deck_edge_immersion_keeps_its_deck_watertight`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/tests/analytic.rs::a_half_full_open_box_has_the_analytic_gz_from_0_to_180_degrees`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/tests/analytic.rs::an_overloaded_open_box_has_no_waterline`](../crates/seacraft-core/tests/analytic.rs)
+- [`crates/seacraft-core/src/hydro.rs::the_demo_hulls_open_deck_is_closed_by_consistently_wound_lids`](../crates/seacraft-core/src/hydro.rs)
+- [`crates/seacraft-core/src/loading.rs::an_overloaded_open_deck_hull_is_flagged_not_floated_at_a_huge_draft`](../crates/seacraft-core/src/loading.rs)
+
+### Numbers Used
+- Open box $10 \times 4 \times 4$ m at $T = 2$ m: volume, KB, BM, $A_{wp}$, wetted surface, $A_m$, lateral area equal
+  the closed box's within $10^{-9}$, no warning.
+- Open and closed box $10 \times 4 \times 2$ m, $T = 1.5$ m, $\phi = 40^\circ$ (deck edge 0.18 m under):
+  $\nabla = 51.917536$ m³, centre $y = 0.610874$, $z = 0.846968$ m (rel. $10^{-9}$), $A_{wp} = 31.114477$ m²
+  ($10^{-6}$); the open box warns `open_hull_lid_submerged`. Without the lid: 46.676581 m³ (the missing deck strip,
+  $14.04$ m² at $1.1198$ m above $O$, is $5.2410$ m³).
+- Half-full open box ($T = KG = 1$ m): §20 heels, fixed and free to trim, $|GZ - GZ_{\text{analytic}}| < 10^{-6}$ m.
+- Overload: fully submerged at drafts 2.5, 10, 75 m the open box floats $80$ m³ with VCB 1 m (lid-less: 86.667 m³
+  at 2.5 m); $1.01 \cdot 80$ m³ has no draft or waterline at 0°, 30°, 120°, fixed or free; $0.99 \cdot 80$ m³ floats
+  at $1.98$ m. Demo hull, 1000 t lightship: `equilibrium_found = false`, "cannot float" (was 74.6 m, `true`).
+
+### Provenance
+Derived by Claude for R8-4 (2026-10-31). The clipped-section numbers, the waterplane run and the lid-less deficit
+were recomputed with an independent Python script (shoelace on the clipped rectangle); the lid-less values are what
+the code produced before the fix and match $Lbd + A\,h/3$ and the deficit formula to $10^{-12}$. FREE!ship's source
+was not available locally; this follows the README's description of `TFreeHydrostaticCalc` (waterplane-only lid),
+which assumes a hull closed below the waterline. Not published values.
