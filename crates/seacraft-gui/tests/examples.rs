@@ -162,11 +162,11 @@ fn create_loads_the_example_and_its_project_as_one_undo_step() {
     // the design waterline is the example's draft.
     assert_eq!(app.kg(), Some(0.65));
     assert!(!app.kg_is_estimate());
-    assert_eq!(app.hydro_options().draft, 0.38);
+    assert_eq!(app.hydro_options().draft, 0.425);
     app.recompute_hydrostatics();
     let h = app.hydrostatics().expect("hydrostatics").clone();
     assert!(
-        (h.displacement_t - 1.922).abs() < 2e-3,
+        (h.displacement_t - 1.918).abs() < 2e-3,
         "Δ {}",
         h.displacement_t
     );

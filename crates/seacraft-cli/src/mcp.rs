@@ -5571,7 +5571,7 @@ mod tests {
         assert_eq!(info["example"]["kg"], 0.65);
         assert_eq!(info["validation"]["ok"], true, "{info}");
         assert_eq!(info["layers"].as_array().unwrap().len(), 4);
-        assert_eq!(info["principal"]["draft"], 0.38);
+        assert_eq!(info["principal"]["draft"], 0.425);
 
         let project = ok(&mut s, 3, "project_get", json!({}));
         assert_eq!(project["kg"], 0.65);
@@ -5580,7 +5580,7 @@ mod tests {
         // No `kg` and no `draft`: the example's.
         let h = ok(&mut s, 4, "hydro_compute", json!({}));
         let disp = h["displacement_t"].as_f64().unwrap();
-        assert!((disp - 1.922).abs() < 2e-3, "{disp}");
+        assert!((disp - 1.918).abs() < 2e-3, "{disp}");
         let gm = h["gm_m"].as_f64().unwrap();
         let km = h["km_transverse"].as_f64().unwrap();
         assert!((km - 0.65 - gm).abs() < 1e-9, "GM at the example KG");

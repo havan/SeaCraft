@@ -130,7 +130,7 @@ impl Example {
                 "Round-bilge workboat on a deep keel, raked stem, small transom, inboard diesel, 7 kn; means of 12 surveyed piyade boats (Turan 2022), lines our own; KG 0.95 m estimated"
             }
             Example::Runabout6m => {
-                "Hard-chine V-bottom planing boat, flat raked transom for an outboard, 30 kn; KG 0.65 m assumed"
+                "Hard-chine deep-V planing boat (23° deadrise), flat raked transom for an outboard, 30 kn; KG 0.65 m assumed"
             }
             Example::Container230m => "Bulbous bow and transom stern, KCS particulars, own lines",
             Example::Trawler22m => {

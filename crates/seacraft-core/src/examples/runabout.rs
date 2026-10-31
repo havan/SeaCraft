@@ -1,16 +1,15 @@
-//! 6.5 m hard-chine outboard runabout: a V-bottom planing boat with a flat
-//! transom raked 12° for an outboard bracket, a raked stem and a flat deck.
+//! 6.5 m hard-chine outboard runabout: a true deep-V planing boat (23°
+//! deadrise constant over the aft half to the flat transom raked 12° for an
+//! outboard bracket, warped forward to the stem), hard chines and a flat deck.
 //!
 //! Targets (examples board, Opus table; "representative of production
-//! boats of this size", not any one model): LWL 5.6 m, BWL 2.2 m (BOA
-//! 2.5 m), T 0.38 m, D 1.25 m, Δ 1.9 t, Cb 0.39, Cp 0.68, Cm 0.58, Cwp 0.80,
-//! LCB 42 % LWL from aft, 30 kn, KG 0.65 m (assumed, about half the depth).
+//! boats of this size", not any one model; updated for true deep-V): LWL 5.6 m,
+//! BWL 2.0 m (BOA 2.5 m), T 0.425 m, D 1.25 m, Δ 1.9 t, Cb 0.39, Cp 0.80,
+//! Cm 0.49, Cwp 0.80, LCB 39.5 % LWL from aft, 30 kn, KG 0.65 m (assumed).
 //!
-//! Cm 0.58 at BWL 2.2 m and T 0.38 m leaves room for about 17° of deadrise
-//! amidships with the chine below the waterline: a 24° bottom there puts the
-//! chine above the waterline and Cm near 0.5. The net follows the targets,
-//! so the bottom is a moderate V aft (≈17° at the transom and amidships)
-//! warping to a fine entry forward.
+//! A true deep-V bottom (23° deadrise) has a triangular section amidships
+//! with the chine near the waterline, giving Cm ≈ 0.49 and Cb ≈ 0.39 at
+//! the design draft T 0.425 m while carrying Δ 1.9 t displacement.
 //!
 //! Layers: Bottom (keel to chine), Topsides (chine to sheer), Transom, Deck.
 //! Creases: the chines, the sheer, the transom outline; the keel and the
@@ -18,7 +17,7 @@
 
 use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
-    plating, round_to_fef, settings, station_grid, Built, Example, GRP,
+    pin_crease_junctions, plating, round_to_fef, settings, station_grid, Built, Example, GRP,
 };
 use crate::loading::LoadingCondition;
 use crate::math::Vec3;
@@ -27,8 +26,8 @@ use crate::project::{Project, ReportSettings, Requirements};
 use crate::weather::BilgeKind;
 
 const LWL: f64 = 5.6;
-const BWL: f64 = 2.2;
-const T: f64 = 0.38;
+const BWL: f64 = 2.0;
+const T: f64 = 0.425;
 const DEPTH: f64 = 1.25;
 /// The example's KG above the keel (m), assumed.
 const KG: f64 = 0.65;
@@ -36,25 +35,25 @@ const SPEED_KN: f64 = 30.0;
 /// Transom rake from the vertical (top forward), degrees.
 const TRANSOM_RAKE_DEG: f64 = 12.0;
 /// Δ of the refined hull at T (t), measured at authoring time and frozen.
-const DESIGN_DISPLACEMENT_T: f64 = 1.922;
+const DESIGN_DISPLACEMENT_T: f64 = 1.918;
 /// LCB of the refined hull at T (model x, m), measured and frozen: the
 /// Design condition's LCG.
-const DESIGN_LCG: f64 = 2.337;
+const DESIGN_LCG: f64 = 2.225;
 
 /// Stations aft to forward: `(x, keel z, chine y, chine z, sheer y, sheer z)`.
 /// Station 0 is the transom (its `x` is where the transom plane meets the
 /// waterline); the stem is [`STEM`].
 const STATIONS: [(f64, f64, f64, f64, f64, f64); 10] = [
-    (0.00, 0.140, 0.94, 0.355, 1.15, 1.15),
-    (0.60, 0.090, 1.00, 0.330, 1.20, 1.16),
-    (1.20, 0.040, 1.05, 0.310, 1.23, 1.17),
-    (1.90, 0.008, 1.08, 0.297, 1.25, 1.18),
-    (2.60, 0.000, 1.09, 0.295, 1.25, 1.20),
-    (3.30, 0.008, 1.06, 0.320, 1.24, 1.23),
-    (3.95, 0.035, 0.97, 0.380, 1.18, 1.27),
-    (4.50, 0.085, 0.80, 0.450, 1.06, 1.31),
-    (5.00, 0.165, 0.57, 0.540, 0.86, 1.35),
-    (5.40, 0.270, 0.30, 0.620, 0.56, 1.39),
+    (0.00, 0.000, 0.98, 0.4160, 1.15, 1.15),
+    (0.60, 0.000, 1.03, 0.4372, 1.20, 1.16),
+    (1.20, 0.000, 1.07, 0.4542, 1.23, 1.17),
+    (1.90, 0.000, 1.10, 0.4669, 1.25, 1.18),
+    (2.60, 0.000, 1.11, 0.4712, 1.25, 1.20),
+    (3.30, 0.005, 1.09, 0.4850, 1.24, 1.23),
+    (3.95, 0.025, 1.02, 0.5350, 1.18, 1.27),
+    (4.50, 0.075, 0.88, 0.5900, 1.06, 1.31),
+    (5.00, 0.155, 0.65, 0.6600, 0.86, 1.35),
+    (5.40, 0.250, 0.35, 0.7000, 0.56, 1.39),
 ];
 
 /// The stem profile on the centreline, forefoot to stem head: `(x, z)` for
@@ -62,7 +61,7 @@ const STATIONS: [(f64, f64, f64, f64, f64, f64); 10] = [
 const STEM: [(f64, f64); 5] = [
     (5.585, 0.36),
     (5.665, 0.46),
-    (5.78, 0.62),
+    (5.78, 0.72),
     (6.05, 1.00),
     (6.42, 1.42),
 ];
@@ -116,6 +115,7 @@ pub(super) fn build() -> Built {
     crease_path(&mut s, &chine);
     crease_path(&mut s, &sheer);
     crease_loop(&mut s, &transom);
+    pin_crease_junctions(&mut s);
 
     let project = Project {
         kg: Some(KG),
@@ -127,7 +127,7 @@ pub(super) fn build() -> Built {
             depth: Some(DEPTH),
             displacement_t: Some(1.9),
             cb: Some(0.39),
-            lcb_frac: Some(0.42),
+            lcb_frac: Some(0.395),
             design_speed_kn: Some(SPEED_KN),
             kg: None,
         }),
@@ -163,6 +163,14 @@ mod tests {
     use super::super::checks;
     use super::*;
 
+    /// The refined transom keeps its chine and sheer corners, and the
+    /// bottom and topsides do not roll in towards it.
+    #[test]
+    fn runabout_keeps_its_transom_outline() {
+        let (s, _) = build();
+        checks::assert_transom_outline(&s, STATIONS[1].0);
+    }
+
     #[test]
     fn runabout_meets_the_board_targets() {
         let (s, _) = build();
@@ -175,10 +183,10 @@ mod tests {
                 bwl: BWL,
                 displacement_t: 1.9,
                 cb: 0.39,
-                cp: 0.68,
-                cm: 0.58,
+                cp: 0.80,
+                cm: 0.49,
                 cwp: 0.80,
-                lcb_frac: 0.42,
+                lcb_frac: 0.395,
             },
         );
         // The frozen Design displacement and LCG are the measured ones.

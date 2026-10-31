@@ -6,8 +6,8 @@
       "name": "Design",
       "lightship": {
         "name": "Lightship (hull, console, 150 hp outboard)",
-        "mass_t": 1.432,
-        "x": 2.346,
+        "mass_t": 1.428,
+        "x": 2.196,
         "y": 0.0,
         "z": 0.607
       },
@@ -45,7 +45,7 @@
   "windage": [],
   "report": {
     "kg": 0.65,
-    "lcg_x": 2.337,
+    "lcg_x": 2.225,
     "speeds_kn": [
       15.0,
       20.0,
@@ -58,12 +58,12 @@
   "requirements": {
     "name": "6.5 m outboard runabout",
     "lwl": 5.6,
-    "bwl": 2.2,
-    "draft": 0.38,
+    "bwl": 2.0,
+    "draft": 0.425,
     "depth": 1.25,
     "displacement_t": 1.9,
     "cb": 0.39,
-    "lcb_frac": 0.42,
+    "lcb_frac": 0.395,
     "design_speed_kn": 30.0
   },
   "kg": 0.65

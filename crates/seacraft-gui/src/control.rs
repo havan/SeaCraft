@@ -3779,7 +3779,7 @@ mod tests {
         );
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["kg"], 0.65, "the example's KG reaches the dock");
-        assert_eq!(r["result"]["draft"], 0.38);
+        assert_eq!(r["result"]["draft"], 0.425);
         assert_eq!(app.project().kg, Some(0.65));
         assert_eq!(app.undo_len(), undo_before + 1, "one undo step");
         for bad in [
