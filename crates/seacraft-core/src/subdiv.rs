@@ -233,7 +233,10 @@ impl SubdivMesh {
         let mut out = old.clone();
 
         for i in 0..n {
-            let kind = if is_boundary[i] || self.hints.get(i) == Some(&VertexKind::Corner) {
+            let kind = if is_boundary[i]
+                || self.hints.get(i) == Some(&VertexKind::Corner)
+                || crease_nbrs[i].len() >= 3
+            {
                 VertexKind::Corner
             } else if self.hints.get(i) == Some(&VertexKind::Crease) || crease_nbrs[i].len() == 2 {
                 VertexKind::Crease
@@ -248,7 +251,8 @@ impl SubdivMesh {
                     // crease edges (a chine meeting the transom and the sheer)
                     // the weights would sum above one and the vertex would be
                     // pushed outward on every refinement level, so such a
-                    // junction stays pinned at its old position instead.
+                    // junction is classified as Corner above and stays pinned
+                    // at its old position instead.
                     let nb = &crease_nbrs[i];
                     if nb.len() == 2 {
                         out[i] = old[i] * 0.5 + old[nb[0]] * 0.25 + old[nb[1]] * 0.25;
@@ -589,6 +593,109 @@ mod tests {
             counts.values().all(|&c| c == 2),
             "open edges: {}",
             counts.values().filter(|&&c| c != 2).count()
+        );
+    }
+
+    #[test]
+    fn creased_box_with_regular_vertices_preserves_corners_at_level_3() {
+        // A closed 6-quad box with all 12 edges creased, but control points left
+        // as `VertexKind::Regular` (as produced by crease tools or imported .fef).
+        // Each corner has 3 incident crease edges; subdivision must pin it as a
+        // Corner so the corners do not shrink inward and the box stays exact.
+        let mut s = box_surface(false);
+        s.rebuild_edges();
+        for e in s.edges.iter_mut() {
+            e.crease = true;
+        }
+        for p in &s.points {
+            assert_eq!(p.kind, VertexKind::Regular);
+        }
+        let m = evaluate(
+            &s,
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        let (min, max) = m.extents();
+        assert!(
+            (min - Vec3::new(0.0, 0.0, 0.0)).length() < 1e-9,
+            "min {:?}",
+            min
+        );
+        assert!(
+            (max - Vec3::new(2.0, 1.0, 1.0)).length() < 1e-9,
+            "max {:?}",
+            max
+        );
+        // Every original control point must remain within 1 mm (< 1e-9) at level 3.
+        for p in &s.points {
+            let closest = m
+                .verts
+                .iter()
+                .map(|v| (*v - p.p).length())
+                .fold(f64::INFINITY, f64::min);
+            assert!(closest < 1e-6, "corner {:?} drifted by {closest} m", p.p);
+        }
+        let mut vol = 0.0;
+        for t in m.triangles() {
+            let (a, b, c) = (m.verts[t[0]], m.verts[t[1]], m.verts[t[2]]);
+            vol += a.dot(b.cross(c)) / 6.0;
+        }
+        assert!((vol.abs() - 2.0).abs() < 1e-6, "volume {}", vol);
+    }
+
+    #[test]
+    fn crease_tool_preserves_transom_corners_with_regular_vertices() {
+        // Build a transom-like 3-patch corner: a bottom face, side face,
+        // and transom face sharing vertex 3 at (0, 1, 0).
+        // All vertices are `VertexKind::Regular`. Use `topology::set_crease` to
+        // crease the 3 edges meeting at vertex 3 (transom bottom, transom side, chine).
+        let mut s = Surface::new();
+        let pts = [
+            Vec3::new(0.0, 0.0, 0.0), // 0
+            Vec3::new(1.0, 0.0, 0.0), // 1
+            Vec3::new(1.0, 1.0, 0.0), // 2
+            Vec3::new(0.0, 1.0, 0.0), // 3: transom chine corner
+            Vec3::new(0.0, 1.0, 1.0), // 4
+            Vec3::new(1.0, 1.0, 1.0), // 5
+            Vec3::new(0.0, 0.0, 1.0), // 6
+        ];
+        for p in pts {
+            s.add_point(p);
+        }
+        // Faces:
+        s.add_face(vec![0, 1, 2, 3], 0); // bottom face
+        s.add_face(vec![3, 2, 5, 4], 0); // side face
+        s.add_face(vec![0, 3, 4, 6], 0); // transom face
+        s.rebuild_edges();
+
+        // Vertex 3 has 3 incident edges, each shared between two faces (no boundaries).
+        // Crease all three with topology::set_crease:
+        crate::topology::set_crease(&mut s, 0, 3, true).unwrap();
+        crate::topology::set_crease(&mut s, 3, 4, true).unwrap();
+        crate::topology::set_crease(&mut s, 2, 3, true).unwrap();
+
+        // Control point 3 remains Regular:
+        assert_eq!(s.points[3].kind, VertexKind::Regular);
+
+        let m = evaluate(
+            &s,
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+
+        // Control point 3 at (0, 1, 0) must stay within 1 mm at level 3:
+        let corner_dist = m
+            .verts
+            .iter()
+            .map(|v| (*v - s.points[3].p).length())
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            corner_dist < 0.001,
+            "transom corner drifted by {corner_dist} m (limit is 1 mm)"
         );
     }
 }

@@ -236,13 +236,16 @@ These were real failures in this codebase; the fixes are load-bearing.
   the draft searches stop expanding once the hull is fully submerged. The
   check is the open box against the half-full-box GZ oracle and its
   overload (`docs/oracles.md` §22).
-* **A crease junction left `Regular` is smoothed away.** Where three or
+* **A crease junction left `Regular` was smoothed away.** Where three or
   more crease edges meet (chine or sheer meeting a transom outline) the
-  point must be a `Corner`; a `Regular` one was averaged as a smooth point
-  and rounded the runabout's transom chine corner off by 0.2 m, rolling the
-  sides in towards the transom. The examples call
-  `examples::pin_crease_junctions` after creasing; the check is
-  `examples::checks::assert_transom_outline`.
+  point must be pinned as a `Corner`; previously a `Regular` one was averaged
+  as a smooth point and rounded the runabout's transom chine corner off by
+  0.2 m, rolling the sides in towards the transom. `subdiv.rs` now automatically
+  treats any vertex with three or more incident crease edges as a `Corner`
+  during refinement, so user-creased models and `.fef` imports preserve sharp
+  corners regardless of stored vertex kind. The checks are
+  `subdiv::tests::creased_box_with_regular_vertices_preserves_corners_at_level_3`
+  and `examples::checks::assert_transom_outline`.
 * **The free-trim residual falls as the trim grows.** Bow up moves the LCB
   aft, so ordering the secant bracket by trim mixed its signs.
   `stability::secant_on_trim` (shared by intact and damage) keeps the bracket
