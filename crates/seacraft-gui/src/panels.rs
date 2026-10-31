@@ -653,10 +653,30 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
     out
 }
 
+/// Format a signed floating-point number with explicit sign for positive values
+/// (`+1.234`), minus for negative values (`-1.234`), and unsigned zero (`0.000`)
+/// whenever the value rounds to zero at the given decimal precision.
+pub fn format_signed(val: f64, decimals: usize) -> String {
+    let p = 10f64.powi(decimals as i32);
+    if (val * p).round().abs() == 0.0 {
+        format!("{:.prec$}", 0.0, prec = decimals)
+    } else {
+        format!("{:+.*}", decimals, val)
+    }
+}
+
+/// Format a dimensional or volumetric readout: 3 decimals below 10, 2 from
+/// 10 up, so a group of readouts shares one precision rule.
+pub fn format_form_value(val: f64) -> String {
+    let abs = val.abs();
+    let decimals = if abs >= 10.0 { 2 } else { 3 };
+    format!("{val:.decimals$}")
+}
+
 /// GM at `kg` as a readout value: a dash while KG is unset.
 pub fn gm_text(h: &Hydrostatics, kg: Option<f64>) -> String {
     match kg {
-        Some(kg) => format!("{:+.3}", h.gm(kg)),
+        Some(kg) => format_signed(h.gm(kg), 3),
         None => "—".to_owned(),
     }
 }
@@ -670,7 +690,7 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readou
             vec![
                 r("Δ", format!("{:.2}", h.displacement_t), "t"),
                 r("T", format!("{:.3}", h.draft), "m"),
-                r("trim", format!("{:+.3}", h.trim_m), "m"),
+                r("trim", format_signed(h.trim_m, 3), "m"),
             ],
             vec![
                 r("GM", gm_text(h, kg), "m"),
@@ -749,10 +769,15 @@ pub fn live_strip(
                 );
             }
             if r == 1 {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
                 let label = if wide { "⤡ narrow" } else { "⤢ wide" };
                 toggle = ui
-                    .selectable_label(wide, label)
-                    .on_hover_text("Widen the dock for plots and tables")
+                    .add(egui::Button::new(label).selected(wide))
+                    .on_hover_text(
+                        "Toggle dock width between standard and wide layout for plots and tables",
+                    )
                     .clicked();
             }
         });
@@ -794,13 +819,13 @@ impl TargetReadout {
             format!(" {}", self.unit)
         };
         format!(
-            "{} {:.*}{unit} ({:.*} {:+.1} %)",
+            "{} {:.*}{unit} ({:.*} {} %)",
             self.name,
             self.decimals,
             self.actual,
             self.decimals,
             self.target,
-            self.deviation_pct()
+            format_signed(self.deviation_pct(), 1)
         )
     }
 }
@@ -819,7 +844,13 @@ pub fn target_readouts(h: &Hydrostatics, req: &Requirements) -> Vec<TargetReadou
         ("BWL", req.bwl, h.bwl, 2, "m"),
         ("T", req.draft, h.draft, 3, "m"),
         ("Cb", req.cb, h.block_coefficient, 3, ""),
-        ("LCB", req.lcb_frac.map(|f| 100.0 * f), lcb_pct, 1, "%"),
+        (
+            "LCB (%Lwl)",
+            req.lcb_frac.map(|f| 100.0 * f),
+            lcb_pct,
+            1,
+            "%",
+        ),
     ];
     rows.into_iter()
         .filter_map(|(name, target, actual, decimals, unit)| {
@@ -867,7 +898,10 @@ pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
                 push(format!(" {}", t.unit), theme::TEXT_MUTED);
             }
             push(format!(" ({:.*}", t.decimals, t.target), theme::TARGET);
-            push(format!(" {:+.1} %", t.deviation_pct()), deviation);
+            push(
+                format!(" {} %", format_signed(t.deviation_pct(), 1)),
+                deviation,
+            );
             push(")".to_owned(), theme::TARGET);
             // An item never wraps inside itself: one that does not fit the
             // rest of the row starts the next one.
@@ -1080,8 +1114,8 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
         ReadoutGroup {
             title: "Volume & form",
             rows: vec![
-                r("volume", format!("{:.3}", h.volume_m3), "m³"),
-                r("displacement", format!("{:.2}", h.displacement_t), "t"),
+                r("volume", format_form_value(h.volume_m3), "m³"),
+                r("displacement", format_form_value(h.displacement_t), "t"),
                 r("Cb", format!("{:.3}", h.block_coefficient), ""),
                 r("Cp", format!("{:.3}", h.prismatic_coefficient), ""),
                 r("Cm", format!("{:.3}", h.midship_coefficient), ""),
@@ -1111,9 +1145,9 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
             rows: vec![
                 r("LWL", format!("{:.2}", h.lwl), "m"),
                 r("BWL", format!("{:.2}", h.bwl), "m"),
-                r("wetted", format!("{:.2}", h.wetted_surface_m2), "m²"),
-                r("waterplane", format!("{:.2}", h.waterplane_area_m2), "m²"),
-                r("midship", format!("{:.3}", h.mainframe_area_m2), "m²"),
+                r("wetted", format_form_value(h.wetted_surface_m2), "m²"),
+                r("waterplane", format_form_value(h.waterplane_area_m2), "m²"),
+                r("midship", format_form_value(h.mainframe_area_m2), "m²"),
             ],
         },
     ]
@@ -1172,12 +1206,17 @@ fn grouped_grid(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], compact: b
 /// (in a column at least [`theme::UNIT_WIDTH`] wide when `unit_column`).
 fn readout_cells(ui: &mut egui::Ui, rows: &[Readout], width: usize, unit_column: bool) {
     for r in rows {
-        ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
-        ui.label(
+        let name_label = ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
+        let val_label = ui.label(
             egui::RichText::new(format!("{:>width$}", r.value))
                 .monospace()
                 .color(theme::TEXT_PRIMARY),
         );
+        if matches!(r.name, "Cb" | "Cp" | "Cm") {
+            let note = "Calculated over total draft T including keel; canoe-body coefficients may be higher.";
+            name_label.on_hover_text(note);
+            val_label.on_hover_text(note);
+        }
         if unit_column {
             ui.horizontal(|ui| {
                 ui.set_min_width(theme::UNIT_WIDTH);
@@ -1209,11 +1248,11 @@ pub fn damage_rows(d: &DamageResult) -> Vec<Readout> {
         r("Intact draft", format!("{:.3}", d.intact_draft), "m"),
         r("Damaged draft", format!("{:.3}", d.draft), "m"),
         r("Sinkage", format!("{:.3}", d.sinkage_m), "m"),
-        r("Damaged heel", format!("{:+.1}", d.heel_deg), "°"),
+        r("Damaged heel", format_signed(d.heel_deg, 1), "°"),
         r("Net buoyant vol.", format!("{:.3}", d.net_volume_m3), "m³"),
         r("KG", format!("{:.3}", d.kg), "m"),
-        r("Intact trim", format!("{:+.3}", d.intact_trim_m), "m"),
-        r("Damaged trim", format!("{:+.3}", d.trim_m), "m"),
+        r("Intact trim", format_signed(d.intact_trim_m, 3), "m"),
+        r("Damaged trim", format_signed(d.trim_m, 3), "m"),
         match d.freeboard_m {
             Some(fb) => r("Min freeboard", format!("{fb:.3}"), "m"),
             None => r("Min freeboard", "-".to_string(), ""),
@@ -1230,16 +1269,16 @@ pub fn loading_rows(l: &LoadingResult) -> Vec<Readout> {
     vec![
         r("Δ (mass)", format!("{:.3}", l.displacement_t), "t"),
         r("LCG", format!("{:.3}", l.lcg), "m"),
-        r("TCG", format!("{:+.3}", l.tcg), "m"),
+        r("TCG", format_signed(l.tcg, 3), "m"),
         r("KG (solid)", format!("{:.3}", l.kg_solid), "m"),
         r("FSM", format!("{:.2}", l.fsm_t_m), "t·m"),
         r("FSC", format!("{:.3}", l.fsc_m), "m"),
         r("KG (fluid)", format!("{:.3}", l.kg_fluid), "m"),
         r("Draft", format!("{:.3}", l.draft), "m"),
-        r("Trim", format!("{:+.3}", l.trim_m), "m"),
-        r("List", format!("{:+.1}", l.list_deg), "°"),
-        r("GM (solid)", format!("{:+.3}", l.gm_solid), "m"),
-        r("GM (fluid)", format!("{:+.3}", l.gm_fluid), "m"),
+        r("Trim", format_signed(l.trim_m, 3), "m"),
+        r("List", format_signed(l.list_deg, 1), "°"),
+        r("GM (solid)", format_signed(l.gm_solid, 3), "m"),
+        r("GM (fluid)", format_signed(l.gm_fluid, 3), "m"),
     ]
 }
 
@@ -1384,7 +1423,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     egui::DragValue::new(&mut panel.options.draft)
                         .speed(0.01)
                         .range(0.0..=panel.limits.draft)
-                        .fixed_decimals(2)
+                        .fixed_decimals(3)
                         .suffix(" m"),
                 )
                 .changed();
@@ -1446,7 +1485,6 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                 .add(
                     egui::DragValue::new(&mut x)
                         .speed(0.01)
-                        .range(-50.0..=50.0)
                         .fixed_decimals(3)
                         .prefix("LCG ")
                         .suffix(" m"),
@@ -1936,23 +1974,26 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     ui.strong("Resistance prediction");
     ui.add_space(2.0);
 
-    egui::ComboBox::from_label("Method")
-        .selected_text(panel.state.method.label())
-        .show_ui(ui, |ui| {
-            for m in [
-                crate::app::ResistanceMethod::Holtrop,
-                crate::app::ResistanceMethod::Dsyhs,
-                crate::app::ResistanceMethod::Savitsky,
-                crate::app::ResistanceMethod::Michell,
-            ] {
-                if ui
-                    .selectable_value(&mut panel.state.method, m, m.label())
-                    .clicked()
-                {
-                    action = PerformanceAction::Changed;
+    ui.horizontal(|ui| {
+        ui.label("Method:");
+        egui::ComboBox::from_id_salt("perf_method")
+            .selected_text(panel.state.method.label())
+            .show_ui(ui, |ui| {
+                for m in [
+                    crate::app::ResistanceMethod::Holtrop,
+                    crate::app::ResistanceMethod::Dsyhs,
+                    crate::app::ResistanceMethod::Savitsky,
+                    crate::app::ResistanceMethod::Michell,
+                ] {
+                    if ui
+                        .selectable_value(&mut panel.state.method, m, m.label())
+                        .clicked()
+                    {
+                        action = PerformanceAction::Changed;
+                    }
                 }
-            }
-        });
+            });
+    });
 
     ui.horizontal(|ui| {
         ui.label("Speeds (kn):");
@@ -2028,11 +2069,13 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
                 .range(0.05..=1.0)
                 .prefix("kyy / Lwl: "),
         );
-        let pts_resp = ui.add(
-            egui::DragValue::new(&mut panel.state.points)
-                .range(5..=200)
-                .prefix("Points: "),
-        );
+        let pts_resp = ui
+            .add(
+                egui::DragValue::new(&mut panel.state.points)
+                    .range(5..=200)
+                    .prefix("Frequencies: "),
+            )
+            .on_hover_text("Number of encounter wave frequencies computed for the RAO");
         if kyy_resp.changed() || pts_resp.changed() {
             action = PerformanceAction::Changed;
         }
@@ -2427,6 +2470,15 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         }
     });
 
+    if panel.project.compartments.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "No compartments defined. Click '+ Add compartment' to create watertight divisions.",
+            )
+            .color(theme::TEXT_MUTED),
+        );
+    }
+
     let mut remove_comp = None;
     let mut renamed: Vec<(String, String)> = Vec::new();
     for (c_idx, comp) in panel.project.compartments.iter_mut().enumerate() {
@@ -2561,6 +2613,12 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 new_case = true;
             }
         });
+        ui.label(
+            egui::RichText::new(
+                "Click 'New' to create a damage case and evaluate damaged equilibrium.",
+            )
+            .color(theme::TEXT_MUTED),
+        );
     } else {
         if *panel.selected >= panel.project.damage_cases.len() {
             *panel.selected = panel.project.damage_cases.len() - 1;
@@ -3332,6 +3390,42 @@ pub fn nice_ticks(lo: f64, hi: f64) -> Vec<f64> {
     (i0..=i1).map(|i| i as f64 * step).collect()
 }
 
+/// Tick values on nice numbers (1, 2, 2.5 or 5 × 10ⁿ) that lie inside `[lo, hi]`.
+pub fn nice_ticks_inside(lo: f64, hi: f64) -> Vec<f64> {
+    let (lo, hi) = match (lo.is_finite(), hi.is_finite()) {
+        (true, true) if hi > lo => (lo, hi),
+        (true, _) => (lo, lo + 1.0),
+        _ => (0.0, 1.0),
+    };
+    let span = (hi - lo).max(1e-9);
+    let base = 10f64.powf(span.log10().floor() - 1.0);
+    let mut best: Option<(usize, f64, i64, i64)> = None;
+    for k in 0..4 {
+        for m in [1.0, 2.0, 2.5, 5.0] {
+            let step = m * base * 10f64.powi(k);
+            let i0 = (lo / step - 1e-9).ceil() as i64;
+            let i1 = (hi / step + 1e-9).floor() as i64;
+            let n = if i1 >= i0 { (i1 - i0 + 1) as usize } else { 0 };
+            let score = match n {
+                5 => 0,
+                4 => 1,
+                6 => 2,
+                3 => 3,
+                n => 4 + n.abs_diff(5),
+            };
+            if best.is_none_or(|b| score < b.0) {
+                best = Some((score, step, i0, i1));
+            }
+        }
+    }
+    let (_, step, i0, i1) = best.unwrap_or((0, 1.0, 0, 1));
+    if i1 >= i0 {
+        (i0..=i1).map(|i| i as f64 * step).collect()
+    } else {
+        vec![lo, hi]
+    }
+}
+
 /// Decimals that print every tick of `ticks` exactly.
 fn tick_decimals(ticks: &[f64]) -> usize {
     let step = match ticks {
@@ -3353,7 +3447,7 @@ fn tick_label(value: f64, decimals: usize, suffix: &str) -> String {
 }
 
 /// The geometry of one x/y plot: caption band, curve area, and the axis
-/// ticks the data was fitted to (the first and last tick are the axis ends).
+/// ticks the data was fitted to.
 /// Pure, so the layout can be tested without a frame.
 #[derive(Debug, Clone)]
 pub struct PlotAxes {
@@ -3361,6 +3455,8 @@ pub struct PlotAxes {
     pub area: egui::Rect,
     pub x_ticks: Vec<f64>,
     pub y_ticks: Vec<f64>,
+    pub x_bounds: (f64, f64),
+    pub y_bounds: (f64, f64),
     /// GZ plot: heel in degrees across, GZ in metres up, criteria dashed.
     pub gz: bool,
 }
@@ -3393,27 +3489,46 @@ impl PlotAxes {
                 }
             }
         }
+        let (x_bounds, x_ticks) = if gz {
+            let t = nice_ticks(x_min, x_max);
+            ((t[0], *t.last().unwrap_or(&40.0)), t)
+        } else {
+            let span = (x_max - x_min).max(1e-9);
+            let pad = 0.02 * span;
+            let lo = if x_min.abs() < 1e-9 { 0.0 } else { x_min - pad };
+            let hi = x_max + pad;
+            let ticks = nice_ticks_inside(lo, hi);
+            let b_lo = lo.min(ticks.first().copied().unwrap_or(lo));
+            let b_hi = hi.max(ticks.last().copied().unwrap_or(hi));
+            ((b_lo, b_hi), ticks)
+        };
+        let (y_bounds, y_ticks) = {
+            let t = nice_ticks(y_min, y_max);
+            let b_lo = if y_min >= 0.0 && t[0] <= 0.0 {
+                0.0
+            } else {
+                t[0]
+            };
+            let b_hi = *t.last().unwrap_or(&1.0);
+            ((b_lo, b_hi), t)
+        };
         Self {
             caption,
             area,
-            x_ticks: nice_ticks(x_min, x_max),
-            y_ticks: nice_ticks(y_min, y_max),
+            x_ticks,
+            y_ticks,
+            x_bounds,
+            y_bounds,
             gz,
         }
     }
 
     fn x_range(&self) -> (f64, f64) {
-        (
-            self.x_ticks.first().copied().unwrap_or(0.0),
-            self.x_ticks.last().copied().unwrap_or(1.0),
-        )
+        self.x_bounds
     }
 
     fn y_range(&self) -> (f64, f64) {
-        (
-            self.y_ticks.first().copied().unwrap_or(0.0),
-            self.y_ticks.last().copied().unwrap_or(1.0),
-        )
+        self.y_bounds
     }
 
     /// A data point on screen.
@@ -3456,8 +3571,7 @@ impl PlotAxes {
         let x_dec = tick_decimals(&self.x_ticks);
         let y_dec = tick_decimals(&self.y_ticks);
         let x_suffix = if self.gz { "°" } else { "" };
-        let last_x = self.x_ticks.len().saturating_sub(1);
-        for (i, &x) in self.x_ticks.iter().enumerate() {
+        for &x in &self.x_ticks {
             let sx = self.to_screen(x, y0).x;
             let colour = if x.abs() < 1e-12 {
                 theme::PLOT_AXIS
@@ -3468,12 +3582,12 @@ impl PlotAxes {
                 [egui::pos2(sx, area.top()), egui::pos2(sx, area.bottom())],
                 egui::Stroke::new(1.0, colour),
             );
-            // The end labels sit inside the axis span: the first starts at
-            // the y axis, right of the y labels that end 4 px before it, so
-            // the corner never collides; the last never leaves the plot.
-            let align = if i == 0 {
+            // The end labels sit inside the axis span: near the left edge
+            // start rightward so the corner never collides; near the right
+            // edge never leave the plot.
+            let align = if sx - area.left() < 18.0 {
                 egui::Align2::LEFT_TOP
-            } else if i == last_x {
+            } else if area.right() - sx < 18.0 {
                 egui::Align2::RIGHT_TOP
             } else {
                 egui::Align2::CENTER_TOP
@@ -3963,6 +4077,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     });
 
     if !cond.items.is_empty() {
+        let name_width = (ui.available_width() - 280.0).clamp(190.0, 320.0);
         egui::Grid::new("items_weights_grid")
             .num_columns(6)
             .striped(true)
@@ -3978,7 +4093,10 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 let mut remove_item = None;
                 for (i, item) in cond.items.iter_mut().enumerate() {
                     if ui
-                        .add_sized([140.0, 20.0], egui::TextEdit::singleline(&mut item.name))
+                        .add_sized(
+                            [name_width, 20.0],
+                            egui::TextEdit::singleline(&mut item.name),
+                        )
                         .changed()
                     {
                         action = LoadingAction::Changed;
@@ -4021,6 +4139,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     action = LoadingAction::Changed;
                 }
             });
+    } else {
+        ui.label(
+            egui::RichText::new(
+                "No deadweight items. Click '+ Add weight' to add cargo or equipment.",
+            )
+            .color(theme::TEXT_MUTED),
+        );
     }
 
     // Tanks grid
@@ -4045,6 +4170,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             action = LoadingAction::Changed;
         }
     });
+
+    if cond.tanks.is_empty() {
+        ui.label(
+            egui::RichText::new("No tanks defined. Click '+ Add tank' to add a liquid tank.")
+                .color(theme::TEXT_MUTED),
+        );
+    }
 
     let mut remove_tank = None;
     for (t_idx, tank) in cond.tanks.iter_mut().enumerate() {
@@ -4476,7 +4608,11 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                         });
                     }
 
-                    if ui.button("✖").clicked() {
+                    if ui
+                        .button("🗑")
+                        .on_hover_text("Remove windage item")
+                        .clicked()
+                    {
                         remove_idx = Some(i);
                     }
 
@@ -4541,42 +4677,32 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
         ui.small("from the loading panel's last Compute");
         ui.add_space(2.0);
 
-        egui::Grid::new("windage_weather_grid")
-            .num_columns(2)
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label("Hull lateral windage area:");
-                ui.label(format!("{:.2} m²", w.hull_windage_area_m2));
-                ui.end_row();
-
-                ui.label("Extra windage area:");
-                ui.label(format!("{:.2} m²", w.extra_windage_area_m2));
-                ui.end_row();
-
-                ui.label("Total windage area (A):");
-                ui.label(format!("{:.2} m²", w.area_m2));
-                ui.end_row();
-
-                ui.label("Vertical lever arm (Z):");
-                ui.label(format!("{:.2} m", w.z_m));
-                ui.end_row();
-
-                ui.label("Wind heeling lever (lw1):");
-                ui.label(format!("{:.3} m", w.lw1_m));
-                ui.end_row();
-
-                ui.label("Steady heel angle (φ0):");
-                ui.label(format!(
-                    "{:.1}° (lim {:.1}°)",
-                    w.phi0_deg.unwrap_or(0.0),
-                    w.phi0_limit_deg
-                ));
-                ui.end_row();
-
-                ui.label("Energy ratio (b/a):");
-                ui.label(format!("{:.2} (req ≥1.0)", w.area_ratio));
-                ui.end_row();
-            });
+        let summary_rows = [
+            Readout::new(
+                "Hull lateral windage area",
+                format!("{:.2}", w.hull_windage_area_m2),
+                "m²",
+            ),
+            Readout::new(
+                "Extra windage area",
+                format!("{:.2}", w.extra_windage_area_m2),
+                "m²",
+            ),
+            Readout::new("Total windage area (A)", format!("{:.2}", w.area_m2), "m²"),
+            Readout::new("Vertical lever arm (Z)", format!("{:.2}", w.z_m), "m"),
+            Readout::new("Wind heeling lever (lw1)", format!("{:.3}", w.lw1_m), "m"),
+            Readout::new(
+                "Steady heel angle (φ0)",
+                format!("{:.1}", w.phi0_deg.unwrap_or(0.0)),
+                "° (lim 16°)",
+            ),
+            Readout::new(
+                "Energy ratio (b/a)",
+                format!("{:.2}", w.area_ratio),
+                "(req ≥1.0)",
+            ),
+        ];
+        readouts(ui, "windage_weather_grid", &summary_rows);
     } else {
         ui.label("Compute a loading condition to check the weather criterion");
     }
@@ -5096,8 +5222,11 @@ mod tests {
         // In the grouped order; the old combined "LWL / BWL" row is two
         // rows at the same precision.
         vec![
-            ("volume", format!("{:.3} m³", h.volume_m3)),
-            ("displacement", format!("{:.2} t", h.displacement_t)),
+            ("volume", format!("{} m³", format_form_value(h.volume_m3))),
+            (
+                "displacement",
+                format!("{} t", format_form_value(h.displacement_t)),
+            ),
             ("Cb", format!("{:.3}", h.block_coefficient)),
             ("Cp", format!("{:.3}", h.prismatic_coefficient)),
             ("Cm", format!("{:.3}", h.midship_coefficient)),
@@ -5112,9 +5241,18 @@ mod tests {
             ("MTC", format!("{:.3} t·m/cm", mtc)),
             ("LWL", format!("{:.2} m", h.lwl)),
             ("BWL", format!("{:.2} m", h.bwl)),
-            ("wetted", format!("{:.2} m²", h.wetted_surface_m2)),
-            ("waterplane", format!("{:.2} m²", h.waterplane_area_m2)),
-            ("midship", format!("{:.3} m²", h.mainframe_area_m2)),
+            (
+                "wetted",
+                format!("{} m²", format_form_value(h.wetted_surface_m2)),
+            ),
+            (
+                "waterplane",
+                format!("{} m²", format_form_value(h.waterplane_area_m2)),
+            ),
+            (
+                "midship",
+                format!("{} m²", format_form_value(h.mainframe_area_m2)),
+            ),
         ]
     }
 
@@ -6340,5 +6478,109 @@ mod tests {
         let text = painted_text(&out.shapes);
         let shown = format!("{:.2} m", want.1);
         assert!(text.iter().any(|(t, _)| *t == shown), "{shown} in {text:?}");
+    }
+
+    #[test]
+    fn signed_zero_formatting_suppresses_negative_and_positive_zero() {
+        assert_eq!(format_signed(0.0, 3), "0.000");
+        assert_eq!(format_signed(-0.0, 3), "0.000");
+        assert_eq!(format_signed(-0.00001, 3), "0.000");
+        assert_eq!(format_signed(0.00001, 3), "0.000");
+        assert_eq!(format_signed(-0.00049, 3), "0.000");
+        assert_eq!(format_signed(0.00049, 3), "0.000");
+        assert_eq!(format_signed(0.001, 3), "+0.001");
+        assert_eq!(format_signed(-0.001, 3), "-0.001");
+        assert_eq!(format_signed(1.234, 3), "+1.234");
+        assert_eq!(format_signed(-1.234, 3), "-1.234");
+        assert_eq!(format_signed(-0.02, 1), "0.0");
+        assert_eq!(format_signed(0.02, 1), "0.0");
+        assert_eq!(format_signed(1.5, 1), "+1.5");
+        assert_eq!(format_signed(-1.5, 1), "-1.5");
+    }
+
+    #[test]
+    fn free_trim_on_container_230m_keeps_lcg_at_its_lcb_without_clamp() {
+        let (surface, _) =
+            seacraft_core::examples::build(seacraft_core::examples::Example::Container230m)
+                .unwrap();
+        let mut options = seacraft_core::hydro::HydroOptions::from_surface(
+            &surface,
+            seacraft_core::subdiv::SubdivisionOptions {
+                level: 1,
+                mode: seacraft_core::subdiv::SubdivisionMode::Loop,
+            },
+        );
+        let h = seacraft_core::hydro::compute(&surface, &options);
+        assert!(h.lcb.x > 100.0, "LCB {} must be > 100 m", h.lcb.x);
+        let (mut kg, mut free_trim, mut lcg) = (Some(15.0), true, Some(h.lcb.x));
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(360.0, 2000.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(input, |ui| {
+            hydrostatics(
+                ui,
+                HydroPanel {
+                    options: &mut options,
+                    kg: &mut kg,
+                    kg_estimate: false,
+                    limits: HydroLimits::default(),
+                    free_trim: &mut free_trim,
+                    lcg: &mut lcg,
+                    result: Some(&h),
+                    stale: false,
+                    busy: false,
+                    curves: None,
+                    curves_stale: false,
+                },
+            );
+        });
+        let texts = painted_texts(&out.shapes);
+        let lcg_fmt = format!("{:.3}", h.lcb.x);
+        assert!(
+            texts.iter().any(|t| t.0.contains(&lcg_fmt)),
+            "LCB value {lcg_fmt} should be visible in texts: {:?}",
+            texts.iter().map(|t| &t.0).collect::<Vec<_>>()
+        );
+        assert_eq!(lcg, Some(h.lcb.x), "LCG was clamped from {}", h.lcb.x);
+    }
+
+    #[test]
+    fn plot_axes_fit_does_not_waste_width_on_negative_transom() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 150.0));
+        // Container-like SAC: stations from -3.0 to 230.0
+        let series = vec![(
+            "SAC".to_string(),
+            vec![(-3.0, 0.0), (100.0, 340.0), (230.0, 0.0)],
+        )];
+        let axes = PlotAxes::fit(rect, &series, false);
+        let (x0, x1) = axes.x_range();
+        assert!(
+            x0 > -50.0,
+            "axis started too far negative at {x0} (wanted near -3, not -100)"
+        );
+        assert!(
+            !axes.x_ticks.contains(&-100.0),
+            "ticks contained -100: {:?}",
+            axes.x_ticks
+        );
+        assert!(
+            axes.x_ticks.contains(&0.0),
+            "ticks should include 0: {:?}",
+            axes.x_ticks
+        );
+        // Wasted width must be <= 10 %:
+        let data_width = 230.0 - (-3.0);
+        let axis_width = x1 - x0;
+        let wasted_ratio = (axis_width - data_width) / axis_width;
+        assert!(
+            wasted_ratio <= 0.10,
+            "wasted width ratio {wasted_ratio:.3} exceeds 10% (axis {x0}..{x1}, data -3..230)"
+        );
     }
 }
