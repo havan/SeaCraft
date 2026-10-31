@@ -727,6 +727,101 @@ pub struct DsyhsInput {
     pub viscosity: f64,
 }
 
+/// Share of the largest piece's submerged volume below which a closed piece
+/// of the hull is an appendage, not a hull of its own (a catamaran's two
+/// demi-hulls both stay).
+const APPENDAGE_VOLUME_SHARE: f64 = 0.15;
+
+/// The hull without its appendages, or `None` when it has none.
+///
+/// The refined hull is split into its connected pieces, vertices welded by
+/// position (a mirrored half joins its other half on the centreline). A
+/// piece is an appendage when it is closed — every edge between two of its
+/// triangles — and floats less than [`APPENDAGE_VOLUME_SHARE`] of the
+/// largest piece below `wp`. Open pieces are never dropped: a hull built of
+/// layers that do not share their boundary vertices is open piece by piece,
+/// and their volumes mean nothing alone.
+pub fn canoe_body(hull: &Hull, wp: &crate::math::Plane) -> Option<Hull> {
+    use std::collections::HashMap;
+    let key = |v: crate::math::Vec3| {
+        let q = |c: f64| (c * 1e6).round() as i64;
+        (q(v.x), q(v.y), q(v.z))
+    };
+    let mut ids: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    let welded: Vec<usize> = hull
+        .verts
+        .iter()
+        .map(|&v| {
+            let n = ids.len();
+            *ids.entry(key(v)).or_insert(n)
+        })
+        .collect();
+    let mut parent: Vec<usize> = (0..ids.len()).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for t in &hull.tris {
+        let a = find(&mut parent, welded[t[0]]);
+        for &v in &t[1..] {
+            let b = find(&mut parent, welded[v]);
+            parent[b] = a;
+        }
+    }
+    let mut pieces: HashMap<usize, Vec<[usize; 3]>> = HashMap::new();
+    for t in &hull.tris {
+        let root = find(&mut parent, welded[t[0]]);
+        pieces.entry(root).or_default().push(*t);
+    }
+    if pieces.len() < 2 {
+        return None;
+    }
+    let closed = |tris: &[[usize; 3]]| {
+        let mut edges: HashMap<(usize, usize), u32> = HashMap::new();
+        for t in tris {
+            for i in 0..3 {
+                let (a, b) = (welded[t[i]], welded[t[(i + 1) % 3]]);
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        edges.values().all(|&n| n == 2)
+    };
+    let volume = |tris: &[[usize; 3]]| hydro::integrate(&hull.verts, tris, wp).0;
+    let sized: Vec<(f64, bool, Vec<[usize; 3]>)> = pieces
+        .into_values()
+        .map(|tris| (volume(&tris), closed(&tris), tris))
+        .collect();
+    let largest = sized.iter().map(|p| p.0).fold(0.0, f64::max);
+    let mut tris = Vec::new();
+    let mut dropped = false;
+    for (v, closed, piece) in sized {
+        if closed && v < APPENDAGE_VOLUME_SHARE * largest {
+            dropped = true;
+        } else {
+            tris.extend(piece);
+        }
+    }
+    if !dropped || tris.is_empty() {
+        return None;
+    }
+    let keel = tris
+        .iter()
+        .flatten()
+        .map(|&i| hull.verts[i].z)
+        .fold(f64::INFINITY, f64::min);
+    Some(Hull {
+        verts: hull.verts.clone(),
+        tris,
+        keel,
+        length: hull.length,
+        model_min: hull.model_min,
+        model_max: hull.model_max,
+    })
+}
+
 impl DsyhsInput {
     /// Measure DSYHS input numbers from a hull at its design condition.
     ///
@@ -734,7 +829,29 @@ impl DsyhsInput {
     /// y points to starboard, and z points up.
     /// The Forward Perpendicular (FPP) is at `x_max` of the design waterline cut.
     /// Distances aft of FPP are therefore `x_max - x`.
+    ///
+    /// The series regresses on the *canoe body*: a fin keel, a rudder or a
+    /// skeg modelled as a closed shell of its own (no vertex shared with the
+    /// hull, as FREE!ship appendage layers usually are) is measured out —
+    /// see [`canoe_body`] — and `draft_canoe` is the canoe body's draft, not
+    /// the total draft to the fin's tip. A hull without such shells is
+    /// measured as it is.
     pub fn measure(hull: &Hull, opts: &HydroOptions) -> Option<Self> {
+        if opts.draft <= 0.0 {
+            return None;
+        }
+        let wp =
+            hydro::waterplane_for(hull.keel, hull.length, opts.draft, opts.trim, opts.heel_deg);
+        if let Some(canoe) = canoe_body(hull, &wp) {
+            // The same waterplane: `waterplane_for` places it at keel + draft.
+            let mut o = opts.clone();
+            o.draft = opts.draft + hull.keel - canoe.keel;
+            return Self::measure_hull(&canoe, &o);
+        }
+        Self::measure_hull(hull, opts)
+    }
+
+    fn measure_hull(hull: &Hull, opts: &HydroOptions) -> Option<Self> {
         let mut o = opts.clone();
         o.stations = 0;
         if o.draft <= 0.0 {
@@ -1462,6 +1579,45 @@ mod tests {
         assert!(w.iter().any(|s| s.contains("Cp")), "{w:?}");
         assert!(w.iter().any(|s| s.contains("L/B")), "{w:?}");
         assert!(w.iter().any(|s| s.contains("B/T")), "{w:?}");
+    }
+
+    /// R8-2 A07. DSYHS regresses on the canoe body. The 10 m yacht floats
+    /// at T = 1.85 m on its fin; its canoe body draws Tc = 0.45 m. The fin
+    /// and rudder are closed shells of their own, so they are measured out:
+    /// Tc, not T, and B/Tc ≈ 6.4 inside the series' range. A hull without
+    /// separate appendages (the demo) is measured as it is.
+    #[test]
+    fn dsyhs_measures_the_canoe_body_without_the_fin_and_rudder() {
+        let level3 = SubdivisionOptions {
+            level: 3,
+            mode: crate::subdiv::SubdivisionMode::Loop,
+        };
+        let (s, _) = crate::examples::build(crate::examples::Example::Yacht10m).unwrap();
+        let hull = Hull::new(&s, level3);
+        let mut opts = HydroOptions::from_surface(&s, level3);
+        opts.draft = 1.85;
+        let whole = hull.hydrostatics(&opts);
+        let d = DsyhsInput::measure(&hull, &opts).expect("measures");
+        assert!((d.draft_canoe - 0.45).abs() < 1e-6, "Tc {}", d.draft_canoe);
+        assert!(
+            d.volume_m3 < whole.volume_m3,
+            "{} vs {}",
+            d.volume_m3,
+            whole.volume_m3
+        );
+        assert!(
+            !d.warnings().iter().any(|w| w.contains("B/Tc")),
+            "{:?}",
+            d.warnings()
+        );
+
+        let demo = crate::demo::demo_hull(false);
+        let hull = Hull::new(&demo, level3);
+        let mut opts = HydroOptions::from_surface(&demo, level3);
+        opts.draft = 0.62;
+        let d = DsyhsInput::measure(&hull, &opts).expect("measures");
+        assert_eq!(d.draft_canoe, 0.62);
+        assert_eq!(d.volume_m3, hull.hydrostatics(&opts).volume_m3);
     }
 
     fn sample_dsyhs() -> DsyhsInput {

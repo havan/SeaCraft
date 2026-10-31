@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use crate::fef;
 use crate::hydro::{Hull, HydroOptions, Hydrostatics};
+use crate::loading::evaluate_tank;
 use crate::math::Vec3;
 use crate::mesh::Surface;
 use crate::project::Project;
@@ -185,23 +186,31 @@ pub fn assert_stability(s: &Surface, kg: f64, lcg: f64) -> (f64, f64) {
     (gm, gz0)
 }
 
-/// The Design loading condition floats free to trim within 0.5 % of LWL.
-/// Returns (draft, trim).
+/// The Design loading condition — lightship, items and tank contents —
+/// floats free to trim within 0.5 % of LWL. Returns (draft, trim).
 pub fn assert_free_trim(s: &Surface, p: &Project) -> (f64, f64) {
     let c = p
         .loading_condition(Some("Design"))
         .expect("a Design condition");
-    let all: Vec<_> = std::iter::once(&c.lightship).chain(&c.items).collect();
-    let mass: f64 = all.iter().map(|w| w.mass_t).sum();
-    let lcg = all.iter().map(|w| w.mass_t * w.x).sum::<f64>() / mass;
-    let vcg = all.iter().map(|w| w.mass_t * w.z).sum::<f64>() / mass;
+    let hull = Hull::new(s, level3());
+    let mut all: Vec<(f64, f64, f64)> = std::iter::once(&c.lightship)
+        .chain(&c.items)
+        .map(|w| (w.mass_t, w.x, w.z))
+        .collect();
+    for t in &c.tanks {
+        let e = evaluate_tank(t, Some(&hull));
+        all.push((e.mass_t, e.x, e.z));
+    }
+    let mass: f64 = all.iter().map(|w| w.0).sum();
+    let lcg = all.iter().map(|w| w.0 * w.1).sum::<f64>() / mass;
+    let vcg = all.iter().map(|w| w.0 * w.2).sum::<f64>() / mass;
     let kg = p.kg.expect("the example's KG");
     assert!(
         (vcg - kg).abs() < 5e-3,
         "Design VCG {vcg} is not the example KG {kg}"
     );
-    let hull = Hull::new(s, level3());
-    let volume = mass * 1000.0 / s.settings.water_density;
+    let volume =
+        mass * 1000.0 / (s.settings.water_density * s.settings.appendage_coefficient.max(1e-6));
     let fc = solve_floating(&hull, volume, 0.0, lcg, 0.0).expect("floats");
     let lwl = s.settings.length;
     println!(
@@ -244,6 +253,10 @@ pub fn assert_project_valid(p: &Project) {
     assert!(p.kg.is_some(), "an example carries its KG");
     let r = p.requirements.as_ref().expect("requirements");
     r.validate().expect("requirements validate");
+    // Draft and depth share the keel datum, so the deck is above the water.
+    if let (Some(t), Some(d)) = (r.draft, r.depth) {
+        assert!(d > t, "requirements depth {d} is not above the draft {t}");
+    }
     p.loading_condition(Some("Design"))
         .expect("a Design condition");
 }

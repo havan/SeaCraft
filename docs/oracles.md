@@ -587,3 +587,29 @@ Closed box section, beam $b$, depth $d$, floating half full ($T = d/2$) with $G$
 Derived by Claude for R8-1a (2026-10-31). The closed form and both symmetries were checked against an independent
 Python script that clips the rectangular section by the heeled waterline and bisects the offset for the area
 (agreement $2 \times 10^{-16}$ at 18 heels from 0° to 180°; light-box symmetry $6 \times 10^{-16}$). Not published values.
+
+## 21. Damaged Residual GZ of a Light Barge with the Bilge Out (R8-2a)
+
+### Formula
+A box barge $L \times B \times D$ floating $\nabla = LBT$, heeled until the bilge leaves the water and before the
+deck edge immerses, floats on a triangle at the low corner: legs $a$ along the bottom and $a \tan\phi$ up the side,
+
+$$\tfrac12 a^2 \tan\phi = BT, \qquad GZ = \left(\tfrac{B}{2} - \tfrac{a}{3}\right)\cos\phi + \left(\tfrac{a\tan\phi}{3} - KG\right)\sin\phi,$$
+
+valid while $a \le B$ and $a\tan\phi \le D$. Past $\tan\phi = 8T/B$ the plane through the keel on the centreline
+already floats more than $\nabla$, so the waterplane cuts the hull's vertical below the keel: a draft solve clamped
+to zero there reports the larger section. A compartment of zero permeability floods nothing, so the damaged
+residual curve must equal it.
+
+### Tests
+- [`crates/seacraft-core/src/damage.rs::residual_gz_of_a_light_barge_follows_the_bilge_out_triangle`](../crates/seacraft-core/src/damage.rs)
+
+### Numbers Used
+- Box $10 \times 4 \times 2$ m, $T = 0.3$ m, $KG = 0.5$ m, 12 t at $\rho = 1.0$ t/m³; residual heels 16°–58° every
+  2° (validity 8.53°…59.0°, clamp from 30.96°); $|GZ - GZ_{\text{analytic}}| < 10^{-6}$ m. Samples:
+  $GZ(16^\circ) = 0.933929$, $GZ(32^\circ) = 1.093452$, $GZ(40^\circ) = 1.082906$, $GZ(58^\circ) = 0.973499$ m.
+
+### Provenance
+Derived by Claude for R8-2a (2026-10-31); checked against an independent Python script that clips the
+rectangular section by the heeled waterline and bisects its offset for the area (agreement $\le 5 \times 10^{-16}$
+at 16°, 30°, 32°, 40°, 50°, 58°). Not published values.

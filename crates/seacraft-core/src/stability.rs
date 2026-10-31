@@ -176,7 +176,7 @@ impl Waterline {
 /// safe: a secant landing outside the middle 90 % of the interval is replaced
 /// by the bisection midpoint, so a volume jump (a chine at the waterline)
 /// cannot stall it.
-fn root_on_bracket(
+pub(crate) fn root_on_bracket(
     volume: impl Fn(f64) -> f64,
     target_volume: f64,
     mut lo: f64,
@@ -389,7 +389,15 @@ fn free_by_draft(
 /// `sample(trim, hint) = (state, LCB − LCG)` has a zero residual, with the
 /// trim kept within ±45 % of `length`. `hint` is the previous sample's state
 /// (its draft or offset). Returns `(state, trim)`.
-fn secant_on_trim(
+///
+/// The bracket is kept by the residual's *sign* — the last trim with a
+/// positive residual and the last with a non-positive one — never by the
+/// trims' order: the residual usually falls as the trim grows (bow up moves
+/// the LCB aft), so ordering the pair by trim swapped its signs. A secant
+/// step that leaves the bracket (or the ±45 % window) is replaced by the
+/// bracket's midpoint, and before a bracket exists by a quarter-length step
+/// towards the root along the slope seen so far.
+pub(crate) fn secant_on_trim(
     length: f64,
     trim_hint: f64,
     sample: impl Fn(f64, Option<f64>) -> Option<(f64, f64)>,
@@ -408,15 +416,14 @@ fn secant_on_trim(
         t1 = (t0 - step).clamp(-max_trim, max_trim);
     }
     let (mut d1, mut r1) = sample(t1, Some(d0))?;
-    let (mut lo, mut hi) = if r0 <= 0.0 {
-        (t0, f64::NAN)
-    } else {
-        (f64::NAN, t0)
-    };
-    if r1 <= 0.0 {
-        lo = t1;
-    } else {
-        hi = t1;
+    // `pos`: a trim with a positive residual; `neg`: one with r <= 0.
+    let (mut pos, mut neg) = (f64::NAN, f64::NAN);
+    for (t, r) in [(t0, r0), (t1, r1)] {
+        if r > 0.0 {
+            pos = t;
+        } else {
+            neg = t;
+        }
     }
     for _ in 0..30 {
         // Secant step with a bisection fallback when it leaves the bracket or
@@ -427,27 +434,38 @@ fn secant_on_trim(
         } else {
             f64::NAN
         };
-        if !t2.is_finite() || t2 <= -max_trim || t2 >= max_trim {
-            t2 = if lo.is_finite() && hi.is_finite() {
-                0.5 * (lo + hi)
-            } else if lo.is_finite() {
-                (lo + 0.25 * length).min(max_trim)
+        let bracketed = pos.is_finite() && neg.is_finite();
+        let outside = !t2.is_finite()
+            || t2 <= -max_trim
+            || t2 >= max_trim
+            || (bracketed && (t2 <= pos.min(neg) || t2 >= pos.max(neg)));
+        if outside {
+            t2 = if bracketed {
+                0.5 * (pos + neg)
             } else {
-                (hi - 0.25 * length).max(-max_trim)
+                // One sign only: step against the residual along the slope
+                // of the last pair (a falling residual when it is flat).
+                let rising = denom.abs() > 1e-12 && denom / (t1 - t0) > 0.0;
+                let (t, r) = if pos.is_finite() {
+                    (pos, 1.0)
+                } else {
+                    (neg, -1.0)
+                };
+                if (r > 0.0) != rising {
+                    (t + 0.25 * length).min(max_trim)
+                } else {
+                    (t - 0.25 * length).max(-max_trim)
+                }
             };
         }
         let (d2, r2) = sample(t2, Some(d1))?;
         if r2.abs() < 1e-6 {
             return Some((d2, t2));
         }
-        if r2 <= 0.0 {
-            lo = t2;
+        if r2 > 0.0 {
+            pos = t2;
         } else {
-            hi = t2;
-        }
-        // Keep the bracket consistent with the pair we just used, then move on.
-        if lo.is_finite() && hi.is_finite() && lo > hi {
-            std::mem::swap(&mut lo, &mut hi);
+            neg = t2;
         }
         if (t2 - t1).abs() < 1e-9 {
             break;
@@ -827,6 +845,24 @@ impl ImoCriteria {
 mod tests {
     use super::*;
     use crate::hydro::Hull;
+
+    /// The free-trim residual `LCB − LCG` usually *falls* as the trim grows
+    /// (bow up moves the LCB aft). A residual that saturates far from the
+    /// root throws the secant out of the ±45 % window, and the fallback must
+    /// then step towards the root and bisect a bracket kept by the residual's
+    /// sign, not by the trims' order (R8-2 A02). The root is at 1 m either way.
+    #[test]
+    fn the_trim_secant_brackets_by_residual_sign_for_either_slope() {
+        let length = 10.0;
+        for slope in [-1.0, 1.0] {
+            let residual = |t: f64| slope * (3.0 * (t - 1.0)).tanh();
+            let sample = |t: f64, _: Option<f64>| Some((0.0, residual(t)));
+            let (_, t) = secant_on_trim(length, 0.0, sample)
+                .unwrap_or_else(|| panic!("no trim found for slope {slope}"));
+            assert!(residual(t).abs() < 1e-6, "slope {slope}: trim {t}");
+            assert!((t - 1.0).abs() < 1e-5, "slope {slope}: trim {t}");
+        }
+    }
 
     #[test]
     fn cross_curves_float_the_hull_volume_without_the_appendages() {

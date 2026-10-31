@@ -81,7 +81,9 @@ impl Default for Project {
 /// Design requirements: the principal dimensions and targets a design was
 /// started from. Every field is optional; a `None` is "no target". Lengths in
 /// metres, displacement in tonnes, `lcb_frac` as a fraction of `LWL` from its
-/// aft end, `kg` above the keel.
+/// aft end. `draft`, `depth` and `kg` are all measured from the keel — the
+/// model's lowest hydrostatic point (a fin keel's tip on a yacht) — so the
+/// depth exceeds the draft.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Requirements {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -300,10 +302,27 @@ impl Project {
             crate::loading::validate(c)
                 .map_err(|e| format!("loading condition `{}`: {e}", c.name))?;
         }
+        for c in &self.compartments {
+            crate::damage::validate_compartment(c)?;
+        }
         for c in &self.damage_cases {
+            let err = |e: String| format!("damage case `{}`: {e}", c.name);
             if let Some(ref name) = c.loading_condition_name {
-                self.loading_condition(Some(name))
-                    .map_err(|e| format!("damage case `{}`: {e}", c.name))?;
+                self.loading_condition(Some(name)).map_err(err)?;
+            }
+            crate::damage::validate_entries(c).map_err(err)?;
+            // A compartment named in a case is a project compartment or a
+            // tank of the case's loading condition.
+            let resolved = self.resolve_damage_case(c)?;
+            let tanks = resolved.loading_condition.as_ref().map(|lc| &lc.tanks);
+            for spec in &resolved.compartments {
+                if let CompartmentSpec::Named(name) = spec {
+                    if !tanks.is_some_and(|t| t.iter().any(|t| t.name == *name)) {
+                        return Err(err(format!(
+                            "no compartment or loading-condition tank named `{name}`"
+                        )));
+                    }
+                }
             }
         }
         for w in &self.windage {
@@ -553,6 +572,40 @@ mod tests {
         let err = p.validate().unwrap_err();
         assert!(err.contains("damage case `Missing cond case`"));
         assert!(err.contains("nonexistent_cond"));
+    }
+
+    /// R8-2 A05. Compartments are checked on their own, and a damage case's
+    /// fields and compartment names are checked against the project — a
+    /// case being built (no compartments yet) still saves.
+    #[test]
+    fn validate_checks_compartments_and_damage_case_references() {
+        assert!(demo_project().validate().is_ok());
+
+        let mut p = demo_project();
+        p.compartments[0].permeability = 1.5;
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("permeability"), "{err}");
+
+        let mut p = demo_project();
+        p.damage_cases[0].compartments = vec![CompartmentSpec::Named("Engine room".into())];
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("Engine room"), "{err}");
+
+        // A tank of the case's loading condition is a valid name.
+        let mut p = demo_project();
+        let tank = p.loading_conditions[0].tanks[0].name.clone();
+        p.damage_cases[0].compartments = vec![CompartmentSpec::Named(tank)];
+        p.damage_cases[0].loading_condition_name = Some(p.loading_conditions[0].name.clone());
+        p.validate().expect("a loading-condition tank resolves");
+
+        let mut p = demo_project();
+        p.damage_cases[0].water_density = Some(1025.0);
+        assert!(p.validate().unwrap_err().contains("t/m³"));
+
+        let mut p = demo_project();
+        p.damage_cases[0].compartments.clear();
+        p.validate()
+            .expect("a case without compartments yet still saves");
     }
 
     #[test]

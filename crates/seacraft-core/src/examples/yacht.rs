@@ -44,6 +44,9 @@ const T: f64 = 1.85;
 const TC: f64 = 0.45;
 /// Canoe-body depth, bottom to sheer amidships (m).
 const DEPTH: f64 = 1.45;
+/// Depth on the draft's datum, keel tip to sheer amidships (m): what the
+/// requirements carry, so draft and depth are measured from the same point.
+const DEPTH_FROM_KEEL_TIP: f64 = T - TC + DEPTH;
 /// Design waterline height above the keel tip.
 const DWL: f64 = T;
 /// The example's KG above the keel tip (m), representative.
@@ -256,7 +259,9 @@ fn build_from(table: &[Station], stem: &[(f64, f64)], fin: &Foil, rudder: &Foil)
             lwl: Some(LWL),
             bwl: Some(BWL),
             draft: Some(T),
-            depth: Some(DEPTH),
+            // The canoe-body depth (1.45 m) sits on the canoe bottom, not on
+            // the keel tip the draft is measured from.
+            depth: Some(DEPTH_FROM_KEEL_TIP),
             displacement_t: Some(5.0),
             // Cb is a canoe-body target (appendages out, draft Tc); the
             // whole hull's Cb on the total draft is not comparable.
@@ -732,5 +737,20 @@ mod tests {
         checks::assert_project_valid(&p);
         assert_eq!(p.windage.len(), 4);
         assert!(p.windage.iter().all(|w| w.name.contains("representative")));
+        // The requirements' depth is the model's sheer amidships above the
+        // keel tip, the draft's datum (R8-2 A06).
+        let r = p.requirements.as_ref().unwrap();
+        let mid = 0.5 * LWL;
+        let w = STATIONS
+            .windows(2)
+            .find(|w| w[0].0 <= mid && mid <= w[1].0)
+            .unwrap();
+        let sheer = w[0].6 + (mid - w[0].0) / (w[1].0 - w[0].0) * (w[1].6 - w[0].6);
+        let depth = r.depth.unwrap();
+        assert!(
+            (depth - sheer).abs() < 0.05,
+            "depth {depth} vs sheer {sheer}"
+        );
+        assert!(depth > r.draft.unwrap());
     }
 }

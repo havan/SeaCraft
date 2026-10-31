@@ -15,11 +15,11 @@
 //!   $\ge 0.015$ m·rad within the range.
 
 use crate::curves::station_polygons;
-use crate::hydro::{waterplane_for, Hull, HydroOptions};
+use crate::hydro::{waterplane_at_offset, waterplane_for, Hull, HydroOptions};
 use crate::loading::LoadingCondition;
-use crate::math::Vec3;
+use crate::math::{deg_to_rad, Plane, Vec3};
 use crate::mesh::Surface;
-use crate::stability::{solve_floating, FloatingCondition};
+use crate::stability::{solve_floating, FloatingCondition, MIN_COS_HEEL};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -181,16 +181,8 @@ pub struct DamageResult {
 
 /// Validate a [`DamageCase`] before evaluation.
 pub fn validate(case: &DamageCase) -> Result<(), String> {
-    if case.name.trim().is_empty() {
-        return Err("damage case name must not be empty".into());
-    }
     if case.compartments.is_empty() {
         return Err("damage case must contain at least one compartment".into());
-    }
-    for spec in &case.compartments {
-        if let CompartmentSpec::Inline(c) = spec {
-            validate_compartment(c)?;
-        }
     }
     if let Some(ref lc_name) = case.loading_condition_name {
         if case.loading_condition.is_none() {
@@ -198,6 +190,22 @@ pub fn validate(case: &DamageCase) -> Result<(), String> {
                 "damage case `{}` refers to loading condition `{}` by name; evaluate it through a project file",
                 case.name, lc_name
             ));
+        }
+    }
+    validate_entries(case)
+}
+
+/// The checks of [`validate`] that hold for a case stored in a project as
+/// well as one about to be evaluated: everything but "at least one
+/// compartment" (a case being built in the design dock has none yet) and a
+/// loading condition given only by name (the project resolves it).
+pub(crate) fn validate_entries(case: &DamageCase) -> Result<(), String> {
+    if case.name.trim().is_empty() {
+        return Err("damage case name must not be empty".into());
+    }
+    for spec in &case.compartments {
+        if let CompartmentSpec::Inline(c) = spec {
+            validate_compartment(c)?;
         }
     }
     if let Some(lc) = &case.loading_condition {
@@ -225,7 +233,7 @@ pub fn validate(case: &DamageCase) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_compartment(c: &Compartment) -> Result<(), String> {
+pub(crate) fn validate_compartment(c: &Compartment) -> Result<(), String> {
     if c.name.trim().is_empty() {
         return Err("compartment name must not be empty".into());
     }
@@ -554,9 +562,14 @@ pub fn damaged_buoyancy(
     heel_deg: f64,
 ) -> (f64, Vec3) {
     let wp = waterplane_for(hull.keel, hull.length, draft, trim, heel_deg);
+    damaged_buoyancy_in(hull, solids, &wp)
+}
+
+/// [`damaged_buoyancy`] below an arbitrary waterplane (`side <= 0` is
+/// submerged), for planes a draft above the keel cannot describe.
+pub fn damaged_buoyancy_in(hull: &Hull, solids: &[CompartmentSolid], wp: &Plane) -> (f64, Vec3) {
     let origin = wp.project(Vec3::ZERO);
-    let (intact_vol, intact_moment, _, _, _) =
-        crate::hydro::integrate(&hull.verts, &hull.tris, &wp);
+    let (intact_vol, intact_moment, _, _, _) = crate::hydro::integrate(&hull.verts, &hull.tris, wp);
 
     let mut net_vol = intact_vol;
     let mut net_moment = intact_moment;
@@ -566,7 +579,7 @@ pub fn damaged_buoyancy(
         if s.verts.is_empty() || s.tris.is_empty() {
             continue;
         }
-        let (comp_vol, comp_moment, _, _, _) = crate::hydro::integrate(&s.verts, &s.tris, &wp);
+        let (comp_vol, comp_moment, _, _, _) = crate::hydro::integrate(&s.verts, &s.tris, wp);
         net_vol -= mu * comp_vol;
         net_moment -= comp_moment * mu;
     }
@@ -580,6 +593,11 @@ pub fn damaged_buoyancy(
 }
 
 /// Solve draft on a bracket so damaged net volume equals `target_volume`.
+/// `None` when the bracket does not straddle it — a target already met at
+/// `lo` included: that is not a clamp to `lo`, the real waterplane then cuts
+/// the hull's vertical lower down (below the keel for a light hull at a
+/// steep heel or a trimmed one), and [`solve_damaged_draft`] finds it on the
+/// plane's offset.
 fn damaged_draft_on_bracket(
     hull: &Hull,
     solids: &[CompartmentSolid],
@@ -591,10 +609,7 @@ fn damaged_draft_on_bracket(
 ) -> Option<f64> {
     let mut vlo = damaged_buoyancy(hull, solids, lo, trim, heel_deg).0;
     let mut vhi = damaged_buoyancy(hull, solids, hi, trim, heel_deg).0;
-    if vlo >= target_volume {
-        return if lo <= 0.0 { Some(0.0) } else { None };
-    }
-    if vhi < target_volume {
+    if vlo >= target_volume || vhi < target_volume {
         return None;
     }
     let tol = 1e-8 * target_volume.max(1.0);
@@ -623,6 +638,15 @@ fn damaged_draft_on_bracket(
 }
 
 /// Solve draft so the damaged ship floats `target_volume` at a given trim and heel.
+///
+/// The draft above the keel is searched first (every upright and moderately
+/// heeled condition, unchanged). Where none exists — a light or trimmed hull
+/// at a steep heel, whose waterplane cuts the hull's vertical below the keel,
+/// or a heel past 90° — the waterplane is found on its offset along its own
+/// normal, bracketed by the hull's extent along it, and returned as the
+/// (possibly negative) draft [`waterplane_for`] places it at. `None` when the
+/// hull cannot float the volume, or within [`MIN_COS_HEEL`] of ±90° heel,
+/// where no draft describes the waterplane.
 pub fn solve_damaged_draft(
     hull: &Hull,
     solids: &[CompartmentSolid],
@@ -630,15 +654,33 @@ pub fn solve_damaged_draft(
     trim: f64,
     heel_deg: f64,
 ) -> Option<f64> {
-    let lo = 0.0f64;
-    let mut hi = (hull.model_max.z - hull.keel).max(0.1) * 2.0 + 1.0;
-    for _ in 0..40 {
-        if damaged_buoyancy(hull, solids, hi, trim, heel_deg).0 >= target_volume {
-            break;
-        }
-        hi *= 1.6;
+    let cos = deg_to_rad(heel_deg).cos();
+    if cos.abs() < MIN_COS_HEEL {
+        return None;
     }
-    damaged_draft_on_bracket(hull, solids, target_volume, trim, heel_deg, lo, hi)
+    if cos > 0.0 {
+        let lo = 0.0f64;
+        let mut hi = (hull.model_max.z - hull.keel).max(0.1) * 2.0 + 1.0;
+        for _ in 0..40 {
+            if damaged_buoyancy(hull, solids, hi, trim, heel_deg).0 >= target_volume {
+                break;
+            }
+            hi *= 1.6;
+        }
+        if let Some(d) =
+            damaged_draft_on_bracket(hull, solids, target_volume, trim, heel_deg, lo, hi)
+        {
+            return Some(d);
+        }
+    }
+    // The plane's normal does not depend on the draft; its offset `s` along
+    // it submerges more of the hull as it grows, at every heel.
+    let n = waterplane_for(hull.keel, hull.length, 0.0, trim, heel_deg).n;
+    let (dry, full) = hull.extent_along(n);
+    let volume = |s: f64| damaged_buoyancy_in(hull, solids, &waterplane_at_offset(n, s)).0;
+    let s = crate::stability::root_on_bracket(volume, target_volume, dry, full, None)?;
+    // `waterplane_for` puts (0, 0, keel + draft + trim/2) on the plane.
+    Some(s / n.z - hull.keel - 0.5 * trim)
 }
 
 /// Solve draft *and* trim so the damaged ship floats `target_volume` with `LCB_net` at `lcg_x`.
@@ -650,92 +692,20 @@ pub fn solve_damaged_floating(
     lcg_x: f64,
     trim_hint: f64,
 ) -> Option<FloatingCondition> {
-    let max_trim = (0.45 * hull.length).max(0.01);
+    // One (trim -> draft, residual) sample; a draft hint from the previous
+    // trim keeps the bracket tight.
     let sample = |trim: f64, draft_hint: Option<f64>| -> Option<(f64, f64)> {
         let draft = draft_hint
             .and_then(|d| {
                 let w = (0.25 * d).clamp(0.02, 0.5);
-                damaged_draft_on_bracket(
-                    hull,
-                    solids,
-                    target_volume,
-                    trim,
-                    heel_deg,
-                    (d - w).max(0.0),
-                    d + w,
-                )
+                damaged_draft_on_bracket(hull, solids, target_volume, trim, heel_deg, d - w, d + w)
             })
             .or_else(|| solve_damaged_draft(hull, solids, target_volume, trim, heel_deg))?;
         let (_, b) = damaged_buoyancy(hull, solids, draft, trim, heel_deg);
         Some((draft, b.x - lcg_x))
     };
-
-    let mut t0 = trim_hint.clamp(-max_trim, max_trim);
-    let (d0, mut r0) = sample(t0, None)?;
-    if r0.abs() < 1e-6 {
-        return Some(FloatingCondition {
-            draft: d0,
-            trim: t0,
-        });
-    }
-    let step = (0.05 * hull.length).clamp(1e-3, max_trim);
-    let mut t1 = (t0 + step).clamp(-max_trim, max_trim);
-    if (t1 - t0).abs() < 1e-9 {
-        t1 = (t0 - step).clamp(-max_trim, max_trim);
-    }
-    let (mut d1, mut r1) = sample(t1, Some(d0))?;
-    let (mut lo, mut hi) = if r0 <= 0.0 {
-        (t0, f64::NAN)
-    } else {
-        (f64::NAN, t0)
-    };
-    if r1 <= 0.0 {
-        lo = t1;
-    } else {
-        hi = t1;
-    }
-
-    for _ in 0..30 {
-        let denom = r1 - r0;
-        let mut t2 = if denom.abs() > 1e-12 {
-            t1 - r1 * (t1 - t0) / denom
-        } else {
-            f64::NAN
-        };
-        if !t2.is_finite() || t2 <= -max_trim || t2 >= max_trim {
-            t2 = if lo.is_finite() && hi.is_finite() {
-                0.5 * (lo + hi)
-            } else if lo.is_finite() {
-                (lo + 0.25 * hull.length).min(max_trim)
-            } else {
-                (hi - 0.25 * hull.length).max(-max_trim)
-            };
-        }
-        let (d2, r2) = sample(t2, Some(d1))?;
-        if r2.abs() < 1e-6 {
-            return Some(FloatingCondition {
-                draft: d2,
-                trim: t2,
-            });
-        }
-        if r2 <= 0.0 {
-            lo = t2;
-        } else {
-            hi = t2;
-        }
-        if lo.is_finite() && hi.is_finite() && lo > hi {
-            std::mem::swap(&mut lo, &mut hi);
-        }
-        if (t2 - t1).abs() < 1e-9 {
-            break;
-        }
-        t0 = t1;
-        r0 = r1;
-        t1 = t2;
-        r1 = r2;
-        d1 = d2;
-    }
-    None
+    crate::stability::secant_on_trim(hull.length, trim_hint, sample)
+        .map(|(draft, trim)| FloatingCondition { draft, trim })
 }
 
 /// Find boundary vertices of the hull representing the sheer/deck edge
@@ -822,6 +792,9 @@ pub fn evaluate(
         .water_density
         .unwrap_or(opts.water_density / 1000.0)
         .max(0.1);
+    // The refined hull carries no appendages: Δ includes them, the hull
+    // floats Δ / (ρ · c_app), as in `hydro`, `stability` and `loading`.
+    let app_coeff = opts.appendage_coefficient.max(1e-6);
 
     // Derive loading particulars (displacement_t, kg, lcg, tcg).
     let (displacement_t, kg, lcg, tcg) = match (case.displacement_t, case.kg) {
@@ -853,7 +826,7 @@ pub fn evaluate(
                     surface.settings.draft
                 };
                 let (target_v, b) = hull.buoyancy(intact_draft, 0.0, 0.0);
-                let d = target_v * density;
+                let d = target_v * app_coeff * density;
                 let k = (hull.model_max.z - hull.keel) * 0.75;
                 (
                     case.displacement_t.unwrap_or(d),
@@ -865,7 +838,7 @@ pub fn evaluate(
         }
     };
 
-    let target_volume = displacement_t / density;
+    let target_volume = displacement_t / (density * app_coeff);
     let mut warnings = Vec::new();
 
     // 1. Intact equilibrium floating condition.
@@ -1597,5 +1570,102 @@ mod tests {
             err,
             "damage case `Case 1` refers to loading condition `Departure` by name; evaluate it through a project file"
         );
+    }
+
+    /// A compartment of zero permeability: present, but it floods nothing.
+    fn dry_case(name: &str, displacement_t: Option<f64>, kg: Option<f64>) -> DamageCase {
+        DamageCase {
+            name: name.into(),
+            compartments: vec![CompartmentSpec::Inline(Compartment {
+                name: "Void".into(),
+                x_min: 4.0,
+                x_max: 6.0,
+                y_min: -1.0,
+                y_max: 1.0,
+                z_min: 0.0,
+                z_max: 2.0,
+                permeability: 0.0,
+                clip_to_hull: false,
+            })],
+            kg,
+            displacement_t,
+            lcg: Some(5.0),
+            tcg: Some(0.0),
+            loading_condition_name: None,
+            loading_condition: None,
+            water_density: Some(1.0),
+        }
+    }
+
+    fn barge_opts(draft: f64, appendage_coefficient: f64) -> HydroOptions {
+        HydroOptions {
+            draft,
+            trim: 0.0,
+            heel_deg: 0.0,
+            water_density: 1000.0,
+            appendage_coefficient,
+            mainframe_x: None,
+            stations: 11,
+            subdivision: SubdivisionOptions {
+                level: 0,
+                mode: SubdivisionMode::Loop,
+            },
+        }
+    }
+
+    /// R8-2 A01. A light box barge (L 10, B 4, D 2 m at T 0.3 m, KG 0.5 m)
+    /// heeled until its bilge leaves the water floats on a triangular
+    /// section at the low corner: legs `a` along the bottom and `a tan φ` up
+    /// the side, `½ a² tan φ = B T`, centroid `(B/2 − a/3, a tan φ / 3)`, so
+    /// `GZ = (B/2 − a/3) cos φ + (a tan φ / 3 − KG) sin φ` while `a ≤ B` and
+    /// `a tan φ ≤ D` (8.5° … 59.0°). Past `tan φ = 8T/B` (31°) the waterplane
+    /// through the keel on the centreline already floats more than ∇: the
+    /// draft solve used to clamp to 0 there and report the larger section.
+    #[test]
+    fn residual_gz_of_a_light_barge_follows_the_bilge_out_triangle() {
+        let (b, t, kg) = (4.0, 0.3, 0.5);
+        let surface = make_box_barge(10.0, b, 2.0);
+        let case = dry_case("light barge", Some(10.0 * b * t), Some(kg));
+        let res = evaluate(&surface, &barge_opts(t, 1.0), &case).expect("evaluates");
+        assert!(res.equilibrium_found && res.heel_deg.abs() < 1e-6);
+        let mut checked = 0;
+        for p in &res.residual_gz {
+            let phi = p.relative_heel_deg;
+            if !(16.0..=58.0).contains(&phi) {
+                continue;
+            }
+            let (s, c) = deg_to_rad(phi).sin_cos();
+            let a = (2.0 * b * t / s * c).sqrt();
+            let want = (0.5 * b - a / 3.0) * c + (a * s / c / 3.0 - kg) * s;
+            let gz = p.gz.unwrap_or_else(|| panic!("no GZ at {phi}°"));
+            assert!((gz - want).abs() < 1e-6, "GZ({phi}°) = {gz}, want {want}");
+            checked += 1;
+        }
+        assert_eq!(checked, 22);
+    }
+
+    /// R8-2 A03. Δ includes the appendages; the refined hull does not. With
+    /// an appendage coefficient of 1.05, Δ = 1.05 ρ L B T floats the box at T,
+    /// as `hydro`, `stability` and `loading` float it — intact and damaged.
+    #[test]
+    fn damage_floats_the_bare_hull_volume_like_intact_stability() {
+        let surface = make_box_barge(10.0, 4.0, 2.0);
+        let opts = barge_opts(0.6, 1.05);
+        let disp = 10.0 * 4.0 * 0.6 * 1.05;
+        let given = evaluate(&surface, &opts, &dry_case("given", Some(disp), Some(0.7))).unwrap();
+        assert!(
+            (given.intact_draft - 0.6).abs() < 1e-6,
+            "{}",
+            given.intact_draft
+        );
+        assert!((given.draft - 0.6).abs() < 1e-6, "{}", given.draft);
+        // Without a displacement it is the one the hull has at `opts.draft`.
+        let derived = evaluate(&surface, &opts, &dry_case("derived", None, None)).unwrap();
+        assert!(
+            (derived.displacement_t - disp).abs() < 1e-9,
+            "{}",
+            derived.displacement_t
+        );
+        assert!((derived.intact_draft - 0.6).abs() < 1e-6);
     }
 }

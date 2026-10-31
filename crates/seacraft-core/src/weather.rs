@@ -40,7 +40,10 @@ pub struct WindageItem {
     pub name: String,
     /// Lateral projected area above the waterline (m²).
     pub area_m2: f64,
-    /// Vertical centroid above the keel (m).
+    /// Vertical centroid (m): above the keel for an item without a
+    /// `profile`; for an item with one, its mid-height in model `z`, the
+    /// profile's own datum ([`WindageItem::sync_from_profile`] keeps them
+    /// equal). [`evaluate_weather`] refers both to the keel.
     pub z_centroid: f64,
     /// Lateral outline on the profile view (model x and z), if defined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,10 +255,15 @@ pub struct WeatherHydro {
     pub kg_m: f64,
     /// Initial transverse metacentric height GM in metres (fluid GM when tanks are present).
     pub gm_m: f64,
+    /// Model `z` of the keel (the lowest hydrostatic point): the datum a
+    /// profiled windage item's model-`z` centroid is referred to.
+    #[serde(default)]
+    pub keel_z: f64,
 }
 
 impl WeatherHydro {
     /// Build [`WeatherHydro`] from a [`Hydrostatics`] measurement and `kg_m` above the keel.
+    /// The keel's model `z` is the centre of buoyancy's less `KB`.
     pub fn from_hydrostatics(h: &Hydrostatics, kg_m: f64) -> Self {
         let beam_m = if h.bwl > 0.0 { h.bwl } else { h.submerged_beam };
         let lwl_m = if h.lwl > 0.0 {
@@ -271,6 +279,7 @@ impl WeatherHydro {
             cb: h.block_coefficient,
             kg_m,
             gm_m: h.km_transverse - kg_m,
+            keel_z: h.lcb.z - h.kb,
         }
     }
 }
@@ -705,8 +714,14 @@ pub fn evaluate_weather(
     let mut extra_mz = 0.0;
     for item in &input.windage_extra {
         if item.area_m2.is_finite() && item.area_m2 > 0.0 && item.z_centroid.is_finite() {
+            // A profiled item sits in model `z`, like the hull it is drawn on.
+            let z = if item.profile.is_some() {
+                item.z_centroid - hydro.keel_z
+            } else {
+                item.z_centroid
+            };
             extra_area += item.area_m2;
-            extra_mz += item.area_m2 * item.z_centroid;
+            extra_mz += item.area_m2 * z;
         }
     }
 
@@ -1100,6 +1115,89 @@ mod tests {
         );
     }
 
+    /// R8-2 A04. Moving the model (and a deckhouse drawn on it) 1.5 m down
+    /// changes nothing: the hull's windage is measured above the keel, a
+    /// profiled item is in model `z` like the hull it is drawn on, and an
+    /// item without a profile is above the keel. Before, the profiled item's
+    /// model `z` was taken as a height above the keel, so `Z` fell by its
+    /// area share of 1.5 m.
+    #[test]
+    fn weather_lever_is_the_same_wherever_the_keel_sits() {
+        let barge = |dz: f64| {
+            let mut s = Surface::new();
+            s.layers.push(crate::mesh::Layer::default());
+            let (l, hb, d) = (10.0, 2.0, 3.0);
+            let mut p = |x: f64, y: f64, z: f64| s.add_point(Vec3::new(x, y, z + dz));
+            let c = [
+                p(0.0, -hb, 0.0),
+                p(0.0, hb, 0.0),
+                p(l, hb, 0.0),
+                p(l, -hb, 0.0),
+                p(0.0, -hb, d),
+                p(0.0, hb, d),
+                p(l, hb, d),
+                p(l, -hb, d),
+            ];
+            for f in [
+                [0, 3, 2, 1],
+                [4, 5, 6, 7],
+                [1, 2, 6, 5],
+                [3, 0, 4, 7],
+                [0, 1, 5, 4],
+                [2, 3, 7, 6],
+            ] {
+                s.add_face(f.iter().map(|&i| c[i]).collect(), 0);
+            }
+            s.initialize_trace();
+            for e in &mut s.edges {
+                e.crease = true;
+            }
+            s
+        };
+        let run = |dz: f64| {
+            let s = barge(dz);
+            let sub = SubdivisionOptions {
+                level: 0,
+                mode: SubdivisionMode::CatmullClark,
+            };
+            let hull = Hull::new(&s, sub);
+            assert!((hull.keel - dz).abs() < 1e-12);
+            let mut opts = HydroOptions::from_surface(&s, sub);
+            opts.draft = 1.2;
+            let input = WeatherInput {
+                windage_extra: vec![
+                    WindageItem::from_profile(
+                        "Deckhouse",
+                        WindageRect {
+                            x_min: 3.0,
+                            x_max: 7.0,
+                            z_min: 3.0 + dz,
+                            z_max: 5.0 + dz,
+                        },
+                    ),
+                    WindageItem {
+                        name: "Mast".into(),
+                        area_m2: 1.0,
+                        z_centroid: 8.0,
+                        profile: None,
+                    },
+                ],
+                ..WeatherInput::default()
+            };
+            let cond = StabilityCondition::fixed(1.5, 0.0);
+            evaluate_hull_weather(&hull, &opts, &cond, &input)
+        };
+        let (up, down) = (run(0.0), run(-1.5));
+        // Hull 18 m² at 2.1 m, deckhouse 8 m² at 4.0 m, mast 1 m² at 8.0 m
+        // above the keel; the underwater profile's centroid is at 0.6 m.
+        let want_z = (18.0 * 2.1 + 8.0 * 4.0 + 1.0 * 8.0) / 27.0 - 0.6;
+        for r in [&up, &down] {
+            assert!((r.area_m2 - 27.0).abs() < 1e-9, "A = {}", r.area_m2);
+            assert!((r.z_m - want_z).abs() < 1e-9, "Z = {} vs {want_z}", r.z_m);
+        }
+        assert!((up.lw1_m - down.lw1_m).abs() < 1e-12);
+    }
+
     #[test]
     fn box_barge_windage_and_lw1_match_analytic() {
         // Closed box barge: L = 10 m, B = 4 m, depth D = 3 m, draft d = 1.2 m.
@@ -1153,6 +1251,7 @@ mod tests {
             cb: 1.0,
             kg_m: 1.5,
             gm_m: 0.8,
+            keel_z: 0.0,
         };
         let curve: Vec<(f64, f64)> = (-30..=60)
             .map(|deg| (deg as f64, 0.8 * deg_to_rad(deg as f64).sin()))
@@ -1200,6 +1299,7 @@ mod tests {
             cb: 0.60,
             kg_m: 2.0,
             gm_m: gm,
+            keel_z: 0.0,
         };
         let res = evaluate_weather(
             &curve,

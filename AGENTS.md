@@ -219,6 +219,13 @@ These were real failures in this codebase; the fixes are load-bearing.
   `Hull::extent_along`, with the free-trim loop on the *level* trim
   (`hydro::waterplane_normal`). The check is the half-full box with `G` at
   its centre: closed-form GZ, `GZ(180° − φ) = −GZ(φ)` (`docs/oracles.md` §20).
+  `damage::solve_damaged_draft` had the same clamp and uses the same offset
+  fallback (`damaged_buoyancy_in`); its check is the light barge's
+  bilge-out triangle (`damage.rs` tests).
+* **The free-trim residual falls as the trim grows.** Bow up moves the LCB
+  aft, so ordering the secant bracket by trim mixed its signs.
+  `stability::secant_on_trim` (shared by intact and damage) keeps the bracket
+  by residual sign; do not reintroduce a `lo`/`hi` swap.
 * **Chained loops come out in arbitrary directions.** Two pontoons walked
   opposite ways cancelled each other's waterplane. `hydro::loop_moments` and
   `clipped_loop_moments` take each loop's sign from its nesting

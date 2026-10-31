@@ -687,7 +687,10 @@ mod tests {
         let (s, p) = build();
         let cond = p.loading_condition(Some("Design")).unwrap();
         let opts = crate::hydro::HydroOptions::from_surface(&s, checks::level3());
+        // The shared acceptance check counts the tanks too (R8-2 A09).
+        let (t_free, trim_free) = checks::assert_free_trim(&s, &p);
         let r = crate::loading::evaluate(&s, &opts, cond);
+        assert!((t_free - r.draft).abs() < 1e-6 && (trim_free - r.trim_m).abs() < 1e-6);
         println!(
             "design: Δ {:.1} t LCG {:.3} KG {:.3} FSC {:.4} -> T {:.3} trim {:.3} GM solid {:.3} fluid {:.3}",
             r.displacement_t, r.lcg, r.kg_solid, r.fsc_m, r.draft, r.trim_m, r.gm_solid, r.gm_fluid

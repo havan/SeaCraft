@@ -163,6 +163,12 @@ pub struct LoadingResult {
     pub tanks: Vec<TankSummary>,
     /// Solved upright equilibrium floating condition (`draft`, `trim` positive bow-up).
     pub floating: FloatingCondition,
+    /// `true` when `floating` is the free-to-trim equilibrium (∇ floated,
+    /// LCB on LCG). `false` when it is not — see `warnings` — and every
+    /// figure measured at it describes a hull that is not in equilibrium.
+    pub equilibrium_found: bool,
+    /// Why the condition is not in equilibrium, when it is not.
+    pub warnings: Vec<String>,
     /// Solved draft above the keel, metres.
     pub draft: f64,
     /// Solved trim, metres (positive bow-up).
@@ -644,18 +650,32 @@ pub fn evaluate(surface: &Surface, opts: &HydroOptions, cond: &LoadingCondition)
     let app_coeff = opts.appendage_coefficient.max(1e-6);
     let target_volume = total_mass * 1000.0 / (density * app_coeff);
 
+    let mut warnings = Vec::new();
+    let mut equilibrium_found = true;
     let floating = if target_volume > 1e-12 {
-        solve_floating(&hull, target_volume, 0.0, lcg, opts.trim)
-            .or_else(|| {
-                solve_draft(&hull, target_volume, opts.trim, 0.0).map(|draft| FloatingCondition {
-                    draft,
-                    trim: opts.trim,
-                })
-            })
-            .unwrap_or(FloatingCondition {
+        if let Some(fc) = solve_floating(&hull, target_volume, 0.0, lcg, opts.trim) {
+            fc
+        } else if let Some(draft) = solve_draft(&hull, target_volume, opts.trim, 0.0) {
+            equilibrium_found = false;
+            warnings.push(format!(
+                "no trim puts the LCB on the LCG ({lcg:.3} m): floated at the held trim {:.3} m",
+                opts.trim
+            ));
+            FloatingCondition {
+                draft,
+                trim: opts.trim,
+            }
+        } else {
+            equilibrium_found = false;
+            warnings.push(format!(
+                "the hull cannot float {total_mass:.3} t: measured at the given draft {:.3} m",
+                opts.draft
+            ));
+            FloatingCondition {
                 draft: opts.draft,
                 trim: opts.trim,
-            })
+            }
+        }
     } else {
         FloatingCondition {
             draft: 0.0,
@@ -719,6 +739,8 @@ pub fn evaluate(surface: &Surface, opts: &HydroOptions, cond: &LoadingCondition)
         breakdown,
         tanks,
         floating,
+        equilibrium_found,
+        warnings,
         draft: floating.draft,
         trim_m: floating.trim,
         list_deg,
@@ -933,6 +955,55 @@ mod tests {
         assert!(clipped.moulded_volume_m3 < unclipped.moulded_volume_m3 * 0.1);
     }
 
+    /// R8-2 A11 (rejected): a hull-clipped tank with no volume inside the
+    /// hull — outside its length, or in its slab but outboard of the hull —
+    /// reports finite zeros at any fill, never `0 / 0`.
+    #[test]
+    fn a_clipped_tank_with_no_volume_in_the_hull_is_finite_zero() {
+        let surface = crate::demo::demo_hull(false);
+        let hull = Hull::new(
+            &surface,
+            SubdivisionOptions {
+                level: 1,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        let tank = |x_min: f64, y_min: f64, fill: f64| Tank {
+            name: "Nowhere".into(),
+            x_min,
+            x_max: x_min + 1.0,
+            y_min,
+            y_max: y_min + 1.0,
+            z_min: 0.2,
+            z_max: 0.6,
+            fill,
+            density_t_m3: 1.0,
+            permeability: 1.0,
+            clip_to_hull: true,
+        };
+        for t in [
+            tank(100.0, 0.0, 0.5),
+            tank(5.0, 50.0, 0.5),
+            tank(5.0, 50.0, 1.0),
+        ] {
+            let e = evaluate_tank(&t, Some(&hull));
+            for v in [
+                e.moulded_volume_m3,
+                e.volume_m3,
+                e.mass_t,
+                e.it_m4,
+                e.fsm_t_m,
+            ] {
+                assert_eq!(v, 0.0, "{e:?}");
+            }
+            assert!(
+                e.x.is_finite() && e.y.is_finite() && e.z.is_finite(),
+                "{e:?}"
+            );
+            assert!(e.surface_z.is_finite(), "{e:?}");
+        }
+    }
+
     #[test]
     fn demo_loadcase_floats_at_equilibrium_displacement_and_lcb_matches_lcg() {
         let surface = crate::demo::demo_hull(false);
@@ -972,9 +1043,37 @@ mod tests {
             "draft {} near 0.62 m",
             res.draft
         );
+        assert!(res.equilibrium_found && res.warnings.is_empty());
         assert!(res.gm_fluid < res.gm_solid);
         assert!(res.imo_criteria.is_some());
         // The GM0 criterion uses the metacentric GM_fluid, not the GZ secant.
         assert_eq!(res.imo_criteria.as_ref().unwrap().gm0_m, res.gm_fluid);
+    }
+
+    /// R8-2 A08. A condition heavier than the whole (closed) hull displaces
+    /// cannot float; the result says so instead of measuring the hull at the
+    /// requested draft as if it were the equilibrium.
+    #[test]
+    fn an_unfloatable_condition_is_flagged_not_silently_measured() {
+        let (surface, project) =
+            crate::examples::build(crate::examples::Example::Runabout6m).unwrap();
+        let opts = HydroOptions::from_surface(
+            &surface,
+            SubdivisionOptions {
+                level: 1,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        let mut cond = project.loading_conditions[0].clone();
+        cond.lightship.mass_t = 1000.0;
+        let res = evaluate(&surface, &opts, &cond);
+        assert!(!res.equilibrium_found);
+        assert_eq!(res.warnings.len(), 1, "{:?}", res.warnings);
+        assert!(
+            res.warnings[0].contains("cannot float"),
+            "{:?}",
+            res.warnings
+        );
+        assert_eq!(res.draft, opts.draft);
     }
 }

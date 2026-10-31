@@ -20,9 +20,11 @@ use super::{
     close_half_deck, close_half_transom, crease_loop, crease_path, design_condition, item, layer,
     plating, round_to_fef, settings, station_grid, Built, Example, GRP,
 };
+use crate::loading::LoadingCondition;
 use crate::math::Vec3;
 use crate::mesh::Surface;
 use crate::project::{Project, ReportSettings, Requirements};
+use crate::weather::BilgeKind;
 
 const LWL: f64 = 5.6;
 const BWL: f64 = 2.2;
@@ -129,17 +131,21 @@ pub(super) fn build() -> Built {
             design_speed_kn: Some(SPEED_KN),
             kg: None,
         }),
-        loading_conditions: vec![design_condition(
-            DESIGN_DISPLACEMENT_T,
-            DESIGN_LCG,
-            KG,
-            "Lightship (hull, console, 150 hp outboard)",
-            vec![
-                item("Crew and passengers (4)", 0.30, 2.40, 0.95),
-                item("Fuel, 150 l", 0.11, 1.20, 0.35),
-                item("Gear and stores", 0.08, 3.50, 0.70),
-            ],
-        )],
+        loading_conditions: vec![LoadingCondition {
+            // Hard chines: the weather criterion's sharp-bilge k = 0.7.
+            bilge: BilgeKind::Sharp,
+            ..design_condition(
+                DESIGN_DISPLACEMENT_T,
+                DESIGN_LCG,
+                KG,
+                "Lightship (hull, console, 150 hp outboard)",
+                vec![
+                    item("Crew and passengers (4)", 0.30, 2.40, 0.95),
+                    item("Fuel, 150 l", 0.11, 1.20, 0.35),
+                    item("Gear and stores", 0.08, 3.50, 0.70),
+                ],
+            )
+        }],
         report: ReportSettings {
             kg: Some(KG),
             lcg_x: Some(DESIGN_LCG),
@@ -204,6 +210,11 @@ mod tests {
         assert!(creased >= 2 * STATIONS.len(), "{creased} crease edges");
         let names: Vec<&str> = s.layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["Bottom", "Topsides", "Transom", "Deck"]);
+        // A hard-chine hull rolls with the IS Code's sharp-bilge factor
+        // k = 0.7, not the round bilge's 1.0 (R8-2 A10).
+        let (_, p) = build();
+        let design = p.loading_condition(Some("Design")).unwrap();
+        assert_eq!(design.bilge, BilgeKind::Sharp);
         assert!(s
             .layers
             .iter()
