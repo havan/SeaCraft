@@ -1433,6 +1433,28 @@ fn draw_volumes(
         if vol.clip_to_hull {
             // Draw filled clipped solid and liquid fill if available
             if let Some((verts, tris)) = &vol.clipped_mesh {
+                // One side of the closed solid only: front and back faces
+                // both drawn stack the translucent fill until it is opaque.
+                let facing = |a: Pos2, b: Pos2, c: Pos2| {
+                    let (u, v) = (b - a, c - a);
+                    u.x * v.y - u.y * v.x > 0.0
+                };
+                // The solid is a stack of slabs along x: the caps between
+                // neighbouring slabs are inside it and would stack the fill
+                // once per slab in the Body plan. Keep the outer surface.
+                let (x_lo, x_hi) = verts
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+                        (a.min(v.x), b.max(v.x))
+                    });
+                let tol = 1e-9 * (x_hi - x_lo).abs().max(1.0);
+                let inner_cap = |t: &[usize; 3]| {
+                    let x = verts[t[0]].x;
+                    (verts[t[1]].x - x).abs() < tol
+                        && (verts[t[2]].x - x).abs() < tol
+                        && x > x_lo + tol
+                        && x < x_hi - tol
+                };
                 let proj_verts: Vec<Option<Pos2>> =
                     verts.iter().map(|v| view.project(*v, rect)).collect();
                 let mut mesh = egui::Mesh::default();
@@ -1440,6 +1462,9 @@ fn draw_volumes(
                     if let (Some(p0), Some(p1), Some(p2)) =
                         (proj_verts[t[0]], proj_verts[t[1]], proj_verts[t[2]])
                     {
+                        if inner_cap(t) || !facing(p0, p1, p2) {
+                            continue;
+                        }
                         let idx = mesh.vertices.len() as u32;
                         mesh.colored_vertex(p0, base_fill);
                         mesh.colored_vertex(p1, base_fill);
@@ -1462,6 +1487,9 @@ fn draw_volumes(
                                 if let (Some(p0), Some(p1), Some(p2)) =
                                     (proj_verts[t[0]], proj_verts[t[1]], proj_verts[t[2]])
                                 {
+                                    if inner_cap(t) || !facing(p0, p1, p2) {
+                                        continue;
+                                    }
                                     let idx = liq_mesh.vertices.len() as u32;
                                     liq_mesh.colored_vertex(p0, liquid_blue);
                                     liq_mesh.colored_vertex(p1, liquid_blue);
