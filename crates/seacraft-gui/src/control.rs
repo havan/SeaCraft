@@ -1163,15 +1163,60 @@ fn handle_inner(
                     "`format` must be obj, stl, 3mf, ply, html, svg, dxf or igs, not `{format}`"
                 )
             })?;
+            // Optional linesplan options; each one omitted keeps the
+            // viewports' setting (the export the File menu writes).
+            let stations = whole_opt(p, "stations", 1..=200)?;
+            let buttocks = whole_opt(p, "buttocks", 0..=200)?;
+            let waterlines = whole_opt(p, "waterlines", 0..=200)?;
+            let combs = boolean(p, "combs")?;
+            let comb_scale = number(p, "comb_scale")?;
+            let level = level_arg(p)?;
+            let given = stations.is_some()
+                || buttocks.is_some()
+                || waterlines.is_some()
+                || combs.is_some()
+                || comb_scale.is_some()
+                || level.is_some();
+            if given && !kind.is_linesplan() {
+                return Err(format!(
+                    "`stations`, `buttocks`, `waterlines`, `combs`, `comb_scale` and `level` \
+                     apply to the linesplan formats (svg, dxf, igs), not `{format}`"
+                ));
+            }
+            let linesplan = given.then(|| {
+                let mut o = app
+                    .display()
+                    .section_options(app.subdivision_level(), app.subdivision_mode());
+                o.stations = stations.unwrap_or(o.stations);
+                o.buttocks = buttocks.unwrap_or(o.buttocks);
+                o.waterlines = waterlines.unwrap_or(o.waterlines);
+                o.combs = combs.unwrap_or(o.combs);
+                o.comb_scale = comb_scale.unwrap_or(o.comb_scale);
+                o.level = level.unwrap_or(o.level);
+                o
+            });
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
-            app.write_export(kind, &validated)?;
+            app.write_export_with(kind, &validated, linesplan)?;
             let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
-            Ok(json!({
+            let mut out = json!({
                 "path": validated.to_string_lossy(),
                 "format": format.to_ascii_lowercase(),
                 "bytes": bytes,
-            }))
+            });
+            if kind.is_linesplan() {
+                let o = linesplan.unwrap_or_else(|| {
+                    app.display()
+                        .section_options(app.subdivision_level(), app.subdivision_mode())
+                });
+                out["stations"] = json!(o.stations);
+                out["buttocks"] = json!(o.buttocks);
+                out["waterlines"] = json!(o.waterlines);
+                out["combs"] = json!(o.combs);
+                out["comb_scale"] = json!(o.comb_scale);
+                out["level"] = json!(o.level);
+            }
+            Ok(out)
         }
         "point.move" => {
             if app.surface().is_none() {
@@ -2267,6 +2312,18 @@ fn whole_in(
         })
 }
 
+/// An optional whole number in `range` from `key`.
+fn whole_opt(
+    p: &Value,
+    key: &str,
+    range: std::ops::RangeInclusive<usize>,
+) -> Result<Option<usize>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => whole_in(v, key, range).map(Some),
+    }
+}
+
 /// Everything `ui.inspect` reports.
 fn inspect(app: &App) -> Value {
     let d = app.display();
@@ -2560,6 +2617,122 @@ mod tests {
             "seacraft-control-{name}-{}.bin",
             std::process::id()
         ))
+    }
+
+    /// C05: `model.export` draws a linesplan with the section options it is
+    /// given (what connected-mode `export_linesplan` forwards); an omitted
+    /// option keeps the viewports' setting, and the viewports are untouched.
+    #[test]
+    fn model_export_draws_the_linesplan_with_the_options_it_is_given() {
+        use seacraft_core::linesplan;
+        let (mut app, ctx) = demo();
+        let surface = app.surface().unwrap().clone();
+        let viewport = app
+            .display()
+            .section_options(app.subdivision_level(), app.subdivision_mode());
+        let svg_path = scratch("lines.svg");
+        let svg_text = svg_path.to_string_lossy().to_string();
+
+        // An old call: the viewports' options, as the File menu writes.
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": svg_text, "format": "svg" }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["stations"], viewport.stations);
+        assert_eq!(
+            std::fs::read_to_string(&svg_path).unwrap(),
+            linesplan::svg(&surface, viewport)
+        );
+
+        // Explicit options win, one by one.
+        let asked = linesplan::LinesplanOptions {
+            stations: 5,
+            buttocks: 3,
+            waterlines: 4,
+            level: 1,
+            combs: !viewport.combs,
+            comb_scale: 1.5,
+            ..viewport
+        };
+        assert_ne!(asked.stations, viewport.stations);
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({
+                "path": svg_text, "format": "svg", "stations": 5, "buttocks": 3,
+                "waterlines": 4, "level": 1, "combs": asked.combs, "comb_scale": 1.5,
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        for (key, value) in [
+            ("stations", json!(5)),
+            ("buttocks", json!(3)),
+            ("waterlines", json!(4)),
+            ("level", json!(1)),
+            ("combs", json!(asked.combs)),
+            ("comb_scale", json!(1.5)),
+        ] {
+            assert_eq!(r["result"][key], value, "{key}: {r}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(&svg_path).unwrap(),
+            linesplan::svg(&surface, asked)
+        );
+        // Only `stations`: the rest stays the viewports'.
+        let dxf_path = scratch("lines.dxf");
+        let dxf_text = dxf_path.to_string_lossy().to_string();
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": dxf_text, "format": "dxf", "stations": 7 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(
+            std::fs::read_to_string(&dxf_path).unwrap(),
+            linesplan::dxf(
+                &surface,
+                linesplan::LinesplanOptions {
+                    stations: 7,
+                    ..viewport
+                }
+            )
+        );
+        // The viewports kept their own counts.
+        assert_eq!(app.display().stations, viewport.stations);
+        assert_eq!(app.display().combs, viewport.combs);
+
+        // Section options are refused for a mesh, and out of range.
+        let obj_text = scratch("lines.obj").to_string_lossy().to_string();
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": obj_text, "format": "obj", "stations": 5 }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("linesplan"), "{r}");
+        for bad in [
+            json!({ "stations": 0 }),
+            json!({ "stations": 2.5 }),
+            json!({ "waterlines": -1 }),
+            json!({ "combs": "yes" }),
+            json!({ "comb_scale": "big" }),
+            json!({ "level": 9 }),
+        ] {
+            let mut params = json!({ "path": svg_text, "format": "svg" });
+            for (k, v) in bad.as_object().unwrap() {
+                params[k] = v.clone();
+            }
+            let r = call(&mut app, &ctx, "model.export", params);
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        let _ = std::fs::remove_file(&svg_path);
+        let _ = std::fs::remove_file(&dxf_path);
     }
 
     #[test]

@@ -355,6 +355,15 @@ impl ExportKind {
             ExportKind::LinesplanIges => "igs",
         }
     }
+
+    /// Whether this is a linesplan drawing (cut with section options), not a
+    /// hull mesh or surface.
+    pub fn is_linesplan(self) -> bool {
+        matches!(
+            self,
+            ExportKind::Linesplan | ExportKind::LinesplanDxf | ExportKind::LinesplanIges
+        )
+    }
 }
 
 /// One undo step: the model and the draft it was measured at, since a
@@ -2636,13 +2645,26 @@ impl App {
 
     /// Write one of the export formats; a failure is logged and returned.
     pub fn write_export(&mut self, kind: ExportKind, path: &std::path::Path) -> Result<(), String> {
+        self.write_export_with(kind, path, None)
+    }
+
+    /// [`App::write_export`] with the linesplan drawn with `linesplan`
+    /// instead of the viewports' section options (the control channel's
+    /// `model.export` with explicit counts). Ignored for the mesh formats.
+    pub fn write_export_with(
+        &mut self,
+        kind: ExportKind,
+        path: &std::path::Path,
+        linesplan: Option<seacraft_core::linesplan::LinesplanOptions>,
+    ) -> Result<(), String> {
         use seacraft_core::io::write_atomic;
         let Some(surface) = &self.surface else {
             return Err("No model loaded.".to_owned());
         };
-        // The drawing shows what the viewports show: their refinement,
-        // section counts and combs, as the CLI does with its flags.
-        let linesplan_opts = self.display.section_options(self.level, self.mode);
+        // By default the drawing shows what the viewports show: their
+        // refinement, section counts and combs, as the CLI does with its flags.
+        let linesplan_opts =
+            linesplan.unwrap_or_else(|| self.display.section_options(self.level, self.mode));
         let written = match kind {
             ExportKind::Obj => write_atomic(
                 path,

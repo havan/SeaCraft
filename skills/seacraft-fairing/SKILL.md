@@ -23,7 +23,7 @@ Run `hull_info {}` and check `validation.ok`; fairing a leaking net measures not
    - `render_png {"path": "/tmp/zebra-body.png", "mode": "zebra", "view": "body"}`
    Smooth, parallel, evenly spaced stripes are fair. Stripes that kink, pinch or change spacing abruptly mark a bump; a stripe that jumps sideways across a face marks a tangent break.
 2. `render_png {"path": "/tmp/curv.png", "mode": "curvature", "view": "plan"}` colours the discrete curvature. Look for isolated spots and for sign changes inside a panel. Use `"mode": "draft"` only for mould draught angle.
-3. Combs: `export_linesplan {"path": "/tmp/lines.svg", "combs": true, "stations": 11, "waterlines": 7, "buttocks": 5}`. Each station, waterline and buttock gets a curvature comb. A fair curve has a comb that changes smoothly with no spikes; a spike or a comb that flips sides marks the nearest control point. A flat comb on a straight run is fine.
+3. Combs: `export_linesplan {"path": "/tmp/lines.svg", "combs": true, "stations": 11, "waterlines": 7, "buttocks": 5}`. Each station, waterline and buttock gets a curvature comb; `comb_scale` (default 0.6) sets its gain. A fair curve has a comb that changes smoothly with no spikes; a spike or a comb that flips sides marks the nearest control point. A flat comb on a straight run is fine.
 4. Judge a bump by two views. A feature seen only in one is likely a render artefact of that view.
 
 ## Fix in small steps

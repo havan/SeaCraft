@@ -666,21 +666,22 @@ fn write_entities(name: &str, entities: &[(&str, Entity<'_>)], units: u8, summar
     out.push_str(&de);
     out.push_str(&pd);
 
-    // Terminate: the record counts of the four sections and the total.
+    // Terminate: one record holding the record counts of the four sections.
+    // Every section numbers its records from 1, so this lone record is
+    // `T0000001` (IGES 5.3 §2.2.4.5), not the file's record total.
     let counts = |letter: char| {
         out.lines()
             .filter(|l| l.chars().nth(72) == Some(letter))
             .count()
     };
     let (s, g, d, p) = (counts('S'), counts('G'), counts('D'), counts('P'));
-    let total = s + g + d + p + 1;
     // Each count is an eight-character field holding the section letter and a
     // seven-digit, space-padded count.
     let mut data = String::new();
     for (letter, count) in [('S', s), ('G', g), ('D', d), ('P', p)] {
         let _ = write!(data, "{letter}{count:>7}");
     }
-    record(&mut out, 'T', total, &data);
+    record(&mut out, 'T', 1, &data);
     out
 }
 
@@ -958,11 +959,26 @@ mod tests {
         };
         assert!(counts('S') == 1 && counts('G') >= 1 && counts('D') == 2);
         assert!(counts('P') >= 4, "20 points need several parameter lines");
-        let terminate: usize = last[73..].trim().parse().unwrap();
-        assert_eq!(
-            terminate,
-            counts('S') + counts('G') + counts('D') + counts('P') + 1
-        );
+        // IGES 5.3 §2.2.4.5: the Terminate section is one record, so its
+        // sequence number is 1 (`T0000001`), not the file's record total.
+        assert_eq!(&last[72..], "T0000001", "{last:?}");
+        // Its data field carries each section's record count.
+        for (k, letter) in ['S', 'G', 'D', 'P'].into_iter().enumerate() {
+            let field = &last[8 * k..8 * (k + 1)];
+            assert_eq!(field.chars().next(), Some(letter), "{field:?}");
+            let n: usize = field[1..].trim().parse().unwrap();
+            assert_eq!(n, counts(letter), "{letter} count in {last:?}");
+        }
+        // Every section numbers its own records from 1, without gaps.
+        for letter in ['S', 'G', 'D', 'P', 'T'] {
+            let seqs: Vec<usize> = text
+                .lines()
+                .filter(|l| l.chars().nth(72) == Some(letter))
+                .map(|l| l[73..].trim().parse().unwrap())
+                .collect();
+            let expected: Vec<usize> = (1..=seqs.len()).collect();
+            assert_eq!(seqs, expected, "section {letter} sequence numbers");
+        }
 
         // The directory entry points at the first parameter line and says how
         // many there are.

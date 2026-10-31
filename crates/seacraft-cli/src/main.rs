@@ -321,13 +321,16 @@ struct ExportArgs {
     output: PathBuf,
     #[command(flatten)]
     subdiv: SubdivArgsCli,
-    /// Export the control net instead of the refined surface
+    /// Export the control net instead of the refined surface (OBJ only;
+    /// refused for the other formats)
     #[arg(long)]
     control: bool,
-    /// Up axis for OBJ output
-    #[arg(long, value_enum, default_value_t = UpArg::Z)]
-    up: UpArg,
-    /// Skip mirroring symmetric layers (single half only)
+    /// Up axis for OBJ output [default: z]. The other formats are always
+    /// written z-up; `--up y` is refused for them.
+    #[arg(long, value_enum)]
+    up: Option<UpArg>,
+    /// Skip mirroring symmetric layers, single half only (OBJ only; refused
+    /// for the other formats)
     #[arg(long)]
     no_mirror: bool,
 }
@@ -783,7 +786,8 @@ struct LackenbyArgs {
     /// Target prismatic coefficient (omit to keep the current one)
     #[arg(long)]
     cp: Option<f64>,
-    /// Target LCB as a percentage of LWL, positive forward of midships
+    /// Target LCB as a percentage of LWL from the aft end of the waterline,
+    /// positive forward of midships (omit to keep the current one)
     #[arg(long, allow_hyphen_values = true)]
     lcb: Option<f64>,
     /// Draft at which to measure, in metres
@@ -801,23 +805,7 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
     let text = std::fs::read_to_string(&a.file)
         .with_context(|| format!("cannot read {}", a.file.display()))?;
     let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
-    let mut opts = HydroOptions::from_surface(
-        &s,
-        SubdivisionOptions {
-            level: a.level,
-            mode: SubdivisionMode::Loop,
-        },
-    );
-    if let Some(d) = a.draft {
-        opts.draft = d;
-    }
-    opts.stations = opts.stations.max(41);
-    let now = hydro::compute(&s, &opts);
-    let lcb_now = (now.lcb.x - now.model_min.x) / now.lwl * 100.0 - 50.0;
-    let target = lackenby::LackenbyTarget::new(
-        a.cp.unwrap_or(now.prismatic_coefficient),
-        a.lcb.unwrap_or(lcb_now),
-    );
+    let (opts, target) = lackenby_setup(&s, a.level, a.draft, a.cp, a.lcb);
     let (out, report) =
         lackenby::fit(&s, target, &opts, 1e-3, 10).map_err(|e| anyhow::anyhow!(e))?;
     seacraft_core::io::write_atomic(&a.output, fef::write(&out))
@@ -852,6 +840,43 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
     }
     println!("  wrote {}", a.output.display());
     Ok(())
+}
+
+/// The measuring options and the target of `seacraft lackenby`. An omitted
+/// `cp` or `lcb` keeps the hull's own value, measured the way
+/// `lackenby::fit` measures it: LCB as a percentage of LWL from the aft end
+/// of the waterline (`wl_aft_x`), not from the model's aft extreme — so a
+/// counter or raked transom overhanging the waterline does not shift the LCB
+/// the user never asked to move.
+fn lackenby_setup(
+    s: &Surface,
+    level: u8,
+    draft: Option<f64>,
+    cp: Option<f64>,
+    lcb: Option<f64>,
+) -> (HydroOptions, lackenby::LackenbyTarget) {
+    let mut opts = HydroOptions::from_surface(
+        s,
+        SubdivisionOptions {
+            level,
+            mode: SubdivisionMode::Loop,
+        },
+    );
+    if let Some(d) = draft {
+        opts.draft = d;
+    }
+    opts.stations = opts.stations.max(41);
+    let now = hydro::compute(s, &opts);
+    let lcb_now = if now.lwl > 1e-9 {
+        (now.lcb.x - now.wl_aft_x) / now.lwl * 100.0 - 50.0
+    } else {
+        0.0
+    };
+    let target = lackenby::LackenbyTarget::new(
+        cp.unwrap_or(now.prismatic_coefficient),
+        lcb.unwrap_or(lcb_now),
+    );
+    (opts, target)
 }
 
 #[derive(Args, Debug)]
@@ -1674,46 +1699,70 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
     Ok(())
 }
 
+/// The `export` flags the format at `ext` cannot honour: `--control`,
+/// `--no-mirror` and `--up y` are OBJ-only, and writing a mirrored, refined,
+/// z-up STL when the user asked otherwise would be a silent lie.
+fn export_flags_error(
+    ext: &str,
+    control: bool,
+    no_mirror: bool,
+    up: Option<UpArg>,
+) -> Option<String> {
+    // OBJ honours all three; an unknown extension gets its own error later.
+    if !matches!(ext, "stl" | "3mf" | "ply" | "igs" | "iges" | "html" | "htm") {
+        return None;
+    }
+    let mut refused = Vec::new();
+    if control {
+        refused.push("--control");
+    }
+    if no_mirror {
+        refused.push("--no-mirror");
+    }
+    if up == Some(UpArg::Y) {
+        refused.push("--up y");
+    }
+    if refused.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} {} only for .obj output; .{ext} is always the refined, mirrored, z-up surface \
+         (drop the flag or write .obj)",
+        refused.join(", "),
+        if refused.len() == 1 {
+            "applies"
+        } else {
+            "apply"
+        },
+    ))
+}
+
 fn cmd_export(a: ExportArgs) -> Result<()> {
-    let s = load(&a.file)?;
-    let mode: SubdivisionMode = a.subdiv.mode.into();
     let ext = a
         .output
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    if let Some(msg) = export_flags_error(&ext, a.control, a.no_mirror, a.up) {
+        bail!(msg);
+    }
+    let s = load(&a.file)?;
+    let mode: SubdivisionMode = a.subdiv.mode.into();
+    let up = if a.up == Some(UpArg::Y) {
+        export::UpAxis::Y
+    } else {
+        export::UpAxis::Z
+    };
     let data: Vec<u8> = match ext.as_str() {
         "obj" => {
-            let mut text = if a.control {
-                export::obj_control(
-                    &s,
-                    if a.up == UpArg::Y {
-                        export::UpAxis::Y
-                    } else {
-                        export::UpAxis::Z
-                    },
-                )
+            let text = if a.no_mirror {
+                obj_from_unmirrored(&s, a.subdiv.level, mode, a.control, up)
+            } else if a.control {
+                export::obj_control(&s, up)
             } else {
-                export::obj(
-                    &s,
-                    a.subdiv.level,
-                    mode,
-                    if a.up == UpArg::Y {
-                        export::UpAxis::Y
-                    } else {
-                        export::UpAxis::Z
-                    },
-                )
+                export::obj(&s, a.subdiv.level, mode, up)
             };
-            if a.no_mirror {
-                let up = if a.up == UpArg::Y {
-                    export::UpAxis::Y
-                } else {
-                    export::UpAxis::Z
-                };
-                text = obj_from_unmirrored(&s, a.subdiv.level, mode, a.control, up);
-            }
             text.into_bytes()
         }
         "stl" => export::stl(&s, a.subdiv.level, mode),
@@ -3858,4 +3907,121 @@ fn cmd_mcp(a: McpArgs) -> Result<()> {
         .serve(stdin.lock(), stdout.lock())
         .context("MCP session failed")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C01: omitting `--lcb` (and `--cp`) asks Lackenby for the hull it was
+    /// given. The LCB is measured from the aft end of the waterline, as
+    /// `lackenby::fit` measures it; the yacht's counter overhangs the
+    /// waterline, where a `model_min.x` datum put the target several
+    /// percent forward.
+    #[test]
+    fn lackenby_without_targets_keeps_the_lcb_on_a_hull_with_an_aft_overhang() {
+        let kind = seacraft_core::examples::Example::Yacht10m;
+        let (s, _) = seacraft_core::examples::build(kind).expect("yacht");
+        let (opts, target) = lackenby_setup(&s, 3, None, None, None);
+        let now = hydro::compute(&s, &opts);
+        assert!(
+            now.wl_aft_x > now.model_min.x + 0.2,
+            "the test needs an aft overhang: wl_aft_x {} vs model_min.x {}",
+            now.wl_aft_x,
+            now.model_min.x
+        );
+        let (_, report) = lackenby::fit(&s, target, &opts, 1e-3, 10).expect("fit");
+        assert!(
+            (target.lcb_pct - report.before.lcb_pct).abs() < 1e-9,
+            "target LCB {:+.3} % vs the hull's {:+.3} %",
+            target.lcb_pct,
+            report.before.lcb_pct
+        );
+        assert!((target.cp - report.before.cp).abs() < 1e-12);
+        assert!(report.converged, "the identity target is reachable");
+        assert!(
+            (report.after.lcb_pct - report.before.lcb_pct).abs() < 0.05,
+            "LCB moved from {:+.3} % to {:+.3} %",
+            report.before.lcb_pct,
+            report.after.lcb_pct
+        );
+
+        // A Cp-only request holds the LCB too.
+        let (opts, target) = lackenby_setup(&s, 3, None, Some(report.before.cp + 0.01), None);
+        assert!((target.lcb_pct - report.before.lcb_pct).abs() < 1e-9);
+        let (_, moved) = lackenby::fit(&s, target, &opts, 1e-3, 10).expect("fit");
+        assert!(
+            (moved.after.lcb_pct - report.before.lcb_pct).abs() < 0.1,
+            "LCB moved from {:+.3} % to {:+.3} %",
+            report.before.lcb_pct,
+            moved.after.lcb_pct
+        );
+    }
+
+    fn parse_export(args: &[&str]) -> ExportArgs {
+        let mut argv = vec!["seacraft", "export"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv).expect("parses").command {
+            Command::Export(a) => a,
+            other => panic!("not export: {other:?}"),
+        }
+    }
+
+    /// C03 + C08: `--control`, `--no-mirror` and `--up y` only shape OBJ;
+    /// the other formats refuse them by name instead of ignoring them.
+    #[test]
+    fn export_refuses_obj_only_flags_for_other_formats() {
+        let dir = std::env::temp_dir().join(format!("seacraft-cli-export-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fef_path = dir.join("demo.fef");
+        std::fs::write(&fef_path, fef::write(&demo::demo_hull(true))).unwrap();
+        let fef_text = fef_path.to_string_lossy().into_owned();
+
+        for ext in ["stl", "3mf", "ply", "igs", "html"] {
+            let out = dir.join(format!("hull.{ext}"));
+            let out_text = out.to_string_lossy().into_owned();
+            for (flags, named) in [
+                (&["--control"][..], "--control"),
+                (&["--no-mirror"][..], "--no-mirror"),
+                (&["--up", "y"][..], "--up y"),
+            ] {
+                let mut args = vec![fef_text.as_str(), "-o", out_text.as_str()];
+                args.extend_from_slice(flags);
+                let err = cmd_export(parse_export(&args)).expect_err("refused");
+                let msg = format!("{err}");
+                assert!(msg.contains(named), "{ext} {flags:?}: {msg}");
+                assert!(msg.contains(".obj"), "{msg}");
+                assert!(!out.exists(), "nothing is written for {ext} {flags:?}");
+            }
+        }
+
+        // `--up z` is what the other formats are anyway; OBJ takes them all.
+        let stl = dir.join("hull.stl");
+        let stl_text = stl.to_string_lossy().into_owned();
+        cmd_export(parse_export(&[&fef_text, "-o", &stl_text, "--up", "z"])).expect("z-up STL");
+        assert!(stl.exists());
+        let obj = dir.join("hull.obj");
+        let obj_text = obj.to_string_lossy().into_owned();
+        cmd_export(parse_export(&[
+            &fef_text,
+            "-o",
+            &obj_text,
+            "--control",
+            "--no-mirror",
+            "--up",
+            "y",
+        ]))
+        .expect("OBJ honours every flag");
+        assert!(std::fs::read_to_string(&obj)
+            .unwrap()
+            .contains("unmirrored"));
+        // An unknown format still names the format, not a flag.
+        let tiff = dir.join("hull.tiff").to_string_lossy().into_owned();
+        let err = cmd_export(parse_export(&[&fef_text, "-o", &tiff, "--control"])).unwrap_err();
+        assert!(
+            format!("{err}").contains("unsupported output format"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

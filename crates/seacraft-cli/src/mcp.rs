@@ -179,8 +179,19 @@ fn read_line(r: &mut impl BufRead, max: usize) -> std::io::Result<Option<Vec<u8>
 
 // ----------------------------------------------------------------- server --
 
+/// The session KG when the model's project gives none: an API default that
+/// keeps `kg`-less calls answering, reported as `"default"` by `hull_info`
+/// (`session_kg_from`) so it is never mistaken for a design value.
+const DEFAULT_SESSION_KG: f64 = 1.0;
+
 /// The MCP server: a hull model and the settings a tool call without arguments
 /// measures it with, plus an optional forwarding connection to a running app.
+///
+/// **Session KG rule.** The KG a call without `kg` uses is the project's
+/// `kg`, or [`DEFAULT_SESSION_KG`] when the project has none. It is derived
+/// again whenever the model or its project is replaced (`load_hull`,
+/// `example`, `generate_hull`, `project_set`, a server started on a file), so
+/// one hull's KG is never carried onto another.
 pub struct McpServer {
     surface: Surface,
     opts: HydroOptions,
@@ -246,7 +257,7 @@ impl McpServer {
         Self {
             surface,
             opts,
-            kg: 1.0,
+            kg: DEFAULT_SESSION_KG,
             source: None,
             project: seacraft_core::project::Project::default(),
             project_error: None,
@@ -264,7 +275,14 @@ impl McpServer {
             Ok(None) => {}
             Err(e) => server.project_error = Some(e),
         }
+        server.adopt_project_kg();
         Ok(server)
+    }
+
+    /// The session KG from the project just installed (see the session KG
+    /// rule on [`McpServer`]).
+    fn adopt_project_kg(&mut self) {
+        self.kg = self.project.kg.unwrap_or(DEFAULT_SESSION_KG);
     }
 
     /// A server that forwards tool calls to `seacraft-gui --control addr`.
@@ -869,6 +887,8 @@ impl McpServer {
             "designer": s.settings.designer,
             "source": self.source.as_ref().map(|p| p.to_string_lossy().into_owned()),
             "backend": if self.is_remote() { "app" } else { "headless" },
+            "session_kg": self.kg,
+            "session_kg_from": if self.project.kg.is_some() { "project" } else { "default" },
             "principal": {
                 "length": s.settings.length,
                 "beam": s.settings.beam,
@@ -948,6 +968,7 @@ impl McpServer {
             }
             _ => return Err("load_hull: give `path` or `demo: true`".to_string()),
         }
+        self.adopt_project_kg();
         let mut info = self.hull_info();
         if let Some(err) = parse_err {
             if let Some(obj) = info.as_object_mut() {
@@ -967,11 +988,9 @@ impl McpServer {
         self.opts =
             HydroOptions::from_surface(&self.surface, seascape_subdiv(self.opts.subdivision.level));
         self.source = None;
-        if let Some(kg) = project.kg {
-            self.kg = kg;
-        }
         self.project = project;
         self.project_error = None;
+        self.adopt_project_kg();
         let mut info = self.hull_info();
         if let Some(obj) = info.as_object_mut() {
             obj.insert(
@@ -1033,6 +1052,7 @@ impl McpServer {
         self.source = None;
         self.project = seacraft_core::project::Project::default();
         self.project_error = None;
+        self.adopt_project_kg();
 
         let mut out = serde_json::to_value(&rep).map_err(|e| e.to_string())?;
         if let Some(obj) = out.as_object_mut() {
@@ -1335,6 +1355,7 @@ impl McpServer {
             .map_err(|e| format!("project_set: {e}"))?;
         self.project = project;
         self.project_error = None;
+        self.adopt_project_kg();
         Ok(json!({
             "format": self.project.format,
             "version": self.project.version,
@@ -2479,8 +2500,10 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "load_hull",
             "Load a hull",
-            "Replace the model: `path` reads a FREE!ship `.fef` file, or `demo: true` builds the built-in 12 m \
-             demo hull (`symmetric` cuts it to the starboard half). Returns hull_info.",
+            "Replace the model: `path` reads a FREE!ship `.fef` file (and its `<model>.seacraft.json` sidecar, if \
+             any), or `demo: true` builds the built-in 12 m demo hull (`symmetric` cuts it to the starboard half). \
+             The session KG becomes the sidecar's `kg`, or the 1.0 m default when there is none (`session_kg_from` \
+             says which). Returns hull_info.",
             obj(
                 json!({
                     "path": string("Path to a .fef file"),
@@ -2558,7 +2581,8 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "project_set",
             "Set the project sidecar",
-            "Replace the design data sidecar. `project` must be a valid seacraft-project JSON object with format and version 1.",
+            "Replace the design data sidecar. `project` must be a valid seacraft-project JSON object with format and version 1. \
+             Headless, the session KG becomes its `kg`, or the 1.0 m default when it has none.",
             obj(
                 json!({
                     "project": {"type": "object", "description": "The complete project sidecar object"},
@@ -2997,7 +3021,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "export_linesplan",
             "Export a linesplan",
             "Write the three-view linesplan. The extension picks the format: `.svg` (standalone drawing), `.dxf` \
-             (AutoCAD 2000, one layer per view plus 3D copies) or `.igs` (B-spline curves).",
+             (AutoCAD 2000, one layer per view plus 3D copies) or `.igs` (B-spline curves). The defaults are the \
+             headless server's; connected to the app, an omitted option keeps the app's viewport setting.",
             obj(
                 json!({
                     "path": string("Output path; .svg, .dxf or .igs"),
@@ -3005,6 +3030,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "buttocks": integer("Buttocks in the profile view (default 5)"),
                     "waterlines": integer("Waterlines in the plan view (default 7)"),
                     "combs": boolean("Draw porcupine curvature combs (SVG and DXF)"),
+                    "comb_scale": number("Comb gain: metres drawn per 1/m of curvature (default 0.6)"),
                     "level": integer("Subdivision level 0-6 (default 3)"),
                 }),
                 &["path"],
@@ -3487,7 +3513,31 @@ impl Remote {
                         ))
                     }
                 };
-                self.request("model.export", json!({"path": path, "format": format}))
+                // Forward the section options the caller gave, read as the
+                // headless tool reads them; the omitted ones keep the app's
+                // own viewport settings.
+                let mut p = json!({"path": path, "format": format});
+                for (key, lo, hi) in [
+                    ("stations", 1, 200),
+                    ("buttocks", 0, 200),
+                    ("waterlines", 0, 200),
+                    ("level", 0, MAX_LEVEL as usize),
+                ] {
+                    if !matches!(a.get(key), None | Some(Value::Null)) {
+                        p[key] = json!(count_arg(a, key, 0, lo, hi)?);
+                    }
+                }
+                if let Some(v) = a.get("combs").filter(|v| !v.is_null()) {
+                    p["combs"] = json!(v.as_bool().ok_or("`combs` must be true or false")?);
+                }
+                if let Some(v) = a.get("comb_scale").filter(|v| !v.is_null()) {
+                    let scale = v
+                        .as_f64()
+                        .filter(|n| n.is_finite())
+                        .ok_or("`comb_scale` must be a finite number")?;
+                    p["comb_scale"] = json!(scale);
+                }
+                self.request("model.export", p)
             }
             "render_png" => {
                 let path = str_arg(a, "path")
@@ -5534,5 +5584,178 @@ mod tests {
         // The refusals left the model alone.
         let info = ok(&mut s, 8, "hull_info", json!({}));
         assert_eq!(info["name"], "6.5 m outboard runabout");
+    }
+
+    /// C04: a model loaded from a file brings its sidecar's KG into the
+    /// session (as `example` does), and a model without one resets it to the
+    /// default instead of inheriting the previous hull's.
+    #[test]
+    fn load_hull_and_load_file_adopt_the_sidecar_kg() {
+        let runabout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/runabout-6m.fef");
+        let runabout_text = runabout.to_string_lossy().into_owned();
+        let gm_at = |h: &Value, kg: f64| {
+            let gm = h["gm_m"].as_f64().unwrap();
+            let km = h["km_transverse"].as_f64().unwrap();
+            assert_eq!(h["kg"], kg, "{h}");
+            assert!((km - kg - gm).abs() < 1e-9, "GM at KG {kg}");
+        };
+
+        let mut s = McpServer::new();
+        let info = ok(&mut s, 1, "load_hull", json!({"path": runabout_text}));
+        assert_eq!(info["session_kg"], 0.65, "{info}");
+        assert_eq!(info["session_kg_from"], "project");
+        let h = ok(&mut s, 2, "hydro_compute", json!({}));
+        gm_at(&h, 0.65);
+        // OG = KG - T at the runabout's design draft.
+        let w = ok(&mut s, 3, "weather_criterion", json!({}));
+        let draft = info["principal"]["draft"].as_f64().unwrap();
+        let og = w["og_m"].as_f64().unwrap();
+        assert!((og - (0.65 - draft)).abs() < 1e-9, "OG {og} at T {draft}");
+
+        // A model without a sidecar: back to the default, not the runabout's.
+        let dir = std::env::temp_dir().join(format!("seacraft-mcp-kg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bare = dir.join("bare.fef");
+        std::fs::write(&bare, fef::write(&demo::demo_hull(false))).unwrap();
+        let info = ok(
+            &mut s,
+            4,
+            "load_hull",
+            json!({"path": bare.to_string_lossy()}),
+        );
+        assert_eq!(info["session_kg"], DEFAULT_SESSION_KG, "{info}");
+        assert_eq!(info["session_kg_from"], "default");
+        let h = ok(&mut s, 5, "hydro_compute", json!({"draft": 0.62}));
+        gm_at(&h, DEFAULT_SESSION_KG);
+
+        // `demo: true` and `generate_hull` carry no project, so no KG either.
+        ok(&mut s, 6, "example", json!({"name": "runabout-6m"}));
+        let info = ok(&mut s, 7, "load_hull", json!({"demo": true}));
+        assert_eq!(info["session_kg"], DEFAULT_SESSION_KG, "{info}");
+        ok(&mut s, 8, "example", json!({"name": "runabout-6m"}));
+        ok(&mut s, 9, "generate_hull", json!({}));
+        let info = ok(&mut s, 10, "hull_info", json!({}));
+        assert_eq!(info["session_kg"], DEFAULT_SESSION_KG, "{info}");
+        // `project_set` installs a project, and with it its KG.
+        let mut project = ok(&mut s, 11, "project_get", json!({}));
+        project.as_object_mut().unwrap().remove("backend");
+        project["kg"] = json!(1.3);
+        ok(&mut s, 12, "project_set", json!({"project": project}));
+        let h = ok(&mut s, 13, "hydro_compute", json!({}));
+        assert_eq!(h["kg"], 1.3, "{h}");
+
+        // A server started on the file (`seacraft mcp --open`).
+        let mut s = McpServer::load_file(&runabout).expect("loads");
+        let h = ok(&mut s, 1, "hydro_compute", json!({}));
+        gm_at(&h, 0.65);
+        let s = McpServer::load_file(&bare).expect("loads");
+        assert_eq!(s.kg, DEFAULT_SESSION_KG);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C06: the schema lists every argument the headless handler reads.
+    #[test]
+    fn export_linesplan_schema_lists_comb_scale() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tool = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "export_linesplan")
+            .expect("export_linesplan")
+            .clone();
+        let props = &tool["inputSchema"]["properties"];
+        for key in [
+            "path",
+            "stations",
+            "buttocks",
+            "waterlines",
+            "combs",
+            "comb_scale",
+            "level",
+        ] {
+            assert!(props.get(key).is_some(), "{key} missing: {props}");
+        }
+        assert_eq!(props["comb_scale"]["type"], "number");
+
+        // And the headless handler honours it: a different gain, a
+        // different drawing.
+        let dir = std::env::temp_dir().join(format!("seacraft-mcp-comb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut drawings = Vec::new();
+        for (i, scale) in [0.6, 2.0].into_iter().enumerate() {
+            let path = dir.join(format!("lines{i}.svg"));
+            ok(
+                &mut s,
+                2 + i as u64,
+                "export_linesplan",
+                json!({"path": path.to_string_lossy(), "combs": true, "comb_scale": scale, "level": 1}),
+            );
+            drawings.push(std::fs::read_to_string(&path).unwrap());
+        }
+        assert_ne!(drawings[0], drawings[1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// C05: connected to the app, `export_linesplan` forwards its section
+    /// options to `model.export` instead of dropping them; omitted ones are
+    /// not sent (the app keeps its viewport settings).
+    #[test]
+    fn connected_export_linesplan_forwards_the_section_options() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read");
+                let v: Value = serde_json::from_str(line.trim()).expect("json");
+                assert_eq!(v["method"], "model.export");
+                seen.push(v["params"].clone());
+                stream
+                    .write_all(b"{\"ok\":true,\"result\":{\"bytes\":1}}\n")
+                    .expect("write");
+            }
+            seen
+        });
+
+        let mut s = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
+        ok(
+            &mut s,
+            1,
+            "export_linesplan",
+            json!({
+                "path": "/tmp/lines.dxf", "stations": 25, "buttocks": 4, "waterlines": 9,
+                "combs": true, "comb_scale": 1.5, "level": 2,
+            }),
+        );
+        ok(
+            &mut s,
+            2,
+            "export_linesplan",
+            json!({"path": "/tmp/lines.svg"}),
+        );
+        // Bad options fail here, before anything is sent.
+        let err = fails(
+            &mut s,
+            3,
+            "export_linesplan",
+            json!({"path": "/tmp/lines.svg", "stations": -1}),
+        );
+        assert!(err.contains("stations"), "{err}");
+
+        let seen = handle.join().expect("server thread finished");
+        assert_eq!(
+            seen[0],
+            json!({
+                "path": "/tmp/lines.dxf", "format": "dxf", "stations": 25, "buttocks": 4,
+                "waterlines": 9, "combs": true, "comb_scale": 1.5, "level": 2,
+            })
+        );
+        assert_eq!(seen[1], json!({"path": "/tmp/lines.svg", "format": "svg"}));
     }
 }

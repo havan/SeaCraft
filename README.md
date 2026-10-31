@@ -559,7 +559,8 @@ seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--sta
                             [--hs M --tp S [--gamma G] [--point NAME:X]...]
 seacraft linesplan hull.fef -o linesplan.svg|.dxf|.igs [--stations N] [--buttocks N] [--waterlines N] [--combs [--comb-scale m]]
 seacraft report    hull.fef -o report.html [--draft T] [--kg KG] [--lcg X] [--speeds 4,6,8] [--no-resistance] [--planing] [--no-project]
-seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N] [--control]
+seacraft export    hull.fef -o hull.obj|.stl|.3mf|.ply|.igs|.html [--level N]
+                   [--control] [--no-mirror] [--up y|z]   (these three: .obj only)
 seacraft render    hull.fef -o preview.png [--mode shaded|zebra|curvature|draft] [--view perspective|profile|plan|body] [--size WxH] [--wireframe]
 seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
 seacraft mcp       [--open hull.fef] [--connect 127.0.0.1:PORT]
