@@ -3,3 +3,4 @@
 **/*.rs.bk
 *.png
 .DS_Store
+/.local/
