@@ -22,8 +22,8 @@
 //! written by [`write_iges_surfaces`].
 //!
 //! The tensor-product surface interpolation is adapted from Tangency Labs'
-//! `solidcore` (`crates/solidcore/src/nurbs/srf_fit.rs`), MIT OR Apache-2.0;
-//! see `ATTRIBUTION.md` for the full provenance. That project's
+//! `solidcore` (`crates/solidcore/src/nurbs/srf_fit.rs`), Apache-2.0, itself a
+//! port of NVIDIA USD BRep; see `ATTRIBUTION.md` and `NOTICE` for the provenance. That project's
 //! `nurbs/iges.rs` is a reader, not a writer, so the file layout below is
 //! SeaCraft's own.
 //!

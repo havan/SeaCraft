@@ -3,6 +3,11 @@ name = "seacraft-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+description = "Desktop hull modeller for SeaCraft"
 
 [[bin]]
 name = "seacraft-gui"

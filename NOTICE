@@ -1,0 +1,34 @@
+SeaCraft
+Copyright (c) 2026 SeaCraft contributors.
+Licensed under the GNU General Public License, version 3 or any later version (LICENSE).
+
+FREE!ship
+SeaCraft is written from FREE!ship's documented behaviour and its GPL source, and reads and writes
+its .fef format. FREE!ship: Copyright (c) 2005 Martijn van Engeland; Copyright (c) 2007-2012 Victor
+F. Timoshenko; FPC/Lazarus conversion Copyright (c) 2015 Mark Malakanov. Licensed under the GNU GPL,
+version 2 or any later version.
+
+Adapted code
+Files adapted from other projects are listed in ATTRIBUTION.md. SolidCraft and FieldCraft are
+licensed MIT OR Apache-2.0 and taken here under MIT (LICENSES/MIT.txt). SolidCraft: Copyright (c)
+2026 SolidCraft contributors. FieldCraft: Copyright (c) 2026 FieldCraft contributors.
+
+The B-spline surface interpolation in crates/seacraft-core/src/iges.rs is adapted, with changes,
+from solidcore's crates/solidcore/src/nurbs/srf_fit.rs, licensed under the Apache License, Version
+2.0 (LICENSES/Apache-2.0.txt). The solidcore NOTICE reads, in the part that applies:
+
+    solidcore
+    Copyright (c) 2026 The solidcore contributors
+
+    This product is a Rust port (a derivative work) of the SMLib and SM_API
+    components of USD BRep, https://github.com/NVIDIA-Omniverse/usd-brep
+    (v1.0.1, commit 3fd5b95), licensed under the Apache License, Version 2.0.
+
+    USD BRep is Copyright (c) 2020-2026, NVIDIA CORPORATION & AFFILIATES. All
+    rights reserved. NVIDIA-authored portions of this product are licensed under
+    the Apache License, Version 2.0, except where otherwise noted.
+
+Dependencies
+Dependency licences are in THIRD-PARTY-LICENSES.txt. The desktop GUI's egui dependency includes
+epaint_default_fonts, which embeds fonts under OFL-1.1 and the Ubuntu Font Licence 1.0. This source
+repository does not contain those fonts; see ROADMAP.md before distributing binaries.

@@ -1,10 +1,14 @@
 # Attribution
 
-SeaCraft is `GPL-2.0-or-later` (see `README.md`). Parts of it are adapted from
-the Tangency Labs CAD projects under permissive licences, which are one-way
-compatible with the GPL: code may be copied *into* SeaCraft, never the other
-way round. Every port is listed here with the file it came from and what was
-changed.
+SeaCraft is `GPL-3.0-or-later` (see `LICENSE` and `README.md`). Parts of it are
+adapted from the Tangency Labs CAD projects under permissive licences, which are
+one-way compatible with the GPL: code may be copied *into* SeaCraft, never the
+other way round. SeaCraft is not affiliated with Tangency Labs or endorsed by it.
+Every port is listed here with the file it came from and what was changed.
+
+Licence texts are in `LICENSES/`. Where a project offers `MIT OR Apache-2.0`,
+SeaCraft takes it under MIT (`LICENSES/MIT.txt`). Apache-2.0-only material is
+under `LICENSES/Apache-2.0.txt`, with the notices it requires in `NOTICE`.
 
 The projects are **not** Cargo dependencies. SeaCraft has no `solidcraft-*`,
 `fieldcraft-*` or `solidcore` in `Cargo.toml`: they measure in millimetres and
@@ -17,8 +21,8 @@ Only self-contained modules are adapted by hand.
 
 * **Source:** `solidcraft/crates/io/src/dxf_out.rs`
 * **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
-* **Licence:** MIT OR Apache-2.0
-* **Copyright:** Tangency Labs and the solidcraft contributors
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 SolidCraft contributors
 
 An AutoCAD 2000 (`AC1015`) DXF writer. What was kept:
 
@@ -59,8 +63,8 @@ What changed:
 * **Source:** `solidcraft/crates/render/src/analysis.rs` and
   `solidcraft/crates/render/src/raster.rs`
 * **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
-* **Licence:** MIT OR Apache-2.0
-* **Copyright:** Tangency Labs and the solidcraft contributors
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 SolidCraft contributors
 
 Surface-fairing analysis modes (`Zebra`, `Curvature`, `Draft`) and the
 dependency-free 2× SSAA CPU z-buffer triangle rasterizer plus stored-deflate PNG
@@ -71,8 +75,8 @@ translucent waterplane compositing.
 
 * **Source:** `solidcraft/crates/io/src/threemf.rs`
 * **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
-* **Licence:** MIT OR Apache-2.0
-* **Copyright:** Tangency Labs and the solidcraft contributors
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 SolidCraft contributors
 
 Spatial-grid vertex welding (`weld`) and 3MF 1.3 package structure
 (`[Content_Types].xml`, `_rels/.rels`, `3D/3dmodel.model`), written in metres
@@ -82,8 +86,12 @@ through a zero-dependency stored-ZIP writer with IEEE 802.3 CRC-32.
 
 * **Source:** `solidcore/crates/solidcore/src/nurbs/srf_fit.rs`
 * **Project:** [solidcore](https://github.com/tangency-labs/solidcore) (Tangency Labs)
-* **Licence:** MIT OR Apache-2.0
-* **Copyright:** Tangency Labs and the solidcore contributors
+* **Upstream of that file:** `source/SMLib/src/NL_SrfFit.cpp` in NVIDIA
+  [USD BRep](https://github.com/NVIDIA-Omniverse/usd-brep), which solidcore ports to Rust
+* **Licence:** Apache-2.0 only (no MIT option; this is why every SeaCraft binary needs GPLv3)
+* **Copyright:** Copyright (c) 2026 The solidcore contributors; Copyright (c) 2020-2026 NVIDIA
+  CORPORATION & AFFILIATES. See `NOTICE`.
+* **Modified:** yes. Reduced to the interpolation routines and adapted to `crate::math::Vec3`.
 
 Tensor-product B-spline surface interpolation (`fit_surface` / `interpolate_grid`:
 averaged chord-length parameters, averaging knot vectors, and sequential `u`/`v`
@@ -94,8 +102,8 @@ collocation solves) for exporting lofted hull patches as IGES 5.3 entity 128.
 * **Source:** `fieldcraft/crates/ui-egui/src/control.rs` and
   `fieldcraft/crates/mcp/src/`
 * **Project:** [fieldcraft](https://github.com/tangency-labs/fieldcraft) (Tangency Labs)
-* **Licence:** MIT OR Apache-2.0
-* **Copyright:** Tangency Labs and the fieldcraft contributors
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 FieldCraft contributors
 
 Loopback TCP JSON-lines GUI control channel (`--control HOST:PORT`, executed on
 the next `egui` frame with input clamping) and the stdio JSON-RPC 2.0 Model
@@ -106,8 +114,8 @@ evaluation and remote `--connect` to a live GUI window.
 
 * **Source:** `solidcraft/crates/engine/src/control_auth.rs`
 * **Project:** [solidcraft](https://github.com/tangency-labs/solidcraft) (Tangency Labs)
-* **Licence:** MIT OR Apache-2.0
-* **Copyright:** Tangency Labs and the solidcraft contributors
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 SolidCraft contributors
 
 Control channel token generation, constant-time token comparison, 0600 token
 file creation, RAII token file cleanup, and canonical path root sandboxing

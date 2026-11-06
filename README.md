@@ -1,4 +1,4 @@
-# SeaCraft — a Rust clone of FREE!ship
+# SeaCraft — hull design and naval architecture in Rust
 
 SeaCraft is an independent Rust reimplementation of the open-source
 [FREE!ship](https://sourceforge.net/projects/freeship/) hull-design program.
@@ -7,10 +7,10 @@ measurement pipeline, and it reads and writes FREE!ship's `.fef` exchange
 format so control nets can move between the two applications.
 
 FREE!ship itself is a Delphi (Object Pascal) application released under the
-GNU GPL v2. Its descendant **FREE!ship Plus** (Victor Timoshenko) and its
+GNU GPL. Its descendant **FREE!ship Plus** (Victor Timoshenko) and its
 Lazarus port **FreeShip Plus in Lazarus** (Mark Malakanov) continue the same
-codebase. SeaCraft is a clean-room Rust implementation written from the
-documented behaviour and the GPL source, not a line-by-line translation.
+codebase. SeaCraft is written from FREE!ship's documented behaviour and its
+GPL source; it is not a line-by-line translation.
 
 ---
 
@@ -735,6 +735,14 @@ and startup recovery in scripted runs.
 
 ## 7. Licence
 
-SeaCraft is distributed under the GNU GPL v2 or later, matching FREE!ship's
-licence. FREE!ship itself is Copyright (C) its authors; this project is an
-independent reimplementation and is not affiliated with it.
+SeaCraft is licensed under the GNU General Public License, version 3 or (at
+your option) any later version (`GPL-3.0-or-later`); see [`LICENSE`](LICENSE).
+FREE!ship is Copyright (C) its authors and allows "version 2 of the License, or
+(at your option) any later version". Tags before `v0.2.1` are labelled
+`GPL-2.0-or-later` but contain the same Apache-2.0-only code, so read them as
+`GPL-3.0-or-later` too.
+
+SeaCraft is not affiliated with FREE!ship or its authors, or with Tangency Labs.
+Adapted third-party code is listed in [`ATTRIBUTION.md`](ATTRIBUTION.md), required
+notices are in [`NOTICE`](NOTICE), and dependency licences are in
+[`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt).

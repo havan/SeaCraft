@@ -3,6 +3,11 @@ name = "seacraft-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
+description = "Hull modelling kernel, hydrostatics and stability for SeaCraft"
 
 [dependencies]
 serde.workspace = true

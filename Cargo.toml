@@ -5,9 +5,13 @@ resolver = "2"
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-license = "GPL-2.0-or-later"
+license = "GPL-3.0-or-later"
 authors = ["SeaCraft contributors"]
 repository = "https://github.com/havan/SeaCraft"
+description = "Hull modelling, hydrostatics and stability in Rust, compatible with FREE!ship .fef files"
+readme = "README.md"
+keywords = ["naval-architecture", "hull", "hydrostatics", "cad", "subdivision"]
+categories = ["science", "simulation"]
 
 [workspace.dependencies]
 anyhow = "1"
