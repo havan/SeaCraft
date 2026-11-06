@@ -40,7 +40,7 @@ dragging with undo, a layer dock, a live hydrostatics dock with GZ cross
 curves, file/export actions, and a tabbed design dock (Loading, Damage,
 Windage, Performance) over the `<model>.seacraft.json` project file, with
 tanks, compartments and windage drawn in the viewports and a design report
-with project sections. `0.1.0` was cut on 2026-10-24; round 3 (`0.1.1` …
+with project sections. `0.2.0` was cut on 2026-11-06. `0.1.0` was cut on 2026-10-24; round 3 (`0.1.1` …
 `0.1.10`) was a fix round from a three-area bug hunt
 (`.hermes/plans/2026-10-24_round3-fix-round.md`).
 
@@ -320,9 +320,10 @@ These were real failures in this codebase; the fixes are load-bearing.
   `alpha.2` … `alpha.10` per completed GUI task, `0.1.0-beta.1` when the
   acceptance checklist passed, then `beta.N` per completed task, `0.1.0` on
   2026-10-24 after the round-2 readiness review (open, edit, measure, load,
-  report, save and reopen with no known blocking defect). From here: `0.1.N`
-  for a fix-only task, `0.2.0-beta.N` per completed feature task until the
-  next readiness review (a default — the user may choose otherwise).
+  report, save and reopen with no known blocking defect), `0.2.0` on 2026-11-06
+  after the round-13 readiness review, same criterion. From here: `0.2.N` for a
+  fix-only task, `0.3.0-beta.N` per completed feature task until the next
+  readiness review (a default — the user may choose otherwise).
 * The version must be identical in `Cargo.toml`, `Cargo.lock`, the window title
   and `seacraft --version`.
 * **Local-only Git.** `git remote -v` must stay empty: no push, no publish, no
