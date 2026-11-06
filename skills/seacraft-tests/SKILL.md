@@ -5,9 +5,10 @@ description: Use when writing or running SeaCraft tests, adding a numeric oracle
 
 # Tests
 
-`cargo xtask ci` is the full gate. Run it before every commit. It runs fmt, clippy with warnings denied,
-release and debug tests, the version check, demo reference numbers and the repository checks. Debug is not
-redundant: `debug_assert!`s and overflow checks only run there.
+`cargo xtask ci` is the gate. Run it before every commit. It runs fmt, clippy with warnings denied, the tests, the
+version check, demo reference numbers and the repository checks. The dev profile is optimised, and it keeps debug
+assertions and overflow checks on. `cargo xtask ci --full` also runs the release build's tests: use it before a
+release. CI runs it weekly.
 
 * **New test**: prefer analytic or invariant checks (box displacement, barge
   waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror
@@ -17,7 +18,7 @@ redundant: `debug_assert!`s and overflow checks only run there.
 
 ```console
 cargo build --release
-cargo xtask ci   # the full gate: fmt, clippy, release + debug tests, versions, demo numbers, repository checks
+cargo xtask ci   # the gate: fmt, clippy, tests, versions, demo numbers, repository checks
 cargo test
 cargo clippy --all-targets       # must stay silent
 cargo run --release --bin seacraft -- demo -o /tmp/demo.fef

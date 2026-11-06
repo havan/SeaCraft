@@ -10,7 +10,7 @@ Work: `ROADMAP.md`, issues labelled `help wanted` or `good first issue`. Design:
 notes are fine in ignored folders.
 
 ```console
-cargo xtask ci                       # the full gate
+cargo xtask ci                       # the gate; add --full before a release
 cargo run -p seacraft-gui -- --open examples/demo-hull.fef
 cargo run --bin seacraft -- hydro examples/demo-hull.fef --kg 2.2
 ```

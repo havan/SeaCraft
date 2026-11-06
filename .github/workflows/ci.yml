@@ -1,10 +1,14 @@
-# The full gate on every pull request and push to main. Pull request code gets only the read-only token.
+# The gate on every pull request and push to main. Pull request code gets only the read-only token.
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Weekly: the release build's tests as well.
+    - cron: '23 3 * * 0'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,9 +24,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install the windowing libraries the GUI links against
         run: |
           sudo apt-get update
@@ -30,7 +32,7 @@ jobs:
             libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
             libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - name: Run the gate
-        run: cargo xtask ci
+        run: cargo xtask ci ${{ github.event_name == 'schedule' && '--full' || '' }}
 
   licences:
     name: Dependency licences
@@ -38,6 +40,5 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-deny --version 0.20.2 --locked
       - run: cargo deny --locked check licenses

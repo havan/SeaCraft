@@ -12,6 +12,8 @@ First public release. No change to any computed number.
 - Design reports, CLI text with stability criteria, and the GUI's criteria panels now say results are not
   validated. JSON and CSV output are unchanged.
 - Added contributor documentation and CI.
+- Concurrent solver calls share one thread budget instead of each starting a thread per core.
+- The test gate takes about a quarter of the time: one optimised build that keeps debug checks.
 
 ## 0.2.0 (2026-11-06)
 

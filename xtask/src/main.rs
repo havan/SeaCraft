@@ -1,4 +1,4 @@
-//! `cargo xtask ci`: the full local gate (fmt, clippy, release and debug tests, versions, demo
+//! `cargo xtask ci`: the local gate (fmt, clippy, tests with debug checks, versions, demo
 //! reference numbers, licences, colour literals, private files, skills).
 //! `cargo xtask private`, `skills`, `colours` and `licences [--check]` run one check.
 
@@ -74,7 +74,7 @@ const DEMO_REFERENCE_TABLE: &[DemoReferenceMetric] = &[
 ];
 
 const USAGE: &str =
-    "Usage: cargo xtask ci [--skip-tests] | private | skills | colours | licences [--check]";
+    "Usage: cargo xtask ci [--skip-tests] [--full] | private | skills | colours | licences [--check]";
 const COMMANDS: &[&str] = &["ci", "private", "skills", "colours", "licences"];
 
 fn main() {
@@ -87,7 +87,8 @@ fn main() {
     match args[1].as_str() {
         "ci" => {
             let skip_tests = args.iter().any(|a| a == "--skip-tests");
-            run_ci(skip_tests);
+            let full = args.iter().any(|a| a == "--full");
+            run_ci(skip_tests, full);
         }
         "private" => step_private(&workspace_root()),
         "skills" => step_skills(&workspace_root()),
@@ -106,7 +107,7 @@ fn main() {
     }
 }
 
-fn run_ci(skip_tests: bool) {
+fn run_ci(skip_tests: bool, full: bool) {
     let root = workspace_root();
 
     step_fmt(&root);
@@ -114,14 +115,16 @@ fn run_ci(skip_tests: bool) {
     // Step a: cargo clippy --all-targets --release -- -D warnings
     step_clippy(&root);
 
-    // Step b: cargo test in release and in debug (or skipped). Debug is not
-    // redundant: debug_assert!s and overflow checks only run there, and egui
-    // has debug_assert!s of its own that a headless test can trip.
+    // Step b: cargo test (or skipped). The dev profile is optimised but keeps debug_assert!s
+    // and overflow checks, and egui has debug_assert!s of its own that a headless test can
+    // trip. `--full` also runs the release build's tests, for a release or a scheduled run.
     if skip_tests {
         println!("[ci] tests: skipped (--skip-tests)");
     } else {
-        step_test(&root, &["test", "--release"], "tests (release)");
-        step_test(&root, &["test"], "tests (debug)");
+        step_test(&root, &["test"], "tests");
+        if full {
+            step_test(&root, &["test", "--release"], "tests (release)");
+        }
     }
 
     // Step c: version check
@@ -168,14 +171,7 @@ fn step_fmt(root: &Path) {
 
 fn step_clippy(root: &Path) {
     let status = Command::new("cargo")
-        .args([
-            "clippy",
-            "--all-targets",
-            "--release",
-            "--",
-            "-D",
-            "warnings",
-        ])
+        .args(["clippy", "--all-targets", "--", "-D", "warnings"])
         .current_dir(root)
         .status()
         .expect("failed to execute cargo clippy");
@@ -234,7 +230,7 @@ fn step_versions(root: &Path) {
 
     // Ensure release binaries are built and Cargo.lock is updated
     let build_status = Command::new("cargo")
-        .args(["build", "--release", "--bins"])
+        .args(["build", "--bins"])
         .current_dir(root)
         .status()
         .unwrap_or_else(|e| {
@@ -269,8 +265,8 @@ fn step_versions(root: &Path) {
         }
     }
 
-    // 3. target/release/seacraft --version
-    let seacraft_bin = root.join("target/release/seacraft");
+    // 3. target/debug/seacraft --version
+    let seacraft_bin = root.join("target/debug/seacraft");
     if !seacraft_bin.exists() {
         fail(
             "versions",
@@ -296,8 +292,8 @@ fn step_versions(root: &Path) {
         );
     }
 
-    // 4. target/release/seacraft-gui --version
-    let seacraft_gui_bin = root.join("target/release/seacraft-gui");
+    // 4. target/debug/seacraft-gui --version
+    let seacraft_gui_bin = root.join("target/debug/seacraft-gui");
     if !seacraft_gui_bin.exists() {
         fail(
             "versions",
@@ -372,11 +368,11 @@ fn parse_lock_package_version(lock: &str, pkg_name: &str) -> Option<String> {
 }
 
 fn step_demo_reference(root: &Path) {
-    let seacraft_bin = root.join("target/release/seacraft");
+    let seacraft_bin = root.join("target/debug/seacraft");
     let tmp_demo =
         std::env::temp_dir().join(format!("seacraft-ci-demo-{}.fef", std::process::id()));
 
-    // 1. target/release/seacraft demo -o <tmp>/demo.fef
+    // 1. target/debug/seacraft demo -o <tmp>/demo.fef
     let demo_status: ExitStatus = Command::new(&seacraft_bin)
         .args(["demo", "-o"])
         .arg(&tmp_demo)
@@ -387,7 +383,7 @@ fn step_demo_reference(root: &Path) {
         fail("demo reference", "seacraft demo command failed");
     }
 
-    // 2. target/release/seacraft hydro <tmp>/demo.fef --draft 0.62 --json
+    // 2. target/debug/seacraft hydro <tmp>/demo.fef --draft 0.62 --json
     let hydro_out = Command::new(&seacraft_bin)
         .args(["hydro"])
         .arg(&tmp_demo)

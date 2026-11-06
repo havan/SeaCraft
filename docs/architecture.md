@@ -146,6 +146,8 @@ Authentication is on by default: a random token in a file only the user can read
 ## Decisions worth keeping
 
 - **Determinism.** Parallel cross curves must equal the serial result bit for bit, not within a tolerance.
+- **One thread budget.** `crates/seacraft-core/src/par.rs` allows one worker per core across the process, so
+  concurrent calls share the cores rather than multiplying threads.
 - **Measure on the refined mesh.** A control-polygon shortcut gives plausible but wrong numbers.
 - **No fabricated inputs.** A model loaded without a KG shows GM as `—` or a marked estimate. The demo hull
   states its KG explicitly.

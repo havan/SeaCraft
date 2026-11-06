@@ -7,14 +7,14 @@ is mostly one person's project, so reviews may take a while. The rules every cha
 
 ## Get it running
 
-You need stable Rust. On Linux, the GUI also needs the usual windowing libraries (see
+You need [rustup](https://rustup.rs), which installs the Rust version in `rust-toolchain.toml`. On Linux, the GUI also needs the usual windowing libraries (see
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) for the Ubuntu package list).
 
 ```sh
 git clone https://github.com/havan/SeaCraft && cd SeaCraft
 cargo run -p seacraft-gui -- --open examples/demo-hull.fef   # the desktop app
 cargo run --bin seacraft -- hydro examples/demo-hull.fef --kg 2.2
-cargo xtask ci                                               # the full gate
+cargo xtask ci                                               # the gate
 ```
 
 The design is in [docs/architecture.md](docs/architecture.md).

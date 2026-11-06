@@ -1,0 +1,4 @@
+# Pinned so that a new Rust release can't turn the gate red through a new lint. Update it on purpose.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

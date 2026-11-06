@@ -19,6 +19,12 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Tests run the solvers thousands of times, 6x slower unoptimised. Optimising keeps debug
+# assertions and overflow checks, which stay on in this profile and catch what release cannot.
+[profile.dev]
+opt-level = 2
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
