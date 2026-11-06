@@ -7,10 +7,14 @@
 //! Screen bases (all orthographic views):
 //! * profile — looking to starboard (`forward = +y`), `+x` right, `+z` up
 //! * plan    — looking down (`forward = -z`), `+x` right, `+y` up
-//! * body    — looking aft from the bow (`forward = +x`), `+y` left, `+z` up
+//! * body    — looking forward from aft (`forward = +x`), `+y` right, `+z` up
 //!
-//! The right vector always follows `right = forward × up`, which keeps the
-//! basis right-handed and the projection free of accidental mirroring.
+//! The right vector follows `right = forward × up`, which keeps the basis
+//! right-handed, except in the body plan. `x` forward, `y` starboard, `z` up
+//! is a left-handed triple, so looking forward with starboard on the right
+//! (the drawing convention, and what the SVG and DXF body plans do) needs a
+//! mirrored basis there. Nothing downstream depends on the handedness: shading
+//! and depth use world normals and the rasterizer's barycentrics are signed.
 
 use eframe::egui::{Pos2, Rect};
 use seacraft_core::math::Vec3;
@@ -152,6 +156,12 @@ impl Camera {
         }
         let right = right.norm();
         let up = right.cross(forward).norm();
+        // Starboard on the right, see the module header.
+        let right = if self.kind == ViewKind::Body {
+            -right
+        } else {
+            right
+        };
 
         ViewTransform {
             eye,
@@ -456,6 +466,19 @@ mod tests {
             (up.x - origin.x).abs() < 0.5,
             "+z must not move horizontally"
         );
+    }
+
+    #[test]
+    fn body_plan_looks_forward_with_starboard_on_the_right() {
+        let rect = rect();
+        let view = Camera::ortho(ViewKind::Body, Vec3::ZERO, 12.0).transform();
+        let origin = view.project(Vec3::ZERO, rect).unwrap();
+        let starboard = view.project(Vec3::new(0.0, 1.0, 0.0), rect).unwrap();
+        let up = view.project(Vec3::new(0.0, 0.0, 1.0), rect).unwrap();
+
+        assert!(view.forward.x > 0.999, "the eye is aft, looking forward");
+        assert!(starboard.x > origin.x + 1.0, "+y must point right");
+        assert!(up.y < origin.y - 1.0, "+z must point up the screen");
     }
 
     #[test]

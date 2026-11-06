@@ -498,6 +498,11 @@ hull), and the line through the spike tips is the curve a fair hull keeps
 smooth — so `--combs` turns a linesplan into a fairing check. In DXF the combs
 go on their own `Combs` layer.
 
+The body plan follows the drawing convention, in the GUI as well as the SVG
+and DXF: looking forward from aft with starboard on the right, stations aft of
+amidships on the left half, those forward of it on the right, and a station
+amidships on both.
+
 `linesplan::dxf` writes the same three views as an AutoCAD 2000 (`AC1015`)
 drawing in metres, laid out conventionally (plan below the profile, body plan
 to the right) on named layers — `Stations`, `Buttocks`, `Waterlines`,

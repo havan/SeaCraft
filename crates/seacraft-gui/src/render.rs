@@ -829,7 +829,7 @@ fn draw_sections(
     let groups: &[&[seacraft_core::linesplan::CurveWithCombs]] = match kind {
         crate::camera::ViewKind::Profile => &[&curves.buttocks],
         crate::camera::ViewKind::Plan => &[&curves.waterlines],
-        crate::camera::ViewKind::Body => &[&curves.stations],
+        crate::camera::ViewKind::Body => &[&curves.body_stations],
         crate::camera::ViewKind::Perspective => {
             &[&curves.stations, &curves.buttocks, &curves.waterlines]
         }

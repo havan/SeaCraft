@@ -6522,7 +6522,7 @@ mod tests {
             )),
             ..Default::default()
         };
-        let out = ctx.run_ui(input, |ui| {
+        let mut out = ctx.run_ui(input, |ui| {
             hydrostatics(
                 ui,
                 HydroPanel {
@@ -6540,6 +6540,7 @@ mod tests {
                 },
             );
         });
+        out.textures_delta.clear();
         let texts = painted_texts(&out.shapes);
         let lcg_fmt = format!("{:.3}", h.lcb.x);
         assert!(

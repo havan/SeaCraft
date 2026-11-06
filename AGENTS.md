@@ -152,6 +152,10 @@ regression, not an improvement.
   when the bow is higher than the stern.
 * **Datum**: `KB`, `BM`, `KM`, `KG` are above the keel (lowest hydrostatic
   point). `LCB`, `LCF` are in model coordinates.
+* **Body plan** looks forward from aft with starboard on the right; stations
+  aft of amidships on the left half, forward of it on the right, amidships on
+  both (`linesplan::body_plan_stations`, `camera.rs`). Same in the GUI, SVG and
+  DXF; 3D curves (DXF `Stations 3D`, IGES, Perspective) stay whole.
 * **Waterplane** is built in `hydro::waterplane_for` from draft, trim and heel;
   the normal points up, and points with `side <= 0` are submerged.
 

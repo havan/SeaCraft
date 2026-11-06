@@ -44,6 +44,7 @@ impl Default for LinesplanOptions {
 
 /// A polyline in one of the orthographic views: its 2D view coordinates and
 /// the 3D curve it came from.
+#[derive(Clone)]
 struct Curve {
     points: Vec<(f64, f64)>,
     points3: Vec<Vec3>,
@@ -65,7 +66,10 @@ pub struct CurveWithCombs {
 /// All 3D curves and optional curvature combs for the hull.
 #[derive(Debug, Clone)]
 pub struct LinesplanCurves3d {
+    /// Every station, whole: the 3D view of the hull.
     pub stations: Vec<CurveWithCombs>,
+    /// The stations as the body plan draws them: see [`body_plan_stations`].
+    pub body_stations: Vec<CurveWithCombs>,
     pub buttocks: Vec<CurveWithCombs>,
     pub waterlines: Vec<CurveWithCombs>,
 }
@@ -122,9 +126,103 @@ pub fn curves_3d(surface: &Surface, opts: LinesplanOptions) -> LinesplanCurves3d
 
     LinesplanCurves3d {
         stations: group(&cut.stations, b),
+        body_stations: group(&body_plan_stations(&cut), b),
         buttocks: group(&cut.buttocks, d),
         waterlines: group(&cut.waterlines, b),
     }
+}
+
+/// The stations as a body plan draws them, looking forward from aft with
+/// starboard (`+y`) on the right: stations aft of amidships (half the extents)
+/// on the left half, those forward of it on the right, and a station amidships
+/// on both. Each hull is symmetric, so the half is the whole section.
+///
+/// A station with nothing on its own half (a model built on one side only) is
+/// kept whole: a station silently missing would look like a fair hull.
+fn body_plan_stations(cut: &Cut) -> Vec<Curve> {
+    let mid = 0.5 * (cut.min.x + cut.max.x);
+    let tol = (cut.max.x - cut.min.x).max(0.1) * 1e-6;
+    let mut out = Vec::with_capacity(cut.stations.len());
+    // `cut_all` keeps the curves of one station together.
+    for station in cut
+        .stations
+        .chunk_by(|a, b| (station_x(a) - station_x(b)).abs() <= tol)
+    {
+        let x = station_x(&station[0]);
+        if (x - mid).abs() <= tol {
+            out.extend_from_slice(station);
+            continue;
+        }
+        let side = if x < mid { -1.0 } else { 1.0 };
+        let kept: Vec<Curve> = station
+            .iter()
+            .flat_map(|c| clip_to_side(c, side, tol))
+            .collect();
+        if kept.is_empty() {
+            out.extend_from_slice(station);
+        } else {
+            out.extend(kept);
+        }
+    }
+    out
+}
+
+fn station_x(curve: &Curve) -> f64 {
+    curve.points3.first().map_or(0.0, |p| p.x)
+}
+
+/// The parts of a station with `side * y >= 0`, split where it crosses the
+/// centreline. A closed curve wholly on that side stays closed.
+fn clip_to_side(curve: &Curve, side: f64, tol: f64) -> Vec<Curve> {
+    let inside = |p: &Vec3| side * p.y >= -tol;
+    let pts = &curve.points3;
+    let piece = |points3: Vec<Vec3>, closed: bool| Curve {
+        points: points3.iter().map(|p| (p.y, p.z)).collect(),
+        points3,
+        closed,
+        plane: curve.plane,
+    };
+    if pts.iter().all(inside) {
+        return vec![piece(pts.clone(), curve.closed)];
+    }
+    // Start a closed ring outside, so no kept run wraps past the array's end.
+    let start = if curve.closed {
+        pts.iter().position(|p| !inside(p)).unwrap_or(0)
+    } else {
+        0
+    };
+    let n = pts.len();
+    let steps = if curve.closed { n } else { n - 1 };
+    let mut out = Vec::new();
+    let mut run: Vec<Vec3> = Vec::new();
+    if inside(&pts[start]) {
+        run.push(pts[start]);
+    }
+    for i in 0..steps {
+        let (a, b) = (pts[(start + i) % n], pts[(start + i + 1) % n]);
+        match (inside(&a), inside(&b)) {
+            (true, true) => run.push(b),
+            (false, false) => {}
+            (was_in, _) => {
+                let t = a.y / (a.y - b.y);
+                let crossing = a + (b - a) * t;
+                if was_in {
+                    run.push(crossing);
+                    if run.len() >= 2 {
+                        out.push(piece(std::mem::take(&mut run), false));
+                    }
+                    run.clear();
+                } else {
+                    run.push(crossing);
+                    run.push(b);
+                }
+            }
+        }
+    }
+    if run.len() >= 2 {
+        out.push(piece(run, false));
+    }
+    out
 }
 
 /// The curves of every view plus the model's extents.
@@ -211,7 +309,8 @@ fn cut_all(surface: &Surface, opts: LinesplanOptions) -> Cut {
     let b = (max.y - min.y).max(0.1);
     let tol = l.max(b) * 1e-6;
 
-    // Body plan: stations at x = const, viewed from the bow (u = y, v = z).
+    // Stations at x = const, as (u = y, v = z); [`body_plan_stations`] halves
+    // them for the body plan.
     let mut stations: Vec<Curve> = Vec::new();
     for i in 0..opts.stations.max(2) {
         let t = i as f64 / (opts.stations.max(2) - 1) as f64;
@@ -595,12 +694,13 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
             plan_y + bw - (z - min.z) * scale,
         )
     };
-    for c in &cut.stations {
+    let body_stations = body_plan_stations(&cut);
+    for c in &body_stations {
         let d = svg_path(c, &map_body);
         let _ = writeln!(out, "<path class=\"station\" d=\"{d}\"/>");
     }
     if opts.combs {
-        let combs = view_combs(&cut.stations, opts.comb_scale, b);
+        let combs = view_combs(&body_stations, opts.comb_scale, b);
         for comb in &combs {
             let (spikes, tips) = comb_svg(comb, &map_body);
             let _ = writeln!(out, "<path class=\"spike\" d=\"{spikes}\"/>");
@@ -724,7 +824,8 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
     ));
 
     // Body plan: stations in (y, z), to the right of the profile.
-    for curve in &cut.stations {
+    let body_stations = body_plan_stations(&cut);
+    for curve in &body_stations {
         entities.push(DxfEntity::new(
             "Stations",
             DxfShape::Polyline {
@@ -738,6 +839,9 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
                 ),
             },
         ));
+    }
+    // Every station stays whole in 3D, so the hull can be rebuilt from it.
+    for curve in &cut.stations {
         entities.push(DxfEntity::new(
             "Stations 3D",
             DxfShape::Polyline3 {
@@ -828,7 +932,7 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
         let map_profile = |u: f64, v: f64| (u, v);
         let map_plan = |u: f64, v: f64| (u, plan_y0 + (v - min.y));
         for (curves, extent, map) in [
-            (&cut.stations, b, &map_body as &dyn Fn(f64, f64) -> P2),
+            (&body_stations, b, &map_body as &dyn Fn(f64, f64) -> P2),
             (&cut.buttocks, d, &map_profile),
             (&cut.waterlines, b, &map_plan),
         ] {
@@ -914,6 +1018,109 @@ mod tests {
     }
 
     #[test]
+    fn the_body_plan_puts_aft_stations_left_and_fore_stations_right() {
+        let surface = crate::demo::demo_hull(false);
+        let cut = cut_all(&surface, LinesplanOptions::default());
+        let mid = 0.5 * (cut.min.x + cut.max.x);
+        let body = body_plan_stations(&cut);
+        let (mut aft, mut fore, mut both) = (0, 0, 0);
+        for c in &body {
+            let x = station_x(c);
+            let lo = c.points3.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+            let hi = c
+                .points3
+                .iter()
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if (x - mid).abs() < 1e-6 {
+                assert!(lo < -0.1 && hi > 0.1, "amidships is on both sides");
+                both += 1;
+            } else if x < mid {
+                assert!(hi <= 1e-5, "aft station at x {x} reaches y {hi}");
+                aft += 1;
+            } else {
+                assert!(lo >= -1e-5, "fore station at x {x} reaches y {lo}");
+                fore += 1;
+            }
+        }
+        assert!(aft > 0 && fore > 0 && both > 0, "{aft} {fore} {both}");
+        // The half runs from the sheer to the centreline: nothing is lost.
+        let half = body
+            .iter()
+            .find(|c| station_x(c) < mid && c.points3.len() > 4)
+            .unwrap();
+        let whole: Vec<&Curve> = cut
+            .stations
+            .iter()
+            .filter(|c| (station_x(c) - station_x(half)).abs() < 1e-9)
+            .collect();
+        let top = |pts: &[Vec3]| pts.iter().map(|p| p.z).fold(f64::NEG_INFINITY, f64::max);
+        let low = |pts: &[Vec3]| pts.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
+        let whole_pts: Vec<Vec3> = whole.iter().flat_map(|c| c.points3.clone()).collect();
+        assert!((top(&half.points3) - top(&whole_pts)).abs() < 1e-6);
+        assert!((low(&half.points3) - low(&whole_pts)).abs() < 1e-6);
+    }
+
+    fn station_curve(points3: Vec<Vec3>, closed: bool) -> Curve {
+        Curve {
+            points: points3.iter().map(|p| (p.y, p.z)).collect(),
+            points3,
+            closed,
+            plane: Plane::new(Vec3::new(1.0, 0.0, 0.0), 0.0),
+        }
+    }
+
+    #[test]
+    fn clipping_a_ring_to_one_side_ends_on_the_centreline() {
+        // A box section, 2 wide and 1 high, closed, starting on the left.
+        let ring = vec![
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 1.0),
+            Vec3::new(0.0, -1.0, 1.0),
+        ];
+        let parts = clip_to_side(&station_curve(ring, true), 1.0, 1e-9);
+        assert_eq!(parts.len(), 1);
+        let p = &parts[0];
+        assert!(!p.closed);
+        assert_eq!(p.points3.len(), 4);
+        assert!(p.points3[0].y.abs() < 1e-12 && p.points3[3].y.abs() < 1e-12);
+        assert!(p.points3.iter().all(|q| q.y >= -1e-12));
+        assert_eq!(p.points[1], (1.0, 0.0));
+    }
+
+    #[test]
+    fn a_ring_on_one_side_stays_closed_or_is_dropped() {
+        // A catamaran's starboard demihull: closed, wholly at y > 0.
+        let ring = vec![
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+            Vec3::new(0.0, 3.0, 1.0),
+        ];
+        let curve = station_curve(ring, true);
+        let kept = clip_to_side(&curve, 1.0, 1e-9);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].closed);
+        assert!(clip_to_side(&curve, -1.0, 1e-9).is_empty());
+    }
+
+    #[test]
+    fn a_station_with_nothing_on_its_half_is_kept_whole() {
+        // Built on the starboard side only: an aft station would vanish.
+        let station =
+            |x: f64| station_curve(vec![Vec3::new(x, 1.0, 0.0), Vec3::new(x, 2.0, 1.0)], false);
+        let cut = Cut {
+            stations: vec![station(0.0), station(10.0)],
+            buttocks: Vec::new(),
+            waterlines: Vec::new(),
+            waterplane: None,
+            min: Vec3::new(0.0, 1.0, 0.0),
+            max: Vec3::new(10.0, 2.0, 1.0),
+        };
+        assert_eq!(body_plan_stations(&cut).len(), 2);
+    }
+
+    #[test]
     fn every_view_draws_its_curves_upright_inside_the_extents() {
         // Profile (x, z), plan (x, y) and body plan (y, z): each 2D point must
         // equal the matching coordinates of its 3D point. A flipped basis put
@@ -970,16 +1177,20 @@ mod tests {
                 "layer {layer} missing"
             );
         }
-        // Entities: three frames + three labels + three centrelines, then every
-        // curve twice (2D view and 3D copy), plus the design waterline.
+        // Entities: three frames + three labels + three centrelines, every curve
+        // in its 2D view (stations as the body plan halves them) and whole as a
+        // 3D copy, plus the design waterline.
         let polylines = drawing.matches("\nLWPOLYLINE\n").count();
         let poly3d = drawing.matches("\nPOLYLINE\n").count();
         assert!(polylines > 30, "2D polylines: {polylines}");
+        let cut = cut_all(&surface, opts);
+        let others = cut.buttocks.len() + cut.waterlines.len();
+        assert_eq!(poly3d, cut.stations.len() + others, "every curve in 3D");
         // Three frames and the design waterline have no 3D twin.
         assert_eq!(
-            polylines - poly3d,
-            4,
-            "every curve but the frames has a 3D twin"
+            polylines,
+            body_plan_stations(&cut).len() + others + 4,
+            "every view's curves, the frames and the waterplane"
         );
         // The SVG still renders.
         let svg = svg(&surface, opts);
