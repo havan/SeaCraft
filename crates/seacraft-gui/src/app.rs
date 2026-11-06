@@ -1012,9 +1012,6 @@ impl App {
         if let Some(p) = open {
             app.load(p);
         }
-        if let Some(dir) = crate::autosave::autosave_dir() {
-            app.set_autosave_dir(dir);
-        }
         app
     }
 
@@ -6298,9 +6295,13 @@ impl App {
         }
     }
 
-    /// Disable autosave and clear any pending recovery prompts (`--no-autosave`).
-    pub fn disable_autosave(&mut self) {
-        self.autosave.disable();
+    /// Start autosave in the platform's directory and offer what a crashed
+    /// session left there. Called by the binary unless `--no-autosave`, so
+    /// that flag and headless apps never touch the directory.
+    pub fn enable_autosave(&mut self) {
+        if let Some(dir) = crate::autosave::autosave_dir() {
+            self.set_autosave_dir(dir);
+        }
     }
 
     /// The directory where this app writes autosaves, or `None` when disabled.
@@ -6338,7 +6339,7 @@ impl App {
             let s = surface.as_ref()?;
             let fef_text = fef::write(s);
             let proj_text = project.to_json();
-            let orig = path.as_ref().map(|p| p.to_string_lossy().to_string());
+            let orig = path.as_deref().and_then(crate::autosave::snapshot_path);
             Some((fef_text, proj_text, orig))
         });
         for (level, msg) in report.logs {
@@ -6420,7 +6421,10 @@ impl App {
 
         let own_fef = self.surface.as_ref().map(fef::write).unwrap_or_default();
         let own_proj = self.project.to_json();
-        let orig_str = self.path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let orig_str = self
+            .path
+            .as_deref()
+            .and_then(crate::autosave::snapshot_path);
         let write_res = self.autosave.write_sync(
             own_fef,
             own_proj,

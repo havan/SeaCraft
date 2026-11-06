@@ -142,8 +142,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut app = App::new(cc, open.clone());
-            if no_autosave {
-                app.disable_autosave();
+            if !no_autosave {
+                app.enable_autosave();
             }
             app.set_analysis(analysis);
             // `--combs` overlays the curves with their combs, as it always did.

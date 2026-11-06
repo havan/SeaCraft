@@ -125,6 +125,15 @@ impl SnapshotFile {
     }
 }
 
+/// `path` as a snapshot records it: absolute, because the session that
+/// recovers it may start in another directory, and a relative path would then
+/// name another file. `None` for a path JSON cannot carry (not UTF-8): the
+/// recovered model then asks where to save rather than writing to an altered
+/// name.
+pub fn snapshot_path(path: &Path) -> Option<String> {
+    std::path::absolute(path).ok()?.to_str().map(str::to_owned)
+}
+
 /// An orphaned session snapshot discovered at startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Orphan {
@@ -217,6 +226,15 @@ pub fn scan_orphans(dir: &Path, own_session: Option<&str>) -> (Vec<Orphan>, Vec<
                 continue;
             }
         };
+        // Nothing a Recover could use: leave the file on disk and say so,
+        // rather than offer it on every start and fail every time.
+        if let Err(e) = seacraft_core::fef::parse(&snap.fef) {
+            warnings.push(format!(
+                "skipping autosave snapshot {}: invalid .fef ({e})",
+                json_path.display()
+            ));
+            continue;
+        }
         let original_path = snap
             .original_path
             .as_deref()
@@ -379,6 +397,10 @@ pub struct AutosaveState {
     last_snapshot_text: Option<(String, String)>,
     /// `(revision, project_rev)` of the snapshot currently on disk.
     last_saved_revs: Option<(u64, u64)>,
+    /// An edit since the last payload was built. Not every project edit moves
+    /// the revisions (a KG or a report option does not, or the loading results
+    /// would go stale), so the revisions alone cannot end the idle wake-up.
+    edited_since_payload: bool,
     /// Unix timestamp (seconds) of the last completed snapshot.
     last_saved_at: Option<u64>,
     /// Background write thread, if one is running.
@@ -410,6 +432,7 @@ impl AutosaveState {
             timer_anchor: None,
             last_snapshot_text: None,
             last_saved_revs: None,
+            edited_since_payload: false,
             last_saved_at: None,
             in_flight: None,
             write_failed: false,
@@ -452,12 +475,6 @@ impl AutosaveState {
         warnings
     }
 
-    /// Disable autosave and clear any pending recovery prompts (`--no-autosave`).
-    pub fn disable(&mut self) {
-        self.dir = None;
-        self.orphans.clear();
-    }
-
     /// Whether a background write is currently running.
     pub fn in_flight(&self) -> bool {
         self.in_flight.is_some()
@@ -465,6 +482,7 @@ impl AutosaveState {
 
     /// Note that the model became dirty.
     pub fn note_dirty(&mut self) {
+        self.edited_since_payload = true;
         if self.timer_anchor.is_none() {
             self.timer_anchor = Some(Instant::now());
         }
@@ -625,6 +643,7 @@ impl AutosaveState {
         }
 
         self.timer_anchor = Some(now);
+        self.edited_since_payload = false;
         let Some((fef, project, original_path)) = build_payload() else {
             return TickReport { logs };
         };
@@ -729,7 +748,7 @@ impl AutosaveState {
         if !dirty || dragging {
             return None;
         }
-        if self.last_saved_revs == Some(revs) && !self.write_failed {
+        if self.last_saved_revs == Some(revs) && !self.write_failed && !self.edited_since_payload {
             return None;
         }
         let anchor = self.timer_anchor?;

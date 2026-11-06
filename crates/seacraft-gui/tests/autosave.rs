@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use seacraft_core::fef;
 use seacraft_core::project::Project;
-use seacraft_gui::autosave::{find_orphans, SnapshotFile, AUTOSAVE_INTERVAL, SNAPSHOT_SCHEMA};
+use seacraft_gui::autosave::{
+    find_orphans, snapshot_path, SnapshotFile, AUTOSAVE_INTERVAL, SNAPSHOT_SCHEMA,
+};
 use seacraft_gui::messages::Level;
 use seacraft_gui::App;
 
@@ -592,12 +594,26 @@ fn test_8_corrupt_snapshot_bad_project_and_original_newer() {
     )
     .unwrap();
 
+    // Valid JSON around a .fef that cannot parse: Recover could only ever fail.
+    let bad_fef_json = autosave_dir.join("session-100-3.json");
+    let bad_fef = SnapshotFile {
+        schema: SNAPSHOT_SCHEMA,
+        app_version: seacraft_core::VERSION.to_owned(),
+        original_path: None,
+        saved_at_unix: 1,
+        fef: "not a fef".to_owned(),
+        project: Project::default().to_json(),
+    };
+    fs::write(&bad_fef_json, bad_fef.to_json()).unwrap();
+
     let mut app = App::headless_empty();
     app.set_autosave_dir(autosave_dir.clone());
     assert!(
         !app.autosave_prompt_open(),
-        "corrupt and wrong-schema snapshots must not be offered"
+        "corrupt, wrong-schema and unparseable snapshots must not be offered"
     );
+    assert!(bad_fef_json.exists(), "unparseable snapshot left on disk");
+    fs::remove_file(&bad_fef_json).unwrap();
     assert!(corrupt_json.exists(), "corrupt snapshot left on disk");
     assert!(
         bad_schema_json.exists(),
@@ -796,4 +812,53 @@ fn test_12_stale_lock_files_are_swept_and_live_ones_kept() {
     app.set_autosave_dir(dir);
     assert!(!dead.exists(), "the dead session's lock is removed");
     assert!(live.exists(), "the live session's lock stays");
+}
+
+#[test]
+fn snapshot_paths_are_absolute() {
+    // A session started elsewhere must find the same file, not its namesake.
+    let recorded = snapshot_path(Path::new("hull.fef")).unwrap();
+    assert_eq!(
+        PathBuf::from(recorded),
+        std::env::current_dir().unwrap().join("hull.fef")
+    );
+    assert_eq!(snapshot_path(Path::new("/a/b.fef")).unwrap(), "/a/b.fef");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_json_cannot_carry_is_not_recorded_altered() {
+    use std::os::unix::ffi::OsStrExt;
+    let path = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/boat_\xff.fef"));
+    assert_eq!(snapshot_path(path), None);
+}
+
+#[test]
+fn an_edit_that_moves_no_revision_still_wakes_the_idle_app() {
+    use seacraft_gui::autosave::AutosaveState;
+    let tmp = TempDir::new("idle");
+    let mut state = AutosaveState::new();
+    state.set_dir(tmp.path().join("autosave"), false);
+    let revs = (1, 1);
+    let t0 = Instant::now();
+    state.note_dirty();
+    let payload = || Some(("fef".to_owned(), "project".to_owned(), None));
+    state.tick(t0 + DUE, true, false, revs, payload);
+    state.join_write();
+    state.tick(t0 + DUE, true, false, revs, payload);
+    assert_eq!(
+        state.repaint_after(t0 + DUE, true, false, revs),
+        None,
+        "written and unchanged: nothing to wake for"
+    );
+
+    // A KG or a report option edit: dirty already, the revisions do not move.
+    state.note_dirty();
+    assert!(
+        state.repaint_after(t0 + DUE, true, false, revs).is_some(),
+        "the edit must reach a snapshot without further input"
+    );
+    state.tick(t0 + DUE + DUE, true, false, revs, payload);
+    state.join_write();
+    assert_eq!(state.repaint_after(t0 + DUE + DUE, true, false, revs), None);
 }
