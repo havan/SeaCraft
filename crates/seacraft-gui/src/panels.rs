@@ -1437,7 +1437,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     egui::DragValue::new(&mut panel.options.trim)
                         .speed(0.01)
                         .range(-panel.limits.trim..=panel.limits.trim)
-                        .fixed_decimals(2)
+                        .fixed_decimals(3)
                         .suffix(" m"),
                 )
                 .changed();
@@ -2083,6 +2083,11 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     if let Some(rep) = &panel.state.raos {
         stale_section(ui, panel.stale_raos, |ui| rao_results(ui, rep));
+    } else if !panel.busy_raos {
+        ui.label(
+            egui::RichText::new("Click Compute above for the heave and pitch RAOs.")
+                .color(theme::TEXT_MUTED),
+        );
     }
 
     ui.add_space(4.0);
@@ -4205,7 +4210,11 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 ui.label("Fill:");
                 let mut fill_pct = (tank.fill * 100.0).round();
                 if ui
-                    .add(egui::Slider::new(&mut fill_pct, 0.0..=100.0).suffix("%"))
+                    .add(
+                        egui::Slider::new(&mut fill_pct, 0.0..=100.0)
+                            .fixed_decimals(0)
+                            .suffix("%"),
+                    )
                     .changed()
                 {
                     tank.fill = (fill_pct / 100.0).clamp(0.0, 1.0);
