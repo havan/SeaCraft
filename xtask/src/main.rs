@@ -1,4 +1,4 @@
-//! `cargo xtask ci`: the full local gate (fmt, clippy, tests, versions, demo reference numbers, no git remotes).
+//! `cargo xtask ci`: the full local gate (fmt, clippy, release and debug tests, versions, demo reference numbers, no git remotes).
 
 use std::fs;
 use std::io::Write;
@@ -99,11 +99,14 @@ fn run_ci(skip_tests: bool) {
     // Step a: cargo clippy --all-targets --release -- -D warnings
     step_clippy(&root);
 
-    // Step b: cargo test --release (or skipped)
+    // Step b: cargo test in release and in debug (or skipped). Debug is not
+    // redundant: debug_assert!s and overflow checks only run there, and egui
+    // has debug_assert!s of its own that a headless test can trip.
     if skip_tests {
         println!("[ci] tests: skipped (--skip-tests)");
     } else {
-        step_test(&root);
+        step_test(&root, &["test", "--release"], "tests (release)");
+        step_test(&root, &["test"], "tests (debug)");
     }
 
     // Step c: version check
@@ -165,9 +168,9 @@ fn step_clippy(root: &Path) {
     println!("[ci] clippy: pass");
 }
 
-fn step_test(root: &Path) {
+fn step_test(root: &Path, args: &[&str], step: &str) {
     let output = Command::new("cargo")
-        .args(["test", "--release"])
+        .args(args)
         .current_dir(root)
         .output()
         .expect("failed to execute cargo test");
@@ -175,7 +178,7 @@ fn step_test(root: &Path) {
     if !output.status.success() {
         std::io::stdout().write_all(&output.stdout).ok();
         std::io::stderr().write_all(&output.stderr).ok();
-        fail("tests", "cargo test exited with failure");
+        fail(step, "cargo test exited with failure");
     }
 
     let mut total_passed = 0;
@@ -195,7 +198,7 @@ fn step_test(root: &Path) {
         }
     }
 
-    println!("[ci] tests: pass ({total_passed} passed)");
+    println!("[ci] {step}: pass ({total_passed} passed)");
 }
 
 fn step_versions(root: &Path) {

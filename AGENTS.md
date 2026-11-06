@@ -121,7 +121,7 @@ ATTRIBUTION.md              provenance of code ported from ../resource/*
 
 ```console
 cargo build --release
-cargo xtask ci   # the full gate: fmt, clippy, tests, versions, demo numbers, no remotes
+cargo xtask ci   # the full gate: fmt, clippy, release + debug tests, versions, demo numbers, no remotes
 cargo test                       # core + gui unit + 5 integration suites
 cargo clippy --all-targets       # must stay silent
 cargo run --release --bin seacraft -- demo -o /tmp/demo.fef
