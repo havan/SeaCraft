@@ -251,6 +251,12 @@ These were real failures in this codebase; the fixes are load-bearing.
   corners regardless of stored vertex kind. The checks are
   `subdiv::tests::creased_box_with_regular_vertices_preserves_corners_at_level_3`
   and `examples::checks::assert_transom_outline`.
+* **A closed hull has no boundary to read the sheer from.** The damaged
+  freeboard came from the open boundary alone, so on a hull with a deck, most
+  of the examples, it read "-" and the deck-immersed warning could not fire.
+  `damage::closed_hull_deck_edge` takes the perimeter of the large
+  upward-facing regions; going by region keeps a spray rail from passing for
+  the deck edge.
 * **The free-trim residual falls as the trim grows.** Bow up moves the LCB
   aft, so ordering the secant bracket by trim mixed its signs.
   `stability::secant_on_trim` (shared by intact and damage) keeps the bracket

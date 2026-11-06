@@ -158,7 +158,11 @@ fn body_plan_stations(cut: &Cut) -> Vec<Curve> {
             .iter()
             .flat_map(|c| clip_to_side(c, side, tol))
             .collect();
-        if kept.is_empty() {
+        // Only touching the centreline is still nothing on this half.
+        let on_its_half = kept
+            .iter()
+            .any(|c| c.points3.iter().any(|p| side * p.y > tol));
+        if !on_its_half {
             out.extend_from_slice(station);
         } else {
             out.extend(kept);
@@ -222,6 +226,13 @@ fn clip_to_side(curve: &Curve, side: f64, tol: f64) -> Vec<Curve> {
     if run.len() >= 2 {
         out.push(piece(run, false));
     }
+    // A curve leaving the centreline for the other half crosses at its own
+    // vertex: no length, and nothing for an export to draw.
+    for c in &mut out {
+        c.points3.dedup_by(|a, b| (*a - *b).length() <= tol);
+        c.points = c.points3.iter().map(|p| (p.y, p.z)).collect();
+    }
+    out.retain(|c| c.points3.len() >= 2);
     out
 }
 
@@ -1118,6 +1129,42 @@ mod tests {
             max: Vec3::new(10.0, 2.0, 1.0),
         };
         assert_eq!(body_plan_stations(&cut).len(), 2);
+    }
+
+    #[test]
+    fn a_station_that_only_touches_the_centreline_on_its_half_is_kept_whole() {
+        // Built on the starboard side from a keel on y = 0. Clipped to port,
+        // only the keel point is left: that must not pass for the station.
+        let station = |x: f64| {
+            station_curve(
+                vec![
+                    Vec3::new(x, 0.0, 0.0),
+                    Vec3::new(x, 0.0, 0.2),
+                    Vec3::new(x, 2.0, 1.0),
+                ],
+                false,
+            )
+        };
+        let cut = Cut {
+            stations: vec![station(0.0), station(10.0)],
+            buttocks: Vec::new(),
+            waterlines: Vec::new(),
+            waterplane: None,
+            min: Vec3::new(0.0, 0.0, 0.0),
+            max: Vec3::new(10.0, 2.0, 1.0),
+        };
+        let kept = body_plan_stations(&cut);
+        assert_eq!(kept.len(), 2);
+        assert!(kept.iter().all(|c| c.points3.len() == 3), "kept whole");
+    }
+
+    #[test]
+    fn a_curve_leaving_the_centreline_for_the_other_half_leaves_no_zero_length_piece() {
+        let curve = station_curve(
+            vec![Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 2.0, 1.0)],
+            false,
+        );
+        assert!(clip_to_side(&curve, -1.0, 1e-9).is_empty());
     }
 
     #[test]

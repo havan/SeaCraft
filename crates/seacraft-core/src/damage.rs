@@ -711,6 +711,96 @@ pub fn solve_damaged_floating(
         .map(|(draft, trim)| FloatingCondition { draft, trim })
 }
 
+/// The sheer / deck edge of the hull, for the damaged freeboard: the open
+/// boundary of a hull that ends at the sheer ([`hull_deck_boundary_vertices`]),
+/// or the outline of the deck of a closed one ([`closed_hull_deck_edge`]).
+fn hull_deck_edge_vertices(hull: &Hull) -> Vec<Vec3> {
+    let open = hull_deck_boundary_vertices(hull);
+    if open.is_empty() {
+        closed_hull_deck_edge(hull)
+    } else {
+        open
+    }
+}
+
+/// The outline of the deck of a closed hull, which has no boundary to read the
+/// sheer from: the perimeter of its large upward-facing regions. Going by
+/// region, not by every upward-facing panel, leaves out a spray rail or chine
+/// flat, which would pass for a deck edge far below the real one, and keeps
+/// each demihull of a catamaran. A coachroof top may count, but it is higher
+/// than the deck edge and the freeboard is the minimum. Empty if the hull has
+/// no upward-facing panels at all.
+fn closed_hull_deck_edge(hull: &Hull) -> Vec<Vec3> {
+    /// Steeper than 60 degrees from level is a side, not a deck.
+    const MIN_UP: f64 = 0.5;
+    /// A region under this share of the largest is not the deck.
+    const MIN_SHARE: f64 = 0.25;
+
+    let n = hull.tris.len();
+    let mut area = vec![0.0; n];
+    let mut up = vec![false; n];
+    let mut edge_tris: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, t) in hull.tris.iter().enumerate() {
+        let (a, b, c) = (hull.verts[t[0]], hull.verts[t[1]], hull.verts[t[2]]);
+        let normal = (b - a).cross(c - a);
+        area[i] = 0.5 * normal.length();
+        up[i] = area[i] > 0.0 && normal.z > MIN_UP * 2.0 * area[i];
+        for k in 0..3 {
+            let (p, q) = (t[k], t[(k + 1) % 3]);
+            let key = if p < q { (p, q) } else { (q, p) };
+            edge_tris.entry(key).or_default().push(i);
+        }
+    }
+
+    // Upward-facing panels connected through shared edges.
+    let mut tri_edges: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for (key, tris) in &edge_tris {
+        for &i in tris {
+            tri_edges[i].push(*key);
+        }
+    }
+    let mut region = vec![usize::MAX; n];
+    let mut region_area: Vec<f64> = Vec::new();
+    for seed in 0..n {
+        if !up[seed] || region[seed] != usize::MAX {
+            continue;
+        }
+        let id = region_area.len();
+        let mut total = 0.0;
+        let mut stack = vec![seed];
+        region[seed] = id;
+        while let Some(i) = stack.pop() {
+            total += area[i];
+            for key in &tri_edges[i] {
+                for &j in &edge_tris[key] {
+                    if up[j] && region[j] == usize::MAX {
+                        region[j] = id;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        region_area.push(total);
+    }
+    let largest = region_area.iter().copied().fold(0.0, f64::max);
+    let is_deck =
+        |i: usize| region[i] != usize::MAX && region_area[region[i]] >= MIN_SHARE * largest;
+
+    // Edges with deck on one side only.
+    let mut pts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (&(a, b), tris) in &edge_tris {
+        if tris.iter().filter(|&&i| is_deck(i)).count() == 1 {
+            for v in [a, b] {
+                if seen.insert(v) {
+                    pts.push(hull.verts[v]);
+                }
+            }
+        }
+    }
+    pts
+}
+
 /// Find boundary vertices of the hull representing the sheer/deck edge
 /// (excluding half-model centerline vertices on y = 0).
 fn hull_deck_boundary_vertices(hull: &Hull) -> Vec<Vec3> {
@@ -987,11 +1077,11 @@ pub fn evaluate(
     }
 
     // 5. Margin / deck edge freeboard at damaged equilibrium.
-    let boundary_pts = hull_deck_boundary_vertices(&hull);
-    let freeboard_m = if boundary_pts.is_empty() {
+    let deck_edge = hull_deck_edge_vertices(&hull);
+    let freeboard_m = if deck_edge.is_empty() {
         None
     } else {
-        let min_fb = boundary_pts
+        let min_fb = deck_edge
             .iter()
             .map(|p| eq_wp.side(*p))
             .fold(f64::INFINITY, f64::min);
@@ -1330,6 +1420,84 @@ mod tests {
         );
         assert!(res.trim_m.abs() < 1e-3, "midship flood has no trim");
         assert!(res.heel_deg.abs() < 1e-3, "symmetric flood has no heel");
+        // The barge is closed, so its deck edge has no boundary to read.
+        let freeboard = res.freeboard_m.expect("a closed hull has a deck edge");
+        assert!(
+            (freeboard - (d_barge - res.draft)).abs() < 1e-6,
+            "freeboard {freeboard} at draft {}",
+            res.draft
+        );
+    }
+
+    /// A prism with a closed section: bottom, a small ledge low on each side
+    /// (a spray rail), sides, deck, coachroof. The ledge faces up as the deck
+    /// does, but it is not the deck edge.
+    #[test]
+    fn the_deck_edge_of_a_closed_hull_is_not_a_spray_rail() {
+        let section = [
+            (-2.1, 0.0),
+            (2.1, 0.0),
+            (2.1, 0.5),
+            (2.0, 0.5),
+            (2.0, 2.0),
+            (1.0, 2.0),
+            (1.0, 2.5),
+            (-1.0, 2.5),
+            (-1.0, 2.0),
+            (-2.0, 2.0),
+            (-2.0, 0.5),
+            (-2.1, 0.5),
+        ];
+        let n = section.len();
+        let mut verts = Vec::new();
+        for x in [0.0, 10.0] {
+            verts.extend(section.iter().map(|&(y, z)| Vec3::new(x, y, z)));
+        }
+        let mut tris = Vec::new();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            // The section runs along the bottom to +y, then up and over the
+            // top, so (aft i, aft j, fore j) has its normal outward.
+            tris.push([i, j, n + j]);
+            tris.push([i, n + j, n + i]);
+        }
+        for i in 1..n - 1 {
+            tris.push([0, i + 1, i]);
+            tris.push([n, n + i, n + i + 1]);
+        }
+        let hull = Hull {
+            verts,
+            tris,
+            lids: Vec::new(),
+            keel: 0.0,
+            length: 10.0,
+            model_min: Vec3::new(0.0, -2.1, 0.0),
+            model_max: Vec3::new(10.0, 2.1, 2.5),
+        };
+        assert!(hull_deck_boundary_vertices(&hull).is_empty(), "closed");
+        let edge = hull_deck_edge_vertices(&hull);
+        let lowest = edge.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
+        assert_eq!(lowest, 2.0, "the deck, not the ledge at z = 0.5");
+        assert!(edge.iter().any(|p| p.y == 2.0) && edge.iter().any(|p| p.y == -2.0));
+    }
+
+    #[test]
+    fn a_hull_with_nothing_facing_up_has_no_deck_edge() {
+        // The readout says "-" rather than inventing a deck edge.
+        let hull = Hull {
+            verts: vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            tris: vec![[0, 2, 1]],
+            lids: Vec::new(),
+            keel: 0.0,
+            length: 1.0,
+            model_min: Vec3::new(0.0, 0.0, 0.0),
+            model_max: Vec3::new(1.0, 1.0, 0.0),
+        };
+        assert!(closed_hull_deck_edge(&hull).is_empty());
     }
 
     /// Sign check: an off-centre compartment on starboard (y > 0) produces
