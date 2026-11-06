@@ -6,9 +6,7 @@
 //! Formlarının Tasarım ve Mühendislik Perspektifinden Karşılaştırılması",
 //! *Journal of Marine and Engineering Technology (JoINMET)* 2(2), 78–90,
 //! 2022. The dimensions and coefficients are the means of the 12 surveyed
-//! piyade boats (the chair's spec in
-//! `.hermes/research/examples-board/10-chair-verification.md`); the lines
-//! are SeaCraft's own. LOA 9.00, LWL 7.97 (0.886 LOA), B 2.96 (0.329 LOA),
+//! piyade boats, taken from that paper's tables; the lines are SeaCraft's own. LOA 9.00, LWL 7.97 (0.886 LOA), B 2.96 (0.329 LOA),
 //! BWL 2.85 (0.962 B), T 0.907 (BWL/T 3.142) measured to the bottom of the
 //! keel as in Turan, freeboard 0.71 (0.784 T), D ≈ 1.62, ∇ 4.49 m³,
 //! Δ ≈ 4.60 t, Cb 0.218, Cm 0.490, Cp 0.445, Cwp 0.629, LCB 47.4 % LWL from
@@ -41,7 +39,7 @@
 //! half-breadth at the forward stations, and the sheer widened to match,
 //! gave LCB 48.0 %, Cwp 0.641), and the
 //! forward sections are already at the hollowest flare the net carries.
-//! The board's binding targets (the coefficients) won over the angle.
+//! The binding targets (the coefficients) won over the angle.
 //!
 //! Layers: Hull (canoe body), Keel (keel and deadwood), Transom, Deck (a
 //! flat top at the sheer: a real piyade is open forward of a half deck
@@ -76,7 +74,7 @@ const DEPTH: f64 = 1.62;
 /// The example's KG above the keel bottom (m), estimated (module header).
 const KG: f64 = 0.95;
 const SPEED_KN: f64 = 7.0;
-/// Turan's means (the board's targets).
+/// Turan's means (the targets).
 const TARGET_DISPLACEMENT_T: f64 = 4.60;
 const TARGET_CB: f64 = 0.218;
 #[cfg(test)]

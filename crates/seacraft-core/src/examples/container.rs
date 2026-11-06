@@ -569,7 +569,7 @@ mod tests {
         assert!((h.lcb.x - DESIGN_LCG).abs() < 1e-3);
         assert!((h.km_transverse - KM_DESIGN).abs() < 1e-3);
         // The waterline ends at the FP; LCB 1.48 % Lpp aft of midship
-        // within the board's 0.5 % of LWL; Cm at midship (Lpp / 2) is the
+        // within the 0.5 % target of LWL; Cm at midship (Lpp / 2) is the
         // same as at mid-LWL (both in the parallel midbody).
         assert!((h.wl_aft_x + h.lwl - LPP).abs() < 0.05, "WL fore end");
         let lcb_aft = (0.5 * LPP - h.lcb.x) / LPP;

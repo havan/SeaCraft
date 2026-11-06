@@ -1,5 +1,4 @@
-//! Regression tests for two round-3 findings that were fixed but never
-//! tested (`.hermes/research/2026-10-24_bughunt-C-frontends.md`):
+//! Regression tests for two findings that were fixed but never tested:
 //!
 //! * **C07** — the View menu's subdivision level slider and mode combo set
 //!   the fields directly, so the revision never moved: analysis frames and

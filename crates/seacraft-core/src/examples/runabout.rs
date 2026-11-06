@@ -2,7 +2,7 @@
 //! deadrise constant over the aft half to the flat transom raked 12° for an
 //! outboard bracket, warped forward to the stem), hard chines and a flat deck.
 //!
-//! Targets (examples board, Opus table; "representative of production
+//! Targets (design targets chosen for this example; "representative of production
 //! boats of this size", not any one model; updated for true deep-V): LWL 5.6 m,
 //! BWL 2.0 m (BOA 2.5 m), T 0.425 m, D 1.25 m, Δ 1.9 t, Cb 0.39, Cp 0.80,
 //! Cm 0.49, Cwp 0.80, LCB 39.5 % LWL from aft, 30 kn, KG 0.65 m (assumed).

@@ -2,7 +2,7 @@
 and damping of Lewis sections in deep water, by two independent methods:
   * Frank close-fit source panels (any section), and
   * Ursell (1949) wave source + wave-free multipoles (semicircle only).
-Run: python3 heave_2d.py   (numpy + scipy). Written by Claude, 2026-10-23.
+Run: python3 heave_2d.py   (numpy + scipy). Written 2026-10-23.
 The wave-source kernel F = e^{KW}E1(KW) + i*pi*sgn(x)*e^{KW} was checked
 against direct numerical principal-value integration (value and gradient).
 

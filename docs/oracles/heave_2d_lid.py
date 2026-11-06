@@ -10,7 +10,7 @@ Checked against Ursell multipoles (heave_2d.py) for the semicircle: plain
 Frank (60 panels) has irregular frequencies at xi = KR ~ 1.82 and ~ 4.78,
 where its added mass is off by up to 60 %; with the lid it stays within
 ~1.5 % of Ursell for xi 0.5..4.8.
-Run: python3 -I heave_2d_lid.py   (numpy + scipy). Written by Claude, 2026-10-23."""
+Run: python3 -I heave_2d_lid.py   (numpy + scipy). Written 2026-10-23."""
 import sys
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
 import numpy as np

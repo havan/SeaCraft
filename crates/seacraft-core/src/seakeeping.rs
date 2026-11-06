@@ -1620,7 +1620,7 @@ mod tests {
         }
     }
 
-    /// Oracle: Claude's two independent Python solutions (docs/oracles/heave_2d.py):
+    /// Oracle: two independent Python solutions (docs/oracles/heave_2d.py):
     /// Frank close-fit panels (60 and 120 panels agree to 0.2 %) and, for the
     /// semicircle, Ursell's wave source + wave-free multipoles; the two agree to
     /// 0.3 % in added mass and 0.6 % in damping for ξ ≤ 1.5. Columns:

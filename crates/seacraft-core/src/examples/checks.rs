@@ -1,5 +1,5 @@
 //! Acceptance checks shared by the example hulls' tests (the examples
-//! board's "Acceptance" list). Every check measures at level 3, Loop.
+//! design's acceptance list). Every check measures at level 3, Loop.
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,7 +36,7 @@ pub fn lcb_frac(h: &Hydrostatics) -> f64 {
     (h.lcb.x - h.wl_aft_x) / h.lwl
 }
 
-/// The board's targets for one example.
+/// The design targets for one example.
 #[derive(Debug, Clone, Copy)]
 pub struct Targets {
     pub lwl: f64,
@@ -51,7 +51,7 @@ pub struct Targets {
 }
 
 /// Measured against target, printed (run with `--nocapture` to see it) and
-/// asserted with the board's tolerances.
+/// asserted with the design tolerances.
 pub fn assert_targets(name: &str, h: &Hydrostatics, t: &Targets) {
     let rows = [
         ("Δ (t)", t.displacement_t, h.displacement_t),

@@ -3,7 +3,7 @@
 //! `3D/3dmodel.model`.
 //!
 //! Adapted from Tangency Labs' `solidcraft/crates/io/src/threemf.rs`
-//! (`../resource/solidcraft`, MIT OR Apache-2.0): the `weld` pass that makes a
+//! (MIT OR Apache-2.0, see `ATTRIBUTION.md`): the `weld` pass that makes a
 //! tessellation watertight, and the package layout (content types part, root
 //! relationships part, one model part with the 3MF core namespace, a single
 //! mesh object and one build item) follow that file.

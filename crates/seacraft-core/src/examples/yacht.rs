@@ -1,7 +1,7 @@
 //! 10 m fin-keel cruising yacht: a light canoe body with a counter transom,
 //! a closed flat deck, a swept fin keel and a spade rudder.
 //!
-//! Targets (examples board, Opus table; "representative of production
+//! Targets (design targets chosen for this example; "representative of production
 //! boats of this size", not any one model): LOA 10.4 m, LWL 9.0 m, BWL
 //! 2.9 m (BOA 3.4 m), canoe-body draft Tc 0.45 m, total draft 1.85 m,
 //! canoe-body depth 1.45 m, Δ 5.0 t; canoe body Cb 0.40, Cp 0.55, Cm 0.73,

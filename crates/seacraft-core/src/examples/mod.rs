@@ -7,8 +7,7 @@
 //! numbers frozen in the hull's station table: [`build`] runs no solver, so
 //! it is cheap enough for the New design preview.
 //!
-//! Every example is checked in its own file against the targets of the
-//! examples board (`.hermes/research/examples-board/20-chair-decision.md`):
+//! Every example is checked in its own file against its design targets:
 //! Δ ±2 %, LWL and BWL ±1 %, Cb and Cp ±0.02, Cm and Cwp ±0.03, LCB ±0.5 %
 //! of LWL, closed below the waterline, GM ≥ 0.15 m at the example's KG,
 //! |GZ(0°)| < 1 mm, free-trim equilibrium in the Design condition within

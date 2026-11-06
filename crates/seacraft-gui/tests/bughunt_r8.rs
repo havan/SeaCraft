@@ -1,6 +1,4 @@
-//! Regression tests for the round-8 GUI bug hunt
-//! (`.hermes/research/2026-10-31_bughunt-B-gui.md`, verdicts in
-//! `.hermes/plans/2026-10-31_round8-bughunt.md`):
+//! Regression tests for a GUI bug hunt:
 //!
 //! * **B03** — a New design (demo, example, parametric) is one undo step back
 //!   to the previous model, but it also wiped every undo step before it.

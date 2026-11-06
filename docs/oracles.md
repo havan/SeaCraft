@@ -5,8 +5,12 @@ the mathematical formula, the exact test function (`file::test_name`), the numbe
 and parameters evaluated, and the provenance describing how the reference value
 was produced.
 
-Per project conventions, only facts stated in the codebase, code comments,
-`.hermes/NEXT.md`, or `ATTRIBUTION.md` are documented.
+Only facts stated in the codebase, code comments or `ATTRIBUTION.md` are documented.
+
+Passing an oracle shows that the code agrees with that case, not that its results are right for a real
+vessel; see [`DISCLAIMER.md`](../DISCLAIMER.md). Many of these derivations and scripts were produced with
+AI coding assistants and then checked as described in each section. A value marked "not published" has
+no published source behind it.
 
 ---
 
@@ -144,7 +148,7 @@ Panel divergence divergence integration over triangular panels of the refined li
 - **Midship area $A_m$**: $1.467\text{ m}^2$ (tolerance $1.0\%$)
 
 ### Provenance
-SeaCraft's own output for the built-in demo hull, frozen as a regression baseline (not an independent or FREE!ship-computed value; provenance of the original numbers: not recorded). Recorded in `AGENTS.md` and `.hermes/NEXT.md` as the project's primary regression gate: any change altering these metrics by $> 1\%$ is a regression.
+SeaCraft's own output for the built-in demo hull, frozen as a regression baseline (not an independent or FREE!ship-computed value; provenance of the original numbers: not recorded). Recorded in `xtask/src/main.rs` as the project's primary regression gate: any change altering these metrics by $> 1\%$ is a regression.
 
 ---
 
@@ -176,7 +180,7 @@ with $k_x = k_0 \sec\theta$, $k_z = k_0 \sec^2\theta$, $k_0 = g / U^2$.
 - Grid result matches 1D analytical quadrature `wigley_analytic_rw` within $1\%$.
 
 ### Provenance
-Independent numerical quadrature using variable substitution $\lambda = \sec\theta = \cosh u$ ($u \in [0, 6]$) over an $801 \times 201$ offset grid using the trapezoidal rule, computed specifically for this regression check. As documented in the module comments and `.hermes/NEXT.md`, these are not published experimental or tabulated values.
+Independent numerical quadrature using variable substitution $\lambda = \sec\theta = \cosh u$ ($u \in [0, 6]$) over an $801 \times 201$ offset grid using the trapezoidal rule, computed specifically for this regression check. As documented in the module comments, these are not published experimental or tabulated values.
 
 ---
 
@@ -397,7 +401,7 @@ Semicircle (b = T = 1 m) and a Lewis section b = 1.5 m, T = 1 m, σ = 0.9, at ξ
 tolerances 1.5 % (added mass, Ā) and 2 % (damping).
 
 ### Provenance
-Computed by Claude with [`docs/oracles/heave_2d.py`](oracles/heave_2d.py) by two independent methods: Frank panels
+Computed with [`docs/oracles/heave_2d.py`](oracles/heave_2d.py) by two independent methods: Frank panels
 (60 vs 120 panels agree to 0.2 %; ∞-frequency semicircle 1.006 × ρπb²/2) and, for the semicircle, Ursell's wave
 source + wave-free multipoles. The two agree to 0.3 % in added mass and 0.6 % in damping for ξ ≤ 1.5. The wave-source
 kernel was checked against direct numerical principal-value integration. ξ = 2 is not used: it is near the panel
@@ -420,7 +424,7 @@ at U = 0 has no heave–pitch coupling; the speed terms satisfy A35 − A53 = 2U
 - [`crates/seacraft-core/src/seakeeping.rs::test_symmetric_box_cross_coupling_vanishes`](../crates/seacraft-core/src/seakeeping.rs)
 
 ### Provenance
-Analytic limits. The speed-term signs were derived by Claude from the relative-motion sectional force
+Analytic limits. The speed-term signs were derived from the relative-motion sectional force
 −D/Dt[(a + b/iω_e)·V], D/Dt = ∂t − U∂x, integrated by parts; the long-wave test caught the original swapped signs.
 The demo hull's KG = 2.2 m limit (≈ 1.10) is BM_L/GM_L from `seacraft hydro`. Not published values.
 
@@ -454,7 +458,7 @@ Recipe: [`docs/oracles/irregular_seas.py`](oracles/irregular_seas.py) — run wi
 | MSI (a/g, ω) → %: (0.10, 1.0) (0.05, 1.0) (0.20, 1.0) (0.10, 0.5) (0.10, 2.0) (0.02, 1.2) | 32.545, 11.409, 61.794, 16.401, 16.401, 1.267 |
 
 ### Provenance
-Analytic moments and a hand-checkable normal-CDF formula, computed by Claude with scipy. The relative-motion
+Analytic moments and a hand-checkable normal-CDF formula, computed with scipy. The relative-motion
 sign rests on the RAO phases: in long waves pitch leads heave by ≈ +90° (λ/L = 8: +92.8°), i.e. the hull
 follows the wave slope, so s ≈ e^{ikx_r}. Not published values.
 
@@ -512,7 +516,7 @@ The Rust lid result is asserted within 2 % (a) and 3 % or 0.002 absolute (b) of 
 plain method (`lid = false`) at ξ = 1.82 must be more than 30 % off in a.
 
 ### Provenance
-Lid oracle and the transom formulas derived and checked by Claude (2026-10-23); not published values. Ohmatsu, "On
+Lid oracle and the transom formulas derived and checked for this project (2026-10-23); not published values. Ohmatsu, "On
 the irregular frequencies in the theory of oscillating bodies in a free surface", Papers Ship Res. Inst. 48 (1975).
 
 ## 19. Round-3 fixes: silhouette windage, Savitsky CL0, catamaran friction, loop signs
@@ -540,7 +544,7 @@ the irregular frequencies in the theory of oscillating bodies in a free surface"
   trim 0.3: `|n·LCF + d| < 1e-9`.
 
 ### Provenance
-Derived by Claude for the round-3 fixes (2026-10-24); hand and Python checks, not published values. Savitsky,
+Derived for these fixes (2026-10-24); hand and Python checks, not published values. Savitsky,
 "Hydrodynamic design of planing hulls", Marine Technology 1(1), 1964.
 
 ---
@@ -584,7 +588,7 @@ Closed box section, beam $b$, depth $d$, floating half full ($T = d/2$) with $G$
 - On its side, $LCG = 4$ m: level trim $2.4$ m, $|LCB - 4| < 10^{-5}$, $GZ = 0$, $KN = 1$ m.
 
 ### Provenance
-Derived by Claude for R8-1a (2026-10-31). The closed form and both symmetries were checked against an independent
+Derived for this test (2026-10-31). The closed form and both symmetries were checked against an independent
 Python script that clips the rectangular section by the heeled waterline and bisects the offset for the area
 (agreement $2 \times 10^{-16}$ at 18 heels from 0° to 180°; light-box symmetry $6 \times 10^{-16}$). Not published values.
 
@@ -610,7 +614,7 @@ residual curve must equal it.
   $GZ(16^\circ) = 0.933929$, $GZ(32^\circ) = 1.093452$, $GZ(40^\circ) = 1.082906$, $GZ(58^\circ) = 0.973499$ m.
 
 ### Provenance
-Derived by Claude for R8-2a (2026-10-31); checked against an independent Python script that clips the
+Derived for this test (2026-10-31); checked against an independent Python script that clips the
 rectangular section by the heeled waterline and bisects its offset for the area (agreement $\le 5 \times 10^{-16}$
 at 16°, 30°, 32°, 40°, 50°, 58°). Not published values.
 
@@ -655,7 +659,7 @@ wrong in either direction.
   at $1.98$ m. Demo hull, 1000 t lightship: `equilibrium_found = false`, "cannot float" (was 74.6 m, `true`).
 
 ### Provenance
-Derived by Claude for R8-4 (2026-10-31). The clipped-section numbers, the waterplane run and the lid-less deficit
+Derived for this test (2026-10-31). The clipped-section numbers, the waterplane run and the lid-less deficit
 were recomputed with an independent Python script (shoelace on the clipped rectangle); the lid-less values are what
 the code produced before the fix and match $Lbd + A\,h/3$ and the deficit formula to $10^{-12}$. FREE!ship's source
 was not available locally; this follows the README's description of `TFreeHydrostaticCalc` (waterplane-only lid),

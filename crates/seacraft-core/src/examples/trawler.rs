@@ -2,7 +2,7 @@
 //! the aft third, an immersed transom raked 25° (top aft), a raked stem, a
 //! sheer rising forward, a closed deck and a 1 m bulwark.
 //!
-//! Targets (examples board, Opus table; "representative of vessels of this
+//! Targets (design targets chosen for this example; "representative of vessels of this
 //! size", not any one boat): LOA 22.0 m, LWL 19.5 m, BWL 6.4 m (BOA 6.8 m),
 //! T 2.6 m, D 3.4 m, Δ 173 t, Cb 0.52, Cp 0.62, Cm 0.84, Cwp 0.80, LCB 47 %
 //! LWL from aft, 11 kn (Fn 0.41), KG 2.50 m (assumed, about 0.74 D).

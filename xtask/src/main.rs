@@ -133,6 +133,7 @@ fn run_ci(skip_tests: bool) {
     // Step e: repository checks that need no build
     step_licences(&root, true);
     step_colours(&root);
+    step_private(&root);
 
     println!("[ci] all CI checks passed successfully");
 }

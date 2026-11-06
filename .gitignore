@@ -1,6 +1,10 @@
 /target
 **/*.swp
 **/*.rs.bk
-*.png
+/*.png
 .DS_Store
 /.local/
+/.hermes/
+/.claude/
+/plan/
+/.superpowers/
