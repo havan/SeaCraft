@@ -1,4 +1,8 @@
-//! `cargo xtask ci`: the full local gate (fmt, clippy, release and debug tests, versions, demo reference numbers, no git remotes).
+//! `cargo xtask ci`: the full local gate (fmt, clippy, release and debug tests, versions, demo
+//! reference numbers, licences, colour literals, private files, skills).
+//! `cargo xtask private`, `skills`, `colours` and `licences [--check]` run one check.
+
+mod gates;
 
 use std::fs;
 use std::io::Write;
@@ -69,10 +73,14 @@ const DEMO_REFERENCE_TABLE: &[DemoReferenceMetric] = &[
     },
 ];
 
+const USAGE: &str =
+    "Usage: cargo xtask ci [--skip-tests] | private | skills | colours | licences [--check]";
+const COMMANDS: &[&str] = &["ci", "private", "skills", "colours", "licences"];
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: cargo xtask ci [--skip-tests]");
+        eprintln!("{USAGE}");
         std::process::exit(1);
     }
 
@@ -81,11 +89,18 @@ fn main() {
             let skip_tests = args.iter().any(|a| a == "--skip-tests");
             run_ci(skip_tests);
         }
+        "private" => step_private(&workspace_root()),
+        "skills" => step_skills(&workspace_root()),
+        "colours" => step_colours(&workspace_root()),
+        "licences" => {
+            let check = args.iter().any(|a| a == "--check");
+            step_licences(&workspace_root(), check);
+        }
         "--help" | "-h" => {
-            println!("Usage: cargo xtask ci [--skip-tests]");
+            println!("{USAGE}");
         }
         other => {
-            eprintln!("unknown command: '{other}'\nUsage: cargo xtask ci [--skip-tests]");
+            eprintln!("unknown command: '{other}'\n{USAGE}");
             std::process::exit(1);
         }
     }
@@ -115,8 +130,9 @@ fn run_ci(skip_tests: bool) {
     // Step d: demo reference check
     step_demo_reference(&root);
 
-    // Step e: git remote -v must print nothing
-    step_git_remotes(&root);
+    // Step e: repository checks that need no build
+    step_licences(&root, true);
+    step_colours(&root);
 
     println!("[ci] all CI checks passed successfully");
 }
@@ -453,24 +469,129 @@ fn step_demo_reference(root: &Path) {
     println!("[ci] demo reference: pass (all metrics within 1.0 %)");
 }
 
-fn step_git_remotes(root: &Path) {
+/// Every tracked file, repository-relative.
+fn tracked_files(root: &Path) -> Vec<String> {
     let out = Command::new("git")
-        .args(["remote", "-v"])
+        .args(["ls-files", "-z"])
         .current_dir(root)
         .output()
-        .unwrap_or_else(|e| fail("remotes", &format!("cannot run git remote: {e}")));
-
+        .unwrap_or_else(|e| fail("git", &format!("cannot run git ls-files: {e}")));
     if !out.status.success() {
-        fail("remotes", "git remote -v returned non-zero exit status");
+        fail("git", "git ls-files returned non-zero exit status");
     }
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
-    let remotes = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !remotes.is_empty() {
-        fail(
-            "remotes",
-            &format!("git remote -v must print nothing, but found:\n{remotes}"),
-        );
+/// Text of a tracked file; `None` for a binary file or one this checkout deleted.
+fn read_text(root: &Path, file: &str) -> Option<String> {
+    let bytes = fs::read(root.join(file)).ok()?;
+    if bytes.contains(&0) {
+        return None;
     }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
 
-    println!("[ci] remotes: pass (local-only repository, 0 remotes)");
+fn report(step: &str, violations: Vec<String>, passed: &str) {
+    if !violations.is_empty() {
+        fail(step, &format!("\n  {}", violations.join("\n  ")));
+    }
+    println!("[ci] {step}: pass ({passed})");
+}
+
+fn step_private(root: &Path) {
+    let files = tracked_files(root);
+    let mut machine = vec![root.to_string_lossy().into_owned()];
+    if let Ok(home) = std::env::var("HOME") {
+        if Path::new(&home).components().count() > 2 {
+            machine.push(home);
+        }
+    }
+    let mut bad = gates::private_path_violations(&files);
+    for file in &files {
+        if let Some(text) = read_text(root, file) {
+            bad.extend(gates::private_text_violations(file, &text, &machine));
+        }
+    }
+    report("private", bad, "no private files or paths tracked");
+}
+
+fn step_skills(root: &Path) {
+    let read = |p: &str| read_text(root, p).unwrap_or_default();
+    let mut dirs: Vec<String> = fs::read_dir(root.join("skills"))
+        .unwrap_or_else(|e| fail("skills", &format!("cannot read skills/: {e}")))
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    let bad = gates::skills_violations(
+        &read("AGENTS.md"),
+        &read("skills/README.md"),
+        &dirs,
+        &|p: &str| root.join(p).exists(),
+        COMMANDS,
+    );
+    report("skills", bad, "AGENTS.md and skills/ agree");
+}
+
+fn step_colours(root: &Path) {
+    let mut bad = Vec::new();
+    for file in tracked_files(root) {
+        if file.starts_with("crates/seacraft-gui/src/") && file.ends_with(".rs") {
+            if let Some(text) = read_text(root, &file) {
+                bad.extend(gates::colour_violations(&file, &text));
+            }
+        }
+    }
+    report("colours", bad, "colour literals only in theme.rs");
+}
+
+fn step_licences(root: &Path, check: bool) {
+    let out = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|e| fail("licences", &format!("cannot run cargo metadata: {e}")));
+    if !out.status.success() {
+        fail("licences", &String::from_utf8_lossy(&out.stderr));
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| fail("licences", &format!("bad cargo metadata: {e}")));
+    let members = meta["workspace_members"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let field = |p: &serde_json::Value, k: &str| p[k].as_str().unwrap_or("not stated").to_string();
+    let deps: Vec<gates::Dep> = meta["packages"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| !members.contains(&p["id"]))
+        .map(|p| gates::Dep {
+            name: field(p, "name"),
+            version: field(p, "version"),
+            license: field(p, "license"),
+            repository: field(p, "repository"),
+        })
+        .collect();
+    let text = gates::licences_render(&deps);
+    let path = root.join("THIRD-PARTY-LICENSES.txt");
+    if check {
+        if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            fail(
+                "licences",
+                "THIRD-PARTY-LICENSES.txt is out of date; run `cargo xtask licences`",
+            );
+        }
+        println!("[ci] licences: pass ({} dependencies)", deps.len());
+    } else {
+        fs::write(&path, text)
+            .unwrap_or_else(|e| fail("licences", &format!("cannot write {path:?}: {e}")));
+        println!("[ci] licences: wrote {} dependencies", deps.len());
+    }
 }

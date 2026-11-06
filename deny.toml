@@ -1,0 +1,24 @@
+# Dependency licences must be compatible with SeaCraft's GPL-3.0-or-later (see NOTICE).
+# `cargo deny check licenses`, run in CI.
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# egui's default fonts. The crate embeds Hack and Noto (OFL-1.1) and Ubuntu-Light (Ubuntu Font
+# Licence 1.0). This repository does not contain them, and it publishes no binaries, so the
+# exception is limited to this crate. Whether the Ubuntu font may ship inside a GPLv3 binary is
+# unconfirmed: check it or replace the font before anyone distributes binaries (ROADMAP.md).
+[[licenses.exceptions]]
+crate = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
