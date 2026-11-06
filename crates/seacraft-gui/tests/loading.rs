@@ -256,3 +256,45 @@ fn imo_criteria_carry_the_not_validated_note() {
         "{note}: {text:?}"
     );
 }
+
+#[test]
+fn windage_weather_verdict_carries_the_not_validated_note() {
+    let (mut app, ctx, _cond) = setup_demo_with_loadcase();
+    let result = app.compute_loading_blocking(None).expect("compute");
+    let weather = result
+        .weather
+        .clone()
+        .expect("the demo condition has a weather result");
+    let mut project = seacraft_core::project::Project::default();
+    let mut selected = None;
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 8000.0),
+        )),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| {
+        seacraft_gui::panels::windage(
+            ui,
+            seacraft_gui::panels::WindagePanel {
+                project: &mut project,
+                weather: Some(&weather),
+                stale: false,
+                selected: &mut selected,
+                keel_z: 0.0,
+            },
+        );
+    });
+    out.textures_delta.clear();
+    let text = texts(&out);
+    assert!(
+        text.iter()
+            .any(|t| t.starts_with("Weather criterion summary")),
+        "{text:?}"
+    );
+    assert!(
+        text.iter().any(|t| t.starts_with("Not validated")),
+        "{text:?}"
+    );
+}

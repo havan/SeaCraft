@@ -11,7 +11,10 @@ version 2 or any later version.
 Adapted code
 Files adapted from other projects are listed in ATTRIBUTION.md. SolidCraft and FieldCraft are
 licensed MIT OR Apache-2.0 and taken here under MIT (LICENSES/MIT.txt). SolidCraft: Copyright (c)
-2026 SolidCraft contributors. FieldCraft: Copyright (c) 2026 FieldCraft contributors.
+2026 SolidCraft contributors. FieldCraft: Copyright (c) 2026 FieldCraft contributors. Parts of those
+files come in turn from CADCraft (Copyright (c) 2026 ArtCraft Team and the CADCraft contributors)
+and GridCraft (Copyright (c) 2026 ArtCraft Team and the GridCraft contributors), under the same
+licence choice.
 
 The B-spline surface interpolation in crates/seacraft-core/src/iges.rs is adapted, with changes,
 from solidcore's crates/solidcore/src/nurbs/srf_fit.rs, licensed under the Apache License, Version

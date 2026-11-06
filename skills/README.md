@@ -67,11 +67,10 @@ Authentication is required by default:
 
 ## Maintaining
 
-- `skills_name_only_real_tools` in `crates/seacraft-cli/src/mcp.rs` runs in CI. It reads every `SKILL.md`, checks that
+- `skills_name_only_real_tools` in `crates/seacraft-cli/src/mcp.rs` runs in CI. It reads the three design skills, checks that
   each `` `tool_name {…}` `` call names a tool in `tool_definitions()`, and checks the frontmatter (`name` equals the
   folder, `description` starts "Use when").
 - Numbers quoted in the skills come from the demo hull (`examples/demo-hull.fef`, T = 0.62 m). If the reference
   numbers in `skills/seacraft-hull-numerics/SKILL.md` move, update the skills in the same change.
 - Write tool calls as `` `tool_name {"arg": value}` `` so the test sees them; keep other backticked code from
   starting with `name {`.
-- Each skill ends with the SeaCraft version it was written against; bump it when its tools change.

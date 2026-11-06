@@ -3871,7 +3871,7 @@ mod tests {
         assert_eq!(info["validation"]["ok"], true, "{info}");
         assert!(info["layers"].as_array().is_some_and(|l| !l.is_empty()));
 
-        // hydro_compute, free to trim: the the hull-numerics skill reference volume.
+        // hydro_compute, free to trim: the hull-numerics skill reference volume.
         let hydro = ok(
             &mut s,
             6,

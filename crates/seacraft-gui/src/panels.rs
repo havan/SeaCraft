@@ -4698,6 +4698,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
             ui.label(egui::RichText::new("Weather criterion summary (§2.3)").strong());
             criteria_badge(ui, w.passed, panel.stale);
         });
+        not_validated_note(ui);
         ui.small("from the loading panel's last Compute");
         ui.add_space(2.0);
 

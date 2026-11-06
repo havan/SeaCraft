@@ -78,6 +78,9 @@ translucent waterplane compositing.
 * **Licence:** MIT OR Apache-2.0, taken under MIT
 * **Copyright:** Copyright (c) 2026 SolidCraft contributors
 
+Solidcraft's bounded zip code comes from GridCraft `crates/xlsx/src/package.rs` (Copyright (c) 2026
+ArtCraft Team and the GridCraft contributors, MIT OR Apache-2.0, taken under MIT).
+
 Spatial-grid vertex welding (`weld`) and 3MF 1.3 package structure
 (`[Content_Types].xml`, `_rels/.rels`, `3D/3dmodel.model`), written in metres
 through a zero-dependency stored-ZIP writer with IEEE 802.3 CRC-32.
@@ -105,6 +108,11 @@ collocation solves) for exporting lofted hull patches as IGES 5.3 entity 128.
 * **Licence:** MIT OR Apache-2.0, taken under MIT
 * **Copyright:** Copyright (c) 2026 FieldCraft contributors
 
+Upstream of those files: fieldcraft adapted them from solidcraft, whose own attribution traces
+them to CADCraft (Copyright (c) 2026 ArtCraft Team and the CADCraft contributors) and, for the tool
+schema helpers, GridCraft (Copyright (c) 2026 ArtCraft Team and the GridCraft contributors). Both are
+MIT OR Apache-2.0, taken under MIT.
+
 Loopback TCP JSON-lines GUI control channel (`--control HOST:PORT`, executed on
 the next `egui` frame with input clamping) and the stdio JSON-RPC 2.0 Model
 Context Protocol (`seacraft mcp`) server supporting both in-process headless
@@ -118,8 +126,9 @@ evaluation and remote `--connect` to a live GUI window.
 * **Copyright:** Copyright (c) 2026 SolidCraft contributors
 
 Control channel token generation, constant-time token comparison, 0600 token
-file creation, RAII token file cleanup, and canonical path root sandboxing
-(`check_read_path` and `check_write_path`).
+file creation and RAII token file cleanup. The path checks (`check_read_path` and
+`check_write_path`) are SeaCraft's own, after the read and write roots in fieldcraft's
+`crates/io/src/roots.rs`.
 
 ## `DISCLAIMER.md`
 
@@ -140,4 +149,6 @@ are SeaCraft's own.
 * **Copyright:** Copyright (c) 2026 SolidCraft contributors; Copyright (c) 2026 FieldCraft contributors
 
 The structure and some wording of SeaCraft's `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md`,
-`CODE_OF_CONDUCT.md`, `skills/seacraft-contributing/`, and `.github/` templates are adapted from these.
+`CODE_OF_CONDUCT.md`, `skills/seacraft-contributing/`, `skills/seacraft-ground-rules/`, and `.github/` templates
+are adapted from these. The ideas behind `deny.toml`, `.github/workflows/ci.yml` and the `cargo xtask` repository
+checks come from them too; that code is SeaCraft's own.

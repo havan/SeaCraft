@@ -1,14 +1,3 @@
----
-summary: >
-  SeaCraft is a Rust reimplementation of the open-source FREE!ship hull
-  modeller: a subdivision-surface geometry kernel, the .fef exchange format,
-  panel-based hydrostatics, stability cross curves, a linesplan generator and
-  mesh export. Occasionally refines to the same shape as FREE!ship, so the
-  weighting rules in subdiv.rs are load-bearing and must not be "tidied".
-agent_instructions: >
-  This file is a router: the hard rules, then the skill to read for your task.
----
-
 # SeaCraft: instructions for agents
 
 SeaCraft is a Rust reimplementation of the FREE!ship hull modeller: subdivision surfaces, the `.fef` format,

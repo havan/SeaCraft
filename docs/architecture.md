@@ -77,13 +77,13 @@ crates/seacraft-gui/
   src/recent.rs             File > Open recent list, JSON eframe::Storage in the data dir
   src/autosave.rs           periodic autosave (30 s, locked session pair) + startup crash recovery modal
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
-  tests/                    autosave, drag, files, hydro, smoke (all headless)
+  tests/                    integration tests, all headless
 xtask/                      cargo xtask ci: fmt, clippy, tests, versions, demo numbers, repository checks
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs
 docs/oracles/heave_2d_lid.py  Frank panels with the irregular-frequency lid vs Ursell (E3)
 docs/oracles/irregular_seas.py  spectrum moments, response moments, MSI oracle for seastate.rs (E2)
-skills/                     agent skills for the MCP server (CI-checked tool names)
+skills/                     contributor skills and MCP design skills
 examples/demo-hull.fef      generated demo model + .seacraft.json (KG 2.2); `seacraft demo -o` writes both
 README.md                   user-facing docs + FREE!ship notes
 ROADMAP.md, CHANGELOG.md    what comes next, what changed

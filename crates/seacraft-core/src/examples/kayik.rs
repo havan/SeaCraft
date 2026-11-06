@@ -46,7 +46,7 @@
 //! aft, so GZ beyond deck-edge immersion assumes the boat is covered).
 //! Creases: the keel's bottom corners, the sheer and the transom outline.
 //!
-//! KG: 0.95 m above the keel bottom (≈ 0.59 D), an estimate. The board's
+//! KG: 0.95 m above the keel bottom (≈ 0.59 D), an estimate. The design's
 //! starting point is 0.6 D; it is rounded down because the lowest 0.36 m
 //! of D is the keel, solid timber with the engine bearers and the diesel
 //! on top of it: 0.95 m is ≈ 0.47 of the canoe-body depth above the

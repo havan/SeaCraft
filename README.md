@@ -712,7 +712,7 @@ and startup recovery in scripted runs.
 ## 6. Status and limitations
 
 **How far results have been checked.** The automated tests compare the code with closed-form cases
-(box barges and similar) and with independent scripts written for the project, and
+(box barges and similar) and with separate scripts written for the project, and
 [`docs/oracles.md`](docs/oracles.md) gives the source of each reference number. Many of those are not
 published values, and the demo hull numbers only freeze earlier output to catch changes. Results have
 not been systematically compared with tank tests, sea trials, full-scale measurements or approved
@@ -758,7 +758,7 @@ software. Comparing them with published data is the most useful contribution any
 * The mainframe station is a measurement choice, not a project property: the
   `.fef` settings line is FREE!ship's and carries no such field, so a model
   loads measuring the midship section at the LCF. `--mainframe` (or
-  `mainframe_x` over MCP) measures it elsewhere — the demo hull's published
+  `mainframe_x` over MCP) measures it elsewhere — the demo hull's quoted
   `Cm`/`Cp` are the LCF values.
 * Not yet implemented: floodable length curves, VRML import, and edge extrusion in the GUI.
   See [`ROADMAP.md`](ROADMAP.md).

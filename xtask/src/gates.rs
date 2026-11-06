@@ -3,14 +3,11 @@
 //! file lists; `main.rs` holds the thin git and filesystem wrappers.
 
 /// Folders kept on a contributor's machine, never in the repository.
-pub const PRIVATE_PREFIXES: &[&str] = &[".hermes/", ".claude/", "plan/", ".local/"];
+pub const PRIVATE_PREFIXES: &[&str] =
+    &[".hermes/", ".claude/", "plan/", ".local/", ".superpowers/"];
 
 /// Tracked files that may name private folders: the rule itself.
-pub const PRIVATE_TEXT_ALLOWED: &[&str] = &[
-    ".gitignore",
-    "xtask/src/gates.rs",
-    "skills/seacraft-ground-rules/SKILL.md",
-];
+pub const PRIVATE_TEXT_ALLOWED: &[&str] = &[".gitignore", "xtask/src/gates.rs"];
 
 /// Tracked paths under a private folder.
 pub fn private_path_violations(files: &[String]) -> Vec<String> {

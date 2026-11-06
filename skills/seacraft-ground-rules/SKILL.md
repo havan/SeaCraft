@@ -37,6 +37,6 @@ describe compatibility.
 
 ## Private files
 
-Local notes stay on your machine, in ignored folders: `.hermes/`, `.claude/`, `plan/`, `.local/`. Never commit
-them, or absolute paths from your machine. `cargo xtask private` fails if you do. Decisions others need go in
+Local notes stay on your machine, in the folders `.gitignore` lists. Never commit them, or absolute paths from
+your machine. `cargo xtask private` fails if you do. Decisions others need go in
 `ROADMAP.md`, `docs/architecture.md`, an issue or a PR, not in session notes.
