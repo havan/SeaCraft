@@ -369,6 +369,10 @@ impl ExportKind {
     }
 }
 
+/// Clipped volume meshes kept at once: more volumes than this would rebuild
+/// every frame, and a drag of a volume's bounds adds one per step.
+const MAX_CLIPPED_VOLUMES: usize = 64;
+
 /// One undo step: the model and the draft it was measured at, since a
 /// transform or an optimisation moves both.
 #[derive(Debug, Clone)]
@@ -1325,6 +1329,9 @@ impl App {
     /// history is the caller's business).
     fn reset_derived(&mut self) {
         self.revision += 1;
+        // Measured on the previous model: left in place, it would trim the
+        // new one to a point that means nothing there.
+        self.hydro.lcg = None;
         self.selected = None;
         self.selected_volume = None;
         self.selected_windage = None;
@@ -3056,6 +3063,16 @@ impl App {
         let still_typing = ctx.text_edit_focused() && ctx.memory(|m| m.focused()) == Some(active);
         if !still_dragging && !still_typing {
             self.project_edit_source = None;
+            // Typed or dragged back to where it started: nothing to undo.
+            let kg = (self.hydro.kg, self.hydro.kg_estimate);
+            let unchanged = self
+                .history
+                .peek_undo()
+                .and_then(|snap| snap.project.as_ref())
+                .is_some_and(|(project, before)| *project == self.project && *before == kg);
+            if unchanged {
+                self.history.discard_last();
+            }
         }
     }
 
@@ -5344,12 +5361,21 @@ impl App {
         };
         let solid = seacraft_core::damage::CompartmentSolid::build(&comp, &hull);
         let mesh = (solid.verts, solid.tris);
-        // One entry per volume name: a newer revision or new bounds replace it.
+        // Names need not be unique, so two volumes may share one: only the
+        // revision retires an entry, and the cap bounds a drag of the bounds.
         if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
-            guard.retain(|(n, _, _)| n != name);
+            guard.retain(|(_, b, _)| b[0] == self.revision);
+            if guard.len() >= MAX_CLIPPED_VOLUMES {
+                guard.remove(0);
+            }
             guard.push((name.to_string(), bounds, mesh.clone()));
         }
         Some(mesh)
+    }
+
+    /// Clipped volume meshes held for the viewports.
+    pub fn clipped_volume_cache_len(&self) -> usize {
+        self.clipped_volumes_cache.lock().map_or(0, |g| g.len())
     }
 
     /// Frame the model in view `index` alone.

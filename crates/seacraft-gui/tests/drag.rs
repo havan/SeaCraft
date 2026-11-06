@@ -151,6 +151,40 @@ fn a_click_without_movement_leaves_no_undo_entry() {
 }
 
 #[test]
+fn selecting_a_point_keeps_the_redo_stack() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let surface = app.surface().expect("model loaded");
+    let index = surface
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+        .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+        .map(|(i, _)| i)
+        .expect("a sheer point");
+    let p = surface.points[index].p;
+    app.move_point(index, p + seacraft_core::math::Vec3::new(0.0, 0.0, 0.01))
+        .unwrap();
+    app.undo();
+    assert!(app.can_redo());
+    frame(&ctx, &mut app, Vec::new());
+    let rect = app.viewport_rect(1);
+    let screen = app.cameras()[1]
+        .transform()
+        .project(app.surface().unwrap().points[index].p, rect)
+        .unwrap();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(&ctx, &mut app, vec![button(screen, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.selected(), Some(index), "the click selected the point");
+    assert!(app.can_redo(), "selecting a point is not an edit");
+}
+
+#[test]
 fn a_drag_that_misses_every_point_pans_the_camera_instead() {
     let mut app = App::headless_for_test(Some(&demo_path()));
     let ctx = egui::Context::default();

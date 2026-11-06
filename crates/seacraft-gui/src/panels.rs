@@ -2945,7 +2945,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             eng_table(
                 ui,
                 &[
-                    EngColumn::text("Compartment"),
+                    EngColumn::text("Name"),
                     EngColumn::number("μ", ""),
                     EngColumn::number("Submerged", "m³"),
                     EngColumn::number("Lost", "m³"),

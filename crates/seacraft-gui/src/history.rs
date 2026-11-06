@@ -11,6 +11,9 @@ use seacraft_core::Surface;
 pub struct History<T = Surface> {
     undo: Vec<T>,
     redo: Vec<T>,
+    /// The redo stack the newest snapshot cleared, until the next change of
+    /// history: [`Self::discard_last`] puts it back.
+    cleared_redo: Vec<T>,
     limit: usize,
 }
 
@@ -20,6 +23,7 @@ impl<T: Clone> History<T> {
         Self {
             undo: Vec::new(),
             redo: Vec::new(),
+            cleared_redo: Vec::new(),
             limit: limit.max(1),
         }
     }
@@ -30,12 +34,13 @@ impl<T: Clone> History<T> {
         if self.undo.len() > self.limit {
             self.undo.remove(0);
         }
-        self.redo.clear();
+        self.cleared_redo = std::mem::take(&mut self.redo);
     }
 
     /// Swap `current` for the previous state; `current` goes on the redo stack.
     pub fn undo(&mut self, current: &T) -> Option<T> {
         let previous = self.undo.pop()?;
+        self.cleared_redo.clear();
         self.redo.push(current.clone());
         Some(previous)
     }
@@ -43,6 +48,7 @@ impl<T: Clone> History<T> {
     /// Swap `current` for the next state; `current` goes back on the undo stack.
     pub fn redo(&mut self, current: &T) -> Option<T> {
         let next = self.redo.pop()?;
+        self.cleared_redo.clear();
         self.undo.push(current.clone());
         if self.undo.len() > self.limit {
             self.undo.remove(0);
@@ -51,14 +57,20 @@ impl<T: Clone> History<T> {
     }
 
     /// Forget the newest snapshot: a click that never became a drag must not
-    /// leave an undo entry that does nothing.
+    /// leave an undo entry that does nothing, nor cost the redo stack, since
+    /// nothing was edited.
     pub fn discard_last(&mut self) -> bool {
-        self.undo.pop().is_some()
+        let discarded = self.undo.pop().is_some();
+        if discarded && self.redo.is_empty() {
+            self.redo = std::mem::take(&mut self.cleared_redo);
+        }
+        discarded
     }
 
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.cleared_redo.clear();
     }
 
     pub fn can_undo(&self) -> bool {
@@ -93,6 +105,7 @@ impl<T: Clone> History<T> {
 
     pub fn clear_redo(&mut self) {
         self.redo.clear();
+        self.cleared_redo.clear();
     }
 }
 
@@ -120,6 +133,24 @@ mod tests {
         // The oldest kept snapshot is 64 edits before the end, not the original.
         assert!((current.points[7].p.z - (original.z + 0.36)).abs() < 1e-9);
         assert_eq!(history.redo_len(), 64);
+    }
+
+    #[test]
+    fn a_discarded_snapshot_keeps_the_redo_stack() {
+        let mut history: History<i32> = History::new(8);
+        history.snapshot(&1);
+        assert_eq!(history.undo(&2), Some(1));
+        // A click: snapshot on press, discarded on release.
+        history.snapshot(&1);
+        assert!(!history.can_redo());
+        history.discard_last();
+        assert_eq!(history.redo(&1), Some(2));
+        // A real edit still ends the redo stack, for good.
+        assert_eq!(history.undo(&2), Some(1));
+        history.snapshot(&1);
+        history.snapshot(&3);
+        history.discard_last();
+        assert!(!history.can_redo());
     }
 
     #[test]

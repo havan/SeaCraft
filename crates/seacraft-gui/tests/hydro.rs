@@ -187,3 +187,20 @@ fn a_hidden_layer_leaves_the_measurement_alone() {
         "the hidden layer is not drawn"
     );
 }
+
+#[test]
+fn a_new_model_does_not_inherit_the_free_trim_lcg() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_free_trim(true, Some(5.2));
+    frame(&mut app);
+    let container = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    app.open_model(std::path::Path::new(&container)).unwrap();
+    app.recompute_hydrostatics();
+    let lcg = app.lcg().expect("sampled from the new model's LCB");
+    assert!(lcg > 50.0, "the demo's LCG on a 230 m ship: {lcg}");
+    let trim = app.hydro_options().trim;
+    assert!(trim.abs() < 1.0, "trimmed to a stale LCG: {trim} m");
+}

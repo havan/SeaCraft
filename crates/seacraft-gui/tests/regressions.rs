@@ -603,3 +603,36 @@ fn control_point_drag_followed_by_dock_edit_undoes_in_reverse_order() {
     assert!(!w.app.can_undo());
     assert!(!w.app.can_redo());
 }
+
+#[test]
+fn an_edit_typed_back_to_where_it_started_is_no_undo_step() {
+    let (mut app, cond, _) = saved_demo_with_cases("dock-undo-noop.fef");
+    app.set_show_loading(true);
+    let mut w = Window::new(app);
+    let field = w.find(
+        |f| f.role == Role::TextInput && f.value == cond.name,
+        "the condition's name field",
+    );
+    w.click_at(field.rect.center());
+    let key = |key| egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    };
+    w.frame(vec![key(egui::Key::End)]);
+    w.frame(vec![egui::Event::Text("X".into())]);
+    assert_eq!(
+        w.app.undo_len(),
+        1,
+        "the edit is on the stack while it runs"
+    );
+    w.frame(vec![key(egui::Key::Backspace)]);
+    assert_eq!(w.app.project().loading_conditions[0].name, cond.name);
+    w.frame(vec![key(egui::Key::Escape)]);
+    w.frame(vec![]);
+    assert_eq!(w.app.undo_len(), 0, "nothing changed, so nothing to undo");
+    assert!(!w.app.can_redo());
+    assert!(!w.app.is_dirty());
+}

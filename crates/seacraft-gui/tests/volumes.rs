@@ -228,3 +228,29 @@ fn the_loading_and_damage_panels_share_one_dock() {
     app.set_show_damage(false);
     assert!(!app.show_damage() && !app.show_loading());
 }
+
+#[test]
+fn clipped_volumes_sharing_a_name_keep_their_own_meshes() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let comp = |x_min: f64| Compartment {
+        name: "Void".into(),
+        x_min,
+        x_max: x_min + 1.0,
+        y_min: -1.0,
+        y_max: 1.0,
+        z_min: 0.0,
+        z_max: 1.0,
+        permeability: 0.9,
+        clip_to_hull: true,
+    };
+    app.set_project(Project {
+        compartments: vec![comp(3.0), comp(6.0)],
+        ..Default::default()
+    });
+    assert_eq!(app.volume_overlays().len(), 2);
+    assert_eq!(
+        app.clipped_volume_cache_len(),
+        2,
+        "with one entry per name each frame rebuilds both meshes"
+    );
+}
