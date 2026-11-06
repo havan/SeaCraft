@@ -1012,6 +1012,16 @@ pub fn criteria_badge_style(passed: bool, stale: bool) -> (&'static str, egui::C
     }
 }
 
+/// The line that goes with every criteria verdict: a pass is arithmetic against
+/// the criteria, not approval.
+pub fn not_validated_note(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new(seacraft_core::NOT_VALIDATED_NOTE)
+            .small()
+            .color(theme::TEXT_SECONDARY),
+    );
+}
+
 /// A criteria verdict: `PASS` green, `FAIL` red, `… · stale` grey when the
 /// result predates the last edit. The only place a verdict is drawn.
 pub fn criteria_badge(ui: &mut egui::Ui, passed: bool, stale: bool) -> egui::Response {
@@ -2963,6 +2973,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 ui.label(egui::RichText::new("Residual stability criteria").strong());
                 criteria_badge(ui, crit.passed, panel.stale);
             });
+            not_validated_note(ui);
             let stale = panel.stale;
             let rows = [
                 criterion_row(
@@ -4362,6 +4373,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 ui.label(egui::RichText::new("IMO A.749 criteria").strong());
                 criteria_badge(ui, imo.passed, panel.stale);
             });
+            not_validated_note(ui);
             let stale = panel.stale;
             let rows = [
                 criterion_row(
@@ -4416,6 +4428,9 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 ui.label(egui::RichText::new("Weather criterion (§2.3)").strong());
                 criteria_badge(ui, w.passed, panel.stale);
             });
+            if r.imo_criteria.is_none() {
+                not_validated_note(ui);
+            }
             readouts(ui, "weather_readouts", &weather_rows(w));
         }
 

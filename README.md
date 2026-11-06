@@ -12,6 +12,11 @@ Lazarus port **FreeShip Plus in Lazarus** (Mark Malakanov) continue the same
 codebase. SeaCraft is written from FREE!ship's documented behaviour and its
 GPL source; it is not a line-by-line translation.
 
+> **Not validated.** Most simulation calculations have not been checked against tank tests, sea
+> trials or approved software, and results may be wrong. A `PASS` against a criterion is not approval.
+> Do not rely on SeaCraft for design or safety decisions without independent checks by a qualified
+> person. It is provided as is, with no warranty; see [`DISCLAIMER.md`](DISCLAIMER.md).
+
 ---
 
 ## 1. How FREE!ship works (investigation notes)
@@ -684,6 +689,13 @@ and startup recovery in scripted runs.
 ---
 
 ## 6. Status and limitations
+
+**How far results have been checked.** The automated tests compare the code with closed-form cases
+(box barges and similar) and with independent scripts written for the project, and
+[`docs/oracles.md`](docs/oracles.md) gives the source of each reference number. Many of those are not
+published values, and the demo hull numbers only freeze earlier output to catch changes. Results have
+not been systematically compared with tank tests, sea trials, full-scale measurements or approved
+software. Comparing them with published data is the most useful contribution anyone could make.
 
 * The kernel, `.fef` round-trip, hydrostatics, stability, linesplan and mesh
   exports are implemented and tested.

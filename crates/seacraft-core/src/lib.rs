@@ -21,6 +21,11 @@
 //!
 //! [FREE!ship]: https://sourceforge.net/projects/freeship
 
+/// Shown next to stability criteria and on design reports. Results of this
+/// program are not validated; `DISCLAIMER.md` says what that means.
+pub const NOT_VALIDATED_NOTE: &str =
+    "Not validated: results may be wrong and are not class, flag or statutory approval; see DISCLAIMER.md.";
+
 pub mod analysis;
 pub mod control_auth;
 pub mod curves;

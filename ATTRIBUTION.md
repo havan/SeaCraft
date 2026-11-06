@@ -120,3 +120,12 @@ evaluation and remote `--connect` to a live GUI window.
 Control channel token generation, constant-time token comparison, 0600 token
 file creation, RAII token file cleanup, and canonical path root sandboxing
 (`check_read_path` and `check_write_path`).
+
+## `DISCLAIMER.md`
+
+* **Source:** `DISCLAIMER.md` of [solidcraft](https://github.com/tangency-labs/solidcraft)
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 SolidCraft contributors
+
+Structure and the warranty, liability and indemnity wording. The sections on validation and approval
+are SeaCraft's own.

@@ -317,6 +317,12 @@ pub fn design_report_with_project(
     out.push_str("  font-size: 0.9rem;\n");
     out.push_str("  color: #573c00;\n");
     out.push_str("}\n");
+    out.push_str(".not-validated {\n");
+    out.push_str("  background: var(--fail-bg);\n");
+    out.push_str("  color: var(--fail-text);\n");
+    out.push_str("  padding: 0.5rem 1rem;\n");
+    out.push_str("  border-radius: 4px;\n");
+    out.push_str("}\n\n");
     out.push_str("footer {\n");
     out.push_str("  border-top: 1px solid var(--border);\n");
     out.push_str("  padding-top: 1.5rem;\n");
@@ -333,6 +339,11 @@ pub fn design_report_with_project(
     out.push_str("}\n");
     out.push_str("</style>\n</head>\n<body>\n");
 
+    let _ = writeln!(
+        out,
+        "<p class=\"not-validated\"><strong>{}</strong></p>",
+        crate::NOT_VALIDATED_NOTE
+    );
     out.push_str("<header>\n");
     let _ = writeln!(out, "  <h1>{}</h1>", esc_name);
     let designer_str = if !esc_designer.is_empty() {
@@ -2115,6 +2126,25 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
 mod tests {
     use super::*;
     use crate::demo;
+
+    #[test]
+    fn report_shows_not_validated_note() {
+        let surface = demo::demo_hull(false);
+        let mut opts = ReportOptions::from_surface(&surface);
+        let html = design_report(&surface, &opts).expect("report");
+        let at = html
+            .find(crate::NOT_VALIDATED_NOTE)
+            .expect("note on the report");
+        assert!(
+            at < html.find("<section").expect("sections"),
+            "note is above the sections"
+        );
+
+        opts.include_resistance = false;
+        opts.include_planing = false;
+        let html = design_report(&surface, &opts).expect("report");
+        assert!(html.contains(crate::NOT_VALIDATED_NOTE));
+    }
 
     #[test]
     fn chart_axes_span_speeds_given_in_any_order() {

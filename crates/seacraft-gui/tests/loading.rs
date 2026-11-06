@@ -216,3 +216,43 @@ fn an_unfloatable_condition_is_logged_once_per_computation() {
     assert_eq!(logged(&app), 2, "the blocking compute logs its own");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn texts(out: &egui::FullOutput) -> Vec<String> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            _ => {}
+        }
+    }
+    let mut text = Vec::new();
+    for clipped in &out.shapes {
+        walk(&clipped.shape, &mut text);
+    }
+    text
+}
+
+#[test]
+fn imo_criteria_carry_the_not_validated_note() {
+    let (mut app, ctx, _cond) = setup_demo_with_loadcase();
+    app.compute_loading_blocking(None).expect("compute");
+    // Tall enough that the whole dock is painted: a scroll area skips what is out of view.
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 8000.0),
+        )),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input.clone(), |ui| app.draw(ui));
+    out.textures_delta.clear();
+    let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+    out.textures_delta.clear();
+    let text = texts(&out);
+    assert!(text.iter().any(|t| t.starts_with("IMO A.749")), "{text:?}");
+    let note = seacraft_core::NOT_VALIDATED_NOTE;
+    assert!(
+        text.iter().any(|t| t.starts_with("Not validated")),
+        "{note}: {text:?}"
+    );
+}

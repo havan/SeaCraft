@@ -3226,6 +3226,7 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         .collect();
     if !criteria.is_empty() {
         println!("\n  IMO A.749 / 2008 IS Code Part A intact stability criteria:");
+        println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
         println!(
             "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
             "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
@@ -3426,6 +3427,7 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
             "\n  IMO A.749 / 2008 IS Code Part A intact stability criteria (KG_fluid {:.3} m):",
             res.kg_fluid
         );
+        println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
         println!(
             "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
             "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
@@ -3601,6 +3603,7 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
     if let Some(c) = &res.criteria {
         println!();
         println!("  residual stability criteria (indicative, SOLAS-style):");
+        println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
         println!(
             "    {:>12}  {:>10}  {:>12}  status",
             "pos range", "max GZ", "area(range)"
@@ -3866,6 +3869,7 @@ fn print_weather_summary(w: &seacraft_core::weather::WeatherResult) {
         _ => "—".to_string(),
     };
     println!("\n  IMO 2008 IS Code Part A §2.3 weather criterion:");
+    println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
     println!(
         "    windage   A {:.3} m2 (hull {:.3}, extra {:.3})  Z {:.3} m  P {:.0} Pa",
         w.area_m2, w.hull_windage_area_m2, w.extra_windage_area_m2, w.z_m, w.wind_pressure_pa
