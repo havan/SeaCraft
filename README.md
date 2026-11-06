@@ -649,6 +649,26 @@ Plan        | Body plan
 The status bar carries the model summary, the subdivision level and mode, the
 cursor position on the active viewport's focal plane and the crate version.
 
+### Autosave and crash recovery
+
+Unsaved work in `seacraft-gui` is snapshotted every **30 seconds** (never mid-drag,
+and only when the model or project has changed since the last snapshot) to:
+
+* **Linux / Unix**: `$XDG_STATE_HOME/seacraft/autosave/` (when absolute), else
+  `$HOME/.local/state/seacraft/autosave/`
+* **Windows**: `%LOCALAPPDATA%\SeaCraft\autosave\`
+* **macOS**: `~/Library/Application Support/SeaCraft/autosave/`
+
+Each session holds an exclusive OS file lock on `session-<pid>-<unix-nanos>.lock`
+and writes `session-<pid>-<unix-nanos>.json` atomically on a background thread.
+Saving, undoing back to the saved state, or discarding unsaved changes removes the
+`.json` snapshot; a clean exit removes both session files. If the process crashes
+or is killed, the OS releases the lock and the next startup offers a recovery
+modal (**Recover**, **Discard**, or **Decide later**) for each orphaned session,
+newest first, restoring the geometry, project and original file path as unsaved
+work (undo history is not recovered). Pass `--no-autosave` to disable autosave
+and startup recovery in scripted runs.
+
 ---
 
 ## 5. Coordinate system and units

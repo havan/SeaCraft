@@ -103,8 +103,9 @@ crates/seacraft-gui/
   src/history.rs            snapshot undo/redo (64)
   src/messages.rs           typed message log (level, text, time) + Messages window
   src/recent.rs             File > Open recent list, JSON eframe::Storage in the data dir
+  src/autosave.rs           periodic autosave (30 s, locked session pair) + startup crash recovery modal
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
-  tests/                    drag, files, hydro, smoke (all headless)
+  tests/                    autosave, drag, files, hydro, smoke (all headless)
 xtask/                      cargo xtask ci: fmt, clippy, tests, version check, demo numbers
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs

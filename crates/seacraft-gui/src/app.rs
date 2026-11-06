@@ -965,6 +965,8 @@ pub struct App {
     axis_lock: Option<seacraft_core::transform::Axis>,
     /// Cache of triangulated solids for clip_to_hull compartments and tanks.
     clipped_volumes_cache: std::sync::Mutex<Vec<ClippedMeshEntry>>,
+    /// Periodic autosave state machine and startup orphan recovery queue.
+    autosave: crate::autosave::AutosaveState,
 }
 
 /// Name, model revision and box bounds (bits) of a cached clipped solid.
@@ -1010,6 +1012,9 @@ impl App {
         if let Some(p) = open {
             app.load(p);
         }
+        if let Some(dir) = crate::autosave::autosave_dir() {
+            app.set_autosave_dir(dir);
+        }
         app
     }
 
@@ -1031,7 +1036,7 @@ impl App {
         app
     }
 
-    fn new_detached() -> Self {
+    pub fn new_detached() -> Self {
         Self {
             surface: None,
             path: None,
@@ -1125,6 +1130,7 @@ impl App {
             optimise_job: None,
             axis_lock: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
+            autosave: crate::autosave::AutosaveState::new(),
         }
     }
 
@@ -1192,6 +1198,7 @@ impl App {
         self.project = project;
         self.project_error = project_error;
         self.dirty = false;
+        self.autosave.note_model_replaced(false);
         self.adopt_project_kg();
         self.adopt();
         self.apply_requirement_defaults();
@@ -1220,6 +1227,7 @@ impl App {
         self.project_error = None;
         self.dirty = true;
         self.saved_state = None;
+        self.autosave.note_model_replaced(true);
         // The demo's KG is part of the demo, as its reference numbers are.
         self.hydro.kg = Some(DEMO_KG);
         self.hydro.kg_estimate = false;
@@ -1240,6 +1248,7 @@ impl App {
         self.project_error = None;
         self.dirty = true;
         self.saved_state = None;
+        self.autosave.note_model_replaced(true);
         // A generated hull has no mass distribution: no KG until one is
         // given (the New design dialog passes its estimate on).
         self.adopt_project_kg();
@@ -1276,6 +1285,7 @@ impl App {
         self.project_error = None;
         self.dirty = true;
         self.saved_state = None;
+        self.autosave.note_model_replaced(true);
         self.adopt_project_kg();
         self.adopt();
         self.apply_requirement_defaults();
@@ -1647,18 +1657,21 @@ impl App {
             DockAction::Hydro(panels::HydroAction::None) => {}
             DockAction::Loading(panels::LoadingAction::Changed) => {
                 self.dirty = true;
+                self.autosave.note_dirty();
                 self.project_changed();
             }
             DockAction::Loading(panels::LoadingAction::Compute) => self.start_loading_compute(),
             DockAction::Loading(panels::LoadingAction::None) => {}
             DockAction::Damage(panels::DamageAction::Changed) => {
                 self.dirty = true;
+                self.autosave.note_dirty();
                 self.project_changed();
             }
             DockAction::Damage(panels::DamageAction::Compute) => self.start_damage_compute(),
             DockAction::Damage(panels::DamageAction::None) => {}
             DockAction::Windage(panels::WindageAction::Changed) => {
                 self.dirty = true;
+                self.autosave.note_dirty();
                 self.project_changed();
             }
             DockAction::Windage(panels::WindageAction::None) => {}
@@ -1683,7 +1696,8 @@ impl App {
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.dirty {
-                    ui.colored_label(crate::theme::WARN, "● unsaved");
+                    ui.colored_label(crate::theme::WARN, "● unsaved")
+                        .on_hover_text(self.autosave.hover_text());
                 }
                 // The latest message, coloured by its level; a click lists
                 // them all (View > Messages).
@@ -1828,6 +1842,17 @@ impl App {
         self.poll_report(ui.ctx());
         self.intercept_close(ui.ctx());
         self.pending_window(ui);
+        self.recovery_window(ui.ctx());
+        let now = std::time::Instant::now();
+        self.autosave_tick(now);
+        if let Some(delay) = self.autosave.repaint_after(
+            now,
+            self.dirty,
+            self.drag.is_some(),
+            (self.revision, self.project_rev),
+        ) {
+            ui.ctx().request_repaint_after(delay);
+        }
         if self.close_requested {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1851,6 +1876,7 @@ impl App {
         if self.new_design.is_some()
             || self.project_settings.is_some()
             || self.transform_dialog.is_some()
+            || self.autosave_prompt_open()
         {
             return;
         }
@@ -2532,6 +2558,7 @@ impl App {
         let speed_changed = speed(&requirements) != speed(&self.project.requirements);
         self.project.requirements = requirements;
         self.dirty = true;
+        self.autosave.note_dirty();
         if self.project.kg.is_none() && (self.hydro.kg.is_none() || self.hydro.kg_estimate) {
             // The dock follows the estimate until the user sets a KG
             // (the demo's own KG is not an estimate and stays).
@@ -2730,6 +2757,7 @@ impl App {
         }
         self.dirty = false;
         self.saved_state = Some((text, self.project.clone()));
+        self.autosave.note_clean();
         self.log(Level::Info, msg);
         Ok(())
     }
@@ -3731,6 +3759,7 @@ impl App {
             surface.points[point].p = target;
         }
         self.dirty = true;
+        self.autosave.note_dirty();
         self.revision += 1;
         self.touch_geometry();
         // Refine now (at the drag level), so the dragged view shows the point
@@ -4214,6 +4243,7 @@ impl App {
         }
         self.project_error = None;
         self.dirty = true;
+        self.autosave.note_dirty();
         self.selected_volume = None;
         self.selected_windage = None;
         self.last_highlighted_tank = None;
@@ -5000,6 +5030,7 @@ impl App {
     #[doc(hidden)]
     pub fn project_mut_for_test(&mut self) -> &mut Project {
         self.dirty = true;
+        self.autosave.note_dirty();
         self.project_changed();
         &mut self.project
     }
@@ -5019,11 +5050,17 @@ impl App {
             (_, None) => false,
             _ => true,
         };
+        if self.dirty {
+            self.autosave.note_dirty();
+        } else {
+            self.autosave.note_clean();
+        }
     }
 
     pub fn mark_geometry_changed(&mut self) {
         self.revision += 1;
         self.dirty = true;
+        self.autosave.note_dirty();
         if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
             guard.clear();
         }
@@ -5060,6 +5097,7 @@ impl App {
         if self.project.kg != Some(kg) {
             self.project.kg = Some(kg);
             self.dirty = true;
+            self.autosave.note_dirty();
         }
         self.hydro_inputs_changed();
     }
@@ -6226,6 +6264,12 @@ impl eframe::App for App {
         self.persist_recent();
     }
 
+    /// Clean shutdown: join any in-flight autosave write and remove the
+    /// session's `.json` and `.lock` files.
+    fn on_exit(&mut self) {
+        self.autosave_shutdown();
+    }
+
     /// Serve the control socket's queue before the UI runs.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_control(ctx);
@@ -6238,6 +6282,252 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.draw(ui);
+    }
+}
+
+// ---- periodic autosave and startup crash recovery -------------------------
+
+impl App {
+    /// Enable autosave in `dir` and scan `dir` for orphaned sessions.
+    pub fn set_autosave_dir(&mut self, dir: PathBuf) {
+        let warnings = self
+            .autosave
+            .set_dir(dir, self.dirty && self.surface.is_some());
+        for w in warnings {
+            self.log(Level::Warning, w);
+        }
+    }
+
+    /// Disable autosave and clear any pending recovery prompts (`--no-autosave`).
+    pub fn disable_autosave(&mut self) {
+        self.autosave.disable();
+    }
+
+    /// The directory where this app writes autosaves, or `None` when disabled.
+    pub fn autosave_dir(&self) -> Option<&std::path::Path> {
+        self.autosave.dir()
+    }
+
+    /// This app's unique autosave session identifier (`session-<pid>-<unix-nanos>`).
+    pub fn autosave_session(&self) -> &str {
+        self.autosave.session()
+    }
+
+    /// Whether a background autosave write thread is currently running.
+    pub fn autosave_in_flight(&self) -> bool {
+        self.autosave.in_flight()
+    }
+
+    /// Block until any in-flight autosave write finishes and log its outcome
+    /// (test helper: joins the worker thread without sleeping).
+    pub fn wait_autosave(&mut self) {
+        for (level, msg) in self.autosave.join_write() {
+            self.log(level, msg);
+        }
+    }
+
+    /// Run one autosave state-machine tick for `now`.
+    pub fn autosave_tick(&mut self, now: std::time::Instant) {
+        let dirty = self.dirty && self.surface.is_some();
+        let dragging = self.drag.is_some();
+        let revs = (self.revision, self.project_rev);
+        let surface = &self.surface;
+        let project = &self.project;
+        let path = &self.path;
+        let report = self.autosave.tick(now, dirty, dragging, revs, || {
+            let s = surface.as_ref()?;
+            let fef_text = fef::write(s);
+            let proj_text = project.to_json();
+            let orig = path.as_ref().map(|p| p.to_string_lossy().to_string());
+            Some((fef_text, proj_text, orig))
+        });
+        for (level, msg) in report.logs {
+            self.log(level, msg);
+        }
+    }
+
+    /// Clean shutdown: join any in-flight write and delete both session files.
+    pub fn autosave_shutdown(&mut self) {
+        self.autosave.shutdown();
+    }
+
+    /// Whether the startup crash-recovery modal is open.
+    pub fn autosave_prompt_open(&self) -> bool {
+        !self.autosave.orphans.is_empty()
+    }
+
+    /// The orphan currently shown at the front of the recovery prompt, if any.
+    pub fn current_orphan(&self) -> Option<&crate::autosave::Orphan> {
+        self.autosave.orphans.first()
+    }
+
+    /// All orphans remaining in the recovery queue, newest first.
+    pub fn orphans(&self) -> &[crate::autosave::Orphan] {
+        &self.autosave.orphans
+    }
+
+    /// Recover the current orphan from the front of the recovery queue.
+    pub fn recover_orphan(&mut self) {
+        if self.autosave.orphans.is_empty() {
+            return;
+        }
+        if self.dirty {
+            self.log(
+                Level::Warning,
+                "cannot recover autosave while the current model has unsaved changes; save or discard first".to_owned(),
+            );
+            return;
+        }
+        let orphan = self.autosave.orphans.remove(0);
+        let surface = match fef::parse(&orphan.fef) {
+            Ok(s) => s,
+            Err(err) => {
+                self.log(
+                    Level::Warning,
+                    format!(
+                        "cannot recover autosave {}: invalid .fef ({err}); keeping file on disk",
+                        orphan.json_path.display()
+                    ),
+                );
+                return;
+            }
+        };
+        let (project, project_bad) = match Project::from_json(&orphan.project) {
+            Ok(p) => (p, None),
+            Err(e) => (Project::default(), Some(e)),
+        };
+        let saved_state = orphan.original_path.as_deref().and_then(|orig| {
+            let text = std::fs::read_to_string(orig).ok()?;
+            let parsed = fef::parse(&text).ok()?;
+            let orig_proj = Project::load_for_model(orig).ok()?.unwrap_or_default();
+            Some((fef::write(&parsed), orig_proj))
+        });
+        self.surface = Some(surface);
+        self.path = orphan.original_path.clone();
+        self.project = project;
+        // As `load` does: an unreadable sidecar next to the file stays
+        // untouched by a later save.
+        self.project_error = orphan
+            .original_path
+            .as_deref()
+            .and_then(|orig| Project::load_for_model(orig).err());
+        self.saved_state = saved_state;
+        self.dirty = true;
+        self.autosave.note_model_replaced(true);
+        self.adopt_project_kg();
+        self.adopt();
+        self.apply_requirement_defaults();
+
+        let own_fef = self.surface.as_ref().map(fef::write).unwrap_or_default();
+        let own_proj = self.project.to_json();
+        let orig_str = self.path.as_ref().map(|p| p.to_string_lossy().to_string());
+        let write_res = self.autosave.write_sync(
+            own_fef,
+            own_proj,
+            orig_str,
+            (self.revision, self.project_rev),
+        );
+
+        if let Some(proj_err) = project_bad {
+            self.log(
+                Level::Warning,
+                format!(
+                    "recovered geometry `{}` from autosave, but project could not be parsed ({proj_err}); using default project and keeping {} on disk",
+                    orphan.model_name,
+                    orphan.json_path.display()
+                ),
+            );
+            if let Err(err) = write_res {
+                self.log(
+                    Level::Warning,
+                    format!(
+                        "could not write fresh autosave snapshot ({err}); keeping {}",
+                        orphan.json_path.display()
+                    ),
+                );
+            }
+        } else {
+            let target_desc = orphan
+                .original_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "untitled".to_owned());
+            self.log(
+                Level::Info,
+                format!(
+                    "recovered `{}` ({target_desc}) from autosave {}",
+                    orphan.model_name,
+                    orphan.json_path.display()
+                ),
+            );
+            match write_res {
+                Ok(()) => orphan.remove_files(),
+                Err(err) => self.log(
+                    Level::Warning,
+                    format!(
+                        "could not write fresh autosave snapshot ({err}); keeping orphan {}",
+                        orphan.json_path.display()
+                    ),
+                ),
+            }
+        }
+
+        if !self.autosave.orphans.is_empty() {
+            let remaining = self.autosave.orphans.len();
+            self.autosave.orphans.clear();
+            let word = if remaining == 1 {
+                "autosave"
+            } else {
+                "autosaves"
+            };
+            self.log(
+                Level::Info,
+                format!("{remaining} other {word} kept on disk for the next start"),
+            );
+        }
+    }
+
+    /// Discard the current orphan, deleting its files and advancing to the
+    /// next one.
+    pub fn discard_orphan(&mut self) {
+        if self.autosave.orphans.is_empty() {
+            return;
+        }
+        let orphan = self.autosave.orphans.remove(0);
+        orphan.remove_files();
+        self.log(
+            Level::Info,
+            format!("discarded autosave {}", orphan.json_path.display()),
+        );
+    }
+
+    /// Keep all remaining orphans on disk and close the recovery prompt; they
+    /// will be offered again at the next start.
+    pub fn defer_orphans(&mut self) {
+        if self.autosave.orphans.is_empty() {
+            return;
+        }
+        let count = self.autosave.orphans.len();
+        self.autosave.orphans.clear();
+        let word = if count == 1 { "autosave" } else { "autosaves" };
+        self.log(
+            Level::Info,
+            format!("deferred {count} {word} to the next start"),
+        );
+    }
+
+    fn recovery_window(&mut self, ctx: &egui::Context) {
+        let Some(orphan) = self.autosave.orphans.first() else {
+            return;
+        };
+        let remaining = self.autosave.orphans.len();
+        let action = crate::autosave::recovery_modal(ctx, orphan, remaining);
+        match action {
+            crate::autosave::RecoveryAction::None => {}
+            crate::autosave::RecoveryAction::Recover => self.recover_orphan(),
+            crate::autosave::RecoveryAction::Discard => self.discard_orphan(),
+            crate::autosave::RecoveryAction::Defer => self.defer_orphans(),
+        }
     }
 }
 

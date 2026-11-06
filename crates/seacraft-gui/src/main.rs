@@ -6,11 +6,12 @@ use seacraft_gui::App;
 fn usage() {
     println!(
         "seacraft-gui {}\n\n\
-         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs] [--control HOST:PORT]\n\n\
+         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs] [--no-autosave] [--control HOST:PORT]\n\n\
          Options:\n  \
          --open FILE             Load a FREE!ship .fef model at startup\n  \
          --analysis MODE         Shading: shaded, zebra, curvature or draft\n  \
          --combs                 Overlay station/buttock/waterline curvature combs\n  \
+         --no-autosave           Disable periodic autosave and startup crash recovery\n  \
          --control ADDR          Serve the JSON-lines control socket on ADDR\n                          \
          (e.g. 127.0.0.1:7373; 127.0.0.1:0 picks a free port)\n  \
          --control-token-file PATH Override default token file path\n  \
@@ -27,6 +28,7 @@ fn main() -> eframe::Result {
     let mut open: Option<PathBuf> = None;
     let mut analysis = seacraft_core::AnalysisMode::Shaded;
     let mut combs = false;
+    let mut no_autosave = false;
     let mut control_addr: Option<String> = None;
     let mut control_token_file: Option<PathBuf> = None;
     let mut control_no_auth = false;
@@ -37,6 +39,7 @@ fn main() -> eframe::Result {
         match arg.as_str() {
             "--open" => open = args.next().map(PathBuf::from),
             "--combs" => combs = true,
+            "--no-autosave" => no_autosave = true,
             "--control" => match args.next() {
                 Some(addr) if !addr.trim().is_empty() => control_addr = Some(addr),
                 _ => {
@@ -139,6 +142,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut app = App::new(cc, open.clone());
+            if no_autosave {
+                app.disable_autosave();
+            }
             app.set_analysis(analysis);
             // `--combs` overlays the curves with their combs, as it always did.
             app.display_mut().curves = combs;

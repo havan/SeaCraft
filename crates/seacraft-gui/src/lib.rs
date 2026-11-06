@@ -5,6 +5,7 @@
 
 pub mod analysis_views;
 pub mod app;
+pub mod autosave;
 pub mod camera;
 pub mod commands;
 pub mod control;

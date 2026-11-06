@@ -205,6 +205,21 @@ fn closing_with_unsaved_work_asks_first_and_discard_closes() {
     let _ = std::fs::remove_file(path);
 }
 
+/// Discard answers for the action that replaces the model. The New design
+/// dialog that follows can still be cancelled, so until a model is actually
+/// replaced the edits stay unsaved and Quit still asks.
+#[test]
+fn discard_before_a_dialog_keeps_the_edits_unsaved() {
+    let (mut app, path) = dirty_model("discard-dialog.fef");
+    app.request_new_design();
+    let mut w = Window::new(app);
+    assert!(w.app.unsaved_prompt_open());
+    w.click("Discard");
+    assert!(!w.app.unsaved_prompt_open());
+    assert!(w.app.is_dirty(), "no model was replaced yet");
+    let _ = std::fs::remove_file(path);
+}
+
 #[test]
 fn cancel_keeps_the_window_and_save_writes_then_closes() {
     let (app, path) = dirty_model("save.fef");
