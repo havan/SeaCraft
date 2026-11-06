@@ -6,7 +6,7 @@
 //! the station section meets that waterline. A second table gives the height of
 //! the hull shell on each buttock plane.
 //!
-//! Datum (see `AGENTS.md`): `x` forward, `y` starboard, `z` up, metres. Both
+//! Datum (see `skills/seacraft-hull-numerics/SKILL.md`): `x` forward, `y` starboard, `z` up, metres. Both
 //! tables are read from the **refined** mesh, upright and at even keel:
 //!
 //! * waterline ordinates are heights **above the keel** (the baseline every

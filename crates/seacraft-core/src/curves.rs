@@ -5,7 +5,7 @@
 //! station, `A(x, T)`. Both are cut from the **refined** mesh (see
 //! [`crate::hydro::Hull`]), never from the control net.
 //!
-//! Conventions (see `AGENTS.md`): `x` forward, `y` starboard, `z` up, `draft`
+//! Conventions (see `skills/seacraft-hull-numerics/SKILL.md`): `x` forward, `y` starboard, `z` up, `draft`
 //! measured above the keel, `trim` positive bow-up. The Bonjean curves are
 //! computed upright and at even keel: they describe the hull form, not a
 //! floating condition.

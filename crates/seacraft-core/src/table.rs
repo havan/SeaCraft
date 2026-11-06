@@ -85,7 +85,7 @@ pub fn table(surface: &Surface, opts: &HydroOptions, drafts: &[f64]) -> Hydrosta
         let mut o = opts.clone();
         o.draft = draft;
         let h = hydro::compute(surface, &o);
-        // The core works in kg (AGENTS.md: "metres and kg inside the core"),
+        // The core works in kg (the hull-numerics skill: "metres and kg inside the core"),
         // so both table quantities need the kilogram-to-tonne factor or they
         // read a thousand times too large.
         let rho_t = h.water_density / 1000.0;

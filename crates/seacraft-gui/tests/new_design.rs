@@ -566,7 +566,7 @@ fn the_demo_keeps_its_kg_and_gm() {
     assert!(!app.kg_is_estimate());
     app.recompute_hydrostatics();
     let h = app.hydrostatics().unwrap().clone();
-    // AGENTS.md reference: KM ≈ 2.63 m at T = 0.62 m, so GM ≈ +0.43 m.
+    // the hull-numerics skill reference: KM ≈ 2.63 m at T = 0.62 m, so GM ≈ +0.43 m.
     let gm = h.gm(2.2);
     assert!(
         (h.km_transverse - 2.63).abs() < 0.03,

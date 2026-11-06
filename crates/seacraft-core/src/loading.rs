@@ -1,7 +1,7 @@
 //! Loading conditions: weight items, partially filled tanks, free-surface
 //! correction, equilibrium floating condition and intact stability.
 //!
-//! Conventions (see `AGENTS.md`):
+//! Conventions (see `skills/seacraft-hull-numerics/SKILL.md`):
 //! * Axes: `x` forward, `y` to starboard, `z` up; keel at low `z`.
 //! * Units: metres and tonnes (`mass_t`, `displacement_t`, `density_t_m3`).
 //! * Datum: `KG`, `KB`, `BM`, `KM`, `GM` are measured above the keel

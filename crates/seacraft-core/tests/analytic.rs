@@ -211,7 +211,7 @@ fn a_box_has_no_righting_lever_upright() {
     assert!(gz10 > 0.0, "GZ at 10 degrees {gz10}");
 }
 
-/// The numbers `AGENTS.md` quotes for the demo hull. They are the project's
+/// The numbers `skills/seacraft-hull-numerics/SKILL.md` quotes for the demo hull. They are the project's
 /// regression oracle: a change that moves them by more than ~1 % is a bug.
 #[test]
 fn demo_hull_matches_the_reference_numbers() {

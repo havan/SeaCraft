@@ -17,6 +17,10 @@ GPL source; it is not a line-by-line translation.
 > Do not rely on SeaCraft for design or safety decisions without independent checks by a qualified
 > person. It is provided as is, with no warranty; see [`DISCLAIMER.md`](DISCLAIMER.md).
 
+![The SeaCraft desktop modeller: four linked viewports with a 10 m yacht, layers on the left, hydrostatics on the right](docs/assets/gui.png)
+
+![A lines plan of the 22 m trawler example exported as SVG: profile, plan and body plan](docs/assets/lines.svg)
+
 ---
 
 ## 1. How FREE!ship works (investigation notes)

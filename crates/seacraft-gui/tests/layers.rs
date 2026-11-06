@@ -125,7 +125,7 @@ fn the_demo_file_has_three_named_layers_that_change_no_number() {
         ["Bottom", "Topsides", "Transom"]
     );
     assert!(s.layer_face_counts().iter().all(|&c| c > 0));
-    // The AGENTS.md reference numbers (level 3, Loop), unchanged.
+    // The the hull-numerics skill reference numbers (level 3, Loop), unchanged.
     app.recompute_hydrostatics();
     let h = app.hydrostatics().unwrap();
     assert!((h.volume_m3 - 11.851).abs() < 0.001, "{}", h.volume_m3);

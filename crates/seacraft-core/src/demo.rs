@@ -282,7 +282,7 @@ mod tests {
             let b = compute(&single, &opts);
             assert_eq!(format!("{a:?}"), format!("{b:?}"));
             if !symmetric {
-                // The AGENTS.md reference (the full model, as in examples/).
+                // The the hull-numerics skill reference (the full model, as in examples/).
                 assert!((a.volume_m3 - 11.851).abs() < 0.001, "{}", a.volume_m3);
             }
         }

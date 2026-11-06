@@ -2007,7 +2007,7 @@ mod tests {
             let rep = head_sea_raos(&surface, &spec).expect("raos");
             (rep.frequencies[0].heave_amp, rep.frequencies[0].pitch_amp)
         };
-        let kb = 0.392; // demo hull at T = 0.62 m (AGENTS.md reference)
+        let kb = 0.392; // demo hull at T = 0.62 m (the hull-numerics skill reference)
         for speed in [0.0, 3.0, 6.0] {
             let (heave, pitch) = run(kb, speed);
             assert!((heave - 1.0).abs() < 0.01, "{speed} kn: heave {heave}");

@@ -5301,7 +5301,7 @@ mod tests {
             };
             assert_eq!(&rejoined, glued, "{name} changed");
         }
-        // The demo reference numbers are the ones on show (AGENTS.md).
+        // The demo reference numbers are the ones on show (the hull-numerics skill).
         let value = |name: &str| -> f64 {
             rows.iter()
                 .find(|r| r.name == name)

@@ -2,7 +2,7 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
-## 0.2.1 (unreleased)
+## 0.2.1 (2026-11-07)
 
 First public release. No change to any computed number.
 
