@@ -115,6 +115,23 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | Curvature, zebra and draft analysis | `analysis.rs` |
 | CPU z-buffer rasterizer + waterplane depth + PNG | `raster.rs` |
 | OBJ / STL / 3MF / PLY / IGES / HTML viewer | `export.rs` |
+| Deterministic damage stability (lost buoyancy) | `damage.rs` |
+| IMO 2008 IS Code weather criterion | `weather.rs` |
+| Holtrop & Mennen still-water resistance | `resistance.rs` |
+| Michell thin-ship wave resistance | `michell.rs` |
+| Savitsky planing hull resistance | `planing.rs` |
+| Strip-theory heave and pitch motions | `seakeeping.rs` |
+| Irregular head seas, significant motions, MSI | `seastate.rs` |
+| Trim optimisation at a speed | `trimopt.rs` |
+| Hydrostatics table, table of offsets, Bonjean curves | `table.rs`, `offsets.rs`, `curves.rs` |
+| Lackenby-style station shift | `lackenby.rs` |
+| Scale, translate and mirror | `transform.rs` |
+| Split a face, insert an edge, toggle a crease | `topology.rs` |
+| Developable plate expansion | `develop.rs` |
+| Project sidecar (loading, damage, windage, report settings) | `project.rs` |
+| Design report (self-contained HTML) | `report.rs` |
+| Example hull library | `examples/` |
+| Control channel token and path sandboxing | `control_auth.rs` |
 | Parametric demo hull | `demo.rs` |
 | Parametric hull generator (`displacement`, `planing`, `yacht`) | `parametric.rs` |
 | Resistance optimiser (Nelder–Mead over Cp, LCB, L/B) | `optimize.rs` |
@@ -739,9 +756,8 @@ software. Comparing them with published data is the most useful contribution any
   loads measuring the midship section at the LCF. `--mainframe` (or
   `mainframe_x` over MCP) measures it elsewhere — the demo hull's published
   `Cm`/`Cp` are the LCF values.
-* Not yet implemented: Lackenby transformation, damage stability / floodable
-  length,
-  VRML import, and interactive face/edge splitting or extrusion in the GUI.
+* Not yet implemented: floodable length curves, VRML import, and edge extrusion in the GUI.
+  See [`ROADMAP.md`](ROADMAP.md).
 * FREE!ship's own sample models are binary `.fbm` files; SeaCraft targets the
   documented text `.fef` exchange format instead.
 

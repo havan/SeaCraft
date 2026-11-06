@@ -48,5 +48,3 @@ Run `hull_info {}` and check `validation.ok`; fairing a leaking net measures not
 - Volume drifting steadily across moves: each was small, the sum was not. Re-baseline every ten moves.
 - Moving a point on a symmetric layer to y < 0: it is clamped to 0 and the reply says `clamped`.
 - Chasing a comb spike at a crease or a transom corner.
-
-Written against SeaCraft 0.1.0-beta.36.

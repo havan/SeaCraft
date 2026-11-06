@@ -56,5 +56,3 @@ State the condition (draft, trim, heel, KG, LCG, density, `level`), then displac
 - KG measured from the deck or the waterline instead of the keel.
 - A pass quoted without the heel range and the weakest margin.
 - Using an open hull's stability beyond the deck-edge immersion angle, or quoting resistance with a warning ignored.
-
-Written against SeaCraft 0.1.0-beta.36.

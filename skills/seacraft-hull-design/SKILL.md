@@ -7,7 +7,7 @@ description: Use when you load a SeaCraft hull (.fef or the demo) and must reach
 
 ## Overview
 
-SeaCraft holds a hull as a subdivision control net and measures the refined surface. Design is a loop: measure, change one thing, measure again. Edits are in memory until `save_hull`. There is no direct Lackenby or prismatic-shift tool: `transform_hull` scales the whole model, shape changes are `move_point` moves you plan as numbers, and `optimize_hull` searches Cp, LCB and L/B for you when the goal is lower resistance at a speed.
+SeaCraft holds a hull as a subdivision control net and measures the refined surface. Design is a loop: measure, change one thing, measure again. Edits are in memory until `save_hull`. There is no direct Lackenby or prismatic-shift MCP tool (the CLI has `seacraft lackenby`): `transform_hull` scales the whole model, shape changes are `move_point` moves you plan as numbers, and `optimize_hull` searches Cp, LCB and L/B for you when the goal is lower resistance at a speed.
 
 ## Before the first call
 
@@ -48,5 +48,3 @@ Write the targets down with units and tolerances (for example 1 % on volume) bef
 - Cb jumps by more than 5 % from one `move_point`: you moved a crease or transom corner. Undo by moving it back.
 - Coefficients compared across calls with different `draft`, `level` or `mainframe_x`.
 - KM or KB quoted from model z: they are above the keel, which is z = 0 only when `hull_info` shows keel 0.
-
-Written against SeaCraft 0.1.0-beta.36.
