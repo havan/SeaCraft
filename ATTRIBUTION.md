@@ -129,3 +129,15 @@ file creation, RAII token file cleanup, and canonical path root sandboxing
 
 Structure and the warranty, liability and indemnity wording. The sections on validation and approval
 are SeaCraft's own.
+
+## Contributor documents
+
+* **Source:** `AGENTS.md`, `CONTRIBUTING.md`, `skills/README.md`, `skills/solidcraft-contributing/SKILL.md` and
+  the pull request template of [solidcraft](https://github.com/tangency-labs/solidcraft); `CODE_OF_CONDUCT.md`,
+  `SECURITY.md`, `CONTRIBUTING.md` and the issue templates of
+  [fieldcraft](https://github.com/tangency-labs/fieldcraft)
+* **Licence:** MIT OR Apache-2.0, taken under MIT
+* **Copyright:** Copyright (c) 2026 SolidCraft contributors; Copyright (c) 2026 FieldCraft contributors
+
+The structure and some wording of SeaCraft's `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md`,
+`CODE_OF_CONDUCT.md`, `skills/seacraft-contributing/`, and `.github/` templates are adapted from these.

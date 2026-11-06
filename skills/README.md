@@ -1,9 +1,23 @@
 # Agent skills
 
-Skills for AI agents that design, fair and check hulls in SeaCraft through its MCP server
-(`seacraft mcp`, see the MCP section of the [main README](../README.md)). Each folder is one skill in the
-[Agent Skills](https://agentskills.io) format: a `SKILL.md` with a name and a description that tell the
-agent when to load it.
+Each folder is one skill in the [Agent Skills](https://agentskills.io) format: a `SKILL.md` with a name and a
+description that tell the agent when to load it. Contributor skills are for changing this repository, and
+`AGENTS.md` routes to them. Design skills are for working on a hull through the MCP server.
+
+## Contributor skills
+
+| Skill | Loads when the agent |
+|---|---|
+| [`seacraft-contributing`](seacraft-contributing/SKILL.md) | helps someone send a pull request or cuts a version |
+| [`seacraft-ground-rules`](seacraft-ground-rules/SKILL.md) | adds a dependency, ported code or wording; licences, honest results, private files |
+| [`seacraft-hull-numerics`](seacraft-hull-numerics/SKILL.md) | changes anything that measures a hull: conventions, invariants, pitfalls already hit |
+| [`seacraft-commands`](seacraft-commands/SKILL.md) | adds a command, measurement, export, panel or tool |
+| [`seacraft-tests`](seacraft-tests/SKILL.md) | writes tests, adds an oracle or tests the GUI headlessly |
+
+## Design skills
+
+For AI agents that design, fair and check hulls through the MCP server (`seacraft mcp`, see the MCP section of
+the [main README](../README.md)).
 
 | Skill | Loads when the agent |
 |---|---|
@@ -22,10 +36,12 @@ the whole model, and a half model that needs a transom face.
 
 ## Install
 
+The design skills:
+
 Claude Code, for all projects:
 
 ```sh
-cp -r skills/seacraft-* ~/.claude/skills/
+cp -r skills/seacraft-{hull-design,fairing,stability-check} ~/.claude/skills/
 ```
 
 One project only: copy the folders into that project's `.claude/skills/` instead. Other agents that read the
@@ -55,7 +71,7 @@ Authentication is required by default:
   each `` `tool_name {…}` `` call names a tool in `tool_definitions()`, and checks the frontmatter (`name` equals the
   folder, `description` starts "Use when").
 - Numbers quoted in the skills come from the demo hull (`examples/demo-hull.fef`, T = 0.62 m). If the reference
-  numbers in `AGENTS.md` move, update the skills in the same change.
+  numbers in `skills/seacraft-hull-numerics/SKILL.md` move, update the skills in the same change.
 - Write tool calls as `` `tool_name {"arg": value}` `` so the test sees them; keep other backticked code from
   starting with `name {`.
 - Each skill ends with the SeaCraft version it was written against; bump it when its tools change.

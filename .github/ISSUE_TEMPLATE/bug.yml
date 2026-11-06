@@ -1,0 +1,33 @@
+name: Bug report
+description: Something SeaCraft does wrong, a wrong result, or a crash
+labels: [bug]
+body:
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed
+      description: Exactly what happened. Quote error messages and wrong numbers as they appear.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Numbered steps or commands, and the `.fef` file if you can share it.
+      placeholder: |
+        1. seacraft hydro examples/demo-hull.fef --kg 2.2
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What should happen instead, and why. For a number, say where the right value comes from.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version and platform
+      description: The output of `seacraft --version`, and your operating system.

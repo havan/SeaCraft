@@ -5,337 +5,53 @@ summary: >
   panel-based hydrostatics, stability cross curves, a linesplan generator and
   mesh export. Occasionally refines to the same shape as FREE!ship, so the
   weighting rules in subdiv.rs are load-bearing and must not be "tidied".
-section_index:
-  - "What this is": overview and status
-  - "Layout": where every module lives
-  - "Build and test": the only commands you need
-  - "Domain conventions": axes, units, signs, datum
-  - "Invariants": rules that silently corrupt results if broken
-  - "Pitfalls already hit": bugs that were fixed; do not reintroduce
-  - "Extending": recipes for a new CLI command / measurement
-  - "Licensing and provenance": GPL-2.0-or-later
 agent_instructions: >
-  Read "Invariants" and "Pitfalls already hit" before touching geometry or
-  hydrostatics. Measure on the refined mesh, never on the control net. After
-  any change to subdiv.rs, hydro.rs or linesplan.rs run `cargo test` and the
-  smoke sequence in "Build and test". Never reorder or re-derive the
-  subdivision weights from a textbook: FREE!ship's averaging pass is a
-  deliberate variant, and matching it is the point of the project.
+  This file is a router: the hard rules, then the skill to read for your task.
 ---
 
-# AGENTS.md
+# SeaCraft: instructions for agents
 
-## What this is
+SeaCraft is a Rust reimplementation of the FREE!ship hull modeller: subdivision surfaces, the `.fef` format,
+panel hydrostatics, stability, lines plans, exports, a desktop GUI, a CLI and an MCP server. Humans: see
+`CONTRIBUTING.md`.
 
-SeaCraft reproduces the modelling and measurement pipeline of
-[FREE!ship](https://sourceforge.net/projects/freeship/) (GPLv2, Delphi) in
-Rust. It reads and writes FREE!ship's text `.fef` exchange format, refines the
-control net with the same hybrid Loop / Catmull-Clark scheme, and measures the
-submerged hull.
+## Start here
 
-**Status.** Library, CLI, GUI, tests, `.fef` round-trip, hydrostatics,
-stability, linesplan SVG and mesh export are implemented and verified. The
-desktop modeller (`seacraft-gui`) has four linked viewports, control-point
-dragging with undo, a layer dock, a live hydrostatics dock with GZ cross
-curves, file/export actions, and a tabbed design dock (Loading, Damage,
-Windage, Performance) over the `<model>.seacraft.json` project file, with
-tanks, compartments and windage drawn in the viewports and a design report
-with project sections. `0.2.0` was cut on 2026-11-06. `0.1.0` was cut on 2026-10-24; round 3 (`0.1.1` …
-`0.1.10`) was a fix round from a three-area bug hunt
-(`.hermes/plans/2026-10-24_round3-fix-round.md`).
-
-The workspace is a **local-only** git repository: no remotes, no push.
-
-## Layout
-
-```
-Cargo.toml                  workspace: core + cli + gui, one shared version
-crates/seacraft-core/
-  src/lib.rs                public API and module map
-  src/math.rs               Vec3, Plane, 2D polygon moments (area/mx/my/ix/iy)
-  src/mesh.rs               Surface = control points/edges/faces/layers, extents,
-                            edge incidence, boundary/crease initialisation
-  src/subdiv.rs             refinement kernel: refine_once, average, mirroring
-  src/fef.rs                .fef parse/write (format documented in file header)
-  src/hydro.rs              Hull, waterplane, clipping, integration, sections,
-                            waterline chaining, coefficients
-  src/stability.rs          draft/trim solving + KN/GZ cross curves + IMO A.749
-  src/weather.rs            IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather) criterion
-  src/loading.rs            loading conditions: weights, tanks (box/hull-clipped), FSM/FSC, equilibrium + IMO
-  src/damage.rs             deterministic damage stability: lost buoyancy, equilibrium draft/trim/heel, residual GZ & SOLAS criteria
-  src/linesplan.rs          stations/buttocks/waterlines -> SVG/DXF/IGES + combs
-  src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
-  src/iges.rs               IGES 5.3 B-spline curve (126) + surface (128) writer
-  src/threemf.rs            spatial-grid vertex welding + 3MF 1.3 archive writer
-  src/analysis.rs           vertex normals, discrete curvature, zebra/draft/curvature
-  src/raster.rs             CPU z-buffer rasterizer, 2x SSAA, waterplane depth, PNG
-  src/report.rs             design dossier: self-contained HTML5 report (particulars, lines, hydro, SAC, stability, resistance)
-  src/export.rs             OBJ (y- or z-up), binary STL, 3MF, PLY, IGES, HTML viewer
-  src/resistance.rs         still-water resistance and effective power (Holtrop & Mennen 1984)
-  src/michell.rs            Michell thin-ship wave resistance (Michlet-style) for slender monohulls and catamarans
-  src/demo.rs               parametric 12 m demo hull, full and half model
-  src/examples/             example-hull library: Example enum, build() -> (Surface, Project),
-                            net primitives (mod.rs), shared acceptance checks (checks.rs),
-                            one file per hull (runabout.rs, wigley.rs, ...)
-  src/parametric.rs         parametric hull generator (displacement/planing/yacht) from principal dims
-  src/optimize.rs           Nelder–Mead + optimize_hull: reshape Cp/LCB/L-B for least R_T at a speed, displacement held
-  src/seakeeping.rs         Lewis sections; 2D heave added mass/damping by Frank close-fit panels (B7a); STF strip-theory heave & pitch RAOs (B7b)
-  src/project.rs            <model>.seacraft.json sidecar: loading conditions, compartments, damage cases, windage, report settings
-  src/seastate.rs           irregular head seas: Bretschneider/JONSWAP spectra, significant motions, MSI (E2)
-  src/io.rs                 write_atomic: temp sibling + sync + rename for every user file
-  src/control_auth.rs       control-channel token (0600 file, constant-time compare) + read/write roots (ported, see ATTRIBUTION)
-crates/seacraft-cli/
-  src/main.rs               clap front end, table/JSON/CSV output
-  src/mcp.rs                JSON-RPC 2.0 MCP server over stdio (headless + --connect)
-crates/seacraft-gui/
-  src/main.rs               eframe bootstrap, `--open FILE`, `--control HOST:PORT`
-  src/app.rs                App state, menus, file actions, dock wiring
-  src/commands.rs           typed model/analysis operations (transform, optimise, topology,
-                            crease, generate, hydro table, trim scan, Bonjean, offsets,
-                            unfold) shared by the control channel and the menus
-  src/model_menu.rs         Model menu items + disabled reasons, Transform/Optimise dialogs,
-                            topology-tool targets (Shift+click pair, picked face), axis lock
-  src/control.rs            loopback TCP JSON-lines control channel
-  src/camera.rs             ViewKind, Camera, ViewTransform, Ray
-  src/render.rs             viewport painter: grid, shading, control net
-  src/theme.rs              colour tokens (the only colour literals), type scale, spacing
-  src/picking.rs            screen-space picking, drag plane
-  src/history.rs            snapshot undo/redo (64)
-  src/messages.rs           typed message log (level, text, time) + Messages window
-  src/recent.rs             File > Open recent list, JSON eframe::Storage in the data dir
-  src/autosave.rs           periodic autosave (30 s, locked session pair) + startup crash recovery modal
-  src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
-  tests/                    autosave, drag, files, hydro, smoke (all headless)
-xtask/                      cargo xtask ci: fmt, clippy, tests, version check, demo numbers
-docs/oracles.md             formulae, tests and numbers for all numeric test oracles
-docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs
-docs/oracles/heave_2d_lid.py  Frank panels with the irregular-frequency lid vs Ursell (E3)
-docs/oracles/irregular_seas.py  spectrum moments, response moments, MSI oracle for seastate.rs (E2)
-skills/                     agent skills for the MCP server (CI-checked tool names)
-examples/demo-hull.fef      generated demo model + .seacraft.json (KG 2.2); `seacraft demo -o` writes both
-README.md                   user-facing docs + FREE!ship investigation notes
-ATTRIBUTION.md              provenance of code ported from ../resource/*
-```
-
-## Build and test
+Work: `ROADMAP.md`, issues labelled `help wanted` or `good first issue`. Design: `docs/architecture.md`. Local
+notes are fine in ignored folders.
 
 ```console
-cargo build --release
-cargo xtask ci   # the full gate: fmt, clippy, release + debug tests, versions, demo numbers, no remotes
-cargo test                       # core + gui unit + 5 integration suites
-cargo clippy --all-targets       # must stay silent
-cargo run --release --bin seacraft -- demo -o /tmp/demo.fef
-cargo run --release --bin seacraft -- hydro /tmp/demo.fef --kg 2.2 --stations 11
-cargo run --release --bin seacraft -- linesplan /tmp/demo.fef -o /tmp/lines.svg
-cargo run --release --bin seacraft -- linesplan /tmp/demo.fef -o /tmp/lines.dxf
-cargo run --release --bin seacraft -- render /tmp/demo.fef -o /tmp/zebra.png --mode zebra
-cargo run --release --bin seacraft -- export /tmp/demo.fef -o /tmp/hull.html --level 2
+cargo xtask ci                       # the full gate
 cargo run -p seacraft-gui -- --open examples/demo-hull.fef
+cargo run --bin seacraft -- hydro examples/demo-hull.fef --kg 2.2
 ```
 
-The GUI runs headlessly for tests: `egui::Context::run_ui` with synthetic
-pointer and key events (`crates/seacraft-gui/tests/`). A real check needs the
-display: `DISPLAY=:1 import -window root /tmp/gui.png` while the app runs.
+## Hard rules (what enforces each)
 
-Reference numbers for the demo hull at T = 0.62 m (level 3, Loop mode):
-volume ≈ 11.85 m³, Cb ≈ 0.504, Cwp ≈ 0.824, KB ≈ 0.392 m, KM ≈ 2.63 m,
-midship area ≈ 1.47 m². A change that moves these by more than ~1 % is a
-regression, not an improvement.
+- Measure on the refined mesh; FREE!ship's subdivision weights are deliberate, so never substitute a textbook's.
+  Breaking the rules in `skills/seacraft-hull-numerics/SKILL.md` gives plausible but wrong numbers: demo
+  reference numbers in `cargo xtask ci`, `crates/seacraft-core/tests/analytic.rs`.
+- A numeric test states where its number came from, and "published" means you read the source:
+  `docs/oracles.md`, reviewed in PRs.
+- Never call a result verified, validated, approved or compliant without saying against what: `DISCLAIMER.md`,
+  reviewed in PRs.
+- Licence `GPL-3.0-or-later`; ported code is attributed in `ATTRIBUTION.md` and its module header; dependencies stay
+  compatible: `cargo deny check licenses`, `cargo xtask licences --check`.
+- No local notes, absolute paths or session logs in the repository: `cargo xtask private`.
+- Panels never mutate the model; they return what the user asked for, and `App::draw` applies it. Reviewed in PRs.
+- Colours only from `crates/seacraft-gui/src/theme.rs`: `cargo xtask colours`.
+- Slow work stays off the window thread, in `Job<T>`, and a stale result is never shown as current. Reviewed in PRs.
+- Every user file goes through `write_atomic`. Reviewed in PRs.
+- The version is identical in `Cargo.toml`, `Cargo.lock`, the window title and `seacraft --version`: `cargo xtask ci`.
+- Run `cargo xtask ci` before every commit. `cargo xtask skills` keeps this file and `skills/` honest.
 
-## Domain conventions
+## Working on X: read the skill first
 
-* **Axes**: `x` forward, `y` to starboard, `z` up; keel at low `z`.
-* **Units**: metres and kg inside the core. `.fef` carries the project's
-  units flag; imperial is only a project setting at present.
-* **Layers** may be `symmetric` (only `y >= 0` modelled, mirrored on evaluation)
-  and `use_in_hydrostatics` (filter for measurement, without affecting display).
-* **Heel** is positive to starboard. **Trim** is a length in metres, positive
-  when the bow is higher than the stern.
-* **Datum**: `KB`, `BM`, `KM`, `KG` are above the keel (lowest hydrostatic
-  point). `LCB`, `LCF` are in model coordinates.
-* **Body plan** looks forward from aft with starboard on the right; stations
-  aft of amidships on the left half, forward of it on the right, amidships on
-  both (`linesplan::body_plan_stations`, `camera.rs`). Same in the GUI, SVG and
-  DXF; 3D curves (DXF `Stations 3D`, IGES, Perspective) stay whole.
-* **Waterplane** is built in `hydro::waterplane_for` from draft, trim and heel;
-  the normal points up, and points with `side <= 0` are submerged.
-
-## Invariants
-
-Breaking any of these produces plausible-looking but wrong numbers.
-
-1. **Measure on the refined mesh.** All hydrostatics, sections and linesplan
-   curves use `subdiv::evaluate` output, never the control polygon.
-2. **Outward normals.** The volume integral is a divergence integral over the
-   hull panels; reversed winding flips the sign or corrupts the volume.
-3. **Closed below the waterline.** Edges must have two adjacent faces except
-   deliberate model boundaries. A submerged boundary edge is a leak. A
-   symmetric half model also needs a transom face, otherwise its waterplane
-   never closes. `Hull` closes every open boundary loop (the sheer of a hull
-   without deck faces) with `Hull::lids` (`hydro::boundary_lids`); measure
-   with `Hull::integrate` / `closed_tris`, not `integrate(&hull.tris)`.
-4. **Integration origin lives in the waterplane.** `integrate` projects the
-   world origin onto the plane so the waterplane lid contributes zero; the
-   centroid is shifted back by that origin afterwards.
-5. **Subdivision weights are FREE!ship's, not a textbook's.** Edge points are
-   midpoints, face points are centroids, and `average` applies
-   `P' = P + a (C - P)` with `a = 4/n` for all-quad, the Loop beta formula for
-   all-triangle, and `12/(3Nq + 2Nt)` mixed, then crease `0.5P + 0.25(N1+N2)`
-   for crease vertices with **exactly two** crease neighbours (others are
-   pinned, so the weights can never sum past 1).
-   Do not substitute standard Catmull-Clark.
-
-## Pitfalls already hit
-
-These were real failures in this codebase; the fixes are load-bearing.
-
-* **Curves fragment into many short paths.** Two causes, both fixed in
-  `hydro::chain_paths`: walking an open chain from an edge in its middle (walk
-  forward, then backward from the other endpoint and concatenate), and
-  duplicate segments from quad diagonals (dedupe by unordered endpoint pair).
-* **Closure detection.** A closed ring returns to the start edge's *other*
-  vertex, not to the first vertex walked. Comparing against the wrong one makes
-  every waterline look open.
-* **Endpoint snapping.** the same crossing computed from the two adjacent
-  triangles differs in the last bits; grid rounding splits it at cell
-  boundaries. Snap by proximity with a neighbour search.
-* **Open station cuts need closing.** A hull open at the deck gives an open
-  station curve; close it along the waterplane before computing area. The
-  centreline (lateral) cut needs the same.
-* **Mirroring reads `face_layer` per face.** Clear it only after
-  `mirror_symmetric`, or it panics with an index-out-of-bounds.
-* **Crease junctions must not average.** A vertex with three or more incident
-  crease edges (chine + transom + sheer) summed `0.5 + 0.25k > 1` and drifted
-  outward by 25 % per level. The rule is `nb.len() == 2`; write the weights as
-  a single expression so the sum is visible.
-* **A heeled hull is free to trim.** Holding `trim` while heeling leaves `LCB`
-  off `LCG`, and the usual hull (wide transom, fine bow) then reports a `KN`/
-  `GZ` that is too high — the error grows with heel and is invisible upright.
-  `StabilityCondition::lcg_x: Some(x)` runs the two-unknown solve; `None` keeps
-  the old fixed-trim behaviour for speed and compatibility. The check is the
-  analytic box: at 2 m draft, asking a 10 m box for `LCB` 4.0 m must trim 2.4 m
-  bow-up (see `tests/analytic.rs`).
-* **A draft above the keel cannot place every waterplane.** Past 90° heel the
-  submerged volume *falls* as that draft grows (the solve returned draft 0 and
-  a plausible GZ); at 90° the draft does not move the plane (no solution); a
-  light hull at a steep heel needs the plane below the keel on the centreline
-  (clamped to 0: the demo at 30 % of its displacement lost 0.15 m of GZ at
-  55–60°); and
-  `waterplane_for`'s trim stops tilting the plane at 90°. `stability` falls
-  back to the plane offset along its normal, bracketed by
-  `Hull::extent_along`, with the free-trim loop on the *level* trim
-  (`hydro::waterplane_normal`). The check is the half-full box with `G` at
-  its centre: closed-form GZ, `GZ(180° − φ) = −GZ(φ)` (`docs/oracles.md` §20).
-  `damage::solve_damaged_draft` had the same clamp and uses the same offset
-  fallback (`damaged_buoyancy_in`); its check is the light barge's
-  bilge-out triangle (`damage.rs` tests).
-* **An open deck is a leak once it is wet.** The demo hull and most
-  FREE!ship models end at the sheer. With the origin in the waterplane the
-  divergence integral over an open surface counts the cone from that origin
-  to the opening, so past deck-edge immersion the volume was wrong in either
-  direction (open 10×4×2 box at 40°: 46.68 m³ for 51.92), and overloaded it
-  grew without bound (`L·B·D + A_deck·h/3`): 1000 t on the demo floated at
-  74.6 m with `equilibrium_found = true`. `Hull::new` closes each boundary
-  loop with lid triangles (deck taken as watertight; never wetted surface),
-  hydrostatics warns `open_hull_lid_submerged` when one is under water, and
-  the draft searches stop expanding once the hull is fully submerged. The
-  check is the open box against the half-full-box GZ oracle and its
-  overload (`docs/oracles.md` §22).
-* **A crease junction left `Regular` was smoothed away.** Where three or
-  more crease edges meet (chine or sheer meeting a transom outline) the
-  point must be pinned as a `Corner`; previously a `Regular` one was averaged
-  as a smooth point and rounded the runabout's transom chine corner off by
-  0.2 m, rolling the sides in towards the transom. `subdiv.rs` now automatically
-  treats any vertex with three or more incident crease edges as a `Corner`
-  during refinement, so user-creased models and `.fef` imports preserve sharp
-  corners regardless of stored vertex kind. The checks are
-  `subdiv::tests::creased_box_with_regular_vertices_preserves_corners_at_level_3`
-  and `examples::checks::assert_transom_outline`.
-* **A closed hull has no boundary to read the sheer from.** The damaged
-  freeboard came from the open boundary alone, so on a hull with a deck, most
-  of the examples, it read "-" and the deck-immersed warning could not fire.
-  `damage::closed_hull_deck_edge` takes the perimeter of the large
-  upward-facing regions; going by region keeps a spray rail from passing for
-  the deck edge.
-* **The free-trim residual falls as the trim grows.** Bow up moves the LCB
-  aft, so ordering the secant bracket by trim mixed its signs.
-  `stability::secant_on_trim` (shared by intact and damage) keeps the bracket
-  by residual sign; do not reintroduce a `lo`/`hi` swap.
-* **Chained loops come out in arbitrary directions.** Two pontoons walked
-  opposite ways cancelled each other's waterplane. `hydro::loop_moments` and
-  `clipped_loop_moments` take each loop's sign from its nesting
-  (`math::loop_signs`), never from the winding the chain walk produced.
-* **A point in plane coordinates needs the plane's offset.** `u·cx + v·cy`
-  lies in the plane through the origin; add `-n·d` to land on the real plane
-  (the LCF was at z ≈ 0 and shifted in x under trim).
-* **Savitsky's deadrise relation is `C_Lβ = C_L0 − 0.0065 β C_L0^0.6`.** It
-  gives `C_Lβ` from `C_L0`; solve it for `C_L0` (`planing::flat_plate_lift`),
-  do not substitute `C_Lβ` on the right.
-* **`PolygonMoments::from_polygon` returns signed values.** Areas/moments may
-  come back negative depending on winding; callers take `abs()` where the
-  orientation is not guaranteed.
-
-## Extending
-
-* **New CLI command**: add a variant to `Command` plus an `Args` struct in
-  `crates/seacraft-cli/src/main.rs`, then a `cmd_*` function; output tables by
-  default and offer `--json`/`--csv` where the data is numeric.
-* **New measurement**: build a `hydro::Hull` once, derive the cutting plane,
-  reuse `plane_segments` + `chain_paths` + `clipped_loop_moments`, and add the
-  field to `Hydrostatics` (it derives `Serialize`). Document the datum.
-* **New export format**: add a function in `export.rs` taking
-  `render_mesh(surface, level, mode)`; keep it dependency-free so the core stays
-  light. The DXF writer (`dxf.rs`) is the model for a format that needs its own
-  module: a `DxfShape` variant, a group-code branch in `write_dxf`, and a test
-  that reads the output back as group-code pairs.
-* **New analysis shade**: extend `analysis::AnalysisMode`, add its colour in
-  `analysis_color`, then give it a default in both front ends (`RenderModeArg`
-  in the CLI, the View menu and `render::frame_key` in the GUI — the key must
-  include the mode's parameters or the cached texture will not refresh).
-* **New example hull**: follow the "Adding a hull" steps in
-  `crates/seacraft-core/src/examples/mod.rs` (one file with a frozen station
-  table and its acceptance tests through `examples::checks`, one line in
-  `Example::builder`, then `seacraft example --all -o examples/`). `build`
-  runs no solver; calibrate once, freeze the numbers. On a half model the
-  centreline boundary (keel, stem, deck centreline) is pinned by the kernel:
-  it stays the control polyline, so give it enough points.
-* **New test**: prefer analytic or invariant checks (box displacement, barge
-  waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror
-  symmetry, `.fef` round-trip) over golden files.
-* **New GUI panel**: add a function in `crates/seacraft-gui/src/panels.rs`
-  taking `&mut egui::Ui` plus the state it needs, return what the user asked
-  for, and let `App::draw` apply it after the closure (never mutate the model
-  from inside a panel closure). Headless tests drive frames through
-  `egui::Context::run_ui`; the docks settle on the second frame, so draw two
-  before reading `App::viewport_rect`.
-* **Ported code**: keep the source file, project and licence in the module
-  header *and* in `ATTRIBUTION.md`. Adapt the vector type to
-  `seacraft_core::math::Vec3`; never add `solidcraft-*`, `fieldcraft-*` or
-  `solidcore` as Cargo dependencies (millimetres, `truck`, `egui 0.36`).
-
-## Versioning and history
-
-* Semver with a prerelease counter, shared through
-  `[workspace.package] version`. History: `0.1.0-alpha.1` at import time,
-  `alpha.2` … `alpha.10` per completed GUI task, `0.1.0-beta.1` when the
-  acceptance checklist passed, then `beta.N` per completed task, `0.1.0` on
-  2026-10-24 after the round-2 readiness review (open, edit, measure, load,
-  report, save and reopen with no known blocking defect), `0.2.0` on 2026-11-06
-  after the round-13 readiness review, same criterion. From here: `0.2.N` for a
-  fix-only task, `0.3.0-beta.N` per completed feature task until the next
-  readiness review (a default — the user may choose otherwise).
-* The version must be identical in `Cargo.toml`, `Cargo.lock`, the window title
-  and `seacraft --version`.
-* **Local-only Git.** `git remote -v` must stay empty: no push, no publish, no
-  origin. One linear commit per task.
-* `.hermes/NEXT.md` is the session handoff: current version and commit, what was
-  just done and how it was verified, the next task's first three actions, open
-  decisions. A fresh session starts there, not from chat history.
-
-## Licensing and provenance
-
-SeaCraft is GPL-2.0-or-later, matching FREE!ship. FREE!ship is Copyright its
-authors; this is an independent reimplementation written from documented
-behaviour and the GPL source, not a translation. The modelling ideas
-(subdivision scheme, `.fef` layout, panel hydrostatics) come from FREE!ship;
-keep attribution intact when adding derived documentation.
+| Working on | Read |
+|---|---|
+| A pull request, a version, evidence for a change | `skills/seacraft-contributing/SKILL.md` |
+| Licences, a dependency, ported code, wording about results | `skills/seacraft-ground-rules/SKILL.md` |
+| Anything that measures a hull: subdivision, hydrostatics, stability, damage, lines plans | `skills/seacraft-hull-numerics/SKILL.md` |
+| A CLI command, measurement, export, analysis shade, example hull, panel or MCP tool | `skills/seacraft-commands/SKILL.md` |
+| Writing or running tests, a numeric oracle, GUI tests | `skills/seacraft-tests/SKILL.md` |
+| Designing, fairing or checking a hull over MCP | `skills/README.md` |

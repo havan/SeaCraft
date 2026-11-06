@@ -61,6 +61,7 @@ takes roughly 60 ms, while the idle app repaints nothing.
 | Intact stability | Free-trim GZ, IMO A.749, IS Code weather criterion | Other criteria sets, stability booklet output |
 | Damage | Deterministic lost buoyancy | Probabilistic SOLAS, floodable length |
 | Resistance | Holtrop-Mennen, Michell, Savitsky, within each method's range | Appendage detail, sailing yacht performance |
+| Small craft | None | ISO 12217-2 STIX (the formula is in a paid standard) |
 | Seakeeping | Strip theory, heave and pitch in head seas | 3D panel method, oblique seas, roll |
 | Modelling | Point edits, split face, insert edge, crease, layers | Multi-select, marquee, edge extrusion |
 | File formats | `.fef`, SVG, DXF, IGES, OBJ, STL, 3MF, PLY | FREE!ship's binary `.fbm`, VRML import |

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 /// Reference numbers for the demo hull at T = 0.62 m (level 3, Loop mode).
-/// Sourced from AGENTS.md ("Build and test" and "verify (fresh session)" in NEXT.md).
+/// Also quoted in `skills/seacraft-hull-numerics/SKILL.md`.
 /// Reference values:
 ///   volume 11.851 m3, Cb 0.5042, Cp 0.7548, Cm 0.6680,
 ///   Cwp 0.8235, KB 0.392 m, KM 2.625 m, midship area 1.467 m2.
@@ -134,6 +134,7 @@ fn run_ci(skip_tests: bool) {
     step_licences(&root, true);
     step_colours(&root);
     step_private(&root);
+    step_skills(&root);
 
     println!("[ci] all CI checks passed successfully");
 }
