@@ -14,6 +14,12 @@ python3 site/build.py
 python3 -m http.server --directory site/_site 8000
 ```
 
+Building every hull takes a minute or two, so `build.py` keeps a hull already in `_site/` when the `seacraft`
+binary, `build.py` and that hull's files in `examples/` are all unchanged. Editing the page rebuilds in about a
+second. Rebuilding the binary after a change to the code builds the hulls again, because their numbers may
+have moved. `--rebuild-hulls` builds them all regardless. The published site starts from an empty folder, so it
+always builds every hull.
+
 | Path | What it is |
 |---|---|
 | `build.py` | Runs `seacraft`, writes `_site/`. Python standard library only |

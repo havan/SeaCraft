@@ -8,10 +8,14 @@ only.
 
     cargo build --release --bin seacraft
     python3 site/build.py --seacraft target/release/seacraft --out site/_site
+
+A hull already in the output folder is kept when its fingerprint still matches (see `hull_key`), so
+a change to the page alone rebuilds in seconds. A clean folder, as in CI, always builds every hull.
 """
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import shutil
@@ -23,6 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = Path(__file__).resolve().parent / "src"
 FONTS = Path(__file__).resolve().parent / "fonts"
+
+# Holds a finished hull's fingerprint. Written last, so a hull cut short by a failure has none.
+KEY_FILE = ".build-key"
 
 # Page order. `resistance` picks the method whose range of hulls this example falls in, and `motions`
 # is off for the planing hull, because strip theory does not describe a boat on the plane.
@@ -339,6 +346,42 @@ def default_speeds(project, length):
     return [round(top * k / 8, 1) for k in range(3, 9)]
 
 
+def digest(*paths):
+    sha = hashlib.sha256()
+    for item in paths:
+        sha.update(Path(item).read_bytes())
+    return sha.hexdigest()
+
+
+def hull_key(seacraft, hull_id):
+    """Everything a hull's results come from: the binary, this script and the hull's own files.
+
+    A kept hull is therefore what a full build would write, and old numbers never pass as current.
+    """
+    examples = ROOT / "examples"
+    return digest(seacraft, __file__, examples / f"{hull_id}.fef", examples / f"{hull_id}.seacraft.json")
+
+
+def hull_is_current(hull_dir, key):
+    try:
+        return (hull_dir / KEY_FILE).read_text(encoding="utf-8") == key
+    except OSError:
+        return False
+
+
+def clear_output(out, keep_hulls):
+    """Empty the output folder, except for the hulls in `keep_hulls`."""
+    for item in out.iterdir():
+        if item.name != "hulls":
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+    for item in (out / "hulls").iterdir():
+        if item.is_dir() and item.name not in keep_hulls:
+            shutil.rmtree(item)
+
+
 def build_hull(seacraft, hull, description, out):
     hull_id = hull["id"]
     hull_dir = out / "hulls" / hull_id
@@ -431,16 +474,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--seacraft", default=str(ROOT / "target/release/seacraft"))
     parser.add_argument("--out", default=str(Path(__file__).resolve().parent / "_site"))
+    parser.add_argument(
+        "--rebuild-hulls",
+        action="store_true",
+        help="build every hull, even those whose binary, script and example files have not changed",
+    )
     args = parser.parse_args()
 
     seacraft = Path(args.seacraft).resolve()
     out = Path(args.out).resolve()
-    if out.exists() and any(out.iterdir()):
-        # hulls/index.json is written last by this script, so it marks a folder the script made.
-        if not (out / "hulls" / "index.json").is_file():
-            sys.exit(f"refusing to delete {out}: it is not empty and is not a site this script built")
-        shutil.rmtree(out)
-    out.mkdir(parents=True, exist_ok=True)
+    # hulls/index.json marks a folder this script made. It is there from the start of a build, so a
+    # build that fails part way can be run again and keeps the hulls it finished.
+    index = out / "hulls" / "index.json"
+    if out.exists() and any(out.iterdir()) and not index.is_file():
+        sys.exit(f"refusing to delete {out}: it is not empty and is not a site this script built")
 
     version = run(seacraft, "--version").split()[-1]
     listing = {}
@@ -450,7 +497,22 @@ def main():
     for hull in HULLS:
         if hull["id"] not in listing:
             sys.exit(f"`seacraft example --list` has no hull {hull['id']}")
-        build_hull(seacraft, hull, listing[hull["id"]], out)
+
+    keys = {hull["id"]: hull_key(seacraft, hull["id"]) for hull in HULLS}
+    kept = set()
+    if not args.rebuild_hulls:
+        kept = {hull_id for hull_id, key in keys.items() if hull_is_current(out / "hulls" / hull_id, key)}
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.touch()
+    clear_output(out, kept)
+
+    for hull in HULLS:
+        hull_id = hull["id"]
+        if hull_id in kept:
+            print(f"  {hull_id}: kept, nothing it depends on has changed")
+            continue
+        build_hull(seacraft, hull, listing[hull_id], out)
+        (out / "hulls" / hull_id / KEY_FILE).write_text(keys[hull_id], encoding="utf-8")
 
     commit = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], capture_output=True, encoding="utf-8", cwd=ROOT
@@ -460,7 +522,7 @@ def main():
         "commit": commit,
         "hulls": [{"id": h["id"], "label": h["label"]} for h in HULLS],
     }
-    (out / "hulls" / "index.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    index.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     for item in SRC.iterdir():
         if item.is_file():
@@ -479,7 +541,7 @@ def main():
     fonts.mkdir()
     for item in FONTS.iterdir():
         shutil.copy(item, fonts / item.name)
-    print(f"built SeaCraft {version} ({commit}) into {out}")
+    print(f"built SeaCraft {version} ({commit}) into {out} (hulls built: {len(HULLS) - len(kept)}, kept: {len(kept)})")
 
 
 if __name__ == "__main__":
