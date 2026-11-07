@@ -271,7 +271,7 @@ struct GpuHullState {
     /// ([`render::geometry_key`] without edges).
     mesh_key: u64,
     /// The mesh the GPU last failed on. While it stands the painted path draws that mesh, and every
-    /// mesh during a drag; a new mesh outside a drag tries the GPU again.
+    /// mesh during the drag in progress; a new mesh outside a drag clears it and tries the GPU again.
     failed_mesh: Option<u64>,
     /// The failure messages logged this session, each once.
     logged: std::collections::HashSet<String>,
@@ -5242,6 +5242,15 @@ impl App {
         let wireframe = self.display.wireframe;
         let key = render::geometry_key(cache.stamp(), surface, wireframe);
         self.gpu_hull.mesh_key = render::geometry_key(cache.stamp(), surface, false);
+        // A new mesh outside a drag tries the GPU again, so a failure does not outlive its mesh.
+        if self.drag.is_none()
+            && self
+                .gpu_hull
+                .failed_mesh
+                .is_some_and(|m| m != self.gpu_hull.mesh_key)
+        {
+            self.gpu_hull.failed_mesh = None;
+        }
         if self.gpu_hull.geometry.as_ref().is_none_or(|g| g.key != key) {
             let geometry = build_geometry(&cache.mesh, surface, key, wireframe);
             self.gpu_hull.geometry = Some(Arc::new(geometry));

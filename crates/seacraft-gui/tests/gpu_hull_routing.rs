@@ -563,6 +563,27 @@ fn a_failure_keeps_the_painted_path_through_a_drag() {
 }
 
 #[test]
+fn a_recovered_mesh_lets_a_later_drag_use_the_gpu() {
+    let (mut app, ctx) = routed();
+    let warnings = app.messages().count(Level::Warning);
+    report_failure(&mut app, "out of memory");
+    assert_painted_frame(&mut app, &ctx, Vec::new());
+
+    // A new mesh outside a drag tries the GPU again, and it draws.
+    app.set_subdivision_level(1);
+    assert_eq!(callbacks(&frame(&ctx, &mut app)), 4);
+
+    // The failure is behind us, so a later drag stays on the GPU, with no new warning.
+    let at = start_drag(&mut app, &ctx);
+    for dx in [4.0, 8.0, 12.0] {
+        let moved = at + vec2(dx, 0.0);
+        let out = frame_with(&ctx, &mut app, vec![egui::Event::PointerMoved(moved)]);
+        assert_eq!(callbacks(&out), 4);
+    }
+    assert_eq!(app.messages().count(Level::Warning), warnings + 1);
+}
+
+#[test]
 fn each_failure_message_is_logged_once_a_session() {
     let (mut app, ctx) = routed();
     let warnings = app.messages().count(Level::Warning);

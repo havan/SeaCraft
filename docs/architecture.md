@@ -79,7 +79,7 @@ crates/seacraft-gui/
   src/autosave.rs           periodic autosave (30 s, locked session pair) + startup crash recovery modal
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
   examples/orbit_bench.rs   real-window, real-GPU frame times while orbiting
-  tests/                    integration tests, all headless
+  tests/                    integration tests, headless except those in gpu_hull.rs and gpu_hull_routing.rs that need a GPU adapter (ignored by default)
 xtask/                      cargo xtask ci: fmt, clippy, tests, versions, demo numbers, repository checks
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs
