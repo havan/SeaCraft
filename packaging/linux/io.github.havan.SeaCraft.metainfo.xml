@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.havan.SeaCraft</id>
+  <name>SeaCraft</name>
+  <summary>Hull modelling, hydrostatics and stability</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <description>
+    <p>
+      SeaCraft models boat and ship hulls on a subdivision control net, compatible with FREE!ship
+      .fef files. It computes hydrostatics, stability, resistance and motions, and exports lines
+      plans and meshes.
+    </p>
+    <p>
+      Most results have not been checked against tank tests, sea trials or approved software, and
+      may be wrong. Do not rely on them for design or safety decisions without independent checks
+      by a qualified person.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.havan.SeaCraft.desktop</launchable>
+  <url type="homepage">https://github.com/havan/SeaCraft</url>
+  <url type="bugtracker">https://github.com/havan/SeaCraft/issues</url>
+  <developer id="io.github.havan">
+    <name>SeaCraft contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

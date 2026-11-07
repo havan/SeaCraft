@@ -1,3 +1,6 @@
+// On Windows a double-click must not open a console window behind the app.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -27,6 +30,8 @@ fn usage() {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(windows)]
+    windows::attach_to_parent_console();
     let mut open: Option<PathBuf> = None;
     let mut analysis = seacraft_core::AnalysisMode::Shaded;
     let mut combs = false;
@@ -135,11 +140,13 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1600.0, 1000.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_title(format!("SeaCraft {}", seacraft_core::VERSION)),
+            .with_title(format!("SeaCraft {}", seacraft_core::VERSION))
+            .with_app_id(seacraft_gui::APP_ID)
+            .with_icon(seacraft_gui::window_icon()),
         ..Default::default()
     };
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "SeaCraft",
         options,
         Box::new(move |cc| {
@@ -158,7 +165,53 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(app))
         }),
-    )
+    );
+    // Launched from a file manager, nobody sees stderr: a window that cannot open must say so.
+    #[cfg(windows)]
+    if let Err(err) = &result {
+        windows::error_box(&format!("SeaCraft could not open its window.\n\n{err}"));
+    }
+    result
+}
+
+/// What a program without a console needs from Windows.
+#[cfg(windows)]
+mod windows {
+    use std::ffi::c_void;
+
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    const MB_ICONERROR: u32 = 0x10;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn MessageBoxW(window: *mut c_void, text: *const u16, title: *const u16, kind: u32) -> i32;
+    }
+
+    /// Started from a terminal, `--help` and the control socket's address print there. Started any
+    /// other way there is no parent console, the call fails, and that is fine.
+    pub fn attach_to_parent_console() {
+        // SAFETY: takes no pointers, and failure only means there is no console to attach to.
+        unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    }
+
+    pub fn error_box(text: &str) {
+        let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+        let (text, title) = (wide(text), wide("SeaCraft"));
+        // SAFETY: both strings are NUL-terminated and outlive the call; no owner window is allowed.
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_ICONERROR,
+            )
+        };
+    }
 }
 
 /// Delete the control token file when the app is killed by a signal, so the

@@ -34,6 +34,16 @@ jobs:
       - name: Run the gate
         run: cargo xtask ci ${{ github.event_name == 'schedule' && '--full' || '' }}
 
+  # Nobody here tests Windows by hand, so this is what notices a change that stops it compiling.
+  windows:
+    name: Windows compiles
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo check --locked -p seacraft-gui -p seacraft-cli
+
   licences:
     name: Dependency licences
     runs-on: ubuntu-24.04

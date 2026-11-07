@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SeaCraft
+GenericName=Hull Modeller
+Comment=Hull modelling, hydrostatics and stability
+Exec=seacraft-gui
+Icon=io.github.havan.SeaCraft
+Terminal=false
+Categories=Science;Engineering;
+Keywords=boat;ship;hull;naval architecture;hydrostatics;stability;
+StartupWMClass=io.github.havan.SeaCraft

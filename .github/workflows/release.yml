@@ -1,0 +1,123 @@
+# Builds the downloads. A version tag also creates a draft GitHub release, which a person reads and
+# publishes; running this by hand only builds and tests. Pull request code never reaches this file.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Linux downloads
+    # The oldest supported Ubuntu: a program runs on systems with this glibc or newer.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install what the build and the packages need
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            flatpak appstream desktop-file-utils
+      - name: Build the package folder
+        run: cargo xtask dist --target x86_64-unknown-linux-gnu
+      - name: Package
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          folder=seacraft-$version-x86_64-unknown-linux-gnu
+          stage=$PWD/target/seacraft-dist/$folder
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "the tag $GITHUB_REF_NAME does not match version $version"
+            exit 1
+          fi
+          desktop-file-validate packaging/linux/io.github.havan.SeaCraft.desktop
+
+          "$stage/seacraft" --version
+          "$stage/seacraft" hydro "$stage/examples/demo-hull.fef" --kg 2.2
+          "$stage/seacraft-gui" --version
+
+          mkdir out
+          tar -C "$stage/.." -czf "out/$folder.tar.gz" "$folder"
+          packaging/linux/build-appimage.sh "$stage" "$PWD/out/SeaCraft-$version-x86_64.AppImage" "$version"
+          packaging/linux/build-flatpak.sh "$stage" "$PWD/out/SeaCraft-$version-x86_64.flatpak" "$version"
+          APPIMAGE_EXTRACT_AND_RUN=1 "out/SeaCraft-$version-x86_64.AppImage" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: out/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows download
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Test data and embedded texts keep the line endings they have in the repository.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Nobody tests Windows by hand, so its whole test suite must pass before it ships.
+      - name: Test
+        run: cargo test --locked --workspace
+      - name: Build the package folder
+        run: cargo xtask dist --target x86_64-pc-windows-msvc
+      - name: Package
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          folder=seacraft-$version-x86_64-pc-windows-msvc
+          stage=$PWD/target/seacraft-dist/$folder
+
+          "$stage/seacraft.exe" --version
+          "$stage/seacraft.exe" hydro "$stage/examples/demo-hull.fef" --kg 2.2
+
+          mkdir out
+          (cd "$stage/.." && 7z a -tzip "$OLDPWD/out/$folder.zip" "$folder")
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: out/*
+          if-no-files-found: error
+
+  draft:
+    name: Draft release
+    if: github.ref_type == 'tag'
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd artifacts && sha256sum -- * >SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "SeaCraft ${GITHUB_REF_NAME#v}" \
+            --notes-file packaging/release-notes.md \
+            artifacts/*

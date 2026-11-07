@@ -23,6 +23,22 @@ GPL source; it is not a line-by-line translation.
 
 ![A lines plan of the 22 m trawler example exported as SVG: profile, plan and body plan](docs/assets/lines.svg)
 
+## Download
+
+To try SeaCraft without building it, take the file for your system from the
+[Releases page](https://github.com/havan/SeaCraft/releases). There is no need for Rust.
+
+| You have | Download | Start it |
+| --- | --- | --- |
+| Windows, 64-bit | `seacraft-*-x86_64-pc-windows-msvc.zip` | Unzip, then double-click `seacraft-gui.exe` |
+| Linux, most distributions | `SeaCraft-*-x86_64.AppImage` | `chmod +x` it, then run it |
+| Linux with Flatpak | `SeaCraft-*-x86_64.flatpak` | `flatpak install --user` it, then find SeaCraft in your menu |
+| Linux, plain folder | `seacraft-*-x86_64-unknown-linux-gnu.tar.gz` | Unpack, then run `./seacraft-gui` |
+
+The start screen offers ready-made hulls under *Open an example*. The Windows programs are not signed, so
+SmartScreen may warn you, and nobody has opened the Windows GUI by hand yet: it is only built and tested
+automatically, so please report what you find.
+
 ---
 
 ## 1. How FREE!ship works (investigation notes)

@@ -5,7 +5,7 @@ START
   Windows:  double-click seacraft-gui.exe
 
   Keep this folder together: it holds the licences that must travel with the programs.
-  To begin, choose File > New design. The Example tab has ready-made hulls, and more are in examples/.
+  To begin, choose "Open an example" on the start screen. The same hulls are in examples/ as files.
   seacraft (seacraft.exe on Windows) is the command line; run it with --help.
 
 WINDOWS

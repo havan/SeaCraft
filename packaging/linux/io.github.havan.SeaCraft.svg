@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="#10202e"/>
+  <!-- A hull's body plan: the two sides of a section, the waterline and the centreline. -->
+  <path d="M40 88 L72 72 L128 92 L184 72 L216 88 C208 150 170 200 128 208 C86 200 48 150 40 88 Z" fill="#c8862f"/>
+  <path d="M40 88 L72 72 L128 92 L184 72 L216 88 C214 104 210 119 204 132 L52 132 C46 119 42 104 40 88 Z" fill="#2a78c4"/>
+  <path d="M40 88 L72 72 L128 92 L184 72 L216 88 C208 150 170 200 128 208 C86 200 48 150 40 88 Z" fill="none" stroke="#e8edf2" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M22 132 H234" stroke="#8fd0ff" stroke-width="5" stroke-linecap="round"/>
+  <path d="M128 92 V208" stroke="#e8edf2" stroke-width="4"/>
+</svg>

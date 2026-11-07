@@ -97,3 +97,12 @@ fn help_about_shows_the_notices_and_the_licence_texts_open_from_it() {
     w.click("Font licence (DejaVu)");
     assert!(w.shows("Bitstream Vera"), "the font licence opens");
 }
+
+#[test]
+fn the_window_icon_decodes_and_the_desktop_entry_matches_the_app_id() {
+    let icon = seacraft_gui::window_icon();
+    assert_eq!((icon.width, icon.height), (256, 256));
+    let entry = include_str!("../../../packaging/linux/io.github.havan.SeaCraft.desktop");
+    assert!(entry.contains(&format!("StartupWMClass={}", seacraft_gui::APP_ID)));
+    assert!(entry.contains(&format!("Icon={}", seacraft_gui::APP_ID)));
+}
