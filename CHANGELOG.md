@@ -2,6 +2,11 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
+## Unreleased
+
+- A website at <https://havan.github.io/SeaCraft/>, built from `site/`. Its numbers and drawings come from
+  running `seacraft` on the example hulls each time it is published. No change to any computed number.
+
 ## 0.2.1 (2026-11-07)
 
 First public release. No change to any computed number.
