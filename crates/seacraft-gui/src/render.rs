@@ -225,12 +225,15 @@ pub fn viewport(
     active: bool,
     selected: Option<usize>,
 ) {
-    viewport_with_texture(ui, rect, camera, scene, opts, active, selected, None, None)
+    viewport_with_texture(
+        ui, rect, camera, scene, opts, active, selected, None, None, None,
+    )
 }
 
 /// Draw a viewport, optionally using `texture` (a rasterizer frame) in place
 /// of the painter's shaded hull, or `hull`, the [`shaded_hull`] mesh built
-/// for this view on an earlier frame.
+/// for this view on an earlier frame. `gpu_hull` draws the hull in their place,
+/// at the same point in the drawing order.
 #[allow(clippy::too_many_arguments)]
 pub fn viewport_with_texture(
     ui: &mut egui::Ui,
@@ -242,6 +245,7 @@ pub fn viewport_with_texture(
     selected: Option<usize>,
     texture: Option<&egui::TextureHandle>,
     hull: Option<Arc<egui::Mesh>>,
+    gpu_hull: Option<egui::PaintCallback>,
 ) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::CANVAS);
@@ -278,7 +282,7 @@ pub fn viewport_with_texture(
         }
         None => {
             if opts.shaded || opts.wireframe {
-                draw_hull(&painter, &view, rect, scene, opts, hull);
+                draw_hull(&painter, &view, rect, scene, opts, hull, gpu_hull);
             }
         }
     }
@@ -1009,6 +1013,16 @@ pub fn geometry_key(stamp: u64, surface: &Surface, wireframe: bool) -> u64 {
     h
 }
 
+/// What a view's GPU texture is rendered for: its [`hull_key`], the scale of its pixels and which
+/// of the faces and edges it shows.
+pub fn gpu_view_key(hull_key: u64, pixels_per_point: f32, opts: &DisplayOptions) -> u64 {
+    let mut h = hull_key;
+    mix(&mut h, pixels_per_point as f64);
+    mix(&mut h, if opts.shaded { 1.0 } else { 0.0 });
+    mix(&mut h, if opts.wireframe { 1.0 } else { 0.0 });
+    h
+}
+
 fn draw_hull(
     painter: &egui::Painter,
     view: &ViewTransform,
@@ -1016,7 +1030,12 @@ fn draw_hull(
     scene: &Scene,
     opts: &DisplayOptions,
     hull: Option<Arc<egui::Mesh>>,
+    gpu_hull: Option<egui::PaintCallback>,
 ) {
+    if let Some(callback) = gpu_hull {
+        painter.add(egui::Shape::Callback(callback));
+        return;
+    }
     let mesh = scene.mesh;
 
     // ---- flat-shaded faces ------------------------------------------------

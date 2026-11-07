@@ -22,6 +22,8 @@ use seacraft_core::stability::{self, CrossCurve};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
 use crate::camera::{Camera, ViewKind};
+use crate::gpu_hull::geometry::{build_geometry, HullGeometry};
+use crate::gpu_hull::{self, HullCallback};
 use crate::history::History;
 use crate::jobs::{revision_key, Job, Track};
 use crate::messages::{Level, MessageLog, MessagesAction};
@@ -255,6 +257,26 @@ fn compute_cross_curves_for(i: CurvesInputs) -> CurvesOut {
         lcg,
         hydro,
     }
+}
+
+/// The app's side of the GPU hull; the wgpu resources live in egui's renderer.
+#[derive(Default)]
+struct GpuHullState {
+    /// Whether views may emit a [`HullCallback`].
+    routing: bool,
+    /// What every view's callback draws this frame.
+    geometry: Option<Arc<HullGeometry>>,
+    /// The geometry key the GPU failed on, which the old path then draws.
+    failed: Option<u64>,
+    failure: gpu_hull::FailureSlot,
+}
+
+/// How one view draws its hull this frame.
+enum HullRoute {
+    Painted,
+    Gpu(egui::PaintCallback),
+    /// Routed, with nothing to draw: an empty mesh, or a cell under a pixel.
+    Nothing,
 }
 
 /// One viewport's rasterized frame, kept until the geometry or camera moves.
@@ -958,6 +980,8 @@ pub struct App {
     /// Each viewport's painter-shaded hull and the [`render::hull_key`] it
     /// was built for.
     shaded_hulls: [Option<(u64, Arc<egui::Mesh>)>; 4],
+    /// The hull drawn on the GPU.
+    gpu_hull: GpuHullState,
     /// Requests from the loopback control socket (`--control`), served once
     /// per frame by [`App::process_control`].
     control: Option<std::sync::mpsc::Receiver<crate::control::ControlRequest>>,
@@ -1136,6 +1160,7 @@ impl App {
             raster_counts: [0; 4],
             waterline_cuts: 0,
             shaded_hulls: Default::default(),
+            gpu_hull: GpuHullState::default(),
             control: None,
             synthetic: Vec::new(),
             control_roots: seacraft_core::control_auth::ControlRoots::default(),
@@ -3282,6 +3307,10 @@ impl App {
     }
 
     fn viewports(&mut self, ui: &mut egui::Ui) {
+        let failure = self.gpu_hull.failure.lock().ok().and_then(|mut f| f.take());
+        if let Some((key, message)) = failure {
+            self.report_gpu_hull_failure(key, message);
+        }
         self.sync_cache();
         let rect = ui.available_rect_before_wrap();
         if rect.width() < 8.0 || rect.height() < 8.0 {
@@ -3316,7 +3345,7 @@ impl App {
         let drag_view = self.drag.as_ref().map(|d| d.view);
         let mut ready = self.raster_stale_views(&cells, &volume_overlays, &windage_overlays);
 
-        for (cell, index) in cells {
+        for &(cell, index) in &cells {
             self.viewport_rects[index] = cell;
             let response = ui.allocate_rect(cell, egui::Sense::click_and_drag());
             let view = self.cameras[index].transform();
@@ -3458,7 +3487,14 @@ impl App {
             } else if self.active == index {
                 self.cursor_world = None;
             }
+        }
 
+        // Input first, then drawing: a point dragged in one view refines the mesh in the loop above,
+        // and every view's GPU callback of a frame must share one geometry. The resources hold one,
+        // so a second mesh in a frame would leave the views already rendered with nothing to show.
+        self.refresh_gpu_hull_geometry();
+
+        for &(cell, index) in &cells {
             if let Some(scene) = self.scene(&volume_overlays, &windage_overlays) {
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
@@ -3503,9 +3539,11 @@ impl App {
                         Some(texture)
                     }
                 };
+                let route = self.hull_route(ui.ctx(), index, cell, &scene);
                 // The painter's shaded hull, kept while the view, the mesh
                 // and the layer colours stay the same.
-                let hull = (texture.is_none() && self.display.shaded).then(|| {
+                let painted = matches!(route, HullRoute::Painted);
+                let hull = (painted && texture.is_none() && self.display.shaded).then(|| {
                     let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
                     let camera = &self.cameras[index];
                     let key = render::hull_key(stamp, camera, cell, &scene, &self.display);
@@ -3519,16 +3557,30 @@ impl App {
                         }
                     }
                 });
+                let no_hull;
+                let (display, gpu_hull) = match route {
+                    HullRoute::Painted => (&self.display, None),
+                    HullRoute::Gpu(callback) => (&self.display, Some(callback)),
+                    HullRoute::Nothing => {
+                        no_hull = render::DisplayOptions {
+                            shaded: false,
+                            wireframe: false,
+                            ..self.display.clone()
+                        };
+                        (&no_hull, None)
+                    }
+                };
                 render::viewport_with_texture(
                     ui,
                     cell,
                     &self.cameras[index],
                     Some(&scene),
-                    &self.display,
+                    display,
                     self.active == index,
                     self.selected,
                     texture.as_ref(),
                     hull,
+                    gpu_hull,
                 );
             } else {
                 render::viewport(
@@ -5055,6 +5107,124 @@ impl App {
 
     pub fn face_count(&self) -> usize {
         self.surface.as_ref().map_or(0, |s| s.faces.len())
+    }
+
+    /// Draw the viewports' hull on the GPU, if the device can make the resources. Called by the
+    /// binary unless `--no-gpu-hull`, so headless apps stay on the painted path. On an error the app
+    /// stays on the painted path: it never fails to start on a machine that ran it before.
+    pub fn enable_gpu_hull(&mut self, state: &eframe::egui_wgpu::RenderState) {
+        match gpu_hull::create_resources(state) {
+            Ok(resources) => {
+                state.renderer.write().callback_resources.insert(resources);
+                self.gpu_hull.routing = true;
+            }
+            Err(message) => self.log(
+                Level::Warning,
+                format!("The viewport keeps the slower drawing: the GPU hull failed ({message})."),
+            ),
+        }
+    }
+
+    /// Route the hull through the GPU, with or without resources to draw it (test hook).
+    pub fn set_gpu_hull_routing(&mut self, on: bool) {
+        self.gpu_hull.routing = on;
+    }
+
+    /// Whether the viewports route their hull through the GPU.
+    pub fn gpu_hull_routing(&self) -> bool {
+        self.gpu_hull.routing
+    }
+
+    /// The geometry the viewports' callbacks share (test hook).
+    pub fn gpu_hull_geometry(&self) -> Option<&Arc<HullGeometry>> {
+        self.gpu_hull.geometry.as_ref()
+    }
+
+    /// The GPU could not draw the mesh with this key: log it once, and draw that mesh the old way.
+    /// A new mesh tries the GPU again.
+    pub fn report_gpu_hull_failure(&mut self, key: u64, message: String) {
+        if self.gpu_hull.failed != Some(key) {
+            self.gpu_hull.failed = Some(key);
+            self.log(
+                Level::Warning,
+                format!("The viewport falls back to the slower drawing for this mesh: {message}"),
+            );
+        }
+    }
+
+    /// Whether routing is on and the display has a hull for it to draw: an analysis mode needs the
+    /// rasterizer's per-pixel shading.
+    fn gpu_hull_applies(&self) -> bool {
+        let display = &self.display;
+        self.gpu_hull.routing
+            && display.analysis.is_shaded()
+            && (display.shaded || display.wireframe)
+    }
+
+    /// Build the geometry the views share if the mesh drawn this frame has changed.
+    fn refresh_gpu_hull_geometry(&mut self) {
+        if !self.gpu_hull_applies() {
+            return;
+        }
+        let (Some(surface), Some(cache)) = (&self.surface, &self.cache) else {
+            return;
+        };
+        let wireframe = self.display.wireframe;
+        let key = render::geometry_key(cache.stamp(), surface, wireframe);
+        if self.gpu_hull.geometry.as_ref().is_none_or(|g| g.key != key) {
+            let geometry = build_geometry(&cache.mesh, surface, key, wireframe);
+            self.gpu_hull.geometry = Some(Arc::new(geometry));
+        }
+    }
+
+    /// How view `index` draws its hull in `cell` this frame.
+    fn hull_route(
+        &self,
+        ctx: &egui::Context,
+        index: usize,
+        cell: egui::Rect,
+        scene: &Scene,
+    ) -> HullRoute {
+        let geometry = match &self.gpu_hull.geometry {
+            Some(geometry) if self.gpu_hull_applies() => geometry,
+            _ => return HullRoute::Painted,
+        };
+        if geometry.vertices.is_empty() {
+            return HullRoute::Nothing;
+        }
+        if self.gpu_hull.failed == Some(geometry.key) {
+            return HullRoute::Painted;
+        }
+        let ppp = ctx.pixels_per_point();
+        let Some(size) = gpu_hull::view::target_size(cell, ppp) else {
+            return HullRoute::Nothing;
+        };
+        let display = &self.display;
+        let camera = &self.cameras[index];
+        let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
+        let hull_key = render::hull_key(stamp, camera, cell, scene, display);
+        let callback = HullCallback {
+            index,
+            uniform: gpu_hull::view::view_uniform(
+                &camera.transform(),
+                cell,
+                ppp,
+                geometry.origin,
+                geometry.min,
+                geometry.max,
+                crate::theme::WIREFRAME,
+            ),
+            size,
+            view_key: render::gpu_view_key(hull_key, ppp, display),
+            geometry: geometry.clone(),
+            shaded: display.shaded,
+            wire: display.wireframe,
+            failure: self.gpu_hull.failure.clone(),
+            context: ctx.clone(),
+        };
+        HullRoute::Gpu(eframe::egui_wgpu::Callback::new_paint_callback(
+            cell, callback,
+        ))
     }
 
     pub fn render_cache(&self) -> Option<&RenderMesh> {

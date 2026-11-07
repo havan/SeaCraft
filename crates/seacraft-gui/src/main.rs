@@ -9,12 +9,13 @@ use seacraft_gui::App;
 fn usage() {
     println!(
         "seacraft-gui {}\n\n\
-         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs] [--no-autosave] [--control HOST:PORT]\n\n\
+         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs] [--no-autosave] [--no-gpu-hull] [--control HOST:PORT]\n\n\
          Options:\n  \
          --open FILE             Load a FREE!ship .fef model at startup\n  \
          --analysis MODE         Shading: shaded, zebra, curvature or draft\n  \
          --combs                 Overlay station/buttock/waterline curvature combs\n  \
          --no-autosave           Disable periodic autosave and startup crash recovery\n  \
+         --no-gpu-hull           Draw the viewport hull on the CPU, as a way out of a GPU problem\n  \
          --control ADDR          Serve the JSON-lines control socket on ADDR\n                          \
          (e.g. 127.0.0.1:7373; 127.0.0.1:0 picks a free port)\n  \
          --control-token-file PATH Override default token file path\n  \
@@ -43,6 +44,7 @@ fn main() -> eframe::Result {
     let mut analysis = seacraft_core::AnalysisMode::Shaded;
     let mut combs = false;
     let mut no_autosave = false;
+    let mut no_gpu_hull = false;
     let mut control_addr: Option<String> = None;
     let mut control_token_file: Option<PathBuf> = None;
     let mut control_no_auth = false;
@@ -54,6 +56,7 @@ fn main() -> eframe::Result {
             "--open" => open = args.next().map(PathBuf::from),
             "--combs" => combs = true,
             "--no-autosave" => no_autosave = true,
+            "--no-gpu-hull" => no_gpu_hull = true,
             "--control" => match args.next() {
                 Some(addr) if !addr.trim().is_empty() => control_addr = Some(addr),
                 _ => {
@@ -160,6 +163,11 @@ fn main() -> eframe::Result {
             let mut app = App::new(cc, open.clone());
             if !no_autosave {
                 app.enable_autosave();
+            }
+            if !no_gpu_hull {
+                if let Some(state) = cc.wgpu_render_state.as_ref() {
+                    app.enable_gpu_hull(state);
+                }
             }
             app.set_analysis(analysis);
             // `--combs` overlays the curves with their combs, as it always did.

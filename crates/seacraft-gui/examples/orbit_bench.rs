@@ -5,6 +5,8 @@
 //! cargo run --release -p seacraft-gui --example orbit_bench -- examples/container-230m.fef 3
 //! ```
 //!
+//! `--no-gpu-hull` draws the hull on the CPU. The label says which path ran.
+//!
 //! It opens a window, orbits the perspective view for `FRAMES` frames, prints
 //! one line and closes. Nothing is saved: no recent list, no autosave.
 
@@ -80,8 +82,13 @@ impl eframe::App for Bench {
 }
 
 fn main() -> eframe::Result {
-    let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: orbit_bench HULL.fef [LEVEL]");
+    let (flags, args): (Vec<String>, Vec<String>) =
+        std::env::args().skip(1).partition(|a| a == "--no-gpu-hull");
+    let no_gpu_hull = !flags.is_empty();
+    let mut args = args.into_iter();
+    let path = args
+        .next()
+        .expect("usage: orbit_bench HULL.fef [LEVEL] [--no-gpu-hull]");
     let level: u8 = args.next().map_or(3, |l| l.parse().expect("a level"));
     let label = format!(
         "{} L{level}",
@@ -102,9 +109,19 @@ fn main() -> eframe::Result {
             seacraft_gui::theme::apply(&cc.egui_ctx);
             let mut app = App::headless_for_test(Some(&path));
             app.set_subdivision_level(level);
+            if !no_gpu_hull {
+                if let Some(state) = cc.wgpu_render_state.as_ref() {
+                    app.enable_gpu_hull(state);
+                }
+            }
+            let path = if app.gpu_hull_routing() {
+                "gpu"
+            } else {
+                "painted"
+            };
             Ok(Box::new(Bench {
                 app,
-                label,
+                label: format!("{label} {path}"),
                 frame: 0,
                 last: None,
                 period: Vec::new(),
