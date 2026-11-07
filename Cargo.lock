@@ -2922,6 +2922,7 @@ name = "seacraft-gui"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "eframe",
  "egui",
  "libc",

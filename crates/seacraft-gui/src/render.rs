@@ -996,6 +996,19 @@ pub fn hull_key(
     h
 }
 
+/// The key a [`crate::gpu_hull::geometry::HullGeometry`] is kept under: the mesh `stamp`, every
+/// layer colour and whether edges are built. The view is not part of it, as the geometry is not
+/// in screen space.
+pub fn geometry_key(stamp: u64, surface: &Surface, wireframe: bool) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ stamp;
+    h = h.wrapping_mul(0x0100_0000_01b3);
+    for layer in &surface.layers {
+        mix(&mut h, layer.color as f64);
+    }
+    mix(&mut h, if wireframe { 1.0 } else { 0.0 });
+    h
+}
+
 fn draw_hull(
     painter: &egui::Painter,
     view: &ViewTransform,
@@ -1032,7 +1045,7 @@ fn draw_hull(
 }
 
 /// A layer's colour, or the default hull grey when the index is out of range.
-fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
+pub(crate) fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
     let Some(layer) = layer.and_then(|i| surface.layers.get(i)) else {
         return theme::HULL_DEFAULT;
     };
@@ -1724,6 +1737,18 @@ mod tests {
         let hull = shaded_hull(&camera.transform(), rect, &scene);
         assert!(!hull.vertices.is_empty());
         assert!(hull.vertices.iter().all(|v| v.color.a() == 255));
+    }
+
+    #[test]
+    fn the_geometry_key_follows_the_stamp_colours_and_wireframe() {
+        let mut surface = Surface::default();
+        surface.layers.push(seacraft_core::mesh::Layer::default());
+        let base = geometry_key(1, &surface, false);
+        assert_eq!(base, geometry_key(1, &surface, false));
+        assert_ne!(base, geometry_key(2, &surface, false));
+        assert_ne!(base, geometry_key(1, &surface, true));
+        surface.layers[0].color ^= 0x10;
+        assert_ne!(base, geometry_key(1, &surface, false));
     }
 
     /// A unit cube cut at half height. The closed form is the perimeter of

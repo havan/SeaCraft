@@ -30,6 +30,7 @@ egui = "0.37"
 # Not used directly. eframe enables these winit defaults only through its own default features, turned
 # off above: the X11 and Wayland backends and client-side window decorations.
 winit = "0.30.13"
+bytemuck = { version = "1", features = ["derive"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

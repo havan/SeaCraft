@@ -329,13 +329,15 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 17] = [
+    const SOURCES: [(&str, &str); 19] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
         ("camera.rs", include_str!("camera.rs")),
         ("commands.rs", include_str!("commands.rs")),
         ("control.rs", include_str!("control.rs")),
+        ("gpu_hull/mod.rs", include_str!("gpu_hull/mod.rs")),
+        ("gpu_hull/geometry.rs", include_str!("gpu_hull/geometry.rs")),
         ("history.rs", include_str!("history.rs")),
         ("jobs.rs", include_str!("jobs.rs")),
         ("lib.rs", include_str!("lib.rs")),
@@ -381,9 +383,15 @@ mod tests {
         // The module list above is complete.
         let lib = include_str!("lib.rs");
         let modules = lib.lines().filter(|l| l.starts_with("pub mod ")).count();
+        // Files inside a module directory, beside its `mod.rs`.
+        let nested = SOURCES.iter().filter(|(f, _)| f.contains('/')).count()
+            - SOURCES
+                .iter()
+                .filter(|(f, _)| f.ends_with("/mod.rs"))
+                .count();
         assert_eq!(
             modules,
-            SOURCES.len() - 2 + 1,
+            SOURCES.len() - nested - 2 + 1,
             "a module is missing from SOURCES"
         );
     }

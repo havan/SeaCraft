@@ -18,6 +18,7 @@ pub mod autosave;
 pub mod camera;
 pub mod commands;
 pub mod control;
+pub mod gpu_hull;
 pub mod history;
 pub mod jobs;
 pub mod messages;
