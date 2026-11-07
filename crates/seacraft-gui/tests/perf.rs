@@ -1,8 +1,8 @@
 //! Frame cost, as ignored release benchmarks: dragging a point, orbiting each
-//! example hull, and orbiting with one drawn layer off at a time. The orbit
-//! benchmarks time `run_ui` and tessellation, and not the GPU, which
-//! `examples/orbit_bench.rs` includes in a real window.
-//!
+//! example hull, orbiting with one drawn layer off at a time, and building and
+//! uploading the GPU hull's vertex data. The orbit benchmarks time `run_ui` and
+//! tessellation, and not the GPU, which `examples/orbit_bench.rs` includes in a
+//! real window.
 //!
 //! ```console
 //! cargo test --release -p seacraft-gui --test perf -- --ignored --nocapture
@@ -280,19 +280,22 @@ fn orbit_frame_cost() {
 #[ignore = "release benchmark: run with --release -- --ignored --nocapture"]
 fn orbit_layer_cost() {
     const FRAMES: usize = 60;
-    type Toggle = fn(&mut seacraft_gui::render::DisplayOptions);
-    let layers: [(&str, Toggle); 8] = [
+    type Toggle = fn(&mut App);
+    let layers: [(&str, Toggle); 9] = [
         ("all on", |_| {}),
-        ("no shade/water", |d| {
-            d.shaded = false;
-            d.waterplane = false;
+        // Every overlay on and the hull left to a GPU this pass does not have:
+        // the frame's CPU cost without the GPU's.
+        ("gpu routed", |app| app.set_gpu_hull_routing(true)),
+        ("no shade/water", |app| {
+            app.display_mut().shaded = false;
+            app.display_mut().waterplane = false;
         }),
-        ("no shading", |d| d.shaded = false),
-        ("no net", |d| d.control_net = false),
-        ("no points", |d| d.points = false),
-        ("no grid", |d| d.grid = false),
-        ("no waterplane", |d| d.waterplane = false),
-        ("no volumes", |d| d.volumes = false),
+        ("no shading", |app| app.display_mut().shaded = false),
+        ("no net", |app| app.display_mut().control_net = false),
+        ("no points", |app| app.display_mut().points = false),
+        ("no grid", |app| app.display_mut().grid = false),
+        ("no waterplane", |app| app.display_mut().waterplane = false),
+        ("no volumes", |app| app.display_mut().volumes = false),
     ];
     let path = format!(
         "{}/../../examples/container-230m.fef",
@@ -307,13 +310,13 @@ fn orbit_layer_cost() {
     for level in [3u8, 4, 5] {
         for (name, toggle) in layers {
             // Level 5 is too slow to repeat for every layer: what remains
-            // without the hull is the row that matters there.
-            if level == 5 && !name.starts_with("no shad") {
+            // without the hull is what matters there.
+            if level == 5 && name != "gpu routed" && !name.starts_with("no shad") {
                 continue;
             }
             let mut app = App::headless_for_test(Some(&path));
             app.set_subdivision_level(level);
-            toggle(app.display_mut());
+            toggle(&mut app);
             let ctx = egui::Context::default();
             for _ in 0..3 {
                 orbit_frame(&ctx, &mut app, Vec::new());
@@ -361,4 +364,81 @@ fn orbit_layer_cost() {
             );
         }
     }
+}
+
+/// What a new mesh costs the GPU path on the largest example at level 5: building the vertex
+/// data on the window thread, and handing it to the device. `upload` only queues the copies, so
+/// the time until the device has finished them is printed beside it. Needs an adapter; with none
+/// it prints `skipped: no adapter`.
+#[test]
+#[ignore = "release benchmark: run with --release -- --ignored --nocapture"]
+fn gpu_hull_build_and_upload() {
+    use eframe::wgpu;
+    use seacraft_gui::gpu_hull::geometry::build_geometry;
+    use seacraft_gui::gpu_hull::pipeline::GpuHullResources;
+
+    const RUNS: usize = 5;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let options = wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    };
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&options)) else {
+        println!("skipped: no adapter");
+        return;
+    };
+    // eframe's defaults: no feature and no limit beyond them.
+    let (device, queue) =
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .expect("a device with the default limits");
+    let path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut app = App::headless_for_test(Some(&path));
+    app.set_subdivision_level(5);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    let mesh = app.render_cache().expect("refined mesh");
+    let surface = app.surface().expect("model loaded");
+    let mut build = Vec::new();
+    let mut upload = Vec::new();
+    let mut done = Vec::new();
+    let mut triangles = 0;
+    let mut bytes = 0;
+    for run in 0..RUNS {
+        let start = Instant::now();
+        // A new key each run, so every upload is a real one.
+        let geometry = build_geometry(mesh, surface, run as u64 + 1, false);
+        build.push(start.elapsed().as_secs_f64() * 1e3);
+        triangles = geometry.vertices.len() / 3;
+        bytes = std::mem::size_of_val(geometry.vertices.as_slice());
+        let mut resources =
+            GpuHullResources::new(&device, &adapter, wgpu::TextureFormat::Rgba8Unorm);
+        let start = Instant::now();
+        resources
+            .upload(&device, &queue, &geometry)
+            .expect("the device takes the mesh");
+        upload.push(start.elapsed().as_secs_f64() * 1e3);
+        queue.submit([]);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the device finishes");
+        done.push(start.elapsed().as_secs_f64() * 1e3);
+    }
+    for v in [&mut build, &mut upload, &mut done] {
+        v.sort_by(f64::total_cmp);
+    }
+    println!();
+    println!(
+        "container-230m L5, {triangles} triangles, {:.0} MiB of vertices, median of {RUNS} runs [{}]",
+        bytes as f64 / (1024.0 * 1024.0),
+        adapter.get_info().name
+    );
+    println!(
+        "build {:.0} ms, upload call {:.0} ms, upload until the device is done {:.0} ms",
+        percentile(&build, 0.5),
+        percentile(&upload, 0.5),
+        percentile(&done, 0.5)
+    );
 }

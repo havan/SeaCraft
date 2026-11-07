@@ -980,6 +980,9 @@ pub struct App {
     /// Each viewport's painter-shaded hull and the [`render::hull_key`] it
     /// was built for.
     shaded_hulls: [Option<(u64, Arc<egui::Mesh>)>; 4],
+    /// Each viewport's waterline, tessellated once, and the [`render::waterline_key`] it was built
+    /// for: orbiting one view rebuilds its own, and the other three draw theirs again.
+    waterline_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
     /// The hull drawn on the GPU.
     gpu_hull: GpuHullState,
     /// Requests from the loopback control socket (`--control`), served once
@@ -1160,6 +1163,7 @@ impl App {
             raster_counts: [0; 4],
             waterline_cuts: 0,
             shaded_hulls: Default::default(),
+            waterline_meshes: Default::default(),
             gpu_hull: GpuHullState::default(),
             control: None,
             synthetic: Vec::new(),
@@ -3328,6 +3332,7 @@ impl App {
         let mut toggle_maximise = false;
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
         let mut fresh_hulls: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
+        let mut fresh_waterlines: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
         let overlays = self.volume_overlays();
         let mut volume_overlays: Vec<render::VolumeOverlay> =
             overlays.iter().map(|(_, o)| o.clone()).collect();
@@ -3557,6 +3562,34 @@ impl App {
                         }
                     }
                 });
+                // The waterline as one mesh, kept like the hull. Only a waterline the app has cut
+                // is kept: one cut on the fly is drawn as strokes.
+                let waterline =
+                    scene
+                        .waterline
+                        .filter(|_| self.display.waterplane)
+                        .map(|segments| {
+                            let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
+                            let camera = &self.cameras[index];
+                            let key = render::waterline_key(
+                                render::hull_key(stamp, camera, cell, &scene, &self.display),
+                                ui.ctx().pixels_per_point(),
+                                segments,
+                            );
+                            match &self.waterline_meshes[index] {
+                                Some((k, mesh)) if *k == key => mesh.clone(),
+                                _ => {
+                                    let mesh = Arc::new(render::waterline_mesh(
+                                        ui.ctx(),
+                                        &camera.transform(),
+                                        cell,
+                                        segments,
+                                    ));
+                                    fresh_waterlines.push((index, key, mesh.clone()));
+                                    mesh
+                                }
+                            }
+                        });
                 let no_hull;
                 let (display, gpu_hull) = match route {
                     HullRoute::Painted => (&self.display, None),
@@ -3581,6 +3614,7 @@ impl App {
                     texture.as_ref(),
                     hull,
                     gpu_hull,
+                    waterline,
                 );
             } else {
                 render::viewport(
@@ -3601,6 +3635,9 @@ impl App {
         }
         for (index, key, hull) in fresh_hulls {
             self.shaded_hulls[index] = Some((key, hull));
+        }
+        for (index, key, mesh) in fresh_waterlines {
+            self.waterline_meshes[index] = Some((key, mesh));
         }
         if toggle_maximise {
             self.toggle_maximised();
@@ -5133,6 +5170,11 @@ impl App {
     /// Whether the viewports route their hull through the GPU.
     pub fn gpu_hull_routing(&self) -> bool {
         self.gpu_hull.routing
+    }
+
+    /// The waterline mesh view `index` keeps, tessellated for its camera and cell (test hook).
+    pub fn waterline_mesh(&self, index: usize) -> Option<&Arc<egui::Mesh>> {
+        self.waterline_meshes[index].as_ref().map(|(_, mesh)| mesh)
     }
 
     /// The geometry the viewports' callbacks share (test hook).

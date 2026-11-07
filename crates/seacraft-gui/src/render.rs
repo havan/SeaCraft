@@ -226,14 +226,15 @@ pub fn viewport(
     selected: Option<usize>,
 ) {
     viewport_with_texture(
-        ui, rect, camera, scene, opts, active, selected, None, None, None,
+        ui, rect, camera, scene, opts, active, selected, None, None, None, None,
     )
 }
 
 /// Draw a viewport, optionally using `texture` (a rasterizer frame) in place
 /// of the painter's shaded hull, or `hull`, the [`shaded_hull`] mesh built
 /// for this view on an earlier frame. `gpu_hull` draws the hull in their place,
-/// at the same point in the drawing order.
+/// at the same point in the drawing order. `waterline`, a [`waterline_mesh`] kept
+/// for this view, draws the waterline in place of its strokes.
 #[allow(clippy::too_many_arguments)]
 pub fn viewport_with_texture(
     ui: &mut egui::Ui,
@@ -246,6 +247,7 @@ pub fn viewport_with_texture(
     texture: Option<&egui::TextureHandle>,
     hull: Option<Arc<egui::Mesh>>,
     gpu_hull: Option<egui::PaintCallback>,
+    waterline: Option<Arc<egui::Mesh>>,
 ) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::CANVAS);
@@ -287,7 +289,7 @@ pub fn viewport_with_texture(
         }
     }
     if opts.waterplane {
-        draw_waterplane(&painter, &view, rect, scene, texture.is_none());
+        draw_waterplane(&painter, &view, rect, scene, texture.is_none(), waterline);
     }
     if opts.volumes {
         draw_volumes(&painter, &view, rect, scene.volumes);
@@ -735,6 +737,7 @@ fn draw_waterplane(
     rect: Rect,
     scene: &Scene,
     fill_quad: bool,
+    waterline: Option<Arc<egui::Mesh>>,
 ) {
     let plane =
         seacraft_core::hydro::waterplane(scene.surface, scene.draft, scene.trim, scene.heel_deg);
@@ -786,6 +789,10 @@ fn draw_waterplane(
     }
 
     // Draw the true waterline intersection curve on the hull surface.
+    if let Some(mesh) = waterline {
+        painter.add(egui::Shape::Mesh(mesh));
+        return;
+    }
     let cut;
     let segments = match scene.waterline {
         Some(segments) => segments,
@@ -794,11 +801,55 @@ fn draw_waterplane(
             &cut
         }
     };
-    for [a, b] in segments {
-        if let (Some(p0), Some(p1)) = (view.project(*a, rect), view.project(*b, rect)) {
-            painter.line_segment([p0, p1], Stroke::new(1.5, theme::DWL));
-        }
+    painter.extend(waterline_shapes(view, rect, segments));
+}
+
+/// The waterline's strokes in a view: each segment whose ends are both in front of the eye.
+pub fn waterline_shapes(
+    view: &ViewTransform,
+    rect: Rect,
+    segments: &[[Vec3; 2]],
+) -> Vec<egui::Shape> {
+    segments
+        .iter()
+        .filter_map(|[a, b]| Some([view.project(*a, rect)?, view.project(*b, rect)?]))
+        .map(|points| egui::Shape::line_segment(points, Stroke::new(1.5, theme::DWL)))
+        .collect()
+}
+
+/// [`waterline_shapes`] tessellated once into one mesh, as egui tessellates them in a frame with
+/// `ctx`'s scale and options, clipped to the cell `rect`: the same triangles, so the same pixels.
+/// A view keeps it while its [`waterline_key`] stays the same.
+pub fn waterline_mesh(
+    ctx: &egui::Context,
+    view: &ViewTransform,
+    rect: Rect,
+    segments: &[[Vec3; 2]],
+) -> egui::Mesh {
+    let mut tessellator = egui::epaint::Tessellator::new(
+        ctx.pixels_per_point(),
+        ctx.tessellation_options(|o| *o),
+        ctx.fonts(|f| f.font_image_size()),
+        // Only filled circles use these: a line segment does not.
+        Vec::new(),
+    );
+    tessellator.set_clip_rect(rect);
+    let mut mesh = egui::Mesh::default();
+    for shape in waterline_shapes(view, rect, segments) {
+        tessellator.tessellate_shape(shape, &mut mesh);
     }
+    mesh
+}
+
+/// The key a [`waterline_mesh`] is kept under: the view's [`hull_key`] (camera, cell, mesh and
+/// waterplane), the scale it was tessellated at, and the length and address of the cut it shows, a
+/// second guard against drawing an old cut.
+pub fn waterline_key(hull_key: u64, pixels_per_point: f32, segments: &[[Vec3; 2]]) -> u64 {
+    let mut h = hull_key;
+    mix(&mut h, pixels_per_point as f64);
+    mix(&mut h, segments.len() as f64);
+    mix(&mut h, segments.as_ptr() as usize as f64);
+    h
 }
 
 /// Where the hull crosses `plane`, as world-space segments, one for each

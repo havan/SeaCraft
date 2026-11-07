@@ -1,7 +1,8 @@
 //! The viewports' frame cache, headless: an analysis mode rasters only the
 //! views whose frame changed, a drag re-rasters only the view it happens in
 //! (the others refresh once on release), the grid shows under an analysis
-//! frame, and maximising or restoring a view refits its camera.
+//! frame, maximising or restoring a view refits its camera, the waterline is
+//! cut once per mesh and plane, and each view keeps its waterline as one mesh.
 
 use eframe::egui;
 use seacraft_core::AnalysisMode;
@@ -345,4 +346,91 @@ fn switching_the_waterplane_off_cuts_nothing_until_it_returns() {
     app.display_mut().waterplane = true;
     frame(&ctx, &mut app, Vec::new());
     assert_waterline_current(&app);
+}
+
+/// What egui makes of the waterline's strokes in view `index`: the strokes the
+/// viewport draws, tessellated here, afresh, with the context's own options.
+fn tessellated_waterline(ctx: &egui::Context, app: &App, index: usize) -> egui::Mesh {
+    let rect = app.viewport_rect(index);
+    let shapes = seacraft_gui::render::waterline_shapes(
+        &app.cameras()[index].transform(),
+        rect,
+        app.waterline().expect("waterline cut"),
+    );
+    let mut tessellator = egui::epaint::Tessellator::new(
+        ctx.pixels_per_point(),
+        ctx.tessellation_options(|o| *o),
+        ctx.fonts(|f| f.font_image_size()),
+        Vec::new(),
+    );
+    tessellator.set_clip_rect(rect);
+    let mut mesh = egui::Mesh::default();
+    for shape in shapes {
+        tessellator.tessellate_shape(shape, &mut mesh);
+    }
+    mesh
+}
+
+fn assert_waterline_mesh_fresh(ctx: &egui::Context, app: &App, index: usize) {
+    let cached = app
+        .waterline_mesh(index)
+        .unwrap_or_else(|| panic!("view {index} keeps a waterline mesh"));
+    let fresh = tessellated_waterline(ctx, app, index);
+    assert!(
+        !fresh.vertices.is_empty(),
+        "view {index} shows the waterline"
+    );
+    assert_eq!(cached.vertices, fresh.vertices, "view {index}");
+    assert_eq!(cached.indices, fresh.indices, "view {index}");
+}
+
+fn drawn_meshes(shape: &egui::Shape, out: &mut Vec<std::sync::Arc<egui::Mesh>>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| drawn_meshes(s, out)),
+        egui::Shape::Mesh(mesh) => out.push(mesh.clone()),
+        _ => {}
+    }
+}
+
+#[test]
+fn each_view_draws_a_kept_waterline_mesh_and_only_a_moved_view_rebuilds_it() {
+    use std::sync::Arc;
+    let (mut app, ctx) = shaded_demo();
+    let out = frame(&ctx, &mut app, Vec::new());
+    let mut drawn = Vec::new();
+    for clipped in &out.shapes {
+        drawn_meshes(&clipped.shape, &mut drawn);
+    }
+    let before: Vec<Arc<egui::Mesh>> = (0..4)
+        .map(|i| {
+            assert_waterline_mesh_fresh(&ctx, &app, i);
+            let kept = app.waterline_mesh(i).expect("kept").clone();
+            assert!(
+                drawn.iter().any(|m| Arc::ptr_eq(m, &kept)),
+                "view {i} draws its kept mesh"
+            );
+            kept
+        })
+        .collect();
+
+    let over = app.viewport_rect(0).center();
+    app.cameras_mut()[0].orbit(3.0, 1.0);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(over)]);
+    let moved = app.waterline_mesh(0).expect("kept");
+    assert!(!Arc::ptr_eq(moved, &before[0]), "the orbited view rebuilt");
+    assert_ne!(moved.vertices, before[0].vertices);
+    assert_waterline_mesh_fresh(&ctx, &app, 0);
+    for (i, kept) in before.iter().enumerate().skip(1) {
+        let now = app.waterline_mesh(i).expect("kept");
+        assert!(Arc::ptr_eq(now, kept), "view {i} reused its mesh");
+    }
+
+    // A new waterplane is a new waterline in every view.
+    app.hydro_options_mut().draft *= 0.8;
+    frame(&ctx, &mut app, Vec::new());
+    for (i, kept) in before.iter().enumerate() {
+        let now = app.waterline_mesh(i).expect("kept");
+        assert_ne!(now.vertices, kept.vertices, "view {i} rebuilt");
+        assert_waterline_mesh_fresh(&ctx, &app, i);
+    }
 }

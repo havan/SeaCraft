@@ -99,12 +99,21 @@ fn callbacks(out: &egui::FullOutput) -> usize {
     count
 }
 
-/// The most vertices in any one mesh of the frame. Only a painted hull has thousands.
+/// Whether `mesh` is a view's tessellated waterline: its strokes and their feathered edges.
+fn is_waterline(mesh: &egui::Mesh) -> bool {
+    mesh.vertices
+        .iter()
+        .all(|v| v.color == theme::DWL || v.color == egui::Color32::TRANSPARENT)
+}
+
+/// The most vertices in any one mesh of the frame but a waterline. Only a painted hull has thousands.
 fn largest_mesh(out: &egui::FullOutput) -> usize {
     let mut largest = 0;
     each_shape(out, |shape| {
         if let egui::Shape::Mesh(mesh) = shape {
-            largest = largest.max(mesh.vertices.len());
+            if !is_waterline(mesh) {
+                largest = largest.max(mesh.vertices.len());
+            }
         }
     });
     largest
