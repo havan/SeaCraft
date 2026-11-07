@@ -308,9 +308,25 @@ pub fn contrast_ratio(a: Color32, b: Color32) -> f64 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
+/// `base` scaled by `shade` in red, green and blue, and always opaque.
+/// `Color32::gamma_multiply` scales alpha too, which would make a shaded
+/// surface see-through.
+pub fn shaded(base: Color32, shade: f32) -> Color32 {
+    let scale = |c: u8| (c as f32 * shade + 0.5) as u8;
+    Color32::from_rgb(scale(base.r()), scale(base.g()), scale(base.b()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shading_scales_rgb_and_keeps_alpha_opaque() {
+        let c = Color32::from_rgb(100, 200, 50);
+        assert_eq!(shaded(c, 0.5), Color32::from_rgb(50, 100, 25));
+        assert_eq!(shaded(c, 0.5).a(), 255);
+        assert_eq!(shaded(c, 1.0), c);
+    }
 
     /// Every GUI source except this one. A new module must be added here.
     const SOURCES: [(&str, &str); 17] = [

@@ -4,6 +4,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- GUI: the hull is drawn solid, so it looks darker and the grid no longer shows through it. No change to any
+  computed number.
 - A website at <https://havan.github.io/SeaCraft/>, built from `site/`. Its numbers and drawings come from
   running `seacraft` on the example hulls each time it is published. No change to any computed number.
 - GUI: text is now set in DejaVu Sans and DejaVu Sans Mono, which replace egui's default fonts. Body and

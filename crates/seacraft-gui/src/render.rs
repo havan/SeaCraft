@@ -887,6 +887,21 @@ fn draw_sections(
     }
 }
 
+/// The direction the key light shines from: over the viewer's shoulder.
+pub fn key_light(view: &ViewTransform) -> Vec3 {
+    (-view.forward + view.up * 0.45 + view.right * 0.35).norm()
+}
+
+/// Brightness of a face with unit `normal`, lit from `light`, seen along
+/// `to_eye`: 0.35 to 1.0 by the angle to the light (either side of the
+/// face), times 0.82 when the eye is behind the face.
+pub fn face_shade(normal: Vec3, light: Vec3, to_eye: Vec3) -> f32 {
+    // Both sides of open hull shells (such as the top-down Plan view) are
+    // drawn, the inside dimmed so the outside remains distinct.
+    let side = if normal.dot(to_eye) >= 0.0 { 1.0 } else { 0.82 };
+    ((0.35 + 0.65 * normal.dot(light).abs()) * side) as f32
+}
+
 /// The flat-shaded hull as one triangle mesh, farthest face first, for the
 /// painter. It depends only on the refined mesh, the layer colours and the
 /// view, so a viewport keeps it while none of them change ([`hull_key`]).
@@ -898,7 +913,7 @@ pub fn shaded_hull(view: &ViewTransform, rect: Rect, scene: &Scene) -> egui::Mes
     }
     // A key light from over the viewer's shoulder: the hull reads as a
     // solid form instead of a silhouette.
-    let light = (-view.forward + view.up * 0.45 + view.right * 0.35).norm();
+    let light = key_light(view);
     let mut items: Vec<(f64, Vec<Pos2>, Color32)> = Vec::with_capacity(mesh.faces.len());
     let mut poly: Vec<Vec3> = Vec::new();
     for (fi, f) in mesh.faces.iter().enumerate() {
@@ -939,14 +954,9 @@ pub fn shaded_hull(view: &ViewTransform, rect: Rect, scene: &Scene) -> egui::Mes
         } else {
             -view.forward
         };
-        // Render both sides of open hull shells (such as the top-down Plan view),
-        // dimming the interior slightly so the outside remains distinct.
-        let facing = normal.dot(to_eye);
-        let side_factor = if facing >= 0.0 { 1.0 } else { 0.82 };
-
         let base = layer_color(scene.surface, mesh.face_layer.get(fi).copied());
-        let shade = ((0.35 + 0.65 * normal.dot(light).abs()) * side_factor) as f32;
-        items.push((depth, pts, base.gamma_multiply(shade)));
+        let shade = face_shade(normal, light, to_eye);
+        items.push((depth, pts, theme::shaded(base, shade)));
     }
     // Painter's algorithm: farthest face first, emitted into one triangle
     // mesh so epaint's path miter-join extruder never shoots spikes on
@@ -1680,6 +1690,41 @@ mod tests {
     use super::*;
     use crate::camera::{Camera, ViewKind};
     use seacraft_core::math::Vec3;
+
+    #[test]
+    fn face_shade_follows_the_light_and_dims_the_inside() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        assert!((face_shade(z, z, z) - 1.0).abs() < 1e-6); // lit head on, facing the eye
+        assert!((face_shade(z, x, z) - 0.35).abs() < 1e-6); // lit edge on
+        assert!((face_shade(z, z, -z) - 0.82).abs() < 1e-6); // seen from inside
+        assert!((face_shade(z, -z, z) - 1.0).abs() < 1e-6); // the light works from both sides
+    }
+
+    #[test]
+    fn a_shaded_hull_is_opaque() {
+        let s = seacraft_core::demo::demo_hull(false);
+        let mesh = export::render_mesh(&s, 1, Default::default());
+        let (min, max) = s.extents();
+        let scene = Scene {
+            surface: &s,
+            mesh: &mesh,
+            curves: None,
+            volumes: &[],
+            windage: &[],
+            min,
+            max,
+            draft: 0.62,
+            trim: 0.0,
+            heel_deg: 0.0,
+            waterline: None,
+        };
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
+        let camera = Camera::new(ViewKind::Profile, (min + max) * 0.5, max - min);
+        let hull = shaded_hull(&camera.transform(), rect, &scene);
+        assert!(!hull.vertices.is_empty());
+        assert!(hull.vertices.iter().all(|v| v.color.a() == 255));
+    }
 
     /// A unit cube cut at half height. The closed form is the perimeter of
     /// its unit-square section: 4, every point on the plane.
