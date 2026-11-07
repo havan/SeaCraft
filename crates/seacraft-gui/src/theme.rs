@@ -177,9 +177,9 @@ pub fn layer_colour(rgb: i32) -> Color32 {
 /// Headings.
 pub const HEADING_SIZE: f32 = 15.0;
 /// Body text, labels and quantity names.
-pub const BODY_SIZE: f32 = 12.5;
+pub const BODY_SIZE: f32 = 12.0;
 /// Buttons.
-pub const BUTTON_SIZE: f32 = 12.5;
+pub const BUTTON_SIZE: f32 = 12.0;
 /// Small print. Never a quantity's name.
 pub const SMALL_SIZE: f32 = 11.0;
 /// Numeric values.
@@ -192,6 +192,38 @@ pub const UNIT_WIDTH: f32 = 32.0;
 /// The font of plot and viewport captions: 11 pt monospace.
 pub fn caption_font() -> FontId {
     FontId::monospace(CAPTION_SIZE)
+}
+
+/// The fonts compiled into the program, unmodified from DejaVu 2.37 (`assets/fonts`, with their
+/// licence). Each family falls back on the other, so a symbol only one of them has still draws.
+pub fn fonts() -> egui::FontDefinitions {
+    const SANS: &str = "DejaVu Sans";
+    const MONO: &str = "DejaVu Sans Mono";
+    let mut fonts = egui::FontDefinitions::empty();
+    for (name, bytes) in [
+        (
+            SANS,
+            include_bytes!("../assets/fonts/DejaVuSans.ttf").as_slice(),
+        ),
+        (
+            MONO,
+            include_bytes!("../assets/fonts/DejaVuSansMono.ttf").as_slice(),
+        ),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
+    fonts.families.insert(
+        FontFamily::Proportional,
+        vec![SANS.to_owned(), MONO.to_owned()],
+    );
+    fonts.families.insert(
+        FontFamily::Monospace,
+        vec![MONO.to_owned(), SANS.to_owned()],
+    );
+    fonts
 }
 
 /// Apply the type scale, spacing and surface colours to `style`.
@@ -235,6 +267,7 @@ pub fn style(style: &mut egui::Style) {
 
 /// Apply the theme to every style of `ctx` (dark and light).
 pub fn apply(ctx: &egui::Context) {
+    ctx.set_fonts(fonts());
     ctx.all_styles_mut(style);
 }
 
@@ -416,6 +449,56 @@ mod tests {
         }
         // All taken: round the palette again rather than fail.
         assert!(p.contains(&next_layer_colour(&p)));
+    }
+
+    /// Every non-ASCII character outside a comment in `dir`, recursively, with where it is.
+    fn characters_in(dir: &std::path::Path, found: &mut Vec<(char, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                characters_in(&path, found);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (i, line) in text.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or("");
+                    for c in code.chars().filter(|c| !c.is_ascii()) {
+                        found.push((c, format!("{}:{}", path.display(), i + 1)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// A machine without a suitable system font must still draw all of SeaCraft's own text.
+    #[test]
+    fn the_embedded_fonts_draw_every_character_the_program_writes() {
+        assert!(
+            egui::FontDefinitions::builtin_font_names().is_empty(),
+            "egui's default fonts are back in the build"
+        );
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut found = Vec::new();
+        characters_in(&root.join("src"), &mut found);
+        characters_in(&root.join("../seacraft-core/src"), &mut found);
+        assert!(found.iter().any(|(c, _)| *c == '°'), "the walk found text");
+
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        // New fonts take effect at the start of the next pass. A headless context has no system
+        // font provider, so only the embedded fonts can answer below.
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+        let missing: Vec<_> = ctx.fonts_mut(|fonts| {
+            found
+                .iter()
+                .filter(|(c, _)| {
+                    !fonts.has_glyph(&FontId::proportional(BODY_SIZE), *c)
+                        || !fonts.has_glyph(&FontId::monospace(MONO_SIZE), *c)
+                })
+                .cloned()
+                .collect()
+        });
+        assert!(missing.is_empty(), "no glyph for {missing:?}");
     }
 
     #[test]

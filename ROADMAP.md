@@ -48,8 +48,8 @@ takes roughly 60 ms, while the idle app repaints nothing.
 
 ### M5: Binaries
 
-- [ ] Before anyone distributes binaries: egui's default fonts include `Ubuntu-Light.ttf` under the Ubuntu
-  Font Licence. Confirm it may ship in a GPLv3 binary or replace it (`deny.toml`, `NOTICE`).
+- [x] Replace egui's default fonts, whose `Ubuntu-Light.ttf` is under the Ubuntu Font Licence, with DejaVu
+  (`crates/seacraft-gui/assets/fonts`, `NOTICE`).
 - [ ] Ship full licence texts with binaries, and add release packaging.
 - [ ] Decide on publishing to crates.io.
 

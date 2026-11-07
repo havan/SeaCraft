@@ -14,11 +14,3 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
-
-# egui's default fonts. The crate embeds Noto Emoji (OFL-1.1) and Ubuntu-Light (Ubuntu Font
-# Licence 1.0). This repository does not contain them, and it publishes no binaries, so the
-# exception is limited to this crate. Whether the Ubuntu font may ship inside a GPLv3 binary is
-# unconfirmed: check it or replace the font before anyone distributes binaries (ROADMAP.md).
-[[licenses.exceptions]]
-crate = "epaint_default_fonts"
-allow = ["OFL-1.1", "Ubuntu-font-1.0"]

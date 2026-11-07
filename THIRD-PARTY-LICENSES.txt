@@ -301,9 +301,6 @@ enumflags2_derive 0.7.12
 epaint 0.37.0
   licence: MIT OR Apache-2.0
   source: https://github.com/emilk/egui/tree/main/crates/epaint
-epaint_default_fonts 0.37.0
-  licence: (MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0
-  source: https://github.com/emilk/egui/tree/main/crates/epaint_default_fonts
 equivalent 1.0.3
   licence: Apache-2.0 OR MIT
   source: https://github.com/indexmap-rs/equivalent

@@ -206,11 +206,9 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
                     if count == 1 { "" } else { "s" }
                 ));
                 let eye = if layer.visible {
-                    egui::RichText::new("👁").color(theme::TEXT_PRIMARY)
+                    egui::RichText::new("◉").color(theme::TEXT_PRIMARY)
                 } else {
-                    egui::RichText::new("👁")
-                        .color(theme::TEXT_MUTED)
-                        .strikethrough()
+                    egui::RichText::new("○").color(theme::TEXT_MUTED)
                 };
                 if ui
                     .add(egui::Button::new(eye).frame(false))
@@ -710,7 +708,7 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readou
 
 /// The Analysis dock's pinned strip: the live floating condition in two
 /// compact rows, greyed while the hydrostatics are being recomputed, and
-/// the *⤢ wide* toggle. Returns true when the toggle was clicked.
+/// the *↔ wide* toggle. Returns true when the toggle was clicked.
 pub fn live_strip(
     ui: &mut egui::Ui,
     h: Option<&Hydrostatics>,
@@ -772,7 +770,7 @@ pub fn live_strip(
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
-                let label = if wide { "⤡ narrow" } else { "⤢ wide" };
+                let label = if wide { "↔ narrow" } else { "↔ wide" };
                 toggle = ui
                     .add(egui::Button::new(label).selected(wide))
                     .on_hover_text(
@@ -1544,7 +1542,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                     // Side by side, so SAC and the cross curves stay above the
                     // fold at 1600 × 1000.
                     ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 14.0;
+                        ui.spacing_mut().item_spacing.x = 13.0;
                         grouped_grid(ui, "hydro_readouts", &[form, centres], true);
                         grouped_grid(ui, "hydro_readouts_2", &[stability, areas], true);
                     });
@@ -2291,7 +2289,7 @@ fn sea_state_section(
                         }
                     }
                 }
-                if ui.small_button("🗑").on_hover_text("Remove point").clicked() {
+                if ui.small_button("✕").on_hover_text("Remove point").clicked() {
                     remove = Some(i);
                 }
             });
@@ -2516,7 +2514,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 {
                     action = DamageAction::Changed;
                 }
-                if ui.button("🗑").on_hover_text("Remove compartment").clicked() {
+                if ui.button("✕").on_hover_text("Remove compartment").clicked() {
                     remove_comp = Some(c_idx);
                 }
             });
@@ -4145,7 +4143,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     {
                         action = LoadingAction::Changed;
                     }
-                    if ui.button("🗑").on_hover_text("Remove weight").clicked() {
+                    if ui.button("✕").on_hover_text("Remove weight").clicked() {
                         remove_item = Some(i);
                     }
                     ui.end_row();
@@ -4213,7 +4211,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 {
                     action = LoadingAction::Changed;
                 }
-                if ui.button("🗑").on_hover_text("Remove tank").clicked() {
+                if ui.button("✕").on_hover_text("Remove tank").clicked() {
                     remove_tank = Some(t_idx);
                 }
             });
@@ -4633,7 +4631,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                     }
 
                     if ui
-                        .button("🗑")
+                        .button("✕")
                         .on_hover_text("Remove windage item")
                         .clicked()
                     {

@@ -15,8 +15,21 @@ path = "src/main.rs"
 
 [dependencies]
 seacraft-core = { path = "../seacraft-core" }
-eframe = "0.37"
+# Every eframe default except `default_fonts`: egui's default fonts embed Ubuntu-Light, and SeaCraft
+# embeds its own (`assets/fonts`). `system_fonts` stays, for text such as file names in other scripts.
+eframe = { version = "0.37", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "links",
+    "system_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
 egui = "0.37"
+# Not used directly. eframe enables these winit defaults only through its own default features, turned
+# off above: the X11 and Wayland backends and client-side window decorations.
+winit = "0.30.13"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

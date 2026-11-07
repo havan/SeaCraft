@@ -6,6 +6,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 - A website at <https://havan.github.io/SeaCraft/>, built from `site/`. Its numbers and drawings come from
   running `seacraft` on the example hulls each time it is published. No change to any computed number.
+- GUI: text is now set in DejaVu Sans and DejaVu Sans Mono, which replace egui's default fonts. Body and
+  button text go from 12.5 to 12 pt to keep the same apparent size. The remove, layer visibility and
+  wide dock buttons now use symbols those fonts contain, so they draw on every machine.
 
 ## 0.2.1 (2026-11-07)
 

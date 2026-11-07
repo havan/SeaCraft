@@ -217,7 +217,7 @@ fn property_switches_and_the_eye_reach_the_model() {
     assert_eq!(w.app.surface().unwrap().layers[2], transom);
 
     // The eye beside the transom hides it.
-    let mut eyes = w.all(Role::Button, "👁");
+    let mut eyes = w.all(Role::Button, "◉");
     eyes.sort_by(|a, b| a.top().total_cmp(&b.top()));
     assert_eq!(eyes.len(), 3, "one eye per layer");
     w.click_at(eyes[2].center());
