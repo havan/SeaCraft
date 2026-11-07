@@ -4,6 +4,14 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- GUI: the viewport hull is drawn on the GPU, so orbiting a large hull at a high subdivision level stays
+  smooth. On one Linux machine with an RTX 3070 Ti, orbiting `container-230m` at level 4 went from about
+  130-160 ms to about 8 ms per frame, and level 5, where the old drawing panics, takes about 10 ms. Hull edges
+  are smoother, faces are depth-tested instead of sorted, a face partly behind the eye is clipped instead of
+  dropped, and wireframe lines are 1 pixel wide. Each view also keeps its waterline as one mesh, with the same
+  pixels. This has not been run on Windows, macOS or an integrated GPU. `seacraft-gui --no-gpu-hull` draws the
+  hull the old way, and the app falls back to it, with a message in the log, when the GPU refuses the mesh or
+  a view's texture. No change to any computed number.
 - GUI: the hull is drawn solid, so it looks darker and the grid no longer shows through it. No change to any
   computed number.
 - A website at <https://havan.github.io/SeaCraft/>, built from `site/`. Its numbers and drawings come from

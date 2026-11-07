@@ -634,9 +634,14 @@ $ cargo run --release --bin seacraft -- linesplan /tmp/demo.fef -o /tmp/demo.svg
 
 ## 4. Desktop application
 
-`seacraft-gui` is an `eframe`/`egui` front end with no GPU pipeline: every
-viewport is CPU-projected into an `egui::Painter`, so it runs on a plain X
-display or a software renderer.
+`seacraft-gui` is an `eframe`/`egui` front end. The viewports draw the hull
+on the GPU through `wgpu`, and every overlay (grid, control net, points,
+waterline) through an `egui::Painter`. `--no-gpu-hull` draws the hull on the
+CPU instead: use it if the hull looks wrong or the app misbehaves on your
+graphics driver. The GPU path has only been run on Linux with an NVIDIA card,
+not on Windows, macOS or an integrated GPU. The CPU path has a limit of its
+own: on `container-230m` at level 5 its mesh is over `wgpu`'s buffer limit and
+the app panics.
 
 ```console
 cargo run --release -p seacraft-gui -- --open examples/demo-hull.fef

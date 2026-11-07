@@ -43,9 +43,29 @@ other work, median frame time and fps with the waterline cached:
 `cargo run --release -p seacraft-gui --example orbit_bench -- HULL.fef LEVEL` takes these numbers, and
 `crates/seacraft-gui/tests/perf.rs` splits the cost per frame. The CPU is the limit, not the GPU.
 
+The hull is now drawn on the GPU, and each view keeps its waterline as one tessellated mesh. These numbers
+describe one machine: Linux, RTX 3070 Ti on Vulkan, release build, 1600 x 1000, vsync off, load average 2 to 12
+from other work. No integrated GPU was available. The GPU path has not been run on Windows or macOS, and
+`--no-gpu-hull` draws the hull the old way. Before is `--no-gpu-hull` in the same build, alternated with the GPU
+path; each cell is the range of the medians of separate runs, frame time then CPU time per frame:
+
+| Hull | Level | Before: frame, CPU | After: frame, CPU |
+|---|---|---|---|
+| `demo-hull` | 3 | 4.1-5.3 ms, 3.9-5.0 ms | 2.0-2.3 ms, 1.7-2.0 ms |
+| `wigley` | 4 | 85-91 ms, 85-91 ms | 3.5-4.0 ms, 3.1-3.4 ms |
+| `container-230m` | 3 | 31-40 ms, 31-40 ms | 7.0-8.7 ms, 6.7-8.2 ms |
+| `container-230m` | 4 | 127-160 ms, 127-160 ms | 7.5-8.4 ms, 7.1-8.1 ms |
+| `container-230m` | 5 | the old path panics | 9.0-10.6 ms, 8.7-10.2 ms |
+
+At level 5 the old path asks wgpu for a 403 MiB vertex buffer, over its 256 MiB limit, and panics, so
+`--no-gpu-hull` is no way out there. A new level 5 mesh of `container-230m` (1.29 million triangles, 103 MiB)
+takes about 140 ms to build on the window thread and 12 ms to upload.
+
 - [x] Profile the cost per frame.
 - [x] Cut the waterline once per mesh and plane instead of once per view per frame.
-- [ ] Draw the hull on the GPU, so that moving the camera does not rebuild or resend its triangles.
+- [ ] Draw the hull on the GPU, so that moving the camera does not rebuild or resend its triangles. Done in
+  code, and the frame target (16.7 ms at levels 4 and 5) is met above. The CPU target, 8 ms per orbit frame at
+  levels 3, 4 and 5, is not: level 5 takes 8.7-10.2 ms, and levels 3 and 4 sit at the limit.
 - Done when orbiting the largest example stays smooth at level 4, with the numbers recorded before and after.
 
 ### M3: Selection

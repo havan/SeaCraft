@@ -70,6 +70,7 @@ crates/seacraft-gui/
   src/control.rs            loopback TCP JSON-lines control channel
   src/camera.rs             ViewKind, Camera, ViewTransform, Ray
   src/render.rs             viewport painter: grid, shading, control net
+  src/gpu_hull/             the viewport hull on the GPU: vertex data, view uniforms, offscreen pipelines
   src/theme.rs              colour tokens (the only colour literals), type scale, spacing
   src/picking.rs            screen-space picking, drag plane
   src/history.rs            snapshot undo/redo (64)
@@ -131,6 +132,12 @@ A new capability should reach each interface that makes sense for it. See `skill
 - **One staleness rule.** A result carries the revision it was computed for, and a stale one is marked as
   such. A green `PASS` is never shown on stale data.
 - **Undo** is snapshots (`crates/seacraft-gui/src/history.rs`), up to 64, shared by model and project edits.
+- **The viewport hull has two paths.** By default each view emits one paint callback
+  (`crates/seacraft-gui/src/gpu_hull/`): the vertex data is built once per mesh next to the refinement and
+  uploaded once, and a view renders offscreen only when its camera, cell or mesh changes, then composites the
+  texture where the painted hull would be. `--no-gpu-hull`, a failed allocation, and headless tests take the
+  painted path, `render::shaded_hull`, a depth-sorted egui mesh. Both shade with the same formula and colours,
+  and every overlay stays an egui shape projected by `ViewTransform::project` on either path.
 
 ## Files on disk
 
