@@ -112,7 +112,7 @@ function buildSea(hull) {
   for (let z = 0; z <= g.z1 + 1e-6; z += step) {
     const label = el("text", {
       x: markX, y: -z, "text-anchor": "end", "dominant-baseline": "central",
-      fill: "currentColor", stroke: "none", "font-family": "Big Shoulders Stencil, sans-serif", "font-weight": 700,
+      fill: "currentColor", stroke: "none", "font-family": "Big Shoulders, sans-serif", "font-weight": 700,
     }, marks);
     label.textContent = `${+z.toFixed(2)}`;
     sea.marks.push(label);

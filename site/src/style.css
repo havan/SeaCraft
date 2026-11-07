@@ -2,8 +2,8 @@
    red boot-top stripe where the two meet the rest of the page. */
 
 @font-face {
-  font-family: "Big Shoulders Stencil";
-  src: url("fonts/big-shoulders-stencil-latin-wght-normal.woff2") format("woff2");
+  font-family: "Big Shoulders";
+  src: url("fonts/big-shoulders-latin-standard-normal.woff2") format("woff2");
   font-weight: 100 900;
   font-display: swap;
 }
@@ -37,7 +37,7 @@
   --series-3: #5e3fa8;
   --grid: #bccac6;
 
-  --display: "Big Shoulders Stencil", "Arial Narrow", Impact, sans-serif;
+  --display: "Big Shoulders", "Arial Narrow", Impact, sans-serif;
   --body: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, sans-serif;
   --mono: "Atkinson Hyperlegible Mono", ui-monospace, "Cascadia Mono", Menlo, monospace;
 
@@ -62,7 +62,7 @@ a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 3px solid var(--boot-top); outline-offset: 3px; }
 .hero :focus-visible, .section-agents :focus-visible { outline-color: currentColor; }
 
-h1, h2, h3 { margin: 0; font-family: var(--display); font-weight: 800; letter-spacing: .005em; }
+h1, h2, h3 { margin: 0; font-family: var(--display); font-weight: 800; letter-spacing: .01em; }
 h2 { font-size: clamp(2.5rem, 5.4vw, 4.75rem); line-height: 1; max-width: 18em; text-wrap: balance; }
 h3 { font-size: clamp(1.75rem, 2.4vw, 2.25rem); line-height: 1.05; }
 
@@ -106,7 +106,7 @@ pre code { font-size: inherit; }
 }
 h1 {
   font-size: clamp(5.5rem, 13.5vw, 12.5rem);
-  font-weight: 900;
+  font-weight: 800;
   line-height: .78;
   margin-left: -.03em;
   padding-bottom: .04em;

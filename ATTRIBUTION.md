@@ -160,7 +160,7 @@ checks come from them too; that code is SeaCraft's own.
 The website serves these fonts unchanged. They are not linked into any program, and each licence text is next
 to its font.
 
-* **Big Shoulders Stencil:** Copyright 2019 The Big Shoulders Project Authors, SIL Open Font License 1.1
+* **Big Shoulders:** Copyright 2019 The Big Shoulders Project Authors, SIL Open Font License 1.1
 * **Atkinson Hyperlegible Next:** Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors, SIL Open
   Font License 1.1
 * **Atkinson Hyperlegible Mono:** Copyright 2020-2024 The Atkinson Hyperlegible Mono Project Authors, SIL Open
