@@ -2,7 +2,7 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
-## Unreleased
+## 0.3.0-beta.1 (2026-11-07)
 
 - GUI: the viewport hull is drawn on the GPU, so orbiting a large hull at a high subdivision level stays
   smooth. On one Linux machine with an RTX 3070 Ti, orbiting `container-230m` at level 4 went from about
