@@ -3,6 +3,8 @@
 | You have | Download | Start it |
 | --- | --- | --- |
 | Windows, 64-bit | `seacraft-*-x86_64-pc-windows-msvc.zip` | Unzip, then double-click `seacraft-gui.exe` |
+| Mac with an Apple chip (M1 or later) | `SeaCraft-*-arm64.dmg` | Open it, then drag SeaCraft to Applications |
+| Mac with an Intel chip | `SeaCraft-*-x86_64.dmg` | Open it, then drag SeaCraft to Applications |
 | Linux, most distributions | `SeaCraft-*-x86_64.AppImage` | `chmod +x` it, then run it |
 | Linux with Flatpak | `SeaCraft-*-x86_64.flatpak` | `flatpak install --user` it, then find SeaCraft in your menu |
 | Linux, plain folder | `seacraft-*-x86_64-unknown-linux-gnu.tar.gz` | Unpack, then run `./seacraft-gui` |
@@ -12,6 +14,11 @@ To begin, choose **Open an example** on the start screen. `SHA256SUMS` holds the
 **Windows:** the programs are not signed, so SmartScreen may warn you; choose *More info*, then *Run anyway*,
 if you trust this page. This build was compiled and tested automatically, but nobody has opened the GUI on
 Windows by hand yet. Please report what you find.
+
+**macOS 11 or later:** the app is not signed with an Apple Developer ID or notarised, so macOS refuses to open
+it the first time. If you trust this page, open *System Settings > Privacy & Security* and choose *Open
+Anyway*. This build was compiled and tested automatically, but nobody has opened the GUI on a Mac by hand yet.
+Please report what you find.
 
 **Flatpak on NVIDIA:** the window needs the `org.freedesktop.Platform.GL.nvidia` extension that matches your
 driver. If SeaCraft fails to open, run `flatpak update`, which normally installs it.

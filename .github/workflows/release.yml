@@ -76,7 +76,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Nobody tests Windows by hand, so its whole test suite must pass before it ships.
       - name: Test
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --no-fail-fast
       - name: Build the package folder
         run: cargo xtask dist --target x86_64-pc-windows-msvc
       - name: Package
@@ -96,10 +96,57 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  macos:
+    name: macOS download (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, runner: macos-15, target: aarch64-apple-darwin }
+          - { arch: x86_64, runner: macos-15-intel, target: x86_64-apple-darwin }
+    env:
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      # Keep in step with LSMinimumSystemVersion in packaging/macos/Info.plist.
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Nobody tests macOS by hand either, so its whole test suite must pass before it ships.
+      - name: Test
+        run: cargo test --locked --workspace --no-fail-fast
+      - name: Build the package folder
+        run: cargo xtask dist --target "$TARGET"
+      - name: Package
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          stage=$PWD/target/seacraft-dist/seacraft-$version-$TARGET
+          image=$PWD/out/SeaCraft-$version-$ARCH.dmg
+
+          mkdir out
+          packaging/macos/build-dmg.sh "$stage" "$image" "$version"
+
+          hdiutil attach "$image" -nobrowse -readonly -mountpoint "$PWD/mounted"
+          codesign --verify --deep --strict mounted/SeaCraft.app
+          programs=mounted/SeaCraft.app/Contents/MacOS
+          "$programs/seacraft" --version
+          "$programs/seacraft" hydro mounted/SeaCraft.app/Contents/Resources/examples/demo-hull.fef --kg 2.2
+          "$programs/seacraft-gui" --version
+          hdiutil detach "$PWD/mounted"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-${{ matrix.arch }}
+          path: out/*
+          if-no-files-found: error
+
   draft:
     name: Draft release
     if: github.ref_type == 'tag'
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

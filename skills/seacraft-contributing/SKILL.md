@@ -41,10 +41,10 @@ Commit subjects follow `type(scope): summary`, such as `fix(core): ...`. History
 1. Set the version, update `CHANGELOG.md`, and run `cargo xtask ci --full`.
 2. Run the Release workflow by hand on `main` to see every platform build, without creating a release.
 3. Tag `vX.Y.Z` and push the tag. The workflow checks the tag against the version, builds the downloads, tests
-   Windows and creates a **draft** release from `packaging/release-notes.md`.
+   Windows and macOS and creates a **draft** release from `packaging/release-notes.md`.
 4. Download the files and open them. Say in the notes what nobody tried by hand. Then publish the draft.
 
-`cargo xtask dist --target TRIPLE` and `packaging/linux/` build the same files locally.
+`cargo xtask dist --target TRIPLE`, `packaging/linux/` and `packaging/macos/` build the same files locally.
 
 ## Reference
 

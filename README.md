@@ -31,13 +31,16 @@ To try SeaCraft without building it, take the file for your system from the
 | You have | Download | Start it |
 | --- | --- | --- |
 | Windows, 64-bit | `seacraft-*-x86_64-pc-windows-msvc.zip` | Unzip, then double-click `seacraft-gui.exe` |
+| Mac with an Apple chip (M1 or later) | `SeaCraft-*-arm64.dmg` | Open it, then drag SeaCraft to Applications |
+| Mac with an Intel chip | `SeaCraft-*-x86_64.dmg` | Open it, then drag SeaCraft to Applications |
 | Linux, most distributions | `SeaCraft-*-x86_64.AppImage` | `chmod +x` it, then run it |
 | Linux with Flatpak | `SeaCraft-*-x86_64.flatpak` | `flatpak install --user` it, then find SeaCraft in your menu |
 | Linux, plain folder | `seacraft-*-x86_64-unknown-linux-gnu.tar.gz` | Unpack, then run `./seacraft-gui` |
 
-The start screen offers ready-made hulls under *Open an example*. The Windows programs are not signed, so
-SmartScreen may warn you, and nobody has opened the Windows GUI by hand yet: it is only built and tested
-automatically, so please report what you find.
+The start screen offers ready-made hulls under *Open an example*. The Windows and macOS programs are not
+signed, so SmartScreen may warn you on Windows, and macOS refuses the app until you choose *Open Anyway* in
+*System Settings > Privacy & Security*. Nobody has opened the GUI by hand on either system yet: those builds
+are only built and tested automatically, so please report what you find.
 
 ---
 

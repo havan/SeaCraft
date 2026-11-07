@@ -724,6 +724,7 @@ fn standard_licence_texts(root: &Path) -> Vec<(&'static str, String)> {
         ("MIT", mit),
         ("Apache-2.0", read("Apache-2.0.txt")),
         ("BSL-1.0", read("BSL-1.0.txt")),
+        ("Zlib", read("Zlib.txt")),
     ]
 }
 

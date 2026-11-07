@@ -32,6 +32,13 @@ fn usage() {
 fn main() -> eframe::Result {
     #[cfg(windows)]
     windows::attach_to_parent_console();
+    // Finder starts an app in `/`, where the save dialogs would then suggest saving.
+    #[cfg(target_os = "macos")]
+    if std::env::current_dir().is_ok_and(|dir| dir == std::path::Path::new("/")) {
+        if let Some(home) = std::env::var_os("HOME") {
+            let _ = std::env::set_current_dir(home);
+        }
+    }
     let mut open: Option<PathBuf> = None;
     let mut analysis = seacraft_core::AnalysisMode::Shaded;
     let mut combs = false;

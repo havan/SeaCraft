@@ -63,9 +63,9 @@ other work, median frame time and fps with the waterline cached:
 - [x] Replace egui's default fonts, whose `Ubuntu-Light.ttf` is under the Ubuntu Font Licence, with DejaVu
   (`crates/seacraft-gui/assets/fonts`, `NOTICE`).
 - [x] Ship full licence texts with binaries: `cargo xtask dist` writes them from the crates that are compiled in.
-- [x] Add release packaging: a version tag builds a Linux archive, AppImage and Flatpak bundle and a Windows
-  zip, then creates a draft release (`.github/workflows/release.yml`, `packaging/`).
-- [ ] Make the first release: run the workflow, try the AppImage, and have someone open the GUI on Windows.
+- [x] Add release packaging: a version tag builds a Linux archive, AppImage and Flatpak bundle, a Windows zip
+  and macOS disk images, then creates a draft release (`.github/workflows/release.yml`, `packaging/`).
+- [ ] Make the first release: run the workflow, and have someone open the GUI on Windows and on a Mac.
 - [x] Decide on publishing to crates.io: not now. The people a release is for download a program, and the
   library API is not meant to be stable yet. Flathub waits too, since it must build from source.
 
@@ -90,5 +90,5 @@ other work, median frame time and fps with the waterline cached:
 - The crash recovery prompt shows its time in UTC, and undo history is not recovered.
 - Clipped tank overlays are drawn at subdivision level 2.
 - A one-sided model keeps whole stations; a catamaran's stations show one demihull a side.
-- The Windows programs are unsigned and have no icon in Explorer, and `.fef` files do not open on
-  double-click on any system.
+- The Windows programs are unsigned and have no icon in Explorer, the macOS app is not notarised, and `.fef`
+  files do not open on double-click on any system.

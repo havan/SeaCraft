@@ -13,9 +13,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   validated, a link to the source, and the licence texts. `--help` on both programs carries the notice too.
 - `cargo xtask dist --target TRIPLE` builds the folder a release archive is made from, with the full
   licence text of every crate compiled in.
-- Release builds for Linux (archive, AppImage, Flatpak bundle) and Windows (zip), made by a workflow that
-  creates a draft release from a version tag. The window has a SeaCraft icon, and on Windows a window that
-  cannot open says why in a message box.
+- Release builds for Linux (archive, AppImage, Flatpak bundle), Windows (zip) and macOS (disk images for Apple
+  and Intel chips), made by a workflow that creates a draft release from a version tag. The window has a
+  SeaCraft icon, and on Windows a window that cannot open says why in a message box.
 - GUI: orbiting and hovering are faster with the waterplane on: the waterline is cut once per mesh and plane
   instead of once per view per frame. No change to any computed number.
 
