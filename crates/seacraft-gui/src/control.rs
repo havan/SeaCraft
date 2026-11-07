@@ -2586,6 +2586,7 @@ fn render_png(
         draft,
         trim,
         heel_deg,
+        waterline: None,
     };
     let transform = app.cameras()[view].transform();
     let waterplane = app.display().waterplane;

@@ -53,6 +53,10 @@ struct RenderCache {
     /// The curves were carried over from before a drag began: they are
     /// rebuilt on release, not on every drag frame.
     curves_stale: bool,
+    /// The waterline cut from `mesh` and the plane it was cut with. It goes
+    /// with the mesh, and only a different plane cuts it again: the views
+    /// redraw it from here while the camera moves.
+    waterline: Option<(seacraft_core::math::Plane, Vec<[Vec3; 2]>)>,
     min: Vec3,
     max: Vec3,
 }
@@ -70,6 +74,11 @@ fn section_cut(d: &DisplayOptions) -> SectionCut {
         d.combs,
         d.comb_scale.to_bits(),
     )
+}
+
+/// Whether two waterplanes are exactly the same plane.
+fn same_plane(a: &seacraft_core::math::Plane, b: &seacraft_core::math::Plane) -> bool {
+    a.n == b.n && a.d == b.d
 }
 
 impl RenderCache {
@@ -944,6 +953,8 @@ pub struct App {
     analysis_frames: [Option<AnalysisFrame>; 4],
     /// How many analysis frames each viewport has rasterized (test hook).
     raster_counts: [u64; 4],
+    /// How many times the waterline has been cut from the mesh.
+    waterline_cuts: u64,
     /// Each viewport's painter-shaded hull and the [`render::hull_key`] it
     /// was built for.
     shaded_hulls: [Option<(u64, Arc<egui::Mesh>)>; 4],
@@ -1123,6 +1134,7 @@ impl App {
             toolbar_rects: Vec::new(),
             analysis_frames: [None, None, None, None],
             raster_counts: [0; 4],
+            waterline_cuts: 0,
             shaded_hulls: Default::default(),
             control: None,
             synthetic: Vec::new(),
@@ -1420,9 +1432,30 @@ impl App {
                 curves_stale: curves.is_some(),
                 curves,
                 curves_for,
+                waterline: None,
                 min,
                 max,
             });
+        }
+        if self.display.waterplane {
+            let options = &self.hydro.options;
+            let plane = seacraft_core::hydro::waterplane(
+                surface,
+                options.draft,
+                options.trim,
+                options.heel_deg,
+            );
+            if let Some(cache) = self.cache.as_mut() {
+                let current = cache
+                    .waterline
+                    .as_ref()
+                    .is_some_and(|(cut, _)| same_plane(cut, &plane));
+                if !current {
+                    let segments = render::waterline_segments(&cache.mesh, &plane);
+                    cache.waterline = Some((plane, segments));
+                    self.waterline_cuts += 1;
+                }
+            }
         }
         if self.display.wants_sections() {
             let dragging = self.drag.is_some();
@@ -3540,6 +3573,7 @@ impl App {
             draft: self.hydro.options.draft,
             trim: self.hydro.options.trim,
             heel_deg: self.hydro.options.heel_deg,
+            waterline: self.waterline(),
         })
     }
 
@@ -5025,6 +5059,26 @@ impl App {
 
     pub fn render_cache(&self) -> Option<&RenderMesh> {
         self.cache.as_ref().map(|c| &c.mesh)
+    }
+
+    /// The waterline cached for the current mesh, while it was cut with the
+    /// waterplane of the current floating condition: a cut from any other
+    /// plane is never shown.
+    pub fn waterline(&self) -> Option<&[[Vec3; 2]]> {
+        let options = &self.hydro.options;
+        let plane = seacraft_core::hydro::waterplane(
+            self.surface.as_ref()?,
+            options.draft,
+            options.trim,
+            options.heel_deg,
+        );
+        let (cut, segments) = self.cache.as_ref()?.waterline.as_ref()?;
+        same_plane(cut, &plane).then_some(segments.as_slice())
+    }
+
+    /// How many times the waterline has been cut from the mesh (test hook).
+    pub fn waterline_cuts(&self) -> u64 {
+        self.waterline_cuts
     }
 
     pub fn cameras(&self) -> &[Camera; 4] {

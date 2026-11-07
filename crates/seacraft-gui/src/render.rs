@@ -10,7 +10,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Stroke};
 use seacraft_core::analysis::AnalysisMode;
 use seacraft_core::export::{self, RenderMesh};
-use seacraft_core::math::Vec3;
+use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::mesh::Surface;
 use seacraft_core::raster;
 use seacraft_core::weather::WindageRect;
@@ -180,6 +180,9 @@ pub struct Scene<'a> {
     pub draft: f64,
     pub trim: f64,
     pub heel_deg: f64,
+    /// The waterline already cut from `mesh`, when the caller keeps one:
+    /// otherwise each view cuts it again from every face of the mesh.
+    pub waterline: Option<&'a [[Vec3; 2]]>,
 }
 
 impl Scene<'_> {
@@ -779,18 +782,35 @@ fn draw_waterplane(
     }
 
     // Draw the true waterline intersection curve on the hull surface.
-    for f in &scene.mesh.faces {
+    let cut;
+    let segments = match scene.waterline {
+        Some(segments) => segments,
+        None => {
+            cut = waterline_segments(scene.mesh, &plane);
+            &cut
+        }
+    };
+    for [a, b] in segments {
+        if let (Some(p0), Some(p1)) = (view.project(*a, rect), view.project(*b, rect)) {
+            painter.line_segment([p0, p1], Stroke::new(1.5, theme::DWL));
+        }
+    }
+}
+
+/// Where the hull crosses `plane`, as world-space segments, one for each
+/// triangle of the mesh's faces that the plane passes through.
+pub fn waterline_segments(mesh: &RenderMesh, plane: &Plane) -> Vec<[Vec3; 2]> {
+    let mut segments = Vec::new();
+    for f in &mesh.faces {
         if f.len() < 3 {
             continue;
         }
         for k in 1..f.len() - 1 {
-            let tri = [
-                scene.mesh.verts[f[0]],
-                scene.mesh.verts[f[k]],
-                scene.mesh.verts[f[k + 1]],
-            ];
+            let tri = [mesh.verts[f[0]], mesh.verts[f[k]], mesh.verts[f[k + 1]]];
             let s = [plane.side(tri[0]), plane.side(tri[1]), plane.side(tri[2])];
-            let mut hits: Vec<Vec3> = Vec::with_capacity(2);
+            // A plane changes side across none of a triangle's edges or two.
+            let mut hits = [Vec3::ZERO; 2];
+            let mut count = 0;
             for (i, j) in [(0usize, 1usize), (1, 2), (2, 0)] {
                 if (s[i] <= 0.0) != (s[j] <= 0.0) {
                     let denom = s[i] - s[j];
@@ -799,18 +819,16 @@ fn draw_waterplane(
                     } else {
                         0.5
                     };
-                    hits.push(tri[i] + (tri[j] - tri[i]) * t);
+                    hits[count] = tri[i] + (tri[j] - tri[i]) * t;
+                    count += 1;
                 }
             }
-            if hits.len() == 2 {
-                if let (Some(p0), Some(p1)) =
-                    (view.project(hits[0], rect), view.project(hits[1], rect))
-                {
-                    painter.line_segment([p0, p1], Stroke::new(1.5, theme::DWL));
-                }
+            if count == 2 {
+                segments.push(hits);
             }
         }
     }
+    segments
 }
 
 /// The intersection curves (`opts.curves`) and their curvature combs
@@ -1663,6 +1681,39 @@ mod tests {
     use crate::camera::{Camera, ViewKind};
     use seacraft_core::math::Vec3;
 
+    /// A unit cube cut at half height. The closed form is the perimeter of
+    /// its unit-square section: 4, every point on the plane.
+    #[test]
+    fn a_unit_cube_cut_at_half_height_has_a_perimeter_of_four() {
+        let v = |x, y, z| Vec3::new(x, y, z);
+        let mesh = RenderMesh {
+            verts: vec![
+                v(0.0, 0.0, 0.0),
+                v(1.0, 0.0, 0.0),
+                v(1.0, 1.0, 0.0),
+                v(0.0, 1.0, 0.0),
+                v(0.0, 0.0, 1.0),
+                v(1.0, 0.0, 1.0),
+                v(1.0, 1.0, 1.0),
+                v(0.0, 1.0, 1.0),
+            ],
+            faces: vec![
+                vec![0, 3, 2, 1],
+                vec![4, 5, 6, 7],
+                vec![0, 1, 5, 4],
+                vec![1, 2, 6, 5],
+                vec![2, 3, 7, 6],
+                vec![3, 0, 4, 7],
+            ],
+            face_layer: vec![0; 6],
+        };
+        let plane = seacraft_core::math::Plane::new(v(0.0, 0.0, 1.0), -0.5);
+        let segments = waterline_segments(&mesh, &plane);
+        let perimeter: f64 = segments.iter().map(|[a, b]| (*b - *a).length()).sum();
+        assert!((perimeter - 4.0).abs() < 1e-12, "perimeter {perimeter}");
+        assert!(segments.iter().flatten().all(|p| (p.z - 0.5).abs() < 1e-12));
+    }
+
     #[test]
     fn grid_lines_are_world_anchored_with_one_datum() {
         let lines = grid_lines(3.3, 10.0, 1.0);
@@ -1843,6 +1894,7 @@ mod tests {
             draft: 0.62,
             trim: 0.0,
             heel_deg: 0.0,
+            waterline: None,
         };
         let opts = DisplayOptions {
             shaded: false,
@@ -1930,6 +1982,7 @@ mod tests {
             draft: 0.62,
             trim: 0.0,
             heel_deg: 0.0,
+            waterline: None,
         };
         let zebra = AnalysisMode::Zebra { stripes: 14.0 };
         let alpha = |rgba: &[u8], w: usize, x: usize, y: usize| rgba[(y * w + x) * 4 + 3];

@@ -664,3 +664,18 @@ were recomputed with an independent Python script (shoelace on the clipped recta
 the code produced before the fix and match $Lbd + A\,h/3$ and the deficit formula to $10^{-12}$. FREE!ship's source
 was not available locally; this follows the README's description of `TFreeHydrostaticCalc` (waterplane-only lid),
 which assumes a hull closed below the waterline. Not published values.
+
+---
+
+## 23. Viewport Waterline of a Unit Cube
+
+### Formula
+A plane parallel to two faces of a cube of side $a$ cuts a square section of perimeter $4a$.
+
+### Tests and Values
+`seacraft-gui render::tests::a_unit_cube_cut_at_half_height_has_a_perimeter_of_four`: $a = 1$, plane $z = 0.5$:
+segment lengths sum to $4$ ($10^{-12}$) and every end lies on the plane ($10^{-12}$).
+
+### Provenance
+Elementary geometry, derived for this test (2026-11-07). Not a published value. It covers the line the viewports
+draw, not a measurement: hydrostatics integrate the mesh separately.

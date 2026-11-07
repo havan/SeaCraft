@@ -30,11 +30,23 @@ The most important milestone: most results have never been compared with reality
 
 ### M2: Viewport performance
 
-The UI is slow with 3D models. Measured on the demo hull in a release build: one frame of four viewports
-takes roughly 60 ms, while the idle app repaints nothing.
+The viewport is smooth on small hulls at the default subdivision level, and slow on larger hulls and at higher
+levels. Orbiting in a real window, release build, 1600 x 1000, vsync off, RTX 3070 Ti, on a machine also running
+other work, median frame time and fps with the waterline cached:
 
-- [ ] Profile the cost per frame, and cache what does not change when only the camera moves.
-- Done when orbiting the largest example stays smooth, with the numbers recorded before and after.
+| Hull | Level 3 | Level 4 |
+|---|---|---|
+| `demo-hull` | 5 ms, about 200 fps | 18 ms, about 55 fps |
+| `wigley` | 22 ms, about 45 fps | 80 ms, about 12 fps |
+| `container-230m` | 37 ms, about 27 fps | 125-165 ms, 6-8 fps |
+
+`cargo run --release -p seacraft-gui --example orbit_bench -- HULL.fef LEVEL` takes these numbers, and
+`crates/seacraft-gui/tests/perf.rs` splits the cost per frame. The CPU is the limit, not the GPU.
+
+- [x] Profile the cost per frame.
+- [x] Cut the waterline once per mesh and plane instead of once per view per frame.
+- [ ] Draw the hull on the GPU, so that moving the camera does not rebuild or resend its triangles.
+- Done when orbiting the largest example stays smooth at level 4, with the numbers recorded before and after.
 
 ### M3: Selection
 

@@ -16,6 +16,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - Release builds for Linux (archive, AppImage, Flatpak bundle) and Windows (zip), made by a workflow that
   creates a draft release from a version tag. The window has a SeaCraft icon, and on Windows a window that
   cannot open says why in a message box.
+- GUI: orbiting and hovering are faster with the waterplane on: the waterline is cut once per mesh and plane
+  instead of once per view per frame. No change to any computed number.
 
 ## 0.2.1 (2026-11-07)
 

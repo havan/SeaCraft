@@ -226,3 +226,123 @@ fn maximising_and_restoring_a_view_refits_its_camera() {
         );
     }
 }
+
+/// The app's cached waterline is the cut of the mesh it is drawing with the
+/// waterplane of the current floating condition, in the same order.
+fn assert_waterline_current(app: &App) {
+    let options = app.hydro_options();
+    let plane = seacraft_core::hydro::waterplane(
+        app.surface().expect("model loaded"),
+        options.draft,
+        options.trim,
+        options.heel_deg,
+    );
+    let mesh = app.render_cache().expect("mesh refined");
+    let cached = app.waterline().expect("waterline cut");
+    assert!(!cached.is_empty(), "the demo hull crosses its waterplane");
+    let fresh = seacraft_gui::render::waterline_segments(mesh, &plane);
+    assert_eq!(cached, fresh.as_slice());
+}
+
+fn shaded_demo() -> (App, egui::Context) {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(2);
+    let ctx = egui::Context::default();
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+    app.recompute_hydrostatics();
+    frame(&ctx, &mut app, Vec::new());
+    (app, ctx)
+}
+
+#[test]
+fn orbiting_or_hovering_does_not_recut_the_waterline() {
+    let (mut app, ctx) = shaded_demo();
+    let cuts = app.waterline_cuts();
+    assert!(cuts >= 1, "the first frames cut the waterline");
+    let over = app.viewport_rect(0).center();
+    for _ in 0..3 {
+        app.cameras_mut()[0].orbit(3.0, 1.0);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(over)]);
+    }
+    assert_eq!(app.waterline_cuts(), cuts);
+}
+
+#[test]
+fn a_new_draft_recuts_the_waterline_on_the_next_frame() {
+    let (mut app, ctx) = shaded_demo();
+    let cuts = app.waterline_cuts();
+    let before = app.waterline().expect("waterline cut").to_vec();
+    app.hydro_options_mut().draft *= 0.8;
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.waterline_cuts(), cuts + 1);
+    assert_ne!(app.waterline().expect("waterline cut"), before.as_slice());
+    assert_waterline_current(&app);
+}
+
+#[test]
+fn a_new_trim_or_heel_recuts_the_waterline() {
+    let (mut app, ctx) = shaded_demo();
+    app.hydro_options_mut().trim = 0.1;
+    frame(&ctx, &mut app, Vec::new());
+    assert_waterline_current(&app);
+    app.hydro_options_mut().heel_deg = 10.0;
+    frame(&ctx, &mut app, Vec::new());
+    assert_waterline_current(&app);
+}
+
+#[test]
+fn a_new_mesh_recuts_the_waterline() {
+    let (mut app, ctx) = shaded_demo();
+    app.set_subdivision_level(1);
+    frame(&ctx, &mut app, Vec::new());
+    assert_waterline_current(&app);
+}
+
+#[test]
+fn dragging_a_point_keeps_the_waterline_on_the_previewed_mesh() {
+    let (mut app, ctx) = shaded_demo();
+    let index = {
+        let surface = app.surface().expect("model loaded");
+        surface
+            .points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .min_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+            .map(|(i, _)| i)
+            .expect("a keel point")
+    };
+    let before = app.surface().unwrap().points[index].p;
+    let rect = app.viewport_rect(1);
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before, rect)
+        .expect("point visible");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dy in [10.0, 20.0, 30.0] {
+        let at = screen + egui::vec2(0.0, dy);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    }
+    assert_ne!(
+        app.surface().unwrap().points[index].p,
+        before,
+        "the point moved"
+    );
+    assert_waterline_current(&app);
+}
+
+#[test]
+fn switching_the_waterplane_off_cuts_nothing_until_it_returns() {
+    let (mut app, ctx) = shaded_demo();
+    app.display_mut().waterplane = false;
+    app.set_subdivision_level(1);
+    let cuts = app.waterline_cuts();
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.waterline_cuts(), cuts);
+    app.display_mut().waterplane = true;
+    frame(&ctx, &mut app, Vec::new());
+    assert_waterline_current(&app);
+}
