@@ -331,7 +331,7 @@ impl ViewTransform {
 
     /// Pixels per metre (orthographic) or the focal length in pixels
     /// (perspective).
-    fn scale(&self, rect: Rect) -> f64 {
+    pub fn scale(&self, rect: Rect) -> f64 {
         let fit = self.fit_px(rect);
         if self.perspective {
             fit / (2.0 * self.fov_tan)
