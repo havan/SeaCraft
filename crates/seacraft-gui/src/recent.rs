@@ -292,6 +292,7 @@ pub fn recent_menu(ui: &mut egui::Ui, entries: &[RecentEntry]) -> RecentAction {
 mod tests {
     use super::*;
 
+    // `/tmp/x` is not absolute on Windows, where it gains the current drive.
     fn abs(name: &str) -> PathBuf {
         normalise(Path::new(name))
     }
@@ -303,16 +304,16 @@ mod tests {
             list.push(Path::new(&format!("/tmp/r{i}.fef")));
         }
         assert_eq!(list.paths().len(), RECENT_CAP);
-        assert_eq!(list.paths()[0], PathBuf::from("/tmp/r9.fef"));
-        assert_eq!(list.paths()[7], PathBuf::from("/tmp/r2.fef"));
+        assert_eq!(list.paths()[0], abs("/tmp/r9.fef"));
+        assert_eq!(list.paths()[7], abs("/tmp/r2.fef"));
         // Opening an older one again moves it to the top, once.
         list.push(Path::new("/tmp/r5.fef"));
-        assert_eq!(list.paths()[0], PathBuf::from("/tmp/r5.fef"));
+        assert_eq!(list.paths()[0], abs("/tmp/r5.fef"));
         assert_eq!(list.paths().len(), RECENT_CAP);
         assert_eq!(
             list.paths()
                 .iter()
-                .filter(|p| p.as_path() == Path::new("/tmp/r5.fef"))
+                .filter(|p| **p == abs("/tmp/r5.fef"))
                 .count(),
             1
         );
@@ -333,10 +334,7 @@ mod tests {
             PathBuf::from("/b/two.fef"),
             PathBuf::from("/a/one.fef"),
         ]);
-        assert_eq!(
-            list.paths(),
-            [PathBuf::from("/a/one.fef"), PathBuf::from("/b/two.fef")]
-        );
+        assert_eq!(list.paths(), [abs("/a/one.fef"), abs("/b/two.fef")]);
         assert_eq!(RecentFiles::from_json(&list.to_json()), list);
         assert!(RecentFiles::from_json("not json").is_empty());
         assert!(RecentFiles::from_json("{\"a\": 1}").is_empty());
