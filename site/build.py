@@ -43,7 +43,7 @@ RESISTANCE_NAMES = {
 
 def run(seacraft, *args, cwd=None):
     """Run seacraft and return stdout, failing the build on any error."""
-    done = subprocess.run([str(seacraft), *map(str, args)], capture_output=True, text=True, cwd=cwd)
+    done = subprocess.run([str(seacraft), *map(str, args)], capture_output=True, encoding="utf-8", cwd=cwd)
     if done.returncode != 0:
         sys.exit(f"seacraft {' '.join(map(str, args))} failed:\n{done.stderr}")
     return done.stdout
@@ -67,7 +67,7 @@ def nums(*values, digits=4):
 
 def read_obj(path):
     verts, tris = [], []
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if line.startswith("v "):
             verts.append(tuple(float(c) for c in line.split()[1:4]))
         elif line.startswith("f "):
@@ -188,7 +188,7 @@ def geometry(obj_path, draft):
     # Outline in profile: the mesh's lowest and highest points at each station.
     top, bottom = [], []
     for k in range(161):
-        x = x0 + length * (k + 0.001) / 161.002
+        x = x0 + length * (k + 0.001) / 160.002
         heights = [p[2] for seg in mesh.cut(0, x) for p in seg]
         if heights:
             top.append((x, max(heights)))
@@ -199,7 +199,7 @@ def geometry(obj_path, draft):
     # Outline in the body plan: the widest point at each height, mirrored.
     widths = []
     for k in range(81):
-        z = z0 + (z1 - z0) * (k + 0.001) / 81.002
+        z = z0 + (z1 - z0) * (k + 0.001) / 80.002
         spans = [abs(p[1]) for seg in mesh.cut(2, z) for p in seg]
         if spans:
             widths.append((z, max(spans)))
@@ -272,14 +272,16 @@ def stability_curves(seacraft, hull_id, hull_dir, kg):
     args = ("stability", f"{hull_id}.fef", "--kg", kg, "--heels", ",".join(map(str, heels)))
     run(seacraft, *args, "--csv", "gz.csv", cwd=hull_dir)
     by_displacement = {}
-    with open(hull_dir / "gz.csv", newline="") as handle:
+    with open(hull_dir / "gz.csv", newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
+            # seacraft writes a dash where the solve found no result: a gap, never a number.
+            gz = None if row["gz_m"] == "—" else float(row["gz_m"])
             by_displacement.setdefault(float(row["displacement_t"]), []).append(
-                [float(row["heel_deg"]), float(row["gz_m"])]
+                [float(row["heel_deg"]), gz]
             )
     (hull_dir / "gz.csv").unlink()
     series = [
-        {"name": f"{sig(d, 4):g} t", "points": [[h, round(g, 4)] for h, g in pts]}
+        {"name": f"{sig(d, 4):g} t", "points": [[h, None if g is None else round(g, 4)] for h, g in pts]}
         for d, pts in sorted(by_displacement.items())
     ]
     return {
@@ -345,11 +347,13 @@ def build_hull(seacraft, hull, description, out):
     shutil.copy(ROOT / "examples" / f"{hull_id}.fef", fef)
     shutil.copy(ROOT / "examples" / f"{hull_id}.seacraft.json", hull_dir)
 
-    project = json.loads((hull_dir / f"{hull_id}.seacraft.json").read_text())
+    project = json.loads((hull_dir / f"{hull_id}.seacraft.json").read_text(encoding="utf-8"))
     info = run(seacraft, "info", fef.name, cwd=hull_dir)
     name = info.splitlines()[0].strip()
     length, beam, draft = parse_info(info)
-    kg = float(project.get("kg") or project.get("report", {}).get("kg") or 0) or round(draft, 2)
+    if project.get("kg") is None:
+        sys.exit(f"{hull_id}.seacraft.json has no kg, and the site will not assume one")
+    kg = float(project["kg"])
 
     with tempfile.TemporaryDirectory() as scratch:
         obj = Path(scratch) / "hull.obj"
@@ -417,7 +421,9 @@ def build_hull(seacraft, hull, description, out):
             "fef": fef.stat().st_size,
         },
     }
-    (hull_dir / "data.json").write_text(json.dumps(data, separators=(",", ":"), ensure_ascii=False))
+    (hull_dir / "data.json").write_text(
+        json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
+    )
     print(f"  {hull_id}: {len(table)} drafts, {(hull_dir / 'data.json').stat().st_size // 1024} KiB data")
 
 
@@ -429,9 +435,12 @@ def main():
 
     seacraft = Path(args.seacraft).resolve()
     out = Path(args.out).resolve()
-    if out.exists():
+    if out.exists() and any(out.iterdir()):
+        # hulls/index.json is written last by this script, so it marks a folder the script made.
+        if not (out / "hulls" / "index.json").is_file():
+            sys.exit(f"refusing to delete {out}: it is not empty and is not a site this script built")
         shutil.rmtree(out)
-    out.mkdir(parents=True)
+    out.mkdir(parents=True, exist_ok=True)
 
     version = run(seacraft, "--version").split()[-1]
     listing = {}
@@ -444,24 +453,25 @@ def main():
         build_hull(seacraft, hull, listing[hull["id"]], out)
 
     commit = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, cwd=ROOT
+        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, encoding="utf-8", cwd=ROOT
     ).stdout.strip()
     manifest = {
         "version": version,
         "commit": commit,
         "hulls": [{"id": h["id"], "label": h["label"]} for h in HULLS],
     }
-    (out / "hulls" / "index.json").write_text(json.dumps(manifest, ensure_ascii=False))
+    (out / "hulls" / "index.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
     for item in SRC.iterdir():
         if item.is_file():
             text = None
             if item.suffix == ".html":
-                text = item.read_text().replace("{{version}}", version).replace("{{commit}}", commit)
+                text = item.read_text(encoding="utf-8")
+                text = text.replace("{{version}}", version).replace("{{commit}}", commit)
             if text is None:
                 shutil.copy(item, out / item.name)
             else:
-                (out / item.name).write_text(text)
+                (out / item.name).write_text(text, encoding="utf-8")
     assets = out / "assets"
     assets.mkdir()
     shutil.copy(ROOT / "docs" / "assets" / "gui.png", assets / "gui.png")

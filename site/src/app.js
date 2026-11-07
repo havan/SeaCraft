@@ -321,7 +321,8 @@ function lineChart(host, spec) {
   const svg = el("svg", { role: "img", "aria-label": spec.alt }, plot);
 
   const xs = spec.series.flatMap((s) => s.points.map((p) => p[0]));
-  const ys = spec.series.flatMap((s) => s.points.map((p) => p[1]));
+  const ys = spec.series.flatMap((s) => s.points.map((p) => p[1])).filter((v) => v !== null);
+  const yText = (v) => (v === null ? "not available" : spec.yFormat(v)); // A failed solve is a gap.
   const xLow = Math.min(...xs);
   const xHigh = Math.max(...xs);
   const yLow = Math.min(0, Math.min(...ys) * 1.15); // Room under the curves for the end labels.
@@ -353,21 +354,32 @@ function lineChart(host, spec) {
     yTitle.textContent = spec.yLabel;
 
     spec.series.forEach((s, i) => {
-      el("path", {
-        class: "curve",
-        stroke: SERIES[i],
-        d: "M" + s.points.map((p) => `${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join("L"),
-      }, svg);
+      // The line breaks at a missing result rather than joining across it.
+      let d = "";
+      let joined = false;
+      for (const p of s.points) {
+        if (p[1] === null) {
+          joined = false;
+          continue;
+        }
+        d += `${joined ? "L" : "M"}${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`;
+        joined = true;
+      }
+      el("path", { class: "curve", stroke: SERIES[i], d }, svg);
       if (s.points.length <= 12) {
         // Few results: mark each one, so the straight joins are not read as computed values.
-        for (const p of s.points) el("circle", { cx: x(p[0]), cy: y(p[1]), r: 4, fill: SERIES[i], class: "dot" }, svg);
+        for (const p of s.points) {
+          if (p[1] !== null) el("circle", { cx: x(p[0]), cy: y(p[1]), r: 4, fill: SERIES[i], class: "dot" }, svg);
+        }
       }
     });
 
     if (spec.series.length > 1) {
       // Name each line where it ends, nudged apart so labels cannot overlap.
       const ends = spec.series
-        .map((s) => ({ name: s.name, y: y(s.points[s.points.length - 1][1]) }))
+        .map((s) => ({ name: s.name, last: s.points.filter((p) => p[1] !== null).pop() }))
+        .filter((end) => end.last)
+        .map((end) => ({ name: end.name, y: y(end.last[1]) }))
         .sort((a, b) => a.y - b.y);
       for (let i = 1; i < ends.length; i++) ends[i].y = Math.max(ends[i].y, ends[i - 1].y + 16);
       for (const end of ends) {
@@ -401,13 +413,17 @@ function lineChart(host, spec) {
       html("div", { textContent: `${spec.xName} ${spec.xFormat(base[index][0])}` }, tip);
       spec.series.forEach((s, i) => {
         const point = s.points[index];
-        dots[i].setAttribute("cx", px);
-        dots[i].setAttribute("cy", y(point[1]));
-        dots[i].setAttribute("visibility", "visible");
+        if (point[1] === null) {
+          dots[i].setAttribute("visibility", "hidden");
+        } else {
+          dots[i].setAttribute("cx", px);
+          dots[i].setAttribute("cy", y(point[1]));
+          dots[i].setAttribute("visibility", "visible");
+        }
         const line = html("div", {}, tip);
         const swatch = html("i", {}, line);
         swatch.style.background = SERIES[i];
-        line.append(`${spec.series.length > 1 ? s.name + ": " : ""}${spec.yFormat(point[1])}`);
+        line.append(`${spec.series.length > 1 ? s.name + ": " : ""}${yText(point[1])}`);
       });
       tip.hidden = false;
       const left = px + 12 + tip.offsetWidth > width ? px - tip.offsetWidth - 12 : px + 12;
@@ -433,7 +449,7 @@ function lineChart(host, spec) {
   spec.series[0].points.forEach((p, i) => {
     const row = html("tr", {}, body);
     html("td", { textContent: spec.xFormat(p[0]) }, row);
-    for (const s of spec.series) html("td", { textContent: spec.yFormat(s.points[i][1]) }, row);
+    for (const s of spec.series) html("td", { textContent: yText(s.points[i][1]) }, row);
   });
 }
 
