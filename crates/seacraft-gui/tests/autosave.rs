@@ -153,8 +153,8 @@ fn test_1_edit_ticks_before_and_after_interval_write_snapshot() {
     assert_eq!(snap.fef, fef::write(app.surface().unwrap()));
     assert_eq!(snap.project, app.project().to_json());
     assert_eq!(
-        snap.original_path.as_deref(),
-        Some(demo_path().as_str()),
+        snap.original_path,
+        snapshot_path(Path::new(&demo_path())),
         "original_path recorded"
     );
 }
@@ -822,7 +822,10 @@ fn snapshot_paths_are_absolute() {
         PathBuf::from(recorded),
         std::env::current_dir().unwrap().join("hull.fef")
     );
-    assert_eq!(snapshot_path(Path::new("/a/b.fef")).unwrap(), "/a/b.fef");
+    // Windows adds the current drive to a path that starts at the root.
+    let rooted = PathBuf::from(snapshot_path(Path::new("/a/b.fef")).unwrap());
+    assert!(rooted.is_absolute());
+    assert!(rooted.ends_with("a/b.fef"));
 }
 
 #[cfg(unix)]
