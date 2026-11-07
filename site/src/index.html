@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>SeaCraft: hull design and naval architecture in Rust</title>
+<meta name="description" content="Free, open-source hull modeller: subdivision surfaces, hydrostatics, stability, resistance, motions and lines plans. Opens and saves FREE!ship .fef files. Results are not validated.">
+<link rel="canonical" href="https://havan.github.io/SeaCraft/">
+<meta property="og:title" content="SeaCraft: hull design and naval architecture in Rust">
+<meta property="og:description" content="Model a hull, then measure it. Free software with a desktop app, a command line and an MCP server.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://havan.github.io/SeaCraft/">
+<meta property="og:image" content="https://havan.github.io/SeaCraft/assets/gui.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/big-shoulders-stencil-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="hero" id="top">
+  <nav class="nav" aria-label="Main">
+    <a class="nav-home" href="#top">SeaCraft</a>
+    <ul>
+      <li><a href="#modeller">Modeller</a></li>
+      <li><a href="#loop">What it measures</a></li>
+      <li><a href="#agents">AI agents</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#checked">How far it’s checked</a></li>
+      <li><a href="https://github.com/havan/SeaCraft">GitHub</a></li>
+    </ul>
+  </nav>
+
+  <div class="hero-text">
+    <h1>SeaCraft</h1>
+    <div class="hero-lede">
+      <p>Model a ship’s hull, then measure it: hydrostatics, stability, resistance, motions and lines plans. Free software in Rust, with a desktop app, a command line and an MCP server. It opens and saves FREE!ship <code>.fef</code> files.</p>
+      <p class="hero-actions">
+        <a class="button" href="#install">Install from source</a>
+        <a class="button button-quiet" href="https://github.com/havan/SeaCraft">View on GitHub</a>
+      </p>
+    </div>
+  </div>
+
+  <div class="stage" id="stage" role="img" aria-label="Profile and body plan of the selected hull, with a waterline you can drag">
+    <svg id="sea" aria-hidden="true"></svg>
+    <noscript><img src="hulls/trawler-22m/lines.svg" alt="Lines plan of the 22 m trawler example" width="1246" height="600"></noscript>
+  </div>
+
+  <div class="instrument">
+    <fieldset class="picker">
+      <legend>Example hull</legend>
+      <div id="picker" class="picker-list"></div>
+    </fieldset>
+
+    <div class="readout">
+      <div class="readout-draft">
+        <label for="draft">Draft</label>
+        <output id="r-draft" for="draft" class="readout-value">–</output>
+        <input id="draft" type="range" min="0" max="35" step="1" value="23">
+      </div>
+      <dl class="readout-list">
+        <div><dt>Displacement</dt><dd id="r-displacement" class="readout-value">–</dd></div>
+        <div><dt>Block coefficient</dt><dd id="r-cb" class="readout-value">–</dd></div>
+        <div><dt>Waterplane area</dt><dd id="r-waterplane" class="readout-value">–</dd></div>
+        <div><dt>Metacentre above keel</dt><dd id="r-km" class="readout-value">–</dd></div>
+        <div><dt>Wetted surface</dt><dd id="r-wetted" class="readout-value">–</dd></div>
+      </dl>
+    </div>
+
+    <p class="provenance"><span id="hull-description"></span> These figures are the output of <code id="cmd-table">seacraft table</code> from SeaCraft {{version}}, run when this page was built. The draft moves in fixed steps, with nothing interpolated in your browser.</p>
+  </div>
+</header>
+
+<aside class="boot-top" aria-label="Results are not validated">
+  <div class="wrap boot-top-inner">
+    <p class="boot-top-title">Results are not validated.</p>
+    <p>Most calculations have not been compared with tank tests, sea trials or approved software, and they can be wrong even when they look right. A <code>PASS</code> against a criterion is arithmetic, not an approval. Have a qualified person check anything you rely on. <a href="#checked">What has been checked</a>, and the <a href="https://github.com/havan/SeaCraft/blob/main/DISCLAIMER.md">full disclaimer</a>.</p>
+  </div>
+</aside>
+
+<main id="main">
+
+<section class="section" id="modeller" aria-labelledby="modeller-title">
+  <div class="wrap">
+    <h2 id="modeller-title">A hull is a control net. Pull one point and the surface follows.</h2>
+    <div class="modeller-intro">
+      <p>SeaCraft models a hull the way FREE!ship does: a coarse net of points refined into a smooth subdivision surface, with creases where a chine or a stem needs a hard edge. There are no NURBS patches to keep in step.</p>
+      <p>You work in four linked views: perspective, profile, plan and body plan. Hydrostatics update when you let go of a point, and undo goes back 64 steps. Autosave can bring your work back after a crash.</p>
+    </div>
+  </div>
+  <figure class="screenshot">
+    <img src="assets/gui.png" width="1600" height="1000" loading="lazy" alt="The SeaCraft desktop modeller: four linked viewports showing a 10 m yacht, with layers on the left and hydrostatics on the right.">
+    <figcaption class="wrap">The desktop app with the 10 m yacht example open.</figcaption>
+  </figure>
+</section>
+
+<section class="section section-loop" id="loop" aria-labelledby="loop-title">
+  <div class="wrap">
+    <div class="loop-head">
+      <h2 id="loop-title">From lines to numbers, for the <span id="loop-hull">selected hull</span></h2>
+      <p>The steps below follow one hull through the program. Every number comes from SeaCraft, and the commands get you the same numbers. Choosing another hull at the top of the page changes all of them.</p>
+    </div>
+
+    <ol class="steps">
+      <li class="step">
+        <div class="step-text">
+          <h3>Cut the lines</h3>
+          <p>Stations, buttocks and waterlines are cut from the refined surface and exported as SVG, DXF or IGES. Curvature combs show you where a line is unfair.</p>
+          <pre><code id="cmd-lines"></code></pre>
+        </div>
+        <figure class="step-figure">
+          <svg id="lines-figure" class="lines-figure" role="img" aria-label="Lines plan of the selected hull: profile with buttocks, plan with waterlines, and body plan with stations"></svg>
+          <figcaption>
+            <span class="key"><i class="key-mark key-buttock"></i>Buttocks</span>
+            <span class="key"><i class="key-mark key-waterline"></i>Waterlines</span>
+            <span class="key"><i class="key-mark key-station"></i>Stations</span>
+            <span>Cut for this page from the mesh SeaCraft exports.</span>
+          </figcaption>
+        </figure>
+      </li>
+
+      <li class="step">
+        <div class="step-text">
+          <h3>Measure the hydrostatics</h3>
+          <p>Volume, displacement, centres, coefficients and metacentres are integrated over the panels of the refined mesh, at any draft, trim and heel. The curve shows how the underwater volume is spread along the length.</p>
+          <pre><code id="cmd-hydro"></code></pre>
+        </div>
+        <figure class="step-figure" id="chart-sac"></figure>
+      </li>
+
+      <li class="step">
+        <div class="step-text">
+          <h3>Check the stability</h3>
+          <p>Cross curves and righting levers past 90° of heel, with free trim. Add loading conditions with tanks and free-surface correction, lost-buoyancy damage cases, and the IMO intact and weather criteria as arithmetic on these numbers.</p>
+          <pre><code id="cmd-stability"></code></pre>
+        </div>
+        <figure class="step-figure" id="chart-gz"></figure>
+      </li>
+
+      <li class="step">
+        <div class="step-text">
+          <h3>Estimate the resistance</h3>
+          <p>Holtrop and Mennen for displacement ships, Michell thin-ship theory, the Delft series for yachts and Savitsky for planing hulls. An optimiser can then adjust Cp, LCB and L/B for a target speed.</p>
+          <pre><code id="cmd-resistance"></code></pre>
+        </div>
+        <figure class="step-figure" id="chart-resistance"></figure>
+      </li>
+
+      <li class="step">
+        <div class="step-text">
+          <h3>Predict the motions</h3>
+          <p>Strip-theory heave and pitch in regular head waves, then irregular seas, significant motions and motion sickness incidence.</p>
+          <pre id="cmd-motions-wrap"><code id="cmd-motions"></code></pre>
+        </div>
+        <figure class="step-figure" id="chart-motions"></figure>
+      </li>
+
+      <li class="step step-last">
+        <div class="step-text">
+          <h3>Hand it on</h3>
+          <p>A self-contained HTML report collects the measurements. Meshes and curves go out as OBJ, STL, 3MF, PLY, IGES and DXF for CAD and 3D printing, and developable plates unfold to SVG.</p>
+          <pre><code id="cmd-report"></code></pre>
+        </div>
+        <div class="step-figure handoff">
+          <p>Open what SeaCraft wrote for <span id="files-hull">this hull</span>:</p>
+          <ul class="files">
+            <li><a id="file-report" href="#"><b>Design report</b><span id="size-report"></span></a></li>
+            <li><a id="file-viewer" href="#"><b>3D viewer</b><span id="size-viewer"></span></a></li>
+            <li><a id="file-lines" href="#"><b>Lines plan, SVG</b><span id="size-lines"></span></a></li>
+            <li><a id="file-fef" href="#" download><b>Hull file, .fef</b><span id="size-fef"></span></a></li>
+          </ul>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section class="section section-agents" id="agents" aria-labelledby="agents-title">
+  <div class="wrap agents">
+    <div>
+      <h2 id="agents-title">Let an AI agent work on the hull</h2>
+      <p><code>seacraft mcp</code> is a Model Context Protocol server. An agent can load a hull, move control points, measure, render a picture and save, using the same code the desktop app runs.</p>
+      <p>Point it at a running modeller and you watch the edits happen. That connection stays on your own machine and needs a token by default, and you can limit which folders it reads and writes.</p>
+      <p>The repository includes <a href="https://github.com/havan/SeaCraft/blob/main/skills/README.md">skills</a> that teach an agent to reach design targets, fair a hull and report stability. They tell it to re-measure after each change, and to look at a render instead of guessing from coordinates.</p>
+    </div>
+    <div>
+      <p class="code-label">Work on a file, with edits held until the agent saves:</p>
+      <pre><code>claude mcp add seacraft -- seacraft mcp --open hull.fef</code></pre>
+      <p class="code-label">Or drive a modeller you can see:</p>
+      <pre><code>seacraft-gui --control 127.0.0.1:7878 --open hull.fef
+claude mcp add seacraft -- seacraft mcp --connect 127.0.0.1:7878</code></pre>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="install" aria-labelledby="install-title">
+  <div class="wrap install">
+    <div>
+      <h2 id="install-title">Build it from source</h2>
+      <p>There are no prebuilt binaries yet. You need <a href="https://rustup.rs">rustup</a>, which installs the pinned Rust version for you. On Linux the desktop app also needs the usual windowing libraries.</p>
+      <p>The current version is {{version}}. Anything may change while it is <code>0.x</code>.</p>
+    </div>
+    <div>
+      <p class="code-label">Open the app with an example hull:</p>
+      <pre><code>git clone https://github.com/havan/SeaCraft
+cd SeaCraft
+cargo run --release -p seacraft-gui -- --open examples/trawler-22m.fef</code></pre>
+      <p class="code-label">Or measure from the command line:</p>
+      <pre><code>cargo run --release --bin seacraft -- hydro examples/trawler-22m.fef --kg 2.5</code></pre>
+      <details class="linux-libs">
+        <summary>Linux libraries (Ubuntu)</summary>
+        <pre><code>sudo apt-get install libxkbcommon-dev libwayland-dev libegl1-mesa-dev \
+  libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev</code></pre>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="section section-checked" id="checked" aria-labelledby="checked-title">
+  <div class="wrap checked">
+    <h2 id="checked-title">How far the numbers have been checked</h2>
+    <div class="checked-columns">
+      <div>
+        <h3>Compared with</h3>
+        <ul>
+          <li>Closed-form cases, such as box barges.</li>
+          <li>Separate scripts written for this project. Many of their reference numbers are not published values.</li>
+          <li>SeaCraft’s own earlier output. The demo hull’s numbers only catch unintended changes, and say nothing about whether they are right.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Not systematically compared with</h3>
+        <ul>
+          <li>Tank tests.</li>
+          <li>Sea trials or other full-scale measurements.</li>
+          <li>Approved naval-architecture software.</li>
+        </ul>
+      </div>
+      <div class="checked-ask">
+        <h3>You can help</h3>
+        <p>Comparing a result with published data is the most useful contribution anyone can make. Start with the <a href="https://github.com/havan/SeaCraft/blob/main/docs/oracles.md">source of each reference number</a>, then pick a task from the <a href="https://github.com/havan/SeaCraft/blob/main/ROADMAP.md">roadmap</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <p class="footer-name">SeaCraft {{version}}</p>
+      <p>Licensed under <a href="https://github.com/havan/SeaCraft/blob/main/LICENSE">GPL-3.0-or-later</a>, with no warranty. See the <a href="https://github.com/havan/SeaCraft/blob/main/DISCLAIMER.md">disclaimer</a>. Page built from commit <a href="https://github.com/havan/SeaCraft/commit/{{commit}}"><code>{{commit}}</code></a>.</p>
+    </div>
+    <div>
+      <p>An independent Rust reimplementation of <a href="https://sourceforge.net/projects/freeship/">FREE!ship</a>, written from its documented behaviour and GPL source. Not affiliated with or endorsed by the FREE!ship projects. <a href="https://github.com/havan/SeaCraft/blob/main/ATTRIBUTION.md">Attribution</a>.</p>
+    </div>
+    <ul class="footer-links">
+      <li><a href="https://github.com/havan/SeaCraft#readme">README</a></li>
+      <li><a href="https://github.com/havan/SeaCraft/blob/main/docs/architecture.md">Architecture</a></li>
+      <li><a href="https://github.com/havan/SeaCraft/blob/main/ROADMAP.md">Roadmap</a></li>
+      <li><a href="https://github.com/havan/SeaCraft/blob/main/CHANGELOG.md">Changelog</a></li>
+      <li><a href="https://github.com/havan/SeaCraft/blob/main/CONTRIBUTING.md">Contributing</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

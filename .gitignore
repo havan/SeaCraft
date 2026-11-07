@@ -1,4 +1,5 @@
 /target
+/site/_site/
 **/*.swp
 **/*.rs.bk
 /*.png
