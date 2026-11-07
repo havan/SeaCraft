@@ -706,6 +706,48 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readou
     }
 }
 
+/// The About window: the legal notices GPLv3 section 5(d) asks an interactive program to show,
+/// the disclaimer, where the source is, and the licence texts of what is embedded.
+pub fn about(ui: &mut egui::Ui) {
+    ui.heading(format!("SeaCraft {}", seacraft_core::VERSION));
+    ui.label("Copyright (c) 2026 SeaCraft contributors.");
+    ui.label(
+        "SeaCraft comes with ABSOLUTELY NO WARRANTY. It is free software: you may redistribute it \
+         under the terms of the GNU General Public License, version 3 or any later version.",
+    );
+    ui.colored_label(
+        theme::WARN,
+        "Results are not validated and may be wrong. Do not rely on them for design or safety \
+         decisions without independent checks by a qualified person.",
+    );
+    ui.hyperlink_to(
+        "Source code of this version",
+        format!(
+            "{}/tree/v{}",
+            env!("CARGO_PKG_REPOSITORY"),
+            seacraft_core::VERSION
+        ),
+    );
+    ui.separator();
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for (title, text) in [
+            ("Notices", include_str!("../../../NOTICE")),
+            (
+                "GNU General Public License",
+                include_str!("../../../LICENSE"),
+            ),
+            (
+                "Font licence (DejaVu)",
+                include_str!("../assets/fonts/LICENSE-DejaVu.txt"),
+            ),
+        ] {
+            egui::CollapsingHeader::new(title).show(ui, |ui| {
+                ui.label(egui::RichText::new(text).small());
+            });
+        }
+    });
+}
+
 /// The Analysis dock's pinned strip: the live floating condition in two
 /// compact rows, greyed while the hydrostatics are being recomputed, and
 /// the *↔ wide* toggle. Returns true when the toggle was clicked.

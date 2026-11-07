@@ -39,4 +39,5 @@ Fonts: Copyright (c) 2006 by Tavmjong Bah. All Rights Reserved. DejaVu changes a
 domain. The licence is in crates/seacraft-gui/assets/fonts/LICENSE-DejaVu.txt.
 
 Dependencies
-Dependency licences are in THIRD-PARTY-LICENSES.txt.
+Dependency licences are in THIRD-PARTY-LICENSES.txt: a list in this repository, and the full texts
+in a release package.

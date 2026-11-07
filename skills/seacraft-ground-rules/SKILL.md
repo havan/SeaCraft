@@ -14,6 +14,7 @@ cannot go the other way into permissive projects, so do not offer it to them unl
   Do not call anything here "clean-room": SeaCraft was written with FREE!ship's source available.
 - A new dependency needs a GPLv3-compatible licence. `cargo deny check licenses` and `deny.toml` enforce it.
   After changing dependencies, run `cargo xtask licences`; never edit `THIRD-PARTY-LICENSES.txt` by hand.
+  `cargo xtask dist` writes the full texts into a package, and fails if a crate has none.
 
 ## Ported code
 

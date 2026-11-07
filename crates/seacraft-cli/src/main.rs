@@ -27,7 +27,9 @@ use std::path::{Path, PathBuf};
     long_about = "SeaCraft is a Rust reimplementation of the FREE!ship hull modeller.\n\
                   It reads and writes FREE!ship .fef exchange files, refines the control\n\
                   net with the same Loop/Catmull-Clark scheme and reports hydrostatics\n\
-                  and stability the way the original application does."
+                  and stability the way the original application does.",
+    after_help = "SeaCraft comes with ABSOLUTELY NO WARRANTY, and its results are not validated.\n\
+                  It is free software under GPL-3.0-or-later; see LICENSE and DISCLAIMER.md."
 )]
 struct Cli {
     #[command(subcommand)]

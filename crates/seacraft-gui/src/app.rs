@@ -856,6 +856,8 @@ pub struct App {
     /// undo back to that state clears `dirty`. `None` for a model never saved.
     saved_state: Option<(String, Project)>,
     dialog: Option<FileDialogState>,
+    /// The About window (Help menu) is showing.
+    about_open: bool,
     pending: Option<PendingAction>,
     /// A quit that has been confirmed (the window closes at the end of the frame).
     close_requested: bool,
@@ -1077,6 +1079,7 @@ impl App {
             dirty: false,
             saved_state: None,
             dialog: None,
+            about_open: false,
             pending: None,
             close_requested: false,
             keyboard_taken: false,
@@ -1696,6 +1699,13 @@ impl App {
         crate::theme::ensure(ui);
         self.shortcuts(ui);
         self.menu(ui);
+        egui::Window::new("About SeaCraft")
+            .open(&mut self.about_open)
+            .collapsible(false)
+            .default_width(520.0)
+            .default_height(480.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), panels::about);
         self.toolbar(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -2247,6 +2257,10 @@ impl App {
                 ui.menu_button("Help", |ui| {
                     ui.label(format!("SeaCraft {}", seacraft_core::VERSION));
                     ui.label("A Rust reimplementation of FREE!ship.");
+                    if ui.button("About SeaCraft…").clicked() {
+                        self.about_open = true;
+                        ui.close();
+                    }
                 });
             });
         });

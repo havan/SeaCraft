@@ -19,7 +19,9 @@ fn usage() {
          --control-read-root DIR Restrict file reading to DIR (repeatable)\n  \
          --control-write-root DIR Restrict file writing to DIR (repeatable)\n  \
          --version               Print the version and exit\n  \
-         --help                  Print this help and exit",
+         --help                  Print this help and exit\n\n\
+         SeaCraft comes with ABSOLUTELY NO WARRANTY, and its results are not validated.\n\
+         It is free software under GPL-3.0-or-later; see LICENSE and DISCLAIMER.md.",
         seacraft_core::VERSION
     );
 }

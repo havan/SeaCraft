@@ -1,6 +1,7 @@
 //! `cargo xtask ci`: the local gate (fmt, clippy, tests with debug checks, versions, demo
 //! reference numbers, licences, colour literals, private files, skills).
 //! `cargo xtask private`, `skills`, `colours` and `licences [--check]` run one check.
+//! `cargo xtask dist --target TRIPLE` builds the folder a release archive is made from.
 
 mod gates;
 
@@ -74,8 +75,8 @@ const DEMO_REFERENCE_TABLE: &[DemoReferenceMetric] = &[
 ];
 
 const USAGE: &str =
-    "Usage: cargo xtask ci [--skip-tests] [--full] | private | skills | colours | licences [--check]";
-const COMMANDS: &[&str] = &["ci", "private", "skills", "colours", "licences"];
+    "Usage: cargo xtask ci [--skip-tests] [--full] | private | skills | colours | licences [--check] | dist --target TRIPLE";
+const COMMANDS: &[&str] = &["ci", "private", "skills", "colours", "licences", "dist"];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -96,6 +97,14 @@ fn main() {
         "licences" => {
             let check = args.iter().any(|a| a == "--check");
             step_licences(&workspace_root(), check);
+        }
+        "dist" => {
+            let target = args
+                .iter()
+                .position(|a| a == "--target")
+                .and_then(|i| args.get(i + 1))
+                .unwrap_or_else(|| fail("dist", USAGE));
+            step_dist(&workspace_root(), target);
         }
         "--help" | "-h" => {
             println!("{USAGE}");
@@ -592,4 +601,196 @@ fn step_licences(root: &Path, check: bool) {
             .unwrap_or_else(|e| fail("licences", &format!("cannot write {path:?}: {e}")));
         println!("[ci] licences: wrote {} dependencies", deps.len());
     }
+}
+
+/// The crates compiled into the two programs on `target`, with their licence files.
+fn shipped_crates(root: &Path, target: &str) -> Vec<gates::ShippedCrate> {
+    let tree = Command::new("cargo")
+        .args(["tree", "--locked", "-e", "normal", "--prefix", "none"])
+        .args([
+            "-p",
+            "seacraft-gui",
+            "-p",
+            "seacraft-cli",
+            "--target",
+            target,
+        ])
+        .args(["--format", "{p}"])
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|e| fail("dist", &format!("cannot run cargo tree: {e}")));
+    if !tree.status.success() {
+        fail("dist", &String::from_utf8_lossy(&tree.stderr));
+    }
+    let wanted: std::collections::BTreeSet<(String, String)> =
+        String::from_utf8_lossy(&tree.stdout)
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let name = words.next()?;
+                let version = words.next()?.strip_prefix('v')?;
+                Some((name.to_owned(), version.to_owned()))
+            })
+            .collect();
+
+    let meta = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--locked"])
+        .current_dir(root)
+        .output()
+        .unwrap_or_else(|e| fail("dist", &format!("cannot run cargo metadata: {e}")));
+    if !meta.status.success() {
+        fail("dist", &String::from_utf8_lossy(&meta.stderr));
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&meta.stdout)
+        .unwrap_or_else(|e| fail("dist", &format!("bad cargo metadata: {e}")));
+    let members = meta["workspace_members"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let field = |p: &serde_json::Value, k: &str| p[k].as_str().unwrap_or("not stated").to_string();
+    meta["packages"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| !members.contains(&p["id"]))
+        .filter(|p| wanted.contains(&(field(p, "name"), field(p, "version"))))
+        .map(|p| {
+            let manifest = PathBuf::from(field(p, "manifest_path"));
+            let dir = manifest
+                .parent()
+                .unwrap_or_else(|| fail("dist", "a manifest path has no parent"));
+            gates::ShippedCrate {
+                dep: gates::Dep {
+                    name: field(p, "name"),
+                    version: field(p, "version"),
+                    license: field(p, "license"),
+                    repository: field(p, "repository"),
+                },
+                authors: p["authors"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|a| a.as_str().map(str::to_owned))
+                    .collect(),
+                files: licence_files(dir),
+            }
+        })
+        .collect()
+}
+
+/// The licence files at the top of a crate and in a `LICENSES` style folder, in a stable order.
+fn licence_files(dir: &Path) -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !gates::is_licence_file(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            for inner in fs::read_dir(&path).into_iter().flatten().flatten() {
+                if let Ok(bytes) = fs::read(inner.path()) {
+                    let file = format!("{name}/{}", inner.file_name().to_string_lossy());
+                    files.push((file, String::from_utf8_lossy(&bytes).into_owned()));
+                }
+            }
+        } else if let Ok(bytes) = fs::read(&path) {
+            files.push((name, String::from_utf8_lossy(&bytes).into_owned()));
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Standard licence texts, for crates that declare a licence but publish no file for it.
+fn standard_licence_texts(root: &Path) -> Vec<(&'static str, String)> {
+    let read = |name: &str| {
+        fs::read_to_string(root.join("LICENSES").join(name))
+            .unwrap_or_else(|e| fail("dist", &format!("cannot read LICENSES/{name}: {e}")))
+    };
+    // LICENSES/MIT.txt names the projects SeaCraft adapts code from; those lines are not the
+    // copyright of a dependency, whose authors are listed with it instead.
+    let mit: String = read("MIT.txt")
+        .lines()
+        .filter(|line| !line.starts_with("Copyright"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    vec![
+        ("MIT", mit),
+        ("Apache-2.0", read("Apache-2.0.txt")),
+        ("BSL-1.0", read("BSL-1.0.txt")),
+    ]
+}
+
+/// Build the two programs for `target` and collect what a release archive holds.
+fn step_dist(root: &Path, target: &str) {
+    let version = env!("CARGO_PKG_VERSION");
+    let status = Command::new("cargo")
+        .args(["build", "--locked", "--profile", "dist", "--target", target])
+        .args(["-p", "seacraft-gui", "-p", "seacraft-cli"])
+        .current_dir(root)
+        .status()
+        .unwrap_or_else(|e| fail("dist", &format!("cannot run cargo build: {e}")));
+    if !status.success() {
+        fail("dist", "the build failed");
+    }
+
+    let folder = format!("seacraft-{version}-{target}");
+    let stage = root.join("target").join("seacraft-dist").join(&folder);
+    let copy = |from: PathBuf, to: PathBuf| {
+        fs::copy(&from, &to).unwrap_or_else(|e| fail("dist", &format!("copy {from:?}: {e}")));
+    };
+    let copy_folder = |from: &str, to: &Path| {
+        fs::create_dir_all(to).unwrap_or_else(|e| fail("dist", &format!("create {to:?}: {e}")));
+        let entries = fs::read_dir(root.join(from))
+            .unwrap_or_else(|e| fail("dist", &format!("read {from}: {e}")));
+        for entry in entries.flatten() {
+            copy(entry.path(), to.join(entry.file_name()));
+        }
+    };
+    if stage.exists() {
+        fs::remove_dir_all(&stage)
+            .unwrap_or_else(|e| fail("dist", &format!("clear {stage:?}: {e}")));
+    }
+    fs::create_dir_all(&stage).unwrap_or_else(|e| fail("dist", &format!("create {stage:?}: {e}")));
+
+    let exe = if target.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    };
+    let built = root.join("target").join(target).join("dist");
+    for program in ["seacraft-gui", "seacraft"] {
+        let file = format!("{program}{exe}");
+        copy(built.join(&file), stage.join(&file));
+    }
+    for file in ["LICENSE", "NOTICE", "ATTRIBUTION.md", "DISCLAIMER.md"] {
+        copy(root.join(file), stage.join(file));
+    }
+    copy(root.join("packaging/README.txt"), stage.join("README.txt"));
+    copy_folder("LICENSES", &stage.join("LICENSES"));
+    copy(
+        root.join("crates/seacraft-gui/assets/fonts/LICENSE-DejaVu.txt"),
+        stage.join("LICENSES/DejaVu.txt"),
+    );
+    copy_folder("examples", &stage.join("examples"));
+
+    let crates = shipped_crates(root, target);
+    let heading = format!("Third-party licences of SeaCraft {version} for {target}.");
+    let text = gates::licence_texts_render(&heading, &crates, &standard_licence_texts(root))
+        .unwrap_or_else(|e| fail("dist", &e));
+    fs::write(stage.join("THIRD-PARTY-LICENSES.txt"), &text)
+        .unwrap_or_else(|e| fail("dist", &format!("cannot write the licences: {e}")));
+
+    println!(
+        "[ci] dist: {} ({} crates, {} KiB of licence text)",
+        stage.display(),
+        crates.len(),
+        text.len() / 1024
+    );
 }

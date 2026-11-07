@@ -9,6 +9,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - GUI: text is now set in DejaVu Sans and DejaVu Sans Mono, which replace egui's default fonts. Body and
   button text go from 12.5 to 12 pt to keep the same apparent size. The remove, layer visibility and
   wide dock buttons now use symbols those fonts contain, so they draw on every machine.
+- GUI: Help > About SeaCraft shows the copyright, the warranty and licence notice, that results are not
+  validated, a link to the source, and the licence texts. `--help` on both programs carries the notice too.
+- `cargo xtask dist --target TRIPLE` builds the folder a release archive is made from, with the full
+  licence text of every crate compiled in.
 
 ## 0.2.1 (2026-11-07)
 
