@@ -36,26 +36,8 @@ fn random_32_bytes() -> Result<[u8; 32]> {
 
 #[cfg(not(unix))]
 fn random_32_bytes() -> Result<[u8; 32]> {
-    // Best-effort non-unix entropy fallback using standard library only.
-    // Combines high-resolution timestamps, process ID, thread ID, and memory addresses
-    // mixed with a splitmix64 permutation.
-    use std::time::{SystemTime, UNIX_EPOCH};
     let mut buf = [0u8; 32];
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id() as u128;
-    let stack_addr = &buf as *const _ as usize as u128;
-    let mut state = now ^ (pid << 32) ^ (stack_addr << 64);
-    for chunk in buf.chunks_exact_mut(8) {
-        state = state.wrapping_add(0x9E3779B97F4A7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-        z ^= z >> 31;
-        chunk.copy_from_slice(&(z as u64).to_le_bytes());
-    }
+    getrandom::fill(&mut buf).map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(buf)
 }
 

@@ -13,4 +13,8 @@ description = "Hull modelling kernel, hydrostatics and stability for SeaCraft"
 serde.workspace = true
 serde_json.workspace = true
 
+# The control token's randomness, which Unix reads from /dev/urandom.
+[target.'cfg(not(unix))'.dependencies]
+getrandom = "0.4"
+
 [dev-dependencies]
