@@ -99,19 +99,13 @@ fn viewport_fits(info: &egui::PaintCallbackInfo, size: [u32; 2]) -> bool {
     viewport.width_px as u32 == size[0] && viewport.height_px as u32 == size[1]
 }
 
-/// [`GpuHullResources::new`], with what it raises on the device caught rather than sent to wgpu's
-/// default handler, which panics.
+/// [`GpuHullResources::new`], with the out-of-memory, validation and internal errors it raises on the
+/// device returned rather than sent to wgpu's default handler, which panics. Other kinds, such as a
+/// lost device, are not caught here.
 pub fn create_resources(state: &egui_wgpu::RenderState) -> Result<GpuHullResources, String> {
-    let device = &state.device;
-    let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let resources = GpuHullResources::new(device, &state.adapter, state.target_format);
-    let invalid = pollster::block_on(validation.pop());
-    let no_memory = pollster::block_on(out_of_memory.pop());
-    match no_memory.or(invalid) {
-        Some(error) => Err(error.to_string()),
-        None => Ok(resources),
-    }
+    pipeline::scoped(&state.device, || {
+        GpuHullResources::new(&state.device, &state.adapter, state.target_format)
+    })
 }
 
 #[cfg(test)]

@@ -528,6 +528,68 @@ fn a_callback_viewport_has_the_size_of_its_texture_at_any_window_size() {
     assert!(seen > 100, "only {seen} callbacks were checked");
 }
 
+fn report_failure(app: &mut App, message: &str) {
+    let key = app.gpu_hull_geometry().expect("a geometry").key;
+    app.report_gpu_hull_failure(key, message.to_owned());
+}
+
+fn assert_painted_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let out = frame_with(ctx, app, events);
+    assert_eq!(callbacks(&out), 0);
+    assert_painted_hull(&out);
+}
+
+#[test]
+fn a_failure_keeps_the_painted_path_through_a_drag() {
+    let (mut app, ctx) = routed();
+    let warnings = app.messages().count(Level::Warning);
+    report_failure(&mut app, "out of memory");
+    assert_painted_frame(&mut app, &ctx, Vec::new());
+
+    // Every drag frame is a new mesh, and none of them tries the GPU.
+    let at = start_drag(&mut app, &ctx);
+    for dx in [4.0, 8.0, 12.0] {
+        let before = app.gpu_hull_geometry().expect("a geometry").key;
+        let moved = at + vec2(dx, 0.0);
+        assert_painted_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(moved)]);
+        assert_ne!(app.gpu_hull_geometry().unwrap().key, before, "a new mesh");
+    }
+
+    // The mesh after the release tries again.
+    frame_with(&ctx, &mut app, vec![button(at + vec2(12.0, 0.0), false)]);
+    let out = frame(&ctx, &mut app);
+    assert_eq!(callbacks(&out), 4);
+    assert_eq!(app.messages().count(Level::Warning), warnings + 1);
+}
+
+#[test]
+fn each_failure_message_is_logged_once_a_session() {
+    let (mut app, ctx) = routed();
+    let warnings = app.messages().count(Level::Warning);
+    report_failure(&mut app, "out of memory");
+    for level in [1, 2, 1] {
+        app.set_subdivision_level(level);
+        frame(&ctx, &mut app);
+        report_failure(&mut app, "out of memory");
+        assert_painted_frame(&mut app, &ctx, Vec::new());
+    }
+    assert_eq!(app.messages().count(Level::Warning), warnings + 1);
+    report_failure(&mut app, "device lost");
+    assert_eq!(app.messages().count(Level::Warning), warnings + 2);
+}
+
+#[test]
+fn a_wireframe_toggle_keeps_a_failed_mesh_painted() {
+    let (mut app, ctx) = routed();
+    report_failure(&mut app, "out of memory");
+    for wireframe in [true, false, true] {
+        app.display_mut().wireframe = wireframe;
+        assert_painted_frame(&mut app, &ctx, Vec::new());
+    }
+    app.set_subdivision_level(1);
+    assert_eq!(callbacks(&frame(&ctx, &mut app)), 4);
+}
+
 #[test]
 fn a_failed_mesh_falls_back_and_logs_once() {
     let (mut app, ctx) = routed();
@@ -796,7 +858,7 @@ fn the_renderer_draws_every_view_through_the_callback() {
 
 #[test]
 #[ignore = "needs an adapter"]
-fn a_view_the_device_refuses_falls_back_and_logs_once() {
+fn a_cell_past_the_texture_limit_takes_the_painted_path() {
     let Some(gpu) = gpu() else { return };
     let state = render_state(gpu);
     let mut app = App::headless_for_test(Some(&demo_path()));
@@ -804,38 +866,50 @@ fn a_view_the_device_refuses_falls_back_and_logs_once() {
     app.enable_gpu_hull(&state);
     let ctx = egui::Context::default();
 
-    // Cells wider than the default limit's 8192 pixels: a real refusal, on the path a real one takes.
+    // Cells wider than the default limit's 8192 pixels: the device would refuse their texture.
     let huge = vec2(20000.0, 1000.0);
-    render_frame(&state, &ctx, &mut app, huge, None);
-    assert!(app.viewport_rect(0).width() > 8192.0);
-    {
-        let renderer = state.renderer.read();
-        let resources = renderer.callback_resources.get::<GpuHullResources>();
-        let resources = resources.expect("the resources");
-        assert!(
-            resources.resolved_texture(0).is_none(),
-            "nothing is current"
-        );
-    }
-    let warnings = app.messages().count(Level::Warning);
-    assert_eq!(warnings, 0, "not reported until the next frame");
-
     for _ in 0..3 {
         let out = frame_sized(&ctx, &mut app, huge, Vec::new());
+        assert!(app.viewport_rect(0).width() > 8192.0);
         assert_eq!(callbacks(&out), 0);
         assert_painted_hull(&out);
     }
-    assert_eq!(app.messages().count(Level::Warning), 1);
+    assert_eq!(app.messages().count(Level::Warning), 0, "nothing failed");
 
-    // A new mesh at a size the device takes routes again, and draws.
-    app.set_subdivision_level(1);
+    // Back to a size the device takes, the same mesh routes and draws. A new context, as the renderer
+    // has not seen the fonts the first one uploaded.
+    let ctx = egui::Context::default();
     render_frame(&state, &ctx, &mut app, SCREEN, None);
     render_frame(&state, &ctx, &mut app, SCREEN, None);
     let renderer = state.renderer.read();
     let resources = renderer.callback_resources.get::<GpuHullResources>();
-    assert!(resources
-        .expect("the resources")
-        .resolved_texture(0)
-        .is_some());
-    assert_eq!(app.messages().count(Level::Warning), 1);
+    let resources = resources.expect("the resources");
+    assert!(resources.resolved_texture(0).is_some());
+    assert_eq!(app.messages().count(Level::Warning), 0);
+}
+
+#[test]
+#[ignore = "needs an adapter"]
+fn a_pipeline_the_device_refuses_leaves_the_app_on_the_painted_path() {
+    let Some(gpu) = gpu() else { return };
+    // The composite pipeline cannot write a depth format: a real device error at creation, which
+    // wgpu's default handler would turn into a panic at startup.
+    let mut state = render_state(gpu);
+    state.target_format = wgpu::TextureFormat::Depth32Float;
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(1);
+    let warnings = app.messages().count(Level::Warning);
+    app.enable_gpu_hull(&state);
+    assert!(!app.gpu_hull_routing(), "routing stays off");
+    assert_eq!(app.messages().count(Level::Warning), warnings + 1);
+    let renderer = state.renderer.read();
+    assert!(renderer
+        .callback_resources
+        .get::<GpuHullResources>()
+        .is_none());
+    drop(renderer);
+    let ctx = egui::Context::default();
+    let out = frame(&ctx, &mut app);
+    assert_eq!(callbacks(&out), 0);
+    assert_painted_hull(&out);
 }

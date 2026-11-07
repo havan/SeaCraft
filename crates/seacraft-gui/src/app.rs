@@ -260,15 +260,36 @@ fn compute_cross_curves_for(i: CurvesInputs) -> CurvesOut {
 }
 
 /// The app's side of the GPU hull; the wgpu resources live in egui's renderer.
-#[derive(Default)]
 struct GpuHullState {
     /// Whether views may emit a [`HullCallback`].
     routing: bool,
+    /// The widest texture side the device takes; a larger cell takes the painted path.
+    max_texture: u32,
     /// What every view's callback draws this frame.
     geometry: Option<Arc<HullGeometry>>,
-    /// The geometry key the GPU failed on, which the old path then draws.
-    failed: Option<u64>,
+    /// The mesh `geometry` was built from, whatever its wireframe setting
+    /// ([`render::geometry_key`] without edges).
+    mesh_key: u64,
+    /// The mesh the GPU last failed on. While it stands the painted path draws that mesh, and every
+    /// mesh during a drag; a new mesh outside a drag tries the GPU again.
+    failed_mesh: Option<u64>,
+    /// The failure messages logged this session, each once.
+    logged: std::collections::HashSet<String>,
     failure: gpu_hull::FailureSlot,
+}
+
+impl Default for GpuHullState {
+    fn default() -> Self {
+        Self {
+            routing: false,
+            max_texture: u32::MAX,
+            geometry: None,
+            mesh_key: 0,
+            failed_mesh: None,
+            logged: Default::default(),
+            failure: Default::default(),
+        }
+    }
 }
 
 /// How one view draws its hull this frame.
@@ -5153,6 +5174,7 @@ impl App {
         match gpu_hull::create_resources(state) {
             Ok(resources) => {
                 state.renderer.write().callback_resources.insert(resources);
+                self.gpu_hull.max_texture = state.device.limits().max_texture_dimension_2d;
                 self.gpu_hull.routing = true;
             }
             Err(message) => self.log(
@@ -5182,11 +5204,17 @@ impl App {
         self.gpu_hull.geometry.as_ref()
     }
 
-    /// The GPU could not draw the mesh with this key: log it once, and draw that mesh the old way.
-    /// A new mesh tries the GPU again.
+    /// The GPU could not draw the geometry with this key. That mesh, with or without its edges, and
+    /// any mesh during a drag, take the old path; a new mesh outside a drag tries the GPU again. Each
+    /// message is logged once a session, so a GPU that keeps failing does not flood the log.
     pub fn report_gpu_hull_failure(&mut self, key: u64, message: String) {
-        if self.gpu_hull.failed != Some(key) {
-            self.gpu_hull.failed = Some(key);
+        let held = self
+            .gpu_hull
+            .geometry
+            .as_ref()
+            .is_some_and(|g| g.key == key);
+        self.gpu_hull.failed_mesh = Some(if held { self.gpu_hull.mesh_key } else { key });
+        if self.gpu_hull.logged.insert(message.clone()) {
             self.log(
                 Level::Warning,
                 format!("The viewport falls back to the slower drawing for this mesh: {message}"),
@@ -5213,6 +5241,7 @@ impl App {
         };
         let wireframe = self.display.wireframe;
         let key = render::geometry_key(cache.stamp(), surface, wireframe);
+        self.gpu_hull.mesh_key = render::geometry_key(cache.stamp(), surface, false);
         if self.gpu_hull.geometry.as_ref().is_none_or(|g| g.key != key) {
             let geometry = build_geometry(&cache.mesh, surface, key, wireframe);
             self.gpu_hull.geometry = Some(Arc::new(geometry));
@@ -5234,13 +5263,17 @@ impl App {
         if geometry.vertices.is_empty() {
             return HullRoute::Nothing;
         }
-        if self.gpu_hull.failed == Some(geometry.key) {
+        let failed = self.gpu_hull.failed_mesh;
+        if failed.is_some_and(|mesh| self.drag.is_some() || mesh == self.gpu_hull.mesh_key) {
             return HullRoute::Painted;
         }
         let ppp = ctx.pixels_per_point();
         let Some(size) = gpu_hull::view::target_size(cell, ppp) else {
             return HullRoute::Nothing;
         };
+        if size.iter().any(|&side| side > self.gpu_hull.max_texture) {
+            return HullRoute::Painted;
+        }
         let display = &self.display;
         let camera = &self.cameras[index];
         let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);

@@ -68,14 +68,17 @@ pub struct GpuHullResources {
     failure: Option<Failure>,
 }
 
-/// Run `allocate` in out-of-memory and validation scopes, and return what they caught.
-fn scoped<T>(device: &wgpu::Device, allocate: impl FnOnce() -> T) -> Result<T, String> {
+/// Run `allocate` in out-of-memory, validation and internal error scopes, and return what they
+/// caught. An internal error is, for example, a backend failing to translate or link a shader.
+pub(super) fn scoped<T>(device: &wgpu::Device, allocate: impl FnOnce() -> T) -> Result<T, String> {
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let value = allocate();
     let invalid = pollster::block_on(validation.pop());
     let no_memory = pollster::block_on(out_of_memory.pop());
-    match no_memory.or(invalid) {
+    let failed = pollster::block_on(internal.pop());
+    match no_memory.or(invalid).or(failed) {
         Some(error) => Err(error.to_string()),
         None => Ok(value),
     }
