@@ -77,6 +77,7 @@ crates/seacraft-gui/
   src/recent.rs             File > Open recent list, JSON eframe::Storage in the data dir
   src/autosave.rs           periodic autosave (30 s, locked session pair) + startup crash recovery modal
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
+  examples/orbit_bench.rs   real-window, real-GPU frame times while orbiting
   tests/                    integration tests, all headless
 xtask/                      cargo xtask ci: fmt, clippy, tests, versions, demo numbers, repository checks
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
