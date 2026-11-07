@@ -329,7 +329,7 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 20] = [
+    const SOURCES: [(&str, &str); 21] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
@@ -338,6 +338,7 @@ mod tests {
         ("control.rs", include_str!("control.rs")),
         ("gpu_hull/mod.rs", include_str!("gpu_hull/mod.rs")),
         ("gpu_hull/geometry.rs", include_str!("gpu_hull/geometry.rs")),
+        ("gpu_hull/pipeline.rs", include_str!("gpu_hull/pipeline.rs")),
         ("gpu_hull/view.rs", include_str!("gpu_hull/view.rs")),
         ("history.rs", include_str!("history.rs")),
         ("jobs.rs", include_str!("jobs.rs")),

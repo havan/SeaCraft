@@ -2926,6 +2926,7 @@ dependencies = [
  "eframe",
  "egui",
  "libc",
+ "pollster",
  "seacraft-core",
  "serde",
  "serde_json",
