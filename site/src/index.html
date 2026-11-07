@@ -27,7 +27,7 @@
       <li><a href="#modeller">Modeller</a></li>
       <li><a href="#loop">What it measures</a></li>
       <li><a href="#agents">AI agents</a></li>
-      <li><a href="#install">Install</a></li>
+      <li><a href="#install">Download</a></li>
       <li><a href="#checked">How far it’s checked</a></li>
       <li><a href="https://github.com/havan/SeaCraft">GitHub</a></li>
     </ul>
@@ -38,7 +38,7 @@
     <div class="hero-lede">
       <p>Model a ship’s hull, then measure it: hydrostatics, stability, resistance, motions and lines plans. Free software in Rust, with a desktop app, a command line and an MCP server. It opens and saves FREE!ship <code>.fef</code> files.</p>
       <p class="hero-actions">
-        <a class="button" href="#install">Install from source</a>
+        <a class="button" href="#install">Download</a>
         <a class="button button-quiet" href="https://github.com/havan/SeaCraft">View on GitHub</a>
       </p>
     </div>
@@ -199,19 +199,31 @@ claude mcp add seacraft -- seacraft mcp --connect 127.0.0.1:7878</code></pre>
 <section class="section" id="install" aria-labelledby="install-title">
   <div class="wrap install">
     <div>
-      <h2 id="install-title">Build it from source</h2>
-      <p>There are no prebuilt binaries yet. You need <a href="https://rustup.rs">rustup</a>, which installs the pinned Rust version for you. On Linux the desktop app also needs the usual windowing libraries.</p>
+      <h2 id="install-title">Download</h2>
+      <p>Ready-made programs for Windows, macOS and Linux are on the <a href="https://github.com/havan/SeaCraft/releases/latest">latest release</a>. Each one holds the desktop app, the <code>seacraft</code> command and the example hulls. To begin, choose <b>Open an example</b> on the start screen.</p>
       <p>The current version is {{version}}. Anything may change while it is <code>0.x</code>.</p>
+      <div class="untested">
+        <p><b>Windows and macOS are untested.</b> Those builds are compiled and tested automatically, but nobody has opened the app on them by hand yet. Feedback is welcome: <a href="https://github.com/havan/SeaCraft/issues/new">open an issue</a> and say what worked and what did not.</p>
+      </div>
     </div>
     <div>
-      <p class="code-label">Open the app with an example hull:</p>
-      <pre><code>git clone https://github.com/havan/SeaCraft
+      <ul class="downloads">
+        <li><b>Windows, 64-bit</b><span><code>seacraft-*-x86_64-pc-windows-msvc.zip</code>. Unzip it, then double-click <code>seacraft-gui.exe</code>. The program is not signed, so SmartScreen may warn you.</span></li>
+        <li><b>Mac with an Apple chip</b><span><code>SeaCraft-*-arm64.dmg</code>. Open it and drag SeaCraft to Applications. The app is not notarised, so the first time, allow it in <i>System Settings &gt; Privacy &amp; Security</i>.</span></li>
+        <li><b>Mac with an Intel chip</b><span><code>SeaCraft-*-x86_64.dmg</code>, with the same steps.</span></li>
+        <li><b>Linux</b><span><code>SeaCraft-*-x86_64.AppImage</code>, a Flatpak bundle, or a plain <code>.tar.gz</code> folder.</span></li>
+      </ul>
+      <p><a class="button" href="https://github.com/havan/SeaCraft/releases/latest">Go to the latest release</a></p>
+      <details class="linux-libs">
+        <summary>Or build it from source</summary>
+        <p>You need <a href="https://rustup.rs">rustup</a>, which installs the pinned Rust version for you.</p>
+        <p class="code-label">Open the app with an example hull:</p>
+        <pre><code>git clone https://github.com/havan/SeaCraft
 cd SeaCraft
 cargo run --release -p seacraft-gui -- --open examples/trawler-22m.fef</code></pre>
-      <p class="code-label">Or measure from the command line:</p>
-      <pre><code>cargo run --release --bin seacraft -- hydro examples/trawler-22m.fef --kg 2.5</code></pre>
-      <details class="linux-libs">
-        <summary>Linux libraries (Ubuntu)</summary>
+        <p class="code-label">Or measure from the command line:</p>
+        <pre><code>cargo run --release --bin seacraft -- hydro examples/trawler-22m.fef --kg 2.5</code></pre>
+        <p class="code-label">On Ubuntu, the desktop app also needs these libraries:</p>
         <pre><code>sudo apt-get install libxkbcommon-dev libwayland-dev libegl1-mesa-dev \
   libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev</code></pre>
       </details>

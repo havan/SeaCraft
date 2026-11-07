@@ -291,6 +291,14 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 .code-label { margin-bottom: .4rem; font-weight: 600; }
 .linux-libs summary { cursor: pointer; font-weight: 600; }
 .linux-libs pre { margin-top: .5rem; }
+.linux-libs { margin-top: 1.5rem; }
+.linux-libs summary + p { margin-top: .75rem; }
+.downloads { list-style: none; margin: 0 0 1.5rem; padding: 0; }
+.downloads li { display: grid; gap: .2rem; padding: .75rem 0; border-top: 1px solid var(--grid); }
+.downloads li:last-child { border-bottom: 1px solid var(--grid); }
+.downloads code { overflow-wrap: anywhere; }
+.untested { margin-top: 1.5rem; padding: .9rem 1.1rem; border-left: 4px solid var(--boot-top); background: var(--hull-air); max-width: 34rem; }
+.untested p { margin: 0; }
 
 /* What has been checked */
 
