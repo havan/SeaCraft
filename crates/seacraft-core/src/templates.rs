@@ -22,7 +22,9 @@ use serde::Serialize;
 
 use crate::hydro::{chain_paths, plane_segments, Hull};
 use crate::math::{Plane, Vec3};
-use crate::sheet::{Anchor, Label, PathKind, Sheet, SheetPath};
+use crate::mesh::Surface;
+use crate::sheet::{Anchor, Label, PageSetup, PathKind, Sheet, SheetPath};
+use crate::subdiv::SubdivisionOptions;
 use crate::units;
 
 /// Below this the in-plane part of a surface normal is held, so a surface lying nearly in the
@@ -666,6 +668,74 @@ pub(crate) fn draw_outline(sheet: &mut Sheet, outline: &Outline, half: bool) -> 
     reach
 }
 
+/// The centreline, and the baseline, waterlines and design waterline as lines across a pattern.
+/// `base_v` is the baseline's height in the drawing and `stretch` how much longer a height is
+/// when measured along the drawing's plane (1 for an upright plane).
+fn add_levels(
+    sheet: &mut Sheet,
+    opts: &TemplateOptions,
+    base_v: f64,
+    stretch: f64,
+    span: [f64; 4],
+) {
+    let [left, v0, right, v1] = span;
+    let level = |sheet: &mut Sheet, v: f64, text: String| {
+        sheet.paths.push(mark((left, v), (right, v)));
+        sheet
+            .labels
+            .push(mark_label((right, v + 0.001), Anchor::End, text));
+    };
+    level(sheet, base_v, "BL".into());
+    let within = |v: f64| v.is_finite() && v > v0 - 1e-9 && v < v1 + 1e-9;
+    for height in opts.waterlines_m.iter().filter(|h| **h > 0.0) {
+        let v = base_v + height * stretch;
+        if within(v) {
+            level(
+                sheet,
+                v,
+                format!("WL {}", units::length(*height, opts.imperial)),
+            );
+        }
+    }
+    if let Some(height) = opts
+        .dwl_m
+        .filter(|h| *h > 0.0 && within(base_v + h * stretch))
+    {
+        let text = format!("DWL {}", units::length(height, opts.imperial));
+        level(sheet, base_v + height * stretch, text);
+    }
+}
+
+/// The centreline of a pattern drawn across the hull, from below `v0` to above `v1`.
+fn add_centreline(sheet: &mut Sheet, v0: f64, v1: f64) {
+    sheet
+        .paths
+        .push(mark((0.0, v0 - MARK_REACH_M), (0.0, v1 + MARK_REACH_M)));
+    sheet
+        .labels
+        .push(mark_label((0.002, v1 + MARK_REACH_M), Anchor::Start, "CL"));
+}
+
+/// The pattern's name, in the middle of it.
+fn add_title(sheet: &mut Sheet, at: (f64, f64)) {
+    sheet.labels.push(Label {
+        at,
+        height_mm: TITLE_LABEL_MM,
+        angle_deg: 0.0,
+        anchor: Anchor::Middle,
+        text: sheet.name.clone(),
+    });
+}
+
+/// A skin thickness as the patterns use it: zero for anything that is not a positive number.
+fn skin_of(opts: &TemplateOptions) -> f64 {
+    if opts.skin_m.is_finite() {
+        opts.skin_m.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// The mould for the station at `x`: the section there, moved in by the skin, with the
 /// centreline, the baseline, the waterlines asked for and the sheer marked, and notes saying
 /// what was deducted and which face goes on the station line. `index` counts from 1, of `count`.
@@ -682,11 +752,7 @@ pub fn station_template(
     if section.is_empty() {
         return None;
     }
-    let skin = if opts.skin_m.is_finite() {
-        opts.skin_m.max(0.0)
-    } else {
-        0.0
-    };
+    let skin = skin_of(opts);
     let top = section
         .iter()
         .flat_map(|p| p.points.iter())
@@ -705,8 +771,7 @@ pub fn station_template(
     };
     let outline = outline(&section, skin, legs_to, "station");
     let [u0, v0, u1, v1] = outline.bounds;
-    let name = format!("Station {index}");
-    let mut sheet = Sheet::new(name.clone());
+    let mut sheet = Sheet::new(format!("Station {index}"));
     let half_breadth_m = draw_outline(&mut sheet, &outline, opts.half);
 
     // Marks reach a little beyond the section on each side.
@@ -717,37 +782,13 @@ pub fn station_template(
     };
     let right = u1.max(0.0) + MARK_REACH_M;
     let highest = legs_to.unwrap_or(v1).max(v1);
-    sheet.paths.push(mark(
-        (0.0, v0 - MARK_REACH_M),
-        (0.0, highest + MARK_REACH_M),
-    ));
-    sheet.labels.push(mark_label(
-        (0.002, highest + MARK_REACH_M),
-        Anchor::Start,
-        "CL",
-    ));
-    let level = |sheet: &mut Sheet, v: f64, text: String| {
-        sheet.paths.push(mark((left, v), (right, v)));
+    add_centreline(&mut sheet, v0, highest);
+    add_levels(&mut sheet, opts, hull.keel, 1.0, [left, v0, right, v1]);
+    if let (Some(z), true) = (legs_to, outline.sheer.is_empty()) {
+        sheet.paths.push(mark((left, z), (right, z)));
         sheet
             .labels
-            .push(mark_label((right, v + 0.001), Anchor::End, text));
-    };
-    level(&mut sheet, hull.keel, "BL".into());
-    let within = |v: f64| v.is_finite() && v > v0 - 1e-9 && v < v1 + 1e-9;
-    for height in &opts.waterlines_m {
-        if within(hull.keel + height) && *height > 0.0 {
-            let text = format!("WL {}", units::length(*height, opts.imperial));
-            level(&mut sheet, hull.keel + height, text);
-        }
-    }
-    if let Some(height) = opts.dwl_m.filter(|h| *h > 0.0 && within(hull.keel + h)) {
-        let text = format!("DWL {}", units::length(height, opts.imperial));
-        level(&mut sheet, hull.keel + height, text);
-    }
-    if let Some(z) = legs_to {
-        if outline.sheer.is_empty() {
-            level(&mut sheet, z, "Strongback".into());
-        }
+            .push(mark_label((right, z + 0.001), Anchor::End, "Strongback"));
     }
     // The sheer, where an open section ends: a tick outward from each end.
     for (i, end) in outline.sheer.iter().enumerate() {
@@ -776,13 +817,7 @@ pub fn station_template(
     } else {
         (u0 + u1) / 2.0
     };
-    sheet.labels.push(Label {
-        at: (middle, (v0 + v1) / 2.0),
-        height_mm: TITLE_LABEL_MM,
-        angle_deg: 0.0,
-        anchor: Anchor::Middle,
-        text: name,
-    });
+    add_title(&mut sheet, (middle, (v0 + v1) / 2.0));
 
     let face = if outline.mean_along > 0.01 {
         MouldFace::Forward
@@ -806,9 +841,7 @@ pub fn station_template(
     );
     sheet.notes.extend(measure_notes(&outline));
     if opts.half {
-        sheet.notes.push(
-            "Half mould: the starboard side. Flip the pattern about the centreline (CL) for the other side".into(),
-        );
+        sheet.notes.push(HALF_NOTE.into());
     }
     if let (Some(z), false) = (legs_to, outline.sheer.is_empty()) {
         sheet.notes.push(format!(
@@ -827,6 +860,430 @@ pub fn station_template(
         longest_segment_m: outline.longest_segment_m,
         warnings,
     })
+}
+
+/// The note on a half pattern.
+const HALF_NOTE: &str =
+    "Half mould: the starboard side. Flip the pattern about the centreline (CL) for the other side";
+
+impl Frame {
+    /// The centre plane, seen from starboard: the bow to the right, up is up.
+    pub fn profile() -> Frame {
+        Frame {
+            origin: Vec3::new(0.0, 0.0, 0.0),
+            u: Vec3::new(1.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 0.0, 1.0),
+        }
+    }
+
+    /// A plane across the hull through `(x, 0, keel_z)` whose top leans aft by `rake_deg`, seen
+    /// looking forward and drawn in its own plane, so that shapes on it are true. Heights in the
+    /// drawing run up the slope from the baseline.
+    pub fn transom(x: f64, keel_z: f64, rake_deg: f64) -> Frame {
+        let (sin, cos) = rake_deg.to_radians().sin_cos();
+        Frame {
+            origin: Vec3::new(x, 0.0, keel_z),
+            u: Vec3::new(0.0, 1.0, 0.0),
+            v: Vec3::new(-sin, 0.0, cos),
+        }
+    }
+}
+
+/// The steepest transom rake that is drawn, in degrees either way.
+pub const MAX_TRANSOM_RAKE_DEG: f64 = 80.0;
+/// How far forward of the plane given a transom is cut, in metres.
+const TRANSOM_SHIFT_M: f64 = 0.001;
+
+/// Where the transom is and how it leans.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transom {
+    /// Where the plane meets the baseline, a model `x`.
+    pub x: f64,
+    /// How far the top leans aft of upright, in degrees.
+    pub rake_deg: f64,
+}
+
+/// The backbone pattern: the hull cut on its centre plane, moved in by the skin, with the
+/// baseline, the waterlines asked for and a numbered line at each of `stations`.
+///
+/// `None` when the centre plane cuts nothing.
+pub fn profile_template(hull: &Hull, stations: &[f64], opts: &TemplateOptions) -> Option<Template> {
+    let section = cut(hull, &Frame::profile());
+    if section.is_empty() {
+        return None;
+    }
+    let skin = skin_of(opts);
+    let outline = outline(&section, skin, None, "profile");
+    let [u0, v0, u1, v1] = outline.bounds;
+    let mut sheet = Sheet::new("Profile");
+    draw_outline(&mut sheet, &outline, false);
+    let span = [u0 - MARK_REACH_M, v0, u1 + MARK_REACH_M, v1];
+    add_levels(&mut sheet, opts, hull.keel, 1.0, span);
+    for (i, x) in stations.iter().enumerate().filter(|(_, x)| x.is_finite()) {
+        sheet
+            .paths
+            .push(mark((*x, v0 - MARK_REACH_M), (*x, v1 + MARK_REACH_M)));
+        let at = (*x, v1 + MARK_REACH_M + 0.001);
+        sheet
+            .labels
+            .push(mark_label(at, Anchor::Middle, (i + 1).to_string()));
+    }
+    add_title(&mut sheet, ((u0 + u1) / 2.0, (v0 + v1) / 2.0));
+    sheet
+        .notes
+        .push("Profile on the centreline, bow to the right".into());
+    sheet.notes.push(skin_note(skin));
+    sheet.notes.extend(measure_notes(&outline));
+    sheet.notes.extend(outline.warnings.iter().cloned());
+    Some(Template {
+        sheet,
+        x: None,
+        face: None,
+        max_bevel_deg: outline.max_bevel_deg,
+        half_breadth_m: 0.0,
+        longest_segment_m: outline.longest_segment_m,
+        warnings: outline.warnings,
+    })
+}
+
+/// The transom pattern: the hull cut by a raked plane and drawn in that plane, so its shape is
+/// true. The cut is taken 1 mm forward of the plane given, because a plane lying in the transom's
+/// own face has no section; the sheet says so.
+///
+/// `None` when the plane cuts nothing, or the rake is over [`MAX_TRANSOM_RAKE_DEG`].
+pub fn transom_template(
+    hull: &Hull,
+    transom: &Transom,
+    opts: &TemplateOptions,
+) -> Option<Template> {
+    let rake = transom.rake_deg;
+    if !rake.is_finite() || rake.abs() > MAX_TRANSOM_RAKE_DEG {
+        return None;
+    }
+    let frame = Frame::transom(transom.x + TRANSOM_SHIFT_M, hull.keel, rake);
+    let section = cut(hull, &frame);
+    if section.is_empty() {
+        return None;
+    }
+    let skin = skin_of(opts);
+    let outline = outline(&section, skin, None, "transom");
+    let [u0, v0, u1, v1] = outline.bounds;
+    let mut sheet = Sheet::new("Transom");
+    let half_breadth_m = draw_outline(&mut sheet, &outline, opts.half);
+    let left = if opts.half {
+        -MARK_REACH_M
+    } else {
+        u0.min(0.0) - MARK_REACH_M
+    };
+    add_centreline(&mut sheet, v0, v1);
+    // Heights are measured up the slope: longer than upright by 1 / cos(rake).
+    let stretch = 1.0 / rake.to_radians().cos();
+    add_levels(
+        &mut sheet,
+        opts,
+        0.0,
+        stretch,
+        [left, v0, u1.max(0.0) + MARK_REACH_M, v1],
+    );
+    let middle = if opts.half {
+        half_breadth_m / 2.0
+    } else {
+        (u0 + u1) / 2.0
+    };
+    add_title(&mut sheet, (middle, (v0 + v1) / 2.0));
+    sheet.notes.push(format!(
+        "Transom at x = {}, top raked {rake:.1}° aft",
+        units::length(transom.x, opts.imperial)
+    ));
+    sheet.notes.push(skin_note(skin));
+    sheet.notes.push(
+        "Cut 1 mm forward of the plane given: a plane lying in the transom face has no section"
+            .into(),
+    );
+    sheet
+        .notes
+        .push("Heights are measured up the slope of the transom, from the baseline".into());
+    sheet.notes.extend(measure_notes(&outline));
+    if opts.half {
+        sheet.notes.push(HALF_NOTE.into());
+    }
+    sheet.notes.extend(outline.warnings.iter().cloned());
+    Some(Template {
+        sheet,
+        x: Some(transom.x),
+        face: None,
+        max_bevel_deg: outline.max_bevel_deg,
+        half_breadth_m,
+        longest_segment_m: outline.longest_segment_m,
+        warnings: outline.warnings,
+    })
+}
+
+/// The thickest skin a set deducts, in metres.
+pub const MAX_SKIN_M: f64 = 0.2;
+
+/// What a set of patterns is made with.
+#[derive(Clone, Debug)]
+pub struct SetOptions {
+    /// How finely the surface is refined before it is cut.
+    pub subdivision: SubdivisionOptions,
+    /// Where the stations are.
+    pub stations: StationChoice,
+    /// The skin thickness to deduct, in metres, from 0 to [`MAX_SKIN_M`]. Zero deducts nothing.
+    pub skin_m: f64,
+    /// Draw the starboard half of each mould only.
+    pub half: bool,
+    /// The level of the strongback, a model height at or above the top of the hull.
+    pub strongback_z: Option<f64>,
+    /// Heights above the keel to mark. `None`: `offsets::default_waterlines(hull, 6)`.
+    pub waterlines_m: Option<Vec<f64>>,
+    /// Add the profile on the centreline.
+    pub profile: bool,
+    /// Add the transom.
+    pub transom: Option<Transom>,
+    /// Add imperial readings beside the metric ones.
+    pub imperial: bool,
+}
+
+impl Default for SetOptions {
+    fn default() -> Self {
+        SetOptions {
+            subdivision: SubdivisionOptions::default(),
+            stations: StationChoice::Count(11),
+            skin_m: 0.0,
+            half: false,
+            strongback_z: None,
+            waterlines_m: None,
+            profile: false,
+            transom: None,
+            imperial: false,
+        }
+    }
+}
+
+/// One line of a set's summary.
+#[derive(Clone, Debug, Serialize)]
+pub struct TemplateRow {
+    /// The sheet's name.
+    pub sheet: String,
+    /// Where along the hull it is, for a station or a transom.
+    pub x: Option<f64>,
+    /// The cut line's largest distance from the centreline, in metres.
+    pub half_breadth_m: f64,
+    /// Which face of a station mould goes on its line.
+    pub face: Option<MouldFace>,
+    /// The largest bevel along the cut, in degrees.
+    pub max_bevel_deg: f64,
+    /// The longest straight piece of the hull's section, in metres.
+    pub longest_segment_m: f64,
+}
+
+/// The patterns for one hull.
+#[derive(Clone, Debug)]
+pub struct TemplateSet {
+    /// The model's name, for captions.
+    pub title: String,
+    /// The drawings: the stations in order, then the profile, then the transom.
+    pub sheets: Vec<Sheet>,
+    /// One summary line for each sheet.
+    pub rows: Vec<TemplateRow>,
+    /// Every sheet's warnings, each starting with its sheet's name, and what was skipped.
+    pub warnings: Vec<String>,
+}
+
+/// The patterns for `surface`: a mould at each station, then the profile and the transom when
+/// asked for. Stations are numbered in the order of their positions; one that cuts nothing is
+/// skipped and named in the warnings.
+///
+/// Fails when the skin is not between 0 and [`MAX_SKIN_M`], when the strongback level is below
+/// the top of the hull, when the transom's rake is over [`MAX_TRANSOM_RAKE_DEG`], when the
+/// station choice is unusable, or when no station cuts the hull.
+pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet, String> {
+    if !opts.skin_m.is_finite() || !(0.0..=MAX_SKIN_M).contains(&opts.skin_m) {
+        return Err(format!(
+            "the skin thickness must be from 0 to {} mm",
+            MAX_SKIN_M * 1000.0
+        ));
+    }
+    if let Some(t) = opts.transom {
+        if !t.x.is_finite() || !t.rake_deg.is_finite() || t.rake_deg.abs() > MAX_TRANSOM_RAKE_DEG {
+            return Err(format!(
+                "the transom needs a position and a rake between -{MAX_TRANSOM_RAKE_DEG} and \
+                 {MAX_TRANSOM_RAKE_DEG} degrees"
+            ));
+        }
+    }
+    let hull = Hull::new(surface, opts.subdivision);
+    if hull.tris.is_empty() {
+        return Err("the model has no hull surface to cut patterns from".into());
+    }
+    if let Some(z) = opts.strongback_z {
+        let top = hull.model_max.z;
+        if !z.is_finite() || z < top - 1e-9 {
+            return Err(format!(
+                "the strongback level, {z:.3} m, is below the top of the hull at {top:.3} m: \
+                 moulds stand on it upside down, so it must be at or above the sheer"
+            ));
+        }
+    }
+    let positions = station_positions(&hull, &opts.stations)?;
+    let template_opts = TemplateOptions {
+        skin_m: opts.skin_m,
+        half: opts.half,
+        strongback_z: opts.strongback_z,
+        waterlines_m: opts
+            .waterlines_m
+            .clone()
+            .unwrap_or_else(|| crate::offsets::default_waterlines(&hull, 6)),
+        dwl_m: Some(surface.settings.draft).filter(|d| d.is_finite() && *d > 0.0),
+        imperial: opts.imperial,
+    };
+    let name = surface.settings.name.trim();
+    let mut set = TemplateSet {
+        title: if name.is_empty() {
+            "Untitled hull".into()
+        } else {
+            name.to_owned()
+        },
+        sheets: Vec::new(),
+        rows: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let add = |set: &mut TemplateSet, template: Template| {
+        let name = &template.sheet.name;
+        set.warnings
+            .extend(template.warnings.iter().map(|w| format!("{name}: {w}")));
+        set.rows.push(TemplateRow {
+            sheet: name.clone(),
+            x: template.x,
+            half_breadth_m: template.half_breadth_m,
+            face: template.face,
+            max_bevel_deg: template.max_bevel_deg,
+            longest_segment_m: template.longest_segment_m,
+        });
+        set.sheets.push(template.sheet);
+    };
+    let mut cut_at = Vec::new();
+    for (i, x) in positions.iter().enumerate() {
+        match station_template(&hull, *x, i + 1, positions.len(), &template_opts) {
+            Some(template) => {
+                cut_at.push(*x);
+                add(&mut set, template);
+            }
+            None => set.warnings.push(format!(
+                "Station {}: the plane at x = {x:.3} m cuts nothing and was skipped",
+                i + 1
+            )),
+        }
+    }
+    if set.sheets.is_empty() {
+        return Err(format!(
+            "no station cuts the hull, which runs from x = {:.3} to {:.3} m",
+            hull.model_min.x, hull.model_max.x
+        ));
+    }
+    if opts.profile {
+        match profile_template(&hull, &cut_at, &template_opts) {
+            Some(template) => add(&mut set, template),
+            None => set
+                .warnings
+                .push("Profile: the centre plane cuts nothing; the profile was skipped".into()),
+        }
+    }
+    if let Some(transom) = opts.transom {
+        match transom_template(&hull, &transom, &template_opts) {
+            Some(template) => add(&mut set, template),
+            None => set.warnings.push(format!(
+                "Transom: the transom plane at x = {:.3} m cuts nothing and was skipped",
+                transom.x
+            )),
+        }
+    }
+    Ok(set)
+}
+
+/// The file a set is written as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    /// A PDF tiled over ordinary paper, with a calibration page.
+    PdfTiled,
+    /// A PDF with one large page for each pattern.
+    PdfSingle,
+    /// One SVG with the patterns side by side.
+    Svg,
+    /// One DXF in millimetres with the patterns side by side.
+    Dxf,
+}
+
+impl Format {
+    /// The format a file name asks for by its extension: `.pdf`, `.svg` or `.dxf`. `single_page`
+    /// picks the one-page-per-pattern PDF, and is refused for the others.
+    pub fn from_path(path: &std::path::Path, single_page: bool) -> Result<Format, String> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        match (ext.as_deref(), single_page) {
+            (Some("pdf"), false) => Ok(Format::PdfTiled),
+            (Some("pdf"), true) => Ok(Format::PdfSingle),
+            (Some("svg" | "dxf"), true) => Err(
+                "single page applies to PDF only: an SVG or a DXF is one drawing already".into(),
+            ),
+            (Some("svg"), false) => Ok(Format::Svg),
+            (Some("dxf"), false) => Ok(Format::Dxf),
+            _ => Err(format!(
+                "`{}`: patterns are written as .pdf, .svg or .dxf",
+                path.display()
+            )),
+        }
+    }
+
+    /// The format's file extension.
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::PdfTiled | Format::PdfSingle => "pdf",
+            Format::Svg => "svg",
+            Format::Dxf => "dxf",
+        }
+    }
+}
+
+/// A set written out.
+#[derive(Clone, Debug)]
+pub struct Written {
+    /// The file.
+    pub bytes: Vec<u8>,
+    /// How many pages a PDF has.
+    pub pages: Option<usize>,
+    /// Characters a PDF's font has no glyph for, each drawn as `?`.
+    pub missing: Vec<char>,
+}
+
+/// Write a set in `format`. The setup's scale applies to every format; its paper, margin and
+/// overlap to the tiled PDF, and its margin to the single-page PDF. A setup without a title takes
+/// the set's.
+pub fn write(set: &TemplateSet, format: Format, setup: &PageSetup) -> Result<Written, String> {
+    setup.check()?;
+    let mut setup = setup.clone();
+    if setup.title.trim().is_empty() {
+        setup.title = set.title.clone();
+    }
+    let pdf = |doc: crate::pdf::Document| Written {
+        pages: Some(doc.pages),
+        missing: doc.missing,
+        bytes: doc.bytes,
+    };
+    let text = |text: String| Written {
+        bytes: text.into_bytes(),
+        pages: None,
+        missing: Vec::new(),
+    };
+    match format {
+        Format::PdfTiled => crate::sheet::pdf_tiled(&set.sheets, &setup).map(pdf),
+        Format::PdfSingle => crate::sheet::pdf_single(&set.sheets, &setup).map(pdf),
+        Format::Svg => Ok(text(crate::sheet::svg(&set.sheets, setup.scale))),
+        Format::Dxf => Ok(text(crate::sheet::dxf(&set.sheets, setup.scale))),
+    }
 }
 
 /// The note that says what the cut line is.
@@ -1530,5 +1987,471 @@ mod tests {
             assert!(t.warnings.is_empty(), "station {}: {:?}", i + 1, t.warnings);
             assert!(t.max_bevel_deg < 60.0);
         }
+    }
+    // ---- Profile, transom, the set ----
+
+    fn demo() -> crate::Surface {
+        let mut surface = crate::demo::demo_hull(true);
+        surface.settings.name = "Kayık".into();
+        surface
+    }
+
+    /// Closed form: a 10 x 4 x 2 box cut at y = 0 is a 10 x 2 rectangle; a 10 mm skin leaves
+    /// 9.98 x 1.98.
+    #[test]
+    fn a_box_profile_is_its_side_view() {
+        let hull = box_hull(10.0, 4.0, 2.0, true);
+        let o = TemplateOptions {
+            waterlines_m: vec![1.0],
+            ..opts(0.01)
+        };
+        let t = profile_template(&hull, &[2.0, 5.0], &o).unwrap();
+        assert_eq!(t.sheet.name, "Profile");
+        assert_span(&cut_points(&t), [0.01, 0.01, 9.99, 1.99], 1e-9);
+        assert_span(
+            &points_of(&t, PathKind::Reference),
+            [0.0, 0.0, 10.0, 2.0],
+            1e-9,
+        );
+        let marks: Vec<_> = t
+            .sheet
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::Mark)
+            .collect();
+        for u in [2.0, 5.0] {
+            assert!(
+                marks.iter().any(|p| p.points.iter().all(|q| q.0 == u)),
+                "a station line at {u}"
+            );
+        }
+        for v in [0.0, 1.0] {
+            assert!(
+                marks.iter().any(|p| p.points.iter().all(|q| q.1 == v)),
+                "a level at {v}"
+            );
+        }
+        for label in ["1", "2", "BL", "WL 1.000 m", "Profile"] {
+            assert!(labels(&t).contains(&label), "{label} in {:?}", labels(&t));
+        }
+        assert_eq!((t.x, t.face), (None, None));
+        assert_eq!(
+            t.sheet.notes[0],
+            "Profile on the centreline, bow to the right"
+        );
+        assert_eq!(
+            t.sheet.notes[1],
+            "Mould line 10.0 mm inside the hull surface"
+        );
+        assert!(profile_template(&tube(1.0, 1.0, 4.0, 16), &[], &opts(0.0)).is_some());
+    }
+
+    /// Closed form: a plane through (1, 0, 0) leaning aft 20 deg cuts the box in a rectangle 4 wide
+    /// and 2 / cos 20 = 2.128356 high. The sides are deducted by t = 0.01, the bottom and deck by
+    /// t / cos 20 = 0.010642. The cut is taken 1 mm forward, which does not change the rectangle.
+    #[test]
+    fn a_raked_transom_is_drawn_in_its_own_plane() {
+        let hull = box_hull(10.0, 4.0, 2.0, true);
+        let transom = Transom {
+            x: 1.0,
+            rake_deg: 20.0,
+        };
+        let t = transom_template(&hull, &transom, &opts(0.01)).unwrap();
+        assert_eq!(t.sheet.name, "Transom");
+        assert_span(&cut_points(&t), [-1.99, 0.010642, 1.99, 2.117714], 1e-6);
+        assert_span(
+            &points_of(&t, PathKind::Reference),
+            [-2.0, 0.0, 2.0, 2.128356],
+            1e-6,
+        );
+        // The bottom and deck meet the plane at 20 degrees off square.
+        assert!((t.max_bevel_deg - 20.0).abs() < 1e-6, "{}", t.max_bevel_deg);
+        assert_eq!(
+            t.sheet.notes[0],
+            "Transom at x = 1.000 m, top raked 20.0° aft"
+        );
+        assert!(t.sheet.notes.iter().any(|n| n == "Cut 1 mm forward of the plane given: a plane lying in the transom face has no section"), "{:?}", t.sheet.notes);
+        assert_eq!((t.x, t.face), (Some(1.0), None));
+        // An upright transom on the box's own end face: the 1 mm shift finds the section.
+        let end = transom_template(
+            &hull,
+            &Transom {
+                x: 0.0,
+                rake_deg: 0.0,
+            },
+            &opts(0.01),
+        )
+        .unwrap();
+        assert_span(&cut_points(&end), [-1.99, 0.01, 1.99, 1.99], 1e-9);
+        // Past the hull there is nothing, and a rake that lays the plane flat is refused.
+        assert!(transom_template(
+            &hull,
+            &Transom {
+                x: 50.0,
+                rake_deg: 0.0
+            },
+            &opts(0.01)
+        )
+        .is_none());
+        assert!(transom_template(
+            &hull,
+            &Transom {
+                x: 1.0,
+                rake_deg: 89.0
+            },
+            &opts(0.01)
+        )
+        .is_none());
+        assert!(transom_template(
+            &hull,
+            &Transom {
+                x: 1.0,
+                rake_deg: f64::NAN
+            },
+            &opts(0.01)
+        )
+        .is_none());
+    }
+
+    /// Internal consistency, not an oracle.
+    #[test]
+    fn the_demo_hull_s_profile_is_as_long_as_the_hull() {
+        let hull = Hull::new(&demo(), crate::SubdivisionOptions::default());
+        let t = profile_template(&hull, &[], &opts(0.0)).unwrap();
+        let s = span(&cut_points(&t));
+        let length = hull.model_max.x - hull.model_min.x;
+        assert!(
+            ((s[2] - s[0]) - length).abs() < 0.01 * length,
+            "{s:?} against {length}"
+        );
+        assert!(
+            s[1] >= hull.keel - 1e-9 && s[3] <= hull.model_max.z + 1e-9,
+            "{s:?}"
+        );
+    }
+
+    #[test]
+    fn a_set_has_one_sheet_per_station_then_profile_then_transom() {
+        let set = template_set(&demo(), &SetOptions::default()).unwrap();
+        let names: Vec<&str> = set.sheets.iter().map(|s| s.name.as_str()).collect();
+        let want: Vec<String> = (1..=11).map(|i| format!("Station {i}")).collect();
+        assert_eq!(names, want);
+        assert_eq!(set.rows.len(), 11);
+        assert_eq!(set.title, "Kayık");
+        assert!(set
+            .rows
+            .iter()
+            .all(|r| r.x.is_some() && r.face.is_some() && r.half_breadth_m > 0.0));
+        assert!(set.sheets.iter().all(|s| s
+            .notes
+            .iter()
+            .any(|n| n == "Mould line is the hull surface: no skin deducted")));
+        // Forward moulds stand aft of their lines and aft moulds forward of theirs.
+        assert_eq!(set.rows[10].face, Some(MouldFace::Forward));
+        assert_eq!(set.rows[0].face, Some(MouldFace::Aft));
+
+        let o = SetOptions {
+            profile: true,
+            transom: Some(Transom {
+                x: 0.3,
+                rake_deg: 10.0,
+            }),
+            skin_m: 0.006,
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        assert_eq!(set.sheets.len(), 13);
+        assert_eq!(
+            (set.sheets[11].name.as_str(), set.sheets[12].name.as_str()),
+            ("Profile", "Transom")
+        );
+        assert_eq!(set.rows.len(), 13);
+        assert_eq!(set.rows[11].sheet, "Profile");
+        let json = serde_json::to_value(&set.rows[0]).unwrap();
+        assert_eq!(json["sheet"], "Station 1");
+        assert_eq!(json["face"], "aft");
+        // An unnamed model still has a title.
+        let mut unnamed = demo();
+        unnamed.settings.name = "  ".into();
+        assert_eq!(
+            template_set(&unnamed, &SetOptions::default())
+                .unwrap()
+                .title,
+            "Untitled hull"
+        );
+    }
+
+    #[test]
+    fn stations_that_miss_are_skipped_and_named() {
+        let o = SetOptions {
+            stations: StationChoice::At(vec![1.0, 999.0]),
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        assert_eq!(set.sheets.len(), 1);
+        assert_eq!(set.sheets[0].name, "Station 1");
+        assert!(
+            set.warnings
+                .iter()
+                .any(|w| w.contains("999.000 m") && w.contains("skipped")),
+            "{:?}",
+            set.warnings
+        );
+        let none = SetOptions {
+            stations: StationChoice::At(vec![999.0]),
+            ..SetOptions::default()
+        };
+        let err = template_set(&demo(), &none).unwrap_err();
+        assert!(err.contains("no station cuts the hull"), "{err}");
+        // A transom that misses is a warning; a model with no hull is an error.
+        let o = SetOptions {
+            transom: Some(Transom {
+                x: 999.0,
+                rake_deg: 0.0,
+            }),
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        assert!(
+            set.warnings
+                .iter()
+                .any(|w| w.contains("transom") && w.contains("skipped")),
+            "{:?}",
+            set.warnings
+        );
+        assert!(template_set(&crate::Surface::new(), &SetOptions::default()).is_err());
+    }
+
+    #[test]
+    fn a_strongback_below_the_sheer_is_refused() {
+        let hull = Hull::new(&demo(), crate::SubdivisionOptions::default());
+        let top = hull.model_max.z;
+        let o = SetOptions {
+            strongback_z: Some(top - 0.5),
+            ..SetOptions::default()
+        };
+        let err = template_set(&demo(), &o).unwrap_err();
+        assert!(
+            err.contains(&format!("{:.3} m", top - 0.5)) && err.contains(&format!("{top:.3} m")),
+            "{err}"
+        );
+        let o = SetOptions {
+            strongback_z: Some(top + 0.3),
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        assert!(
+            set.sheets[5]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Legs run up to the strongback level")),
+            "{:?}",
+            set.sheets[5].notes
+        );
+        assert!(set.warnings.is_empty(), "{:?}", set.warnings);
+        let o = SetOptions {
+            strongback_z: Some(f64::NAN),
+            ..SetOptions::default()
+        };
+        assert!(template_set(&demo(), &o).is_err());
+    }
+
+    #[test]
+    fn a_silly_skin_is_refused() {
+        for bad in [-0.001, f64::NAN, 0.25, f64::INFINITY] {
+            let o = SetOptions {
+                skin_m: bad,
+                ..SetOptions::default()
+            };
+            assert!(template_set(&demo(), &o).is_err(), "{bad}");
+        }
+        for good in [0.0, 0.2] {
+            let o = SetOptions {
+                skin_m: good,
+                stations: StationChoice::Count(2),
+                ..SetOptions::default()
+            };
+            assert!(template_set(&demo(), &o).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn the_design_waterline_is_marked_when_the_model_has_a_draft() {
+        let mut surface = demo();
+        surface.settings.draft = 0.9;
+        let set = template_set(
+            &surface,
+            &SetOptions {
+                profile: true,
+                ..SetOptions::default()
+            },
+        )
+        .unwrap();
+        for sheet in &set.sheets {
+            assert!(
+                sheet.labels.iter().any(|l| l.text == "DWL 0.900 m"),
+                "{}",
+                sheet.name
+            );
+        }
+        surface.settings.draft = 0.0;
+        let set = template_set(
+            &surface,
+            &SetOptions {
+                profile: true,
+                ..SetOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(set
+            .sheets
+            .iter()
+            .all(|s| !s.labels.iter().any(|l| l.text.starts_with("DWL"))));
+        // Six waterlines by default, spread from the keel to the top of the hull. A sheet carries
+        // those between its own bottom and top, so each sheet's are a run of the six, in order.
+        // (On the demo the profile's top, at the stem, is 1.02 m and the hull's 1.66 m.)
+        let hull = Hull::new(&surface, SubdivisionOptions::default());
+        let want: Vec<String> = crate::offsets::default_waterlines(&hull, 6)
+            .iter()
+            .map(|h| format!("WL {}", units::length(*h, false)))
+            .collect();
+        assert_eq!(want.len(), 6);
+        let wl = |sheet: &Sheet| -> Vec<String> {
+            sheet
+                .labels
+                .iter()
+                .filter(|l| l.text.starts_with("WL "))
+                .map(|l| l.text.clone())
+                .collect()
+        };
+        for sheet in &set.sheets {
+            let got = wl(sheet);
+            assert!(
+                !got.is_empty() && want.windows(got.len()).any(|w| w == got.as_slice()),
+                "{}: {got:?}",
+                sheet.name
+            );
+        }
+        assert_eq!(set.sheets.last().unwrap().name, "Profile");
+        assert_eq!(
+            wl(&set.sheets[5]).len(),
+            4,
+            "midship reaches four of the six"
+        );
+        let own = SetOptions {
+            waterlines_m: Some(vec![0.5]),
+            ..SetOptions::default()
+        };
+        let set = template_set(&surface, &own).unwrap();
+        assert_eq!(
+            set.sheets[5]
+                .labels
+                .iter()
+                .filter(|l| l.text.starts_with("WL "))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_extension_picks_the_format() {
+        let path = std::path::Path::new;
+        assert_eq!(
+            Format::from_path(path("a.pdf"), false),
+            Ok(Format::PdfTiled)
+        );
+        assert_eq!(
+            Format::from_path(path("a.pdf"), true),
+            Ok(Format::PdfSingle)
+        );
+        assert_eq!(
+            Format::from_path(path("dir.d/a.DXF"), false),
+            Ok(Format::Dxf)
+        );
+        assert_eq!(Format::from_path(path("a.svg"), false), Ok(Format::Svg));
+        for bad in ["a.png", "a", "pdf"] {
+            let err = Format::from_path(path(bad), false).unwrap_err();
+            assert!(
+                err.contains(".pdf") && err.contains(".svg") && err.contains(".dxf"),
+                "{err}"
+            );
+        }
+        for single in ["a.dxf", "a.svg"] {
+            let err = Format::from_path(path(single), true).unwrap_err();
+            assert!(err.contains("single page"), "{err}");
+        }
+        assert_eq!(
+            [
+                Format::PdfTiled,
+                Format::PdfSingle,
+                Format::Svg,
+                Format::Dxf
+            ]
+            .map(Format::name),
+            ["pdf", "pdf", "svg", "dxf"]
+        );
+    }
+
+    #[test]
+    fn every_format_writes() {
+        let o = SetOptions {
+            stations: StationChoice::Count(3),
+            skin_m: 0.006,
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        let setup = PageSetup {
+            scale: 0.1,
+            ..PageSetup::default()
+        };
+        let tiled = write(&set, Format::PdfTiled, &setup).unwrap();
+        assert!(tiled.bytes.starts_with(b"%PDF-"));
+        assert_eq!(
+            tiled.pages,
+            Some(crate::sheet::page_count(&set.sheets, &setup))
+        );
+        assert!(tiled.missing.is_empty());
+        // The set's title is the document's, unless the caller gave one.
+        assert!(crate::pdf::page_text(&tiled.bytes, 0)
+            .iter()
+            .any(|s| s == "Kayık"));
+        let titled = write(
+            &set,
+            Format::PdfTiled,
+            &PageSetup {
+                title: "Mine".into(),
+                ..setup.clone()
+            },
+        )
+        .unwrap();
+        assert!(crate::pdf::page_text(&titled.bytes, 0)
+            .iter()
+            .any(|s| s == "Mine"));
+        let single = write(&set, Format::PdfSingle, &setup).unwrap();
+        assert_eq!(single.pages, Some(3));
+        let svg = write(&set, Format::Svg, &setup).unwrap();
+        assert!(svg.bytes.starts_with(b"<?xml") && svg.pages.is_none());
+        let dxf = write(&set, Format::Dxf, &setup).unwrap();
+        assert!(String::from_utf8_lossy(&dxf.bytes).contains("CUT") && dxf.pages.is_none());
+        // A bad scale is refused for every format.
+        for format in [
+            Format::PdfTiled,
+            Format::PdfSingle,
+            Format::Svg,
+            Format::Dxf,
+        ] {
+            assert!(write(
+                &set,
+                format,
+                &PageSetup {
+                    scale: 0.0,
+                    ..PageSetup::default()
+                }
+            )
+            .is_err());
+        }
+        // At full size on A4 a 12 m hull's stations are a few hundred pages, which is allowed.
+        let full = crate::sheet::page_count(&set.sheets, &PageSetup::default());
+        assert!(full > 20 && full < crate::sheet::MAX_TILED_PAGES, "{full}");
     }
 }
