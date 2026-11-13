@@ -1172,6 +1172,47 @@ fn handle_inner(
                      not `{format}`"
                 )
             })?;
+            if kind == crate::app::ExportKind::OffsetsPdf {
+                // The table's own counts; the linesplan's drawing options do not apply.
+                for key in ["buttocks", "waterlines", "combs", "comb_scale"] {
+                    if !matches!(p.get(key), None | Some(Value::Null)) {
+                        return Err(format!(
+                            "`{key}` applies to the linesplan formats (svg, dxf, igs), not \
+                             offsets_pdf: it takes `stations`, `waterline_steps`, \
+                             `buttock_steps`, `level` and `imperial`"
+                        ));
+                    }
+                }
+                let defaults = commands::OffsetsParams::default();
+                let params = commands::OffsetsParams {
+                    level: level_arg(p)?,
+                    stations: whole_opt(p, "stations", 2..=200)?.unwrap_or(defaults.stations),
+                    waterline_steps: whole_opt(p, "waterline_steps", 1..=50)?
+                        .unwrap_or(defaults.waterline_steps),
+                    buttock_steps: whole_opt(p, "buttock_steps", 1..=50)?
+                        .unwrap_or(defaults.buttock_steps),
+                    waterlines: None,
+                    buttocks: None,
+                };
+                let imperial = boolean(p, "imperial")?.unwrap_or(false);
+                let path = std::path::PathBuf::from(path.trim());
+                let validated = app.check_control_write_path(&path)?;
+                let pages = app.write_offsets_pdf(&validated, &params, imperial)?;
+                let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
+                return Ok(json!({
+                    "path": validated.to_string_lossy(),
+                    "format": "offsets_pdf",
+                    "bytes": bytes,
+                    "pages": pages,
+                    "stations": params.stations,
+                    "imperial": imperial,
+                }));
+            }
+            for key in ["imperial", "waterline_steps", "buttock_steps"] {
+                if !matches!(p.get(key), None | Some(Value::Null)) {
+                    return Err(format!("`{key}` applies to offsets_pdf, not `{format}`"));
+                }
+            }
             // Optional linesplan options; each one omitted keeps the
             // viewports' setting (the export the File menu writes).
             let stations = whole_opt(p, "stations", 1..=200)?;
@@ -1204,17 +1245,9 @@ fn handle_inner(
                 o.level = level.unwrap_or(o.level);
                 o
             });
-            let imperial = boolean(p, "imperial")?;
-            if imperial.is_some() && kind != crate::app::ExportKind::OffsetsPdf {
-                return Err(format!("`imperial` applies to offsets_pdf, not `{format}`"));
-            }
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
-            if kind == crate::app::ExportKind::OffsetsPdf {
-                app.write_offsets_pdf(&validated, imperial.unwrap_or(false))?;
-            } else {
-                app.write_export_with(kind, &validated, linesplan)?;
-            }
+            app.write_export_with(kind, &validated, linesplan)?;
             let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
             let mut out = json!({
                 "path": validated.to_string_lossy(),
@@ -2836,6 +2869,23 @@ mod tests {
         );
         assert_eq!(r["ok"], true, "{r}");
         assert!(std::fs::metadata(&both).unwrap().len() > bytes.len() as u64);
+        // The table's counts: 40 stations need a second page for each table.
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": metric.to_string_lossy(), "format": "offsets_pdf", "stations": 40, "level": 1 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["pages"], 4, "{r}");
+        assert_eq!(r["result"]["stations"], 40, "{r}");
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": metric.to_string_lossy(), "format": "offsets_pdf", "combs": true }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
         let r = call(
             &mut app,
             &ctx,

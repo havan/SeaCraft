@@ -2959,18 +2959,23 @@ impl App {
                 path,
                 seacraft_core::linesplan::iges(surface, linesplan_opts),
             ),
-            ExportKind::OffsetsPdf => return self.write_offsets_pdf(path, false),
+            ExportKind::OffsetsPdf => {
+                let defaults = crate::commands::OffsetsParams::default();
+                return self.write_offsets_pdf(path, &defaults, false).map(|_| ());
+            }
         };
         self.log_export(kind.label(), path, written)
     }
 
-    /// Write the table of offsets the Offsets view shows by default (21 stations, 6 waterlines,
-    /// 4 buttocks) as a PDF, with `imperial` tables after the metric ones; the outcome is logged.
+    /// Write the table of offsets `params` asks for as a PDF, with `imperial` tables after the
+    /// metric ones, and return its page count; the outcome is logged. The File menu writes the
+    /// Offsets view's default table (21 stations, 6 waterlines, 4 buttocks).
     pub fn write_offsets_pdf(
         &mut self,
         path: &std::path::Path,
+        params: &crate::commands::OffsetsParams,
         imperial: bool,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let label = ExportKind::OffsetsPdf.label();
         let name = self
             .surface
@@ -2979,24 +2984,21 @@ impl App {
             .settings
             .name
             .clone();
-        let made = crate::commands::offsets_in(
-            crate::commands::ModelView::of(self),
-            &crate::commands::OffsetsParams::default(),
-        )
-        .and_then(|r| {
-            let table = seacraft_core::offsets::TableOfOffsets {
-                keel_z: r.keel_z,
-                waterlines_m: r.waterlines_m,
-                buttocks_m: r.buttocks_m,
-                stations: r.stations,
-            };
-            let title = format!("{name} - table of offsets");
-            seacraft_core::offsets::pdf(&table, &title, imperial)
-        });
+        let made = crate::commands::offsets_in(crate::commands::ModelView::of(self), params)
+            .and_then(|r| {
+                let table = seacraft_core::offsets::TableOfOffsets {
+                    keel_z: r.keel_z,
+                    waterlines_m: r.waterlines_m,
+                    buttocks_m: r.buttocks_m,
+                    stations: r.stations,
+                };
+                let title = format!("{name} - table of offsets");
+                seacraft_core::offsets::pdf(&table, &title, imperial)
+            });
         match made {
             Ok(doc) => {
                 let written = seacraft_core::io::write_atomic(path, doc.bytes);
-                self.log_export(label, path, written)
+                self.log_export(label, path, written).map(|()| doc.pages)
             }
             Err(err) => {
                 let msg = format!("cannot export {}: {err}", path.display());
