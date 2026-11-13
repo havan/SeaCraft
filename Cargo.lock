@@ -2899,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "seacraft-cli"
-version = "0.3.0-beta.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2910,7 +2910,7 @@ dependencies = [
 
 [[package]]
 name = "seacraft-core"
-version = "0.3.0-beta.1"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.4.3",
  "serde",
@@ -2919,7 +2919,7 @@ dependencies = [
 
 [[package]]
 name = "seacraft-gui"
-version = "0.3.0-beta.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4353,7 +4353,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.3.0-beta.1"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

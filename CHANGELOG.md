@@ -2,7 +2,9 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
-## Unreleased
+## 0.3.0 (2026-11-13)
+
+0.3.0-beta.1 with one fix:
 
 - GUI: the wide Analysis dock can be dragged to any width, as the narrow one could. An Analysis menu view
   such as Offsets still opens it wide, but closing the view now gives back the narrow dock it had, instead of
