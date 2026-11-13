@@ -679,3 +679,155 @@ segment lengths sum to $4$ ($10^{-12}$) and every end lies on the plane ($10^{-1
 ### Provenance
 Elementary geometry, derived for this test (2026-11-07). Not a published value. It covers the line the viewports
 draw, not a measurement: hydrostatics integrate the mesh separately.
+
+---
+
+## 24. Moulds: the Skin Deducted from a Section
+
+### Formula
+A station mould is the hull's section moved inward by the skin thickness $t$. Each straight piece of the section
+moves along its own normal in the drawing plane by $t / \max(|n_p|, 0.2)$, where $n_p$ is the part of the surface
+normal lying in the plane, so a surface meeting the plane at an angle $\alpha$ off square is deducted by
+$t / \cos\alpha$. Neighbouring pieces meet where their moved lines meet (a mitre). A piece the move consumes, one
+shorter than its two ends' shortening $t\,(\cot\tfrac{\theta_1}{2} + \cot\tfrac{\theta_2}{2})$ at interior angles
+$\theta_1, \theta_2$, is dropped and its neighbours' moved lines meet instead.
+- Cylinder of radius $R$: the mould is a circle of radius $R - t$.
+- Cone of half-angle $a$: at radius $R$ the mould radius is $R - t / \cos a$, and the bevel is $a$.
+- Rectangle $W \times H$: the mould is $(W - 2t) \times (H - 2t)$ with square corners.
+
+### Tests
+`crates/seacraft-core/src/templates.rs`:
+- `a_cylinder_mould_is_smaller_by_the_skin`: 720 flat strips, within $R(1 - \cos(\pi / 720)) = 10^{-5}$ of the
+  cylinder.
+- `a_cone_mould_is_deducted_along_the_slope`: $a = \arctan(0.5 / 4) = 7.125^\circ$; at $x = 2$, $R = 0.75$, $t =
+  0.012$: mould radius $0.75 - 0.012 \times 1.007782 = 0.737907$ m, bevel $a$.
+- `a_box_mould_has_mitred_corners`: a $10 \times 4 \times 2$ m box with a deck and $t = 10$ mm gives a
+  $3.98 \times 1.98$ m mould with square corners.
+- `slivers_in_line_with_a_side_stay_inside_the_corner`: $4 \times 2$ moved in by 0.01 is $3.98 \times 1.98$, with
+  0.2 and 0.4 mm pieces beside a corner in line with the sides.
+- `a_segment_shorter_than_the_skin_at_a_corner_is_consumed_not_a_crossing`: $2 \times 1$ with one corner cut by a
+  4 mm chamfer at $45^\circ$, $t = 6$ mm: each end of the chamfer shortens by $0.006 \tan 22.5^\circ = 2.49$ mm, more
+  than half its length, so the mould is $1.988 \times 0.988$ with the rectangle's own corner ($10^{-9}$).
+- `a_hair_of_a_segment_beside_a_bend_is_consumed_quietly`: a 0.15 mm piece beside a $3^\circ$ bend; with
+  $t = 0.06$ the mould corner is $0.06$ from both long lines ($10^{-9}$).
+- `a_surface_nearly_in_the_plane_is_clamped_and_counted`: a cone 1 m in radius and 0.1 m long meets the plane at
+  $5.7^\circ$; $|n_p| = 0.0995 < 0.2$, so the deduction is $0.01 / 0.2 = 0.05$ and 64 pieces are counted.
+- `a_skin_thicker_than_the_radius_is_warned_about`: a tube 5 mm in radius under a 12 mm skin is consumed whole and
+  warned about; at 50 mm it is not.
+
+### Provenance
+Closed forms derived by hand for these tests (2026-11-12 and 2026-11-13). Not published values. The deduction
+rule is this project's own; the spec for it is in the module header of `templates.rs`.
+
+---
+
+## 25. Profile and Raked Transom Patterns
+
+### Formula
+A $L \times B \times D$ box cut by its centre plane is an $L \times D$ rectangle. A plane through $(x_0, 0, 0)$
+whose top leans aft by $r$ cuts it in a rectangle $B$ wide and $D / \cos r$ high, drawn in that plane. The sides
+are square to the plane and deducted by $t$; the bottom and deck meet it at $r$ off square and are deducted by
+$t / \cos r$.
+
+### Tests
+`crates/seacraft-core/src/templates.rs`:
+- `a_box_profile_is_its_side_view`: $10 \times 4 \times 2$ m, $t = 10$ mm: the cut spans
+  $[0.01, 0.01, 9.99, 1.99]$ ($10^{-9}$); station marks at $u = 2$ and $5$.
+- `a_raked_transom_is_drawn_in_its_own_plane`: $x_0 = 1$, $r = 20^\circ$: hull outline $4 \times 2.128356$, cut
+  spans $[-1.99, 0.010642, 1.99, 2.117714]$ ($10^{-6}$), bevel $20^\circ$. The cut is taken 1 mm forward of the
+  plane, which leaves this rectangle unchanged; at $x_0 = 0$, $r = 0$ (the box's own end face) it gives
+  $[-1.99, 0.01, 1.99, 1.99]$.
+
+### Provenance
+Closed forms derived by hand for these tests (2026-11-13). Not published values.
+
+---
+
+## 26. Printed Size: the PDF Point and the Rendered Millimetre
+
+### Formula
+$1\ \text{pt} = 1/72$ in (PDF reference) and $1\ \text{in} = 25.4$ mm exactly (1959 international yard and
+pound), so $1\ \text{mm} = 72 / 25.4 = 2.834646$ pt.
+
+### Tests
+- `crates/seacraft-core/src/pdf.rs::an_a4_page_has_the_a4_media_box`: $210 \times 297$ mm is
+  $595.2756 \times 841.8898$ pt.
+- `crates/seacraft-core/src/pdf.rs::a_100_mm_line_spans_283_465_pt`: 10 mm $= 28.346$ pt, 110 mm $= 311.811$ pt.
+- `crates/seacraft-core/src/sheet.rs::a_single_page_is_the_drawing_the_calibration_column_and_the_margins`:
+  $(1000 + 120 + 20)$ mm $= 3231.496$ pt by $(500 + 20)$ mm $= 1474.016$ pt; 100 mm $= 283.465$ pt.
+- `crates/seacraft-core/src/sheet.rs::imperial_adds_the_inch_rule_and_changes_nothing_else`: 4 in $= 288$ pt.
+- `crates/seacraft-core/tests/pdf_render.rs::poppler_draws_100_mm_as_1000_pixels_and_reads_turkish_text`
+  (ignored by default; needs poppler): renders with poppler, an implementation independent of this writer, at
+  254 dpi, where 1 px = 0.1 mm. A 100 mm line must cover 1000 px ($\pm 2$) and `pdftotext` must read back
+  "Kayık Şile". Run on 2026-11-13 with poppler 22.02.0 (`pdftoppm -v`), it printed: `100 mm drew as 1000 px at
+  254 dpi; text read back as "Kayık Şile"`.
+
+### Provenance
+Definitions, not measurements. The poppler run checks the writer against another program's reading of the file;
+nobody has yet measured a printed page, and the PDFs have not been opened in a Windows or macOS viewer.
+
+---
+
+## 27. Imperial Readings and the Offsets Table in Millimetres
+
+### Formula
+$1\ \text{in} = 25.4$ mm exactly. A length is rounded to the nearest sixteenth of an inch and written as feet,
+inches and eighths (`7-10-4` is 7 ft 10 4/8 in; a trailing `+` is one sixteenth more) or as feet, inches and a
+fraction in lowest terms.
+
+### Tests
+- `crates/seacraft-core/src/units.rs::imperial_readings`: 0.3048 m → `1-0-0`; 1.0 m (39.370 in → 630/16) →
+  `3-3-3`, `3' 3 3/8"`; 2.4 m (1512/16) → `7-10-4`, `7' 10 1/2"`; 0.3 m (189/16) → `0-11-6+`, `11 13/16"`;
+  0.30475 m (191.97/16) carries to `1-0-0`; −0.05 m (31/16) → `-0-1-7+`; 0.01 m (6/16) → `0-0-3`, `3/8"`;
+  0.3148 m (198/16) → `1-0-3`; −0.0001 m → `0-0-0` with no sign.
+- `crates/seacraft-core/src/offsets.rs::imperial_adds_its_tables_after_the_metric_ones`: 2.0 m = 78.740 in =
+  1260/16 in = 6 ft 6 12/16 in, written `6-6-6`.
+- `crates/seacraft-core/src/offsets.rs::a_box_table_reads_in_millimetres`: a box 4 m wide has every half-breadth
+  below the deck equal to 2000 mm.
+
+### Provenance
+Hand-computed from 1 in = 25.4 mm (2026-11-12, 2026-11-13). Not published values.
+
+---
+
+## 28. Tiling a Pattern over Paper
+
+### Formula
+This project's own layout rule: the printable area is the paper less two margins; neighbouring tiles share the
+overlap, so they are one step apart, step = printable − overlap; the drawing is padded by 5 mm a side and needs
+$\lceil w / \text{step}_w \rceil \times \lceil h / \text{step}_h \rceil$ tiles; the orientation with fewer tiles
+wins; a tile nothing crosses is not printed.
+
+### Tests
+`crates/seacraft-core/src/sheet.rs`, A4 with 10 mm margin and overlap (printable $190 \times 277$, step
+$180 \times 267$ mm):
+- `a_small_sheet_is_one_tile_and_has_no_map`: $150 \times 250$ mm → $1 \times 1$.
+- `the_orientation_with_fewer_tiles_wins`: $400 \times 250$ mm: portrait $3 \times 1$, landscape $2 \times 2$;
+  $300 \times 300$ is $2 \times 2$ either way; $250 \times 400$: portrait $2 \times 2$, landscape $1 \times 3$.
+- `a_tile_nothing_crosses_is_not_printed`: bounds $520 \times 620$ mm → $3 \times 3$ portrait, grid
+  $550 \times 811$ mm with the drawing's corner at $(15, 95.5)$.
+- `the_drawing_and_the_join_grid_are_each_written_once`: a 700 mm line takes $\lceil 700 / 267 \rceil = 3$
+  landscape tiles.
+- `a_join_cross_is_at_the_same_sheet_position_on_both_pages`: neighbours differ by one step, 267 mm $= 756.850$ pt.
+- `a_ship_at_full_size_is_refused_with_the_count`: $100 \times 30$ m at full size on A4 landscape is $375 \times 167$
+  tiles and is refused.
+
+### Provenance
+Worked by hand from the rule above (2026-11-12). The rule is this project's, so these check the code against its
+own specification, not against an outside source.
+
+---
+
+## 29. Builder Patterns: Internal Consistency, Not Oracles
+
+These compare one part of the program with another. They catch a part drifting from the rest; they do not show
+either part is right.
+- `crates/seacraft-core/src/templates.rs::the_demo_hull_s_moulds_agree_with_its_offsets_table`: each demo-hull
+  mould is no wider than the offsets table's section at that station, and narrower by no more than the skin over
+  the 0.2 floor.
+- `crates/seacraft-core/src/templates.rs::the_demo_hull_s_profile_is_as_long_as_the_hull`: the profile spans the
+  hull's length within 1 %.
+- `crates/seacraft-core/src/templates.rs::the_runabout_s_moulds_keep_the_skin_from_the_hull`: every point of each
+  `runabout-6m` station mould is at least $0.99\,t$ from the section ($t = 6$ mm), and none crosses itself.
+- `crates/seacraft-gui/tests/templates.rs::the_window_shows_the_page_count_once_it_is_computed`: the count the
+  window shows equals `sheet::page_count` of the same set.
