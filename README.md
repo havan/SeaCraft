@@ -773,7 +773,8 @@ software. Comparing them with published data is the most useful contribution any
   `save_hull`, `move_point`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
-  `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan` and `render_png`.
+  `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,
+  `export_offsets_pdf` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install
   steps and the CI test that keeps them in step with the tools.
