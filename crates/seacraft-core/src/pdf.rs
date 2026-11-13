@@ -572,6 +572,168 @@ impl Pdf {
 }
 
 /// Test support: read back what the writer wrote, through the file's own tables.
+/// A table of text to print: a title and subtitle at the top of each page, a header row, the
+/// rows, and a footer line.
+#[derive(Clone, Copy, Debug)]
+pub struct Table<'a> {
+    pub title: &'a str,
+    pub subtitle: &'a str,
+    pub header: &'a [String],
+    pub rows: &'a [Vec<String>],
+    pub footer: &'a str,
+    /// How many leading columns are repeated on every page when the columns do not fit one.
+    /// At least the first is.
+    pub repeat: usize,
+}
+
+/// The table layout, in millimetres: A4 landscape.
+mod table_layout {
+    pub const PAPER: (f64, f64) = (297.0, 210.0);
+    pub const MARGIN: f64 = 12.0;
+    pub const TITLE_BLOCK: f64 = 20.0;
+    pub const FOOTER: f64 = 8.0;
+    pub const ROW: f64 = 5.0;
+    pub const FIRST_COLUMN: f64 = 22.0;
+    pub const COLUMN: f64 = 18.0;
+    /// Space between a cell's edge and its text.
+    pub const PAD: f64 = 1.5;
+    pub const TEXT_PT: f64 = 8.0;
+    pub const TITLE_PT: f64 = 12.0;
+}
+
+/// Adds the pages the table needs and returns how many. A4 landscape, 12 mm margins, 8 pt text in
+/// 5 mm rows; the first column 22 mm wide and the others 18 mm, numbers right-aligned. Rows that
+/// do not fit a page continue on the next with the header repeated; columns that do not fit
+/// continue on further pages with the first [`Table::repeat`] columns repeated. Rows go first:
+/// every row of the first columns, then every row of the next.
+pub fn add_table(pdf: &mut Pdf, table: &Table<'_>) -> usize {
+    use table_layout::*;
+    let mm = |v: f64| v * PT_PER_MM;
+    let (width, height) = PAPER;
+    let columns = table
+        .header
+        .len()
+        .max(table.rows.iter().map(Vec::len).max().unwrap_or(0))
+        .max(1);
+    let column_width = |c: usize| if c == 0 { FIRST_COLUMN } else { COLUMN };
+    let repeat = table.repeat.clamp(1, columns);
+    let usable = width - 2.0 * MARGIN;
+    let repeated: f64 = (0..repeat).map(column_width).sum();
+    // The other columns in groups that fit beside the repeated ones.
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut used = usable;
+    for c in repeat..columns {
+        if used + COLUMN > usable - repeated + 1e-9 || groups.is_empty() {
+            groups.push(Vec::new());
+            used = 0.0;
+        }
+        groups.last_mut().expect("just pushed").push(c);
+        used += COLUMN;
+    }
+    if groups.is_empty() {
+        groups.push(Vec::new());
+    }
+    let per_page = ((height - 2.0 * MARGIN - TITLE_BLOCK - FOOTER) / ROW).floor() as usize - 1;
+    let chunks: Vec<&[Vec<String>]> = if table.rows.is_empty() {
+        vec![&[]]
+    } else {
+        table.rows.chunks(per_page).collect()
+    };
+    let pages = groups.len() * chunks.len();
+    let top = height - MARGIN;
+    let text_pt = |c: &mut Content, x: f64, y: f64, anchor: Anchor, size: f64, text: &str| {
+        c.text((mm(x), mm(y)), size, 0.0, anchor, 0.0, text)
+    };
+    let mut page = 0;
+    for group in &groups {
+        let shown: Vec<usize> = (0..repeat).chain(group.iter().copied()).collect();
+        let lefts: Vec<f64> = shown
+            .iter()
+            .scan(MARGIN, |x, c| {
+                let left = *x;
+                *x += column_width(*c);
+                Some(left)
+            })
+            .collect();
+        let right = MARGIN + shown.iter().map(|c| column_width(*c)).sum::<f64>();
+        for chunk in &chunks {
+            page += 1;
+            let mut content = Content::new();
+            text_pt(
+                &mut content,
+                MARGIN,
+                top - 6.0,
+                Anchor::Start,
+                TITLE_PT,
+                table.title,
+            );
+            text_pt(
+                &mut content,
+                MARGIN,
+                top - 13.0,
+                Anchor::Start,
+                TEXT_PT,
+                table.subtitle,
+            );
+            let row_text = |content: &mut Content, y: f64, cells: &[String]| {
+                for (i, c) in shown.iter().enumerate() {
+                    let Some(cell) = cells.get(*c) else { continue };
+                    if *c == 0 {
+                        text_pt(content, lefts[i] + PAD, y, Anchor::Start, TEXT_PT, cell);
+                    } else {
+                        let x = lefts[i] + column_width(*c) - PAD;
+                        text_pt(content, x, y, Anchor::End, TEXT_PT, cell);
+                    }
+                }
+            };
+            // A row's text sits a little below the middle of its 5 mm.
+            let first = top - TITLE_BLOCK;
+            row_text(&mut content, first - 3.5, table.header);
+            let rule = |content: &mut Content, y: f64, width_mm: f64| {
+                let stroke = Stroke {
+                    width_mm,
+                    grey: 0.0,
+                    dash_mm: None,
+                };
+                content.polyline(&[(mm(MARGIN), mm(y)), (mm(right), mm(y))], false, stroke);
+            };
+            rule(&mut content, first - ROW, 0.18);
+            for (r, cells) in chunk.iter().enumerate() {
+                let row_top = first - ROW * (r + 1) as f64;
+                row_text(&mut content, row_top - 3.5, cells);
+                if (r + 1) % 5 == 0 && r + 1 < chunk.len() {
+                    rule(&mut content, row_top - ROW, 0.1);
+                }
+            }
+            let footer_y = MARGIN + FOOTER - 3.5;
+            let room = mm(usable - 30.0);
+            for (i, line) in wrap_text(table.footer, TEXT_PT, room).iter().enumerate() {
+                text_pt(
+                    &mut content,
+                    MARGIN,
+                    footer_y - 3.5 * i as f64,
+                    Anchor::Start,
+                    TEXT_PT,
+                    line,
+                );
+            }
+            if pages > 1 {
+                let marker = format!("Page {page} of {pages}");
+                text_pt(
+                    &mut content,
+                    width - MARGIN,
+                    footer_y,
+                    Anchor::End,
+                    TEXT_PT,
+                    &marker,
+                );
+            }
+            pdf.add_page(mm(width), mm(height), content);
+        }
+    }
+    pages
+}
+
 #[cfg(test)]
 mod reading {
     use std::collections::BTreeMap;
