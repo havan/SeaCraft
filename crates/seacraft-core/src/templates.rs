@@ -261,6 +261,75 @@ fn properly_cross(a0: (f64, f64), a1: (f64, f64), b0: (f64, f64), b1: (f64, f64)
     d1 * d2 < 0.0 && d3 * d4 < 0.0
 }
 
+/// Whether the vertex between two segments with these moves lies on one straight line moved by
+/// one deduction: the segments point the same way and are moved alike.
+fn straight_through(a: Option<((f64, f64), f64)>, b: Option<((f64, f64), f64)>) -> bool {
+    match (a, b) {
+        (Some((ma, da)), Some((mb, db))) => {
+            let cross = ma.0 * mb.1 - ma.1 * mb.0;
+            let dot = ma.0 * mb.0 + ma.1 * mb.1;
+            dot > 0.0 && cross.abs() < 1e-9 && (da - db).abs() <= 1e-12 * da.abs().max(db.abs())
+        }
+        _ => false,
+    }
+}
+
+/// Place each vertex lying on a straight run of the section between the moved ends of that run,
+/// at the same fraction of its length.
+///
+/// A plane passing close to a vertex of a flat panel cuts a sliver a fraction of a millimetre
+/// long beside the corner. Moved along its own normal alone, the far end of that sliver lands
+/// outside the corner's mitre and the mould line runs backwards by nearly the skin.
+fn respace_straight_runs(
+    points: &[(f64, f64)],
+    moves: &[Option<((f64, f64), f64)>],
+    closed: bool,
+    moved: &mut [(f64, f64)],
+) {
+    let n = points.len();
+    let segment = |i: usize| moves.get(i).copied().flatten();
+    let interior = |i: usize| {
+        let before = match (i, closed) {
+            (0, true) => segment(n - 1),
+            (0, false) => None,
+            _ => segment(i - 1),
+        };
+        (closed || (i > 0 && i + 1 < n)) && straight_through(before, segment(i))
+    };
+    let kept: Vec<usize> = (0..n).filter(|i| !interior(*i)).collect();
+    // A closed loop with no corner has no area; nothing to place it by.
+    if kept.is_empty() {
+        return;
+    }
+    let runs = if closed { kept.len() } else { kept.len() - 1 };
+    for r in 0..runs {
+        let (a, b) = (kept[r], kept[(r + 1) % kept.len()]);
+        let steps = (b + n - a) % n;
+        let steps = if steps == 0 { n } else { steps };
+        if steps < 2 {
+            continue;
+        }
+        let at = |k: usize| points[(a + k) % n];
+        let lengths: Vec<f64> = (0..steps)
+            .map(|k| {
+                let (p, q) = (at(k), at(k + 1));
+                (q.0 - p.0).hypot(q.1 - p.1)
+            })
+            .collect();
+        let total: f64 = lengths.iter().sum();
+        if total <= 0.0 {
+            continue;
+        }
+        let (from, to) = (moved[a], moved[b]);
+        let mut walked = 0.0;
+        for (k, length) in lengths.iter().enumerate().take(steps - 1) {
+            walked += length;
+            let f = walked / total;
+            moved[(a + k + 1) % n] = (from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+        }
+    }
+}
+
 /// Move a section in by `skin_m`, each segment by `skin / max(|n_p|, 0.2)` along its own normal
 /// and each vertex to where its two segments agree. A skin of zero, or less, returns the section.
 pub fn mould_line(section: &[SectionPath], skin_m: f64) -> MouldLine {
@@ -299,6 +368,7 @@ pub fn mould_line(section: &[SectionPath], skin_m: f64) -> MouldLine {
             })
             .collect();
         let mut moved = moved;
+        respace_straight_runs(&path.points, &moves, path.closed, &mut moved);
         // A segment that now runs the other way means the skin does not fit there. Where the
         // cutting plane clips the tip of a triangle the section has a segment a fraction of a
         // millimetre long, and a bend beside it turns that one over by less than a line's
@@ -1263,8 +1333,9 @@ mod tests {
         let points = vec![
             (0.0, 0.0),
             (-1.0, 0.0),
-            (-1.00015, 0.0),
-            (-1.00015 - c, s),
+            // Tilted a hair, so this is not one straight run with the segment before it.
+            (-1.00015, 0.000005),
+            (-1.00015 - c, 0.000005 + s),
             (0.0, 2.0),
         ];
         let outward = |i: usize| {
@@ -1295,6 +1366,42 @@ mod tests {
         );
         assert!((thin.paths[0].0[1].1 - 0.006).abs() < 1e-4);
         assert!(mould_line(&section, 0.06).crosses_itself);
+    }
+
+    /// Closed form: a 4 x 2 rectangle moved in by 0.01 is 3.98 x 1.98. A plane passing 1 mm from
+    /// a box's end cuts slivers 0.2 and 0.4 mm long beside the corner, in line with the sides;
+    /// they stay inside the corner's mitre instead of poking out of it.
+    #[test]
+    fn slivers_in_line_with_a_side_stay_inside_the_corner() {
+        // Clockwise, so the outside is on the left of the direction travelled.
+        let points = vec![
+            (2.0, 0.0),
+            (-1.9996, 0.0),
+            (-2.0, 0.0),
+            (-2.0, 0.0002),
+            (-2.0, 2.0),
+            (2.0, 2.0),
+        ];
+        let n = points.len();
+        let meetings = (0..n)
+            .map(|i| {
+                let (p, q): ((f64, f64), (f64, f64)) = (points[i], points[(i + 1) % n]);
+                let len = (q.0 - p.0).hypot(q.1 - p.1);
+                Some(Meeting {
+                    outward: ((q.1 - p.1) / -len, (q.0 - p.0) / len),
+                    in_plane: 1.0,
+                    along: 0.0,
+                })
+            })
+            .collect();
+        let section = [SectionPath {
+            points,
+            closed: true,
+            meetings,
+        }];
+        let mould = mould_line(&section, 0.01);
+        assert!(!mould.crosses_itself);
+        assert_span(&mould.paths[0].0, [-1.99, 0.01, 1.99, 1.99], 1e-9);
     }
 
     /// A 5 mm tube cannot hold a 12 mm skin: the mould line would turn inside out.
