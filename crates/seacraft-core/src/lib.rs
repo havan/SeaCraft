@@ -73,6 +73,8 @@ pub mod transform;
 pub mod trimopt;
 /// Read a TrueType font and write a subset of it.
 pub mod ttf;
+/// Lengths as text: metric first, imperial beside it when asked.
+pub mod units;
 pub mod weather;
 
 pub use analysis::AnalysisMode;
