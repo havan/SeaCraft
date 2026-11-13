@@ -28,6 +28,8 @@ struct Window {
     app: App,
     /// Role, label, whether it is disabled, and where.
     widgets: Vec<(Role, String, bool, egui::Rect)>,
+    /// Every text painted in the last frame, egui's own warnings included.
+    painted: Vec<String>,
 }
 
 impl Window {
@@ -38,6 +40,7 @@ impl Window {
             ctx,
             app,
             widgets: Vec::new(),
+            painted: Vec::new(),
         };
         w.frame(vec![]);
         w.frame(vec![]);
@@ -56,6 +59,17 @@ impl Window {
         let app = &mut self.app;
         let mut out = self.ctx.run_ui(input, |ui| app.draw(ui));
         out.textures_delta.clear();
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                egui::Shape::Text(t) => texts.push(t.galley.text().to_string()),
+                _ => {}
+            }
+        }
+        self.painted.clear();
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut self.painted);
+        }
         self.widgets = out
             .platform_output
             .accesskit_update
@@ -218,6 +232,19 @@ fn export_writes_the_previewed_document() {
     w.app.export_templates_to(&dxf).unwrap();
     assert!(std::fs::read_to_string(&dxf).unwrap().contains("CUT"));
     assert!(w.app.export_templates_to(&scratch("m.png")).is_err());
+}
+
+#[test]
+fn export_opens_a_file_dialog_that_shares_no_widget_with_the_window() {
+    let mut w = Window::new(demo());
+    w.app.set_show_templates(true);
+    w.until("the preview", |app| app.templates_pages().is_some());
+    w.click("Export…");
+    // A new window is laid out unseen on its first frame.
+    w.frame(vec![]);
+    assert!(w.button("OK").is_some(), "the file dialog is open");
+    let clashes: Vec<&String> = w.painted.iter().filter(|t| t.contains("use of")).collect();
+    assert!(clashes.is_empty(), "egui reports clashing ids: {clashes:?}");
 }
 
 #[test]

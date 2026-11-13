@@ -3048,7 +3048,9 @@ impl App {
         };
         let mut accept = false;
         let mut cancel = false;
+        // Its own id: a window that opens it may carry the same title.
         egui::Window::new(title)
+            .id(egui::Id::unique("file_dialog"))
             .collapsible(false)
             .resizable(true)
             .default_width(520.0)
