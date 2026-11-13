@@ -37,6 +37,12 @@ crates/seacraft-core/
   src/damage.rs             deterministic damage stability: lost buoyancy, equilibrium draft/trim/heel, residual GZ & SOLAS criteria
   src/linesplan.rs          stations/buttocks/waterlines -> SVG/DXF/IGES + combs
   src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
+  src/templates.rs          builder patterns: station moulds, profile, transom; skin deduction
+  src/sheet.rs              a drawing sheet in metres -> tiled/single-page PDF, SVG, DXF (mm)
+  src/pdf.rs                dependency-free PDF writer: pages, reusable forms, text, tables
+  src/ttf.rs                TrueType reader and subsetter for the PDF font
+  src/fonts.rs              the embedded DejaVu fonts and their licence
+  src/units.rs              lengths as text: metres, millimetres, feet-inches-eighths, scales
   src/iges.rs               IGES 5.3 B-spline curve (126) + surface (128) writer
   src/threemf.rs            spatial-grid vertex welding + 3MF 1.3 archive writer
   src/analysis.rs           vertex normals, discrete curvature, zebra/draft/curvature
@@ -108,6 +114,15 @@ NOTICE, LICENSE, LICENSES/  licence texts and required notices
 - `crates/seacraft-core/src/project.rs`: `<model>.seacraft.json` holds what `.fef` has no place for, such as
   loading conditions, compartments, damage cases, windage and report settings.
 - `docs/oracles.md` records each test's reference number and where it came from.
+
+Builder output goes one way, from the hull to paper:
+
+```
+Hull --templates.rs--> Sheet (paths, labels, notes in metres) --sheet.rs--> pdf.rs / SVG / dxf.rs
+offsets.rs TableOfOffsets --pdf::add_table--> PDF
+```
+
+`templates.rs` knows hulls and nothing about paper; `sheet.rs` knows paper and nothing about hulls.
 
 ## Commands
 

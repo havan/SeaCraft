@@ -14,6 +14,8 @@ see [`DISCLAIMER.md`](DISCLAIMER.md).
 - Resistance by Holtrop-Mennen, Michell thin-ship theory and Savitsky; a hull optimiser.
 - Strip-theory heave and pitch motions, irregular head seas, MSI.
 - Lines plans (SVG, DXF, IGES), mesh exports (OBJ, STL, 3MF, PLY, HTML), an HTML design report.
+- Full-size building patterns: station moulds with the skin deducted, profile and raked transom, as a PDF
+  tiled over ordinary paper, one page a pattern, SVG or DXF; the table of offsets as a PDF.
 - A command line, a loopback control channel, and an MCP server for AI agents.
 
 ## Next
@@ -88,6 +90,23 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 - [ ] Make the first release: run the workflow, and have someone open the GUI on Windows and on a Mac.
 - [x] Decide on publishing to crates.io: not now. The people a release is for download a program, and the
   library API is not meant to be stable yet. Flathub waits too, since it must build from source.
+
+### M6: Builder's toolkit
+
+- [x] Station moulds from the refined hull, with the skin deducted along the surface normal, mould face and
+  bevel on each sheet, strongback legs, half moulds (`crates/seacraft-core/src/templates.rs`).
+- [x] Profile (backbone) and raked transom patterns.
+- [x] A dependency-free PDF writer with an embedded DejaVu subset, tiled over A4, A3 or Letter with join marks,
+  a map page and 100 mm check rules, or one page a pattern; SVG and DXF in millimetres (`sheet.rs`, `pdf.rs`).
+- [x] The table of offsets as a PDF, metric with feet-inches-eighths beside it.
+- [x] The same in the CLI (`seacraft templates`, `offsets --pdf`), the GUI (File ▸ Builder templates…), the
+  control channel (`build.templates`) and MCP (`export_templates`, `export_offsets_pdf`), with a boatbuilding
+  skill.
+- [ ] Print the calibration page and one station and measure them.
+- [ ] Open the PDFs on Windows and macOS viewers.
+- [ ] Plywood panels: developed shapes of hull panels for stitch-and-glue, with their joins.
+- [ ] Materials and weight: skin area, plywood sheets, glass and resin, and the weight they add.
+- [ ] A build pack: patterns, offsets, panels and a cutting list in one document.
 
 ## Gap review
 

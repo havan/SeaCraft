@@ -21,6 +21,10 @@ MCP. See `docs/architecture.md`.
   light. The DXF writer (`dxf.rs`) is the model for a format that needs its own
   module: a `DxfShape` variant, a group-code branch in `write_dxf`, and a test
   that reads the output back as group-code pairs.
+* **New builder output** (patterns, printable tables): build `sheet::Sheet`s
+  and let `sheet.rs` write them (`pdf_tiled`, `pdf_single`, `svg`, `dxf`);
+  never write PDF from a hull module. Lengths on paper go through `units.rs`,
+  metric first. A table to print goes through `pdf::add_table`.
 * **New analysis shade**: extend `analysis::AnalysisMode`, add its colour in
   `analysis_color`, then give it a default in both front ends (`RenderModeArg`
   in the CLI, the View menu and `render::frame_key` in the GUI — the key must
