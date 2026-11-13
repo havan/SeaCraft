@@ -12,6 +12,7 @@ use seacraft_core::stability::CrossCurve;
 use seacraft_core::weather::{WeatherResult, WindageItem, WindageRect};
 use seacraft_core::{AnalysisMode, SubdivisionMode, Surface};
 
+use crate::commands::TemplatesParams;
 use crate::render::DisplayOptions;
 use crate::theme;
 
@@ -6649,4 +6650,247 @@ mod tests {
             "wasted width ratio {wasted_ratio:.3} exceeds 10% (axis {x0}..{x1}, data -3..230)"
         );
     }
+}
+
+// ---- builder templates ----------------------------------------------------
+
+/// Where the Builder templates preview stands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TemplatesStatus<'a> {
+    /// The patterns for the current options and model are being cut.
+    Working,
+    /// The PDF for the current options and model is ready.
+    Ready {
+        pages: usize,
+        sheets: usize,
+        warnings: &'a [String],
+    },
+    /// The current options or model give no patterns; the reason.
+    Failed(&'a str),
+}
+
+/// What the Builder templates window asks the app to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplatesAction {
+    /// Pick a file and write the patterns.
+    Export,
+}
+
+/// The scales the window offers, paper over real size.
+const TEMPLATE_SCALES: [f64; 5] = [1.0, 0.5, 0.2, 0.1, 0.05];
+
+/// The Builder templates options, the preview's status and Export. Edits `params` in place;
+/// the app compares it with what it had.
+pub fn templates_options(
+    ui: &mut egui::Ui,
+    params: &mut TemplatesParams,
+    status: &TemplatesStatus<'_>,
+) -> Option<TemplatesAction> {
+    use seacraft_core::templates::{StationChoice, Transom};
+    // The list as typed, kept while it is being edited; forgotten in the other modes.
+    let list_id = egui::Id::unique("templates_at_text");
+    egui::Grid::new("templates_grid")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Stations:");
+            ui.horizontal(|ui| {
+                let (count, spacing, list) = match &params.stations {
+                    StationChoice::Count(_) => (true, false, false),
+                    StationChoice::Spacing(_) => (false, true, false),
+                    StationChoice::At(_) => (false, false, true),
+                };
+                if ui.radio(count, "Count").clicked() && !count {
+                    params.stations = StationChoice::Count(11);
+                }
+                if ui.radio(spacing, "Spacing").clicked() && !spacing {
+                    params.stations = StationChoice::Spacing(0.5);
+                }
+                if ui.radio(list, "At x").clicked() && !list {
+                    params.stations = StationChoice::At(vec![1.0]);
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            match &mut params.stations {
+                StationChoice::Count(n) => {
+                    ui.data_mut(|d| d.remove::<String>(list_id));
+                    ui.add(
+                        egui::DragValue::new(n).range(2..=seacraft_core::templates::MAX_STATIONS),
+                    );
+                }
+                StationChoice::Spacing(s) => {
+                    ui.data_mut(|d| d.remove::<String>(list_id));
+                    ui.add(
+                        egui::DragValue::new(s)
+                            .speed(0.01)
+                            .range(0.05..=10.0)
+                            .suffix(" m"),
+                    );
+                }
+                StationChoice::At(xs) => {
+                    let shown = xs
+                        .iter()
+                        .map(|x| format!("{x}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let mut text: String = ui.data_mut(|d| d.get_temp(list_id)).unwrap_or(shown);
+                    let response = ui
+                        .add(egui::TextEdit::singleline(&mut text).hint_text("x, x, … in metres"));
+                    if response.changed() {
+                        let parsed: Option<Vec<f64>> = text
+                            .split(',')
+                            .map(|t| t.trim())
+                            .filter(|t| !t.is_empty())
+                            .map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite()))
+                            .collect();
+                        if let Some(parsed) = parsed.filter(|v| !v.is_empty()) {
+                            *xs = parsed;
+                        }
+                    }
+                    ui.data_mut(|d| d.insert_temp(list_id, text));
+                }
+            }
+            ui.end_row();
+
+            ui.label("Skin to deduct:");
+            ui.add(
+                egui::DragValue::new(&mut params.skin_mm)
+                    .speed(0.1)
+                    .range(0.0..=seacraft_core::templates::MAX_SKIN_M * 1000.0)
+                    .suffix(" mm"),
+            );
+            ui.end_row();
+
+            ui.label("Half moulds:");
+            ui.checkbox(&mut params.half, "Starboard half only");
+            ui.end_row();
+
+            ui.label("Strongback:");
+            ui.horizontal(|ui| {
+                let mut on = params.strongback_z.is_some();
+                if ui.checkbox(&mut on, "Legs up to z").changed() {
+                    params.strongback_z = on.then_some(2.0);
+                }
+                if let Some(z) = &mut params.strongback_z {
+                    ui.add(egui::DragValue::new(z).speed(0.01).suffix(" m"));
+                }
+            });
+            ui.end_row();
+
+            ui.label("Profile:");
+            ui.checkbox(&mut params.profile, "Backbone pattern");
+            ui.end_row();
+
+            ui.label("Transom:");
+            ui.horizontal(|ui| {
+                let mut on = params.transom.is_some();
+                if ui.checkbox(&mut on, "At x").changed() {
+                    params.transom = on.then_some(Transom {
+                        x: 0.0,
+                        rake_deg: 0.0,
+                    });
+                }
+                if let Some(t) = &mut params.transom {
+                    ui.add(egui::DragValue::new(&mut t.x).speed(0.01).suffix(" m"));
+                    ui.label("rake");
+                    let max = seacraft_core::templates::MAX_TRANSOM_RAKE_DEG;
+                    ui.add(
+                        egui::DragValue::new(&mut t.rake_deg)
+                            .speed(0.5)
+                            .range(-max..=max)
+                            .suffix("°"),
+                    );
+                }
+            });
+            ui.end_row();
+
+            ui.label("Paper:");
+            egui::ComboBox::from_id_salt("templates_paper")
+                .selected_text(params.paper.to_uppercase())
+                .show_ui(ui, |ui| {
+                    for paper in ["a4", "a3", "letter"] {
+                        ui.selectable_value(
+                            &mut params.paper,
+                            paper.to_owned(),
+                            paper.to_uppercase(),
+                        );
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Single page:");
+            ui.checkbox(&mut params.single_page, "One page a pattern (plotter)");
+            ui.end_row();
+
+            ui.label("Margin:");
+            ui.add(
+                egui::DragValue::new(&mut params.margin_mm)
+                    .speed(0.5)
+                    .range(0.0..=50.0)
+                    .suffix(" mm"),
+            );
+            ui.end_row();
+
+            ui.label("Overlap:");
+            ui.add(
+                egui::DragValue::new(&mut params.overlap_mm)
+                    .speed(0.5)
+                    .range(0.0..=50.0)
+                    .suffix(" mm"),
+            );
+            ui.end_row();
+
+            ui.label("Scale:");
+            egui::ComboBox::from_id_salt("templates_scale")
+                .selected_text(seacraft_core::units::scale_label(params.scale))
+                .show_ui(ui, |ui| {
+                    for scale in TEMPLATE_SCALES {
+                        ui.selectable_value(
+                            &mut params.scale,
+                            scale,
+                            seacraft_core::units::scale_label(scale),
+                        );
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Imperial:");
+            ui.checkbox(&mut params.imperial, "Feet and inches beside metres");
+            ui.end_row();
+        });
+
+    ui.separator();
+    match status {
+        TemplatesStatus::Working => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Working…");
+            });
+        }
+        TemplatesStatus::Ready {
+            pages,
+            sheets,
+            warnings,
+        } => {
+            ui.label(format!("{pages} pages, {sheets} patterns"));
+            if !warnings.is_empty() {
+                egui::ScrollArea::vertical()
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for warning in warnings.iter() {
+                            ui.colored_label(theme::WARN, warning);
+                        }
+                    });
+            }
+        }
+        TemplatesStatus::Failed(reason) => {
+            ui.colored_label(theme::FAIL, *reason);
+        }
+    }
+    ui.separator();
+    let ready = matches!(status, TemplatesStatus::Ready { .. });
+    ui.add_enabled(ready, egui::Button::new("Export…"))
+        .clicked()
+        .then_some(TemplatesAction::Export)
 }

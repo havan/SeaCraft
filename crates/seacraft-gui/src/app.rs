@@ -492,6 +492,8 @@ enum DialogKind {
     Export(ExportKind),
     /// The HTML design report, written with the project's report settings.
     Report,
+    /// The builder templates, in the format the path's extension names.
+    Templates,
 }
 
 /// An action that may need to discard unsaved work first.
@@ -960,6 +962,16 @@ pub struct App {
     start_rects: Option<crate::new_design::StartRects>,
     /// A design report being written on a worker thread, and its path.
     report_job: Option<(PathBuf, Job<()>)>,
+    /// The File > Builder templates window is open.
+    show_templates: bool,
+    templates_params: crate::commands::TemplatesParams,
+    /// Bumped when `templates_params` changes; part of the preview's key.
+    templates_rev: u64,
+    /// The preview: the PDF for the current options, its key and job.
+    templates_result: Option<crate::commands::TemplatesResult>,
+    templates_track: Track<crate::commands::TemplatesResult>,
+    /// Templates in another format being written on a worker thread, and the path.
+    templates_export_job: Option<(PathBuf, Job<()>)>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
     loading_track: Track<LoadingResult>,
@@ -1166,6 +1178,12 @@ impl App {
             project_settings: None,
             start_rects: None,
             report_job: None,
+            show_templates: false,
+            templates_params: crate::commands::TemplatesParams::default(),
+            templates_rev: 0,
+            templates_result: None,
+            templates_track: Track::default(),
+            templates_export_job: None,
             loading_selected: 0,
             loading_result: None,
             loading_track: Track::default(),
@@ -1943,6 +1961,7 @@ impl App {
         self.project_settings_window(ui);
         self.dialog_window(ui);
         self.report_options_window(ui);
+        self.templates_window(ui);
         self.finish_project_edit_frame(ui.ctx());
         self.messages_window(ui);
         self.poll_report(ui.ctx());
@@ -2188,6 +2207,16 @@ impl App {
                     }
                     if ui.button("Report options…").clicked() {
                         self.show_report_options = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new("Builder templates…"),
+                        )
+                        .clicked()
+                    {
+                        self.show_templates = true;
                         ui.close();
                     }
                     if ui
@@ -2792,6 +2821,10 @@ impl App {
                 .join(format!("{clean}-report.html"))
                 .to_string_lossy()
                 .to_string(),
+            DialogKind::Templates => dir
+                .join(format!("{clean}-moulds.pdf"))
+                .to_string_lossy()
+                .to_string(),
         }
     }
 
@@ -3009,6 +3042,7 @@ impl App {
             DialogKind::SaveAs => "Save as",
             DialogKind::Export(k) => k.label(),
             DialogKind::Report => "Design report",
+            DialogKind::Templates => "Builder templates",
         };
         let mut accept = false;
         let mut cancel = false;
@@ -3028,6 +3062,7 @@ impl App {
                     DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
                     DialogKind::Export(k) => format!(".{}", k.extension()),
                     DialogKind::Report => ".html".to_owned(),
+                    DialogKind::Templates => ".pdf".to_owned(),
                 };
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
@@ -3064,6 +3099,7 @@ impl App {
             DialogKind::SaveAs => self.write_model(&path),
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
+            DialogKind::Templates => self.start_templates_export(&path),
         };
         match result {
             Err(err) => {
@@ -4572,6 +4608,217 @@ impl App {
             MessagesAction::Clear => self.messages.clear(),
             MessagesAction::Close => self.show_messages = false,
         }
+    }
+
+    // ---- builder templates -----------------------------------------------
+
+    /// The key of the templates preview: the model, the options, and the name and draft that
+    /// the sheets print.
+    fn templates_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let (name, draft) = self.surface.as_ref().map_or((0, 0), |s| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.settings.name.hash(&mut h);
+            (h.finish(), s.settings.draft.to_bits())
+        });
+        revision_key(&[self.revision, self.templates_rev, name, draft])
+    }
+
+    /// Collect the preview job and start the next one when it is due: never while a point is
+    /// dragged, and 300 ms after the geometry last moved.
+    fn drive_templates_preview(&mut self, ctx: &egui::Context) {
+        let key = self.templates_key();
+        if let Some(Ok(result)) = self.templates_track.poll(key) {
+            self.templates_result = Some(result);
+        }
+        let quiet = self
+            .last_change
+            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(300));
+        if self.templates_track.due(key) && self.drag.is_none() {
+            match (&self.surface, quiet) {
+                (Some(surface), true) => {
+                    let surface = surface.clone();
+                    let (level, mode) = (self.level, self.mode);
+                    let params = self.templates_params.clone();
+                    let format = params.pdf_format();
+                    self.templates_track.start(key, move || {
+                        crate::commands::templates_in(&surface, level, mode, &params, format)
+                    });
+                }
+                (Some(_), false) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100))
+                }
+                (None, _) => {}
+            }
+        }
+        if self.templates_track.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Where the preview stands for `key`.
+    fn templates_status(&self, key: u64) -> panels::TemplatesStatus<'_> {
+        if let Some(reason) = self.templates_track.failure(key) {
+            return panels::TemplatesStatus::Failed(reason);
+        }
+        match &self.templates_result {
+            Some(r) if self.templates_track.is_current(key) => panels::TemplatesStatus::Ready {
+                pages: r.pages.unwrap_or(0),
+                sheets: r.rows.len(),
+                warnings: &r.warnings,
+            },
+            _ => panels::TemplatesStatus::Working,
+        }
+    }
+
+    /// The File > Builder templates window.
+    fn templates_window(&mut self, ui: &mut egui::Ui) {
+        self.poll_templates_export(ui.ctx());
+        if !self.show_templates {
+            return;
+        }
+        if self.surface.is_none() {
+            self.show_templates = false;
+            return;
+        }
+        self.drive_templates_preview(ui.ctx());
+        let key = self.templates_key();
+        let mut params = self.templates_params.clone();
+        let mut open = true;
+        let mut action = None;
+        let status = self.templates_status(key);
+        egui::Window::new("Builder templates")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(440.0)
+            .show(ui.ctx(), |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(640.0)
+                    .show(ui, |ui| {
+                        action = panels::templates_options(ui, &mut params, &status);
+                    });
+            });
+        if params != self.templates_params {
+            self.set_templates_params(params);
+        }
+        if action == Some(panels::TemplatesAction::Export) {
+            self.open_dialog(DialogKind::Templates);
+        }
+        self.show_templates = open;
+    }
+
+    /// Is the Builder templates window open?
+    pub fn show_templates(&self) -> bool {
+        self.show_templates
+    }
+
+    pub fn set_show_templates(&mut self, show: bool) {
+        self.show_templates = show;
+    }
+
+    pub fn templates_params(&self) -> &crate::commands::TemplatesParams {
+        &self.templates_params
+    }
+
+    /// Change the templates options; the preview is stale from now.
+    pub fn set_templates_params(&mut self, params: crate::commands::TemplatesParams) {
+        if params != self.templates_params {
+            self.templates_params = params;
+            self.templates_rev += 1;
+        }
+    }
+
+    /// Pages of the current preview; `None` while it is being computed or after a failure.
+    pub fn templates_pages(&self) -> Option<usize> {
+        match self.templates_status(self.templates_key()) {
+            panels::TemplatesStatus::Ready { pages, .. } => Some(pages),
+            _ => None,
+        }
+    }
+
+    /// Why the current preview failed, if it did.
+    pub fn templates_failure(&self) -> Option<&str> {
+        self.templates_track.failure(self.templates_key())
+    }
+
+    /// The preview's bytes when they are current and in `format`.
+    fn templates_preview_in(&self, format: seacraft_core::templates::Format) -> Option<&[u8]> {
+        let r = self.templates_result.as_ref()?;
+        (self.templates_track.is_current(self.templates_key()) && r.format == format)
+            .then_some(r.bytes.as_slice())
+    }
+
+    /// Write the templates to `path` on this thread, in the format its extension names: the
+    /// previewed PDF when it is current and the same format, otherwise cut afresh. For the
+    /// control channel and tests; the outcome is logged.
+    pub fn export_templates_to(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let format = self.templates_params.format_for(path)?;
+        let bytes = match self.templates_preview_in(format) {
+            Some(bytes) => bytes.to_vec(),
+            None => {
+                let surface = self.surface.as_ref().ok_or("No model loaded.")?;
+                crate::commands::templates_in(
+                    surface,
+                    self.level,
+                    self.mode,
+                    &self.templates_params,
+                    format,
+                )?
+                .bytes
+            }
+        };
+        let written = seacraft_core::io::write_atomic(path, bytes);
+        self.log_export("Builder templates", path, written)
+    }
+
+    /// The Export dialog's OK: write the previewed PDF at once, or cut another format on a
+    /// worker thread; the message log reports when it is written.
+    fn start_templates_export(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let format = match self.templates_params.format_for(path) {
+            Ok(format) => format,
+            Err(err) => {
+                self.log(Level::Error, err.clone());
+                return Err(err);
+            }
+        };
+        if let Some(bytes) = self.templates_preview_in(format) {
+            let written = seacraft_core::io::write_atomic(path, bytes);
+            return self.log_export("Builder templates", path, written);
+        }
+        let Some(surface) = self.surface.clone() else {
+            return Err("No model loaded.".to_owned());
+        };
+        let (level, mode) = (self.level, self.mode);
+        let params = self.templates_params.clone();
+        let target = path.to_path_buf();
+        self.set_status(format!("writing templates {}…", path.display()));
+        let job = Job::spawn(self.revision, move || {
+            let r = crate::commands::templates_in(&surface, level, mode, &params, format)?;
+            seacraft_core::io::write_atomic(&target, r.bytes)
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))
+        });
+        self.templates_export_job = Some((path.to_path_buf(), job));
+        Ok(())
+    }
+
+    /// Collect a finished templates export, if any.
+    fn poll_templates_export(&mut self, ctx: &egui::Context) {
+        let Some((path, job)) = &self.templates_export_job else {
+            return;
+        };
+        let (level, msg) = match job.poll() {
+            crate::jobs::Poll::Running => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                return;
+            }
+            crate::jobs::Poll::Done(()) => (
+                Level::Info,
+                format!("exported {} (Builder templates)", path.display()),
+            ),
+            crate::jobs::Poll::Failed(e) => (Level::Error, format!("templates failed: {e}")),
+        };
+        self.log(level, msg);
+        self.templates_export_job = None;
     }
 
     /// The File > Report options window, editing the project's report settings.
