@@ -580,8 +580,9 @@ pub fn plane_segments(verts: &[Vec3], tris: &[[usize; 3]], plane: &Plane) -> Vec
 }
 
 /// Chain segments into ordered polylines. The returned flag says whether the
-/// polyline closed on itself. Endpoints are snapped to `tol` so duplicate
-/// vertices from mirrored halves join up.
+/// polyline closed on itself; a closed polyline holds each of its points once,
+/// without repeating the first at the end. Endpoints are snapped to `tol` so
+/// duplicate vertices from mirrored halves join up.
 pub fn chain_paths(segs: &[(Vec3, Vec3)], tol: f64) -> Vec<(Vec<Vec3>, bool)> {
     if segs.is_empty() {
         return Vec::new();
@@ -685,7 +686,8 @@ pub fn chain_paths(segs: &[(Vec3, Vec3)], tol: f64) -> Vec<(Vec<Vec3>, bool)> {
         }
         used[start_edge] = true;
         let (a, b) = edges[start_edge];
-        let (fwd, closed) = walk(b, start_edge, &mut used, &adj, &edges);
+        // The walk closes when it comes back round to `a`, which it does not repeat.
+        let (fwd, closed) = walk(b, a, &mut used, &adj, &edges);
         let mut poly: Vec<Vec3> = Vec::new();
         poly.push(points[a]);
         for i in fwd.iter() {
@@ -693,14 +695,12 @@ pub fn chain_paths(segs: &[(Vec3, Vec3)], tol: f64) -> Vec<(Vec<Vec3>, bool)> {
         }
         if !closed {
             // Continue on the other side of the start edge.
-            let (mut back, _) = walk(a, start_edge, &mut used, &adj, &edges);
+            let (mut back, _) = walk(a, usize::MAX, &mut used, &adj, &edges);
             back.remove(0); // drop the duplicate of `a`
             back.reverse();
             let mut full: Vec<Vec3> = back.iter().map(|i| points[*i]).collect();
             full.extend(poly);
             poly = full;
-        } else {
-            poly.pop(); // drop duplicate closing point
         }
         if poly.len() >= 2 {
             paths.push((poly, closed));
@@ -1263,5 +1263,52 @@ mod tests {
             bow > 0.0 && stern < 0.0,
             "positive trim lifts the bow: {bow} / {stern}"
         );
+    }
+    /// A closed loop keeps every one of its points, whichever segment the walk starts from and
+    /// however the segments of several loops are mixed: the chain used to drop the last point of
+    /// the first loop, and to leave a later loop open or cut short.
+    #[test]
+    fn chained_loops_keep_every_point_and_are_all_closed() {
+        let p = |y: f64, z: f64| Vec3::new(0.0, y, z);
+        let square = |y0: f64| {
+            vec![
+                (p(y0, 0.0), p(y0 + 1.0, 0.0)),
+                (p(y0 + 1.0, 0.0), p(y0 + 1.0, 1.0)),
+                (p(y0 + 1.0, 1.0), p(y0, 1.0)),
+                (p(y0, 1.0), p(y0, 0.0)),
+            ]
+        };
+        let one = chain_paths(&square(0.0), 1e-7);
+        assert_eq!(one.len(), 1);
+        assert_eq!((one[0].0.len(), one[0].1), (4, true));
+
+        // Two loops with their segments interleaved, as a mesh hands them over, after an open
+        // line so that neither loop starts at the first segment.
+        let (a, b) = (square(3.0), square(6.0));
+        let mut mixed = vec![(p(-5.0, 0.0), p(-4.0, 0.0)), (p(-4.0, 0.0), p(-3.0, 0.0))];
+        for i in 0..4 {
+            mixed.push(a[i]);
+            mixed.push(b[(i + 2) % 4]);
+        }
+        let paths = chain_paths(&mixed, 1e-7);
+        let mut shapes: Vec<(usize, bool)> = paths
+            .iter()
+            .map(|(pts, closed)| (pts.len(), *closed))
+            .collect();
+        shapes.sort();
+        assert_eq!(shapes, [(3, false), (4, true), (4, true)]);
+        for (pts, closed) in &paths {
+            // No point is repeated, and a closed loop's area is the square's.
+            for (i, q) in pts.iter().enumerate() {
+                assert!(pts[i + 1..].iter().all(|r| r.dist(*q) > 1e-9));
+            }
+            if *closed {
+                let n = pts.len();
+                let area: f64 = (0..n)
+                    .map(|i| pts[i].y * pts[(i + 1) % n].z - pts[(i + 1) % n].y * pts[i].z)
+                    .sum();
+                assert!((area.abs() / 2.0 - 1.0).abs() < 1e-12, "{area}");
+            }
+        }
     }
 }
