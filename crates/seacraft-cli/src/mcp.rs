@@ -3978,6 +3978,10 @@ mod tests {
                 "seacraft-stability-check",
                 include_str!("../../../skills/seacraft-stability-check/SKILL.md"),
             ),
+            (
+                "seacraft-boatbuilding",
+                include_str!("../../../skills/seacraft-boatbuilding/SKILL.md"),
+            ),
         ];
         let tools: Vec<String> = tool_definitions()
             .iter()

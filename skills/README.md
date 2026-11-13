@@ -24,6 +24,7 @@ the [main README](../README.md)).
 | [`seacraft-hull-design`](seacraft-hull-design/SKILL.md) | loads a hull and must hit targets: displacement, draft, LCB, Cp, main dimensions, trim for least resistance |
 | [`seacraft-fairing`](seacraft-fairing/SKILL.md) | smooths a hull: zebra or curvature renders, linesplan combs, small control-point moves |
 | [`seacraft-stability-check`](seacraft-stability-check/SKILL.md) | reports hydrostatics, KN/GZ cross curves, IMO A.749 results, or Holtrop / Savitsky resistance |
+| [`seacraft-boatbuilding`](seacraft-boatbuilding/SKILL.md) | helps a builder: full-size station moulds, profile and transom patterns with the skin deducted, a table of offsets |
 
 They teach the agent to:
 - read the hull and a baseline measurement before touching anything
@@ -41,7 +42,7 @@ The design skills:
 Claude Code, for all projects:
 
 ```sh
-cp -r skills/seacraft-{hull-design,fairing,stability-check} ~/.claude/skills/
+cp -r skills/seacraft-{hull-design,fairing,stability-check,boatbuilding} ~/.claude/skills/
 ```
 
 One project only: copy the folders into that project's `.claude/skills/` instead. Other agents that read the
@@ -67,7 +68,7 @@ Authentication is required by default:
 
 ## Maintaining
 
-- `skills_name_only_real_tools` in `crates/seacraft-cli/src/mcp.rs` runs in CI. It reads the three design skills, checks that
+- `skills_name_only_real_tools` in `crates/seacraft-cli/src/mcp.rs` runs in CI. It reads the four design skills, checks that
   each `` `tool_name {…}` `` call names a tool in `tool_definitions()`, and checks the frontmatter (`name` equals the
   folder, `description` starts "Use when").
 - Numbers quoted in the skills come from the demo hull (`examples/demo-hull.fef`, T = 0.62 m). If the reference
