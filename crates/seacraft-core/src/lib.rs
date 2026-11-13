@@ -53,6 +53,8 @@ pub mod offsets;
 pub mod optimize;
 mod par;
 pub mod parametric;
+/// A small PDF writer: pages, reusable drawings, stroked lines, Unicode text.
+pub mod pdf;
 pub mod planing;
 pub mod project;
 pub mod raster;
