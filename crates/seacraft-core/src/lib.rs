@@ -69,6 +69,8 @@ pub mod sheet;
 pub mod stability;
 pub mod subdiv;
 pub mod table;
+/// Full-size patterns from a hull: station moulds, the profile, the transom.
+pub mod templates;
 pub mod threemf;
 pub mod topology;
 pub mod transform;
