@@ -35,9 +35,6 @@ const MARK_REACH_M: f64 = 0.02;
 /// Letter heights on paper, in millimetres.
 const MARK_LABEL_MM: f64 = 3.0;
 const TITLE_LABEL_MM: f64 = 5.0;
-/// A moved segment may run backwards by this much, in metres, before the mould line is said to
-/// cross itself: under the width of the line it is drawn with.
-const BACKWARDS_TOL_M: f64 = 2e-4;
 /// The most stations one set may have.
 pub const MAX_STATIONS: usize = 500;
 
@@ -332,6 +329,119 @@ fn respace_straight_runs(
     }
 }
 
+/// Where the moved lines of segments `a` and `b` meet, if they are not nearly parallel.
+fn moved_lines_meet(
+    points: &[(f64, f64)],
+    moves: &[Option<((f64, f64), f64)>],
+    a: usize,
+    b: usize,
+) -> Option<(f64, f64)> {
+    let n = points.len();
+    let line = |s: usize| {
+        let (m, d) = moves.get(s).copied().flatten()?;
+        let (p, q) = (points[s], points[(s + 1) % n]);
+        Some(((p.0 - d * m.0, p.1 - d * m.1), (q.0 - p.0, q.1 - p.1)))
+    };
+    let ((p, u), (r, w)) = (line(a)?, line(b)?);
+    let cross = u.0 * w.1 - u.1 * w.0;
+    if cross.abs() <= 1e-9 * u.0.hypot(u.1) * w.0.hypot(w.1) {
+        return None;
+    }
+    let t = ((r.0 - p.0) * w.1 - (r.1 - p.1) * w.0) / cross;
+    Some((p.0 + t * u.0, p.1 + t * u.1))
+}
+
+/// Drop the segments the move consumed, and let their neighbours' moved lines meet.
+///
+/// Moving a line inward shortens each segment at a convex corner; one shorter than that, a
+/// 4 mm piece of topside where it turns onto a deck under a 6 mm skin, or a fraction of a
+/// millimetre where the plane clips a triangle's tip, would run backwards. That is not the skin
+/// failing to fit: the moved line simply has no such segment, so its two ends go to where the
+/// nearest live segments' moved lines meet. Returns true when the whole line is consumed, as
+/// a tube thinner than its skin is.
+fn collapse_consumed_segments(
+    points: &[(f64, f64)],
+    moves: &[Option<((f64, f64), f64)>],
+    closed: bool,
+    moved: &mut [(f64, f64)],
+) -> bool {
+    let n = points.len();
+    let count = if closed { n } else { n.saturating_sub(1) };
+    let length = |s: usize| {
+        let (p, q) = (points[s], points[(s + 1) % n]);
+        (q.0 - p.0).hypot(q.1 - p.1)
+    };
+    let mut alive: Vec<bool> = (0..count).map(|s| length(s) > 0.0).collect();
+    let live_before = |alive: &[bool], s: usize| {
+        (1..count)
+            .map(|k| (s + count - k) % count)
+            .take_while(|t| closed || *t < s)
+            .find(|t| alive[*t])
+    };
+    let live_after = |alive: &[bool], s: usize| {
+        (1..count)
+            .map(|k| (s + k) % count)
+            .take_while(|t| closed || *t > s)
+            .find(|t| alive[*t])
+    };
+    // Each pass drops at least one segment, so this ends.
+    loop {
+        let mut dropped = false;
+        for s in 0..count {
+            if !alive[s] {
+                continue;
+            }
+            let (i, j) = (s, (s + 1) % n);
+            let (p, q) = (points[i], points[j]);
+            let along = ((q.0 - p.0) * (moved[j].0 - moved[i].0)
+                + (q.1 - p.1) * (moved[j].1 - moved[i].1))
+                / length(s);
+            if along >= 0.0 {
+                continue;
+            }
+            alive[s] = false;
+            dropped = true;
+            let middle = (
+                (moved[i].0 + moved[j].0) / 2.0,
+                (moved[i].1 + moved[j].1) / 2.0,
+            );
+            let (before, after) = (live_before(&alive, s), live_after(&alive, s));
+            // The vertices from the end of the live segment before to the start of the one
+            // after all go to one point.
+            let (first, last) = (before.map_or(i, |b| (b + 1) % n), after.unwrap_or(j));
+            let at = match (before, after) {
+                (Some(b), Some(a)) if b != a => {
+                    let reach = 4.0
+                        * [b, a]
+                            .iter()
+                            .filter_map(|t| moves.get(*t).copied().flatten())
+                            .map(|(_, d)| d)
+                            .fold(0.0, f64::max);
+                    moved_lines_meet(points, moves, b, a)
+                        .filter(|x| (x.0 - middle.0).hypot(x.1 - middle.1) <= reach + length(s))
+                        .unwrap_or(middle)
+                }
+                _ => middle,
+            };
+            let mut k = first;
+            loop {
+                moved[k] = at;
+                if k == last {
+                    break;
+                }
+                k = (k + 1) % n;
+            }
+        }
+        if !dropped {
+            return false;
+        }
+        let live = alive.iter().filter(|a| **a).count();
+        if (closed && live < 3) || live == 0 {
+            return true;
+        }
+    }
+}
+
 /// Move a section in by `skin_m`, each segment by `skin / max(|n_p|, 0.2)` along its own normal
 /// and each vertex to where its two segments agree. A skin of zero, or less, returns the section.
 pub fn mould_line(section: &[SectionPath], skin_m: f64) -> MouldLine {
@@ -371,31 +481,9 @@ pub fn mould_line(section: &[SectionPath], skin_m: f64) -> MouldLine {
             .collect();
         let mut moved = moved;
         respace_straight_runs(&path.points, &moves, path.closed, &mut moved);
-        // A segment that now runs the other way means the skin does not fit there. Where the
-        // cutting plane clips the tip of a triangle the section has a segment a fraction of a
-        // millimetre long, and a bend beside it turns that one over by less than a line's
-        // width: those are closed up, not reported.
         let count = if path.closed { n } else { n - 1 };
-        for i in 0..count {
-            let j = (i + 1) % n;
-            let (p, q) = (path.points[i], path.points[j]);
-            let length = (q.0 - p.0).hypot(q.1 - p.1);
-            if length == 0.0 {
-                continue;
-            }
-            let along = ((q.0 - p.0) * (moved[j].0 - moved[i].0)
-                + (q.1 - p.1) * (moved[j].1 - moved[i].1))
-                / length;
-            if along < -BACKWARDS_TOL_M {
-                out.crosses_itself = true;
-            } else if along < 0.0 {
-                let middle = (
-                    (moved[i].0 + moved[j].0) / 2.0,
-                    (moved[i].1 + moved[j].1) / 2.0,
-                );
-                moved[i] = middle;
-                moved[j] = middle;
-            }
+        if collapse_consumed_segments(&path.points, &moves, path.closed, &mut moved) {
+            out.crosses_itself = true;
         }
         // Turned inside out as a whole, as a tube thinner than its skin is.
         if path.closed && area2(&path.points) * area2(&moved) < 0.0 {
@@ -1779,11 +1867,12 @@ mod tests {
         );
     }
 
-    /// A section with a segment 0.15 mm long beside a 3 degree bend, as a plane clipping the tip of
-    /// a triangle makes: moved in 6 mm the short segment would turn over by under 0.01 mm. It closes up
-    /// and nothing is reported. The same bend with a 60 mm skin turns it over by 1.4 mm: reported.
+    /// A section with a segment 0.15 mm long beside a 3 degree bend, as a plane clipping the
+    /// tip of a triangle makes: moved in 6 mm the short segment would turn over by under
+    /// 0.01 mm. It is consumed and nothing is reported. A 60 mm skin consumes it the same way:
+    /// the two long lines, each moved 0.06, meet at one point.
     #[test]
-    fn a_hair_of_a_segment_beside_a_bend_closes_up_quietly() {
+    fn a_hair_of_a_segment_beside_a_bend_is_consumed_quietly() {
         let bend = 3f64.to_radians();
         let (c, s) = (bend.cos(), bend.sin());
         // Along -u, the outside below: a long run, the short segment, then the bend and a long run.
@@ -1822,7 +1911,16 @@ mod tests {
             "the short segment closed up"
         );
         assert!((thin.paths[0].0[1].1 - 0.006).abs() < 1e-4);
-        assert!(mould_line(&section, 0.06).crosses_itself);
+        // A skin far thicker than the hair consumes it too: the two long lines, each moved by
+        // 0.06, meet at one point.
+        let thick = mould_line(&section, 0.06);
+        assert!(!thick.crosses_itself);
+        let corner = thick.paths[0].0[1];
+        assert_eq!(corner, thick.paths[0].0[2]);
+        assert!((corner.1 - 0.06).abs() < 1e-9, "{corner:?}");
+        let (a, d) = ((-1.00015, 0.000005), (-c, s));
+        let off_bend = (d.0 * (corner.1 - a.1) - d.1 * (corner.0 - a.0)).abs();
+        assert!((off_bend - 0.06).abs() < 1e-9, "{off_bend}");
     }
 
     /// Closed form: a 4 x 2 rectangle moved in by 0.01 is 3.98 x 1.98. A plane passing 1 mm from
@@ -1859,6 +1957,51 @@ mod tests {
         let mould = mould_line(&section, 0.01);
         assert!(!mould.crosses_itself);
         assert_span(&mould.paths[0].0, [-1.99, 0.01, 1.99, 1.99], 1e-9);
+    }
+
+    /// Closed form: a 2 x 1 rectangle moved in by 0.006 is 1.988 x 0.988, corners and all. A
+    /// corner cut by a 4 mm chamfer at 45 degrees, as a topside meets a deck, loses the chamfer:
+    /// each of its ends moves 0.006 x tan 22.5 deg = 2.49 mm along it, which is more than its
+    /// length, so the moved sides meet at the rectangle's own moved corner.
+    #[test]
+    fn a_segment_shorter_than_the_skin_at_a_corner_is_consumed_not_a_crossing() {
+        let a = 0.004 / 2f64.sqrt();
+        // Clockwise, so the outside is on the left of the direction travelled.
+        let points = vec![
+            (1.0, 0.0),
+            (-1.0 + a, 0.0),
+            (-1.0, a),
+            (-1.0, 1.0),
+            (1.0, 1.0),
+        ];
+        let n = points.len();
+        let meetings = (0..n)
+            .map(|i| {
+                let (p, q): ((f64, f64), (f64, f64)) = (points[i], points[(i + 1) % n]);
+                let len = (q.0 - p.0).hypot(q.1 - p.1);
+                Some(Meeting {
+                    outward: ((q.1 - p.1) / -len, (q.0 - p.0) / len),
+                    in_plane: 1.0,
+                    along: 0.0,
+                })
+            })
+            .collect();
+        let section = [SectionPath {
+            points,
+            closed: true,
+            meetings,
+        }];
+        let mould = mould_line(&section, 0.006);
+        assert!(!mould.crosses_itself);
+        let moved = &mould.paths[0].0;
+        assert_span(moved, [-0.994, 0.006, 0.994, 0.994], 1e-9);
+        for i in [1, 2] {
+            let p = moved[i];
+            assert!(
+                (p.0 + 0.994).abs() < 1e-9 && (p.1 - 0.006).abs() < 1e-9,
+                "{i}: {p:?}"
+            );
+        }
     }
 
     /// A 5 mm tube cannot hold a 12 mm skin: the mould line would turn inside out.
@@ -1954,6 +2097,49 @@ mod tests {
             StationChoice::At(vec![1.0, f64::NAN]),
         ] {
             assert!(station_positions(&hull, &bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Internal consistency on a real hull, not an oracle: the runabout example has a sheer
+    /// that turns onto a deck through segments a few millimetres long. Every point of each
+    /// station's mould line is at least the skin (less 1 %, for the mean taken at a gentle bend)
+    /// from the section, and none is reported as crossing itself.
+    #[test]
+    fn the_runabout_s_moulds_keep_the_skin_from_the_hull() {
+        let surface = crate::fef::parse(include_str!("../../../examples/runabout-6m.fef")).unwrap();
+        let hull = Hull::new(&surface, crate::SubdivisionOptions::default());
+        let skin = 0.006;
+        let dist = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len2 = dx * dx + dy * dy;
+            let t = if len2 > 0.0 {
+                (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+        };
+        for x in station_positions(&hull, &StationChoice::Count(11)).unwrap() {
+            let section = cut(&hull, &Frame::station(x));
+            let mould = mould_line(&section, skin);
+            assert!(!mould.crosses_itself, "x = {x}");
+            for (moved, _) in &mould.paths {
+                for p in moved {
+                    let nearest = section
+                        .iter()
+                        .flat_map(|path| {
+                            let n = path.points.len();
+                            let count = if path.closed { n } else { n - 1 };
+                            (0..count).map(move |i| (path.points[i], path.points[(i + 1) % n]))
+                        })
+                        .map(|(a, b)| dist(*p, a, b))
+                        .fold(f64::MAX, f64::min);
+                    assert!(
+                        nearest >= 0.99 * skin,
+                        "x = {x}: {p:?} is {nearest} from the hull"
+                    );
+                }
+            }
         }
     }
 
