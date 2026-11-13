@@ -368,10 +368,12 @@ pub enum ExportKind {
     Linesplan,
     LinesplanDxf,
     LinesplanIges,
+    /// The table of offsets as a printable PDF, in millimetres.
+    OffsetsPdf,
 }
 
 impl ExportKind {
-    pub const ALL: [ExportKind; 9] = [
+    pub const ALL: [ExportKind; 10] = [
         ExportKind::Obj,
         ExportKind::Stl,
         ExportKind::ThreeMf,
@@ -381,6 +383,7 @@ impl ExportKind {
         ExportKind::Linesplan,
         ExportKind::LinesplanDxf,
         ExportKind::LinesplanIges,
+        ExportKind::OffsetsPdf,
     ];
 
     pub fn label(self) -> &'static str {
@@ -394,6 +397,7 @@ impl ExportKind {
             ExportKind::Linesplan => "Linesplan SVG…",
             ExportKind::LinesplanDxf => "Linesplan DXF…",
             ExportKind::LinesplanIges => "Linesplan IGES…",
+            ExportKind::OffsetsPdf => "Offsets table PDF…",
         }
     }
 
@@ -408,6 +412,7 @@ impl ExportKind {
             ExportKind::Linesplan => "svg",
             ExportKind::LinesplanDxf => "dxf",
             ExportKind::LinesplanIges => "igs",
+            ExportKind::OffsetsPdf => "pdf",
         }
     }
 
@@ -2921,7 +2926,60 @@ impl App {
                 path,
                 seacraft_core::linesplan::iges(surface, linesplan_opts),
             ),
+            ExportKind::OffsetsPdf => return self.write_offsets_pdf(path, false),
         };
+        self.log_export(kind.label(), path, written)
+    }
+
+    /// Write the table of offsets the Offsets view shows by default (21 stations, 6 waterlines,
+    /// 4 buttocks) as a PDF, with `imperial` tables after the metric ones; the outcome is logged.
+    pub fn write_offsets_pdf(
+        &mut self,
+        path: &std::path::Path,
+        imperial: bool,
+    ) -> Result<(), String> {
+        let label = ExportKind::OffsetsPdf.label();
+        let name = self
+            .surface
+            .as_ref()
+            .ok_or_else(|| "No model loaded.".to_owned())?
+            .settings
+            .name
+            .clone();
+        let made = crate::commands::offsets_in(
+            crate::commands::ModelView::of(self),
+            &crate::commands::OffsetsParams::default(),
+        )
+        .and_then(|r| {
+            let table = seacraft_core::offsets::TableOfOffsets {
+                keel_z: r.keel_z,
+                waterlines_m: r.waterlines_m,
+                buttocks_m: r.buttocks_m,
+                stations: r.stations,
+            };
+            let title = format!("{name} - table of offsets");
+            seacraft_core::offsets::pdf(&table, &title, imperial)
+        });
+        match made {
+            Ok(doc) => {
+                let written = seacraft_core::io::write_atomic(path, doc.bytes);
+                self.log_export(label, path, written)
+            }
+            Err(err) => {
+                let msg = format!("cannot export {}: {err}", path.display());
+                self.log(Level::Error, msg.clone());
+                Err(msg)
+            }
+        }
+    }
+
+    /// Log the outcome of writing an export labelled `label` to `path`.
+    fn log_export(
+        &mut self,
+        label: &str,
+        path: &std::path::Path,
+        written: std::io::Result<()>,
+    ) -> Result<(), String> {
         match written {
             Ok(()) => {
                 self.log(
@@ -2929,7 +2987,7 @@ impl App {
                     format!(
                         "exported {} ({})",
                         path.display(),
-                        kind.label().trim_end_matches('…')
+                        label.trim_end_matches('…')
                     ),
                 );
                 Ok(())

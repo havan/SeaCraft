@@ -1160,7 +1160,8 @@ fn handle_inner(
             let format = text(p, "format")?.ok_or("missing `format`")?;
             let kind = export_kind(format).ok_or_else(|| {
                 format!(
-                    "`format` must be obj, stl, 3mf, ply, html, svg, dxf or igs, not `{format}`"
+                    "`format` must be obj, stl, 3mf, ply, html, svg, dxf, igs or offsets_pdf, \
+                     not `{format}`"
                 )
             })?;
             // Optional linesplan options; each one omitted keeps the
@@ -1195,9 +1196,17 @@ fn handle_inner(
                 o.level = level.unwrap_or(o.level);
                 o
             });
+            let imperial = boolean(p, "imperial")?;
+            if imperial.is_some() && kind != crate::app::ExportKind::OffsetsPdf {
+                return Err(format!("`imperial` applies to offsets_pdf, not `{format}`"));
+            }
             let path = std::path::PathBuf::from(path.trim());
             let validated = app.check_control_write_path(&path)?;
-            app.write_export_with(kind, &validated, linesplan)?;
+            if kind == crate::app::ExportKind::OffsetsPdf {
+                app.write_offsets_pdf(&validated, imperial.unwrap_or(false))?;
+            } else {
+                app.write_export_with(kind, &validated, linesplan)?;
+            }
             let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
             let mut out = json!({
                 "path": validated.to_string_lossy(),
@@ -2555,6 +2564,7 @@ fn export_kind(format: &str) -> Option<crate::app::ExportKind> {
         "svg" => ExportKind::Linesplan,
         "dxf" => ExportKind::LinesplanDxf,
         "igs" | "iges" => ExportKind::LinesplanIges,
+        "offsets_pdf" => ExportKind::OffsetsPdf,
         _ => return None,
     })
 }
@@ -2618,6 +2628,41 @@ mod tests {
             "seacraft-control-{name}-{}.bin",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn model_export_writes_the_offsets_pdf() {
+        let (mut app, ctx) = demo();
+        let metric = scratch("offsets.pdf");
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": metric.to_string_lossy(), "format": "offsets_pdf" }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(r["result"]["bytes"].as_u64().unwrap() > 0, "{r}");
+        let bytes = std::fs::read(&metric).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        let both = scratch("offsets-imperial.pdf");
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": both.to_string_lossy(), "format": "offsets_pdf", "imperial": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(std::fs::metadata(&both).unwrap().len() > bytes.len() as u64);
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": metric.to_string_lossy(), "format": "svg", "imperial": true }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(r["error"].as_str().unwrap().contains("imperial"), "{r}");
+        let _ = std::fs::remove_file(metric);
+        let _ = std::fs::remove_file(both);
     }
 
     /// C05: `model.export` draws a linesplan with the section options it is
