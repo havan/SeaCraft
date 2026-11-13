@@ -111,6 +111,22 @@ pub fn text_width_pt(text: &str, size_pt: f64) -> f64 {
     units as f64 / f.metrics().units_per_em as f64 * size_pt
 }
 
+/// `text` broken into lines no wider than `width_pt` at `size_pt`, at spaces. A word wider than
+/// the line gets a line to itself. An empty text is no lines.
+pub fn wrap_text(text: &str, size_pt: f64, width_pt: f64) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if text_width_pt(&format!("{line} {word}"), size_pt) <= width_pt => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
+}
+
 /// What goes on a page or in a reusable drawing: lines, text and placed drawings, in the order
 /// they are added. Coordinates are points, x to the right and y up, from the lower-left corner.
 #[derive(Default, Clone, Debug)]
@@ -240,6 +256,16 @@ impl Content {
             num(x),
             num(y),
         );
+    }
+
+    /// Add everything in `other` after what is here, as if it had been drawn here.
+    pub fn append(&mut self, other: &Content) {
+        self.ops.push_str(&other.ops);
+        for (glyph, c) in &other.glyphs {
+            self.glyphs.entry(*glyph).or_insert(*c);
+        }
+        self.missing.extend(&other.missing);
+        self.forms.extend(&other.forms);
     }
 
     /// Place a drawing added with [`Pdf::add_form`], under the current transform and clip.
@@ -976,6 +1002,35 @@ mod tests {
         assert!(!text(&doc.bytes).contains("/FontFile2"));
         assert!(!text(&doc.bytes).contains("/Font"));
         assert_xref_is_right(&doc.bytes);
+    }
+
+    #[test]
+    fn long_text_wraps_at_spaces_and_content_can_be_joined() {
+        let words = "one two three four five six seven";
+        let width = text_width_pt("one two three", 10.0);
+        let lines = wrap_text(words, 10.0, width + 0.01);
+        assert_eq!(lines, ["one two three", "four five six", "seven"]);
+        assert!(lines.iter().all(|l| text_width_pt(l, 10.0) <= width + 0.01));
+        assert_eq!(wrap_text("", 10.0, 100.0), Vec::<String>::new());
+        assert_eq!(wrap_text("unbreakable", 10.0, 1.0), ["unbreakable"]);
+        assert_eq!(wrap_text("fits", 10.0, 1000.0), ["fits"]);
+
+        let mut pdf = Pdf::new("Joined");
+        let form = pdf.add_form([0.0, 0.0, 10.0, 10.0], Content::new());
+        let mut part = Content::new();
+        part.text((10.0, 10.0), 10.0, 0.0, Anchor::Start, 0.0, "part \u{8239}");
+        part.form(form);
+        let mut whole = Content::new();
+        whole.polyline(&[(0.0, 0.0), (5.0, 5.0)], false, BLACK);
+        whole.append(&part);
+        pdf.add_page(100.0, 100.0, whole);
+        let doc = pdf.finish().unwrap();
+        assert_eq!(page_text(&doc.bytes, 0), ["part ?"]);
+        assert_eq!(doc.missing, ['\u{8239}']);
+        let stream = text(&page_stream(&doc.bytes, 0));
+        assert!(stream.find("S\n").unwrap() < stream.find("Tj").unwrap());
+        assert!(stream.ends_with("/X0 Do\n"), "{stream}");
+        assert!(text(&doc.bytes).contains("/XObject << /X0 "));
     }
 
     /// The width is the sum of the font's own advances, read here a second way through `ttf`.

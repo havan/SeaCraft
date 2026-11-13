@@ -64,6 +64,8 @@ pub mod resistance;
 pub mod seakeeping;
 /// Irregular head-sea responses: spectra, significant motions, accelerations, MSI.
 pub mod seastate;
+/// A 2D drawing in metres and its writers: tiled PDF, single-page PDF, SVG, DXF.
+pub mod sheet;
 pub mod stability;
 pub mod subdiv;
 pub mod table;
