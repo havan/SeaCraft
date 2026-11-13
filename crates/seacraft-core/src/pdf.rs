@@ -159,6 +159,14 @@ impl Content {
         let _ = writeln!(self.ops, "1 0 0 1 {} {} cm", num(dx_pt), num(dy_pt));
     }
 
+    /// Shrink or enlarge everything drawn from here on by `factor`, about the current origin.
+    /// Line widths and text scale with it. A factor that is not more than zero is ignored.
+    pub fn scale(&mut self, factor: f64) {
+        if factor.is_finite() && factor > 0.0 {
+            let _ = writeln!(self.ops, "{factor:.6} 0 0 {factor:.6} 0 0 cm");
+        }
+    }
+
     /// Draw only inside this rectangle from here on.
     pub fn clip_rect(&mut self, x_pt: f64, y_pt: f64, w_pt: f64, h_pt: f64) {
         let _ = writeln!(
@@ -1029,6 +1037,12 @@ mod tests {
         assert_eq!(doc.missing, ['\u{8239}']);
         let stream = text(&page_stream(&doc.bytes, 0));
         assert!(stream.find("S\n").unwrap() < stream.find("Tj").unwrap());
+        let mut c = Content::new();
+        c.scale(0.25);
+        c.scale(0.0);
+        c.scale(f64::NAN);
+        assert_eq!(c.ops, "0.250000 0 0 0.250000 0 0 cm\n");
+
         assert!(stream.ends_with("/X0 Do\n"), "{stream}");
         assert!(text(&doc.bytes).contains("/XObject << /X0 "));
     }
