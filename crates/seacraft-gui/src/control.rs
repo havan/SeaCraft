@@ -697,6 +697,7 @@ fn handle_inner(
             let mut dock_wide: Option<bool> = None;
             let mut maximised: Option<bool> = None;
             let mut messages: Option<bool> = None;
+            let mut templates: Option<bool> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -767,6 +768,10 @@ fn handle_inner(
                     }
                     "messages" => {
                         messages = Some(value.as_bool().ok_or("`messages` must be true or false")?)
+                    }
+                    "templates" => {
+                        templates =
+                            Some(value.as_bool().ok_or("`templates` must be true or false")?)
                     }
                     "analysis" => {
                         let name = value.as_str().ok_or("`analysis` must be a string")?;
@@ -855,6 +860,9 @@ fn handle_inner(
             *app.display_mut() = display;
             if let Some(show) = messages {
                 app.set_show_messages(show);
+            }
+            if let Some(show) = templates {
+                app.set_show_templates(show);
             }
             if let Some(show) = loading_panel {
                 app.set_show_loading(show);
@@ -1810,6 +1818,96 @@ fn handle_inner(
             };
             reply_app(commands::bonjean(app, &params)?)
         }
+        "build.templates" => {
+            use seacraft_core::templates::{StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS};
+            let path = text(p, "path")?
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("missing `path`")?;
+            let given: Vec<&str> = ["stations", "spacing", "at"]
+                .into_iter()
+                .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
+                .collect();
+            if given.len() > 1 {
+                return Err(format!(
+                    "give one of `stations`, `spacing` and `at`, not `{}`",
+                    given.join("` and `")
+                ));
+            }
+            let defaults = commands::TemplatesParams::default();
+            let stations = if let Some(n) = number_in(p, "stations", 2.0..=MAX_STATIONS as f64)? {
+                StationChoice::Count(n.round() as usize)
+            } else if let Some(s) = number_in(p, "spacing", 0.001..=1.0e4)? {
+                StationChoice::Spacing(s)
+            } else if let Some(xs) = numbers(p, "at")? {
+                StationChoice::At(xs)
+            } else {
+                defaults.stations.clone()
+            };
+            let transom = match (number(p, "transom_x")?, number(p, "transom_rake_deg")?) {
+                (Some(x), Some(rake_deg)) => Some(Transom { x, rake_deg }),
+                (None, None) => None,
+                _ => {
+                    return Err(
+                        "`transom_x` and `transom_rake_deg` go together: give both or neither"
+                            .into(),
+                    )
+                }
+            };
+            let paper = match text(p, "paper")? {
+                Some(paper) => {
+                    seacraft_core::sheet::Paper::parse(paper)
+                        .map_err(|e| format!("`paper`: {e}"))?;
+                    paper.to_owned()
+                }
+                None => defaults.paper.clone(),
+            };
+            let scale = match text(p, "scale")? {
+                Some(scale) => {
+                    seacraft_core::units::parse_scale(scale).map_err(|e| format!("`scale`: {e}"))?
+                }
+                None => defaults.scale,
+            };
+            let params = commands::TemplatesParams {
+                level: level_arg(p)?,
+                stations,
+                skin_mm: number_in(p, "skin_mm", 0.0..=MAX_SKIN_M * 1000.0)?
+                    .unwrap_or(defaults.skin_mm),
+                half: boolean(p, "half")?.unwrap_or(defaults.half),
+                strongback_z: number(p, "strongback_z")?,
+                waterlines: numbers(p, "waterlines")?,
+                profile: boolean(p, "profile")?.unwrap_or(defaults.profile),
+                transom,
+                paper,
+                single_page: boolean(p, "single_page")?.unwrap_or(defaults.single_page),
+                margin_mm: number_in(p, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
+                overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
+                scale,
+                imperial: boolean(p, "imperial")?.unwrap_or(defaults.imperial),
+            };
+            let path = std::path::PathBuf::from(path.trim());
+            let validated = app.check_control_write_path(&path)?;
+            let format = params.format_for(&validated)?;
+            let surface = app.surface().ok_or("build.templates: no model is loaded")?;
+            let r = commands::templates_in(
+                surface,
+                app.subdivision_level(),
+                app.subdivision_mode(),
+                &params,
+                format,
+            )?;
+            seacraft_core::io::write_atomic(&validated, &r.bytes)
+                .map_err(|e| format!("cannot write {}: {e}", validated.display()))?;
+            let missing: Vec<String> = r.missing.iter().map(char::to_string).collect();
+            Ok(json!({
+                "path": validated.to_string_lossy(),
+                "format": format.name(),
+                "bytes": r.bytes.len(),
+                "pages": r.pages,
+                "sheets": r.rows,
+                "warnings": r.warnings,
+                "missing_characters": missing,
+            }))
+        }
         "curves.offsets" => {
             // Read-only, like curves.bonjean: no snapshot, no dirty flag.
             let defaults = commands::OffsetsParams::default();
@@ -2628,6 +2726,91 @@ mod tests {
             "seacraft-control-{name}-{}.bin",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn build_templates_writes_inside_the_write_root_only() {
+        let (mut app, ctx) = demo();
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-templates-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        let inside = dir.join("m.pdf");
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.templates",
+            json!({ "path": inside.to_string_lossy(), "skin_mm": 6 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(r["result"]["pages"].as_u64().unwrap() > 0, "{r}");
+        assert_eq!(r["result"]["sheets"].as_array().unwrap().len(), 11, "{r}");
+        assert_eq!(r["result"]["format"], "pdf");
+        assert!(std::fs::read(&inside).unwrap().starts_with(b"%PDF-"));
+        let dxf = dir.join("m.dxf");
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.templates",
+            json!({ "path": dxf.to_string_lossy(), "profile": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["pages"], Value::Null);
+        assert_eq!(r["result"]["sheets"].as_array().unwrap().len(), 12, "{r}");
+
+        let outside = dir.join("../seacraft-templates-outside.pdf");
+        let templates = call(
+            &mut app,
+            &ctx,
+            "build.templates",
+            json!({ "path": outside.to_string_lossy() }),
+        );
+        let export = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": outside.to_string_lossy(), "format": "offsets_pdf" }),
+        );
+        assert_eq!(templates["ok"], false, "{templates}");
+        assert_eq!(templates["error"], export["error"]);
+        assert!(!outside.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_templates_refuses_two_station_choices_and_bad_values() {
+        let (mut app, ctx) = demo();
+        let path = scratch("bad-templates.pdf");
+        let path = path.to_string_lossy();
+        for (params, key) in [
+            (json!({ "stations": 5, "spacing": 0.5 }), "spacing"),
+            (json!({ "spacing": 0.5, "at": [1.0] }), "at"),
+            (json!({ "skin_mm": -1 }), "skin_mm"),
+            (json!({ "scale": "1:0" }), "scale"),
+            (json!({ "paper": "a5" }), "paper"),
+            (json!({ "transom_x": 1.0 }), "transom_rake_deg"),
+            (json!({ "stations": 1 }), "stations"),
+        ] {
+            let mut params = params;
+            params["path"] = json!(path);
+            let r = call(&mut app, &ctx, "build.templates", params.clone());
+            assert_eq!(r["ok"], false, "{params}: {r}");
+            let err = r["error"].as_str().unwrap();
+            assert!(err.contains(key), "{params}: {err}");
+        }
+        assert!(!std::path::Path::new(path.as_ref()).exists());
+    }
+
+    #[test]
+    fn ui_set_opens_the_templates_window() {
+        let (mut app, ctx) = demo();
+        let r = call(&mut app, &ctx, "ui.set", json!({ "templates": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.show_templates());
     }
 
     #[test]
