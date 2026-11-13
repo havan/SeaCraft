@@ -86,6 +86,8 @@ enum Command {
     Seakeeping(SeakeepingArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
     Linesplan(LinesplanArgs),
+    /// Full-size building patterns: station moulds, profile and transom as PDF, DXF or SVG
+    Templates(TemplatesArgs),
     /// Design dossier: self-contained HTML report with particulars, linesplan, hydrostatics, SAC, stability and resistance
     Report(ReportArgs),
     /// Render a preview PNG, including zebra, curvature and draft analysis
@@ -429,6 +431,12 @@ struct OffsetsArgs {
     /// Write the HTML table to this path
     #[arg(long)]
     html: Option<PathBuf>,
+    /// Write the tables as a printable PDF, in millimetres, to this path
+    #[arg(long)]
+    pdf: Option<PathBuf>,
+    /// Add the tables in feet, inches and eighths to the PDF
+    #[arg(long)]
+    imperial: bool,
     /// Emit JSON instead of a table
     #[arg(long)]
     json: bool,
@@ -1282,6 +1290,70 @@ struct LinesplanArgs {
     subdiv: SubdivArgsCli,
 }
 
+#[derive(Args, Debug)]
+struct TemplatesArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output path: `.pdf` (tiled over paper, or one page a pattern), `.svg` or `.dxf`
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Number of stations, at the middles of equal slices of the hull [default: 11]
+    #[arg(long, conflicts_with_all = ["spacing", "at"])]
+    stations: Option<usize>,
+    /// A station at every multiple of this many metres of x inside the hull
+    #[arg(long, value_name = "METRES", conflicts_with = "at")]
+    spacing: Option<f64>,
+    /// Stations at these x positions in metres, comma separated
+    #[arg(long, value_name = "X,X,...")]
+    at: Option<String>,
+    /// Skin thickness to deduct, in millimetres: plank, plywood or strip plus glass
+    #[arg(
+        long,
+        value_name = "MM",
+        default_value_t = 0.0,
+        allow_negative_numbers = true
+    )]
+    skin_mm: f64,
+    /// Draw the starboard half only, to be flipped about the centreline
+    #[arg(long)]
+    half: bool,
+    /// Strongback level, model z in metres: open sections get legs up to it
+    #[arg(long, value_name = "Z", allow_negative_numbers = true)]
+    strongback: Option<f64>,
+    /// Waterline heights above the keel to mark, metres, comma separated [default: 6 over the depth]
+    #[arg(long, value_name = "M,M,...")]
+    waterlines: Option<String>,
+    /// Add the profile (backbone) pattern
+    #[arg(long)]
+    profile: bool,
+    /// Add a transom pattern: where the plane meets the baseline and how far its top leans aft
+    #[arg(long, value_name = "X,RAKE_DEG", allow_negative_numbers = true)]
+    transom: Option<String>,
+    /// Paper the PDF is tiled over: a4, a3, letter or WxH in millimetres [default: a4]
+    #[arg(long)]
+    paper: Option<String>,
+    /// One page a pattern, sized to fit it, for a plotter or print shop (PDF only)
+    #[arg(long)]
+    single_page: bool,
+    /// The strip around each page a printer cannot reach, millimetres [default: 10]
+    #[arg(long, value_name = "MM", allow_negative_numbers = true)]
+    margin_mm: Option<f64>,
+    /// How much neighbouring tiles share, millimetres [default: 10]
+    #[arg(long, value_name = "MM", allow_negative_numbers = true)]
+    overlap_mm: Option<f64>,
+    /// Drawing scale, as 1:N or one number
+    #[arg(long, default_value = "1:1")]
+    scale: String,
+    /// Add imperial readings beside the metric ones
+    #[arg(long)]
+    imperial: bool,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
@@ -1315,6 +1387,7 @@ fn run() -> Result<()> {
         Command::Damage(a) => cmd_damage(a),
         Command::Seakeeping(a) => cmd_seakeeping(a),
         Command::Linesplan(a) => cmd_linesplan(a),
+        Command::Templates(a) => cmd_templates(a),
         Command::Report(a) => cmd_report(a),
         Command::Render(a) => cmd_render(a),
         Command::Mcp(a) => cmd_mcp(a),
@@ -2043,6 +2116,9 @@ fn parse_ordinates(text: &str, key: &str) -> Result<Vec<f64>> {
 }
 
 fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
+    if a.imperial && a.pdf.is_none() {
+        bail!("--imperial applies to --pdf: the other outputs are in metres");
+    }
     let s = load(&a.file)?;
     let opts = HydroOptions::from_surface(
         &s,
@@ -2062,6 +2138,13 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
     };
     let table = offsets::table_of_offsets(&hull, a.stations, &waterlines, &buttocks);
     let title = format!("{} - table of offsets", s.settings.name);
+
+    if let Some(path) = &a.pdf {
+        let doc = offsets::pdf(&table, &title, a.imperial).map_err(anyhow::Error::msg)?;
+        seacraft_core::io::write_atomic(path, doc.bytes)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!("wrote {}", path.display());
+    }
 
     if let Some(path) = &a.html {
         seacraft_core::io::write_atomic(path, offsets::html(&table, &title))
@@ -2097,7 +2180,7 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&table)?);
         return Ok(());
     }
-    if a.html.is_some() && a.csv.is_none() {
+    if (a.html.is_some() || a.pdf.is_some()) && a.csv.is_none() {
         println!(
             "{} stations x {} waterlines, widest half-breadth {:.3} m",
             table.stations.len(),
@@ -2960,6 +3043,168 @@ fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
             "not developable: the plate needs a joint, a press or a different cut"
         }
     );
+    Ok(())
+}
+
+/// How a page line names the paper: `A4`, `A3`, `Letter`, or its size.
+fn paper_name(paper: seacraft_core::sheet::Paper) -> String {
+    use seacraft_core::sheet::Paper;
+    match paper {
+        p if p == Paper::A4 => "A4".into(),
+        p if p == Paper::A3 => "A3".into(),
+        p if p == Paper::LETTER => "Letter".into(),
+        p => format!("{} x {} mm", p.width_mm, p.height_mm),
+    }
+}
+
+fn cmd_templates(a: TemplatesArgs) -> Result<()> {
+    use seacraft_core::sheet::{PageSetup, Paper};
+    use seacraft_core::templates::{self, Format, MouldFace, SetOptions, StationChoice, Transom};
+    use seacraft_core::units;
+
+    // Everything the user typed is checked before the hull is refined and cut.
+    let extension = a
+        .output
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if matches!(extension.as_str(), "svg" | "dxf") {
+        let given: Vec<&str> = [
+            (a.paper.is_some(), "--paper"),
+            (a.single_page, "--single-page"),
+            (a.margin_mm.is_some(), "--margin-mm"),
+            (a.overlap_mm.is_some(), "--overlap-mm"),
+        ]
+        .into_iter()
+        .filter_map(|(given, name)| given.then_some(name))
+        .collect();
+        if !given.is_empty() {
+            bail!(
+                "{} apply to PDF only: an SVG or a DXF is one drawing at the scale asked for",
+                given.join(", ")
+            );
+        }
+    }
+    let format = Format::from_path(&a.output, a.single_page).map_err(anyhow::Error::msg)?;
+    let max_mm = templates::MAX_SKIN_M * 1000.0;
+    if !a.skin_mm.is_finite() || !(0.0..=max_mm).contains(&a.skin_mm) {
+        bail!("--skin-mm must be from 0 to {max_mm} mm, not {}", a.skin_mm);
+    }
+    let scale = units::parse_scale(&a.scale).map_err(|e| anyhow::anyhow!("--scale: {e}"))?;
+    let paper = match &a.paper {
+        Some(text) => Paper::parse(text).map_err(|e| anyhow::anyhow!("--paper: {e}"))?,
+        None => Paper::A4,
+    };
+    let defaults = PageSetup::default();
+    let setup = PageSetup {
+        paper,
+        margin_mm: a.margin_mm.unwrap_or(defaults.margin_mm),
+        overlap_mm: a.overlap_mm.unwrap_or(defaults.overlap_mm),
+        scale,
+        imperial: a.imperial,
+        title: String::new(),
+    };
+    setup.check().map_err(anyhow::Error::msg)?;
+    let stations = match (&a.stations, &a.spacing, &a.at) {
+        (_, Some(spacing), _) => StationChoice::Spacing(*spacing),
+        (_, _, Some(at)) => StationChoice::At(parse_list(at).context("--at")?),
+        (count, _, _) => StationChoice::Count(count.unwrap_or(11)),
+    };
+    let transom = match &a.transom {
+        None => None,
+        Some(text) => match parse_list(text).context("--transom")?.as_slice() {
+            [x, rake_deg] => Some(Transom {
+                x: *x,
+                rake_deg: *rake_deg,
+            }),
+            _ => bail!("--transom takes X,RAKE_DEG: where the plane meets the baseline and its rake aft, not `{text}`"),
+        },
+    };
+    let waterlines_m = match &a.waterlines {
+        Some(text) => Some(parse_ordinates(text, "--waterlines")?),
+        None => None,
+    };
+
+    let s = load(&a.file)?;
+    let opts = SetOptions {
+        subdivision: SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+        stations,
+        skin_m: a.skin_mm / 1000.0,
+        half: a.half,
+        strongback_z: a.strongback,
+        waterlines_m,
+        profile: a.profile,
+        transom,
+        imperial: a.imperial,
+    };
+    let set = templates::template_set(&s, &opts).map_err(anyhow::Error::msg)?;
+    let written = templates::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
+    seacraft_core::io::write_atomic(&a.output, &written.bytes)
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+
+    let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
+    if a.json {
+        let v = serde_json::json!({
+            "path": a.output.display().to_string(),
+            "format": format.name(),
+            "pages": written.pages,
+            "skin_mm": a.skin_mm,
+            "scale": units::scale_label(scale),
+            "sheets": set.rows,
+            "warnings": set.warnings,
+            "missing_characters": missing,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+
+    println!(
+        "{:<12} {:>8} {:>18} {:>8} {:>11}",
+        "sheet", "x [m]", "half-breadth [mm]", "face", "bevel [deg]"
+    );
+    for row in &set.rows {
+        let x = row.x.map_or_else(|| "-".to_owned(), |x| format!("{x:.3}"));
+        let face = match row.face {
+            Some(MouldFace::Forward) => "forward",
+            Some(MouldFace::Aft) => "aft",
+            Some(MouldFace::Either) => "either",
+            None => "-",
+        };
+        println!(
+            "{:<12} {:>8} {:>18.0} {:>8} {:>11.1}",
+            row.sheet,
+            x,
+            row.half_breadth_m * 1000.0,
+            face,
+            row.max_bevel_deg
+        );
+    }
+    let scale_label = units::scale_label(scale);
+    match (format, written.pages) {
+        (Format::PdfTiled, Some(pages)) => {
+            println!("{pages} pages, {}, scale {scale_label}", paper_name(paper))
+        }
+        (_, Some(pages)) => println!("{pages} pages, one a pattern, scale {scale_label}"),
+        (_, None) => println!("one drawing, scale {scale_label}"),
+    }
+    if a.skin_mm > 0.0 {
+        println!("skin {} mm deducted", a.skin_mm);
+    } else {
+        println!("no skin deducted: the cut line is the hull surface");
+    }
+    for warning in &set.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if !missing.is_empty() {
+        println!(
+            "the font has no letter for {}: each is printed as ?",
+            missing.join(" ")
+        );
+    }
+    println!("wrote {}", a.output.display());
     Ok(())
 }
 
