@@ -933,6 +933,8 @@ pub struct App {
     dock_tab: DesignDock,
     /// The Analysis dock is widened for plots and tables.
     dock_wide: bool,
+    /// An analysis view widened the dock, so closing it narrows the dock again.
+    dock_widened_by_view: bool,
     /// An inspector value being dragged (point index and x/y/z): the point
     /// moves when the drag is released, as one undo step.
     inspector_pending: Option<(usize, [f64; 3])>,
@@ -1149,6 +1151,7 @@ impl App {
             show_analysis: true,
             dock_tab: DesignDock::Hydrostatics,
             dock_wide: false,
+            dock_widened_by_view: false,
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
             layer_list_rect: egui::Rect::NOTHING,
@@ -1544,8 +1547,9 @@ impl App {
         let panel = if self.dock_wide {
             let window = ui.ctx().content_rect().width();
             egui::Panel::right("analysis_dock_wide")
-                .resizable(false)
-                .exact_size((window * 0.55).round())
+                .resizable(true)
+                .default_size((window * 0.55).round())
+                .size_range(360.0..=(window * 0.85).round())
         } else {
             egui::Panel::right("analysis_dock")
                 .resizable(true)
@@ -1725,10 +1729,10 @@ impl App {
         });
         self.dock_tab = tab;
         if toggle_wide {
-            self.dock_wide = !self.dock_wide;
+            self.set_dock_wide(!self.dock_wide);
         }
         if close_view {
-            self.analysis.open = None;
+            self.close_analysis_view();
         }
         self.apply_view_action(view_action, ui.ctx());
         self.last_highlighted_tank = tank_highlight;
@@ -4589,9 +4593,11 @@ impl App {
         self.show_analysis
     }
 
-    /// Widen the Analysis dock to about 55 % of the window (plots, tables).
+    /// Widen the Analysis dock, at first to about 55 % of the window (plots, tables); either
+    /// width can be dragged and is kept. A width set here outlasts the analysis views.
     pub fn set_dock_wide(&mut self, wide: bool) {
         self.dock_wide = wide;
+        self.dock_widened_by_view = false;
     }
 
     pub fn dock_wide(&self) -> bool {
@@ -6915,7 +6921,10 @@ impl App {
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
         self.analysis.open = Some(view);
         self.show_analysis = true;
-        self.dock_wide = true;
+        if !self.dock_wide {
+            self.dock_wide = true;
+            self.dock_widened_by_view = true;
+        }
         let key = self.analysis_key(view);
         let slot = self.analysis.slot(view);
         if slot.result.is_none() && slot.track.due(key) {
@@ -6923,9 +6932,12 @@ impl App {
         }
     }
 
-    /// Back to the dock's tabs.
+    /// Back to the dock's tabs, at the width the dock had before a view widened it.
     pub fn close_analysis_view(&mut self) {
         self.analysis.open = None;
+        if self.dock_widened_by_view {
+            self.set_dock_wide(false);
+        }
     }
 
     /// The view shown in the Analysis dock, if any.
@@ -7111,7 +7123,7 @@ impl App {
                     self.set_status(format!("{}: {rows} rows copied as CSV", view.label()));
                 }
             }
-            ViewAction::Close => self.analysis.open = None,
+            ViewAction::Close => self.close_analysis_view(),
         }
     }
 }

@@ -688,7 +688,9 @@ Plan        | Body plan
   GM, LCB), then the tabs Hydro / Loading / Damage / Windage / Performance
   (View menu radio items; control `ui.set {"dock_tab": "loading"}`, or the
   older `{"loading_panel": true}` keys, which select the tab; `"analysis_dock"`
-  shows or hides it). *↔ wide* widens it to about 55 % of the window. The Hydro
+  shows or hides it). *↔ wide* widens it, at first to about 55 % of the window;
+  both widths can be dragged. An Analysis menu view widens the dock and narrows
+  it again when it closes, unless *↔ wide* was already on. The Hydro
   tab is the live hydrostatics report: draft, trim, heel and KG, the full
   coefficient set (with TPC and MTC), the sectional area curve of the current
   draft, and GZ cross curves drawn in place. It recomputes 120 ms after the

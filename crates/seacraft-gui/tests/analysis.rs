@@ -405,3 +405,86 @@ fn the_analysis_menu_needs_a_model() {
     frame(&ctx, &mut app, Vec::new());
     frame(&ctx, &mut app, Vec::new());
 }
+
+#[test]
+fn a_view_gives_the_dock_back_at_the_width_it_had() {
+    let (ctx, mut app, out) = settled();
+    let narrow = app.viewport_rect(1);
+    assert!(!app.dock_wide());
+
+    // Opened from the narrow dock: Close and a tab both give the narrow dock back.
+    open_from_menu(&ctx, &mut app, &out, AnalysisView::Offsets);
+    assert!(app.dock_wide());
+    let out = frame(&ctx, &mut app, Vec::new());
+    click_text(&ctx, &mut app, &out, "Close");
+    assert_eq!(app.analysis_view(), None);
+    assert!(!app.dock_wide(), "Close gives the narrow dock back");
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.viewport_rect(1), narrow);
+
+    open_from_menu(&ctx, &mut app, &out, AnalysisView::Offsets);
+    let out = frame(&ctx, &mut app, Vec::new());
+    click_text(&ctx, &mut app, &out, "Hydro");
+    assert_eq!(app.analysis_view(), None);
+    assert!(!app.dock_wide(), "a tab gives the narrow dock back");
+
+    // Widened by hand first: the dock stays wide.
+    app.set_dock_wide(true);
+    app.open_analysis_view(AnalysisView::Offsets);
+    app.close_analysis_view();
+    assert!(app.dock_wide(), "the hand-set width is kept");
+}
+
+/// The x of the resize handle on the right dock's left edge.
+fn dock_edge(out: &egui::FullOutput) -> f32 {
+    let update = out
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .expect("AccessKit on");
+    update
+        .nodes
+        .iter()
+        .filter(|(_, n)| {
+            n.role() == egui::accesskit::Role::Splitter && n.label() == Some("Resize panel")
+        })
+        .filter_map(|(_, n)| n.bounds())
+        .map(|b| ((b.x0 + b.x1) / 2.0) as f32)
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+#[test]
+fn the_wide_dock_can_be_dragged_narrower_with_a_wide_table_in_it() {
+    let (ctx, mut app, out) = settled();
+    ctx.enable_accesskit();
+    open_from_menu(&ctx, &mut app, &out, AnalysisView::Offsets);
+    app.wait_analysis_view(AnalysisView::Offsets);
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+    let edge = dock_edge(&out);
+    assert!(
+        (1600.0 - edge - 0.55 * 1600.0).abs() < 30.0,
+        "the wide dock opens at 55 %: its edge is at {edge}"
+    );
+
+    let from = egui::pos2(edge, 600.0);
+    let to = egui::pos2(edge + 300.0, 600.0);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![button(from, true)]);
+    for step in 1..=10 {
+        let p = from.lerp(to, step as f32 / 10.0);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    }
+    frame(&ctx, &mut app, vec![button(to, false)]);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+    let out = frame(&ctx, &mut app, Vec::new());
+    let dragged = dock_edge(&out);
+    assert!(
+        (dragged - (edge + 300.0)).abs() < 10.0,
+        "dragged from {edge} to {}, the edge is at {dragged}",
+        edge + 300.0
+    );
+}

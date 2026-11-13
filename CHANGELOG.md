@@ -2,6 +2,12 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
+## Unreleased
+
+- GUI: the wide Analysis dock can be dragged to any width, as the narrow one could. An Analysis menu view
+  such as Offsets still opens it wide, but closing the view now gives back the narrow dock it had, instead of
+  leaving it wide and fixed at 55 % of the window.
+
 ## 0.3.0-beta.1 (2026-11-07)
 
 - GUI: the viewport hull is drawn on the GPU, so orbiting a large hull at a high subdivision level stays
