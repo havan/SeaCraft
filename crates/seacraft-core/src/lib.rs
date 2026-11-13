@@ -37,6 +37,8 @@ pub mod dxf;
 pub mod examples;
 pub mod export;
 pub mod fef;
+/// The embedded DejaVu fonts and their licence.
+pub mod fonts;
 pub mod hydro;
 pub mod iges;
 /// Crash-safe file output: temporary sibling, sync, rename.
@@ -67,6 +69,8 @@ pub mod threemf;
 pub mod topology;
 pub mod transform;
 pub mod trimopt;
+/// Read a TrueType font and write a subset of it.
+pub mod ttf;
 pub mod weather;
 
 pub use analysis::AnalysisMode;

@@ -81,7 +81,7 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 ### M5: Binaries
 
 - [x] Replace egui's default fonts, whose `Ubuntu-Light.ttf` is under the Ubuntu Font Licence, with DejaVu
-  (`crates/seacraft-gui/assets/fonts`, `NOTICE`).
+  (`crates/seacraft-core/assets/fonts`, `NOTICE`).
 - [x] Ship full licence texts with binaries: `cargo xtask dist` writes them from the crates that are compiled in.
 - [x] Add release packaging: a version tag builds a Linux archive, AppImage and Flatpak bundle, a Windows zip
   and macOS disk images, then creates a draft release (`.github/workflows/release.yml`, `packaging/`).

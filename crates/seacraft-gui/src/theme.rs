@@ -194,21 +194,15 @@ pub fn caption_font() -> FontId {
     FontId::monospace(CAPTION_SIZE)
 }
 
-/// The fonts compiled into the program, unmodified from DejaVu 2.37 (`assets/fonts`, with their
-/// licence). Each family falls back on the other, so a symbol only one of them has still draws.
+/// The fonts compiled into the program, unmodified from DejaVu 2.37 (`seacraft_core::fonts`, with
+/// their licence). Each family falls back on the other, so a symbol only one of them has still draws.
 pub fn fonts() -> egui::FontDefinitions {
     const SANS: &str = "DejaVu Sans";
     const MONO: &str = "DejaVu Sans Mono";
     let mut fonts = egui::FontDefinitions::empty();
     for (name, bytes) in [
-        (
-            SANS,
-            include_bytes!("../assets/fonts/DejaVuSans.ttf").as_slice(),
-        ),
-        (
-            MONO,
-            include_bytes!("../assets/fonts/DejaVuSansMono.ttf").as_slice(),
-        ),
+        (SANS, seacraft_core::fonts::DEJAVU_SANS),
+        (MONO, seacraft_core::fonts::DEJAVU_SANS_MONO),
     ] {
         fonts.font_data.insert(
             name.to_owned(),

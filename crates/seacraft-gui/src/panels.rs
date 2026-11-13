@@ -738,7 +738,7 @@ pub fn about(ui: &mut egui::Ui) {
             ),
             (
                 "Font licence (DejaVu)",
-                include_str!("../assets/fonts/LICENSE-DejaVu.txt"),
+                seacraft_core::fonts::DEJAVU_LICENCE,
             ),
         ] {
             egui::CollapsingHeader::new(title).show(ui, |ui| {
