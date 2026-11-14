@@ -79,13 +79,39 @@ pub struct FoundPanel {
     pub tris: Vec<[usize; 3]>,
     /// Each local vertex's id in the half mesh; `usize::MAX` for a mirrored vertex.
     pub mesh_ids: Vec<usize>,
+    /// Half-mesh ids welded onto a local vertex that `mesh_ids` gives another id (coincident
+    /// points, as at a pole): every half-mesh id of the panel is in one or the other.
+    pub welded: HashMap<usize, usize>,
     pub seams: Vec<Seam>,
 }
 
 impl FoundPanel {
     /// The local vertex for a half-mesh id.
     pub fn local(&self, mesh_id: usize) -> Option<usize> {
-        self.mesh_ids.iter().position(|&m| m == mesh_id)
+        self.mesh_ids
+            .iter()
+            .position(|&m| m == mesh_id)
+            .or_else(|| self.welded.get(&mesh_id).copied())
+    }
+
+    /// A seam's local vertices, with a point that welding made twice kept once; `None` when a
+    /// vertex is not on the panel.
+    pub fn seam_local(&self, seam: &Seam) -> Option<Vec<usize>> {
+        let index: HashMap<usize, usize> = self
+            .mesh_ids
+            .iter()
+            .enumerate()
+            .filter(|(_, &m)| m != usize::MAX)
+            .map(|(i, &m)| (m, i))
+            .chain(self.welded.iter().map(|(&m, &i)| (m, i)))
+            .collect();
+        let mut ids: Vec<usize> = seam
+            .verts
+            .iter()
+            .map(|m| index.get(m).copied())
+            .collect::<Option<_>>()?;
+        ids.dedup();
+        Some(ids)
     }
 }
 
@@ -436,9 +462,15 @@ pub fn find_panels(
         }
         let (cv, ct, map) = clean(&verts, &tris);
         let mut mesh_ids = vec![usize::MAX; cv.len()];
+        let mut welded = HashMap::new();
         for (old, &new) in map.iter().enumerate() {
-            if new != usize::MAX && mesh_ids[new] == usize::MAX {
+            if new == usize::MAX || ids[old] == usize::MAX {
+                continue;
+            }
+            if mesh_ids[new] == usize::MAX {
                 mesh_ids[new] = ids[old];
+            } else {
+                welded.insert(ids[old], new);
             }
         }
         let loops_after = boundary_loops(&ct).len();
@@ -466,6 +498,7 @@ pub fn find_panels(
             verts: cv,
             tris: ct,
             mesh_ids,
+            welded,
             seams,
         });
     }
@@ -601,17 +634,6 @@ fn ticks(
     (t3, tf)
 }
 
-fn local_ids(found: &FoundPanel, seam: &[usize]) -> Option<Vec<usize>> {
-    let index: HashMap<usize, usize> = found
-        .mesh_ids
-        .iter()
-        .enumerate()
-        .filter(|(_, &m)| m != usize::MAX)
-        .map(|(i, &m)| (m, i))
-        .collect();
-    seam.iter().map(|m| index.get(m).copied()).collect()
-}
-
 /// Turns a flat pattern so the builder reads it: outside face up (it already is: [`flatten`]
 /// keeps the triangles' winding), long axis along x, forward to the right (flat x grows with
 /// model x; for a panel across the hull, such as a transom, up is up), lowest corner at the
@@ -690,20 +712,25 @@ pub(crate) fn measure_found(
         reason: e.to_string(),
     })?;
     let st = crate::flatten::strain(&found.verts, &found.tris, &xy);
-    let seams = found
-        .seams
-        .iter()
-        .map(|seam| {
-            let ids = local_ids(&found, &seam.verts).unwrap_or_default();
-            let (t3, tf) = ticks(&found.verts, &xy, &ids, stations);
-            SeamMeasure {
-                name: seam.name(),
-                drift_m: drift_from_both_ends(&t3, &tf),
-                length_3d_m: t3.last().copied().unwrap_or(0.0),
-                length_flat_m: tf.last().copied().unwrap_or(0.0),
-            }
-        })
-        .collect();
+    let mut seams = Vec::new();
+    for seam in &found.seams {
+        let Some(ids) = found.seam_local(seam) else {
+            return Err(Refusal {
+                panel: found.name.clone(),
+                reason: format!(
+                    "its {} could not be followed on the panel's mesh, so it was not measured",
+                    seam.name()
+                ),
+            });
+        };
+        let (t3, tf) = ticks(&found.verts, &xy, &ids, stations);
+        seams.push(SeamMeasure {
+            name: seam.name(),
+            drift_m: drift_from_both_ends(&t3, &tf),
+            length_3d_m: t3.last().copied().unwrap_or(0.0),
+            length_flat_m: tf.last().copied().unwrap_or(0.0),
+        });
+    }
     let area_3d_m2 = found
         .tris
         .iter()
@@ -852,10 +879,8 @@ pub fn measure_panels(
                 {
                     continue;
                 }
-                let (Some(ia), Some(ib)) = (
-                    local_ids(&pa.found, &sa.verts),
-                    local_ids(&pb.found, &sa.verts),
-                ) else {
+                let (Some(ia), Some(ib)) = (pa.found.seam_local(sa), pb.found.seam_local(sa))
+                else {
                     continue;
                 };
                 let (_, fa) = ticks(&pa.found.verts, &pa.xy, &ia, stations);
@@ -1100,20 +1125,8 @@ pub fn panel_sheet(
     }
 
     // What each edge is stitched to, inside the edge at its middle.
-    let index: HashMap<usize, usize> = found
-        .mesh_ids
-        .iter()
-        .enumerate()
-        .filter(|(_, &m)| m != usize::MAX)
-        .map(|(i, &m)| (m, i))
-        .collect();
     for seam in &found.seams {
-        let Some(ids) = seam
-            .verts
-            .iter()
-            .map(|m| index.get(m).copied())
-            .collect::<Option<Vec<usize>>>()
-        else {
+        let Some(ids) = found.seam_local(seam) else {
             continue;
         };
         let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
@@ -2066,6 +2079,46 @@ mod tests {
         assert_eq!(mismatches.len(), 5, "{mismatches:?}");
     }
 
+    /// The side's three bow points made one (a pole, as a stem often is): the welded copies of
+    /// that point must still carry the chine. Identity: the chine is one 3D polyline shared by
+    /// both panels, so its 3D length is the same on each, and the pair is compared.
+    #[test]
+    fn a_seam_through_a_welded_point_is_still_measured() {
+        let mut s = pram_fixture(0.0, 0.0);
+        let stem = Vec3::new(2.4, 0.2, 0.3);
+        for p in &mut s.points {
+            if (p.p.x - 2.4).abs() < 1e-9 && p.p.y > 1e-6 {
+                p.p = stem;
+                p.kind = crate::mesh::VertexKind::Corner;
+            }
+        }
+        let (ps, mismatches, _) = measured(&s, 2);
+        let side = flat(&ps, "Side");
+        let bottom = flat(&ps, "Bottom");
+        let chine = |p: &FlatPanel, mate: &str| {
+            p.measures
+                .seams
+                .iter()
+                .find(|m| m.name.contains(mate))
+                .cloned()
+                .unwrap_or_else(|| panic!("{}: {:?}", p.found.name, p.measures.seams))
+        };
+        let on_side = chine(side, "Bottom");
+        let on_bottom = chine(bottom, "Side");
+        assert!(on_bottom.length_3d_m > 2.0, "{on_bottom:?}");
+        assert!(
+            (on_side.length_3d_m - on_bottom.length_3d_m).abs() < 1e-9,
+            "{on_side:?} {on_bottom:?}"
+        );
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| [&m.a, &m.b].contains(&&"Side".to_string())
+                    && [&m.a, &m.b].contains(&&"Bottom".to_string())),
+            "{mismatches:?}"
+        );
+    }
+
     /// Convergence, stated as such: on a curved side the outline moves less between finer levels.
     #[test]
     fn a_curved_side_reports_its_level_shift() {
@@ -2124,6 +2177,7 @@ mod tests {
             layer: 0,
             copies: Copies::One,
             mesh_ids: (0..v.len()).collect(),
+            welded: HashMap::new(),
             verts: v,
             tris: t,
             seams: vec![Seam {
@@ -2165,6 +2219,7 @@ mod tests {
             layer: 0,
             copies: Copies::One,
             mesh_ids: (0..v.len()).collect(),
+            welded: HashMap::new(),
             verts: v,
             tris: t,
             seams: vec![Seam {
@@ -2338,6 +2393,7 @@ mod tests {
                 layer: 0,
                 copies: Copies::One,
                 mesh_ids: (0..verts.len()).collect(),
+                welded: HashMap::new(),
                 verts,
                 tris,
                 seams: Vec::new(),
