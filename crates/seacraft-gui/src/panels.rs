@@ -4777,6 +4777,57 @@ pub fn no_model_note(ui: &mut egui::Ui) {
     );
 }
 
+/// A small muted heading over a group of menu items.
+pub fn menu_heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme::TEXT_MUTED));
+}
+
+/// What the keyboard and the mouse do, as (keys, what happens) rows for
+/// Help > Keyboard and mouse. `keys` formats a shortcut for this platform.
+pub fn shortcuts(
+    keys: &dyn Fn(egui::Modifiers, egui::Key) -> String,
+) -> Vec<(String, &'static str)> {
+    let command = egui::Modifiers::COMMAND;
+    let plain = |text: &str| text.to_owned();
+    vec![
+        (plain("Click"), "Select a control point"),
+        (plain("Shift+click"), "Select a second point"),
+        (plain("Drag a point"), "Move it in the view's plane"),
+        (
+            plain("X, Y or Z while dragging"),
+            "Keep the point on that axis",
+        ),
+        (plain("Esc"), "Clear the selection"),
+        (plain("Drag empty space, or middle drag"), "Pan"),
+        (plain("Right drag in Perspective"), "Orbit"),
+        (plain("Wheel"), "Zoom at the pointer"),
+        (plain("F"), "Frame the model in every view"),
+        (plain("1 – 4"), "Make a view the active one"),
+        (
+            keys(command, egui::Key::Space),
+            "Maximise the active view, or restore the four",
+        ),
+        (plain("Space"), "Shaded hull on or off"),
+        (plain("F5"), "Recompute the results that are out of date"),
+        (keys(command, egui::Key::Z), "Undo"),
+        (keys(command, egui::Key::Y), "Redo"),
+    ]
+}
+
+/// Draw [`shortcuts`] as two columns: the keys, then what they do.
+pub fn shortcut_list(ui: &mut egui::Ui, rows: &[(String, &'static str)]) {
+    egui::Grid::new("shortcut_list")
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (keys, what) in rows {
+                ui.label(egui::RichText::new(keys).color(theme::TEXT_PRIMARY));
+                ui.label(egui::RichText::new(*what).color(theme::TEXT_SECONDARY));
+                ui.end_row();
+            }
+        });
+}
+
 /// The intersection-curve counts and the comb settings, for the toolbar's
 /// "…" menu and View > Curves and combs. Edits `display` and returns whether
 /// anything changed; the caller applies it.

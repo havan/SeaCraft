@@ -432,7 +432,7 @@ pub fn segmented<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> 
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
-                ui.spacing_mut().button_padding.y = 2.0;
+                ui.spacing_mut().button_padding = egui::vec2(7.0, 2.0);
                 add(ui)
             })
             .inner

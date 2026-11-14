@@ -2099,26 +2099,37 @@ impl App {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new("New design…")
-                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
-                        )
-                        .clicked()
-                    {
-                        self.request(PendingAction::NewDesign);
-                        ui.close();
-                    }
-                    if !seacraft_core::examples::Example::all().is_empty()
-                        && ui.button("New from example…").clicked()
-                    {
-                        self.request(PendingAction::NewExample);
-                        ui.close();
-                    }
-                    if ui.button("New demo hull").clicked() {
-                        self.request(PendingAction::NewDemo);
-                        ui.close();
-                    }
+                    // One entry for the three ways to start a model.
+                    ui.menu_button("New", |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("Design…")
+                                    .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
+                            )
+                            .on_hover_text("A hull from the main dimensions and a hull type")
+                            .clicked()
+                        {
+                            self.request(PendingAction::NewDesign);
+                            ui.close();
+                        }
+                        if !seacraft_core::examples::Example::all().is_empty()
+                            && ui
+                                .button("From an example…")
+                                .on_hover_text("One of the example hulls, as a starting point")
+                                .clicked()
+                        {
+                            self.request(PendingAction::NewExample);
+                            ui.close();
+                        }
+                        if ui
+                            .button("Demo hull")
+                            .on_hover_text("The small demo hull, to try things on")
+                            .clicked()
+                        {
+                            self.request(PendingAction::NewDemo);
+                            ui.close();
+                        }
+                    });
                     if ui
                         .add(
                             egui::Button::new("Open .fef…")
@@ -2240,6 +2251,7 @@ impl App {
                     }
                 });
                 ui.menu_button("View", |ui| {
+                    panels::menu_heading(ui, "Show");
                     ui.checkbox(&mut self.display.shaded, "Shaded hull");
                     ui.checkbox(&mut self.display.wireframe, "Wireframe");
                     ui.checkbox(&mut self.display.control_net, "Control net");
@@ -2257,8 +2269,8 @@ impl App {
                         }
                     });
                     ui.separator();
-                    ui.label("Surface analysis");
-                    ui.horizontal_wrapped(|ui| {
+                    panels::menu_heading(ui, "Shading");
+                    crate::theme::segmented(ui, |ui| {
                         let current = self.display.analysis;
                         // Each mode with its remembered parameter (the
                         // toolbar edits it; 14 stripes, 1 m, 3° by default).
@@ -2282,30 +2294,32 @@ impl App {
                         }
                     });
                     ui.separator();
+                    panels::menu_heading(ui, "Panels");
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_messages, "Messages");
                     // One right-hand dock with tabs: several right-hand panels
                     // leave no room for the viewports.
                     ui.checkbox(&mut self.show_analysis, "Analysis dock");
-                    for tab in DesignDock::ALL {
-                        let name = match tab {
-                            DesignDock::Hydrostatics => "Hydrostatics",
-                            other => other.label(),
-                        };
-                        if ui
-                            .radio(self.show_analysis && self.dock_tab == tab, name)
-                            .clicked()
-                        {
-                            self.set_dock_tab(tab);
+                    // The dock's tabs, indented under the dock they belong to.
+                    ui.indent("dock_tabs", |ui| {
+                        for tab in DesignDock::ALL {
+                            let name = match tab {
+                                DesignDock::Hydrostatics => "Hydrostatics",
+                                other => other.label(),
+                            };
+                            if ui
+                                .radio(self.show_analysis && self.dock_tab == tab, name)
+                                .clicked()
+                            {
+                                self.set_dock_tab(tab);
+                            }
                         }
-                    }
+                    });
                     ui.separator();
+                    panels::menu_heading(ui, "Precision");
                     let mut level = self.level as u32;
-                    if crate::theme::slider(
-                        ui,
-                        egui::Slider::new(&mut level, 0..=5).text("subdivision level"),
-                    )
-                    .changed()
+                    if crate::theme::slider(ui, egui::Slider::new(&mut level, 0..=5).text("level"))
+                        .changed()
                     {
                         // Through the setters: shading caches and the
                         // hydrostatics key on the revision.
@@ -2316,7 +2330,7 @@ impl App {
                     // a mode could be chosen.
                     let mut mode = self.mode;
                     ui.horizontal(|ui| {
-                        ui.label("mode");
+                        ui.label("Scheme");
                         ui.radio_value(&mut mode, SubdivisionMode::Loop, "Loop");
                         ui.radio_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
                     });
@@ -2324,8 +2338,9 @@ impl App {
                         self.set_subdivision_mode(mode);
                     }
                     ui.separator();
+                    panels::menu_heading(ui, "Views");
                     if ui
-                        .add(egui::Button::new("Reset cameras").shortcut_text("F"))
+                        .add(egui::Button::new("Frame the model in every view").shortcut_text("F"))
                         .clicked()
                     {
                         self.reset_cameras();
@@ -2348,12 +2363,21 @@ impl App {
                 self.model_menu(ui);
                 self.analysis_menu(ui);
                 ui.menu_button("Help", |ui| {
-                    ui.label(format!("SeaCraft {}", seacraft_core::VERSION));
-                    ui.label("A Rust reimplementation of FREE!ship.");
+                    ui.menu_button("Keyboard and mouse", |ui| {
+                        panels::shortcut_list(ui, &panels::shortcuts(&keys));
+                    });
                     if ui.button("About SeaCraft…").clicked() {
                         self.about_open = true;
                         ui.close();
                     }
+                    ui.separator();
+                    panels::menu_heading(
+                        ui,
+                        &format!(
+                            "SeaCraft {} · hull design after FREE!ship",
+                            seacraft_core::VERSION
+                        ),
+                    );
                 });
             });
         });
@@ -2417,7 +2441,7 @@ impl App {
     }
 
     /// Open the New design dialog (callers go through the unsaved-changes
-    /// prompt first: Ctrl+N, File > New design…, the start card).
+    /// prompt first: Ctrl+N, File > New > Design…, the start card).
     pub fn open_new_design(&mut self) {
         self.new_design = Some(crate::new_design::NewDesignState::new(
             crate::new_design::SEA_WATER_T_M3,

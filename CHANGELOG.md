@@ -55,6 +55,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   width control as an icon at its end, in place of two cramped rows and a "↔ wide" button. The Hydro tab loses
   its Recompute button: hydrostatics already recompute 120 ms after a change, and F5 still forces it. A slider's
   number is drawn as a field.
+- GUI menus: File > New holds the three ways to start a model (Design…, From an example…, Demo hull). The View
+  menu is grouped under Show, Shading, Panels, Precision and Views, with the dock's tabs indented under the dock.
+  Help > Keyboard and mouse lists what the keys and the mouse do.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is
