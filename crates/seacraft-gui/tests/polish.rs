@@ -53,8 +53,9 @@ fn the_inspector_sits_directly_under_the_layer_list() {
         (0.0..=24.0).contains(&gap),
         "the Inspector starts {gap} px below the layers ({layers:?}, {inspector:?})"
     );
-    // Not pinned to the foot of the window any more.
-    assert!(inspector.top() < 400.0, "{inspector:?}");
+    // Not pinned to the foot of the window any more: in its upper half,
+    // under the three layers and the active layer's grouped properties.
+    assert!(inspector.top() < 500.0, "{inspector:?}");
     // A sentence-case heading, as the rest of the app.
     let text = texts(&out);
     let heading = text

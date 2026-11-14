@@ -363,102 +363,106 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
             },
         ),
     ];
-    egui::Grid::new("layer_flags")
-        .num_columns(2)
-        .spacing(egui::vec2(8.0, 2.0))
-        .show(ui, |ui| {
-            for (i, (label, on, tip, props)) in flags.into_iter().enumerate() {
+    // Two groups: what the layer is, and what it takes part in.
+    let mut flags = flags.into_iter();
+    for (heading, count) in [("Shape", 2), ("Used for", 3)] {
+        ui.add_space(2.0);
+        menu_heading(ui, heading);
+        ui.horizontal_wrapped(|ui| {
+            for (label, on, tip, props) in flags.by_ref().take(count) {
                 let mut v = on;
                 if ui.checkbox(&mut v, label).on_hover_text(tip).changed() {
                     action = set(active, props(v));
                 }
-                if i % 2 == 1 {
-                    ui.end_row();
-                }
             }
         });
+    }
 
     // Density (t/m³) and plate thickness (mm); the model keeps kg/m³ and m.
     if state.pending.is_some_and(|(i, _, _)| i != active) {
         state.pending = None;
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(egui::RichText::new("Plating").color(theme::TEXT_SECONDARY))
-            .on_hover_text("Material density and plate thickness, for a weight estimate");
-        for (field, label, unit, model, speed, tip) in [
-            (
-                LayerField::Density,
-                "Density",
-                "t/m³",
-                layer.density / 1000.0,
-                0.01,
-                "Material density of the plating, for a weight estimate",
-            ),
-            (
-                LayerField::Thickness,
-                "Thickness",
-                "mm",
-                layer.thickness * 1000.0,
-                0.1,
-                "Plate thickness, for a weight estimate",
-            ),
-        ] {
-            let mut v = match state.pending {
-                Some((_, f, v)) if f == field => v,
-                _ => model,
-            };
-            let r = ui
-                .add_sized(
-                    [52.0, 20.0],
-                    theme::num(&mut v)
-                        .speed(speed)
-                        .range(match field {
-                            LayerField::Density => 0.0..=25.0,
-                            LayerField::Thickness => 0.0..=1000.0,
-                        })
-                        .fixed_decimals(match field {
-                            LayerField::Density => 3,
-                            LayerField::Thickness => 1,
-                        })
-                        .update_while_editing(false),
-                )
-                .on_hover_text(format!("{label}: {tip}"));
-            let mut commit: Option<f64> = None;
-            if r.changed() {
-                if r.dragged() {
-                    state.pending = Some((active, field, v));
-                } else {
-                    commit = Some(v);
+    ui.add_space(2.0);
+    menu_heading(ui, "Plating, for a weight estimate");
+    egui::Grid::new("layer_plating")
+        .num_columns(2)
+        .spacing(egui::vec2(8.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, unit, model, speed, tip) in [
+                (
+                    LayerField::Density,
+                    "Density",
+                    "t/m³",
+                    layer.density / 1000.0,
+                    0.01,
+                    "Material density of the plating, for a weight estimate",
+                ),
+                (
+                    LayerField::Thickness,
+                    "Thickness",
+                    "mm",
+                    layer.thickness * 1000.0,
+                    0.1,
+                    "Plate thickness, for a weight estimate",
+                ),
+            ] {
+                let mut v = match state.pending {
+                    Some((_, f, v)) if f == field => v,
+                    _ => model,
+                };
+                ui.label(egui::RichText::new(label).color(theme::TEXT_SECONDARY));
+                let r = ui
+                    .add_sized(
+                        [96.0, 20.0],
+                        theme::num(&mut v)
+                            .suffix(format!(" {unit}"))
+                            .speed(speed)
+                            .range(match field {
+                                LayerField::Density => 0.0..=25.0,
+                                LayerField::Thickness => 0.0..=1000.0,
+                            })
+                            .fixed_decimals(match field {
+                                LayerField::Density => 3,
+                                LayerField::Thickness => 1,
+                            })
+                            .update_while_editing(false),
+                    )
+                    .on_hover_text(tip);
+                let mut commit: Option<f64> = None;
+                if r.changed() {
+                    if r.dragged() {
+                        state.pending = Some((active, field, v));
+                    } else {
+                        commit = Some(v);
+                    }
                 }
-            }
-            if r.drag_stopped() {
-                commit = state
-                    .pending
-                    .filter(|(_, f, _)| *f == field)
-                    .map(|(_, _, p)| p)
-                    .or(commit);
-                state.pending = None;
-            }
-            if let Some(v) = commit.filter(|v| (v - model).abs() > 1e-12) {
-                state.pending = None;
-                action = set(
-                    active,
-                    match field {
-                        LayerField::Density => LayerProps {
-                            density: Some(v * 1000.0),
-                            ..Default::default()
+                if r.drag_stopped() {
+                    commit = state
+                        .pending
+                        .filter(|(_, f, _)| *f == field)
+                        .map(|(_, _, p)| p)
+                        .or(commit);
+                    state.pending = None;
+                }
+                if let Some(v) = commit.filter(|v| (v - model).abs() > 1e-12) {
+                    state.pending = None;
+                    action = set(
+                        active,
+                        match field {
+                            LayerField::Density => LayerProps {
+                                density: Some(v * 1000.0),
+                                ..Default::default()
+                            },
+                            LayerField::Thickness => LayerProps {
+                                thickness: Some(v / 1000.0),
+                                ..Default::default()
+                            },
                         },
-                        LayerField::Thickness => LayerProps {
-                            thickness: Some(v / 1000.0),
-                            ..Default::default()
-                        },
-                    },
-                );
+                    );
+                }
+                ui.end_row();
             }
-            ui.label(egui::RichText::new(unit).color(theme::TEXT_MUTED));
-        }
-    });
+        });
 
     // Move to layer: the face under the last click.
     let picked = picked_face.filter(|&f| f < surface.faces.len());
@@ -478,15 +482,24 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
         .color(theme::TEXT_MUTED),
     );
     let can_move = picked.is_some() && picked_layer != Some(active);
-    let tip = "Click a control face in any view (inside the amber control net, \
-               away from the points), then move it onto this layer. One undo step.";
+    // The tooltip says what is missing while the button is disabled.
+    let how = "click a control face in any view (inside the amber control net, away from the \
+               points)";
+    let tip = match (picked, can_move) {
+        (None, _) => format!("No face is picked: {how}, then press this."),
+        (Some(_), false) => format!(
+            "The picked face is already on \"{}\": make another layer active, or {how}.",
+            layer.name
+        ),
+        (Some(f), true) => format!("Move face {f} onto \"{}\". One undo step.", layer.name),
+    };
     if ui
         .add_enabled(
             can_move,
             egui::Button::new("Move picked face to this layer"),
         )
-        .on_hover_text(tip)
-        .on_disabled_hover_text(tip)
+        .on_hover_text(&tip)
+        .on_disabled_hover_text(&tip)
         .clicked()
     {
         if let Some(f) = picked {
