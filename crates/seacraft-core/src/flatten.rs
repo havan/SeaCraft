@@ -7,7 +7,7 @@
 //! equation 1: each triangle's flat edges against its true edges turned by the rotation that
 //! fits them best, weighted by the cotangent of the opposite angle. The local step finds those
 //! rotations; the global step solves their equation 4, a cotangent Laplacian that depends only on
-//! the 3D mesh, here by conjugate gradients ([`solve_cg`]) with one vertex held.
+//! the 3D mesh, factored once ([`Cholesky`]) with one vertex held.
 //!
 //! Two choices differ from the paper. It starts from [`crate::develop::unfold`]'s edge-joining
 //! development instead of Floater's or LSCM's parameterisation, and a pattern with a triangle
@@ -21,6 +21,10 @@
 use std::collections::HashMap;
 
 use crate::math::Vec3;
+
+/// Local/global iterations at most; the loop stops sooner when the energy changes by under
+/// 1e-10 of itself.
+const MAX_ITERATIONS: usize = 1000;
 
 /// A sparse symmetric matrix stored by rows, both triangles kept.
 #[derive(Debug, Clone)]
@@ -52,93 +56,158 @@ impl SymMatrix {
             None => row.push((j, v)),
         }
     }
-
-    /// `out = A x`.
-    pub fn mul(&self, x: &[f64], out: &mut [f64]) {
-        for (i, row) in self.rows.iter().enumerate() {
-            out[i] = row.iter().map(|&(j, a)| a * x[j]).sum();
-        }
-    }
-
-    pub fn diagonal(&self) -> Vec<f64> {
-        (0..self.n)
-            .map(|i| {
-                self.rows[i]
-                    .iter()
-                    .find(|(c, _)| *c == i)
-                    .map_or(0.0, |&(_, a)| a)
-            })
-            .collect()
-    }
 }
 
-/// How a conjugate-gradient solve ended.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CgOutcome {
-    pub iterations: usize,
-    pub relative_residual: f64,
-    pub converged: bool,
+/// The Cholesky factor `A = L Lᵀ` of a sparse symmetric positive-definite matrix, rows reordered
+/// by reverse Cuthill–McKee so the factor stays inside a narrow envelope. Factored once, it solves
+/// the flattening's global step for every iteration with two triangular sweeps.
+#[derive(Debug, Clone)]
+pub struct Cholesky {
+    /// `perm[k]` is the original row at position `k`.
+    perm: Vec<usize>,
+    /// First stored column of each (permuted) row.
+    first: Vec<usize>,
+    /// Where each row's entries start in `values`; row `i` holds columns `first[i]..=i`.
+    start: Vec<usize>,
+    values: Vec<f64>,
 }
 
-/// Solves `A x = b` for a symmetric positive-definite `A` by conjugate gradients with a Jacobi
-/// (diagonal) preconditioner. `x` is the starting guess and receives the answer. Stops when
-/// `‖b − A x‖ / ‖b‖ < tol` or after `max_iter` iterations.
-pub fn solve_cg(a: &SymMatrix, b: &[f64], x: &mut [f64], tol: f64, max_iter: usize) -> CgOutcome {
+/// Reverse Cuthill–McKee: breadth first from a low-degree node at the far end of the graph,
+/// neighbours by rising degree, reversed.
+fn rcm(a: &SymMatrix) -> Vec<usize> {
     let n = a.n;
-    let dot = |u: &[f64], v: &[f64]| u.iter().zip(v).map(|(p, q)| p * q).sum::<f64>();
-    let b_norm = dot(b, b).sqrt();
-    if b_norm == 0.0 {
-        x.iter_mut().for_each(|v| *v = 0.0);
-        return CgOutcome {
-            iterations: 0,
-            relative_residual: 0.0,
-            converged: true,
-        };
-    }
-    let inv_diag: Vec<f64> = a
-        .diagonal()
+    let nbrs: Vec<Vec<usize>> = a
+        .rows
         .iter()
-        .map(|&d| if d > 0.0 { 1.0 / d } else { 1.0 })
+        .enumerate()
+        .map(|(i, r)| r.iter().map(|&(j, _)| j).filter(|&j| j != i).collect())
         .collect();
-    let mut ax = vec![0.0; n];
-    a.mul(x, &mut ax);
-    let mut r: Vec<f64> = b.iter().zip(&ax).map(|(p, q)| p - q).collect();
-    let mut z: Vec<f64> = r.iter().zip(&inv_diag).map(|(p, q)| p * q).collect();
-    let mut p = z.clone();
-    let mut rz = dot(&r, &z);
-    let mut ap = vec![0.0; n];
-    let mut residual = dot(&r, &r).sqrt() / b_norm;
-    let mut it = 0;
-    while residual >= tol && it < max_iter {
-        a.mul(&p, &mut ap);
-        let pap = dot(&p, &ap);
-        if pap <= 0.0 || !pap.is_finite() {
-            break;
+    let degree: Vec<usize> = nbrs.iter().map(Vec::len).collect();
+    let mut seen = vec![false; n];
+    let mut order = Vec::with_capacity(n);
+    let bfs = |root: usize, seen: &mut Vec<bool>, out: &mut Vec<usize>| {
+        let begin = out.len();
+        seen[root] = true;
+        out.push(root);
+        let mut head = begin;
+        while head < out.len() {
+            let v = out[head];
+            head += 1;
+            let mut next: Vec<usize> = nbrs[v].iter().copied().filter(|&w| !seen[w]).collect();
+            next.sort_by_key(|&w| (degree[w], w));
+            for w in next {
+                seen[w] = true;
+                out.push(w);
+            }
         }
-        let alpha = rz / pap;
-        for i in 0..n {
-            x[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
+    };
+    for s in 0..n {
+        if seen[s] {
+            continue;
         }
-        it += 1;
-        residual = dot(&r, &r).sqrt() / b_norm;
-        if residual < tol {
-            break;
-        }
-        for i in 0..n {
-            z[i] = r[i] * inv_diag[i];
-        }
-        let rz_new = dot(&r, &z);
-        let beta = rz_new / rz;
-        rz = rz_new;
-        for i in 0..n {
-            p[i] = z[i] + beta * p[i];
-        }
+        // A pseudo-peripheral start: the last node reached from the lowest-degree node of this
+        // piece, found by one breadth-first pass.
+        let mut probe = Vec::new();
+        let mut probe_seen = seen.clone();
+        bfs(s, &mut probe_seen, &mut probe);
+        let low = *probe.iter().min_by_key(|&&v| (degree[v], v)).unwrap_or(&s);
+        let mut probe2 = Vec::new();
+        let mut probe_seen2 = seen.clone();
+        bfs(low, &mut probe_seen2, &mut probe2);
+        let root = *probe2.last().unwrap_or(&low);
+        bfs(root, &mut seen, &mut order);
     }
-    CgOutcome {
-        iterations: it,
-        relative_residual: residual,
-        converged: residual < tol,
+    order.reverse();
+    order
+}
+
+impl Cholesky {
+    /// Factors `a`; `None` when it is not positive definite.
+    pub fn factor(a: &SymMatrix) -> Option<Cholesky> {
+        let n = a.n;
+        let perm = rcm(a);
+        let mut pos = vec![0usize; n];
+        for (k, &i) in perm.iter().enumerate() {
+            pos[i] = k;
+        }
+        let mut first: Vec<usize> = (0..n).collect();
+        for (i, row) in a.rows.iter().enumerate() {
+            let pi = pos[i];
+            for &(j, _) in row {
+                let pj = pos[j];
+                if pj < first[pi] {
+                    first[pi] = pj;
+                }
+            }
+        }
+        let mut start = Vec::with_capacity(n + 1);
+        let mut total = 0;
+        for (i, &f) in first.iter().enumerate() {
+            start.push(total);
+            total += i - f + 1;
+        }
+        start.push(total);
+        let mut values = vec![0.0; total];
+        for (i, row) in a.rows.iter().enumerate() {
+            let pi = pos[i];
+            for &(j, v) in row {
+                let pj = pos[j];
+                if pj <= pi {
+                    values[start[pi] + pj - first[pi]] += v;
+                }
+            }
+        }
+        for i in 0..n {
+            let (fi, si) = (first[i], start[i]);
+            for j in fi..i {
+                let (fj, sj) = (first[j], start[j]);
+                let k0 = fi.max(fj);
+                let mut sum = values[si + j - fi];
+                for k in k0..j {
+                    sum -= values[si + k - fi] * values[sj + k - fj];
+                }
+                values[si + j - fi] = sum / values[sj + j - fj];
+            }
+            let mut d = values[si + i - fi];
+            for k in fi..i {
+                d -= values[si + k - fi].powi(2);
+            }
+            if d <= 0.0 || !d.is_finite() {
+                return None;
+            }
+            values[si + i - fi] = d.sqrt();
+        }
+        Some(Cholesky {
+            perm,
+            first,
+            start,
+            values,
+        })
+    }
+
+    /// Solves `A x = b`.
+    pub fn solve(&self, b: &[f64]) -> Vec<f64> {
+        let n = self.perm.len();
+        let mut y: Vec<f64> = self.perm.iter().map(|&i| b[i]).collect();
+        for i in 0..n {
+            let (fi, si) = (self.first[i], self.start[i]);
+            let row = &self.values[si..si + i - fi];
+            let sum = y[i] - row.iter().zip(&y[fi..i]).map(|(l, v)| l * v).sum::<f64>();
+            y[i] = sum / self.values[si + i - fi];
+        }
+        for i in (0..n).rev() {
+            let (fi, si) = (self.first[i], self.start[i]);
+            y[i] /= self.values[si + i - fi];
+            let xi = y[i];
+            for (v, l) in y[fi..i].iter_mut().zip(&self.values[si..si + i - fi]) {
+                *v -= l * xi;
+            }
+        }
+        let mut x = vec![0.0; n];
+        for (k, &i) in self.perm.iter().enumerate() {
+            x[i] = y[k];
+        }
+        x
     }
 }
 
@@ -277,8 +346,8 @@ pub enum FlattenError {
     Fold { triangle: usize },
     /// The flat outline crosses itself.
     SelfCrossing,
-    /// The least-squares solve did not settle.
-    NoConvergence,
+    /// The least-squares equations had no unique answer.
+    Unsolvable,
 }
 
 impl std::fmt::Display for FlattenError {
@@ -304,7 +373,9 @@ impl std::fmt::Display for FlattenError {
             FlattenError::SelfCrossing => {
                 write!(f, "laid flat its outline crosses itself")
             }
-            FlattenError::NoConvergence => write!(f, "the flattening did not settle"),
+            FlattenError::Unsolvable => {
+                write!(f, "its flattening equations have no single answer")
+            }
         }
     }
 }
@@ -481,11 +552,10 @@ pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError
     let mut rot = vec![(1.0, 0.0); tris.len()];
     let mut bx = vec![0.0; n - 1];
     let mut by = vec![0.0; n - 1];
-    let mut sx: Vec<f64> = (0..n).filter(|&v| v != pin).map(|v| u[v].0).collect();
-    let mut sy: Vec<f64> = (0..n).filter(|&v| v != pin).map(|v| u[v].1).collect();
+    let factor = Cholesky::factor(&a).ok_or(FlattenError::Unsolvable)?;
     let mut prev = f64::INFINITY;
     let mut iterations = 0;
-    for it in 0..200 {
+    for it in 0..MAX_ITERATIONS {
         iterations = it + 1;
         // Local step: the rotation closest to each triangle's map, from the cross-covariance
         // S = Σ w (u_i − u_j)(x_i − x_j)ᵀ; for 2 × 2 the closest rotation has angle
@@ -534,12 +604,8 @@ pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError
                 }
             }
         }
-        let max_iter = 20 * n;
-        let ox = solve_cg(&a, &bx, &mut sx, 1e-12, max_iter);
-        let oy = solve_cg(&a, &by, &mut sy, 1e-12, max_iter);
-        if !ox.converged || !oy.converged {
-            return Err(FlattenError::NoConvergence);
-        }
+        let sx = factor.solve(&bx);
+        let sy = factor.solve(&by);
         for (v, p) in u.iter_mut().enumerate() {
             if let Some(i) = unknown(v) {
                 *p = (sx[i], sy[i]);
@@ -918,7 +984,7 @@ mod tests {
 
     /// A 3×3 symmetric positive-definite system, solved exactly by Cramer's rule in the test.
     #[test]
-    fn cg_solves_a_small_spd_system() {
+    fn cholesky_solves_a_small_spd_system() {
         let m = [[4.0, 1.0, 0.0], [1.0, 3.0, 1.0], [0.0, 1.0, 2.0]];
         let b = [1.0, 2.0, 3.0];
         let mut a = SymMatrix::new(3);
@@ -935,9 +1001,7 @@ mod tests {
                 + c[0][2] * (c[1][0] * c[2][1] - c[1][1] * c[2][0])
         };
         let d = det3(m);
-        let mut x = vec![0.0; 3];
-        let out = solve_cg(&a, &b, &mut x, 1e-14, 100);
-        assert!(out.converged, "{out:?}");
+        let x = Cholesky::factor(&a).expect("positive definite").solve(&b);
         for k in 0..3 {
             let mut c = m;
             for r in 0..3 {
@@ -948,11 +1012,21 @@ mod tests {
         }
     }
 
+    /// A matrix that is not positive definite has no Cholesky factor.
+    #[test]
+    fn cholesky_refuses_an_indefinite_matrix() {
+        let mut a = SymMatrix::new(2);
+        a.add(0, 0, 1.0);
+        a.add(1, 1, 1.0);
+        a.add(0, 1, 2.0);
+        assert!(Cholesky::factor(&a).is_none());
+    }
+
     /// A path of `n` nodes with unit springs, node 0 held at 0 and a unit load on every other node.
     /// Node `i` carries the load of nodes `i..n`, so `x_i − x_{i−1} = n − i` and
     /// `x_i = Σ_{k=1..i} (n − k) = i(2n − 1 − i)/2` (n = 3: 2, 3).
     #[test]
-    fn cg_on_a_path_laplacian_matches_closed_form() {
+    fn cholesky_on_a_path_laplacian_matches_closed_form() {
         let n = 50;
         // Unknowns are nodes 1..n, stored at 0..n-1.
         let mut a = SymMatrix::new(n - 1);
@@ -966,9 +1040,7 @@ mod tests {
             a.add(q - 1, q - 1, 1.0);
         }
         let b = vec![1.0; n - 1];
-        let mut x = vec![0.0; n - 1];
-        let out = solve_cg(&a, &b, &mut x, 1e-14, 10 * n);
-        assert!(out.converged, "{out:?}");
+        let x = Cholesky::factor(&a).expect("positive definite").solve(&b);
         for i in 1..n {
             let exact = (i * (2 * n - 1 - i)) as f64 / 2.0;
             assert!(
