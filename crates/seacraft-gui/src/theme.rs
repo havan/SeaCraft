@@ -407,6 +407,129 @@ pub fn as_switch<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> 
     .inner
 }
 
+/// Runs `add` inside the track of a segmented control: one sunk, outlined
+/// box whose `selectable_label`s are the choices, so "one of these" does
+/// not read as a row of separate buttons.
+pub fn segmented<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(FIELD)
+        .stroke(Stroke::new(1.0, OUTLINE))
+        .corner_radius(CornerRadius::same(RADIUS))
+        .inner_margin(egui::Margin::same(1))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 1.0;
+                ui.spacing_mut().button_padding.y = 2.0;
+                add(ui)
+            })
+            .inner
+        })
+        .inner
+}
+
+/// The side of an icon button, in points.
+pub const ICON_BUTTON: f32 = 20.0;
+
+/// The icons the app draws itself: the embedded fonts carry no symbol set,
+/// and a stroked icon stays sharp at any scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icon {
+    /// Frame the model: four corner brackets.
+    Fit,
+    /// Two arrows pointing out to opposite corners.
+    Maximise,
+    /// Two arrows pointing in from opposite corners.
+    Restore,
+    /// A double chevron pointing left: the right dock grows.
+    Widen,
+    /// A double chevron pointing right: the right dock shrinks.
+    Narrow,
+}
+
+impl Icon {
+    /// Stroke the icon centred in `rect`.
+    fn paint(self, painter: &egui::Painter, rect: egui::Rect, colour: Color32) {
+        let c = rect.center();
+        let stroke = Stroke::new(1.5, colour);
+        let at = |x: f32, y: f32| c + egui::vec2(x, y);
+        let line = |a: egui::Pos2, b: egui::Pos2| painter.line_segment([a, b], stroke);
+        match self {
+            Icon::Fit => {
+                for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                    line(at(5.0 * sx, 5.0 * sy), at(1.5 * sx, 5.0 * sy));
+                    line(at(5.0 * sx, 5.0 * sy), at(5.0 * sx, 1.5 * sy));
+                }
+            }
+            Icon::Maximise | Icon::Restore => {
+                // Each arrow runs along the diagonal; its head sits at the
+                // corner end (maximise) or at the centre end (restore).
+                for s in [-1.0_f32, 1.0] {
+                    let (tip, tail) = if self == Icon::Maximise {
+                        (5.0 * s, 1.5 * s)
+                    } else {
+                        (1.5 * s, 5.0 * s)
+                    };
+                    let back = if self == Icon::Maximise { -s } else { s };
+                    line(at(tail, -tail), at(tip, -tip));
+                    line(at(tip, -tip), at(tip + 3.5 * back, -tip));
+                    line(at(tip, -tip), at(tip, -tip - 3.5 * back));
+                }
+            }
+            Icon::Widen | Icon::Narrow => {
+                let s = if self == Icon::Widen { 1.0 } else { -1.0 };
+                for x in [-2.5_f32, 2.5] {
+                    line(at(x + 2.0 * s, -4.0), at(x - 2.0 * s, 0.0));
+                    line(at(x - 2.0 * s, 0.0), at(x + 2.0 * s, 4.0));
+                }
+            }
+        }
+    }
+}
+
+/// How an icon button sits on what is behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconStyle {
+    /// In a dock or toolbar: a raised button.
+    Raised,
+    /// Over a viewport: the caption backing until the pointer is on it.
+    Hud,
+}
+
+/// An icon button in `rect`. `on` draws it as a switch that is on.
+pub fn icon_button_at(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    icon: Icon,
+    style: IconStyle,
+    on: bool,
+) -> egui::Response {
+    let response = ui.allocate_rect(rect, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let v = ui.style().interact(&response);
+        let idle = !(response.hovered() || response.is_pointer_button_down_on());
+        let (fill, outline, colour) = match (style, idle, on) {
+            (_, true, true) => (SWITCH_ON, Stroke::NONE, TEXT_ON_ACCENT),
+            (IconStyle::Hud, true, false) => (HUD_BACKING, Stroke::NONE, TEXT_SECONDARY),
+            _ => (v.bg_fill, v.bg_stroke, v.fg_stroke.color),
+        };
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(RADIUS),
+            fill,
+            outline,
+            egui::StrokeKind::Inside,
+        );
+        icon.paint(ui.painter(), rect, colour);
+    }
+    response
+}
+
+/// An icon button laid out like any other widget.
+pub fn icon_button(ui: &mut egui::Ui, icon: Icon, on: bool) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(ICON_BUTTON), egui::Sense::hover());
+    icon_button_at(ui, rect, icon, IconStyle::Raised, on)
+}
+
 /// Apply the theme to every style of `ctx` (dark and light).
 pub fn apply(ctx: &egui::Context) {
     ctx.set_fonts(fonts());

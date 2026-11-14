@@ -322,7 +322,7 @@ pub fn viewport_with_texture(
     if let Some(text) = grid_caption(view.perspective, opts.grid, minor, major) {
         hud_caption(
             &painter,
-            rect.right_top() + egui::vec2(-8.0, 6.0),
+            egui::pos2(view_buttons(rect)[0].left() - 8.0, rect.top() + 6.0),
             Align2::RIGHT_TOP,
             text,
         );
@@ -349,6 +349,17 @@ pub fn viewport_with_texture(
 }
 
 /// Where a viewport's title caption is anchored (its top-left corner).
+/// Where a viewport drawn in `rect` has its two corner buttons: fit, then
+/// maximise, in the top right corner. The grid caption sits to their left.
+pub fn view_buttons(rect: Rect) -> [Rect; 2] {
+    let side = theme::ICON_BUTTON;
+    let last = Rect::from_min_size(
+        rect.right_top() + egui::vec2(-4.0 - side, 4.0),
+        egui::Vec2::splat(side),
+    );
+    [last.translate(egui::vec2(-side - 2.0, 0.0)), last]
+}
+
 fn title_pos(rect: Rect) -> Pos2 {
     rect.left_top() + egui::vec2(8.0, 6.0)
 }

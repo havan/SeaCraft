@@ -47,6 +47,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   drawer under the viewports instead of taking over and widening the Analysis dock. The drawer's header has the
   five views as tabs, Compute, Copy CSV and ✕; closing it gives the viewports their height back, and the dock
   keeps its tab and its width throughout.
+- GUI toolbar: the shading mode is one segmented control, and the subdivision level is labelled Precision and
+  reads "Level 3". Fit and Maximise left the toolbar: each view has the two as icon buttons in its top right
+  corner, where fit frames that view alone (F still frames all four) and maximise acts on that view, active or
+  not.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is

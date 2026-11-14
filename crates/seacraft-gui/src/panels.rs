@@ -4753,9 +4753,8 @@ pub struct ToolbarState<'a> {
     pub params: AnalysisParams,
     pub level: u8,
     pub mode: SubdivisionMode,
-    pub maximised: bool,
-    /// A model is loaded. Without one the view controls (analysis mode,
-    /// display toggles, Fit, Maximise) are disabled; the subdivision level
+    /// A model is loaded. Without one the view controls (analysis mode and
+    /// display toggles) are disabled; the subdivision level
     /// and scheme stay editable, as settings the next model is shown with.
     pub has_model: bool,
 }
@@ -4860,15 +4859,10 @@ pub struct ToolbarOutput {
     pub display: Option<DisplayOptions>,
     pub level: Option<u8>,
     pub mode: Option<SubdivisionMode>,
-    /// Frame the model in every view (F).
-    pub fit: bool,
-    /// Maximise the active view, or restore the four views.
-    pub toggle_maximise: bool,
     /// Where each control was drawn, by name (a test hook): `shaded`,
     /// `zebra`, `curvature`, `draft`, `param`, `net`, `points`,
     /// `waterplane`, `curves`, `combs`, `sections` (the counts menu),
-    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`,
-    /// `fit`, `maximise`.
+    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`.
     pub rects: Vec<(&'static str, egui::Rect)>,
 }
 
@@ -4877,25 +4871,17 @@ const LEVEL_ITEMS: [&str; 6] = [
 ];
 
 /// The slim toolbar under the menu bar: analysis mode and its parameter,
-/// display toggles, subdivision level and scheme, Fit and Maximise. One row
+/// display toggles, subdivision level and scheme. One row
 /// at 1600 px; it wraps on a narrower window.
 pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
     let mut out = ToolbarOutput::default();
-    let ctx = ui.ctx().clone();
-    let keys = |modifiers: egui::Modifiers, key: egui::Key| {
-        ctx.format_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
-    };
-    let fit_key = keys(egui::Modifiers::NONE, egui::Key::F);
-    let max_key = keys(egui::Modifiers::COMMAND, egui::Key::Space);
-
     ui.horizontal_wrapped(|ui| {
         // Analysis mode: a segmented control.
         let current = state.display.analysis;
-        ui.horizontal(|ui| {
+        theme::segmented(ui, |ui| {
             if !state.has_model {
                 ui.disable();
             }
-            ui.spacing_mut().item_spacing.x = 0.0;
             for (name, kind, label, tip) in [
                 (
                     "shaded",
@@ -4989,9 +4975,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                             AnalysisMode::Curvature { .. } => {
                                 AnalysisMode::Curvature { radius: value }
                             }
-                            AnalysisMode::Draft { .. } => {
-                                AnalysisMode::Draft { angle_deg: value }
-                            }
+                            AnalysisMode::Draft { .. } => AnalysisMode::Draft { angle_deg: value },
                         });
                     }
                     out.rects.push(("param", response.rect));
@@ -5046,8 +5030,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     &mut display.wireframe,
                 ),
             ] {
-                let response = theme::as_switch(ui, |ui| ui.selectable_label(*flag, label))
-                    .on_hover_text(tip);
+                let response =
+                    theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
                 if response.clicked() {
                     *flag = !*flag;
                     toggled = true;
@@ -5062,7 +5046,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     }
                 })
                 .response
-                .on_hover_text("Section counts (stations, waterlines, buttocks) and comb scale and density");
+                .on_hover_text(
+                    "Section counts (stations, waterlines, buttocks) and comb scale and density",
+                );
             out.rects.push(("sections", menu.rect));
         });
         if toggled {
@@ -5071,19 +5057,21 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.separator();
 
         // Subdivision level and scheme, applied through the setters.
+        ui.label(egui::RichText::new("Precision").color(theme::TEXT_SECONDARY));
         let mut level = state.level;
         let combo = egui::ComboBox::from_id_salt("toolbar_level")
-            .selected_text(format!("L{level}"))
-            .width(44.0)
+            .selected_text(format!("Level {level}"))
+            .width(68.0)
             .show_ui(ui, |ui| {
                 for (n, name) in LEVEL_ITEMS.iter().enumerate() {
                     let response = ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
                     out.rects.push((name, response.rect));
                 }
             });
-        let combo = combo
-            .response
-            .on_hover_text("Subdivision level, for display and measurement (0–5)");
+        let combo = combo.response.on_hover_text(
+            "How finely the hull is subdivided, for display and for measurement: \
+                 a higher level is smoother and slower (0–5)",
+        );
         out.rects.push(("level", combo.rect));
         if level != state.level {
             out.level = Some(level);
@@ -5106,30 +5094,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         if mode != state.mode {
             out.mode = Some(mode);
         }
-        ui.separator();
-
-        let fit = ui
-            .add_enabled(state.has_model, egui::Button::new("Fit"))
-            .on_hover_text(format!("Frame the model in every view ({fit_key})"));
-        out.fit = fit.clicked();
-        out.rects.push(("fit", fit.rect));
-        // A framed button like Fit (an action, not a display toggle),
-        // highlighted while a view is maximised.
-        let max = ui
-            .add_enabled(
-                state.has_model,
-                egui::Button::new(if state.maximised {
-                    "Restore"
-                } else {
-                    "Maximise"
-                })
-                .selected(state.maximised),
-            )
-            .on_hover_text(format!(
-                "Maximise the active view, or restore the four views ({max_key}, or double-click a view's title)"
-            ));
-        out.toggle_maximise = max.clicked();
-        out.rects.push(("maximise", max.rect));
     });
     out
 }

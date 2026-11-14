@@ -704,9 +704,10 @@ Plan        | Body plan
 * A slim toolbar under the menu bar carries the surface-analysis mode
   (Shaded / Zebra / Curvature / Draft) with its parameter (stripes, radius,
   draft angle; 14, 1 m and 3° by default), the display toggles (net, points,
-  waterplane, combs, wireframe), the subdivision level and scheme, **Fit** and
-  **Maximise**. **Ctrl+Space**, the toolbar button or a double-click on a
-  view's title makes the active view fill the whole viewport area (control
+  waterplane, combs, wireframe) and the precision (subdivision level) and scheme.
+  Each view has two buttons in its top right corner: one frames the model in that
+  view, the other maximises it. **Ctrl+Space**, that button or a double-click on a
+  view's title makes a view fill the whole viewport area (control
   `ui.set {"maximised": true}`); **1**–**4** then switch the maximised view.
 * The left dock manages layers, after FREE!ship's layer dialog: a list
   (colour, name, visibility eye, face count) whose highlighted entry is the

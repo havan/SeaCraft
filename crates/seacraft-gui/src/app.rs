@@ -1009,6 +1009,8 @@ pub struct App {
     analysis_params: panels::AnalysisParams,
     /// Where the toolbar's controls were drawn last frame (test hook).
     toolbar_rects: Vec<(&'static str, egui::Rect)>,
+    /// Each view's fit and maximise buttons (last frame).
+    view_button_rects: [[egui::Rect; 2]; 4],
     /// Rasterized frames for the analysis modes, one per viewport.
     analysis_frames: [Option<AnalysisFrame>; 4],
     /// How many analysis frames each viewport has rasterized (test hook).
@@ -1203,6 +1205,7 @@ impl App {
             maximised: None,
             analysis_params: panels::AnalysisParams::default(),
             toolbar_rects: Vec::new(),
+            view_button_rects: [[egui::Rect::NOTHING; 2]; 4],
             analysis_frames: [None, None, None, None],
             raster_counts: [0; 4],
             waterline_cuts: 0,
@@ -2363,7 +2366,6 @@ impl App {
             params: self.analysis_params,
             level: self.level,
             mode: self.mode,
-            maximised: self.maximised.is_some(),
             has_model: self.surface.is_some(),
         };
         let out = egui::Panel::top("toolbar")
@@ -2383,12 +2385,6 @@ impl App {
         }
         if let Some(mode) = out.mode {
             self.set_subdivision_mode(mode);
-        }
-        if out.fit {
-            self.reset_cameras();
-        }
-        if out.toggle_maximise {
-            self.toggle_maximised();
         }
         self.toolbar_rects = out.rects;
     }
@@ -3420,6 +3416,15 @@ impl App {
         };
         self.viewport_rects = [egui::Rect::NOTHING; 4];
         self.title_rects = [egui::Rect::NOTHING; 4];
+        self.view_button_rects = [[egui::Rect::NOTHING; 2]; 4];
+        let fit_key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::NONE,
+            egui::Key::F,
+        ));
+        let max_key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::Space,
+        ));
         let mut toggle_maximise = false;
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
         let mut fresh_hulls: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
@@ -3482,7 +3487,12 @@ impl App {
                 // Grab on *press*, not when egui decides it is a drag: the
                 // pick must use the pixel the user aimed at, not where the
                 // cursor has already slid to.
-                if response.hovered() && ui.input(|i| i.pointer.primary_pressed()) {
+                // A press on a corner button is not a grab at the point
+                // that happens to lie under it.
+                let on_button = ui
+                    .input(|i| i.pointer.interact_pos())
+                    .is_some_and(|p| render::view_buttons(cell).iter().any(|b| b.contains(p)));
+                if response.hovered() && !on_button && ui.input(|i| i.pointer.primary_pressed()) {
                     self.begin_drag(ui, &view, cell, index);
                 }
                 if response.dragged_by(egui::PointerButton::Primary) {
@@ -3719,6 +3729,33 @@ impl App {
                 );
             }
             self.draw_pick_overlays(ui, cell, index);
+
+            // Fit and maximise, in the corner of the view they act on.
+            let [fit, maximise] = render::view_buttons(cell);
+            self.view_button_rects[index] = [fit, maximise];
+            let hud = crate::theme::IconStyle::Hud;
+            if crate::theme::icon_button_at(ui, fit, crate::theme::Icon::Fit, hud, false)
+                .on_hover_text(format!(
+                    "Frame the model in this view ({fit_key} frames every view)"
+                ))
+                .clicked()
+            {
+                self.refit_camera(index);
+            }
+            let (icon, tip) = if self.maximised.is_some() {
+                (crate::theme::Icon::Restore, "Restore the four views")
+            } else {
+                (crate::theme::Icon::Maximise, "Maximise this view")
+            };
+            if crate::theme::icon_button_at(ui, maximise, icon, hud, false)
+                .on_hover_text(format!(
+                    "{tip} ({max_key}, or double-click the view's title)"
+                ))
+                .clicked()
+            {
+                self.active = index;
+                toggle_maximise = true;
+            }
         }
         for (index, frame) in fresh {
             self.analysis_frames[index] = Some(frame);
@@ -6000,6 +6037,12 @@ impl App {
     /// The whole central area the viewports share (last frame).
     pub fn central_rect(&self) -> egui::Rect {
         self.central_rect
+    }
+
+    /// View `i`'s fit and maximise buttons (last frame); `Rect::NOTHING`
+    /// when hidden.
+    pub fn view_button_rects(&self, i: usize) -> [egui::Rect; 2] {
+        self.view_button_rects[i]
     }
 
     /// View `i`'s title caption (last frame); `Rect::NOTHING` when hidden.
