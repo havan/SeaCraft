@@ -138,6 +138,8 @@ sheet does not stretch. The program finds the flat shape with the least stretch 
 
 - seam drift: how much an edge laid flat is longer or shorter than on the model, up to each station tick, the
   worse of measuring from either end;
+- mismatch: how far each edge differs from the edge it is stitched to, at the ticks. Two panels can each pass
+  their drift limit and still differ by twice it; the mismatch is printed, not judged against a limit;
 - stretch: how much the panel must stretch to lie flat, RMS and largest, in per cent;
 - the outline's shift to the next refinement level, which tells you whether the model is refined enough;
 - the edge-joining gap, an older and coarser measure kept beside it.

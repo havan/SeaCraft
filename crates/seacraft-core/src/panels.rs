@@ -1085,6 +1085,45 @@ pub fn failing_heading(measures: &Measures, limits: Limits) -> String {
     heading
 }
 
+/// How far each of a panel's stitched edges differs from its mate's at the ticks, as a sheet
+/// note; `None` for a panel stitched to nothing. A mate measured apart from this panel (not in
+/// the set, or its edge not paired) is said to be not compared.
+pub fn mismatch_note(panel: &FlatPanel, mismatches: &[Mismatch]) -> Option<String> {
+    let me = &panel.found.name;
+    let mut mates: Vec<&str> = panel
+        .found
+        .seams
+        .iter()
+        .filter_map(|s| match &s.mate {
+            Mate::Panel(m) => Some(m.as_str()),
+            _ => None,
+        })
+        .collect();
+    mates.sort_unstable();
+    mates.dedup();
+    if mates.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = mates
+        .iter()
+        .map(|&mate| {
+            let worst = mismatches
+                .iter()
+                .filter(|m| (&m.a == me && m.b == mate) || (m.a == mate && &m.b == me))
+                .map(|m| m.max_m)
+                .fold(None, |w: Option<f64>, d| Some(w.map_or(d, |w| w.max(d))));
+            match worst {
+                Some(d) => format!("{mate} {:.1} mm", d * 1000.0),
+                None => format!("{mate} not compared"),
+            }
+        })
+        .collect();
+    Some(format!(
+        "Against the mating edge, largest difference at the ticks: {}",
+        parts.join("; ")
+    ))
+}
+
 /// What an unsettled flattening may still be off by, as a sheet note.
 pub fn unsettled_note(unsettled_m: f64) -> String {
     if unsettled_m.is_finite() {
@@ -1775,6 +1814,14 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         // Before the three closing sentences.
         let at = sheet.notes.len().saturating_sub(3);
         sheet.notes.insert(at, plywood);
+        if let Some(note) = mismatch_note(p, &set.mismatches) {
+            let at = sheet
+                .notes
+                .iter()
+                .position(|n| n.starts_with("Seam drift"))
+                .map_or(0, |i| i + 1);
+            sheet.notes.insert(at, note);
+        }
         let m = &p.measures;
         set.rows.push(PanelRow {
             panel: p.found.name.clone(),
@@ -2815,6 +2862,32 @@ mod tests {
                 whole.total_sheets
             )
         );
+    }
+
+    /// Each pattern says how far its stitched edges differ from their mates' at the ticks; a
+    /// mate that was not measured with it is said to be not compared.
+    #[test]
+    fn mating_mismatch_is_printed_on_each_pattern() {
+        let s = pram_fixture(0.0, 0.08);
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        let chine = set
+            .mismatches
+            .iter()
+            .find(|m| m.a == "Bottom" && m.b == "Side")
+            .expect("chine compared");
+        assert!(chine.max_m > 0.001, "{chine:?}");
+        let side = set.rows.iter().position(|r| r.panel == "Side").unwrap();
+        let note = set.sheets[side]
+            .notes
+            .iter()
+            .find(|n| n.starts_with("Against the mating edge"))
+            .unwrap_or_else(|| panic!("{:?}", set.sheets[side].notes));
+        assert!(
+            note.contains(&format!("Bottom {:.1} mm", chine.max_m * 1000.0)),
+            "{note}"
+        );
+        // The transoms are not in the default set (not marked developable).
+        assert!(note.contains("Transoms 1 not compared"), "{note}");
     }
 
     #[test]

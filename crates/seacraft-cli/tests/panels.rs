@@ -88,6 +88,10 @@ fn panels_prints_a_table_and_the_sheet_count() {
     let out = ok(&dir, &["panels", "pram.fef", "-o", "p.svg"]);
     assert!(out.contains("Side"), "{out}");
     assert!(
+        out.contains("Bottom against Side: stitched edges differ by up to 0.0 mm at the ticks"),
+        "{out}"
+    );
+    assert!(
         out.contains("plywood sheets, end to end, no nesting: an upper bound"),
         "{out}"
     );

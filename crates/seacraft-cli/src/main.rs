@@ -3517,6 +3517,14 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     for r in &set.refused {
         println!("{:<16} refused: {}", r.panel, r.reason);
     }
+    for m in &set.mismatches {
+        println!(
+            "{} against {}: stitched edges differ by up to {:.1} mm at the ticks",
+            m.a,
+            m.b,
+            m.max_m * 1000.0
+        );
+    }
     println!("{}", set.sheet_count_line());
     for row in &set.stock {
         if let Some(note) = &row.note {
