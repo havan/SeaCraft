@@ -523,7 +523,10 @@ pub fn icon_button_at(
     let response = ui.allocate_rect(rect, egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let v = ui.style().interact(&response);
-        let idle = !(response.hovered() || response.is_pointer_button_down_on());
+        // Keyboard focus is not idle: the focused button must show which
+        // action Space or Enter will press.
+        let idle =
+            !(response.hovered() || response.is_pointer_button_down_on() || response.has_focus());
         let (fill, outline, colour) = match (style, idle, on) {
             (_, true, true) => (SWITCH_ON, Stroke::NONE, TEXT_ON_ACCENT),
             (IconStyle::Hud, true, false) => (HUD_BACKING, Stroke::NONE, TEXT_SECONDARY),
@@ -608,6 +611,40 @@ mod tests {
         assert_eq!(shaded(c, 0.5), Color32::from_rgb(50, 100, 25));
         assert_eq!(shaded(c, 0.5).a(), 255);
         assert_eq!(shaded(c, 1.0), c);
+    }
+
+    /// The fill of a HUD icon button drawn in a frame of its own, with or
+    /// without the keyboard focus.
+    fn hud_button_fill(focused: bool) -> Color32 {
+        let ctx = egui::Context::default();
+        let rect =
+            egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::Vec2::splat(ICON_BUTTON));
+        let mut fill = None;
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let response = icon_button_at(ui, rect, Icon::Fit, IconStyle::Hud, false);
+                if focused {
+                    response.request_focus();
+                }
+            });
+            // Nothing uploads the fonts in a headless pass; a dropped delta panics.
+            out.textures_delta.clear();
+            fill = out.shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.rect == rect => Some(r.fill),
+                _ => None,
+            });
+        }
+        fill.expect("the button's backing")
+    }
+
+    #[test]
+    fn a_focused_icon_button_does_not_look_idle() {
+        assert_eq!(hud_button_fill(false), HUD_BACKING);
+        assert_ne!(
+            hud_button_fill(true),
+            HUD_BACKING,
+            "the keyboard focus must show on the button"
+        );
     }
 
     /// Every GUI source except this one. A new module must be added here.
