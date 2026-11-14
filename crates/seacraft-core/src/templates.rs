@@ -993,10 +993,14 @@ pub struct Transom {
 }
 
 /// The backbone pattern: the hull cut on its centre plane, moved in by the skin, with the
-/// baseline, the waterlines asked for and a numbered line at each of `stations`.
+/// baseline, the waterlines asked for and a line at each of `stations`, marked with its number.
 ///
 /// `None` when the centre plane cuts nothing.
-pub fn profile_template(hull: &Hull, stations: &[f64], opts: &TemplateOptions) -> Option<Template> {
+pub fn profile_template(
+    hull: &Hull,
+    stations: &[(usize, f64)],
+    opts: &TemplateOptions,
+) -> Option<Template> {
     let section = cut(hull, &Frame::profile());
     if section.is_empty() {
         return None;
@@ -1008,14 +1012,14 @@ pub fn profile_template(hull: &Hull, stations: &[f64], opts: &TemplateOptions) -
     draw_outline(&mut sheet, &outline, false);
     let span = [u0 - MARK_REACH_M, v0, u1 + MARK_REACH_M, v1];
     add_levels(&mut sheet, opts, hull.keel, 1.0, span);
-    for (i, x) in stations.iter().enumerate().filter(|(_, x)| x.is_finite()) {
+    for (number, x) in stations.iter().filter(|(_, x)| x.is_finite()) {
         sheet
             .paths
             .push(mark((*x, v0 - MARK_REACH_M), (*x, v1 + MARK_REACH_M)));
         let at = (*x, v1 + MARK_REACH_M + 0.001);
         sheet
             .labels
-            .push(mark_label(at, Anchor::Middle, (i + 1).to_string()));
+            .push(mark_label(at, Anchor::Middle, number.to_string()));
     }
     add_title(&mut sheet, ((u0 + u1) / 2.0, (v0 + v1) / 2.0));
     sheet
@@ -1256,7 +1260,7 @@ pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet,
     for (i, x) in positions.iter().enumerate() {
         match station_template(&hull, *x, i + 1, positions.len(), &template_opts) {
             Some(template) => {
-                cut_at.push(*x);
+                cut_at.push((i + 1, *x));
                 add(&mut set, template);
             }
             None => set.warnings.push(format!(
@@ -2243,7 +2247,7 @@ mod tests {
             waterlines_m: vec![1.0],
             ..opts(0.01)
         };
-        let t = profile_template(&hull, &[2.0, 5.0], &o).unwrap();
+        let t = profile_template(&hull, &[(1, 2.0), (2, 5.0)], &o).unwrap();
         assert_eq!(t.sheet.name, "Profile");
         assert_span(&cut_points(&t), [0.01, 0.01, 9.99, 1.99], 1e-9);
         assert_span(
@@ -2458,6 +2462,30 @@ mod tests {
             set.warnings
         );
         assert!(template_set(&crate::Surface::new(), &SetOptions::default()).is_err());
+    }
+
+    /// A skipped station keeps its number free: the profile marks the others as their own sheets
+    /// are named.
+    #[test]
+    fn the_profile_numbers_stations_as_their_sheets_do() {
+        let o = SetOptions {
+            stations: StationChoice::At(vec![-999.0, 1.0, 3.0]),
+            profile: true,
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        let names: Vec<&str> = set.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Station 2", "Station 3", "Profile"]);
+        let profile: Vec<&str> = set.sheets[2]
+            .labels
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
+        assert!(
+            profile.contains(&"2") && profile.contains(&"3"),
+            "{profile:?}"
+        );
+        assert!(!profile.contains(&"1"), "{profile:?}");
     }
 
     #[test]
