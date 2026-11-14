@@ -46,7 +46,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - GUI: an Analysis menu view (hydrostatic table, Bonjean curves, offsets, trim scan, plate development) opens in a
   drawer under the viewports instead of taking over and widening the Analysis dock. The drawer's header has the
   five views as tabs, Compute, Copy CSV and ✕; closing it gives the viewports their height back, and the dock
-  keeps its tab and its width throughout.
+  keeps its tab and its width throughout. F5 recomputes the drawer's view and the dock's tab, each when it is out
+  of date, and reaches the drawer with the dock hidden.
 - GUI toolbar: the shading mode is one segmented control, and the subdivision level is labelled Precision and
   reads "Level 3". Fit and Maximise left the toolbar: each view has the two as icon buttons in its top right
   corner, where fit frames that view alone (F still frames all four) and maximise acts on that view, active or

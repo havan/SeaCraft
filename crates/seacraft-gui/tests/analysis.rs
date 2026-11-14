@@ -396,6 +396,40 @@ fn a_geometry_change_makes_a_view_stale_until_f5() {
 }
 
 #[test]
+fn f5_recomputes_the_drawer_and_the_dock_tab_each_on_its_own() {
+    let (_ctx, mut app, _) = settled();
+    app.set_dock_tab(seacraft_gui::app::DesignDock::Hydrostatics);
+    app.compute_cross_curves();
+    assert!(app.cross_curves().is_some(), "GZ curves computed");
+    app.open_analysis_view(AnalysisView::HydroTable);
+    app.wait_analysis_view(AnalysisView::HydroTable);
+
+    // The drawer no longer replaces the dock's tab: both are on screen, and
+    // F5 brings both back.
+    let p = app.surface().unwrap().points[10].p;
+    app.move_point(10, p + Vec3::new(0.0, 0.0, 0.05)).unwrap();
+    assert!(app.analysis_view_stale(AnalysisView::HydroTable));
+    assert!(app.stale_results().contains(&"GZ curves"));
+    app.recompute_stale();
+    assert!(
+        app.analysis_view_busy(AnalysisView::HydroTable),
+        "the drawer"
+    );
+    assert!(app.curves_busy(), "the dock's tab under the open drawer");
+    app.wait_analysis_view(AnalysisView::HydroTable);
+
+    // The drawer stays on screen with the dock hidden, so F5 still reaches it.
+    app.set_show_analysis(false);
+    app.move_point(10, p).unwrap();
+    assert!(app.analysis_view_stale(AnalysisView::HydroTable));
+    app.recompute_stale();
+    assert!(
+        app.analysis_view_busy(AnalysisView::HydroTable),
+        "the drawer with the dock hidden"
+    );
+}
+
+#[test]
 fn the_analysis_menu_needs_a_model() {
     let mut app = App::headless_empty();
     app.open_analysis_view(AnalysisView::HydroTable);

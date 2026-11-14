@@ -4320,7 +4320,8 @@ impl App {
     }
 
     /// F5: recompute every stale result that is shown — the automatic ones
-    /// at once, without the debounce, and the heavy ones of the open tab.
+    /// at once, without the debounce, and the heavy ones of the open tab and of
+    /// the view in the drawer.
     pub fn recompute_stale(&mut self) {
         if self.drag.is_some() || self.surface.is_none() {
             return;
@@ -4353,14 +4354,16 @@ impl App {
         ) {
             self.start_resistance_compute();
         }
-        if !self.show_analysis {
-            return;
-        }
+        // The drawer's view and the dock's tab are each on screen on their
+        // own: the drawer stays when the dock is hidden, and does not cover
+        // the tab when both are shown.
         if let Some(view) = self.analysis.open {
-            // The open view instead of the hidden tab: stale or empty.
+            // Stale or empty.
             if self.analysis.slot(view).track.due(self.analysis_key(view)) {
                 self.start_analysis_view(view);
             }
+        }
+        if !self.show_analysis {
             return;
         }
         match self.dock_tab {
