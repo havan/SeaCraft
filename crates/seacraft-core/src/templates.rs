@@ -569,6 +569,8 @@ pub(crate) struct Outline {
     pub(crate) sheer: Vec<(f64, f64)>,
     /// The length-weighted mean of `n . N` along the section.
     pub(crate) mean_along: f64,
+    /// The least and the greatest `n . N` of any piece, zero when none is below or above.
+    pub(crate) along_range: (f64, f64),
     pub(crate) max_bevel_deg: f64,
     pub(crate) longest_segment_m: f64,
     /// `[min_u, min_v, max_u, max_v]` of the hull's section.
@@ -591,6 +593,7 @@ pub(crate) fn outline(
         surface: Vec::new(),
         sheer: Vec::new(),
         mean_along: 0.0,
+        along_range: (0.0, 0.0),
         max_bevel_deg: 0.0,
         longest_segment_m: 0.0,
         bounds: [f64::MAX, f64::MAX, f64::MIN, f64::MIN],
@@ -606,6 +609,8 @@ pub(crate) fn outline(
             if let Some(m) = meeting {
                 weighted += m.along * length;
                 total += length;
+                let r = &mut out.along_range;
+                *r = (r.0.min(m.along), r.1.max(m.along));
                 out.max_bevel_deg = out
                     .max_bevel_deg
                     .max(m.along.abs().min(1.0).asin().to_degrees());
@@ -908,13 +913,7 @@ pub fn station_template(
     };
     add_title(&mut sheet, (middle, (v0 + v1) / 2.0));
 
-    let face = if outline.mean_along > 0.01 {
-        MouldFace::Forward
-    } else if outline.mean_along < -0.01 {
-        MouldFace::Aft
-    } else {
-        MouldFace::Either
-    };
+    let face = mould_face(outline.mean_along, outline.along_range);
     sheet.notes.push(format!(
         "Station {index} of {count}, x = {}",
         units::length(x, opts.imperial)
@@ -928,6 +927,7 @@ pub fn station_template(
         }
         .into(),
     );
+    sheet.notes.extend(bevel_note(face, outline.along_range));
     sheet.notes.extend(measure_notes(&outline));
     if opts.half {
         sheet.notes.push(HALF_NOTE.into());
@@ -949,6 +949,45 @@ pub fn station_template(
         longest_segment_m: outline.longest_segment_m,
         warnings,
     })
+}
+
+/// `n . N` beyond which a mould's far face stands proud of the skin enough to bevel: 1 degree.
+const BEVEL_SIN: f64 = 0.017_452_406_437_283_51;
+
+/// Which face goes on the line, from how the section narrows: the way every piece of it narrows
+/// when they agree, otherwise the way its length-weighted mean `mean` does.
+fn mould_face(mean: f64, (least, most): (f64, f64)) -> MouldFace {
+    match (least < -BEVEL_SIN, most > BEVEL_SIN) {
+        (false, true) => MouldFace::Forward,
+        (true, false) => MouldFace::Aft,
+        _ if mean > 0.01 => MouldFace::Forward,
+        _ if mean < -0.01 => MouldFace::Aft,
+        _ => MouldFace::Either,
+    }
+}
+
+/// Where a mould set on its line by `face` still stands proud of the skin: the pieces of the
+/// section that narrow the other way by more than a degree.
+fn bevel_note(face: MouldFace, (least, most): (f64, f64)) -> Option<String> {
+    let deg = |a: f64| a.abs().min(1.0).asin().to_degrees();
+    let (aft, forward) = (least < -BEVEL_SIN, most > BEVEL_SIN);
+    match face {
+        MouldFace::Forward if aft => Some(format!(
+            "Bevel the aft face where the hull narrows aft, up to {:.1}°, or it stands proud of the skin",
+            deg(least)
+        )),
+        MouldFace::Aft if forward => Some(format!(
+            "Bevel the forward face where the hull narrows forward, up to {:.1}°, or it stands proud of the skin",
+            deg(most)
+        )),
+        MouldFace::Either if aft && forward => Some(format!(
+            "Bevel needed both ways: the hull narrows forward by up to {:.1}° and aft by up to {:.1}°; the \
+             face off the line stands proud of the skin where the hull narrows towards it",
+            deg(most),
+            deg(least)
+        )),
+        _ => None,
+    }
 }
 
 /// The note on a half pattern.
@@ -1544,6 +1583,38 @@ pub(crate) mod testing {
             .collect();
         hull_from(verts, tris, move |_| Vec3::new(l / 2.0, 0.0, d / 2.0))
     }
+
+    /// A box 4 m long with a deck whose half breadth falls from 1 to 0.5 m going forward while
+    /// its deck rises from 1 to 1.5 m: the sides narrow forward and the deck narrows aft, both
+    /// at atan(0.125) = 7.125 degrees.
+    pub(crate) fn twisted_box() -> Hull {
+        let verts: Vec<Vec3> = [
+            (0.0, -1.0, 0.0),
+            (4.0, -0.5, 0.0),
+            (4.0, 0.5, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, -1.0, 1.0),
+            (4.0, -0.5, 1.5),
+            (4.0, 0.5, 1.5),
+            (0.0, 1.0, 1.0),
+        ]
+        .iter()
+        .map(|(x, y, z)| Vec3::new(*x, *y, *z))
+        .collect();
+        let quads = [
+            [0, 1, 2, 3],
+            [0, 1, 5, 4],
+            [3, 2, 6, 7],
+            [0, 3, 7, 4],
+            [1, 2, 6, 5],
+            [4, 5, 6, 7],
+        ];
+        let tris = quads
+            .iter()
+            .flat_map(|q| [[q[0], q[1], q[2]], [q[0], q[2], q[3]]])
+            .collect();
+        hull_from(verts, tris, |p| Vec3::new(p.x, 0.0, 0.5))
+    }
 }
 
 #[cfg(test)]
@@ -1788,6 +1859,29 @@ mod tests {
             t.sheet.notes
         );
         assert!((t.half_breadth_m - 1.99).abs() < 1e-9);
+    }
+
+    /// Closed form: on `twisted_box` at x = 2 the sides (2.5 m) narrow forward and the deck
+    /// (1.5 m) narrows aft, both at 7.125 degrees. The longer part decides the face, forward;
+    /// the deck then needs the mould's aft face bevelled, or that edge stands in the skin.
+    #[test]
+    fn a_section_narrowing_both_ways_says_where_to_bevel() {
+        let t = station_template(&twisted_box(), 2.0, 1, 1, &opts(0.006)).unwrap();
+        assert_eq!(t.face, Some(MouldFace::Forward));
+        assert!(
+            (t.max_bevel_deg - 7.125).abs() < 0.01,
+            "{}",
+            t.max_bevel_deg
+        );
+        assert!(
+            t.sheet.notes.iter().any(|n| n
+                == "Bevel the aft face where the hull narrows aft, up to 7.1°, or it stands proud of the skin"),
+            "{:?}",
+            t.sheet.notes
+        );
+        // A section narrowing one way only needs no such note.
+        let cone = station_template(&tube(1.0, 0.5, 4.0, 720), 2.0, 1, 1, &opts(0.006)).unwrap();
+        assert!(!cone.sheet.notes.iter().any(|n| n.starts_with("Bevel")));
     }
 
     #[test]

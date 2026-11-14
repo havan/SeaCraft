@@ -25,7 +25,7 @@ Read the hull first: `hull_info {}` for extents and `validation.ok` (a leaking n
 
 ## Read the reply
 
-- `sheets` has a row a pattern: `x`, `half_breadth_m`, `face` and `max_bevel_deg`. `face` says which side of the mould goes on its station line so the mould needs no bevel to clear the skin: `forward` means the hull narrows going forward and the mould stands aft of its line; `aft` the other way; `either` where the hull is parallel.
+- `sheets` has a row a pattern: `x`, `half_breadth_m`, `face` and `max_bevel_deg`. `face` says which side of the mould goes on its station line so the mould needs no bevel to clear the skin: `forward` means the hull narrows going forward and the mould stands aft of its line; `aft` the other way; `either` where the hull is parallel. Where parts of a section narrow opposite ways, `face` follows the greater length and the sheet's notes say which face to bevel, and by up to how much, where the rest stands proud; relay that note.
 - Relay every entry of `warnings`, word for word, with the sheet it names. "skin is thicker than the hull's local radius here" means that mould cannot be made at that skin as drawn; a station that "cuts nothing and was skipped" is missing from the set.
 - `missing_characters`: letters the PDF font lacks, printed as `?`. Mention them if any.
 - Each sheet's notes include "Longest straight segment … mm". If it is more than a few tens of millimetres on a curved section, the mesh is coarse: export again with a higher `level` (4 or 5) and compare.
@@ -34,7 +34,7 @@ Read the hull first: `hull_info {}` for extents and `validation.ok` (a leaking n
 
 - Print at 100 %, never "fit to page", and measure both 100 mm rules on every page before cutting. If either is not 100 mm, do not cut. The PDF prints these instructions beside its rules too.
 - Join tiles on their alignment marks; the map page shows where each tile goes.
-- The bevel figure is the largest angle along the section; fair the moulds with a batten across several of them before planking.
+- The bevel figure is the largest angle along the section, not the bevel for the whole edge; the builder finds the local bevel with a batten across several moulds and planes each part to it before planking.
 - Results are not validated (see `DISCLAIMER.md`): the patterns are what the program computed from this hull, not a checked set.
 
 ## Red flags

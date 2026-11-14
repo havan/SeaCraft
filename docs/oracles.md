@@ -713,6 +713,10 @@ $\theta_1, \theta_2$, is dropped and its neighbours' moved lines meet instead.
   0.0575877$ m ($10^{-9}$), where a mitre held at $4t$ would leave both sides nearer the hull than $t$.
 - `a_section_the_skin_closes_to_nothing_is_reported`: a 20 mm square with $t = 10$ mm closes to a point (area
   0), which is reported as the skin being thicker than the hull's radius.
+- `a_section_narrowing_both_ways_says_where_to_bevel`: a box whose half breadth falls from 1 to 0.5 m and whose
+  deck rises from 1 to 1.5 m over 4 m. At $x = 2$ the sides (2.5 m of section) narrow forward and the deck (1.5 m)
+  aft, both at $\arctan 0.125 = 7.125^\circ$: the station line goes on the forward face and the aft face is to be
+  bevelled up to $7.1^\circ$. A cone, narrowing one way only, gets no such note.
 - `a_hair_of_a_segment_beside_a_bend_is_consumed_quietly`: a 0.15 mm piece beside a $3^\circ$ bend; with
   $t = 0.06$ the mould corner is $0.06$ from both long lines ($10^{-9}$).
 - `a_surface_nearly_in_the_plane_is_clamped_and_counted`: a cone 1 m in radius and 0.1 m long meets the plane at

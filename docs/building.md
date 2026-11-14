@@ -73,8 +73,14 @@ Each sheet says which face goes on the line, worked out from the hull's shape th
 - "Station line on the AFT face of the mould": the other way, near the stern.
 - "Either face on the station line" where the hull is parallel.
 
-The sheet also gives the largest bevel along the section. Plane the edges to it, or check with a batten across
-several moulds, before planking.
+Where part of a section narrows one way and part the other, as when the sides narrow forward while the sheer rises,
+no face clears the skin everywhere. The face is then chosen for the greater length of the section, and the sheet
+says which face to bevel where the rest narrows the other way, and by up to how much: "Bevel the aft face where the
+hull narrows aft, up to 4.1°, or it stands proud of the skin".
+
+The sheet also gives the largest bevel along the section. That is the most any part of the edge needs, not what
+the whole edge needs: the bevel changes along the section. Find it at each part of the edge by laying a batten
+across several moulds, and plane each part until the batten lies fair, before planking.
 
 ## The strongback
 
