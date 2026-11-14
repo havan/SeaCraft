@@ -43,6 +43,19 @@ pub const SELECTED: Color32 = Color32::from_rgb(0x24, 0x56, 0x8a);
 pub const SWITCH_ON: Color32 = Color32::from_rgb(0x45, 0x55, 0x6b);
 /// Text on [`SELECTED`] and on the primary button.
 pub const TEXT_ON_ACCENT: Color32 = Color32::from_rgb(0xf2, 0xf6, 0xfa);
+/// Adds `slider` with its value drawn as a field (see [`as_field`]): the
+/// rail and the handle keep the raised fill, the number beside them is sunk.
+pub fn slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        let w = &mut ui.visuals_mut().widgets;
+        w.inactive.weak_bg_fill = FIELD;
+        w.hovered.weak_bg_fill = FIELD_HOVER;
+        w.active.weak_bg_fill = FIELD_HOVER;
+        ui.add(slider)
+    })
+    .inner
+}
+
 /// The primary button of a dialog: the one action it exists for.
 pub const PRIMARY: Color32 = Color32::from_rgb(0x2f, 0x6f, 0xb0);
 /// Plot area background, a shade below the canvas.

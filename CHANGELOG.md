@@ -51,6 +51,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   reads "Level 3". Fit and Maximise left the toolbar: each view has the two as icon buttons in its top right
   corner, where fit frames that view alone (F still frames all four) and maximise acts on that view, active or
   not.
+- GUI Analysis dock: the pinned strip is one row of five tiles (name and unit over the value) with the dock's
+  width control as an icon at its end, in place of two cramped rows and a "↔ wide" button. The Hydro tab loses
+  its Recompute button: hydrostatics already recompute 120 ms after a change, and F5 still forces it. A slider's
+  number is drawn as a field.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is

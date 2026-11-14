@@ -728,7 +728,7 @@ Plan        | Body plan
   GM, LCB), then the tabs Hydro / Loading / Damage / Windage / Performance
   (View menu radio items; control `ui.set {"dock_tab": "loading"}`, or the
   older `{"loading_panel": true}` keys, which select the tab; `"analysis_dock"`
-  shows or hides it). *↔ wide* widens it, at first to about 55 % of the window;
+  shows or hides it). The button at the end of the strip widens it, at first to about 55 % of the window;
   both widths can be dragged. An Analysis menu view opens in a drawer under the
   viewports, with the other views as tabs in its header and *✕* to close it;
   it takes height from the viewports and leaves the dock alone. The Hydro

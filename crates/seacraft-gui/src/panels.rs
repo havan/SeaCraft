@@ -680,8 +680,8 @@ pub fn gm_text(h: &Hydrostatics, kg: Option<f64>) -> String {
     }
 }
 
-/// The pinned live strip's two rows: displacement, draft and trim; GM
-/// and LCB. A dash stands for a quantity not measured yet (GM: or no KG).
+/// The pinned live strip's readouts in two groups: displacement, draft and
+/// trim; GM and LCB. A dash stands for a quantity not measured yet (GM: or no KG).
 pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readout>; 2] {
     let r = Readout::new;
     match h {
@@ -749,9 +749,10 @@ pub fn about(ui: &mut egui::Ui) {
     });
 }
 
-/// The Analysis dock's pinned strip: the live floating condition in two
-/// compact rows, greyed while the hydrostatics are being recomputed, and
-/// the *↔ wide* toggle. Returns true when the toggle was clicked.
+/// The Analysis dock's pinned strip: the live floating condition as one
+/// row of tiles (name and unit above, value below), greyed while the
+/// hydrostatics are being recomputed, with the dock's width control at its
+/// end. Returns true when the width control was clicked.
 pub fn live_strip(
     ui: &mut egui::Ui,
     h: Option<&Hydrostatics>,
@@ -761,68 +762,67 @@ pub fn live_strip(
 ) -> bool {
     let mut toggle = false;
     let rows = live_strip_rows(h, kg);
+    let items: Vec<&Readout> = rows.iter().flatten().collect();
     let value_colour = if stale {
         theme::STALE
     } else {
         theme::TEXT_PRIMARY
     };
-    // Fixed cells rather than a `Grid`: a grid's first-frame sizing pass
-    // would widen the resizable dock, and fixed cells line the two rows up.
-    let cell = |ui: &mut egui::Ui, width: f32, right: bool, text: egui::RichText| {
-        let layout = if right {
-            egui::Layout::right_to_left(egui::Align::Center)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Center)
-        };
-        ui.allocate_ui_with_layout(egui::vec2(width, 18.0), layout, |ui| {
-            ui.set_min_width(width);
-            ui.label(text);
-        });
-    };
     ui.add_space(2.0);
-    for (r, row) in rows.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for item in row {
-                cell(
-                    ui,
-                    STRIP_NAME_WIDTH,
-                    false,
-                    egui::RichText::new(item.name)
-                        .font(theme::caption_font())
-                        .color(theme::TEXT_SECONDARY),
-                );
-                cell(
-                    ui,
-                    STRIP_VALUE_WIDTH,
-                    true,
-                    egui::RichText::new(&item.value)
-                        .monospace()
-                        .color(value_colour),
-                );
-                cell(
-                    ui,
-                    STRIP_UNIT_WIDTH,
-                    false,
-                    egui::RichText::new(item.unit)
-                        .font(theme::caption_font())
-                        .color(theme::TEXT_MUTED),
-                );
-            }
-            if r == 1 {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                let label = if wide { "↔ narrow" } else { "↔ wide" };
-                toggle = ui
-                    .add(egui::Button::new(label).selected(wide))
-                    .on_hover_text(
-                        "Toggle dock width between standard and wide layout for plots and tables",
-                    )
-                    .clicked();
-            }
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        // Fixed tiles rather than a `Grid`: a grid's first-frame sizing pass
+        // would widen the resizable dock. The tiles share the row with the
+        // width control, and stop growing in the wide dock.
+        let room = ui.available_width() - theme::ICON_BUTTON - 4.0;
+        let tile = (room / items.len() as f32)
+            .floor()
+            .clamp(STRIP_TILE_MIN, STRIP_TILE_MAX);
+        for item in items {
+            ui.allocate_ui_with_layout(
+                egui::vec2(tile, STRIP_TILE_HEIGHT),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(tile);
+                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(item.name)
+                                .font(theme::caption_font())
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            egui::RichText::new(item.unit)
+                                .font(theme::caption_font())
+                                .color(theme::TEXT_MUTED),
+                        );
+                    });
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&item.value)
+                                .monospace()
+                                .color(value_colour),
+                        )
+                        .truncate(),
+                    );
+                },
+            );
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let (icon, tip) = if wide {
+                (theme::Icon::Narrow, "Back to the standard dock width")
+            } else {
+                (
+                    theme::Icon::Widen,
+                    "Widen the dock, for its plots and tables",
+                )
+            };
+            toggle = theme::icon_button(ui, icon, wide)
+                .on_hover_text(tip)
+                .clicked();
         });
-    }
+    });
+    ui.add_space(2.0);
     toggle
 }
 
@@ -958,10 +958,12 @@ pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
     });
 }
 
-/// Widths of the pinned strip's cells: name, value (right-aligned) and unit.
-const STRIP_NAME_WIDTH: f32 = 28.0;
-const STRIP_VALUE_WIDTH: f32 = 54.0;
-const STRIP_UNIT_WIDTH: f32 = 16.0;
+/// The pinned strip's tiles: the narrowest that holds a value like
+/// `+0.425`, the widest worth giving one in the wide dock, and their height
+/// (a caption line over a value line).
+const STRIP_TILE_MIN: f32 = 56.0;
+const STRIP_TILE_MAX: f32 = 104.0;
+const STRIP_TILE_HEIGHT: f32 = 32.0;
 
 /// What the user asked the hydrostatics dock to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -969,8 +971,6 @@ pub enum HydroAction {
     None,
     /// The floating condition was edited: recompute after the debounce.
     Changed,
-    /// Recompute now.
-    Recompute,
     CrossCurves,
     /// The user set KG (it now goes into the project): recompute after the
     /// debounce, as [`HydroAction::Changed`].
@@ -1561,9 +1561,6 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button("Recompute").clicked() {
-            action = HydroAction::Recompute;
-        }
         let gz = ui.button("GZ curves");
         if gz.clicked() {
             action = HydroAction::CrossCurves;
@@ -2065,7 +2062,8 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     ui.strong("Seakeeping (head-sea RAOs)");
     ui.add_space(2.0);
 
-    let speed_resp = ui.add(
+    let speed_resp = theme::slider(
+        ui,
         egui::Slider::new(&mut panel.state.sk_speed_kn, 0.0..=20.0)
             .text("Speed (kn)")
             .step_by(0.5),
@@ -4215,13 +4213,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             ui.horizontal(|ui| {
                 ui.label("Fill:");
                 let mut fill_pct = (tank.fill * 100.0).round();
-                if ui
-                    .add(
-                        egui::Slider::new(&mut fill_pct, 0.0..=100.0)
-                            .fixed_decimals(0)
-                            .suffix("%"),
-                    )
-                    .changed()
+                if theme::slider(
+                    ui,
+                    egui::Slider::new(&mut fill_pct, 0.0..=100.0)
+                        .fixed_decimals(0)
+                        .suffix("%"),
+                )
+                .changed()
                 {
                     tank.fill = (fill_pct / 100.0).clamp(0.0, 1.0);
                     action = LoadingAction::Changed;

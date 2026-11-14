@@ -1734,7 +1734,6 @@ impl App {
         match action {
             DockAction::None => {}
             DockAction::Hydro(panels::HydroAction::Changed) => self.hydro_inputs_changed(),
-            DockAction::Hydro(panels::HydroAction::Recompute) => self.start_hydro_job(),
             DockAction::Hydro(panels::HydroAction::CrossCurves) => self.start_curves_job(),
             DockAction::Hydro(panels::HydroAction::KgSet) => {
                 if let Some(kg) = self.hydro.kg {
@@ -2302,9 +2301,11 @@ impl App {
                     }
                     ui.separator();
                     let mut level = self.level as u32;
-                    if ui
-                        .add(egui::Slider::new(&mut level, 0..=5).text("subdivision level"))
-                        .changed()
+                    if crate::theme::slider(
+                        ui,
+                        egui::Slider::new(&mut level, 0..=5).text("subdivision level"),
+                    )
+                    .changed()
                     {
                         // Through the setters: shading caches and the
                         // hydrostatics key on the revision.
