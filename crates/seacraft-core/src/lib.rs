@@ -37,6 +37,7 @@ pub mod dxf;
 pub mod examples;
 pub mod export;
 pub mod fef;
+pub mod flatten;
 /// The embedded DejaVu fonts and their licence.
 pub mod fonts;
 pub mod hydro;
@@ -51,6 +52,7 @@ pub mod mesh;
 pub mod michell;
 pub mod offsets;
 pub mod optimize;
+pub mod panels;
 mod par;
 pub mod parametric;
 /// A small PDF writer: pages, reusable drawings, stroked lines, Unicode text.

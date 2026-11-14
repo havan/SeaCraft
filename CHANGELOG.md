@@ -13,6 +13,20 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   checked against closed-form shapes (cylinder, cone, box, raked plane) and against poppler's rendering of the
   PDF (100 mm drew as 1000 px at 254 dpi). Nobody has printed and measured a set yet, and the PDFs have not been
   opened on Windows or macOS. [`docs/building.md`](docs/building.md) is the builder's guide.
+- Plywood panels: `seacraft panels hull.fef -o panels.pdf` lays each panel of a hard-chine hull flat for
+  stitch-and-glue. Panels are found on the refined half model from its layers and creases; a symmetric panel that
+  meets its mirror flat across the centreline is one piece, any other is cut twice, one turned over. Each pattern
+  has its cut line, station lines, a tick wherever a station crosses an edge, what each edge is stitched to, and
+  the measures: seam drift (flat against 3D length, from either end), stretch, the outline shift to the next
+  subdivision level and the old edge-joining gap. A panel that drifts over 2 mm or stretches over 0.1 % RMS does
+  not lie flat; then nothing is written unless `--allow-undevelopable` is given, and its pattern is headed so. The
+  limits are provisional project judgement (`--max-seam-drift-mm`, `--max-stretch-pct`). `--offsets-csv` and
+  `--offsets-pdf` give offsets from a straight baseline, and every run counts plywood sheets end to end
+  (`--stock-mm`, `--scarf-mm`): an upper bound, no nesting. The flattening is the as-rigid-as-possible method of
+  Liu et al. (2008); it is checked against closed-form shapes (cylinder and cone on their rulings, a folded strip,
+  planar panels, a spherical cap by Gauss–Bonnet). It is geometry, not a bending test of plywood, it allows no
+  plywood thickness, and no boat has been built from these patterns yet. Core and CLI only: the GUI, control
+  channel and MCP follow.
 - `seacraft offsets --pdf offsets.pdf [--imperial]` prints the table of offsets in millimetres above the keel, and
   with `--imperial` the same tables in feet-inches-eighths.
 - `seacraft offsets --json` keeps its standard output to the JSON table when it also writes `--pdf`, `--html` or

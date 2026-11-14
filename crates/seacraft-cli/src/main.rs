@@ -88,6 +88,8 @@ enum Command {
     Linesplan(LinesplanArgs),
     /// Full-size building patterns: station moulds, profile and transom as PDF, DXF or SVG
     Templates(TemplatesArgs),
+    /// Plywood panels laid flat for stitch-and-glue: full-size patterns, offsets and a sheet count
+    Panels(PanelsArgs),
     /// Design dossier: self-contained HTML report with particulars, linesplan, hydrostatics, SAC, stability and resistance
     Report(ReportArgs),
     /// Render a preview PNG, including zebra, curvature and draft analysis
@@ -1354,6 +1356,96 @@ struct TemplatesArgs {
     subdiv: SubdivArgsCli,
 }
 
+#[derive(Args, Debug)]
+struct PanelsArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Output path: `.pdf` (tiled over paper, or one page a panel), `.svg` or `.dxf`
+    #[arg(short, long)]
+    output: PathBuf,
+    /// A layer to make panels from; repeat for more [default: the layers marked developable, or
+    /// every layer used in hydrostatics when none is]
+    #[arg(long = "layer", value_name = "NAME")]
+    layers: Vec<String>,
+    /// Number of stations to mark, at the middles of equal slices of the hull [default: 11]
+    #[arg(long, conflicts_with_all = ["spacing", "at"])]
+    stations: Option<usize>,
+    /// A station at every multiple of this many metres of x inside the hull
+    #[arg(long, value_name = "METRES", conflicts_with = "at")]
+    spacing: Option<f64>,
+    /// Stations at these x positions in metres, comma separated
+    #[arg(long, value_name = "X,X,...")]
+    at: Option<String>,
+    /// Paper the PDF is tiled over: a4, a3, letter or WxH in millimetres [default: a4]
+    #[arg(long)]
+    paper: Option<String>,
+    /// One page a panel, sized to fit it, for a plotter or print shop (PDF only)
+    #[arg(long)]
+    single_page: bool,
+    /// The strip around each page a printer cannot reach, millimetres [default: 10]
+    #[arg(long, value_name = "MM", allow_negative_numbers = true)]
+    margin_mm: Option<f64>,
+    /// How much neighbouring tiles share, millimetres [default: 10]
+    #[arg(long, value_name = "MM", allow_negative_numbers = true)]
+    overlap_mm: Option<f64>,
+    /// Drawing scale, as 1:N or one number
+    #[arg(long, default_value = "1:1")]
+    scale: String,
+    /// Add imperial readings beside the metric ones
+    #[arg(long)]
+    imperial: bool,
+    /// A panel whose flat seam length drifts from its length on the model by more than this does
+    /// not lie flat, millimetres
+    #[arg(
+        long,
+        value_name = "MM",
+        default_value_t = 2.0,
+        allow_negative_numbers = true
+    )]
+    max_seam_drift_mm: f64,
+    /// A panel that must stretch more than this (RMS) to lie flat does not, per cent
+    #[arg(
+        long,
+        value_name = "PCT",
+        default_value_t = 0.1,
+        allow_negative_numbers = true
+    )]
+    max_stretch_pct: f64,
+    /// Rows of the panel offsets every this many millimetres along the baseline
+    #[arg(
+        long,
+        value_name = "MM",
+        default_value_t = 250.0,
+        allow_negative_numbers = true
+    )]
+    offset_spacing_mm: f64,
+    /// Also write the panel offsets as CSV
+    #[arg(long, value_name = "FILE")]
+    offsets_csv: Option<PathBuf>,
+    /// Also write the panel offsets as PDF tables
+    #[arg(long, value_name = "FILE")]
+    offsets_pdf: Option<PathBuf>,
+    /// The plywood sheet, LENGTHxWIDTH in millimetres
+    #[arg(long, value_name = "LxW", default_value = "2440x1220")]
+    stock_mm: String,
+    /// How much joined sheets overlap at a scarf, millimetres; 0 for butt joints
+    #[arg(
+        long,
+        value_name = "MM",
+        default_value_t = 0.0,
+        allow_negative_numbers = true
+    )]
+    scarf_mm: f64,
+    /// Write the patterns even when a panel does not lie flat; each such pattern is headed so
+    #[arg(long)]
+    allow_undevelopable: bool,
+    /// Emit JSON instead of a table
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
@@ -1388,6 +1480,7 @@ fn run() -> Result<()> {
         Command::Seakeeping(a) => cmd_seakeeping(a),
         Command::Linesplan(a) => cmd_linesplan(a),
         Command::Templates(a) => cmd_templates(a),
+        Command::Panels(a) => cmd_panels(a),
         Command::Report(a) => cmd_report(a),
         Command::Render(a) => cmd_render(a),
         Command::Mcp(a) => cmd_mcp(a),
@@ -3213,6 +3306,301 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
         );
     }
     println!("wrote {}", a.output.display());
+    Ok(())
+}
+
+/// Where a path the user typed lands, for telling whether two outputs are one file: absolute,
+/// with `.`, `..` and symbolic links resolved as far as the file or its folder exists.
+fn landing(path: &Path) -> PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return p;
+    }
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    match (abs.parent(), abs.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir)
+            .map(|d| d.join(name))
+            .unwrap_or(abs),
+        _ => abs,
+    }
+}
+
+fn cmd_panels(a: PanelsArgs) -> Result<()> {
+    use seacraft_core::panels::{self, Limits, PanelOptions, Stock};
+    use seacraft_core::sheet::{PageSetup, Paper};
+    use seacraft_core::templates::{Format, StationChoice};
+    use seacraft_core::units;
+
+    // Everything the user typed is checked before the hull is refined and flattened.
+    let extension = a
+        .output
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if matches!(extension.as_str(), "svg" | "dxf") {
+        let given: Vec<&str> = [
+            (a.paper.is_some(), "--paper"),
+            (a.single_page, "--single-page"),
+            (a.margin_mm.is_some(), "--margin-mm"),
+            (a.overlap_mm.is_some(), "--overlap-mm"),
+        ]
+        .into_iter()
+        .filter_map(|(given, name)| given.then_some(name))
+        .collect();
+        if !given.is_empty() {
+            bail!(
+                "{} apply to PDF only: an SVG or a DXF is one drawing at the scale asked for",
+                given.join(", ")
+            );
+        }
+    }
+    let format = Format::from_path(&a.output, a.single_page).map_err(anyhow::Error::msg)?;
+    if let Some(p) = &a.offsets_pdf {
+        let ext = p
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        if ext.as_deref() != Some("pdf") {
+            bail!("--offsets-pdf writes a .pdf, not `{}`", p.display());
+        }
+    }
+    // Two outputs written to one file would leave only the last, while both are reported.
+    let outputs: Vec<(&str, &Path)> = [
+        ("-o", Some(a.output.as_path())),
+        ("--offsets-csv", a.offsets_csv.as_deref()),
+        ("--offsets-pdf", a.offsets_pdf.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, path)| path.map(|p| (flag, p)))
+    .collect();
+    let landed: Vec<PathBuf> = outputs.iter().map(|(_, p)| landing(p)).collect();
+    for (i, (flag, path)) in outputs.iter().enumerate() {
+        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
+            bail!(
+                "{flag} and {} name the same file, `{}`: each output needs a file of its own",
+                outputs[j].0,
+                path.display()
+            );
+        }
+    }
+    let positive = |v: f64| v.is_finite() && v > 0.0;
+    if !positive(a.max_seam_drift_mm) {
+        bail!(
+            "--max-seam-drift-mm must be more than zero, not {}",
+            a.max_seam_drift_mm
+        );
+    }
+    if !positive(a.max_stretch_pct) {
+        bail!(
+            "--max-stretch-pct: the stretch limit must be more than zero, not {}",
+            a.max_stretch_pct
+        );
+    }
+    if !positive(a.offset_spacing_mm) {
+        bail!(
+            "--offset-spacing-mm must be more than zero, not {}",
+            a.offset_spacing_mm
+        );
+    }
+    let stock = match a.stock_mm.split_once(['x', 'X']) {
+        Some((l, w)) => match (l.trim().parse::<f64>(), w.trim().parse::<f64>()) {
+            (Ok(l), Ok(w)) if positive(l) && positive(w) => (l, w),
+            _ => bail!(
+                "--stock-mm takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `{}`",
+                a.stock_mm
+            ),
+        },
+        None => bail!(
+            "--stock-mm takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `{}`",
+            a.stock_mm
+        ),
+    };
+    if !a.scarf_mm.is_finite() || a.scarf_mm < 0.0 || a.scarf_mm >= stock.0 {
+        bail!(
+            "--scarf-mm must be from 0 to less than the sheet's length, not {}",
+            a.scarf_mm
+        );
+    }
+    let scale = units::parse_scale(&a.scale).map_err(|e| anyhow::anyhow!("--scale: {e}"))?;
+    let paper = match &a.paper {
+        Some(text) => Paper::parse(text).map_err(|e| anyhow::anyhow!("--paper: {e}"))?,
+        None => Paper::A4,
+    };
+    let defaults = PageSetup::default();
+    let setup = PageSetup {
+        paper,
+        margin_mm: a.margin_mm.unwrap_or(defaults.margin_mm),
+        overlap_mm: a.overlap_mm.unwrap_or(defaults.overlap_mm),
+        scale,
+        imperial: a.imperial,
+        title: String::new(),
+    };
+    setup.check().map_err(anyhow::Error::msg)?;
+    let stations = match (&a.stations, &a.spacing, &a.at) {
+        (_, Some(spacing), _) => StationChoice::Spacing(*spacing),
+        (_, _, Some(at)) => StationChoice::At(parse_list(at).context("--at")?),
+        (count, _, _) => StationChoice::Count(count.unwrap_or(11)),
+    };
+
+    let s = load(&a.file)?;
+    let opts = PanelOptions {
+        subdivision: SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+        layers: (!a.layers.is_empty()).then(|| a.layers.clone()),
+        stations,
+        limits: Limits {
+            seam_drift_m: a.max_seam_drift_mm / 1000.0,
+            rms_stretch: a.max_stretch_pct / 100.0,
+        },
+        offset_spacing_m: a.offset_spacing_mm / 1000.0,
+        stock: Stock {
+            length_m: stock.0 / 1000.0,
+            width_m: stock.1 / 1000.0,
+            scarf_m: a.scarf_mm / 1000.0,
+        },
+        imperial: a.imperial,
+    };
+    let set = panels::panel_set(&s, &opts).map_err(anyhow::Error::msg)?;
+
+    // A panel that does not lie flat stops the export unless the user asked for it anyway.
+    let failing: Vec<String> = set
+        .sheets
+        .iter()
+        .zip(&set.rows)
+        .filter(|(_, r)| !r.lies_flat)
+        .map(|(sheet, r)| format!("{}: {}", r.panel, sheet.notes[0]))
+        .chain(
+            set.refused
+                .iter()
+                .map(|r| format!("{} cannot be laid flat: {}", r.panel, r.reason)),
+        )
+        .collect();
+    if !failing.is_empty() && !a.allow_undevelopable {
+        for f in &failing {
+            eprintln!("{f}");
+        }
+        let what = if set.refused.is_empty() {
+            "do not lie flat within the limits"
+        } else {
+            "do not lie flat within the limits or could not be laid flat"
+        };
+        bail!(
+            "{} of {} panels {what}; nothing written. Pass --allow-undevelopable to write the \
+             others anyway",
+            failing.len(),
+            set.rows.len() + set.refused.len()
+        );
+    }
+
+    let written = panels::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
+    seacraft_core::io::write_atomic(&a.output, &written.bytes)
+        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    if let Some(path) = &a.offsets_csv {
+        seacraft_core::io::write_atomic(path, panels::offsets_csv(&set.offsets).as_bytes())
+            .with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    if let Some(path) = &a.offsets_pdf {
+        let doc = panels::offsets_pdf(&set.offsets, &set.title, a.imperial)
+            .map_err(anyhow::Error::msg)?;
+        seacraft_core::io::write_atomic(path, &doc.bytes)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+    }
+
+    let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
+    if a.json {
+        let v = serde_json::json!({
+            "path": a.output.display().to_string(),
+            "format": format.name(),
+            "pages": written.pages,
+            "scale": units::scale_label(scale),
+            "panels": set.rows,
+            "mismatches": set.mismatches,
+            "refused": set.refused,
+            "total_sheets": set.total_sheets,
+            "missing_characters": missing,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+
+    println!(
+        "{:<16} {:>6} {:>10} {:>7} {:>9} {:>7}",
+        "panel", "copies", "lies flat", "rms %", "drift mm", "sheets"
+    );
+    for r in &set.rows {
+        println!(
+            "{:<16} {:>6} {:>10} {:>7.3} {:>9.1} {:>7}",
+            r.panel,
+            r.copies,
+            if r.lies_flat { "yes" } else { "no" },
+            r.rms_stretch_pct,
+            r.max_seam_drift_mm,
+            r.sheets_each
+                .map_or_else(|| "-".to_owned(), |n| n.to_string())
+        );
+    }
+    for r in &set.rows {
+        if let Some(mm) = r.unsettled_mm {
+            println!(
+                "{}: {}",
+                r.panel,
+                panels::unsettled_note(mm / 1000.0).to_lowercase()
+            );
+        }
+    }
+    for r in &set.refused {
+        println!("{:<16} refused: {}", r.panel, r.reason);
+    }
+    for m in &set.mismatches {
+        println!(
+            "{} against {}: stitched edges differ by up to {:.1} mm at the ticks",
+            m.a,
+            m.b,
+            m.max_m * 1000.0
+        );
+    }
+    println!("{}", set.sheet_count_line());
+    for row in &set.stock {
+        if let Some(note) = &row.note {
+            println!("{}: {note}", row.panel);
+        }
+    }
+    let headed = set.rows.iter().filter(|r| !r.lies_flat).count();
+    match headed {
+        0 => {}
+        1 => println!("1 panel does not lie flat within the limits: its pattern is headed so"),
+        n => println!("{n} panels do not lie flat within the limits: their patterns are headed so"),
+    }
+    let refused: Vec<&str> = set.refused.iter().map(|r| r.panel.as_str()).collect();
+    match refused.len() {
+        0 => {}
+        1 => println!(
+            "1 panel could not be laid flat and is not in the file: {}",
+            refused[0]
+        ),
+        n => println!(
+            "{n} panels could not be laid flat and are not in the file: {}",
+            refused.join(", ")
+        ),
+    }
+    let scale_label = units::scale_label(scale);
+    match (format, written.pages) {
+        (Format::PdfTiled, Some(pages)) => {
+            println!("{pages} pages, {}, scale {scale_label}", paper_name(paper))
+        }
+        (_, Some(pages)) => println!("{pages} pages, one a panel, scale {scale_label}"),
+        (_, None) => println!("one drawing, scale {scale_label}"),
+    }
+    if !missing.is_empty() {
+        println!(
+            "the font has no letter for {}: each is printed as ?",
+            missing.join(" ")
+        );
+    }
+    println!("wrote {}", a.output.display());
+    for path in [&a.offsets_csv, &a.offsets_pdf].into_iter().flatten() {
+        println!("wrote {}", path.display());
+    }
     Ok(())
 }
 
