@@ -4723,6 +4723,7 @@ impl App {
         let status = self.templates_status(key);
         egui::Window::new("Builder templates")
             .open(&mut open)
+            .collapsible(false)
             .resizable(true)
             .default_width(440.0)
             // Room for every option and Export: egui's default window height is
@@ -4888,6 +4889,7 @@ impl App {
         );
         egui::Window::new("Report options")
             .open(&mut open)
+            .collapsible(false)
             .resizable(true)
             .default_width(420.0)
             .show(ui.ctx(), |ui| {

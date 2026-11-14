@@ -6606,6 +6606,10 @@ pub enum TemplatesAction {
     Export,
 }
 
+/// A tiled set of more pages than this gets a warning under its page count: every page is a
+/// sheet to print, trim and join by hand.
+pub const TEMPLATES_MANY_PAGES: usize = 40;
+
 /// Shown in place of the page count while the station list on screen does not read.
 pub const STATION_LIST_ERROR: &str = "Not a list of positions: write x, x, … in metres";
 
@@ -6815,6 +6819,15 @@ pub fn templates_options(
             warnings,
         } => {
             ui.label(format!("{pages} pages, {sheets} patterns"));
+            if *pages > TEMPLATES_MANY_PAGES && !params.single_page {
+                ui.colored_label(
+                    theme::WARN,
+                    format!(
+                        "{pages} pages to print, trim and join. A larger paper, or one page a \
+                         pattern on a plotter, needs fewer."
+                    ),
+                );
+            }
             if !warnings.is_empty() {
                 egui::ScrollArea::vertical()
                     .max_height(120.0)
@@ -6830,8 +6843,14 @@ pub fn templates_options(
         }
     }
     ui.separator();
+    // The window's one action: filled, once there is something to export.
     let ready = matches!(status, TemplatesStatus::Ready { .. });
-    ui.add_enabled(ready, egui::Button::new("Export…"))
+    let export = if ready {
+        theme::primary_button("Export…")
+    } else {
+        egui::Button::new("Export…")
+    };
+    ui.add_enabled(ready, export)
         .clicked()
         .then_some(TemplatesAction::Export)
 }
