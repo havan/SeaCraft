@@ -16,6 +16,7 @@ use crate::mesh::{ordered, Layer, Surface};
 use crate::pdf::Anchor;
 use crate::sheet::{Label, PathKind, Sheet, SheetPath};
 use crate::subdiv::{evaluate, SubdivisionOptions};
+use crate::templates::{station_positions, StationChoice};
 
 /// A symmetric panel is joined to its mirror when every face along the centreline is within
 /// this angle of its mirror image.
@@ -1465,12 +1466,13 @@ pub fn lay_out(panel: &FlatPanel, stock: Stock) -> StockRow {
 }
 
 /// The sheets of a laid-out panel drawn on its pattern for the eye: each sheet's outline and
-/// each joint.
+/// each joint, cut back to the pattern's extent so they add no paper to a tiled print.
 pub fn stock_paths(row: &StockRow, panel: &FlatPanel, stock: Stock) -> Vec<SheetPath> {
     let Some(sheets) = row.sheets_each else {
         return Vec::new();
     };
-    let (x0, y0, _, _) = extent(panel);
+    let (x0, y0, length, width) = extent(panel);
+    let (x1, y1) = (x0 + length, y0 + width.min(stock.width_m));
     let reference = |points: Vec<(f64, f64)>, closed: bool| SheetPath {
         kind: PathKind::Reference,
         points,
@@ -1483,22 +1485,11 @@ pub fn stock_paths(row: &StockRow, panel: &FlatPanel, stock: Stock) -> Vec<Sheet
         } else {
             x0 + row.joints_m[k - 1] - stock.scarf_m.max(0.0)
         };
-        let (a, b) = (start, start + stock.length_m);
-        out.push(reference(
-            vec![
-                (a, y0),
-                (b, y0),
-                (b, y0 + stock.width_m),
-                (a, y0 + stock.width_m),
-            ],
-            true,
-        ));
+        let (a, b) = (start, (start + stock.length_m).min(x1));
+        out.push(reference(vec![(a, y0), (b, y0), (b, y1), (a, y1)], true));
     }
     for j in &row.joints_m {
-        out.push(reference(
-            vec![(x0 + j, y0), (x0 + j, y0 + stock.width_m)],
-            false,
-        ));
+        out.push(reference(vec![(x0 + j, y0), (x0 + j, y1)], false));
     }
     out
 }
@@ -1508,6 +1499,234 @@ pub fn total_sheets(rows: &[StockRow]) -> usize {
     rows.iter()
         .filter_map(|r| r.sheets_each.map(|s| s * r.copies))
         .sum()
+}
+
+/// What a panel set is made with.
+#[derive(Debug, Clone)]
+pub struct PanelOptions {
+    pub subdivision: SubdivisionOptions,
+    /// Layer names; `None` takes [`default_layers`].
+    pub layers: Option<Vec<String>>,
+    pub stations: StationChoice,
+    pub limits: Limits,
+    pub offset_spacing_m: f64,
+    pub stock: Stock,
+    pub imperial: bool,
+}
+
+impl Default for PanelOptions {
+    fn default() -> Self {
+        Self {
+            subdivision: SubdivisionOptions::default(),
+            layers: None,
+            stations: StationChoice::Count(11),
+            limits: Limits::default(),
+            offset_spacing_m: 0.25,
+            stock: Stock::default(),
+            imperial: false,
+        }
+    }
+}
+
+/// One panel in the summary table.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PanelRow {
+    pub panel: String,
+    pub copies: usize,
+    pub lies_flat: bool,
+    pub rms_stretch_pct: f64,
+    pub max_stretch_pct: f64,
+    pub max_seam_drift_mm: f64,
+    pub level_shift_mm: Option<f64>,
+    pub edge_join_gap_mm: f64,
+    pub area_m2: f64,
+    pub sheets_each: Option<usize>,
+}
+
+/// Every panel of a hull: patterns, measures, offsets and the plywood they take.
+#[derive(Debug, Clone)]
+pub struct PanelSet {
+    pub title: String,
+    pub sheets: Vec<Sheet>,
+    pub rows: Vec<PanelRow>,
+    pub mismatches: Vec<Mismatch>,
+    pub refused: Vec<Refusal>,
+    pub offsets: Vec<PanelOffsets>,
+    pub stock: Vec<StockRow>,
+    pub total_sheets: usize,
+    /// Station names and model `x`, as the patterns mark them.
+    pub stations: Vec<(String, f64)>,
+}
+
+impl PanelSet {
+    /// No panel refused and every panel within the limits.
+    pub fn all_lie_flat(&self) -> bool {
+        self.refused.is_empty() && self.rows.iter().all(|r| r.lies_flat)
+    }
+}
+
+fn positive(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
+/// The layer indices named, or the defaults. An unknown name or a layer with no faces is an
+/// error listing the model's layers.
+fn chosen_layers(surface: &Surface, names: Option<&[String]>) -> Result<Vec<usize>, String> {
+    let all: Vec<&str> = surface.layers.iter().map(|l| l.name.as_str()).collect();
+    let listing = || format!("the model's layers are {}", all.join(", "));
+    let Some(names) = names else {
+        let layers = default_layers(surface);
+        if layers.is_empty() {
+            return Err(format!(
+                "no layer is marked developable or used in hydrostatics; {}",
+                listing()
+            ));
+        }
+        return Ok(layers);
+    };
+    let mut out = Vec::new();
+    for name in names {
+        let Some(i) = surface.layers.iter().position(|l| l.name == *name) else {
+            return Err(format!("there is no layer named `{name}`; {}", listing()));
+        };
+        if !surface.face_layer.contains(&i) {
+            return Err(format!("layer `{name}` has no faces; {}", listing()));
+        }
+        if !out.contains(&i) {
+            out.push(i);
+        }
+    }
+    Ok(out)
+}
+
+/// Finds, flattens and measures the panels and draws their patterns.
+pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, String> {
+    let l = opts.limits;
+    if !positive(l.seam_drift_m) || !positive(l.rms_stretch) {
+        return Err("the seam drift and stretch limits must be more than zero".into());
+    }
+    if !positive(opts.offset_spacing_m) {
+        return Err("the offset spacing must be more than zero".into());
+    }
+    let st = opts.stock;
+    if !positive(st.length_m) || !positive(st.width_m) {
+        return Err("the plywood sheet must have a length and a width".into());
+    }
+    if !st.scarf_m.is_finite() || st.scarf_m < 0.0 || st.scarf_m >= st.length_m {
+        return Err("the scarf must be from 0 to less than the sheet's length".into());
+    }
+    let layers = chosen_layers(surface, opts.layers.as_deref())?;
+    let hull = crate::hydro::Hull::new(surface, opts.subdivision);
+    if hull.tris.is_empty() {
+        return Err("the model has no surface to make panels from".into());
+    }
+    let xs = station_positions(&hull, &opts.stations)?;
+    let stations: Vec<(String, f64)> = xs
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| (format!("St {}", i + 1), x))
+        .collect();
+    let (panels, mismatches, refused) =
+        measure_panels(surface, opts.subdivision, &layers, &xs, opts.limits);
+    if panels.is_empty() && refused.is_empty() {
+        return Err("no panel was found on the chosen layers".into());
+    }
+    let name = surface.settings.name.trim();
+    let mut set = PanelSet {
+        title: if name.is_empty() {
+            "Untitled hull".into()
+        } else {
+            name.to_owned()
+        },
+        sheets: Vec::new(),
+        rows: Vec::new(),
+        mismatches,
+        refused,
+        offsets: Vec::new(),
+        stock: Vec::new(),
+        total_sheets: 0,
+        stations: stations.clone(),
+    };
+    for p in &panels {
+        let mut sheet = panel_sheet(p, &stations, opts.limits, opts.imperial);
+        let row = lay_out(p, st);
+        sheet.paths.extend(stock_paths(&row, p, st));
+        let plywood = match (&row.note, row.sheets_each) {
+            (Some(note), _) => format!("Plywood: {note}"),
+            (None, Some(n)) => {
+                let joints: Vec<String> = row
+                    .joints_m
+                    .iter()
+                    .map(|j| crate::units::length(*j, opts.imperial))
+                    .collect();
+                let sheets = if n == 1 { "sheet" } else { "sheets" };
+                let mut text = format!(
+                    "Plywood: {n} {sheets} of {} × {} mm each copy",
+                    crate::units::millimetres(st.length_m),
+                    crate::units::millimetres(st.width_m)
+                );
+                if !joints.is_empty() {
+                    text.push_str(&format!(", joints {} from the aft end", joints.join(", ")));
+                }
+                text
+            }
+            (None, None) => "Plywood: not laid out".into(),
+        };
+        // Before the three closing sentences.
+        let at = sheet.notes.len().saturating_sub(3);
+        sheet.notes.insert(at, plywood);
+        let m = &p.measures;
+        set.rows.push(PanelRow {
+            panel: p.found.name.clone(),
+            copies: p.found.copies.count(),
+            lies_flat: p.lies_flat,
+            rms_stretch_pct: m.rms_stretch * 100.0,
+            max_stretch_pct: m.max_stretch * 100.0,
+            max_seam_drift_mm: m.max_seam_drift_m() * 1000.0,
+            level_shift_mm: m.level_shift_m.map(|d| d * 1000.0),
+            edge_join_gap_mm: m.edge_join_gap_m * 1000.0,
+            area_m2: m.area_flat_m2,
+            sheets_each: row.sheets_each,
+        });
+        set.offsets.push(panel_offsets(p, opts.offset_spacing_m));
+        set.stock.push(row);
+        set.sheets.push(sheet);
+    }
+    set.total_sheets = total_sheets(&set.stock);
+    Ok(set)
+}
+
+/// Writes a panel set in `format`, as [`crate::templates::write`] writes moulds.
+pub fn write(
+    set: &PanelSet,
+    format: crate::templates::Format,
+    setup: &crate::sheet::PageSetup,
+) -> Result<crate::templates::Written, String> {
+    use crate::templates::{Format, Written};
+    setup.check()?;
+    if set.sheets.is_empty() {
+        return Err("no panel could be drawn".into());
+    }
+    let mut setup = setup.clone();
+    if setup.title.trim().is_empty() {
+        setup.title = set.title.clone();
+    }
+    let pdf = |doc: crate::pdf::Document| Written {
+        pages: Some(doc.pages),
+        missing: doc.missing,
+        bytes: doc.bytes,
+    };
+    let text = |text: String| Written {
+        bytes: text.into_bytes(),
+        pages: None,
+        missing: Vec::new(),
+    };
+    match format {
+        Format::PdfTiled => crate::sheet::pdf_tiled(&set.sheets, &setup).map(pdf),
+        Format::PdfSingle => crate::sheet::pdf_single(&set.sheets, &setup).map(pdf),
+        Format::Svg => Ok(text(crate::sheet::svg(&set.sheets, setup.scale))),
+        Format::Dxf => Ok(text(crate::sheet::dxf(&set.sheets, setup.scale))),
+    }
 }
 
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
@@ -2299,6 +2518,13 @@ mod tests {
         assert!(paths
             .iter()
             .all(|p| p.kind == crate::sheet::PathKind::Reference));
+        // Drawn within the pattern, so they add no paper to print.
+        for p in &paths {
+            for q in &p.points {
+                assert!((-1e-12..=5.0 + 1e-12).contains(&q.0), "{q:?}");
+                assert!((-1e-12..=0.5 + 1e-12).contains(&q.1), "{q:?}");
+            }
+        }
     }
 
     #[test]
@@ -2322,6 +2548,131 @@ mod tests {
         assert_eq!(rows[0].copies, 2);
         assert_eq!(rows[1].sheets_each, Some(2));
         assert_eq!(total_sheets(&rows), 4);
+    }
+
+    #[test]
+    fn panel_set_on_the_flat_pram() {
+        let mut s = pram_fixture(0.0, 0.0);
+        s.layers[2].developable = true;
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        assert!(set.all_lie_flat(), "{:?} {:?}", set.rows, set.refused);
+        let names: Vec<&str> = set.rows.iter().map(|r| r.panel.as_str()).collect();
+        assert_eq!(names, ["Bottom", "Side", "Transoms 1", "Transoms 2"]);
+        assert_eq!(set.sheets.len(), 4);
+        assert_eq!(set.offsets.len(), 4);
+        assert_eq!(set.rows[1].copies, 2);
+        // Bottom 1 + Side 2 × 1 + two transoms 1 each.
+        assert_eq!(set.total_sheets, 5);
+        assert_eq!(set.title, s.settings.name);
+        // The stock outline is drawn on each pattern for the eye.
+        assert!(set.sheets[0]
+            .paths
+            .iter()
+            .any(|p| p.kind == crate::sheet::PathKind::Reference));
+    }
+
+    #[test]
+    fn panel_set_takes_the_developable_layers_by_default_and_names_on_request() {
+        let s = pram_fixture(0.0, 0.0);
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        let names: Vec<&str> = set.rows.iter().map(|r| r.panel.as_str()).collect();
+        assert_eq!(names, ["Bottom", "Side"]);
+        let opts = PanelOptions {
+            layers: Some(vec!["Transoms".into()]),
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&s, &opts).expect("a set");
+        assert_eq!(set.rows.len(), 2);
+    }
+
+    #[test]
+    fn an_unknown_layer_lists_the_layers() {
+        let s = pram_fixture(0.0, 0.0);
+        let opts = PanelOptions {
+            layers: Some(vec!["Keel".into()]),
+            ..PanelOptions::default()
+        };
+        let e = panel_set(&s, &opts).unwrap_err();
+        for w in ["Keel", "Bottom", "Side", "Transoms"] {
+            assert!(e.contains(w), "{e}");
+        }
+        let mut s2 = s.clone();
+        s2.layers.push(Layer {
+            name: "Deck".into(),
+            ..Layer::default()
+        });
+        let opts = PanelOptions {
+            layers: Some(vec!["Deck".into()]),
+            ..PanelOptions::default()
+        };
+        let e = panel_set(&s2, &opts).unwrap_err();
+        assert!(e.contains("Deck") && e.contains("no faces"), "{e}");
+    }
+
+    #[test]
+    fn a_failing_panel_makes_the_set_not_lie_flat() {
+        let s = pram_fixture(0.0, 0.08);
+        let opts = PanelOptions {
+            limits: Limits {
+                seam_drift_m: 0.002,
+                rms_stretch: 1e-6,
+            },
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&s, &opts).expect("a set");
+        assert!(!set.all_lie_flat());
+        let side = set.rows.iter().find(|r| r.panel == "Side").unwrap();
+        assert!(!side.lies_flat);
+        assert!(set.sheets[1].notes[0].starts_with("Does not lie flat"));
+    }
+
+    #[test]
+    fn write_gives_pdf_svg_dxf() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let s = pram_fixture(0.0, 0.0);
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        let setup = PageSetup::default();
+        let pdf = write(&set, Format::PdfTiled, &setup).expect("pdf");
+        assert!(pdf.bytes.starts_with(b"%PDF-"));
+        assert!(pdf.pages.unwrap() > 1);
+        let svg = String::from_utf8(write(&set, Format::Svg, &setup).unwrap().bytes).unwrap();
+        for r in &set.rows {
+            assert!(svg.contains(&r.panel), "{}", r.panel);
+        }
+        let dxf = String::from_utf8(write(&set, Format::Dxf, &setup).unwrap().bytes).unwrap();
+        assert!(dxf.contains("CUT"));
+    }
+
+    /// Closed form: a planar panel lies flat with every edge its true length. The demo's transom
+    /// is one 11-sided planar face whose subdivision has many obtuse triangles, where some
+    /// edges' cotangent weights sum below zero.
+    #[test]
+    fn a_planar_transom_with_obtuse_triangles_flattens_exactly() {
+        for symmetric in [false, true] {
+            let s = crate::demo::demo_hull(symmetric);
+            let (ps, refused) = find_panels(&s, SubdivisionOptions::default(), &[2]);
+            assert!(refused.is_empty(), "{refused:?}");
+            let p = &ps[0];
+            assert!(p.verts.iter().all(|v| v.x.abs() < 1e-12), "not planar");
+            let flat = crate::flatten::flatten(&p.verts, &p.tris).expect("flattens");
+            let st = crate::flatten::strain(&p.verts, &p.tris, &flat.xy);
+            assert!(st.max < 1e-9, "{st:?}");
+        }
+    }
+
+    /// The pram as a user has it: written to a `.fef` and read back, its points rounded to the
+    /// file's decimals. The transoms' straight sheer and bottom are many nearly collinear
+    /// segments, which must not read as an outline crossing itself.
+    #[test]
+    fn a_pram_read_back_from_its_file_still_flattens() {
+        for (d, b) in [(0.0, 0.0), (12.0, 0.0), (0.0, 0.08)] {
+            let text = crate::fef::write(&pram_fixture(d, b));
+            let s = crate::fef::parse(&text).expect("reads back");
+            let (ps, _, refused) = measured(&s, 3);
+            assert!(refused.is_empty(), "deadrise {d}, bow {b}: {refused:?}");
+            assert_eq!(ps.len(), 4);
+        }
     }
 
     #[test]
