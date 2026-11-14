@@ -203,3 +203,53 @@ fn a_refused_panel_is_named_and_not_counted() {
     );
     assert!(!out.contains("their patterns are headed so"), "{out}");
 }
+
+#[test]
+fn two_outputs_to_one_file_are_refused_before_any_is_written() {
+    let dir = workdir("same");
+    let absolute = dir.join("p.pdf");
+    let absolute = absolute.to_str().unwrap();
+    for (flag, other) in [
+        ("--offsets-pdf", "./p.pdf"),
+        ("--offsets-pdf", absolute),
+        ("--offsets-csv", "p.pdf"),
+    ] {
+        let err = fails(&dir, &["panels", "pram.fef", "-o", "p.pdf", flag, other]);
+        assert!(
+            err.contains(flag) && err.contains("same file") && err.contains("-o"),
+            "{err}"
+        );
+        assert!(!dir.join("p.pdf").exists(), "{flag} {other}");
+    }
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    let err = fails(
+        &dir,
+        &[
+            "panels",
+            "pram.fef",
+            "-o",
+            "sub/../p.pdf",
+            "--offsets-pdf",
+            "p.pdf",
+        ],
+    );
+    assert!(err.contains("same file"), "{err}");
+    assert!(!dir.join("p.pdf").exists());
+    // Three different files are written.
+    ok(
+        &dir,
+        &[
+            "panels",
+            "pram.fef",
+            "-o",
+            "p.pdf",
+            "--offsets-csv",
+            "sub/../o.csv",
+            "--offsets-pdf",
+            "o.pdf",
+        ],
+    );
+    for f in ["p.pdf", "o.csv", "o.pdf"] {
+        assert!(dir.join(f).exists(), "{f}");
+    }
+}

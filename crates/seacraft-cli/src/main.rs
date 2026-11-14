@@ -3309,6 +3309,21 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
     Ok(())
 }
 
+/// Where a path the user typed lands, for telling whether two outputs are one file: absolute,
+/// with `.`, `..` and symbolic links resolved as far as the file or its folder exists.
+fn landing(path: &Path) -> PathBuf {
+    if let Ok(p) = std::fs::canonicalize(path) {
+        return p;
+    }
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    match (abs.parent(), abs.file_name()) {
+        (Some(dir), Some(name)) => std::fs::canonicalize(dir)
+            .map(|d| d.join(name))
+            .unwrap_or(abs),
+        _ => abs,
+    }
+}
+
 fn cmd_panels(a: PanelsArgs) -> Result<()> {
     use seacraft_core::panels::{self, Limits, PanelOptions, Stock};
     use seacraft_core::sheet::{PageSetup, Paper};
@@ -3345,6 +3360,25 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             .map(|e| e.to_string_lossy().to_ascii_lowercase());
         if ext.as_deref() != Some("pdf") {
             bail!("--offsets-pdf writes a .pdf, not `{}`", p.display());
+        }
+    }
+    // Two outputs written to one file would leave only the last, while both are reported.
+    let outputs: Vec<(&str, &Path)> = [
+        ("-o", Some(a.output.as_path())),
+        ("--offsets-csv", a.offsets_csv.as_deref()),
+        ("--offsets-pdf", a.offsets_pdf.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, path)| path.map(|p| (flag, p)))
+    .collect();
+    let landed: Vec<PathBuf> = outputs.iter().map(|(_, p)| landing(p)).collect();
+    for (i, (flag, path)) in outputs.iter().enumerate() {
+        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
+            bail!(
+                "{flag} and {} name the same file, `{}`: each output needs a file of its own",
+                outputs[j].0,
+                path.display()
+            );
         }
     }
     let positive = |v: f64| v.is_finite() && v > 0.0;
