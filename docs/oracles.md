@@ -954,6 +954,9 @@ end, measured from the first tick and again from the last.
   seam pairs.
 - `a_pram_read_back_from_its_file_still_flattens`: flat, V and bowed prams written to a `.fef` and read back (points
   rounded by up to $4.6 \times 10^{-6}$ m) give four panels each.
+- `a_joined_panel_measures_its_seams_across_the_centreline_and_marks_it`: the flat bottom, joined to its mirror,
+  measures its edges to the transoms whole, $2 \times 0.35$ and $2 \times 0.45$ m to $10^{-6}$ m, as do the joined
+  transoms; its pattern carries the centreline, 2.4 m long, and both chines are labelled.
 
 Convergence, stated as such: `a_curved_side_reports_its_level_shift`: with the sides bowed 80 mm out amidships, the
 side's outline moves 1.04 mm from level 1 to 2 and 0.057 mm from 3 to 4 (largest distance between the two outlines,

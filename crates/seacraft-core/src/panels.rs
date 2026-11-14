@@ -55,6 +55,9 @@ pub struct Seam {
     pub mate: Mate,
     /// Ordered vertex ids in the half mesh, so a seam and its mate share ids.
     pub verts: Vec<usize>,
+    /// On a panel joined to its mirror, the seam runs on through the mirror image of `verts`
+    /// across the centreline, and is measured whole.
+    pub across: bool,
 }
 
 impl Seam {
@@ -82,6 +85,12 @@ pub struct FoundPanel {
     /// Half-mesh ids welded onto a local vertex that `mesh_ids` gives another id (coincident
     /// points, as at a pole): every half-mesh id of the panel is in one or the other.
     pub welded: HashMap<usize, usize>,
+    /// On a panel joined to its mirror, each local vertex's mirror image (a centreline point is
+    /// its own); empty otherwise.
+    pub mirror: HashMap<usize, usize>,
+    /// On a panel joined to its mirror, the runs of half-mesh ids along the centreline it was
+    /// joined across; empty otherwise.
+    pub centreline: Vec<Vec<usize>>,
     pub seams: Vec<Seam>,
 }
 
@@ -94,9 +103,35 @@ impl FoundPanel {
             .or_else(|| self.welded.get(&mesh_id).copied())
     }
 
-    /// A seam's local vertices, with a point that welding made twice kept once; `None` when a
-    /// vertex is not on the panel.
+    /// A seam's local vertices, with a point that welding made twice kept once, and the seam's
+    /// mirror image joined on where it runs across the centreline; `None` when a vertex is not
+    /// on the panel.
     pub fn seam_local(&self, seam: &Seam) -> Option<Vec<usize>> {
+        let ids = self.half_local(&seam.verts)?;
+        if !seam.across {
+            return Some(ids);
+        }
+        let mut mirrored = self.mirror_local(&ids)?;
+        mirrored.reverse();
+        let mut full = if on_centreline(self.verts[ids[0]]) {
+            mirrored.extend_from_slice(&ids);
+            mirrored
+        } else {
+            let mut full = ids;
+            full.extend_from_slice(&mirrored);
+            full
+        };
+        full.dedup();
+        Some(full)
+    }
+
+    /// The mirror image of a run of local vertices; `None` when the panel is not joined.
+    pub fn mirror_local(&self, ids: &[usize]) -> Option<Vec<usize>> {
+        ids.iter().map(|i| self.mirror.get(i).copied()).collect()
+    }
+
+    /// Local vertices for a run of half-mesh ids, with a point that welding made twice kept once.
+    pub fn half_local(&self, mesh_ids: &[usize]) -> Option<Vec<usize>> {
         let index: HashMap<usize, usize> = self
             .mesh_ids
             .iter()
@@ -105,8 +140,7 @@ impl FoundPanel {
             .map(|(i, &m)| (m, i))
             .chain(self.welded.iter().map(|(&m, &i)| (m, i)))
             .collect();
-        let mut ids: Vec<usize> = seam
-            .verts
+        let mut ids: Vec<usize> = mesh_ids
             .iter()
             .map(|m| index.get(m).copied())
             .collect::<Option<_>>()?;
@@ -396,6 +430,7 @@ pub fn find_panels(
                     seams.push(Seam {
                         mate: mates[0].clone(),
                         verts,
+                        across: false,
                     });
                 }
                 Some(s0) => {
@@ -411,7 +446,11 @@ pub fn find_panels(
                                 break;
                             }
                         }
-                        seams.push(Seam { mate, verts });
+                        seams.push(Seam {
+                            mate,
+                            verts,
+                            across: false,
+                        });
                         i = j;
                         if i == s0 {
                             break;
@@ -420,8 +459,18 @@ pub fn find_panels(
                 }
             }
         }
+        let mut centreline = Vec::new();
         if joined {
+            centreline = seams
+                .iter()
+                .filter(|s| s.mate == Mate::Centreline)
+                .map(|s| s.verts.clone())
+                .collect();
             seams.retain(|s| s.mate != Mate::Centreline);
+            for s in &mut seams {
+                let ends = [s.verts[0], s.verts[s.verts.len() - 1]];
+                s.across = ends.iter().any(|&v| on_centreline(mesh.verts[v]));
+            }
         }
         let rank = |m: &Mate| match m {
             Mate::Panel(_) => 0,
@@ -458,8 +507,8 @@ pub fn find_panels(
             }
             tris.push(lt);
         }
+        let mut mirror: HashMap<usize, usize> = HashMap::new();
         if joined {
-            let mut mirror: HashMap<usize, usize> = HashMap::new();
             let half = tris.len();
             for ti in 0..half {
                 let t = tris[ti];
@@ -492,6 +541,26 @@ pub fn find_panels(
                 welded.insert(ids[old], new);
             }
         }
+        let mut mirror_local = HashMap::new();
+        if joined {
+            for (old, &id) in ids.iter().enumerate() {
+                if id == usize::MAX {
+                    continue;
+                }
+                let image = if on_centreline(verts[old]) {
+                    Some(old)
+                } else {
+                    mirror.get(&old).copied()
+                };
+                if let Some(image) = image {
+                    let (a, b) = (map[old], map[image]);
+                    if a != usize::MAX && b != usize::MAX {
+                        mirror_local.insert(a, b);
+                        mirror_local.insert(b, a);
+                    }
+                }
+            }
+        }
         let loops_after = boundary_loops(&ct).len();
         if ct.is_empty() || loops_after != 1 {
             let err = if ct.is_empty() {
@@ -518,6 +587,8 @@ pub fn find_panels(
             tris: ct,
             mesh_ids,
             welded,
+            mirror: mirror_local,
+            centreline,
             seams,
         });
     }
@@ -798,14 +869,12 @@ pub(crate) fn measure_found(
 fn corners(found: &FoundPanel, xy: &[(f64, f64)]) -> Vec<(Vec3, (f64, f64))> {
     let mut out: Vec<(Vec3, (f64, f64))> = Vec::new();
     for seam in &found.seams {
-        for m in [seam.verts.first(), seam.verts.last()]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(i) = found.local(*m) {
-                if !out.iter().any(|(p, _)| p.dist(found.verts[i]) < 1e-9) {
-                    out.push((found.verts[i], xy[i]));
-                }
+        let Some(ids) = found.seam_local(seam) else {
+            continue;
+        };
+        for &i in [ids.first(), ids.last()].into_iter().flatten() {
+            if !out.iter().any(|(p, _)| p.dist(found.verts[i]) < 1e-9) {
+                out.push((found.verts[i], xy[i]));
             }
         }
     }
@@ -982,15 +1051,20 @@ pub fn measure_panels(
                 }
                 let mut rev = sa.verts.clone();
                 rev.reverse();
-                if !pb
+                let Some(sb) = pb
                     .found
                     .seams
                     .iter()
-                    .any(|sb| sb.verts == sa.verts || sb.verts == rev)
-                {
+                    .find(|sb| sb.verts == sa.verts || sb.verts == rev)
+                else {
                     continue;
-                }
-                let (Some(ia), Some(ib)) = (pa.found.seam_local(sa), pb.found.seam_local(sa))
+                };
+                // Whole across the centreline when both panels are joined; the halves otherwise.
+                let seam = Seam {
+                    across: sa.across && sb.across,
+                    ..sa.clone()
+                };
+                let (Some(ia), Some(ib)) = (pa.found.seam_local(&seam), pb.found.seam_local(&seam))
                 else {
                     continue;
                 };
@@ -1292,11 +1366,46 @@ pub fn panel_sheet(
         }
     }
 
-    // What each edge is stitched to, inside the edge at its middle.
+    // A joined panel's centreline, which a seam across it is aligned by.
+    for run in &found.centreline {
+        let Some(ids) = found.half_local(run) else {
+            continue;
+        };
+        let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
+        if let Some((p, d)) = midpoint(&pts) {
+            let off = (
+                -d.1 * SEAM_LABEL_INSET_M / 3.0,
+                d.0 * SEAM_LABEL_INSET_M / 3.0,
+            );
+            sheet.labels.push(mark_label(
+                (p.0 + off.0, p.1 + off.1),
+                reading_angle(d),
+                Anchor::Middle,
+                "Centreline".into(),
+            ));
+        }
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Mark,
+            points: pts,
+            closed: false,
+        });
+    }
+
+    // What each edge is stitched to, inside the edge at its middle; on a joined panel, a seam
+    // that does not run across the centreline is labelled on both sides.
+    let mut runs = Vec::new();
     for seam in &found.seams {
         let Some(ids) = found.seam_local(seam) else {
             continue;
         };
+        if !seam.across {
+            if let Some(m) = found.mirror_local(&ids) {
+                runs.push((seam, m));
+            }
+        }
+        runs.push((seam, ids));
+    }
+    for (seam, ids) in runs {
         let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
         let Some((p, d)) = midpoint(&pts) else {
             continue;
@@ -2453,11 +2562,14 @@ mod tests {
             copies: Copies::One,
             mesh_ids: (0..v.len()).collect(),
             welded: HashMap::new(),
+            mirror: HashMap::new(),
+            centreline: Vec::new(),
             verts: v,
             tris: t,
             seams: vec![Seam {
                 mate: Mate::Open,
                 verts: ring,
+                across: false,
             }],
         };
         let wide = Limits {
@@ -2495,11 +2607,14 @@ mod tests {
             copies: Copies::One,
             mesh_ids: (0..v.len()).collect(),
             welded: HashMap::new(),
+            mirror: HashMap::new(),
+            centreline: Vec::new(),
             verts: v,
             tris: t,
             seams: vec![Seam {
                 mate: Mate::Open,
                 verts: ring,
+                across: false,
             }],
         }
     }
@@ -2630,6 +2745,63 @@ mod tests {
         assert!(words.iter().any(|t| t == "Cut 1"), "{words:?}");
     }
 
+    /// Closed form: the flat pram's transoms are 2 × 0.35 m and 2 × 0.45 m wide at the bottom
+    /// (`pram_net`), and its bottom is 2.4 m long on the centreline.
+    #[test]
+    fn a_joined_panel_measures_its_seams_across_the_centreline_and_marks_it() {
+        use crate::sheet::PathKind;
+        let s = pram_fixture(0.0, 0.0);
+        let (ps, _, _) = measured(&s, 2);
+        let widths = |p: &FlatPanel, prefix: &str| -> Vec<f64> {
+            let mut w: Vec<f64> = p
+                .measures
+                .seams
+                .iter()
+                .filter(|m| m.name.starts_with(prefix))
+                .map(|m| m.length_3d_m)
+                .collect();
+            w.sort_by(f64::total_cmp);
+            w
+        };
+        let bottom = flat(&ps, "Bottom");
+        let w = widths(bottom, "edge to Transoms");
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(
+            (w[0] - 0.70).abs() < 1e-6 && (w[1] - 0.90).abs() < 1e-6,
+            "{w:?}"
+        );
+        let mut t: Vec<f64> = ["Transoms 1", "Transoms 2"]
+            .iter()
+            .flat_map(|n| widths(flat(&ps, n), "edge to Bottom"))
+            .collect();
+        t.sort_by(f64::total_cmp);
+        assert!(
+            t.len() == 2 && (t[0] - 0.70).abs() < 1e-6 && (t[1] - 0.90).abs() < 1e-6,
+            "{t:?}"
+        );
+
+        let sheet = panel_sheet(bottom, &[], Limits::default(), false);
+        let words = texts(&sheet);
+        assert_eq!(
+            words.iter().filter(|t| *t == "Stitch to Side").count(),
+            2,
+            "both chines labelled: {words:?}"
+        );
+        assert!(words.iter().any(|t| t == "Centreline"), "{words:?}");
+        let marks: Vec<&crate::sheet::SheetPath> = sheet
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::Mark)
+            .collect();
+        assert_eq!(marks.len(), 1, "the centreline, and no stations");
+        let length: f64 = marks[0]
+            .points
+            .windows(2)
+            .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+            .sum();
+        assert!((length - 2.4).abs() < 1e-6, "{length}");
+    }
+
     #[test]
     fn a_failing_panel_is_headed_so() {
         let mesh = crate::flatten::shapes::cap(40f64.to_radians(), 6, 24);
@@ -2699,6 +2871,8 @@ mod tests {
                 copies: Copies::One,
                 mesh_ids: (0..verts.len()).collect(),
                 welded: HashMap::new(),
+                mirror: HashMap::new(),
+                centreline: Vec::new(),
                 verts,
                 tris,
                 seams: Vec::new(),

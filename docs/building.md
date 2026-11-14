@@ -126,8 +126,9 @@ seacraft panels skiff.fef -o panels.pdf --offsets-csv panels.csv --offsets-pdf o
 name them with `--layer`. Each piece of a layer between creases is one panel, named after the layer (`Side`, or
 `Side 1`, `Side 2` from the lowest up). Every crease must run from edge to edge of its panel: one that stops
 inside a panel cannot be cut, and the program refuses that panel and says where the crease ends. A symmetric
-panel that meets its mirror flat across the centreline, like a flat bottom, is one piece; any other, like the
-halves of a V bottom, is cut twice, one turned over.
+panel that meets its mirror flat across the centreline, like a flat bottom, is one piece, with its centreline
+drawn on it; an edge that crosses the centreline, such as the bottom's edge to the transom, is measured whole. Any
+other, like the halves of a V bottom, is cut twice, one turned over.
 
 **Each pattern** has its cut line, the station lines, a tick wherever a station crosses an edge, and what each edge
 is stitched to. The ticks are where the two panels' edges meet, and they match from either end, so start stitching
