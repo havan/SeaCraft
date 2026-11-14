@@ -460,7 +460,8 @@ pub fn pdf_single(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, Strin
 /// A sheet placed in a row of sheets, in millimetres of paper.
 struct Placed<'a> {
     sheet: &'a Sheet,
-    bounds: [f64; 4],
+    /// What the sheet covers, its labels' text included ([`extent_mm`]).
+    extent_mm: [f64; 4],
     /// Where the sheet's left edge is.
     left_mm: f64,
     scale: f64,
@@ -469,9 +470,10 @@ struct Placed<'a> {
 impl Placed<'_> {
     /// A point of the sheet in millimetres, y up from the row's base line.
     fn mm(&self, p: (f64, f64)) -> (f64, f64) {
+        let k = self.scale * 1000.0;
         (
-            self.left_mm + (p.0 - self.bounds[0]) * self.scale * 1000.0,
-            (p.1 - self.bounds[1]) * self.scale * 1000.0,
+            self.left_mm + p.0 * k - self.extent_mm[0],
+            p.1 * k - self.extent_mm[1],
         )
     }
 
@@ -494,21 +496,21 @@ fn row(sheets: &[Sheet], scale: f64) -> (Vec<Placed<'_>>, f64, f64, usize) {
     let mut placed = Vec::new();
     let (mut left, mut width, mut height, mut lines) = (0.0, 0.0, 0.0f64, 0);
     for sheet in sheets {
-        let Some(bounds) = sheet.bounds() else {
+        let Some(e) = extent_mm(sheet, scale) else {
             continue;
         };
         let p = Placed {
             sheet,
-            bounds,
+            extent_mm: e,
             left_mm: left,
             scale,
         };
         // A sheet takes the room of its drawing or of its widest note, whichever is more.
         let notes = p.note_lines().map(note_width_mm).fold(0.0, f64::max);
-        let slot = ((bounds[2] - bounds[0]) * scale * 1000.0).max(notes);
+        let slot = (e[2] - e[0]).max(notes);
         width = left + slot;
         left += slot + GAP_MM;
-        height = height.max((bounds[3] - bounds[1]) * scale * 1000.0);
+        height = height.max(e[3] - e[1]);
         lines = lines.max(p.note_lines().count());
         placed.push(p);
     }
@@ -1630,6 +1632,30 @@ mod tests {
             assert!(bad.check().is_err(), "{bad:?}");
             assert!(pdf_single(&[rect(1.0, 0.5)], &bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// A label ending at the drawing's left edge, as a waterline's name does, is inside the
+    /// drawing's room: its first letter is not before the row's left edge at x = 0.
+    #[test]
+    fn svg_makes_room_for_a_label_s_whole_text() {
+        let mut sheet = rect(1.0, 0.5);
+        let text = "WL 0.250 m";
+        sheet.labels.push(Label {
+            at: (0.0, 0.25),
+            height_mm: 4.0,
+            angle_deg: 0.0,
+            anchor: Anchor::End,
+            text: text.into(),
+        });
+        let out = svg(&[sheet], 1.0);
+        let at = out.find("<text x=\"").unwrap() + "<text x=\"".len();
+        let x: f64 = out[at..at + out[at..].find('"').unwrap()].parse().unwrap();
+        let width = text_width_pt(text, 4.0 * PT_PER_MM) / PT_PER_MM;
+        assert!(
+            x - width >= -1e-3,
+            "the text runs from {} to {x}",
+            x - width
+        );
     }
 
     #[test]
