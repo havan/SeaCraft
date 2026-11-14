@@ -15,6 +15,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   opened on Windows or macOS. [`docs/building.md`](docs/building.md) is the builder's guide.
 - `seacraft offsets --pdf offsets.pdf [--imperial]` prints the table of offsets in millimetres above the keel, and
   with `--imperial` the same tables in feet-inches-eighths.
+- `seacraft offsets --json` keeps its standard output to the JSON table when it also writes `--pdf`, `--html` or
+  `--csv`: the "wrote" lines now go to standard error.
 - GUI: File ▸ Builder templates… previews the page count on a background job and exports the patterns; File ▸
   Export ▸ Offsets table PDF…. The control channel gains `build.templates`, `model.export` format `offsets_pdf`
   (with `stations`, `waterline_steps`, `buttock_steps`, `level`, `imperial`) and `ui.set` `templates`.

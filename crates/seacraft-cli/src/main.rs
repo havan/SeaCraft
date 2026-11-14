@@ -2138,18 +2138,26 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
     };
     let table = offsets::table_of_offsets(&hull, a.stations, &waterlines, &buttocks);
     let title = format!("{} - table of offsets", s.settings.name);
+    // With --json the standard output is the table alone: what was written goes to stderr.
+    let written = |line: String| {
+        if a.json {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    };
 
     if let Some(path) = &a.pdf {
         let doc = offsets::pdf(&table, &title, a.imperial).map_err(anyhow::Error::msg)?;
         seacraft_core::io::write_atomic(path, doc.bytes)
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {}", path.display());
+        written(format!("wrote {}", path.display()));
     }
 
     if let Some(path) = &a.html {
         seacraft_core::io::write_atomic(path, offsets::html(&table, &title))
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {}", path.display());
+        written(format!("wrote {}", path.display()));
     }
     if let Some(path) = &a.csv {
         // Long format: one row per (station, waterline, buttock) reading would
@@ -2169,12 +2177,12 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         }
         seacraft_core::io::write_atomic(path, text)
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!(
+        written(format!(
             "wrote {} ({} stations x {} waterlines)",
             path.display(),
             table.stations.len(),
             table.waterlines_m.len()
-        );
+        ));
     }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&table)?);

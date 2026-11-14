@@ -204,3 +204,25 @@ fn offsets_writes_a_pdf() {
     let err = fails(&dir, &["offsets", "demo.fef", "--imperial"]);
     assert!(err.contains("--imperial applies to --pdf"), "{err}");
 }
+
+/// With `--json` the standard output is the table alone, whatever files are written beside it;
+/// what was written goes to the standard error.
+#[test]
+fn offsets_json_stays_json_beside_written_files() {
+    let dir = workdir("offsets-json");
+    let out = run(
+        &dir,
+        &[
+            "offsets", "demo.fef", "--json", "--pdf", "o.pdf", "--html", "o.html", "--csv", "o.csv",
+        ],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let table: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", text(&out.stdout)));
+    assert!(table["stations"].is_array());
+    let err = text(&out.stderr);
+    for file in ["o.pdf", "o.html", "o.csv"] {
+        assert!(dir.join(file).exists(), "{file}");
+        assert!(err.contains(&format!("wrote {file}")), "{err}");
+    }
+}
