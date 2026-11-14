@@ -1234,6 +1234,159 @@ fn point_in_panel(found: &FoundPanel, xy: &[(f64, f64)], p: (f64, f64)) -> bool 
     })
 }
 
+/// One row of a panel's offsets: how far along the baseline, and where the outline crosses the
+/// square line there, measured off the baseline, lowest first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OffsetRow {
+    pub along_m: f64,
+    pub ordinates_m: Vec<f64>,
+}
+
+/// A panel's outline as offsets from a straight baseline, for laying it out on the sheet with a
+/// batten instead of a full-size print.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PanelOffsets {
+    pub panel: String,
+    pub rows: Vec<OffsetRow>,
+}
+
+/// The offsets of a flat panel from a baseline along its lowest edge (`y` = the pattern's least
+/// `y`), with rows every `spacing_m` from its aft end (least `x`) and one at its forward end.
+pub fn panel_offsets(panel: &FlatPanel, spacing_m: f64) -> PanelOffsets {
+    let xy = &panel.xy;
+    let loops = boundary_loops(&panel.found.tris);
+    let (x0, x1, y0) = xy.iter().fold((f64::MAX, f64::MIN, f64::MAX), |m, p| {
+        (m.0.min(p.0), m.1.max(p.0), m.2.min(p.1))
+    });
+    let width = x1 - x0;
+    let mut along = Vec::new();
+    if spacing_m > 0.0 && spacing_m.is_finite() && width > 0.0 {
+        let mut k = 0usize;
+        while (k as f64) * spacing_m < width - 1e-9 * width.max(1.0) {
+            along.push(k as f64 * spacing_m);
+            k += 1;
+        }
+    }
+    along.push(width.max(0.0));
+    // The end rows are taken a hair inside the panel, where the square line still crosses it.
+    let nudge = 1e-9 * width.max(1.0);
+    let rows = along
+        .into_iter()
+        .map(|a| {
+            let x = (x0 + a).clamp(x0 + nudge, x1 - nudge);
+            let mut ys = Vec::new();
+            for lp in &loops {
+                for k in 0..lp.len() {
+                    let (p, q) = (xy[lp[k]], xy[lp[(k + 1) % lp.len()]]);
+                    if (p.0 >= x) != (q.0 >= x) {
+                        let t = (x - p.0) / (q.0 - p.0);
+                        ys.push(p.1 + t * (q.1 - p.1) - y0);
+                    }
+                }
+            }
+            ys.sort_by(f64::total_cmp);
+            ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+            OffsetRow {
+                along_m: a,
+                ordinates_m: ys,
+            }
+        })
+        .collect();
+    PanelOffsets {
+        panel: panel.found.name.clone(),
+        rows,
+    }
+}
+
+fn csv_field(text: &str) -> String {
+    if text.contains([',', '"', '\n']) {
+        format!("\"{}\"", text.replace('"', "\"\""))
+    } else {
+        text.to_owned()
+    }
+}
+
+/// Every panel's offsets as CSV, whole millimetres: `panel,along_mm,crossing,ordinate_mm`, one
+/// line per crossing, crossings numbered from the baseline up.
+pub fn offsets_csv(all: &[PanelOffsets]) -> String {
+    let mut out = String::from("panel,along_mm,crossing,ordinate_mm\n");
+    for o in all {
+        let name = csv_field(&o.panel);
+        for r in &o.rows {
+            for (i, y) in r.ordinates_m.iter().enumerate() {
+                out.push_str(&format!(
+                    "{name},{},{},{}\n",
+                    crate::units::millimetres(r.along_m),
+                    i + 1,
+                    crate::units::millimetres(*y)
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Every panel's offsets as tables, one per panel (and a second in feet, inches and eighths with
+/// `imperial`), A4 landscape.
+pub fn offsets_pdf(
+    all: &[PanelOffsets],
+    title: &str,
+    imperial: bool,
+) -> Result<crate::pdf::Document, String> {
+    use crate::pdf::{add_table, Pdf, Table};
+    use crate::units::{ft_in_8ths, millimetres};
+    if all.is_empty() {
+        return Err("there are no panel offsets to tabulate".into());
+    }
+    let subtitle =
+        "Square off a straight baseline along the panel's lowest edge, from its aft end. \
+                    Crossings count up from the baseline; \"-\" means the row has fewer.";
+    let mut doc = Pdf::new(title);
+    type Write = fn(f64) -> String;
+    let mut systems: Vec<(&str, Write)> = vec![("millimetres", millimetres)];
+    if imperial {
+        systems.push(("feet-inches-eighths", ft_in_8ths));
+    }
+    for o in all {
+        let crossings = o
+            .rows
+            .iter()
+            .map(|r| r.ordinates_m.len())
+            .max()
+            .unwrap_or(0);
+        for (unit, length) in &systems {
+            let mut header = vec!["Along".to_owned()];
+            header.extend((1..=crossings).map(|i| format!("Crossing {i}")));
+            let rows: Vec<Vec<String>> = o
+                .rows
+                .iter()
+                .map(|r| {
+                    let mut row = vec![length(r.along_m)];
+                    row.extend((0..crossings).map(|i| {
+                        r.ordinates_m
+                            .get(i)
+                            .map_or_else(|| "-".into(), |y| length(*y))
+                    }));
+                    row
+                })
+                .collect();
+            let heading = format!("{title}: {} offsets, {unit}", o.panel);
+            add_table(
+                &mut doc,
+                &Table {
+                    title: &heading,
+                    subtitle,
+                    header: &header,
+                    rows: &rows,
+                    footer: crate::NOT_VALIDATED_NOTE,
+                    repeat: 1,
+                },
+            );
+        }
+    }
+    doc.finish()
+}
+
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
 /// flared sides that are planar when `side_bow_m` is 0 and bowed outward amidships by it
 /// otherwise, a stern transom 0.40 m deep and a bow transom 0.50 m deep. Layers `Bottom` and
@@ -1832,6 +1985,155 @@ mod tests {
             .join("\n")
             .to_lowercase();
         assert!(!all.contains("developable"));
+    }
+
+    /// A flat panel made directly from its pattern, for the tests that only read the outline.
+    fn flat_by_hand(name: &str, xy: Vec<(f64, f64)>, tris: Vec<[usize; 3]>) -> FlatPanel {
+        let verts: Vec<Vec3> = xy.iter().map(|p| Vec3::new(p.0, p.1, 0.0)).collect();
+        FlatPanel {
+            found: FoundPanel {
+                name: name.into(),
+                layer: 0,
+                copies: Copies::One,
+                mesh_ids: (0..verts.len()).collect(),
+                verts,
+                tris,
+                seams: Vec::new(),
+            },
+            xy,
+            measures: Measures {
+                seams: Vec::new(),
+                rms_stretch: 0.0,
+                max_stretch: 0.0,
+                level_shift_m: None,
+                edge_join_gap_m: 0.0,
+                area_3d_m2: 0.0,
+                area_flat_m2: 0.0,
+            },
+            lies_flat: true,
+        }
+    }
+
+    /// Two rows of points, `inner[k]` and `outer[k]`, joined into a strip of triangles.
+    fn strip(inner: &[(f64, f64)], outer: &[(f64, f64)]) -> (Vec<(f64, f64)>, Vec<[usize; 3]>) {
+        let n = inner.len();
+        let mut xy = inner.to_vec();
+        xy.extend_from_slice(outer);
+        let mut t = Vec::new();
+        for k in 0..n - 1 {
+            t.push([k, n + k, n + k + 1]);
+            t.push([k, n + k + 1, k + 1]);
+        }
+        (xy, t)
+    }
+
+    /// Closed form: a 2.4 m × 0.6 m rectangle stands 0 and 600 mm off its baseline everywhere.
+    #[test]
+    fn a_rectangle_has_constant_ordinates() {
+        let lower: Vec<(f64, f64)> = (0..=8).map(|i| (0.3 * i as f64, 0.0)).collect();
+        let upper: Vec<(f64, f64)> = (0..=8).map(|i| (0.3 * i as f64, 0.6)).collect();
+        let (xy, t) = strip(&upper, &lower);
+        let panel = flat_by_hand("Plank", xy, t);
+        let off = panel_offsets(&panel, 0.25);
+        assert_eq!(off.panel, "Plank");
+        let along: Vec<f64> = off.rows.iter().map(|r| r.along_m).collect();
+        let mut want: Vec<f64> = (0..10).map(|i| 0.25 * i as f64).collect();
+        want.push(2.4);
+        assert_eq!(along.len(), want.len(), "{along:?}");
+        for (a, w) in along.iter().zip(&want) {
+            assert!((a - w).abs() < 1e-12, "{along:?}");
+        }
+        for r in &off.rows {
+            assert_eq!(r.ordinates_m.len(), 2, "{r:?}");
+            assert!(
+                r.ordinates_m[0].abs() < 1e-6 && (r.ordinates_m[1] - 0.6).abs() < 1e-6,
+                "{r:?}"
+            );
+        }
+    }
+
+    /// Closed form: the development of a cone of half-angle 30° taken 180° round, between slant
+    /// 0.3 and 1, is a sector of angle `S = 1440·2·asin(sin 30°·sin(π/2880))` (1440 facets, whose
+    /// chords lie within `1 − cos(δ/2) ≈ 1.5e-7` m of the arcs). Its outline is the two arcs and
+    /// the two end rulings; a row at `x` crosses them where the circles and lines meet `x`.
+    #[test]
+    fn the_cone_sector_ordinates_follow_its_arcs() {
+        let n = 1440;
+        let delta = 2.0 * (0.5 * (std::f64::consts::PI / n as f64 / 2.0).sin()).asin();
+        let half = n as f64 * delta / 2.0;
+        let ray = |r: f64| -> Vec<(f64, f64)> {
+            (0..=n)
+                .map(|k| {
+                    let phi = -half + k as f64 * delta;
+                    (r * phi.cos(), r * phi.sin())
+                })
+                .collect()
+        };
+        let (xy, t) = strip(&ray(0.3), &ray(1.0));
+        let panel = flat_by_hand("Sector", xy, t);
+        let off = panel_offsets(&panel, 0.25);
+        let x0 = 0.3 * half.cos();
+        let y0 = -half.sin();
+        for row in &off.rows[1..4] {
+            let x = x0 + row.along_m;
+            let mut want = Vec::new();
+            for r in [0.3f64, 1.0] {
+                if x <= r {
+                    let y = (r * r - x * x).sqrt();
+                    if y.atan2(x) <= half {
+                        want.extend([-y, y]);
+                    }
+                }
+            }
+            let r = x / half.cos();
+            if (0.3..=1.0).contains(&r) {
+                let y = x * half.tan();
+                want.extend([-y, y]);
+            }
+            want.sort_by(f64::total_cmp);
+            let got = &row.ordinates_m;
+            assert_eq!(got.len(), want.len(), "x {x}: {got:?} vs {want:?}");
+            for (g, w) in got.iter().zip(&want) {
+                assert!((g - (w - y0)).abs() < 1e-6, "x {x}: {got:?} vs {want:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn csv_and_pdf_carry_every_row() {
+        let s = pram_fixture(0.0, 0.0);
+        let (ps, _, _) = measured(&s, 2);
+        let all: Vec<PanelOffsets> = ps.iter().map(|p| panel_offsets(p, 0.25)).collect();
+        let csv = offsets_csv(&all);
+        let mut lines = csv.lines();
+        assert_eq!(lines.next(), Some("panel,along_mm,crossing,ordinate_mm"));
+        let cells: usize = all
+            .iter()
+            .flat_map(|o| o.rows.iter().map(|r| r.ordinates_m.len()))
+            .sum();
+        assert_eq!(csv.lines().count(), cells + 1);
+        assert!(csv.lines().any(|l| l.starts_with("Transoms 1,0,1,")));
+        let doc = offsets_pdf(&all, "Pram", false).expect("pdf");
+        assert!(doc.bytes.starts_with(b"%PDF-"));
+        assert!(doc.pages >= all.len());
+        let imperial = offsets_pdf(&all, "Pram", true).expect("pdf");
+        assert!(imperial.pages >= 2 * all.len());
+        assert!(offsets_pdf(&[], "Pram", false).is_err());
+    }
+
+    #[test]
+    fn a_name_with_a_comma_is_quoted_in_the_csv() {
+        let off = PanelOffsets {
+            panel: "Side, upper".into(),
+            rows: vec![OffsetRow {
+                along_m: 0.0,
+                ordinates_m: vec![0.1234],
+            }],
+        };
+        assert_eq!(
+            offsets_csv(&[off]),
+            "panel,along_mm,crossing,ordinate_mm\n\"Side, upper\",0,1,123\n"
+        );
     }
 
     #[test]
