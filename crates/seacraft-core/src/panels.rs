@@ -279,7 +279,26 @@ pub fn find_panels(
                 tris_half.push([f[0], f[i], f[i + 1]]);
             }
         }
+        // Faces wound both ways put one directed edge in two faces; the boundary cannot then be
+        // followed, nor the panel's outside told from its inside.
+        let mut directed = HashSet::new();
+        let one_way = tris_half
+            .iter()
+            .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+            .all(|e| directed.insert(e));
         let loops = boundary_loops(&tris_half);
+        let loops_on_edges = loops.iter().all(|lp| {
+            (0..lp.len()).all(|i| edge_faces.contains_key(&ordered(lp[i], lp[(i + 1) % lp.len()])))
+        });
+        if !one_way || !loops_on_edges {
+            refused.push(Refusal {
+                panel: name,
+                reason: "its faces do not all face the same way: turn the faces of this layer so \
+                         they all face out"
+                    .into(),
+            });
+            continue;
+        }
         let on_boundary: HashSet<usize> = loops.iter().flatten().copied().collect();
 
         // A crease that ends inside the piece leaves faces on both its sides in the piece.
@@ -2077,6 +2096,25 @@ mod tests {
         assert!(chine.max_m < 1e-6, "{chine:?}");
         // Every seam to a found panel is compared once: 2 per transom + the chine.
         assert_eq!(mismatches.len(), 5, "{mismatches:?}");
+    }
+
+    #[test]
+    fn a_face_turned_the_other_way_refuses_its_panel() {
+        let mut s = pram_fixture(0.0, 0.0);
+        let fi = s.face_layer.iter().position(|&l| l == 1).unwrap() + 3;
+        s.faces[fi].reverse();
+        s.rebuild_edges();
+        let (ps, refused) = find_panels(&s, SubdivisionOptions::default(), &all(&s));
+        assert!(
+            !names(&ps).contains(&"Side".to_string()),
+            "{:?}",
+            names(&ps)
+        );
+        let r = refused
+            .iter()
+            .find(|r| r.panel == "Side")
+            .expect("Side refused");
+        assert!(r.reason.contains("do not all face the same way"), "{r:?}");
     }
 
     /// The side's three bow points made one (a pole, as a stem often is): the welded copies of
