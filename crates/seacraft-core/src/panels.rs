@@ -570,8 +570,9 @@ pub struct Measures {
     pub seams: Vec<SeamMeasure>,
     pub rms_stretch: f64,
     pub max_stretch: f64,
-    /// Largest corner shift between this subdivision level and the next (the one before at the
-    /// cap), after the best rigid fit; `None` when it could not be paired.
+    /// Largest distance between this subdivision level's outline and the next level's (the one
+    /// before at the cap), placed by the best rigid fit of their corners; `None` when they could
+    /// not be paired.
     pub level_shift_m: Option<f64>,
     /// The edge-joining development's gap ([`crate::develop::unfold`]), a second, independent
     /// measure.
@@ -811,13 +812,28 @@ fn corners(found: &FoundPanel, xy: &[(f64, f64)]) -> Vec<(Vec3, (f64, f64))> {
     out
 }
 
-/// The largest distance between matched points after the best rigid fit (no reflection) of `b`
-/// onto `a`.
-pub(crate) fn rigid_misfit(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
-    let n = a.len() as f64;
-    if a.is_empty() {
-        return 0.0;
+/// A turn and a move in the plane: `q` goes to `rot · (q − from) + to`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RigidFit {
+    cos: f64,
+    sin: f64,
+    from: (f64, f64),
+    to: (f64, f64),
+}
+
+impl RigidFit {
+    pub(crate) fn apply(&self, q: (f64, f64)) -> (f64, f64) {
+        let (qx, qy) = (q.0 - self.from.0, q.1 - self.from.1);
+        (
+            self.cos * qx - self.sin * qy + self.to.0,
+            self.sin * qx + self.cos * qy + self.to.1,
+        )
     }
+}
+
+/// The best rigid fit (no reflection) of the points `b` onto the matched points `a`.
+pub(crate) fn rigid_fit(a: &[(f64, f64)], b: &[(f64, f64)]) -> RigidFit {
+    let n = a.len().max(1) as f64;
     let ca = a
         .iter()
         .fold((0.0, 0.0), |s, p| (s.0 + p.0 / n, s.1 + p.1 / n));
@@ -832,15 +848,66 @@ pub(crate) fn rigid_misfit(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
         sxy += qx * py - qy * px;
     }
     let th = sxy.atan2(sxx);
-    let (c, s) = (th.cos(), th.sin());
+    RigidFit {
+        cos: th.cos(),
+        sin: th.sin(),
+        from: cb,
+        to: ca,
+    }
+}
+
+/// The largest distance between matched points after the best rigid fit (no reflection) of `b`
+/// onto `a`.
+#[cfg(test)]
+pub(crate) fn rigid_misfit(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    if a.is_empty() {
+        return 0.0;
+    }
+    let fit = rigid_fit(a, b);
     a.iter()
         .zip(b)
-        .map(|(p, q)| {
-            let (qx, qy) = (q.0 - cb.0, q.1 - cb.1);
-            let (rx, ry) = (c * qx - s * qy + ca.0, s * qx + c * qy + ca.1);
-            ((rx - p.0).powi(2) + (ry - p.1).powi(2)).sqrt()
+        .map(|(p, &q)| {
+            let r = fit.apply(q);
+            (r.0 - p.0).hypot(r.1 - p.1)
         })
         .fold(0.0, f64::max)
+}
+
+/// The largest distance between two closed outlines, either way round, after the best rigid
+/// fit of `corners_b` onto `corners_a` has placed `b`.
+pub(crate) fn outline_shift(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    corners_a: &[(f64, f64)],
+    corners_b: &[(f64, f64)],
+) -> f64 {
+    let fit = rigid_fit(corners_a, corners_b);
+    let b: Vec<(f64, f64)> = b.iter().map(|&q| fit.apply(q)).collect();
+    // The largest distance from a point of `from` to the closed polyline `to`.
+    let directed = |from: &[(f64, f64)], to: &[(f64, f64)]| -> f64 {
+        from.iter()
+            .map(|&p| {
+                (0..to.len())
+                    .map(|k| segment_distance(p, to[k], to[(k + 1) % to.len()]))
+                    .fold(f64::INFINITY, f64::min)
+            })
+            .fold(0.0, f64::max)
+    };
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    directed(a, &b).max(directed(&b, a))
+}
+
+fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
 }
 
 /// Finds, flattens and measures the panels of `layers`. `stations` are the model `x` of the
@@ -886,7 +953,21 @@ pub fn measure_panels(
             }
         }
         if a.len() >= 2 {
-            p.measures.level_shift_m = Some(rigid_misfit(&a, &b));
+            let outline = |found: &FoundPanel, xy: &[(f64, f64)]| -> Vec<(f64, f64)> {
+                boundary_loops(&found.tris)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|i| xy[i])
+                    .collect()
+            };
+            p.measures.level_shift_m = Some(outline_shift(
+                &outline(&p.found, &p.xy),
+                &outline(q, &qxy),
+                &a,
+                &b,
+            ));
         }
     }
 
@@ -2291,6 +2372,37 @@ mod tests {
         let (coarse, fine) = (coarse.expect("measured"), fine.expect("measured"));
         assert!(coarse.is_finite() && fine.is_finite());
         assert!(fine < coarse, "level 3→4 {fine} vs level 1→2 {coarse}");
+    }
+
+    /// Closed form: two unit squares with the same corners, one with the middle of an edge
+    /// pushed out 10 mm, differ by 10 mm, wherever the second lies; the corners alone see none.
+    #[test]
+    fn the_outline_shift_sees_a_bulge_between_corners() {
+        let a = [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let (c, s) = (0.8f64, 0.6f64);
+        let place = |p: (f64, f64)| (c * p.0 - s * p.1 + 3.0, s * p.0 + c * p.1 - 2.0);
+        let b: Vec<(f64, f64)> = [(0.0, 0.0), (0.5, -0.01), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+            .into_iter()
+            .map(place)
+            .collect();
+        let corners_a = [a[0], a[2], a[3], a[4]];
+        let corners_b = [b[0], b[2], b[3], b[4]];
+        assert!(rigid_misfit(&corners_a, &corners_b) < 1e-12);
+        let shift = outline_shift(&a, &b, &corners_a, &corners_b);
+        assert!((shift - 0.01).abs() < 1e-12, "{shift}");
+    }
+
+    /// Measured, a regression pin: the bowed side's outline moves 0.057 mm from level 3 to 4
+    /// (the review's probe, largest distance between the outlines after the corner fit), its
+    /// corners only 0.0099 mm.
+    #[test]
+    fn the_level_shift_is_the_outline_not_the_corners() {
+        let s = pram_fixture(0.0, 0.08);
+        let shift = flat(&measured(&s, 3).0, "Side")
+            .measures
+            .level_shift_m
+            .expect("measured");
+        assert!(shift > 4e-5 && shift < 8e-5, "{shift}");
     }
 
     #[test]

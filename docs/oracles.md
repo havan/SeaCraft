@@ -956,7 +956,12 @@ end, measured from the first tick and again from the last.
   rounded by up to $4.6 \times 10^{-6}$ m) give four panels each.
 
 Convergence, stated as such: `a_curved_side_reports_its_level_shift`: with the sides bowed 80 mm out amidships, the
-side's largest corner shift between subdivision levels is 0.13 mm from level 1 to 2 and 0.037 mm from 3 to 4.
+side's outline moves 1.04 mm from level 1 to 2 and 0.057 mm from 3 to 4 (largest distance between the two outlines,
+either way round, after the best rigid fit of their corners). `the_level_shift_is_the_outline_not_the_corners`
+pins the 0.057 mm (between 0.04 and 0.08 mm); the corners alone move 0.0099 mm, which is why the corners are only
+used to place the outlines. `the_outline_shift_sees_a_bulge_between_corners` is the closed form: two unit squares
+with the same corners, one with an edge's middle pushed out 10 mm and the square turned and moved, differ by
+10 mm to $10^{-12}$.
 
 Internal consistency: `the_edge_join_gap_is_kept` (the `develop::unfold` gap is reported as is), `limits_decide_
 lies_flat` (a cap of measured RMS $r$ fails at a limit of $0.99r$ and passes at $1.01r$).
