@@ -43,6 +43,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   are the brightest text in a dock; body text is 13 px; Create and the unsaved-changes Save are filled primary
   buttons. The analysis dock opens 384 px wide and the layer panel 264 px, and the hydrostatics readout goes two
   columns from a 364 px dock. The Builder templates window opens tall enough to show Export.
+- GUI: an Analysis menu view (hydrostatic table, Bonjean curves, offsets, trim scan, plate development) opens in a
+  drawer under the viewports instead of taking over and widening the Analysis dock. The drawer's header has the
+  five views as tabs, Compute, Copy CSV and ✕; closing it gives the viewports their height back, and the dock
+  keeps its tab and its width throughout.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is

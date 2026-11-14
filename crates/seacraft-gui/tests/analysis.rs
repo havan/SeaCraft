@@ -113,15 +113,14 @@ fn cell(row: &[EngCell], c: usize) -> &str {
 }
 
 #[test]
-fn each_analysis_menu_item_opens_its_view_in_the_wide_dock() {
+fn each_analysis_menu_item_opens_its_view_in_the_drawer() {
     let (ctx, mut app, mut out) = settled();
     assert_eq!(app.analysis_view(), None);
     assert!(!app.dock_wide());
     for view in AnalysisView::ALL {
         open_from_menu(&ctx, &mut app, &out, view);
         assert_eq!(app.analysis_view(), Some(view), "{}", view.label());
-        assert!(app.dock_wide(), "a view opens in the wide dock");
-        assert!(app.show_analysis());
+        assert!(!app.dock_wide(), "a view leaves the dock's width alone");
         // Opening a view with no result computes it.
         assert!(
             app.analysis_view_busy(view) || app.analysis_view_result(view).is_some(),
@@ -144,19 +143,20 @@ fn each_analysis_menu_item_opens_its_view_in_the_wide_dock() {
         );
         assert!(find(&out, "Copy CSV").is_some());
     }
-    // A tab click goes back to the tabs.
+    // A dock tab is the dock's business: the view stays open beside it.
     click_text(&ctx, &mut app, &out, "Loading");
-    assert_eq!(app.analysis_view(), None);
+    assert_eq!(app.analysis_view(), Some(AnalysisView::Plates));
+    app.close_analysis_view();
     assert_eq!(
         app.design_dock(),
         Some(seacraft_gui::app::DesignDock::Loading)
     );
-    // Reopening keeps the result (nothing to recompute); Close goes back.
+    // Reopening keeps the result (nothing to recompute); the drawer's ✕ closes it.
     app.open_analysis_view(AnalysisView::Bonjean);
     assert!(!app.analysis_view_busy(AnalysisView::Bonjean));
     frame(&ctx, &mut app, Vec::new());
     let out = frame(&ctx, &mut app, Vec::new());
-    click_text(&ctx, &mut app, &out, "Close");
+    click_text(&ctx, &mut app, &out, "✕");
     assert_eq!(app.analysis_view(), None);
     assert_eq!(
         app.design_dock(),
@@ -407,37 +407,40 @@ fn the_analysis_menu_needs_a_model() {
 }
 
 #[test]
-fn a_view_gives_the_dock_back_at_the_width_it_had() {
+fn a_view_opens_under_the_viewports_and_closing_it_gives_their_height_back() {
     let (ctx, mut app, out) = settled();
-    let narrow = app.viewport_rect(1);
+    let before = app.viewport_rect(1);
     assert!(!app.dock_wide());
 
-    // Opened from the narrow dock: Close and a tab both give the narrow dock back.
     open_from_menu(&ctx, &mut app, &out, AnalysisView::Offsets);
-    assert!(app.dock_wide());
-    let out = frame(&ctx, &mut app, Vec::new());
-    click_text(&ctx, &mut app, &out, "Close");
-    assert_eq!(app.analysis_view(), None);
-    assert!(!app.dock_wide(), "Close gives the narrow dock back");
     frame(&ctx, &mut app, Vec::new());
     let out = frame(&ctx, &mut app, Vec::new());
-    assert_eq!(app.viewport_rect(1), narrow);
-
-    open_from_menu(&ctx, &mut app, &out, AnalysisView::Offsets);
+    let open = app.viewport_rect(1);
+    // The drawer takes height from the viewports, never width, and the dock keeps its own.
+    assert!(!app.dock_wide());
+    assert_eq!((open.left(), open.right()), (before.left(), before.right()));
+    assert!(open.height() < before.height(), "{open:?} / {before:?}");
+    // The other views are tabs in the drawer's header.
+    click_text(&ctx, &mut app, &out, "Bonjean curves");
+    assert_eq!(app.analysis_view(), Some(AnalysisView::Bonjean));
+    frame(&ctx, &mut app, Vec::new());
     let out = frame(&ctx, &mut app, Vec::new());
-    click_text(&ctx, &mut app, &out, "Hydro");
-    assert_eq!(app.analysis_view(), None);
-    assert!(!app.dock_wide(), "a tab gives the narrow dock back");
 
-    // Widened by hand first: the dock stays wide.
+    click_text(&ctx, &mut app, &out, "✕");
+    assert_eq!(app.analysis_view(), None);
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.viewport_rect(1), before);
+
+    // A dock widened by hand is not the view's to narrow.
     app.set_dock_wide(true);
     app.open_analysis_view(AnalysisView::Offsets);
     app.close_analysis_view();
     assert!(app.dock_wide(), "the hand-set width is kept");
 }
 
-/// The x of the resize handle on the right dock's left edge.
-fn dock_edge(out: &egui::FullOutput) -> f32 {
+/// The y of the resize handle on the drawer's top edge: the one splitter that lies flat.
+fn drawer_edge(out: &egui::FullOutput) -> f32 {
     let update = out
         .platform_output
         .accesskit_update
@@ -450,26 +453,27 @@ fn dock_edge(out: &egui::FullOutput) -> f32 {
             n.role() == egui::accesskit::Role::Splitter && n.label() == Some("Resize panel")
         })
         .filter_map(|(_, n)| n.bounds())
-        .map(|b| ((b.x0 + b.x1) / 2.0) as f32)
+        .filter(|b| b.x1 - b.x0 > b.y1 - b.y0)
+        .map(|b| ((b.y0 + b.y1) / 2.0) as f32)
         .fold(f32::NEG_INFINITY, f32::max)
 }
 
 #[test]
-fn the_wide_dock_can_be_dragged_narrower_with_a_wide_table_in_it() {
+fn the_drawer_can_be_dragged_shorter_with_a_long_table_in_it() {
     let (ctx, mut app, out) = settled();
     ctx.enable_accesskit();
     open_from_menu(&ctx, &mut app, &out, AnalysisView::Offsets);
     app.wait_analysis_view(AnalysisView::Offsets);
     frame(&ctx, &mut app, Vec::new());
     let out = frame(&ctx, &mut app, Vec::new());
-    let edge = dock_edge(&out);
+    let edge = drawer_edge(&out);
     assert!(
-        (1600.0 - edge - 0.55 * 1600.0).abs() < 30.0,
-        "the wide dock opens at 55 %: its edge is at {edge}"
+        (1000.0 - edge - 0.42 * 1000.0).abs() < 40.0,
+        "the drawer opens at about 42 % of the window: its edge is at {edge}"
     );
 
-    let from = egui::pos2(edge, 600.0);
-    let to = egui::pos2(edge + 300.0, 600.0);
+    let from = egui::pos2(700.0, edge);
+    let to = egui::pos2(700.0, edge + 200.0);
     frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
     frame(&ctx, &mut app, vec![button(from, true)]);
     for step in 1..=10 {
@@ -481,10 +485,10 @@ fn the_wide_dock_can_be_dragged_narrower_with_a_wide_table_in_it() {
         frame(&ctx, &mut app, Vec::new());
     }
     let out = frame(&ctx, &mut app, Vec::new());
-    let dragged = dock_edge(&out);
+    let dragged = drawer_edge(&out);
     assert!(
-        (dragged - (edge + 300.0)).abs() < 10.0,
+        (dragged - (edge + 200.0)).abs() < 10.0,
         "dragged from {edge} to {}, the edge is at {dragged}",
-        edge + 300.0
+        edge + 200.0
     );
 }

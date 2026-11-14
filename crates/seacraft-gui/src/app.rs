@@ -940,8 +940,6 @@ pub struct App {
     dock_tab: DesignDock,
     /// The Analysis dock is widened for plots and tables.
     dock_wide: bool,
-    /// An analysis view widened the dock, so closing it narrows the dock again.
-    dock_widened_by_view: bool,
     /// An inspector value being dragged (point index and x/y/z): the point
     /// moves when the drag is released, as one undo step.
     inspector_pending: Option<(usize, [f64; 3])>,
@@ -1168,7 +1166,6 @@ impl App {
             show_analysis: true,
             dock_tab: DesignDock::Hydrostatics,
             dock_wide: false,
-            dock_widened_by_view: false,
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
             layer_list_rect: egui::Rect::NOTHING,
@@ -1601,10 +1598,6 @@ impl App {
         let kg_estimate = self.kg_is_estimate();
         let limits = self.hydro_limits();
         let keel_z = self.keel_z();
-        let open_view = self.analysis.open;
-        let view_panel = open_view.map(|v| self.analysis_view_panel_inputs(v));
-        let mut close_view = false;
-        let mut view_action = crate::analysis_views::ViewAction::None;
         let pre_drag = ui.ctx().dragged_id();
         let pre_focus = ui
             .ctx()
@@ -1636,38 +1629,16 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
                 for (i, t) in DesignDock::ALL.into_iter().enumerate() {
-                    let response = ui.selectable_label(tab == t && open_view.is_none(), t.label());
+                    let response = ui.selectable_label(tab == t, t.label());
                     if tab_stale[i] {
                         panels::stale_dot(ui, response.rect);
                     }
                     if response.clicked() {
                         tab = t;
-                        close_view = true;
                     }
-                }
-                if let Some(view) = open_view {
-                    ui.separator();
-                    let _ = ui.selectable_label(true, view.label());
                 }
             });
             ui.separator();
-            if let (Some(view), Some((stale, busy, failure, layers, design_draft))) =
-                (open_view, view_panel)
-            {
-                view_action = crate::analysis_views::panel(
-                    ui,
-                    crate::analysis_views::ViewPanel {
-                        view,
-                        state: &mut self.analysis,
-                        stale,
-                        busy,
-                        failure,
-                        layers,
-                        design_draft,
-                    },
-                );
-                return;
-            }
             if let Some(msg) = &failure {
                 ui.colored_label(crate::theme::FAIL, format!("⚠ {msg}"));
             }
@@ -1754,10 +1725,6 @@ impl App {
         if toggle_wide {
             self.set_dock_wide(!self.dock_wide);
         }
-        if close_view {
-            self.close_analysis_view();
-        }
-        self.apply_view_action(view_action, ui.ctx());
         self.last_highlighted_tank = tank_highlight;
         self.last_highlighted_compartment = comp_highlight;
 
@@ -1948,6 +1915,7 @@ impl App {
         if self.show_analysis {
             self.analysis_dock(ui);
         }
+        self.analysis_drawer(ui);
         self.run_jobs(ui.ctx());
 
         if self.surface.is_some() {
@@ -4906,10 +4874,9 @@ impl App {
     }
 
     /// Widen the Analysis dock, at first to about 55 % of the window (plots, tables); either
-    /// width can be dragged and is kept. A width set here outlasts the analysis views.
+    /// width can be dragged and is kept.
     pub fn set_dock_wide(&mut self, wide: bool) {
         self.dock_wide = wide;
-        self.dock_widened_by_view = false;
     }
 
     pub fn dock_wide(&self) -> bool {
@@ -7228,15 +7195,48 @@ impl App {
         });
     }
 
-    /// Show `view` in the widened Analysis dock. Opening a view that has no
-    /// result yet computes it.
+    /// The open Analysis view, in a drawer under the viewports: a table is
+    /// wide, so it takes the width of the viewports and leaves the docks and
+    /// their widths alone. Its header names the view and carries its close
+    /// button, so what closes is what the header is on.
+    fn analysis_drawer(&mut self, ui: &mut egui::Ui) {
+        let Some(view) = self.analysis.open else {
+            return;
+        };
+        if self.surface.is_none() {
+            return;
+        }
+        let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
+        let window = ui.ctx().content_rect().height();
+        let mut action = crate::analysis_views::ViewAction::None;
+        egui::Panel::bottom("analysis_drawer")
+            .resizable(true)
+            .default_size((window * 0.42).round())
+            .size_range(160.0..=(window * 0.8).round())
+            .show(ui, |ui| {
+                // Keep the drawer's height while a view has little to show
+                // (computing, or no result yet), so it does not jump.
+                ui.set_min_height(ui.available_height());
+                action = crate::analysis_views::panel(
+                    ui,
+                    crate::analysis_views::ViewPanel {
+                        view,
+                        state: &mut self.analysis,
+                        stale,
+                        busy,
+                        failure,
+                        layers,
+                        design_draft,
+                    },
+                );
+            });
+        self.apply_view_action(action, ui.ctx());
+    }
+
+    /// Show `view` in the drawer under the viewports. Opening a view that
+    /// has no result yet computes it.
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
         self.analysis.open = Some(view);
-        self.show_analysis = true;
-        if !self.dock_wide {
-            self.dock_wide = true;
-            self.dock_widened_by_view = true;
-        }
         let key = self.analysis_key(view);
         let slot = self.analysis.slot(view);
         if slot.result.is_none() && slot.track.due(key) {
@@ -7244,12 +7244,9 @@ impl App {
         }
     }
 
-    /// Back to the dock's tabs, at the width the dock had before a view widened it.
+    /// Close the drawer. The viewports take its height back.
     pub fn close_analysis_view(&mut self) {
         self.analysis.open = None;
-        if self.dock_widened_by_view {
-            self.set_dock_wide(false);
-        }
     }
 
     /// The view shown in the Analysis dock, if any.
@@ -7436,6 +7433,7 @@ impl App {
                 }
             }
             ViewAction::Close => self.close_analysis_view(),
+            ViewAction::Open(other) => self.open_analysis_view(other),
         }
     }
 }
