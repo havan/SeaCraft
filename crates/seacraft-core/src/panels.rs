@@ -13,6 +13,8 @@ use serde::Serialize;
 use crate::flatten::{boundary_loops, clean, FlattenError};
 use crate::math::Vec3;
 use crate::mesh::{ordered, Layer, Surface};
+use crate::pdf::Anchor;
+use crate::sheet::{Label, PathKind, Sheet, SheetPath};
 use crate::subdiv::{evaluate, SubdivisionOptions};
 
 /// A symmetric panel is joined to its mirror when every face along the centreline is within
@@ -869,6 +871,369 @@ pub fn measure_panels(
     (panels, mismatches, refused)
 }
 
+/// Letter heights on paper, in millimetres, as the mould patterns use them.
+const MARK_LABEL_MM: f64 = 3.0;
+const TITLE_LABEL_MM: f64 = 5.0;
+/// How long a seam tick is, metres.
+const TICK_M: f64 = 0.02;
+/// How far a seam's label sits inside the edge, metres.
+const SEAM_LABEL_INSET_M: f64 = 0.015;
+
+/// Wording every panel sheet carries.
+pub const THICKNESS_NOTE: &str = "Developed on the modelled surface: no plywood thickness allowed";
+pub const MEASURED_NOTE: &str = "Measured against the model; not a bending test of plywood.";
+
+/// A point where a station plane crosses the panel: its key and its flat position.
+type PlanePoint = ((usize, usize), (f64, f64));
+
+/// Where a station plane `x = X` crosses an edge: the key that names the point (a vertex when
+/// the plane passes through it) and the edge parameter.
+fn plane_point(verts: &[Vec3], a: usize, b: usize, x: f64) -> ((usize, usize), f64) {
+    let t = ((x - verts[a].x) / (verts[b].x - verts[a].x)).clamp(0.0, 1.0);
+    if t <= 1e-12 {
+        ((a, a), 0.0)
+    } else if t >= 1.0 - 1e-12 {
+        ((b, b), 1.0)
+    } else {
+        (ordered(a, b), t)
+    }
+}
+
+/// Each station's line on the flat panel: the station plane cut through the 3D panel, every
+/// crossing point carried to the pattern by where it lies on its triangle's edge, chained into
+/// polylines. A station that crosses the panel in several places gives several lines.
+pub fn station_marks(
+    panel: &FlatPanel,
+    stations: &[(String, f64)],
+) -> Vec<(String, Vec<(f64, f64)>)> {
+    let verts = &panel.found.verts;
+    let xy = &panel.xy;
+    let mut out = Vec::new();
+    for (name, x) in stations {
+        let side = |v: usize| verts[v].x >= *x;
+        let mut segs: Vec<[PlanePoint; 2]> = Vec::new();
+        for t in &panel.found.tris {
+            let mut ends = Vec::new();
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                if side(a) != side(b) {
+                    let (key, u) = plane_point(verts, a, b, *x);
+                    let p = (
+                        xy[a].0 + u * (xy[b].0 - xy[a].0),
+                        xy[a].1 + u * (xy[b].1 - xy[a].1),
+                    );
+                    ends.push((key, p));
+                }
+            }
+            if ends.len() == 2 && ends[0].0 != ends[1].0 {
+                segs.push([ends[0], ends[1]]);
+            }
+        }
+        // Chain the segments end to end.
+        let mut at: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (i, sg) in segs.iter().enumerate() {
+            for e in sg {
+                at.entry(e.0).or_default().push(i);
+            }
+        }
+        let mut used = vec![false; segs.len()];
+        let mut lines: Vec<Vec<(f64, f64)>> = Vec::new();
+        for i in 0..segs.len() {
+            if used[i] {
+                continue;
+            }
+            used[i] = true;
+            let mut keys = std::collections::VecDeque::from([segs[i][0].0, segs[i][1].0]);
+            let mut pts = std::collections::VecDeque::from([segs[i][0].1, segs[i][1].1]);
+            for front in [false, true] {
+                loop {
+                    let end = if front { keys[0] } else { keys[keys.len() - 1] };
+                    let Some(&j) = at[&end].iter().find(|&&j| !used[j]) else {
+                        break;
+                    };
+                    used[j] = true;
+                    let other = if segs[j][0].0 == end {
+                        segs[j][1]
+                    } else {
+                        segs[j][0]
+                    };
+                    if front {
+                        keys.push_front(other.0);
+                        pts.push_front(other.1);
+                    } else {
+                        keys.push_back(other.0);
+                        pts.push_back(other.1);
+                    }
+                }
+            }
+            lines.push(pts.into_iter().collect());
+        }
+        // Longest first, so a station's main line comes before any stub.
+        lines.sort_by(|a, b| polyline_length(b).total_cmp(&polyline_length(a)));
+        for line in lines {
+            out.push((name.clone(), line));
+        }
+    }
+    out
+}
+
+fn polyline_length(pts: &[(f64, f64)]) -> f64 {
+    pts.windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum()
+}
+
+/// The point at the middle of a flat polyline's length, and its direction there.
+fn midpoint(pts: &[(f64, f64)]) -> Option<((f64, f64), (f64, f64))> {
+    let half = polyline_length(pts) / 2.0;
+    let mut run = 0.0;
+    for w in pts.windows(2) {
+        let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+        let l = (dx * dx + dy * dy).sqrt();
+        if l > 0.0 && run + l >= half {
+            let t = (half - run) / l;
+            return Some(((w[0].0 + t * dx, w[0].1 + t * dy), (dx / l, dy / l)));
+        }
+        run += l;
+    }
+    None
+}
+
+/// An angle in degrees that keeps text along `d` the right way up.
+fn reading_angle(d: (f64, f64)) -> f64 {
+    let mut a = d.1.atan2(d.0).to_degrees();
+    if a > 90.0 {
+        a -= 180.0;
+    } else if a < -90.0 {
+        a += 180.0;
+    }
+    a
+}
+
+/// The first note of a panel that does not lie flat.
+pub fn failing_heading(measures: &Measures, limits: Limits) -> String {
+    let (drift, seam) = measures
+        .worst_seam()
+        .map_or((0.0, String::from("edge")), |s| (s.drift_m, s.name.clone()));
+    format!(
+        "Does not lie flat: must stretch {:.2} % (limit {:.1} %), seam drift {:.1} mm along the {} (limit {:.0} mm)",
+        measures.rms_stretch * 100.0,
+        limits.rms_stretch * 100.0,
+        drift * 1000.0,
+        seam,
+        limits.seam_drift_m * 1000.0
+    )
+}
+
+/// The full-size pattern of one panel: its outline to cut, the station lines and the seam ticks
+/// to mark, what each edge is stitched to, and what was measured.
+pub fn panel_sheet(
+    panel: &FlatPanel,
+    stations: &[(String, f64)],
+    limits: Limits,
+    imperial: bool,
+) -> Sheet {
+    let found = &panel.found;
+    let xy = &panel.xy;
+    let mut sheet = Sheet::new(found.name.clone());
+    let mark_label = |at: (f64, f64), angle_deg: f64, anchor: Anchor, text: String| Label {
+        at,
+        height_mm: MARK_LABEL_MM,
+        angle_deg,
+        anchor,
+        text,
+    };
+
+    let loops = boundary_loops(&found.tris);
+    for lp in &loops {
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Cut,
+            points: lp.iter().map(|&i| xy[i]).collect(),
+            closed: true,
+        });
+    }
+
+    for (name, line) in station_marks(panel, stations) {
+        let top = if line[0].1 >= line[line.len() - 1].1 {
+            line[0]
+        } else {
+            line[line.len() - 1]
+        };
+        sheet.labels.push(mark_label(
+            (top.0, top.1 + 0.005),
+            90.0,
+            Anchor::Start,
+            name.clone(),
+        ));
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Mark,
+            points: line,
+            closed: false,
+        });
+    }
+
+    // A tick across the edge wherever a station crosses it.
+    for lp in &loops {
+        for k in 0..lp.len() {
+            let (a, b) = (lp[k], lp[(k + 1) % lp.len()]);
+            let (xa, xb) = (found.verts[a].x, found.verts[b].x);
+            for (_, x) in stations {
+                if (xa >= *x) == (xb >= *x) {
+                    continue;
+                }
+                let t = ((x - xa) / (xb - xa)).clamp(0.0, 1.0);
+                let p = (
+                    xy[a].0 + t * (xy[b].0 - xy[a].0),
+                    xy[a].1 + t * (xy[b].1 - xy[a].1),
+                );
+                let (dx, dy) = (xy[b].0 - xy[a].0, xy[b].1 - xy[a].1);
+                let l = (dx * dx + dy * dy).sqrt().max(1e-12);
+                let n = (-dy / l * TICK_M / 2.0, dx / l * TICK_M / 2.0);
+                sheet.paths.push(SheetPath {
+                    kind: PathKind::Mark,
+                    points: vec![(p.0 - n.0, p.1 - n.1), (p.0 + n.0, p.1 + n.1)],
+                    closed: false,
+                });
+            }
+        }
+    }
+
+    // What each edge is stitched to, inside the edge at its middle.
+    let index: HashMap<usize, usize> = found
+        .mesh_ids
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| m != usize::MAX)
+        .map(|(i, &m)| (m, i))
+        .collect();
+    for seam in &found.seams {
+        let Some(ids) = seam
+            .verts
+            .iter()
+            .map(|m| index.get(m).copied())
+            .collect::<Option<Vec<usize>>>()
+        else {
+            continue;
+        };
+        let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
+        let Some((p, d)) = midpoint(&pts) else {
+            continue;
+        };
+        // The outline runs anticlockwise, so the panel is on the left of a seam that runs with
+        // it; a seam that runs against it has the panel on its right.
+        let inward = (-d.1, d.0);
+        let probe = (
+            p.0 + inward.0 * SEAM_LABEL_INSET_M,
+            p.1 + inward.1 * SEAM_LABEL_INSET_M,
+        );
+        let inside = point_in_panel(found, xy, probe);
+        let s = if inside { 1.0 } else { -1.0 };
+        let at = (
+            p.0 + s * inward.0 * SEAM_LABEL_INSET_M,
+            p.1 + s * inward.1 * SEAM_LABEL_INSET_M,
+        );
+        let text = match &seam.mate {
+            Mate::Panel(m) => format!("Stitch to {m}"),
+            Mate::Centreline => "Centreline: stitch to its mirror".into(),
+            Mate::Open => "Open edge".into(),
+        };
+        sheet
+            .labels
+            .push(mark_label(at, reading_angle(d), Anchor::Middle, text));
+    }
+
+    // Title, copies and the tick rule in the middle of the panel.
+    let (lo, hi) = xy.iter().fold(
+        ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN)),
+        |(lo, hi), p| {
+            (
+                (lo.0.min(p.0), lo.1.min(p.1)),
+                (hi.0.max(p.0), hi.1.max(p.1)),
+            )
+        },
+    );
+    let centre = ((lo.0 + hi.0) / 2.0, (lo.1 + hi.1) / 2.0);
+    sheet.labels.push(Label {
+        at: (centre.0, centre.1 + 0.01),
+        height_mm: TITLE_LABEL_MM,
+        angle_deg: 0.0,
+        anchor: Anchor::Middle,
+        text: found.name.clone(),
+    });
+    let copies = match found.copies {
+        Copies::One => "Cut 1".to_string(),
+        Copies::MirroredPair => "Cut 2, one turned over".to_string(),
+    };
+    sheet.labels.push(mark_label(
+        (centre.0, centre.1 - 0.005),
+        0.0,
+        Anchor::Middle,
+        copies,
+    ));
+    if !stations.is_empty() {
+        sheet.labels.push(mark_label(
+            (centre.0, centre.1 - 0.015),
+            0.0,
+            Anchor::Middle,
+            "Ticks match from either end".into(),
+        ));
+    }
+
+    let m = &panel.measures;
+    if !panel.lies_flat {
+        sheet.notes.push(failing_heading(m, limits));
+    }
+    sheet.notes.push(format!(
+        "Stretch: {:.3} % RMS, {:.3} % largest (limit {:.1} % RMS)",
+        m.rms_stretch * 100.0,
+        m.max_stretch * 100.0,
+        limits.rms_stretch * 100.0
+    ));
+    let drifts: Vec<String> = m
+        .seams
+        .iter()
+        .map(|s| format!("{} {:.1} mm", s.name, s.drift_m * 1000.0))
+        .collect();
+    sheet.notes.push(format!(
+        "Seam drift from either end (limit {:.0} mm): {}",
+        limits.seam_drift_m * 1000.0,
+        drifts.join("; ")
+    ));
+    sheet.notes.push(match m.level_shift_m {
+        Some(d) => format!(
+            "Outline shift to the next subdivision level: {:.2} mm",
+            d * 1000.0
+        ),
+        None => "Outline shift to the next subdivision level: not measured".into(),
+    });
+    sheet.notes.push(format!(
+        "Edge-joining gap: {:.1} mm",
+        m.edge_join_gap_m * 1000.0
+    ));
+    sheet.notes.push(format!(
+        "Size {} by {}; area {:.3} m² flat, {:.3} m² on the model",
+        crate::units::length(hi.0 - lo.0, imperial),
+        crate::units::length(hi.1 - lo.1, imperial),
+        m.area_flat_m2,
+        m.area_3d_m2
+    ));
+    sheet.notes.push(THICKNESS_NOTE.into());
+    sheet.notes.push(MEASURED_NOTE.into());
+    sheet.notes.push(crate::NOT_VALIDATED_NOTE.into());
+    sheet
+}
+
+/// Whether a flat point lies on the panel.
+fn point_in_panel(found: &FoundPanel, xy: &[(f64, f64)], p: (f64, f64)) -> bool {
+    found.tris.iter().any(|t| {
+        let (a, b, c) = (xy[t[0]], xy[t[1]], xy[t[2]]);
+        let s1 = crate::flatten::signed_area(a, b, p);
+        let s2 = crate::flatten::signed_area(b, c, p);
+        let s3 = crate::flatten::signed_area(c, a, p);
+        s1 >= 0.0 && s2 >= 0.0 && s3 >= 0.0
+    })
+}
+
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
 /// flared sides that are planar when `side_bow_m` is 0 and bowed outward amidships by it
 /// otherwise, a stern transom 0.40 m deep and a bow transom 0.50 m deep. Layers `Bottom` and
@@ -1294,6 +1659,179 @@ mod tests {
                 .lies_flat
         );
         assert!(measure_found(found, &[0.0], loose).unwrap().lies_flat);
+    }
+
+    fn hand_made(name: &str, mesh: (Vec<Vec3>, Vec<[usize; 3]>)) -> FoundPanel {
+        let (v, t) = mesh;
+        let mut ring = boundary_loops(&t)[0].clone();
+        ring.push(ring[0]);
+        FoundPanel {
+            name: name.into(),
+            layer: 0,
+            copies: Copies::One,
+            mesh_ids: (0..v.len()).collect(),
+            verts: v,
+            tris: t,
+            seams: vec![Seam {
+                mate: Mate::Open,
+                verts: ring,
+            }],
+        }
+    }
+
+    fn named(xs: &[f64]) -> Vec<(String, f64)> {
+        xs.iter()
+            .enumerate()
+            .map(|(i, &x)| (format!("St {}", i + 1), x))
+            .collect()
+    }
+
+    /// Closed form: a cylinder faceted on its rulings flattens to a rectangle on which every
+    /// cross-section is a straight line across, as far apart as the sections are.
+    #[test]
+    fn station_marks_on_a_cylinder_are_straight_and_spaced() {
+        let mesh = crate::flatten::shapes::ruled_cylinder(0.5, 2.0, 24, 120f64.to_radians());
+        let panel = measure_found(hand_made("Tube", mesh), &[], Limits::default()).unwrap();
+        let marks = station_marks(&panel, &named(&[0.5, 1.0, 1.5]));
+        assert_eq!(marks.len(), 3, "{marks:?}");
+        let mut xs = Vec::new();
+        for (name, pts) in &marks {
+            assert!(pts.len() >= 2, "{name}");
+            // Across the long axis (flat x), so every point has the same flat x.
+            let x0 = pts[0].0;
+            for p in pts {
+                assert!((p.0 - x0).abs() < 1e-9, "{name}: {p:?} vs {x0}");
+            }
+            let span = pts.iter().map(|p| p.1).fold(f64::MIN, f64::max)
+                - pts.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+            let width = 24.0 * 2.0 * 0.5 * (120f64.to_radians() / 48.0).sin();
+            assert!((span - width).abs() < 1e-9, "{name}: {span} vs {width}");
+            xs.push(x0);
+        }
+        assert_eq!(marks[0].0, "St 1");
+        assert!((xs[1] - xs[0] - 0.5).abs() < 1e-9 && (xs[2] - xs[1] - 0.5).abs() < 1e-9);
+    }
+
+    fn texts(sheet: &crate::sheet::Sheet) -> Vec<String> {
+        sheet.labels.iter().map(|l| l.text.clone()).collect()
+    }
+
+    #[test]
+    fn a_panel_sheet_has_its_cut_marks_and_words() {
+        use crate::sheet::PathKind;
+        let s = pram_fixture(0.0, 0.0);
+        let (ps, _, _) = measured(&s, 3);
+        let side = flat(&ps, "Side");
+        let stations = named(&STATIONS);
+        let sheet = panel_sheet(side, &stations, Limits::default(), false);
+        assert_eq!(sheet.name, "Side");
+        let cuts: Vec<_> = sheet
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::Cut)
+            .collect();
+        assert_eq!(cuts.len(), 1);
+        assert!(cuts[0].closed);
+        let outline: std::collections::HashSet<(u64, u64)> = boundary_loops(&side.found.tris)[0]
+            .iter()
+            .map(|&i| (side.xy[i].0.to_bits(), side.xy[i].1.to_bits()))
+            .collect();
+        assert_eq!(cuts[0].points.len(), outline.len());
+        assert!(cuts[0]
+            .points
+            .iter()
+            .all(|p| outline.contains(&(p.0.to_bits(), p.1.to_bits()))));
+        let marks = sheet
+            .paths
+            .iter()
+            .filter(|p| p.kind == PathKind::Mark)
+            .count();
+        // Four station lines, and a tick where each crosses the chine and the sheer.
+        assert_eq!(marks, 4 + 8, "{marks}");
+        let words = texts(&sheet);
+        for w in [
+            "Side",
+            "Cut 2, one turned over",
+            "Stitch to Bottom",
+            "Stitch to Transoms 1",
+            "Stitch to Transoms 2",
+            "Open edge",
+            "Ticks match from either end",
+            "St 1",
+            "St 4",
+        ] {
+            assert!(words.iter().any(|t| t == w), "no label {w:?} in {words:?}");
+        }
+        for n in [
+            crate::NOT_VALIDATED_NOTE,
+            "Developed on the modelled surface: no plywood thickness allowed",
+            "Measured against the model; not a bending test of plywood.",
+        ] {
+            assert!(sheet.notes.iter().any(|t| t == n), "no note {n:?}");
+        }
+        assert!(sheet.notes.iter().any(|t| t.starts_with("Stretch: ")));
+        assert!(sheet.notes.iter().any(|t| t.contains("edge to Bottom")));
+        assert!(!sheet.notes[0].starts_with("Does not lie flat"));
+    }
+
+    #[test]
+    fn a_joined_panel_says_cut_one_and_its_centreline_seam_is_labelled() {
+        let s = pram_fixture(12.0, 0.0);
+        let (ps, _, _) = measured(&s, 2);
+        let words = texts(&panel_sheet(
+            flat(&ps, "Bottom"),
+            &[],
+            Limits::default(),
+            false,
+        ));
+        assert!(
+            words.iter().any(|t| t == "Cut 2, one turned over"),
+            "{words:?}"
+        );
+        assert!(
+            words
+                .iter()
+                .any(|t| t == "Centreline: stitch to its mirror"),
+            "{words:?}"
+        );
+        let s = pram_fixture(0.0, 0.0);
+        let (ps, _, _) = measured(&s, 2);
+        let words = texts(&panel_sheet(
+            flat(&ps, "Bottom"),
+            &[],
+            Limits::default(),
+            false,
+        ));
+        assert!(words.iter().any(|t| t == "Cut 1"), "{words:?}");
+    }
+
+    #[test]
+    fn a_failing_panel_is_headed_so() {
+        let mesh = crate::flatten::shapes::cap(40f64.to_radians(), 6, 24);
+        let limits = Limits::default();
+        let panel = measure_found(hand_made("Cap", mesh), &[0.0], limits).unwrap();
+        assert!(!panel.lies_flat);
+        let sheet = panel_sheet(&panel, &named(&[0.0]), limits, false);
+        let m = &panel.measures;
+        let worst = m.worst_seam().unwrap();
+        let heading = format!(
+            "Does not lie flat: must stretch {:.2} % (limit {:.1} %), seam drift {:.1} mm along the {} (limit {:.0} mm)",
+            m.rms_stretch * 100.0,
+            limits.rms_stretch * 100.0,
+            worst.drift_m * 1000.0,
+            worst.name,
+            limits.seam_drift_m * 1000.0
+        );
+        assert_eq!(sheet.notes[0], heading);
+        let all: String = sheet
+            .notes
+            .iter()
+            .chain(sheet.labels.iter().map(|l| &l.text))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+        assert!(!all.contains("developable"));
     }
 
     #[test]
