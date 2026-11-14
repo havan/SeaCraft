@@ -1387,6 +1387,129 @@ pub fn offsets_pdf(
     doc.finish()
 }
 
+/// The plywood the panels are cut from.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Stock {
+    pub length_m: f64,
+    pub width_m: f64,
+    /// How much each joined sheet overlaps the one before; 0 for butt joints.
+    pub scarf_m: f64,
+}
+
+impl Default for Stock {
+    fn default() -> Self {
+        Self {
+            length_m: 2.44,
+            width_m: 1.22,
+            scarf_m: 0.0,
+        }
+    }
+}
+
+/// How many sheets one panel takes, laid end to end along its length.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StockRow {
+    pub panel: String,
+    pub copies: usize,
+    /// Sheets for one copy; `None` when it could not be laid out.
+    pub sheets_each: Option<usize>,
+    /// Where each sheet's reach ends along the panel, from its aft end, metres.
+    pub joints_m: Vec<f64>,
+    pub note: Option<String>,
+}
+
+/// The pattern's extent: `(min x, min y, length, width)`.
+fn extent(panel: &FlatPanel) -> (f64, f64, f64, f64) {
+    let (x0, y0, x1, y1) = panel
+        .xy
+        .iter()
+        .fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |m, p| {
+            (m.0.min(p.0), m.1.min(p.1), m.2.max(p.0), m.3.max(p.1))
+        });
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
+/// Lays one panel along sheets of `stock` joined end to end, with no nesting: an upper bound
+/// on what it takes.
+pub fn lay_out(panel: &FlatPanel, stock: Stock) -> StockRow {
+    let (_, _, length, width) = extent(panel);
+    let mut row = StockRow {
+        panel: panel.found.name.clone(),
+        copies: panel.found.copies.count(),
+        sheets_each: None,
+        joints_m: Vec::new(),
+        note: None,
+    };
+    let reach = stock.length_m - stock.scarf_m.max(0.0);
+    if width > stock.width_m + 1e-9 {
+        row.note = Some(format!(
+            "wider than the stock ({} mm > {} mm): not laid out",
+            crate::units::millimetres(width),
+            crate::units::millimetres(stock.width_m)
+        ));
+        return row;
+    }
+    if reach <= 0.0 || !reach.is_finite() {
+        row.note = Some("the scarf is as long as the sheet: not laid out".into());
+        return row;
+    }
+    let mut end = stock.length_m;
+    let mut sheets = 1;
+    while end < length - 1e-9 {
+        row.joints_m.push(end);
+        end += reach;
+        sheets += 1;
+    }
+    row.sheets_each = Some(sheets);
+    row
+}
+
+/// The sheets of a laid-out panel drawn on its pattern for the eye: each sheet's outline and
+/// each joint.
+pub fn stock_paths(row: &StockRow, panel: &FlatPanel, stock: Stock) -> Vec<SheetPath> {
+    let Some(sheets) = row.sheets_each else {
+        return Vec::new();
+    };
+    let (x0, y0, _, _) = extent(panel);
+    let reference = |points: Vec<(f64, f64)>, closed: bool| SheetPath {
+        kind: PathKind::Reference,
+        points,
+        closed,
+    };
+    let mut out = Vec::new();
+    for k in 0..sheets {
+        let start = if k == 0 {
+            x0
+        } else {
+            x0 + row.joints_m[k - 1] - stock.scarf_m.max(0.0)
+        };
+        let (a, b) = (start, start + stock.length_m);
+        out.push(reference(
+            vec![
+                (a, y0),
+                (b, y0),
+                (b, y0 + stock.width_m),
+                (a, y0 + stock.width_m),
+            ],
+            true,
+        ));
+    }
+    for j in &row.joints_m {
+        out.push(reference(
+            vec![(x0 + j, y0), (x0 + j, y0 + stock.width_m)],
+            false,
+        ));
+    }
+    out
+}
+
+/// Sheets for every copy of every laid-out panel.
+pub fn total_sheets(rows: &[StockRow]) -> usize {
+    rows.iter()
+        .filter_map(|r| r.sheets_each.map(|s| s * r.copies))
+        .sum()
+}
+
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
 /// flared sides that are planar when `side_bow_m` is 0 and bowed outward amidships by it
 /// otherwise, a stern transom 0.40 m deep and a bow transom 0.50 m deep. Layers `Bottom` and
@@ -2134,6 +2257,71 @@ mod tests {
             offsets_csv(&[off]),
             "panel,along_mm,crossing,ordinate_mm\n\"Side, upper\",0,1,123\n"
         );
+    }
+
+    fn plank(length: f64, width: f64, copies: Copies) -> FlatPanel {
+        let lower = [(0.0, 0.0), (length, 0.0)];
+        let upper = [(0.0, width), (length, width)];
+        let (xy, t) = strip(&upper, &lower);
+        let mut p = flat_by_hand("Plank", xy, t);
+        p.found.copies = copies;
+        p
+    }
+
+    #[test]
+    fn a_panel_shorter_than_a_sheet_takes_one() {
+        let row = lay_out(&plank(2.0, 0.5, Copies::One), Stock::default());
+        assert_eq!(row.sheets_each, Some(1));
+        assert!(row.joints_m.is_empty());
+        assert_eq!(row.note, None);
+    }
+
+    /// Arithmetic: the first sheet reaches 2.44 m and each further one 2.44 m less the scarf.
+    #[test]
+    fn butt_and_scarf_counts() {
+        let butt = lay_out(&plank(5.0, 0.5, Copies::One), Stock::default());
+        assert_eq!(butt.sheets_each, Some(3));
+        assert_eq!(butt.joints_m.len(), 2);
+        assert!((butt.joints_m[0] - 2.44).abs() < 1e-12 && (butt.joints_m[1] - 4.88).abs() < 1e-12);
+        let scarfed = lay_out(
+            &plank(5.0, 0.5, Copies::One),
+            Stock {
+                scarf_m: 0.2,
+                ..Stock::default()
+            },
+        );
+        assert_eq!(scarfed.sheets_each, Some(3));
+        assert!((scarfed.joints_m[0] - 2.44).abs() < 1e-12);
+        assert!((scarfed.joints_m[1] - 4.68).abs() < 1e-12);
+        // Reference rectangles for three sheets and two joint lines.
+        let paths = stock_paths(&scarfed, &plank(5.0, 0.5, Copies::One), Stock::default());
+        assert_eq!(paths.len(), 5);
+        assert!(paths
+            .iter()
+            .all(|p| p.kind == crate::sheet::PathKind::Reference));
+    }
+
+    #[test]
+    fn a_panel_wider_than_the_stock_is_reported() {
+        let rows = [lay_out(&plank(2.0, 1.3, Copies::One), Stock::default())];
+        assert_eq!(rows[0].sheets_each, None);
+        assert_eq!(
+            rows[0].note.as_deref(),
+            Some("wider than the stock (1300 mm > 1220 mm): not laid out")
+        );
+        assert_eq!(total_sheets(&rows), 0);
+        assert!(stock_paths(&rows[0], &plank(2.0, 1.3, Copies::One), Stock::default()).is_empty());
+    }
+
+    #[test]
+    fn total_counts_copies() {
+        let rows = [
+            lay_out(&plank(2.0, 0.5, Copies::MirroredPair), Stock::default()),
+            lay_out(&plank(4.0, 0.5, Copies::One), Stock::default()),
+        ];
+        assert_eq!(rows[0].copies, 2);
+        assert_eq!(rows[1].sheets_each, Some(2));
+        assert_eq!(total_sheets(&rows), 4);
     }
 
     #[test]
