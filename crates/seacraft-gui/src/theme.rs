@@ -97,6 +97,10 @@ pub const WIREFRAME: Color32 = Color32::from_rgb(0x7f, 0x9a, 0xb5);
 pub const CONTROL_NET: Color32 = Color32::from_rgb(0xe8, 0x9d, 0x3a);
 /// Crease edges of the control net.
 pub const CREASE: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
+/// The control net and its creases while no point is selected: the same
+/// hues, quiet enough that the hull under them is what the eye reads.
+pub const CONTROL_NET_IDLE: Color32 = Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x66);
+pub const CREASE_IDLE: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x80);
 /// Control points.
 pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
 /// The picked control point and its outline.

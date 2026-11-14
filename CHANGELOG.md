@@ -58,6 +58,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - GUI menus: File > New holds the three ways to start a model (Design…, From an example…, Demo hull). The View
   menu is grouped under Show, Shading, Panels, Precision and Views, with the dock's tabs indented under the dock.
   Help > Keyboard and mouse lists what the keys and the mouse do.
+- GUI viewports: the control net and its creases are drawn dimmed until a control point is selected, so the hull
+  is what the eye reads when nothing is being edited.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is
