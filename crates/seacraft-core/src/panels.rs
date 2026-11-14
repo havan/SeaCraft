@@ -469,6 +469,406 @@ pub fn find_panels(
     (panels, refused)
 }
 
+/// When a panel is said not to lie flat. Provisional project judgement, not a published rule;
+/// `docs/oracles.md` says so.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Limits {
+    /// Largest seam drift, metres.
+    pub seam_drift_m: f64,
+    /// Largest RMS stretch, a fraction.
+    pub rms_stretch: f64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            seam_drift_m: 0.002,
+            rms_stretch: 0.001,
+        }
+    }
+}
+
+/// How one seam's flat length follows its 3D length.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SeamMeasure {
+    pub name: String,
+    /// Largest |flat − 3D| cumulative length at the station ticks and the far end, measured from
+    /// either end.
+    pub drift_m: f64,
+    pub length_3d_m: f64,
+    pub length_flat_m: f64,
+}
+
+/// How far two seams stitched together differ in flat length at the station ticks.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Mismatch {
+    pub a: String,
+    pub b: String,
+    /// The seam's name on panel `a`.
+    pub seam: String,
+    pub max_m: f64,
+}
+
+/// What was measured on one flat panel.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Measures {
+    pub seams: Vec<SeamMeasure>,
+    pub rms_stretch: f64,
+    pub max_stretch: f64,
+    /// Largest corner shift between this subdivision level and the next (the one before at the
+    /// cap), after the best rigid fit; `None` when it could not be paired.
+    pub level_shift_m: Option<f64>,
+    /// The edge-joining development's gap ([`crate::develop::unfold`]), a second, independent
+    /// measure.
+    pub edge_join_gap_m: f64,
+    pub area_3d_m2: f64,
+    pub area_flat_m2: f64,
+}
+
+impl Measures {
+    /// The seam with the largest drift.
+    pub fn worst_seam(&self) -> Option<&SeamMeasure> {
+        self.seams
+            .iter()
+            .max_by(|a, b| a.drift_m.total_cmp(&b.drift_m))
+    }
+
+    pub fn max_seam_drift_m(&self) -> f64 {
+        self.worst_seam().map_or(0.0, |s| s.drift_m)
+    }
+}
+
+/// A panel laid flat and measured.
+#[derive(Debug, Clone)]
+pub struct FlatPanel {
+    pub found: FoundPanel,
+    /// One point per `found.verts`, metres, oriented by [`orient`].
+    pub xy: Vec<(f64, f64)>,
+    pub measures: Measures,
+    pub lies_flat: bool,
+}
+
+/// The largest difference between two cumulative lengths along one seam, at its ticks, measured
+/// from the first tick and again from the last. `s3d` and `sflat` start at 0 and end at the
+/// seam's end.
+pub(crate) fn drift_from_both_ends(s3d: &[f64], sflat: &[f64]) -> f64 {
+    let (Some(&l3), Some(&lf)) = (s3d.last(), sflat.last()) else {
+        return 0.0;
+    };
+    s3d.iter()
+        .zip(sflat)
+        .map(|(&a, &b)| (b - a).abs().max(((lf - b) - (l3 - a)).abs()))
+        .fold(0.0, f64::max)
+}
+
+/// Cumulative 3D and flat lengths along `ids` (local vertices) at each station crossing, with 0
+/// first and the seam's end last.
+fn ticks(
+    verts: &[Vec3],
+    xy: &[(f64, f64)],
+    ids: &[usize],
+    stations: &[f64],
+) -> (Vec<f64>, Vec<f64>) {
+    let (mut t3, mut tf) = (vec![0.0], vec![0.0]);
+    let (mut s3, mut sf) = (0.0, 0.0);
+    for w in ids.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let l3 = verts[a].dist(verts[b]);
+        let lf = ((xy[b].0 - xy[a].0).powi(2) + (xy[b].1 - xy[a].1).powi(2)).sqrt();
+        let (xa, xb) = (verts[a].x, verts[b].x);
+        if xa != xb {
+            let mut hits: Vec<f64> = stations
+                .iter()
+                .map(|&x| (x - xa) / (xb - xa))
+                .filter(|&t| t > 0.0 && t <= 1.0)
+                .collect();
+            hits.sort_by(f64::total_cmp);
+            for t in hits {
+                t3.push(s3 + t * l3);
+                tf.push(sf + t * lf);
+            }
+        }
+        s3 += l3;
+        sf += lf;
+    }
+    if t3.last() != Some(&s3) {
+        t3.push(s3);
+        tf.push(sf);
+    }
+    (t3, tf)
+}
+
+fn local_ids(found: &FoundPanel, seam: &[usize]) -> Option<Vec<usize>> {
+    let index: HashMap<usize, usize> = found
+        .mesh_ids
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| m != usize::MAX)
+        .map(|(i, &m)| (m, i))
+        .collect();
+    seam.iter().map(|m| index.get(m).copied()).collect()
+}
+
+/// Turns a flat pattern so the builder reads it: outside face up (it already is: [`flatten`]
+/// keeps the triangles' winding), long axis along x, forward to the right (flat x grows with
+/// model x; for a panel across the hull, such as a transom, up is up), lowest corner at the
+/// origin.
+///
+/// [`flatten`]: crate::flatten::flatten
+pub fn orient(found: &FoundPanel, xy: &mut [(f64, f64)]) {
+    let n = xy.len() as f64;
+    if xy.is_empty() {
+        return;
+    }
+    let (mx, my) = xy
+        .iter()
+        .fold((0.0, 0.0), |s, p| (s.0 + p.0 / n, s.1 + p.1 / n));
+    let (mut cxx, mut cxy, mut cyy) = (0.0, 0.0, 0.0);
+    for p in xy.iter() {
+        let (dx, dy) = (p.0 - mx, p.1 - my);
+        cxx += dx * dx;
+        cxy += dx * dy;
+        cyy += dy * dy;
+    }
+    let th = 0.5 * (2.0 * cxy).atan2(cxx - cyy);
+    let (c, s) = (th.cos(), th.sin());
+    for p in xy.iter_mut() {
+        let (dx, dy) = (p.0 - mx, p.1 - my);
+        *p = (c * dx + s * dy, -s * dx + c * dy);
+    }
+    let m3 = found.verts.iter().fold(Vec3::ZERO, |s, v| s + *v) / n;
+    let along: f64 = xy
+        .iter()
+        .zip(&found.verts)
+        .map(|(p, v)| p.0 * (v.x - m3.x))
+        .sum();
+    let span = found
+        .verts
+        .iter()
+        .map(|v| (v.x - m3.x).abs())
+        .fold(0.0, f64::max);
+    let turn = if span > 1e-6 {
+        along < 0.0
+    } else {
+        let up: f64 = xy
+            .iter()
+            .zip(&found.verts)
+            .map(|(p, v)| p.1 * (v.z - m3.z))
+            .sum();
+        up < 0.0
+    };
+    if turn {
+        for p in xy.iter_mut() {
+            *p = (-p.0, -p.1);
+        }
+    }
+    let (x0, y0) = xy
+        .iter()
+        .fold((f64::MAX, f64::MAX), |m, p| (m.0.min(p.0), m.1.min(p.1)));
+    for p in xy.iter_mut() {
+        *p = (p.0 - x0, p.1 - y0);
+    }
+}
+
+fn flat_pattern(found: &FoundPanel) -> Result<Vec<(f64, f64)>, FlattenError> {
+    let mut xy = crate::flatten::flatten(&found.verts, &found.tris)?.xy;
+    orient(found, &mut xy);
+    Ok(xy)
+}
+
+/// Flattens and measures one panel, without the level shift (which needs the surface).
+pub(crate) fn measure_found(
+    found: FoundPanel,
+    stations: &[f64],
+    limits: Limits,
+) -> Result<FlatPanel, Refusal> {
+    let xy = flat_pattern(&found).map_err(|e| Refusal {
+        panel: found.name.clone(),
+        reason: e.to_string(),
+    })?;
+    let st = crate::flatten::strain(&found.verts, &found.tris, &xy);
+    let seams = found
+        .seams
+        .iter()
+        .map(|seam| {
+            let ids = local_ids(&found, &seam.verts).unwrap_or_default();
+            let (t3, tf) = ticks(&found.verts, &xy, &ids, stations);
+            SeamMeasure {
+                name: seam.name(),
+                drift_m: drift_from_both_ends(&t3, &tf),
+                length_3d_m: t3.last().copied().unwrap_or(0.0),
+                length_flat_m: tf.last().copied().unwrap_or(0.0),
+            }
+        })
+        .collect();
+    let area_3d_m2 = found
+        .tris
+        .iter()
+        .map(|t| {
+            let v = &found.verts;
+            0.5 * (v[t[1]] - v[t[0]]).cross(v[t[2]] - v[t[0]]).length()
+        })
+        .sum();
+    let area_flat_m2 = found
+        .tris
+        .iter()
+        .map(|t| crate::flatten::signed_area(xy[t[0]], xy[t[1]], xy[t[2]]))
+        .sum();
+    let measures = Measures {
+        seams,
+        rms_stretch: st.rms,
+        max_stretch: st.max,
+        level_shift_m: None,
+        edge_join_gap_m: crate::develop::unfold(&found.verts, &found.tris).max_gap_m,
+        area_3d_m2,
+        area_flat_m2,
+    };
+    let lies_flat =
+        measures.max_seam_drift_m() <= limits.seam_drift_m && st.rms <= limits.rms_stretch;
+    Ok(FlatPanel {
+        found,
+        xy,
+        measures,
+        lies_flat,
+    })
+}
+
+/// The 3D and flat position of each seam end of a panel.
+fn corners(found: &FoundPanel, xy: &[(f64, f64)]) -> Vec<(Vec3, (f64, f64))> {
+    let mut out: Vec<(Vec3, (f64, f64))> = Vec::new();
+    for seam in &found.seams {
+        for m in [seam.verts.first(), seam.verts.last()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(i) = found.local(*m) {
+                if !out.iter().any(|(p, _)| p.dist(found.verts[i]) < 1e-9) {
+                    out.push((found.verts[i], xy[i]));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The largest distance between matched points after the best rigid fit (no reflection) of `b`
+/// onto `a`.
+pub(crate) fn rigid_misfit(a: &[(f64, f64)], b: &[(f64, f64)]) -> f64 {
+    let n = a.len() as f64;
+    if a.is_empty() {
+        return 0.0;
+    }
+    let ca = a
+        .iter()
+        .fold((0.0, 0.0), |s, p| (s.0 + p.0 / n, s.1 + p.1 / n));
+    let cb = b
+        .iter()
+        .fold((0.0, 0.0), |s, p| (s.0 + p.0 / n, s.1 + p.1 / n));
+    let (mut sxx, mut sxy) = (0.0, 0.0);
+    for (p, q) in a.iter().zip(b) {
+        let (px, py) = (p.0 - ca.0, p.1 - ca.1);
+        let (qx, qy) = (q.0 - cb.0, q.1 - cb.1);
+        sxx += qx * px + qy * py;
+        sxy += qx * py - qy * px;
+    }
+    let th = sxy.atan2(sxx);
+    let (c, s) = (th.cos(), th.sin());
+    a.iter()
+        .zip(b)
+        .map(|(p, q)| {
+            let (qx, qy) = (q.0 - cb.0, q.1 - cb.1);
+            let (rx, ry) = (c * qx - s * qy + ca.0, s * qx + c * qy + ca.1);
+            ((rx - p.0).powi(2) + (ry - p.1).powi(2)).sqrt()
+        })
+        .fold(0.0, f64::max)
+}
+
+/// Finds, flattens and measures the panels of `layers`. `stations` are the model `x` of the
+/// station ticks. Returns the panels, every pair of stitched seams compared, and the panels that
+/// could not be made.
+pub fn measure_panels(
+    surface: &Surface,
+    subdivision: SubdivisionOptions,
+    layers: &[usize],
+    stations: &[f64],
+    limits: Limits,
+) -> (Vec<FlatPanel>, Vec<Mismatch>, Vec<Refusal>) {
+    let (found, mut refused) = find_panels(surface, subdivision, layers);
+    let mut panels = Vec::new();
+    for f in found {
+        match measure_found(f, stations, limits) {
+            Ok(p) => panels.push(p),
+            Err(r) => refused.push(r),
+        }
+    }
+
+    // Level shift: the same panels one level finer (one coarser at the cap).
+    let level = subdivision.level.min(6);
+    let other = SubdivisionOptions {
+        level: if level >= 6 { level - 1 } else { level + 1 },
+        ..subdivision
+    };
+    let (other_found, _) = find_panels(surface, other, layers);
+    for p in &mut panels {
+        let Some(q) = other_found.iter().find(|q| q.name == p.found.name) else {
+            continue;
+        };
+        let Ok(qxy) = flat_pattern(q) else {
+            continue;
+        };
+        let here = corners(&p.found, &p.xy);
+        let there = corners(q, &qxy);
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for (p3, pf) in &here {
+            if let Some((_, qf)) = there.iter().find(|(q3, _)| q3.dist(*p3) < 1e-3) {
+                a.push(*pf);
+                b.push(*qf);
+            }
+        }
+        if a.len() >= 2 {
+            p.measures.level_shift_m = Some(rigid_misfit(&a, &b));
+        }
+    }
+
+    // Seams stitched together: the same half-mesh vertices, from two panels.
+    let mut mismatches = Vec::new();
+    for i in 0..panels.len() {
+        for j in i + 1..panels.len() {
+            let (pa, pb) = (&panels[i], &panels[j]);
+            for sa in &pa.found.seams {
+                if sa.mate != Mate::Panel(pb.found.name.clone()) {
+                    continue;
+                }
+                let mut rev = sa.verts.clone();
+                rev.reverse();
+                if !pb
+                    .found
+                    .seams
+                    .iter()
+                    .any(|sb| sb.verts == sa.verts || sb.verts == rev)
+                {
+                    continue;
+                }
+                let (Some(ia), Some(ib)) = (
+                    local_ids(&pa.found, &sa.verts),
+                    local_ids(&pb.found, &sa.verts),
+                ) else {
+                    continue;
+                };
+                let (_, fa) = ticks(&pa.found.verts, &pa.xy, &ia, stations);
+                let (_, fb) = ticks(&pb.found.verts, &pb.xy, &ib, stations);
+                mismatches.push(Mismatch {
+                    a: pa.found.name.clone(),
+                    b: pb.found.name.clone(),
+                    seam: sa.name(),
+                    max_m: drift_from_both_ends(&fa, &fb),
+                });
+            }
+        }
+    }
+    (panels, mismatches, refused)
+}
+
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
 /// flared sides that are planar when `side_bow_m` is 0 and bowed outward amidships by it
 /// otherwise, a stern transom 0.40 m deep and a bow transom 0.50 m deep. Layers `Bottom` and
@@ -737,6 +1137,163 @@ mod tests {
         let (ps, _) = find_panels(&s, SubdivisionOptions::default(), &[1]);
         assert_eq!(names(&ps), ["Side"]);
         assert_eq!(ps[0].seams[1].mate, Mate::Panel("Transoms 1".into()));
+    }
+
+    const STATIONS: [f64; 4] = [0.3, 0.9, 1.5, 2.1];
+
+    fn measured(s: &Surface, level: u8) -> (Vec<FlatPanel>, Vec<Mismatch>, Vec<Refusal>) {
+        let opts = SubdivisionOptions {
+            level,
+            ..SubdivisionOptions::default()
+        };
+        measure_panels(s, opts, &all(s), &STATIONS, Limits::default())
+    }
+
+    fn flat<'a>(ps: &'a [FlatPanel], name: &str) -> &'a FlatPanel {
+        ps.iter().find(|p| p.found.name == name).expect(name)
+    }
+
+    /// Closed form: every panel of the flat pram is planar, so it lies flat with no stretch and
+    /// every seam keeps its length.
+    #[test]
+    fn a_flat_pram_lies_flat_with_true_seams() {
+        let s = pram_fixture(0.0, 0.0);
+        let (ps, _, refused) = measured(&s, 3);
+        assert!(refused.is_empty(), "{refused:?}");
+        assert_eq!(ps.len(), 4);
+        for p in &ps {
+            let m = &p.measures;
+            assert!(p.lies_flat, "{}: {m:?}", p.found.name);
+            assert!(m.rms_stretch < 1e-9, "{}: {m:?}", p.found.name);
+            for seam in &m.seams {
+                assert!(seam.drift_m < 1e-6, "{}: {seam:?}", p.found.name);
+            }
+            assert!(
+                (m.area_flat_m2 - m.area_3d_m2).abs() < 1e-9,
+                "{}: {m:?}",
+                p.found.name
+            );
+        }
+    }
+
+    /// Arithmetic: drift 3 mm reached at the first tick and kept, or reached only at the end,
+    /// is 3 mm from whichever end it is measured.
+    #[test]
+    fn drift_is_measured_from_both_ends() {
+        let a = drift_from_both_ends(&[0.0, 1.0, 2.0], &[0.0, 1.003, 2.003]);
+        let b = drift_from_both_ends(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.003]);
+        assert!((a - 0.003).abs() < 1e-12, "{a}");
+        assert!((b - 0.003).abs() < 1e-12, "{b}");
+        // The same seams measured from the other end.
+        let a2 = drift_from_both_ends(&[0.0, 1.0, 2.0], &[0.0, 1.0, 2.003]);
+        let b2 = drift_from_both_ends(&[0.0, 1.0, 2.0], &[0.0, 1.003, 2.003]);
+        assert!((a2 - a).abs() < 1e-12 && (b2 - b).abs() < 1e-12);
+        // Drift in the middle that comes back by the end still counts.
+        let c = drift_from_both_ends(&[0.0, 1.0, 2.0], &[0.0, 1.004, 2.0]);
+        assert!((c - 0.004).abs() < 1e-12, "{c}");
+    }
+
+    #[test]
+    fn mating_seams_are_compared() {
+        let s = pram_fixture(0.0, 0.0);
+        let (_, mismatches, _) = measured(&s, 3);
+        let chine = mismatches
+            .iter()
+            .find(|m| (m.a == "Bottom" && m.b == "Side") || (m.a == "Side" && m.b == "Bottom"))
+            .unwrap_or_else(|| panic!("{mismatches:?}"));
+        assert!(chine.max_m < 1e-6, "{chine:?}");
+        // Every seam to a found panel is compared once: 2 per transom + the chine.
+        assert_eq!(mismatches.len(), 5, "{mismatches:?}");
+    }
+
+    /// Convergence, stated as such: on a curved side the outline moves less between finer levels.
+    #[test]
+    fn a_curved_side_reports_its_level_shift() {
+        let s = pram_fixture(0.0, 0.08);
+        let coarse = flat(&measured(&s, 1).0, "Side").measures.level_shift_m;
+        let fine = flat(&measured(&s, 3).0, "Side").measures.level_shift_m;
+        let (coarse, fine) = (coarse.expect("measured"), fine.expect("measured"));
+        assert!(coarse.is_finite() && fine.is_finite());
+        assert!(fine < coarse, "level 3→4 {fine} vs level 1→2 {coarse}");
+    }
+
+    #[test]
+    fn the_edge_join_gap_is_kept() {
+        let s = pram_fixture(0.0, 0.08);
+        let (ps, _, _) = measured(&s, 2);
+        let side = flat(&ps, "Side");
+        let gap = crate::develop::unfold(&side.found.verts, &side.found.tris).max_gap_m;
+        assert_eq!(side.measures.edge_join_gap_m, gap);
+        assert!(gap > 0.0);
+    }
+
+    #[test]
+    fn oriented_forward_right_outside_up() {
+        let s = pram_fixture(0.0, 0.0);
+        let (ps, _, _) = measured(&s, 3);
+        let side = flat(&ps, "Side");
+        for t in &side.found.tris {
+            assert!(crate::flatten::signed_area(side.xy[t[0]], side.xy[t[1]], side.xy[t[2]]) > 0.0);
+        }
+        let right = (0..side.xy.len())
+            .max_by(|&a, &b| side.xy[a].0.total_cmp(&side.xy[b].0))
+            .unwrap();
+        let fore = side
+            .found
+            .verts
+            .iter()
+            .map(|v| v.x)
+            .fold(f64::MIN, f64::max);
+        assert!((side.found.verts[right].x - fore).abs() < 1e-9);
+        // Long axis along x.
+        let span = |f: fn(&(f64, f64)) -> f64| {
+            let v: Vec<f64> = side.xy.iter().map(f).collect();
+            v.iter().cloned().fold(f64::MIN, f64::max) - v.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        assert!(span(|p| p.0) > 2.0 * span(|p| p.1));
+    }
+
+    #[test]
+    fn limits_decide_lies_flat() {
+        let (v, t) = crate::flatten::shapes::cap(40f64.to_radians(), 6, 24);
+        let loops = boundary_loops(&t);
+        let mut ring = loops[0].clone();
+        ring.push(ring[0]);
+        let found = FoundPanel {
+            name: "Cap".into(),
+            layer: 0,
+            copies: Copies::One,
+            mesh_ids: (0..v.len()).collect(),
+            verts: v,
+            tris: t,
+            seams: vec![Seam {
+                mate: Mate::Open,
+                verts: ring,
+            }],
+        };
+        let wide = Limits {
+            seam_drift_m: 1e3,
+            rms_stretch: 1.0,
+        };
+        let r = measure_found(found.clone(), &[0.0], wide)
+            .expect("flattens")
+            .measures
+            .rms_stretch;
+        assert!(r > 0.001);
+        let tight = Limits {
+            rms_stretch: 0.99 * r,
+            ..wide
+        };
+        let loose = Limits {
+            rms_stretch: 1.01 * r,
+            ..wide
+        };
+        assert!(
+            !measure_found(found.clone(), &[0.0], tight)
+                .unwrap()
+                .lies_flat
+        );
+        assert!(measure_found(found, &[0.0], loose).unwrap().lies_flat);
     }
 
     #[test]
