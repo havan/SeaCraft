@@ -3500,6 +3500,15 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
                 .map_or_else(|| "-".to_owned(), |n| n.to_string())
         );
     }
+    for r in &set.rows {
+        if let Some(mm) = r.unsettled_mm {
+            println!(
+                "{}: {}",
+                r.panel,
+                panels::unsettled_note(mm / 1000.0).to_lowercase()
+            );
+        }
+    }
     for r in &set.refused {
         println!("{:<16} refused: {}", r.panel, r.reason);
     }

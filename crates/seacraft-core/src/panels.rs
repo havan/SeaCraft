@@ -578,6 +578,9 @@ pub struct Measures {
     pub edge_join_gap_m: f64,
     pub area_3d_m2: f64,
     pub area_flat_m2: f64,
+    /// `None` when the flattening settled; otherwise how far its points may still have had to
+    /// move ([`crate::flatten::Flat::unsettled_m`]).
+    pub unsettled_m: Option<f64>,
 }
 
 impl Measures {
@@ -591,6 +594,14 @@ impl Measures {
     pub fn max_seam_drift_m(&self) -> f64 {
         self.worst_seam().map_or(0.0, |s| s.drift_m)
     }
+}
+
+/// Whether a panel lies flat within `limits`: its seams and stretch inside them, and its
+/// flattening settled (an unsettled pattern's numbers are not final).
+pub fn lies_flat(measures: &Measures, limits: Limits) -> bool {
+    measures.max_seam_drift_m() <= limits.seam_drift_m
+        && measures.rms_stretch <= limits.rms_stretch
+        && measures.unsettled_m.is_none()
 }
 
 /// A panel laid flat and measured.
@@ -714,10 +725,10 @@ pub fn orient(found: &FoundPanel, xy: &mut [(f64, f64)]) {
     }
 }
 
-fn flat_pattern(found: &FoundPanel) -> Result<Vec<(f64, f64)>, FlattenError> {
-    let mut xy = crate::flatten::flatten(&found.verts, &found.tris)?.xy;
-    orient(found, &mut xy);
-    Ok(xy)
+fn flat_pattern(found: &FoundPanel) -> Result<crate::flatten::Flat, FlattenError> {
+    let mut flat = crate::flatten::flatten(&found.verts, &found.tris)?;
+    orient(found, &mut flat.xy);
+    Ok(flat)
 }
 
 /// Flattens and measures one panel, without the level shift (which needs the surface).
@@ -726,10 +737,11 @@ pub(crate) fn measure_found(
     stations: &[f64],
     limits: Limits,
 ) -> Result<FlatPanel, Refusal> {
-    let xy = flat_pattern(&found).map_err(|e| Refusal {
+    let flat = flat_pattern(&found).map_err(|e| Refusal {
         panel: found.name.clone(),
         reason: e.to_string(),
     })?;
+    let xy = flat.xy;
     let st = crate::flatten::strain(&found.verts, &found.tris, &xy);
     let mut seams = Vec::new();
     for seam in &found.seams {
@@ -771,14 +783,13 @@ pub(crate) fn measure_found(
         edge_join_gap_m: crate::develop::unfold(&found.verts, &found.tris).max_gap_m,
         area_3d_m2,
         area_flat_m2,
+        unsettled_m: flat.unsettled_m,
     };
-    let lies_flat =
-        measures.max_seam_drift_m() <= limits.seam_drift_m && st.rms <= limits.rms_stretch;
     Ok(FlatPanel {
+        lies_flat: lies_flat(&measures, limits),
         found,
         xy,
         measures,
-        lies_flat,
     })
 }
 
@@ -862,7 +873,7 @@ pub fn measure_panels(
         let Some(q) = other_found.iter().find(|q| q.name == p.found.name) else {
             continue;
         };
-        let Ok(qxy) = flat_pattern(q) else {
+        let Ok(qxy) = flat_pattern(q).map(|f| f.xy) else {
             continue;
         };
         let here = corners(&p.found, &p.xy);
@@ -1060,14 +1071,32 @@ pub fn failing_heading(measures: &Measures, limits: Limits) -> String {
     let (drift, seam) = measures
         .worst_seam()
         .map_or((0.0, String::from("edge")), |s| (s.drift_m, s.name.clone()));
-    format!(
+    let mut heading = format!(
         "Does not lie flat: must stretch {:.2} % (limit {:.1} %), seam drift {:.1} mm along the {} (limit {:.0} mm)",
         measures.rms_stretch * 100.0,
         limits.rms_stretch * 100.0,
         drift * 1000.0,
         seam,
         limits.seam_drift_m * 1000.0
-    )
+    );
+    if measures.unsettled_m.is_some() {
+        heading.push_str("; the flattening stopped at its limit before it settled");
+    }
+    heading
+}
+
+/// What an unsettled flattening may still be off by, as a sheet note.
+pub fn unsettled_note(unsettled_m: f64) -> String {
+    if unsettled_m.is_finite() {
+        format!(
+            "Flattening stopped at its iteration limit: points may still move about {:.2} mm",
+            unsettled_m * 1000.0
+        )
+    } else {
+        "Flattening stopped at its iteration limit: how far points may still move could not be \
+         estimated"
+            .into()
+    }
 }
 
 /// The full-size pattern of one panel: its outline to cut, the station lines and the seam ticks
@@ -1215,6 +1244,9 @@ pub fn panel_sheet(
     let m = &panel.measures;
     if !panel.lies_flat {
         sheet.notes.push(failing_heading(m, limits));
+    }
+    if let Some(d) = m.unsettled_m {
+        sheet.notes.push(unsettled_note(d));
     }
     sheet.notes.push(format!(
         "Stretch: {:.3} % RMS, {:.3} % largest (limit {:.1} % RMS)",
@@ -1573,6 +1605,8 @@ pub struct PanelRow {
     pub edge_join_gap_mm: f64,
     pub area_m2: f64,
     pub sheets_each: Option<usize>,
+    /// `None` when the flattening settled; otherwise how far its points may still move, mm.
+    pub unsettled_mm: Option<f64>,
 }
 
 /// Every panel of a hull: patterns, measures, offsets and the plywood they take.
@@ -1719,6 +1753,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             edge_join_gap_mm: m.edge_join_gap_m * 1000.0,
             area_m2: m.area_flat_m2,
             sheets_each: row.sheets_each,
+            unsettled_mm: m.unsettled_m.map(|d| d * 1000.0),
         });
         set.offsets.push(panel_offsets(p, opts.offset_spacing_m));
         set.stock.push(row);
@@ -2422,6 +2457,36 @@ mod tests {
         assert!(!all.contains("developable"));
     }
 
+    /// A pattern the flattening could not settle is not judged to lie flat, and its sheet and
+    /// table row say how far it may still move.
+    #[test]
+    fn an_unsettled_pattern_is_noted_and_does_not_lie_flat() {
+        let mut panel = flat_by_hand(
+            "Plank",
+            vec![(0.0, 0.0), (1.0, 0.0), (1.0, 0.2), (0.0, 0.2)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let limits = Limits::default();
+        assert!(lies_flat(&panel.measures, limits));
+        panel.measures.unsettled_m = Some(0.0005);
+        assert!(!lies_flat(&panel.measures, limits));
+        panel.lies_flat = false;
+        let sheet = panel_sheet(&panel, &[], limits, false);
+        assert!(
+            sheet.notes[0].contains("the flattening stopped at its limit before it settled"),
+            "{:?}",
+            sheet.notes
+        );
+        assert!(
+            sheet.notes.iter().any(|n| {
+                n
+                == "Flattening stopped at its iteration limit: points may still move about 0.50 mm"
+            }),
+            "{:?}",
+            sheet.notes
+        );
+    }
+
     /// A flat panel made directly from its pattern, for the tests that only read the outline.
     fn flat_by_hand(name: &str, xy: Vec<(f64, f64)>, tris: Vec<[usize; 3]>) -> FlatPanel {
         let verts: Vec<Vec3> = xy.iter().map(|p| Vec3::new(p.0, p.1, 0.0)).collect();
@@ -2445,6 +2510,7 @@ mod tests {
                 edge_join_gap_m: 0.0,
                 area_3d_m2: 0.0,
                 area_flat_m2: 0.0,
+                unsettled_m: None,
             },
             lies_flat: true,
         }
@@ -2766,6 +2832,28 @@ mod tests {
             let (ps, _, refused) = measured(&s, 3);
             assert!(refused.is_empty(), "deadrise {d}, bow {b}: {refused:?}");
             assert_eq!(ps.len(), 4);
+        }
+    }
+
+    /// A planar panel read back from a file is planar to the file's rounding: the loop must
+    /// see that it has stopped moving, not run to its limit.
+    #[test]
+    fn a_planar_panel_read_back_from_its_file_settles_at_once() {
+        let s = crate::fef::parse(&crate::fef::write(&pram_fixture(0.0, 0.0))).expect("reads");
+        let opts = SubdivisionOptions {
+            level: 3,
+            ..SubdivisionOptions::default()
+        };
+        let (ps, _) = find_panels(&s, opts, &all(&s));
+        for p in &ps {
+            let f = crate::flatten::flatten(&p.verts, &p.tris).expect("flattens");
+            assert!(
+                f.unsettled_m.is_none() && f.iterations < 50,
+                "{}: {} iterations, {:?}",
+                p.name,
+                f.iterations,
+                f.unsettled_m
+            );
         }
     }
 

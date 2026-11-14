@@ -910,8 +910,22 @@ Refusals, by construction: `a_ring_is_not_a_disc` (two edge loops), `a_fold_is_r
 vertex of the first turn), `pieces_of_one_straight_edge_do_not_cross` (two pieces of one line with orientations of
 $\pm 9 \times 10^{-19}$, from the pram's transom read back from its file, are apart).
 
+When to stop, a numerical judgement, not an oracle: the local/global loop converges linearly, so once the largest
+step shrinks by a steady factor $\rho$ per iteration (measured over 10 iterations) about $\text{step} \cdot \rho /
+(1 - \rho)$ is left to move. The loop stops when that is under $10^{-6}$ of the mesh's size (0.01 mm on a 10 m
+panel) or a step is under $10^{-10}$ of it (rounding), and a pattern stopped by the 10 000-iteration limit carries
+the estimate, is not judged to lie flat and says so on its sheet. Measured (release build): the demo hull's
+Topsides, which stopped unsettled at the earlier 1000-iteration limit 2.9 mm from the same mesh renumbered,
+settles in about 3500 iterations within 0.016 mm of it; the planar panels of the pram read back from its file
+settle at once instead of running to the limit.
+- `the_iteration_limit_is_reported_not_hidden`: a cap stopped after 3 iterations reports how far it is from
+  settled; with the full limit it settles.
+- `crates/seacraft-core/src/panels.rs::a_planar_panel_read_back_from_its_file_settles_at_once`: every panel of the
+  flat pram read back from its `.fef` settles in under 50 iterations.
+
 Internal consistency, not an oracle: `the_result_does_not_depend_on_face_order_or_placement` (faces scrambled and
-the mesh turned and moved: outlines agree after the best rigid fit to $10^{-9}$; measured $3.3 \times 10^{-11}$).
+the mesh turned and moved: outlines agree after the best rigid fit within twice the settling tolerance,
+$2 \times 10^{-6}$ of the mesh's size; measured $1.3 \times 10^{-6}$ m on the 2.2 m mesh).
 
 ### Provenance
 The method was read in the paper itself (2026-11-14); the closed forms were worked by hand for these tests. Two

@@ -22,9 +22,19 @@ use std::collections::HashMap;
 
 use crate::math::Vec3;
 
-/// Local/global iterations at most; the loop stops sooner when the energy changes by under
-/// 1e-10 of itself.
-const MAX_ITERATIONS: usize = 1000;
+/// Local/global iterations at most. The loop stops sooner once it has settled (see
+/// [`SETTLED`]); a pattern stopped by this limit says how far it may still be from settled.
+const MAX_ITERATIONS: usize = 10_000;
+
+/// Settled: the points still to move, estimated from how fast the steps shrink, under this
+/// share of the mesh's size (0.01 mm on a 10 m panel), or a step under [`STILL`] of it.
+/// The local/global loop converges linearly: once the largest step shrinks by a steady factor
+/// `ρ` per iteration, what is left to move is about `step · ρ / (1 − ρ)`.
+const SETTLED: f64 = 1e-6;
+/// A step this small (a share of the mesh's size) is rounding: the loop has stopped moving.
+const STILL: f64 = 1e-10;
+/// Iterations over which the shrink factor `ρ` is measured.
+const RATE_SPAN: usize = 10;
 
 /// A sparse symmetric matrix stored by rows, both triangles kept.
 #[derive(Debug, Clone)]
@@ -388,6 +398,10 @@ pub struct Flat {
     pub xy: Vec<(f64, f64)>,
     /// Local/global iterations run.
     pub iterations: usize,
+    /// `None` when the iteration settled; otherwise how far, in metres, the pattern's points may
+    /// still have had to move when the iteration limit stopped it (infinite when that could not
+    /// be estimated).
+    pub unsettled_m: Option<f64>,
 }
 
 /// Twice-signed area halved: positive when `a, b, c` run anticlockwise.
@@ -410,6 +424,15 @@ fn isometric_frame(a: Vec3, b: Vec3, c: Vec3) -> [(f64, f64); 3] {
 /// Flattens a cleaned triangle mesh with one boundary loop, keeping every triangle as close to
 /// its true shape as least squares allows. See the module header.
 pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError> {
+    flatten_capped(verts, tris, MAX_ITERATIONS)
+}
+
+/// [`flatten`] with at most `max_iterations` local/global iterations.
+pub(crate) fn flatten_capped(
+    verts: &[Vec3],
+    tris: &[[usize; 3]],
+    max_iterations: usize,
+) -> Result<Flat, FlattenError> {
     if tris.is_empty() || verts.is_empty() {
         return Err(FlattenError::Empty);
     }
@@ -545,9 +568,25 @@ pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError
     let mut bx = vec![0.0; n - 1];
     let mut by = vec![0.0; n - 1];
     let factor = Cholesky::factor(&a).ok_or(FlattenError::Unsolvable)?;
-    let mut prev = f64::INFINITY;
+    let size = {
+        let (lo, hi) = verts.iter().fold(
+            (
+                Vec3::new(f64::MAX, f64::MAX, f64::MAX),
+                Vec3::new(f64::MIN, f64::MIN, f64::MIN),
+            ),
+            |(lo, hi), p| {
+                (
+                    Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z)),
+                    Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z)),
+                )
+            },
+        );
+        lo.dist(hi)
+    };
+    let mut steps: Vec<f64> = Vec::new();
+    let mut unsettled_m = None;
     let mut iterations = 0;
-    for it in 0..MAX_ITERATIONS {
+    for it in 0..max_iterations {
         iterations = it + 1;
         // Local step: the rotation closest to each triangle's map, from the cross-covariance
         // S = Σ w (u_i − u_j)(x_i − x_j)ᵀ; for 2 × 2 the closest rotation has angle
@@ -598,16 +637,30 @@ pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError
         }
         let sx = factor.solve(&bx);
         let sy = factor.solve(&by);
+        let mut step: f64 = 0.0;
         for (v, p) in u.iter_mut().enumerate() {
             if let Some(i) = unknown(v) {
+                step = step.max((sx[i] - p.0).hypot(sy[i] - p.1));
                 *p = (sx[i], sy[i]);
             }
         }
-        let e = energy(&u, &rot);
-        if e <= 1e-24 * scale || (prev.is_finite() && (prev - e).abs() <= 1e-10 * prev) {
+        steps.push(step);
+        // What is left to move, from the shrink factor over the last RATE_SPAN steps; infinite
+        // while the steps are not shrinking.
+        let left = match steps.len().checked_sub(RATE_SPAN + 1).map(|k| steps[k]) {
+            Some(before) if before > 0.0 && step < before => {
+                let rho = (step / before).powf(1.0 / RATE_SPAN as f64);
+                step * rho / (1.0 - rho)
+            }
+            _ => f64::INFINITY,
+        };
+        let settled =
+            step <= STILL * size || left <= SETTLED * size || energy(&u, &rot) <= 1e-24 * scale;
+        if settled {
+            unsettled_m = None;
             break;
         }
-        prev = e;
+        unsettled_m = Some(left);
     }
 
     // Outside up: the pattern is reflected when most triangles came out clockwise.
@@ -619,7 +672,11 @@ pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError
         u.iter_mut().for_each(|p| p.1 = -p.1);
     }
     check_flat(tris, &u)?;
-    Ok(Flat { xy: u, iterations })
+    Ok(Flat {
+        xy: u,
+        iterations,
+        unsettled_m,
+    })
 }
 
 /// Refuses a flat pattern with a triangle turned over or an outline that crosses itself.
@@ -916,11 +973,33 @@ mod tests {
             .collect();
         let b = flatten(&v2, &t2).expect("flattens");
         let misfit = rigid_misfit(&a.xy, &b.xy);
+        // Each run stops within SETTLED of the mesh's size of the same answer, so the two agree
+        // within twice that (the mesh is 2 m long, 1 m across: size about 2.2 m).
         assert!(
-            misfit < 1e-9,
+            misfit < 2.0 * SETTLED * 2.2,
             "misfit {misfit} it {} {}",
             a.iterations,
             b.iterations
+        );
+    }
+
+    /// A loop cut short says so: three iterations from the seed cannot settle a spherical cap.
+    #[test]
+    fn the_iteration_limit_is_reported_not_hidden() {
+        let (v, t) = shapes::cap(40f64.to_radians(), 8, 24);
+        let short = flatten_capped(&v, &t, 3).expect("flattens");
+        assert_eq!(short.iterations, 3);
+        assert!(
+            short.unsettled_m.is_some_and(|d| d > 0.0),
+            "{:?}",
+            short.unsettled_m
+        );
+        let full = flatten(&v, &t).expect("flattens");
+        assert!(
+            full.unsettled_m.is_none(),
+            "{} {:?}",
+            full.iterations,
+            full.unsettled_m
         );
     }
 
