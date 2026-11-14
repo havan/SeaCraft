@@ -448,7 +448,7 @@ pub fn transform_dialog(
                     Some(s) => {
                         for v in s.iter_mut() {
                             ui.add(
-                                egui::DragValue::new(v)
+                                theme::num(v)
                                     .speed(0.005)
                                     .range(0.001..=1000.0)
                                     .fixed_decimals(3),
@@ -464,7 +464,7 @@ pub fn transform_dialog(
                 ui.end_row();
                 ui.label(egui::RichText::new("Move (m)").color(theme::TEXT_SECONDARY));
                 for v in state.translate.iter_mut() {
-                    ui.add(egui::DragValue::new(v).speed(0.01).fixed_decimals(3));
+                    ui.add(theme::num(v).speed(0.01).fixed_decimals(3));
                 }
                 ui.end_row();
                 ui.label("");
@@ -618,7 +618,7 @@ pub fn optimise_dialog(
                         field(
                             ui,
                             "Speed",
-                            egui::DragValue::new(&mut state.speed_kn)
+                            theme::num(&mut state.speed_kn)
                                 .speed(0.1)
                                 .range(0.1..=80.0)
                                 .fixed_decimals(1),
@@ -644,7 +644,7 @@ pub fn optimise_dialog(
                         field(
                             ui,
                             "Displacement within",
-                            egui::DragValue::new(&mut state.tolerance_pct)
+                            theme::num(&mut state.tolerance_pct)
                                 .speed(0.05)
                                 .range(0.05..=10.0)
                                 .fixed_decimals(2),
@@ -654,7 +654,7 @@ pub fn optimise_dialog(
                         field(
                             ui,
                             "Evaluations",
-                            egui::DragValue::new(&mut state.max_evaluations)
+                            theme::num(&mut state.max_evaluations)
                                 .speed(1.0)
                                 .range(1..=500),
                             "max",
@@ -663,9 +663,7 @@ pub fn optimise_dialog(
                         field(
                             ui,
                             "Measure at level",
-                            egui::DragValue::new(&mut state.level)
-                                .speed(0.05)
-                                .range(0..=4),
+                            theme::num(&mut state.level).speed(0.05).range(0..=4),
                             "",
                         );
                         ui.end_row();

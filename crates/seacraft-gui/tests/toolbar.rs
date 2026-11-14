@@ -1,7 +1,7 @@
 //! The toolbar and the maximised view, headless: the analysis mode and its
 //! parameter refresh the cached frames, the level goes through the setter,
-//! and Ctrl+Space, the toolbar button and a double-click on a view's title
-//! maximise the active view.
+//! and Ctrl+Space, the button in a view's corner and a double-click on a
+//! view's title maximise a view.
 
 use eframe::egui;
 use seacraft_core::AnalysisMode;
@@ -161,8 +161,20 @@ fn the_toolbar_toggles_display_options_and_sets_the_level() {
     // Fit refits a camera that was moved off.
     let before = format!("{:?}", app.cameras()[1]);
     app.cameras_mut()[1].zoom(3.0);
-    click_toolbar(&ctx, &mut app, "fit");
+    let other = format!("{:?}", app.cameras()[2]);
+    let [fit, _] = app.view_button_rects(1);
+    click(&ctx, &mut app, fit.center());
     assert_eq!(format!("{:?}", app.cameras()[1]), before);
+    assert_eq!(
+        format!("{:?}", app.cameras()[2]),
+        other,
+        "a view's fit button leaves the other views alone"
+    );
+    assert_eq!(
+        app.selected(),
+        None,
+        "the button took the click, not the view"
+    );
 }
 
 #[test]
@@ -200,11 +212,14 @@ fn ctrl_space_maximises_the_active_view_and_restores_four() {
     assert_eq!(app.maximised(), None);
     assert_eq!(quad_rects(&app), four, "four cells again");
 
-    // The toolbar button does the same.
-    click_toolbar(&ctx, &mut app, "maximise");
-    assert_eq!(app.maximised(), Some(2));
-    assert_eq!(app.viewport_rect(2), app.central_rect());
-    click_toolbar(&ctx, &mut app, "maximise");
+    // The button in a view's corner maximises that view, active or not.
+    let [_, maximise] = app.view_button_rects(3);
+    click(&ctx, &mut app, maximise.center());
+    assert_eq!(app.maximised(), Some(3));
+    assert_eq!(app.active_view(), 3);
+    assert_eq!(app.viewport_rect(3), app.central_rect());
+    let [_, restore] = app.view_button_rects(3);
+    click(&ctx, &mut app, restore.center());
     assert_eq!(quad_rects(&app), four);
 }
 

@@ -199,6 +199,22 @@ fn the_window_shows_the_page_count_once_it_is_computed() {
             .any(|(_, l, _, _)| *l == format!("{shown} pages, 11 patterns")),
         "the status line"
     );
+    // A long tiled set says what it costs; one page a pattern does not.
+    let many = seacraft_gui::panels::TEMPLATES_MANY_PAGES;
+    assert!(shown > many, "the demo set on A4 is a long one: {shown}");
+    let warned = |w: &Window| {
+        w.widgets
+            .iter()
+            .any(|(_, l, _, _)| l.contains("pages to print, trim and join"))
+    };
+    assert!(warned(&w), "{shown} pages without a warning");
+    let mut params = w.app.templates_params().clone();
+    params.single_page = true;
+    w.app.set_templates_params(params);
+    w.until("the single-page count", |app| {
+        app.templates_pages().is_some()
+    });
+    assert!(!warned(&w), "one page a pattern is not a tiled set");
 }
 
 #[test]

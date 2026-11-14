@@ -303,7 +303,7 @@ pub fn viewport_with_texture(
         }
     }
     if opts.control_net {
-        draw_control_net(&painter, &view, rect, scene.surface);
+        draw_control_net(&painter, &view, rect, scene.surface, selected.is_some());
     }
     if opts.points {
         draw_points(&painter, &view, rect, scene.surface, selected);
@@ -322,7 +322,7 @@ pub fn viewport_with_texture(
     if let Some(text) = grid_caption(view.perspective, opts.grid, minor, major) {
         hud_caption(
             &painter,
-            rect.right_top() + egui::vec2(-8.0, 6.0),
+            egui::pos2(view_buttons(rect)[0].left() - 8.0, rect.top() + 6.0),
             Align2::RIGHT_TOP,
             text,
         );
@@ -349,6 +349,17 @@ pub fn viewport_with_texture(
 }
 
 /// Where a viewport's title caption is anchored (its top-left corner).
+/// Where a viewport drawn in `rect` has its two corner buttons: fit, then
+/// maximise, in the top right corner. The grid caption sits to their left.
+pub fn view_buttons(rect: Rect) -> [Rect; 2] {
+    let side = theme::ICON_BUTTON;
+    let last = Rect::from_min_size(
+        rect.right_top() + egui::vec2(-4.0 - side, 4.0),
+        egui::Vec2::splat(side),
+    );
+    [last.translate(egui::vec2(-side - 2.0, 0.0)), last]
+}
+
 fn title_pos(rect: Rect) -> Pos2 {
     rect.left_top() + egui::vec2(8.0, 6.0)
 }
@@ -1122,7 +1133,17 @@ pub(crate) fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
     theme::layer_colour(layer.color)
 }
 
-fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, surface: &Surface) {
+/// The control net, creases heavier. At full strength while a point is
+/// selected (`editing`); otherwise dimmed, so it does not compete with the
+/// hull it shapes.
+fn draw_control_net(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    rect: Rect,
+    surface: &Surface,
+    editing: bool,
+) {
+    let (net, crease_colour) = control_net_colours(editing);
     let mut creases: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
     for e in &surface.edges {
         if e.crease {
@@ -1144,14 +1165,20 @@ fn draw_control_net(painter: &egui::Painter, view: &ViewTransform, rect: Rect, s
                 [p, q],
                 Stroke::new(
                     if crease { 1.6 } else { 1.0 },
-                    if crease {
-                        theme::CREASE
-                    } else {
-                        theme::CONTROL_NET
-                    },
+                    if crease { crease_colour } else { net },
                 ),
             );
         }
+    }
+}
+
+/// The colours of the control net and of its creases (see
+/// [`draw_control_net`]).
+pub fn control_net_colours(editing: bool) -> (Color32, Color32) {
+    if editing {
+        (theme::CONTROL_NET, theme::CREASE)
+    } else {
+        (theme::CONTROL_NET_IDLE, theme::CREASE_IDLE)
     }
 }
 

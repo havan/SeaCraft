@@ -608,6 +608,8 @@ pub enum ViewAction {
     Compute,
     CopyCsv,
     Close,
+    /// Show another view in the drawer.
+    Open(AnalysisView),
 }
 
 /// The view's panel inputs.
@@ -623,14 +625,21 @@ pub struct ViewPanel<'a> {
     pub design_draft: f64,
 }
 
-/// Draw a view: heading with *Compute*, *Copy CSV* and close, its inputs,
+/// Draw a view: the views as tabs, *Compute*, *Copy CSV* and close, its inputs,
 /// then the result (dimmed when stale): caption, table, plot.
 pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
     let mut action = ViewAction::None;
     let view = p.view;
     let has_result = p.state.slot(view).result.is_some();
     ui.horizontal(|ui| {
-        ui.heading(view.label());
+        // The views as tabs: the one shown is the drawer's title, and the
+        // others are one click away without the menu.
+        for other in AnalysisView::ALL {
+            if ui.selectable_label(other == view, other.label()).clicked() && other != view {
+                action = ViewAction::Open(other);
+            }
+        }
+        ui.separator();
         if ui
             .add_enabled(!p.busy, egui::Button::new("Compute"))
             .on_hover_text("Compute the table for the current model (F5 when out of date)")
@@ -650,8 +659,8 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .small_button("Close")
-                .on_hover_text("Close the view (back to the tabs)")
+                .button("✕")
+                .on_hover_text(format!("Close {}", view.label()))
                 .clicked()
             {
                 action = ViewAction::Close;
@@ -705,7 +714,7 @@ fn drag_usize(
     range: std::ops::RangeInclusive<usize>,
     prefix: &str,
 ) -> bool {
-    ui.add(egui::DragValue::new(value).range(range).prefix(prefix))
+    ui.add(theme::num(value).range(range).prefix(prefix))
         .changed()
 }
 
@@ -725,7 +734,7 @@ fn inputs(
             ui.label("Drafts up to");
             if ui
                 .add(
-                    egui::DragValue::new(&mut to)
+                    theme::num(&mut to)
                         .speed(0.01)
                         .range(0.01..=1.0e3)
                         .fixed_decimals(3)
@@ -765,7 +774,7 @@ fn inputs(
             let p = &mut inputs.trim;
             changed |= ui
                 .add(
-                    egui::DragValue::new(&mut p.speed_kn)
+                    theme::num(&mut p.speed_kn)
                         .speed(0.1)
                         .range(0.1..=100.0)
                         .prefix("speed: ")
@@ -774,7 +783,7 @@ fn inputs(
                 .changed();
             changed |= ui
                 .add(
-                    egui::DragValue::new(&mut p.from)
+                    theme::num(&mut p.from)
                         .speed(0.01)
                         .range(-20.0..=20.0)
                         .fixed_decimals(2)
@@ -784,7 +793,7 @@ fn inputs(
                 .changed();
             changed |= ui
                 .add(
-                    egui::DragValue::new(&mut p.to)
+                    theme::num(&mut p.to)
                         .speed(0.01)
                         .range(-20.0..=20.0)
                         .fixed_decimals(2)

@@ -170,3 +170,47 @@ fn a_middle_drag_pans_every_view() {
     assert_eq!(points, after, "a pan is not an edit");
     assert_eq!(app.undo_len(), 0);
 }
+
+/// Every stroke colour the frame draws lines with.
+fn line_colours(ctx: &egui::Context, app: &mut App) -> Vec<egui::Color32> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<egui::Color32>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            egui::Shape::LineSegment { stroke, .. } => out.push(stroke.color),
+            _ => {}
+        }
+    }
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 1000.0),
+        )),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+    out.textures_delta.clear();
+    let mut colours = Vec::new();
+    for clipped in &out.shapes {
+        walk(&clipped.shape, &mut colours);
+    }
+    colours
+}
+
+#[test]
+fn the_control_net_is_dimmed_until_a_point_is_selected() {
+    use seacraft_gui::theme;
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    let idle = line_colours(&ctx, &mut app);
+    assert!(idle.contains(&theme::CONTROL_NET_IDLE) && idle.contains(&theme::CREASE_IDLE));
+    assert!(
+        !idle.contains(&theme::CONTROL_NET) && !idle.contains(&theme::CREASE),
+        "nothing is selected: the net stays behind the hull"
+    );
+
+    app.select_point(Some(0));
+    let editing = line_colours(&ctx, &mut app);
+    assert!(editing.contains(&theme::CONTROL_NET) && editing.contains(&theme::CREASE));
+    assert!(!editing.contains(&theme::CONTROL_NET_IDLE));
+}

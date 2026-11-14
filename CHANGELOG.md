@@ -37,6 +37,39 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - MCP: `export_templates` and `export_offsets_pdf`, headless and connected, and a `seacraft-boatbuilding` skill
   that has the agent ask for the skin thickness and relay every warning.
 - The DejaVu fonts moved into the core crate; PDFs embed a subset of DejaVu Sans. No change to the GUI's text.
+- GUI look: the docks, windows and menus take the viewports' slate instead of neutral grey; a field that holds a
+  value is sunk and outlined where a button is raised; the selection blue marks only what is selected (the active
+  layer, the open tab, the shading mode), and a display switch that is on is drawn raised instead; section headings
+  are the brightest text in a dock; body text is 13 px; Create and the unsaved-changes Save are filled primary
+  buttons. The analysis dock opens 384 px wide and the layer panel 264 px, and the hydrostatics readout goes two
+  columns from a 364 px dock. The Builder templates window opens tall enough to show Export.
+- GUI: an Analysis menu view (hydrostatic table, Bonjean curves, offsets, trim scan, plate development) opens in a
+  drawer under the viewports instead of taking over and widening the Analysis dock. The drawer's header has the
+  five views as tabs, Compute, Copy CSV and ✕; closing it gives the viewports their height back, and the dock
+  keeps its tab and its width throughout. F5 recomputes the drawer's view and the dock's tab, each when it is out
+  of date, and reaches the drawer with the dock hidden.
+- GUI toolbar: the shading mode is one segmented control, and the subdivision level is labelled Precision and
+  reads "Level 3". Fit and Maximise left the toolbar: each view has the two as icon buttons in its top right
+  corner, where fit frames that view alone (F still frames all four) and maximise acts on that view, active or
+  not.
+- GUI Analysis dock: the pinned strip is one row of five tiles (name and unit over the value) with the dock's
+  width control as an icon at its end, in place of two cramped rows and a "↔ wide" button. The Hydro tab loses
+  its Recompute button: hydrostatics already recompute 120 ms after a change, and F5 still forces it. A slider's
+  number is drawn as a field.
+- GUI menus: File > New holds the three ways to start a model (Design…, From an example…, Demo hull). The View
+  menu is grouped under Show, Shading, Panels, Precision and Views, with the dock's tabs indented under the dock.
+  Help > Keyboard and mouse lists what the keys and the mouse do.
+- GUI viewports: the control net and its creases are drawn dimmed until a control point is selected, so the hull
+  is what the eye reads when nothing is being edited.
+- GUI layer panel: the five switches are grouped under Shape and Used for; density and thickness are named
+  fields that carry their units; the tooltip of "Move picked face to this layer" says what is missing while the
+  button is disabled.
+- GUI start screen: each recent file shows the folder it is in, on the start card and in File > Open recent, so
+  two files of one name can be told apart. With no model the docks are empty: only the status bar and the start
+  card say so, where both docks used to repeat it.
+- GUI Builder templates: a tiled set of more than 40 pages gets a warning under its page count that names the two
+  ways to need fewer, and Export is the window's filled primary button. The Builder templates and Report options
+  windows lost their collapse arrow, like every other window.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is

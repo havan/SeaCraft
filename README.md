@@ -704,9 +704,10 @@ Plan        | Body plan
 * A slim toolbar under the menu bar carries the surface-analysis mode
   (Shaded / Zebra / Curvature / Draft) with its parameter (stripes, radius,
   draft angle; 14, 1 m and 3° by default), the display toggles (net, points,
-  waterplane, combs, wireframe), the subdivision level and scheme, **Fit** and
-  **Maximise**. **Ctrl+Space**, the toolbar button or a double-click on a
-  view's title makes the active view fill the whole viewport area (control
+  waterplane, combs, wireframe) and the precision (subdivision level) and scheme.
+  Each view has two buttons in its top right corner: one frames the model in that
+  view, the other maximises it. **Ctrl+Space**, that button or a double-click on a
+  view's title makes a view fill the whole viewport area (control
   `ui.set {"maximised": true}`); **1**–**4** then switch the maximised view.
 * The left dock manages layers, after FREE!ship's layer dialog: a list
   (colour, name, visibility eye, face count) whose highlighted entry is the
@@ -727,9 +728,10 @@ Plan        | Body plan
   GM, LCB), then the tabs Hydro / Loading / Damage / Windage / Performance
   (View menu radio items; control `ui.set {"dock_tab": "loading"}`, or the
   older `{"loading_panel": true}` keys, which select the tab; `"analysis_dock"`
-  shows or hides it). *↔ wide* widens it, at first to about 55 % of the window;
-  both widths can be dragged. An Analysis menu view widens the dock and narrows
-  it again when it closes, unless *↔ wide* was already on. The Hydro
+  shows or hides it). The button at the end of the strip widens it, at first to about 55 % of the window;
+  both widths can be dragged. An Analysis menu view opens in a drawer under the
+  viewports, with the other views as tabs in its header and *✕* to close it;
+  it takes height from the viewports and leaves the dock alone. The Hydro
   tab is the live hydrostatics report: draft, trim, heel and KG, the full
   coefficient set (with TPC and MTC), the sectional area curve of the current
   draft, and GZ cross curves drawn in place. It recomputes 120 ms after the

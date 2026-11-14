@@ -91,7 +91,7 @@ fn the_loading_tab_lives_in_one_right_dock_that_leaves_the_viewports_wide() {
         profile.width() > 400.0,
         "profile cell {profile:?} with the Loading tab open"
     );
-    // One right panel: the viewports end where that one ~360 px dock starts
+    // One right panel: the viewports end where that one ~384 px dock starts
     // (the old hydrostatics + design docks left them ending near x = 880).
     assert!(
         profile.right() > 1600.0 - 450.0,
@@ -105,7 +105,7 @@ fn the_loading_tab_lives_in_one_right_dock_that_leaves_the_viewports_wide() {
     assert_eq!(app.design_dock(), Some(DesignDock::Hydrostatics));
     assert_eq!(app.viewport_rect(1), profile);
 
-    // ↔ wide takes about 55 % of the window; off again restores the dock.
+    // The wide dock takes about 55 % of the window; off again restores the dock.
     app.set_dock_wide(true);
     frame(&ctx, &mut app, Vec::new());
     frame(&ctx, &mut app, Vec::new());

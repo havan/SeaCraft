@@ -612,18 +612,17 @@ fn the_dock_limits_scale_with_the_hull() {
     assert_eq!(app.hydro_options().trim, 30.0);
 }
 
-// ---- no model: quiet docks --------------------------------------------
+// ---- no model: empty docks --------------------------------------------
 
 #[test]
-fn with_no_model_the_docks_say_so_in_one_line() {
+fn with_no_model_only_the_status_bar_says_so() {
     let (mut app, ctx) = empty();
     let out = frame(&ctx, &mut app, Vec::new());
     let painted: Vec<String> = texts(&out).into_iter().map(|(t, _)| t).collect();
-    let note = seacraft_gui::panels::NO_MODEL_NOTE;
     assert_eq!(
-        painted.iter().filter(|t| *t == note).count(),
-        2,
-        "both docks: {painted:?}"
+        painted.iter().filter(|t| t.contains("No model")).count(),
+        1,
+        "the status bar, and neither dock: {painted:?}"
     );
     // ("Draft" is also the toolbar's analysis mode.)
     for gone in [
@@ -664,6 +663,6 @@ fn with_no_model_the_docks_say_so_in_one_line() {
         "no model {central:?} vs model {with_model:?}"
     );
     let painted: Vec<String> = texts(&out).into_iter().map(|(t, _)| t).collect();
-    assert!(!painted.iter().any(|t| t == note));
+    assert!(!painted.iter().any(|t| t.contains("No model")));
     assert!(painted.iter().any(|t| t == "Trim"));
 }

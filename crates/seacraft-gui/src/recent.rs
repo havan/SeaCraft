@@ -37,6 +37,48 @@ impl RecentEntry {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.path.to_string_lossy().to_string())
     }
+
+    /// The folder the file is in, short enough for `room` characters: the
+    /// home folder as `~`, and the start left out (after a `…`) before the
+    /// end is, since the end tells two copies of a file apart.
+    pub fn folder(&self, room: usize) -> String {
+        let Some(parent) = self.path.parent() else {
+            return String::new();
+        };
+        let text = match std::env::home_dir()
+            .filter(|home| !home.as_os_str().is_empty())
+            .and_then(|home| parent.strip_prefix(home).ok())
+        {
+            Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+            None => parent.display().to_string(),
+        };
+        shorten_start(&text, room)
+    }
+}
+
+/// `text` if it has at most `room` characters; otherwise a `…` and its
+/// end, cut at a path separator where one is near.
+fn shorten_start(text: &str, room: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= room {
+        return text.to_owned();
+    }
+    let keep = room.saturating_sub(1).max(1);
+    let mut tail = &chars[chars.len() - keep.min(chars.len())..];
+    // Start at a whole folder name when that costs less than half the room.
+    if let Some(at) = tail.iter().position(|c| std::path::is_separator(*c)) {
+        if at < keep / 2 {
+            tail = &tail[at..];
+        }
+    }
+    format!("…{}", tail.iter().collect::<String>())
+}
+
+/// How many characters of folder fit beside a file name in a row of about
+/// `row` characters.
+pub fn folder_room(name: &str, row: usize) -> usize {
+    row.saturating_sub(name.chars().count() + 2).max(10)
 }
 
 /// The recent-files list, most recent first, without duplicates, at most
@@ -267,9 +309,15 @@ pub fn recent_menu(ui: &mut egui::Ui, entries: &[RecentEntry]) -> RecentAction {
         ui.label(egui::RichText::new("No recent files").color(theme::TEXT_MUTED));
     }
     for (i, entry) in entries.iter().enumerate() {
-        let text = format!("{}  {}", i + 1, entry.label());
+        let name = format!("{}  {}", i + 1, entry.label());
+        let folder = egui::RichText::new(entry.folder(folder_room(&name, 52)))
+            .small()
+            .color(theme::TEXT_MUTED);
         let full = entry.path.display().to_string();
-        let response = ui.add_enabled(entry.exists, egui::Button::new(text));
+        let response = ui.add_enabled(
+            entry.exists,
+            egui::Button::new((name, egui::Atom::grow(), folder)),
+        );
         if entry.exists {
             if response.on_hover_text(full).clicked() {
                 action = RecentAction::Open(entry.path.clone());
@@ -295,6 +343,23 @@ mod tests {
     // `/tmp/x` is not absolute on Windows, where it gains the current drive.
     fn abs(name: &str) -> PathBuf {
         normalise(Path::new(name))
+    }
+
+    #[test]
+    fn a_long_folder_keeps_its_end() {
+        assert_eq!(shorten_start("/a/b", 10), "/a/b");
+        let long = "/home/someone/boats/2026/skiff/examples";
+        let short = shorten_start(long, 20);
+        assert!(short.chars().count() <= 20, "{short}");
+        assert!(
+            short.starts_with('…') && short.ends_with("/skiff/examples"),
+            "{short}"
+        );
+        // Two copies of one file name differ in what is shown.
+        let other = shorten_start("/home/someone/boats/2026/dinghy/examples", 20);
+        assert_ne!(short, other);
+        assert_eq!(folder_room("demo-hull.fef", 44), 29);
+        assert_eq!(folder_room(&"x".repeat(60), 44), 10);
     }
 
     #[test]

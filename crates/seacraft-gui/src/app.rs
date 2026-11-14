@@ -940,8 +940,6 @@ pub struct App {
     dock_tab: DesignDock,
     /// The Analysis dock is widened for plots and tables.
     dock_wide: bool,
-    /// An analysis view widened the dock, so closing it narrows the dock again.
-    dock_widened_by_view: bool,
     /// An inspector value being dragged (point index and x/y/z): the point
     /// moves when the drag is released, as one undo step.
     inspector_pending: Option<(usize, [f64; 3])>,
@@ -1011,6 +1009,8 @@ pub struct App {
     analysis_params: panels::AnalysisParams,
     /// Where the toolbar's controls were drawn last frame (test hook).
     toolbar_rects: Vec<(&'static str, egui::Rect)>,
+    /// Each view's fit and maximise buttons (last frame).
+    view_button_rects: [[egui::Rect; 2]; 4],
     /// Rasterized frames for the analysis modes, one per viewport.
     analysis_frames: [Option<AnalysisFrame>; 4],
     /// How many analysis frames each viewport has rasterized (test hook).
@@ -1168,7 +1168,6 @@ impl App {
             show_analysis: true,
             dock_tab: DesignDock::Hydrostatics,
             dock_wide: false,
-            dock_widened_by_view: false,
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
             layer_list_rect: egui::Rect::NOTHING,
@@ -1206,6 +1205,7 @@ impl App {
             maximised: None,
             analysis_params: panels::AnalysisParams::default(),
             toolbar_rects: Vec::new(),
+            view_button_rects: [[egui::Rect::NOTHING; 2]; 4],
             analysis_frames: [None, None, None, None],
             raster_counts: [0; 4],
             waterline_cuts: 0,
@@ -1572,11 +1572,11 @@ impl App {
             egui::Panel::right("analysis_dock_wide")
                 .resizable(true)
                 .default_size((window * 0.55).round())
-                .size_range(360.0..=(window * 0.85).round())
+                .size_range(384.0..=(window * 0.85).round())
         } else {
             egui::Panel::right("analysis_dock")
                 .resizable(true)
-                .default_size(360.0)
+                .default_size(384.0)
         };
         let mut tab = self.dock_tab;
         let mut toggle_wide = false;
@@ -1601,10 +1601,6 @@ impl App {
         let kg_estimate = self.kg_is_estimate();
         let limits = self.hydro_limits();
         let keel_z = self.keel_z();
-        let open_view = self.analysis.open;
-        let view_panel = open_view.map(|v| self.analysis_view_panel_inputs(v));
-        let mut close_view = false;
-        let mut view_action = crate::analysis_views::ViewAction::None;
         let pre_drag = ui.ctx().dragged_id();
         let pre_focus = ui
             .ctx()
@@ -1618,7 +1614,7 @@ impl App {
         if self.surface.is_none() {
             // Nothing to measure: the dock keeps its frame (the layout does
             // not jump when a model arrives) but not its empty controls.
-            panel.show(ui, panels::no_model_note);
+            panel.show(ui, panels::empty_dock);
             return;
         }
         panel.show(ui, |ui| {
@@ -1632,42 +1628,20 @@ impl App {
             panels::target_strip(ui, &targets, hydro_stale);
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
-                // Tight enough that the five tabs fit one row at 360 px.
+                // Tight enough that the five tabs fit one row at 384 px.
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
                 for (i, t) in DesignDock::ALL.into_iter().enumerate() {
-                    let response = ui.selectable_label(tab == t && open_view.is_none(), t.label());
+                    let response = ui.selectable_label(tab == t, t.label());
                     if tab_stale[i] {
                         panels::stale_dot(ui, response.rect);
                     }
                     if response.clicked() {
                         tab = t;
-                        close_view = true;
                     }
-                }
-                if let Some(view) = open_view {
-                    ui.separator();
-                    let _ = ui.selectable_label(true, view.label());
                 }
             });
             ui.separator();
-            if let (Some(view), Some((stale, busy, failure, layers, design_draft))) =
-                (open_view, view_panel)
-            {
-                view_action = crate::analysis_views::panel(
-                    ui,
-                    crate::analysis_views::ViewPanel {
-                        view,
-                        state: &mut self.analysis,
-                        stale,
-                        busy,
-                        failure,
-                        layers,
-                        design_draft,
-                    },
-                );
-                return;
-            }
             if let Some(msg) = &failure {
                 ui.colored_label(crate::theme::FAIL, format!("⚠ {msg}"));
             }
@@ -1754,17 +1728,12 @@ impl App {
         if toggle_wide {
             self.set_dock_wide(!self.dock_wide);
         }
-        if close_view {
-            self.close_analysis_view();
-        }
-        self.apply_view_action(view_action, ui.ctx());
         self.last_highlighted_tank = tank_highlight;
         self.last_highlighted_compartment = comp_highlight;
 
         match action {
             DockAction::None => {}
             DockAction::Hydro(panels::HydroAction::Changed) => self.hydro_inputs_changed(),
-            DockAction::Hydro(panels::HydroAction::Recompute) => self.start_hydro_job(),
             DockAction::Hydro(panels::HydroAction::CrossCurves) => self.start_curves_job(),
             DockAction::Hydro(panels::HydroAction::KgSet) => {
                 if let Some(kg) = self.hydro.kg {
@@ -1888,14 +1857,14 @@ impl App {
             let active_layer = self.active_layer();
             egui::Panel::left("layer_panel")
                 .resizable(true)
-                .default_size(250.0)
+                .default_size(264.0)
                 .show(ui, |ui| {
                     // The selection Inspector sits directly under the layer
                     // list, both in one scroll area, so the eye does not
                     // travel the height of the window between them.
                     if self.surface.is_none() {
                         // No layers to list and nothing to inspect.
-                        panels::no_model_note(ui);
+                        panels::empty_dock(ui);
                         return;
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -1948,6 +1917,7 @@ impl App {
         if self.show_analysis {
             self.analysis_dock(ui);
         }
+        self.analysis_drawer(ui);
         self.run_jobs(ui.ctx());
 
         if self.surface.is_some() {
@@ -2129,26 +2099,37 @@ impl App {
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new("New design…")
-                                .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
-                        )
-                        .clicked()
-                    {
-                        self.request(PendingAction::NewDesign);
-                        ui.close();
-                    }
-                    if !seacraft_core::examples::Example::all().is_empty()
-                        && ui.button("New from example…").clicked()
-                    {
-                        self.request(PendingAction::NewExample);
-                        ui.close();
-                    }
-                    if ui.button("New demo hull").clicked() {
-                        self.request(PendingAction::NewDemo);
-                        ui.close();
-                    }
+                    // One entry for the three ways to start a model.
+                    ui.menu_button("New", |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("Design…")
+                                    .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
+                            )
+                            .on_hover_text("A hull from the main dimensions and a hull type")
+                            .clicked()
+                        {
+                            self.request(PendingAction::NewDesign);
+                            ui.close();
+                        }
+                        if !seacraft_core::examples::Example::all().is_empty()
+                            && ui
+                                .button("From an example…")
+                                .on_hover_text("One of the example hulls, as a starting point")
+                                .clicked()
+                        {
+                            self.request(PendingAction::NewExample);
+                            ui.close();
+                        }
+                        if ui
+                            .button("Demo hull")
+                            .on_hover_text("The small demo hull, to try things on")
+                            .clicked()
+                        {
+                            self.request(PendingAction::NewDemo);
+                            ui.close();
+                        }
+                    });
                     if ui
                         .add(
                             egui::Button::new("Open .fef…")
@@ -2270,6 +2251,7 @@ impl App {
                     }
                 });
                 ui.menu_button("View", |ui| {
+                    panels::menu_heading(ui, "Show");
                     ui.checkbox(&mut self.display.shaded, "Shaded hull");
                     ui.checkbox(&mut self.display.wireframe, "Wireframe");
                     ui.checkbox(&mut self.display.control_net, "Control net");
@@ -2287,8 +2269,8 @@ impl App {
                         }
                     });
                     ui.separator();
-                    ui.label("Surface analysis");
-                    ui.horizontal_wrapped(|ui| {
+                    panels::menu_heading(ui, "Shading");
+                    crate::theme::segmented(ui, |ui| {
                         let current = self.display.analysis;
                         // Each mode with its remembered parameter (the
                         // toolbar edits it; 14 stripes, 1 m, 3° by default).
@@ -2312,27 +2294,31 @@ impl App {
                         }
                     });
                     ui.separator();
+                    panels::menu_heading(ui, "Panels");
                     ui.checkbox(&mut self.show_layers, "Layer panel");
                     ui.checkbox(&mut self.show_messages, "Messages");
                     // One right-hand dock with tabs: several right-hand panels
                     // leave no room for the viewports.
                     ui.checkbox(&mut self.show_analysis, "Analysis dock");
-                    for tab in DesignDock::ALL {
-                        let name = match tab {
-                            DesignDock::Hydrostatics => "Hydrostatics",
-                            other => other.label(),
-                        };
-                        if ui
-                            .radio(self.show_analysis && self.dock_tab == tab, name)
-                            .clicked()
-                        {
-                            self.set_dock_tab(tab);
+                    // The dock's tabs, indented under the dock they belong to.
+                    ui.indent("dock_tabs", |ui| {
+                        for tab in DesignDock::ALL {
+                            let name = match tab {
+                                DesignDock::Hydrostatics => "Hydrostatics",
+                                other => other.label(),
+                            };
+                            if ui
+                                .radio(self.show_analysis && self.dock_tab == tab, name)
+                                .clicked()
+                            {
+                                self.set_dock_tab(tab);
+                            }
                         }
-                    }
+                    });
                     ui.separator();
+                    panels::menu_heading(ui, "Precision");
                     let mut level = self.level as u32;
-                    if ui
-                        .add(egui::Slider::new(&mut level, 0..=5).text("subdivision level"))
+                    if crate::theme::slider(ui, egui::Slider::new(&mut level, 0..=5).text("level"))
                         .changed()
                     {
                         // Through the setters: shading caches and the
@@ -2344,7 +2330,7 @@ impl App {
                     // a mode could be chosen.
                     let mut mode = self.mode;
                     ui.horizontal(|ui| {
-                        ui.label("mode");
+                        ui.label("Scheme");
                         ui.radio_value(&mut mode, SubdivisionMode::Loop, "Loop");
                         ui.radio_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
                     });
@@ -2352,8 +2338,9 @@ impl App {
                         self.set_subdivision_mode(mode);
                     }
                     ui.separator();
+                    panels::menu_heading(ui, "Views");
                     if ui
-                        .add(egui::Button::new("Reset cameras").shortcut_text("F"))
+                        .add(egui::Button::new("Frame the model in every view").shortcut_text("F"))
                         .clicked()
                     {
                         self.reset_cameras();
@@ -2376,12 +2363,21 @@ impl App {
                 self.model_menu(ui);
                 self.analysis_menu(ui);
                 ui.menu_button("Help", |ui| {
-                    ui.label(format!("SeaCraft {}", seacraft_core::VERSION));
-                    ui.label("A Rust reimplementation of FREE!ship.");
+                    ui.menu_button("Keyboard and mouse", |ui| {
+                        panels::shortcut_list(ui, &panels::shortcuts(&keys));
+                    });
                     if ui.button("About SeaCraft…").clicked() {
                         self.about_open = true;
                         ui.close();
                     }
+                    ui.separator();
+                    panels::menu_heading(
+                        ui,
+                        &format!(
+                            "SeaCraft {} · hull design after FREE!ship",
+                            seacraft_core::VERSION
+                        ),
+                    );
                 });
             });
         });
@@ -2395,7 +2391,6 @@ impl App {
             params: self.analysis_params,
             level: self.level,
             mode: self.mode,
-            maximised: self.maximised.is_some(),
             has_model: self.surface.is_some(),
         };
         let out = egui::Panel::top("toolbar")
@@ -2415,12 +2410,6 @@ impl App {
         }
         if let Some(mode) = out.mode {
             self.set_subdivision_mode(mode);
-        }
-        if out.fit {
-            self.reset_cameras();
-        }
-        if out.toggle_maximise {
-            self.toggle_maximised();
         }
         self.toolbar_rects = out.rects;
     }
@@ -2452,7 +2441,7 @@ impl App {
     }
 
     /// Open the New design dialog (callers go through the unsaved-changes
-    /// prompt first: Ctrl+N, File > New design…, the start card).
+    /// prompt first: Ctrl+N, File > New > Design…, the start card).
     pub fn open_new_design(&mut self) {
         self.new_design = Some(crate::new_design::NewDesignState::new(
             crate::new_design::SEA_WATER_T_M3,
@@ -3130,7 +3119,7 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.label("There are unsaved changes. Save them first?");
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.add(crate::theme::primary_button("Save")).clicked() {
                         choice = Some(Some(action));
                     }
                     if ui.button("Discard").clicked() {
@@ -3452,6 +3441,15 @@ impl App {
         };
         self.viewport_rects = [egui::Rect::NOTHING; 4];
         self.title_rects = [egui::Rect::NOTHING; 4];
+        self.view_button_rects = [[egui::Rect::NOTHING; 2]; 4];
+        let fit_key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::NONE,
+            egui::Key::F,
+        ));
+        let max_key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::Space,
+        ));
         let mut toggle_maximise = false;
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
         let mut fresh_hulls: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
@@ -3514,7 +3512,12 @@ impl App {
                 // Grab on *press*, not when egui decides it is a drag: the
                 // pick must use the pixel the user aimed at, not where the
                 // cursor has already slid to.
-                if response.hovered() && ui.input(|i| i.pointer.primary_pressed()) {
+                // A press on a corner button is not a grab at the point
+                // that happens to lie under it.
+                let on_button = ui
+                    .input(|i| i.pointer.interact_pos())
+                    .is_some_and(|p| render::view_buttons(cell).iter().any(|b| b.contains(p)));
+                if response.hovered() && !on_button && ui.input(|i| i.pointer.primary_pressed()) {
                     self.begin_drag(ui, &view, cell, index);
                 }
                 if response.dragged_by(egui::PointerButton::Primary) {
@@ -3751,6 +3754,33 @@ impl App {
                 );
             }
             self.draw_pick_overlays(ui, cell, index);
+
+            // Fit and maximise, in the corner of the view they act on.
+            let [fit, maximise] = render::view_buttons(cell);
+            self.view_button_rects[index] = [fit, maximise];
+            let hud = crate::theme::IconStyle::Hud;
+            if crate::theme::icon_button_at(ui, fit, crate::theme::Icon::Fit, hud, false)
+                .on_hover_text(format!(
+                    "Frame the model in this view ({fit_key} frames every view)"
+                ))
+                .clicked()
+            {
+                self.refit_camera(index);
+            }
+            let (icon, tip) = if self.maximised.is_some() {
+                (crate::theme::Icon::Restore, "Restore the four views")
+            } else {
+                (crate::theme::Icon::Maximise, "Maximise this view")
+            };
+            if crate::theme::icon_button_at(ui, maximise, icon, hud, false)
+                .on_hover_text(format!(
+                    "{tip} ({max_key}, or double-click the view's title)"
+                ))
+                .clicked()
+            {
+                self.active = index;
+                toggle_maximise = true;
+            }
         }
         for (index, frame) in fresh {
             self.analysis_frames[index] = Some(frame);
@@ -4290,7 +4320,8 @@ impl App {
     }
 
     /// F5: recompute every stale result that is shown — the automatic ones
-    /// at once, without the debounce, and the heavy ones of the open tab.
+    /// at once, without the debounce, and the heavy ones of the open tab and of
+    /// the view in the drawer.
     pub fn recompute_stale(&mut self) {
         if self.drag.is_some() || self.surface.is_none() {
             return;
@@ -4323,14 +4354,16 @@ impl App {
         ) {
             self.start_resistance_compute();
         }
-        if !self.show_analysis {
-            return;
-        }
+        // The drawer's view and the dock's tab are each on screen on their
+        // own: the drawer stays when the dock is hidden, and does not cover
+        // the tab when both are shown.
         if let Some(view) = self.analysis.open {
-            // The open view instead of the hidden tab: stale or empty.
+            // Stale or empty.
             if self.analysis.slot(view).track.due(self.analysis_key(view)) {
                 self.start_analysis_view(view);
             }
+        }
+        if !self.show_analysis {
             return;
         }
         match self.dock_tab {
@@ -4693,8 +4726,12 @@ impl App {
         let status = self.templates_status(key);
         egui::Window::new("Builder templates")
             .open(&mut open)
+            .collapsible(false)
             .resizable(true)
             .default_width(440.0)
+            // Room for every option and Export: egui's default window height is
+            // less, and the scroll area would hide the button below the fold.
+            .default_height(640.0)
             .show(ui.ctx(), |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(640.0)
@@ -4855,6 +4892,7 @@ impl App {
         );
         egui::Window::new("Report options")
             .open(&mut open)
+            .collapsible(false)
             .resizable(true)
             .default_width(420.0)
             .show(ui.ctx(), |ui| {
@@ -4903,10 +4941,9 @@ impl App {
     }
 
     /// Widen the Analysis dock, at first to about 55 % of the window (plots, tables); either
-    /// width can be dragged and is kept. A width set here outlasts the analysis views.
+    /// width can be dragged and is kept.
     pub fn set_dock_wide(&mut self, wide: bool) {
         self.dock_wide = wide;
-        self.dock_widened_by_view = false;
     }
 
     pub fn dock_wide(&self) -> bool {
@@ -6030,6 +6067,12 @@ impl App {
     /// The whole central area the viewports share (last frame).
     pub fn central_rect(&self) -> egui::Rect {
         self.central_rect
+    }
+
+    /// View `i`'s fit and maximise buttons (last frame); `Rect::NOTHING`
+    /// when hidden.
+    pub fn view_button_rects(&self, i: usize) -> [egui::Rect; 2] {
+        self.view_button_rects[i]
     }
 
     /// View `i`'s title caption (last frame); `Rect::NOTHING` when hidden.
@@ -7225,15 +7268,48 @@ impl App {
         });
     }
 
-    /// Show `view` in the widened Analysis dock. Opening a view that has no
-    /// result yet computes it.
+    /// The open Analysis view, in a drawer under the viewports: a table is
+    /// wide, so it takes the width of the viewports and leaves the docks and
+    /// their widths alone. Its header names the view and carries its close
+    /// button, so what closes is what the header is on.
+    fn analysis_drawer(&mut self, ui: &mut egui::Ui) {
+        let Some(view) = self.analysis.open else {
+            return;
+        };
+        if self.surface.is_none() {
+            return;
+        }
+        let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
+        let window = ui.ctx().content_rect().height();
+        let mut action = crate::analysis_views::ViewAction::None;
+        egui::Panel::bottom("analysis_drawer")
+            .resizable(true)
+            .default_size((window * 0.42).round())
+            .size_range(160.0..=(window * 0.8).round())
+            .show(ui, |ui| {
+                // Keep the drawer's height while a view has little to show
+                // (computing, or no result yet), so it does not jump.
+                ui.set_min_height(ui.available_height());
+                action = crate::analysis_views::panel(
+                    ui,
+                    crate::analysis_views::ViewPanel {
+                        view,
+                        state: &mut self.analysis,
+                        stale,
+                        busy,
+                        failure,
+                        layers,
+                        design_draft,
+                    },
+                );
+            });
+        self.apply_view_action(action, ui.ctx());
+    }
+
+    /// Show `view` in the drawer under the viewports. Opening a view that
+    /// has no result yet computes it.
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
         self.analysis.open = Some(view);
-        self.show_analysis = true;
-        if !self.dock_wide {
-            self.dock_wide = true;
-            self.dock_widened_by_view = true;
-        }
         let key = self.analysis_key(view);
         let slot = self.analysis.slot(view);
         if slot.result.is_none() && slot.track.due(key) {
@@ -7241,12 +7317,9 @@ impl App {
         }
     }
 
-    /// Back to the dock's tabs, at the width the dock had before a view widened it.
+    /// Close the drawer. The viewports take its height back.
     pub fn close_analysis_view(&mut self) {
         self.analysis.open = None;
-        if self.dock_widened_by_view {
-            self.set_dock_wide(false);
-        }
     }
 
     /// The view shown in the Analysis dock, if any.
@@ -7433,6 +7506,7 @@ impl App {
                 }
             }
             ViewAction::Close => self.close_analysis_view(),
+            ViewAction::Open(other) => self.open_analysis_view(other),
         }
     }
 }

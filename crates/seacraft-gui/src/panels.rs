@@ -116,7 +116,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
 
     // ---- heading and buttons, on one row ------------------------------------
     ui.horizontal(|ui| {
-        ui.heading("Layers");
+        theme::heading(ui, "Layers");
         // Right to left: added last-first, they read Add, Delete, ↑, ↓.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
@@ -363,102 +363,106 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
             },
         ),
     ];
-    egui::Grid::new("layer_flags")
-        .num_columns(2)
-        .spacing(egui::vec2(8.0, 2.0))
-        .show(ui, |ui| {
-            for (i, (label, on, tip, props)) in flags.into_iter().enumerate() {
+    // Two groups: what the layer is, and what it takes part in.
+    let mut flags = flags.into_iter();
+    for (heading, count) in [("Shape", 2), ("Used for", 3)] {
+        ui.add_space(2.0);
+        menu_heading(ui, heading);
+        ui.horizontal_wrapped(|ui| {
+            for (label, on, tip, props) in flags.by_ref().take(count) {
                 let mut v = on;
                 if ui.checkbox(&mut v, label).on_hover_text(tip).changed() {
                     action = set(active, props(v));
                 }
-                if i % 2 == 1 {
-                    ui.end_row();
-                }
             }
         });
+    }
 
     // Density (t/m³) and plate thickness (mm); the model keeps kg/m³ and m.
     if state.pending.is_some_and(|(i, _, _)| i != active) {
         state.pending = None;
     }
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(egui::RichText::new("Plating").color(theme::TEXT_SECONDARY))
-            .on_hover_text("Material density and plate thickness, for a weight estimate");
-        for (field, label, unit, model, speed, tip) in [
-            (
-                LayerField::Density,
-                "Density",
-                "t/m³",
-                layer.density / 1000.0,
-                0.01,
-                "Material density of the plating, for a weight estimate",
-            ),
-            (
-                LayerField::Thickness,
-                "Thickness",
-                "mm",
-                layer.thickness * 1000.0,
-                0.1,
-                "Plate thickness, for a weight estimate",
-            ),
-        ] {
-            let mut v = match state.pending {
-                Some((_, f, v)) if f == field => v,
-                _ => model,
-            };
-            let r = ui
-                .add_sized(
-                    [52.0, 20.0],
-                    egui::DragValue::new(&mut v)
-                        .speed(speed)
-                        .range(match field {
-                            LayerField::Density => 0.0..=25.0,
-                            LayerField::Thickness => 0.0..=1000.0,
-                        })
-                        .fixed_decimals(match field {
-                            LayerField::Density => 3,
-                            LayerField::Thickness => 1,
-                        })
-                        .update_while_editing(false),
-                )
-                .on_hover_text(format!("{label}: {tip}"));
-            let mut commit: Option<f64> = None;
-            if r.changed() {
-                if r.dragged() {
-                    state.pending = Some((active, field, v));
-                } else {
-                    commit = Some(v);
+    ui.add_space(2.0);
+    menu_heading(ui, "Plating, for a weight estimate");
+    egui::Grid::new("layer_plating")
+        .num_columns(2)
+        .spacing(egui::vec2(8.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, unit, model, speed, tip) in [
+                (
+                    LayerField::Density,
+                    "Density",
+                    "t/m³",
+                    layer.density / 1000.0,
+                    0.01,
+                    "Material density of the plating, for a weight estimate",
+                ),
+                (
+                    LayerField::Thickness,
+                    "Thickness",
+                    "mm",
+                    layer.thickness * 1000.0,
+                    0.1,
+                    "Plate thickness, for a weight estimate",
+                ),
+            ] {
+                let mut v = match state.pending {
+                    Some((_, f, v)) if f == field => v,
+                    _ => model,
+                };
+                ui.label(egui::RichText::new(label).color(theme::TEXT_SECONDARY));
+                let r = ui
+                    .add_sized(
+                        [96.0, 20.0],
+                        theme::num(&mut v)
+                            .suffix(format!(" {unit}"))
+                            .speed(speed)
+                            .range(match field {
+                                LayerField::Density => 0.0..=25.0,
+                                LayerField::Thickness => 0.0..=1000.0,
+                            })
+                            .fixed_decimals(match field {
+                                LayerField::Density => 3,
+                                LayerField::Thickness => 1,
+                            })
+                            .update_while_editing(false),
+                    )
+                    .on_hover_text(tip);
+                let mut commit: Option<f64> = None;
+                if r.changed() {
+                    if r.dragged() {
+                        state.pending = Some((active, field, v));
+                    } else {
+                        commit = Some(v);
+                    }
                 }
-            }
-            if r.drag_stopped() {
-                commit = state
-                    .pending
-                    .filter(|(_, f, _)| *f == field)
-                    .map(|(_, _, p)| p)
-                    .or(commit);
-                state.pending = None;
-            }
-            if let Some(v) = commit.filter(|v| (v - model).abs() > 1e-12) {
-                state.pending = None;
-                action = set(
-                    active,
-                    match field {
-                        LayerField::Density => LayerProps {
-                            density: Some(v * 1000.0),
-                            ..Default::default()
+                if r.drag_stopped() {
+                    commit = state
+                        .pending
+                        .filter(|(_, f, _)| *f == field)
+                        .map(|(_, _, p)| p)
+                        .or(commit);
+                    state.pending = None;
+                }
+                if let Some(v) = commit.filter(|v| (v - model).abs() > 1e-12) {
+                    state.pending = None;
+                    action = set(
+                        active,
+                        match field {
+                            LayerField::Density => LayerProps {
+                                density: Some(v * 1000.0),
+                                ..Default::default()
+                            },
+                            LayerField::Thickness => LayerProps {
+                                thickness: Some(v / 1000.0),
+                                ..Default::default()
+                            },
                         },
-                        LayerField::Thickness => LayerProps {
-                            thickness: Some(v / 1000.0),
-                            ..Default::default()
-                        },
-                    },
-                );
+                    );
+                }
+                ui.end_row();
             }
-            ui.label(egui::RichText::new(unit).color(theme::TEXT_MUTED));
-        }
-    });
+        });
 
     // Move to layer: the face under the last click.
     let picked = picked_face.filter(|&f| f < surface.faces.len());
@@ -478,15 +482,24 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
         .color(theme::TEXT_MUTED),
     );
     let can_move = picked.is_some() && picked_layer != Some(active);
-    let tip = "Click a control face in any view (inside the amber control net, \
-               away from the points), then move it onto this layer. One undo step.";
+    // The tooltip says what is missing while the button is disabled.
+    let how = "click a control face in any view (inside the amber control net, away from the \
+               points)";
+    let tip = match (picked, can_move) {
+        (None, _) => format!("No face is picked: {how}, then press this."),
+        (Some(_), false) => format!(
+            "The picked face is already on \"{}\": make another layer active, or {how}.",
+            layer.name
+        ),
+        (Some(f), true) => format!("Move face {f} onto \"{}\". One undo step.", layer.name),
+    };
     if ui
         .add_enabled(
             can_move,
             egui::Button::new("Move picked face to this layer"),
         )
-        .on_hover_text(tip)
-        .on_disabled_hover_text(tip)
+        .on_hover_text(&tip)
+        .on_disabled_hover_text(&tip)
         .clicked()
     {
         if let Some(f) = picked {
@@ -562,7 +575,7 @@ fn point_layers(surface: &Surface, point: usize) -> Vec<&str> {
 /// undo step. Escape while typing abandons the value.
 pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutput {
     let mut out = InspectorOutput::default();
-    ui.heading("Inspector");
+    theme::heading(ui, "Inspector");
     ui.add_space(4.0);
     let point = match (panel.surface, panel.selected) {
         (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
@@ -605,7 +618,7 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
                 let mut v = shown[axis];
                 let r = ui.add_sized(
                     [96.0, 20.0],
-                    egui::DragValue::new(&mut v)
+                    theme::num(&mut v)
                         .speed(0.005)
                         .fixed_decimals(3)
                         .update_while_editing(false),
@@ -680,8 +693,8 @@ pub fn gm_text(h: &Hydrostatics, kg: Option<f64>) -> String {
     }
 }
 
-/// The pinned live strip's two rows: displacement, draft and trim; GM
-/// and LCB. A dash stands for a quantity not measured yet (GM: or no KG).
+/// The pinned live strip's readouts in two groups: displacement, draft and
+/// trim; GM and LCB. A dash stands for a quantity not measured yet (GM: or no KG).
 pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readout>; 2] {
     let r = Readout::new;
     match h {
@@ -710,7 +723,7 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readou
 /// The About window: the legal notices GPLv3 section 5(d) asks an interactive program to show,
 /// the disclaimer, where the source is, and the licence texts of what is embedded.
 pub fn about(ui: &mut egui::Ui) {
-    ui.heading(format!("SeaCraft {}", seacraft_core::VERSION));
+    theme::heading(ui, format!("SeaCraft {}", seacraft_core::VERSION));
     ui.label("Copyright (c) 2026 SeaCraft contributors.");
     ui.label(
         "SeaCraft comes with ABSOLUTELY NO WARRANTY. It is free software: you may redistribute it \
@@ -749,9 +762,10 @@ pub fn about(ui: &mut egui::Ui) {
     });
 }
 
-/// The Analysis dock's pinned strip: the live floating condition in two
-/// compact rows, greyed while the hydrostatics are being recomputed, and
-/// the *↔ wide* toggle. Returns true when the toggle was clicked.
+/// The Analysis dock's pinned strip: the live floating condition as one
+/// row of tiles (name and unit above, value below), greyed while the
+/// hydrostatics are being recomputed, with the dock's width control at its
+/// end. Returns true when the width control was clicked.
 pub fn live_strip(
     ui: &mut egui::Ui,
     h: Option<&Hydrostatics>,
@@ -761,68 +775,67 @@ pub fn live_strip(
 ) -> bool {
     let mut toggle = false;
     let rows = live_strip_rows(h, kg);
+    let items: Vec<&Readout> = rows.iter().flatten().collect();
     let value_colour = if stale {
         theme::STALE
     } else {
         theme::TEXT_PRIMARY
     };
-    // Fixed cells rather than a `Grid`: a grid's first-frame sizing pass
-    // would widen the resizable dock, and fixed cells line the two rows up.
-    let cell = |ui: &mut egui::Ui, width: f32, right: bool, text: egui::RichText| {
-        let layout = if right {
-            egui::Layout::right_to_left(egui::Align::Center)
-        } else {
-            egui::Layout::left_to_right(egui::Align::Center)
-        };
-        ui.allocate_ui_with_layout(egui::vec2(width, 18.0), layout, |ui| {
-            ui.set_min_width(width);
-            ui.label(text);
-        });
-    };
     ui.add_space(2.0);
-    for (r, row) in rows.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for item in row {
-                cell(
-                    ui,
-                    STRIP_NAME_WIDTH,
-                    false,
-                    egui::RichText::new(item.name)
-                        .font(theme::caption_font())
-                        .color(theme::TEXT_SECONDARY),
-                );
-                cell(
-                    ui,
-                    STRIP_VALUE_WIDTH,
-                    true,
-                    egui::RichText::new(&item.value)
-                        .monospace()
-                        .color(value_colour),
-                );
-                cell(
-                    ui,
-                    STRIP_UNIT_WIDTH,
-                    false,
-                    egui::RichText::new(item.unit)
-                        .font(theme::caption_font())
-                        .color(theme::TEXT_MUTED),
-                );
-            }
-            if r == 1 {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                let label = if wide { "↔ narrow" } else { "↔ wide" };
-                toggle = ui
-                    .add(egui::Button::new(label).selected(wide))
-                    .on_hover_text(
-                        "Toggle dock width between standard and wide layout for plots and tables",
-                    )
-                    .clicked();
-            }
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        // Fixed tiles rather than a `Grid`: a grid's first-frame sizing pass
+        // would widen the resizable dock. The tiles share the row with the
+        // width control, and stop growing in the wide dock.
+        let room = ui.available_width() - theme::ICON_BUTTON - 4.0;
+        let tile = (room / items.len() as f32)
+            .floor()
+            .clamp(STRIP_TILE_MIN, STRIP_TILE_MAX);
+        for item in items {
+            ui.allocate_ui_with_layout(
+                egui::vec2(tile, STRIP_TILE_HEIGHT),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_min_width(tile);
+                    ui.spacing_mut().item_spacing = egui::vec2(3.0, 0.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(item.name)
+                                .font(theme::caption_font())
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                        ui.label(
+                            egui::RichText::new(item.unit)
+                                .font(theme::caption_font())
+                                .color(theme::TEXT_MUTED),
+                        );
+                    });
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&item.value)
+                                .monospace()
+                                .color(value_colour),
+                        )
+                        .truncate(),
+                    );
+                },
+            );
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let (icon, tip) = if wide {
+                (theme::Icon::Narrow, "Back to the standard dock width")
+            } else {
+                (
+                    theme::Icon::Widen,
+                    "Widen the dock, for its plots and tables",
+                )
+            };
+            toggle = theme::icon_button(ui, icon, wide)
+                .on_hover_text(tip)
+                .clicked();
         });
-    }
+    });
+    ui.add_space(2.0);
     toggle
 }
 
@@ -958,10 +971,12 @@ pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
     });
 }
 
-/// Widths of the pinned strip's cells: name, value (right-aligned) and unit.
-const STRIP_NAME_WIDTH: f32 = 28.0;
-const STRIP_VALUE_WIDTH: f32 = 54.0;
-const STRIP_UNIT_WIDTH: f32 = 16.0;
+/// The pinned strip's tiles: the narrowest that holds a value like
+/// `+0.425`, the widest worth giving one in the wide dock, and their height
+/// (a caption line over a value line).
+const STRIP_TILE_MIN: f32 = 56.0;
+const STRIP_TILE_MAX: f32 = 104.0;
+const STRIP_TILE_HEIGHT: f32 = 32.0;
 
 /// What the user asked the hydrostatics dock to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -969,8 +984,6 @@ pub enum HydroAction {
     None,
     /// The floating condition was edited: recompute after the debounce.
     Changed,
-    /// Recompute now.
-    Recompute,
     CrossCurves,
     /// The user set KG (it now goes into the project): recompute after the
     /// debounce, as [`HydroAction::Changed`].
@@ -1220,7 +1233,7 @@ pub fn grouped_readouts(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup]) {
     grouped_grid(ui, id, groups, false);
 }
 
-/// [`grouped_readouts`], tight enough that two columns fit a 340 px dock:
+/// [`grouped_readouts`], tight enough that two columns fit a 364 px dock:
 /// narrower gaps and a unit column only as wide as its units.
 fn grouped_grid(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], compact: bool) {
     let width = groups
@@ -1281,8 +1294,8 @@ fn readout_cells(ui: &mut egui::Ui, rows: &[Readout], width: usize, unit_column:
 }
 
 /// The dock's inner width from which the hydrostatics readout splits into
-/// two columns: what a 340 px dock leaves inside its margins and scroll bar.
-pub const HYDRO_TWO_COLUMN_WIDTH: f32 = 316.0;
+/// two columns: what a 364 px dock leaves inside its margins and scroll bar.
+pub const HYDRO_TWO_COLUMN_WIDTH: f32 = 340.0;
 
 /// Whether the hydrostatics readout is laid out in two columns at this
 /// available width.
@@ -1404,7 +1417,7 @@ fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, w
         Some(value) => ui
             .add_sized(
                 [width, 20.0],
-                egui::DragValue::new(value)
+                theme::num(value)
                     .speed(0.02)
                     .range(0.0..=max)
                     .fixed_decimals(2)
@@ -1453,10 +1466,10 @@ fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, w
 /// Draft, trim, heel and KG controls plus the measurement readout.
 pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     let mut action = HydroAction::None;
-    ui.heading("Hydrostatics");
+    theme::heading(ui, "Hydrostatics");
     ui.add_space(4.0);
 
-    // From a 340 px dock the readout runs in two columns and the floating
+    // From a 364 px dock the readout runs in two columns and the floating
     // condition in two pairs per row, so the plots stay above the fold.
     let two_columns = hydro_two_columns(ui.available_width());
     let field_width = if two_columns { 84.0 } else { 96.0 };
@@ -1471,7 +1484,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             changed |= ui
                 .add_sized(
                     [field_width, 20.0],
-                    egui::DragValue::new(&mut panel.options.draft)
+                    theme::num(&mut panel.options.draft)
                         .speed(0.01)
                         .range(0.0..=panel.limits.draft)
                         .fixed_decimals(3)
@@ -1485,7 +1498,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             changed |= ui
                 .add_sized(
                     [field_width, 20.0],
-                    egui::DragValue::new(&mut panel.options.trim)
+                    theme::num(&mut panel.options.trim)
                         .speed(0.01)
                         .range(-panel.limits.trim..=panel.limits.trim)
                         .fixed_decimals(3)
@@ -1497,7 +1510,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             changed |= ui
                 .add_sized(
                     [field_width, 20.0],
-                    egui::DragValue::new(&mut panel.options.heel_deg)
+                    theme::num(&mut panel.options.heel_deg)
                         .speed(0.2)
                         .range(-60.0..=60.0)
                         .fixed_decimals(1)
@@ -1534,7 +1547,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             let mut x = panel.lcg.unwrap_or_default();
             if ui
                 .add(
-                    egui::DragValue::new(&mut x)
+                    theme::num(&mut x)
                         .speed(0.01)
                         .fixed_decimals(3)
                         .prefix("LCG ")
@@ -1561,9 +1574,6 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button("Recompute").clicked() {
-            action = HydroAction::Recompute;
-        }
         let gz = ui.button("GZ curves");
         if gz.clicked() {
             action = HydroAction::CrossCurves;
@@ -1631,7 +1641,7 @@ pub fn report_options(
 ) -> bool {
     let mut changed = false;
 
-    ui.heading("General hydrostatics");
+    theme::heading(ui, "General hydrostatics");
     egui::Grid::new("report_hydro_grid")
         .num_columns(2)
         .spacing([12.0, 4.0])
@@ -1645,12 +1655,7 @@ pub fn report_options(
             }
             if let Some(d) = &mut report.draft {
                 changed |= ui
-                    .add(
-                        egui::DragValue::new(d)
-                            .speed(0.01)
-                            .range(0.01..=50.0)
-                            .suffix(" m"),
-                    )
+                    .add(theme::num(d).speed(0.01).range(0.01..=50.0).suffix(" m"))
                     .changed();
             }
             ui.end_row();
@@ -1664,12 +1669,7 @@ pub fn report_options(
             }
             if let Some(kg) = &mut report.kg {
                 changed |= ui
-                    .add(
-                        egui::DragValue::new(kg)
-                            .speed(0.01)
-                            .range(0.0..=50.0)
-                            .suffix(" m"),
-                    )
+                    .add(theme::num(kg).speed(0.01).range(0.0..=50.0).suffix(" m"))
                     .changed();
             }
             ui.end_row();
@@ -1684,7 +1684,7 @@ pub fn report_options(
             if let Some(lcg) = &mut report.lcg_x {
                 changed |= ui
                     .add(
-                        egui::DragValue::new(lcg)
+                        theme::num(lcg)
                             .speed(0.01)
                             .range(-100.0..=100.0)
                             .suffix(" m"),
@@ -1743,7 +1743,7 @@ pub fn report_options(
         });
 
     ui.separator();
-    ui.heading("Resistance & powering");
+    theme::heading(ui, "Resistance & powering");
     let mut inc_res = report.include_resistance.unwrap_or(true);
     if ui
         .checkbox(&mut inc_res, "Holtrop & Mennen resistance")
@@ -1762,7 +1762,7 @@ pub fn report_options(
     }
 
     ui.separator();
-    ui.heading("Loading conditions");
+    theme::heading(ui, "Loading conditions");
     let mut inc_w = report.include_weather.unwrap_or(true);
     if ui
         .checkbox(&mut inc_w, "Include IMO weather criterion")
@@ -1804,7 +1804,7 @@ pub fn report_options(
     }
 
     ui.separator();
-    ui.heading("Damage cases");
+    theme::heading(ui, "Damage cases");
     if damage_cases.is_empty() {
         ui.label("No damage cases in project.");
     } else {
@@ -1838,7 +1838,7 @@ pub fn report_options(
     }
 
     ui.separator();
-    ui.heading("Seakeeping");
+    theme::heading(ui, "Seakeeping");
     let mut has_seakeeping = report.seakeeping.is_some();
     if ui
         .checkbox(&mut has_seakeeping, "Include seakeeping analysis")
@@ -1863,7 +1863,7 @@ pub fn report_options(
                 ui.label("Speed:");
                 changed |= ui
                     .add(
-                        egui::DragValue::new(&mut sk.speed_kn)
+                        theme::num(&mut sk.speed_kn)
                             .speed(0.5)
                             .range(0.0..=100.0)
                             .suffix(" kn"),
@@ -1879,12 +1879,7 @@ pub fn report_options(
                 }
                 if let Some(k) = &mut sk.kg {
                     changed |= ui
-                        .add(
-                            egui::DragValue::new(k)
-                                .speed(0.01)
-                                .range(0.0..=50.0)
-                                .suffix(" m"),
-                        )
+                        .add(theme::num(k).speed(0.01).range(0.0..=50.0).suffix(" m"))
                         .changed();
                 }
                 ui.end_row();
@@ -1927,7 +1922,7 @@ pub fn report_options(
                     let mut hs = sea.hs();
                     if ui
                         .add(
-                            egui::DragValue::new(&mut hs)
+                            theme::num(&mut hs)
                                 .speed(0.1)
                                 .range(0.1..=30.0)
                                 .suffix(" m"),
@@ -1946,7 +1941,7 @@ pub fn report_options(
                     let mut tp = sea.tp();
                     if ui
                         .add(
-                            egui::DragValue::new(&mut tp)
+                            theme::num(&mut tp)
                                 .speed(0.1)
                                 .range(0.5..=30.0)
                                 .suffix(" s"),
@@ -1964,7 +1959,7 @@ pub fn report_options(
                     if let WaveSpectrum::Jonswap { gamma, .. } = sea {
                         ui.label("Peak enhancement γ:");
                         changed |= ui
-                            .add(egui::DragValue::new(gamma).speed(0.1).range(1.0..=20.0))
+                            .add(theme::num(gamma).speed(0.1).range(1.0..=20.0))
                             .changed();
                         ui.end_row();
                     }
@@ -1998,7 +1993,7 @@ pub struct PerformancePanel<'a> {
 
 pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
     let mut action = PerformanceAction::None;
-    ui.heading("Performance");
+    theme::heading(ui, "Performance");
     ui.add_space(4.0);
 
     let is_busy = panel.busy_resistance || panel.busy_raos;
@@ -2049,19 +2044,19 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     ui.horizontal(|ui| {
         ui.label("Speeds (kn):");
         let r1 = ui.add(
-            egui::DragValue::new(&mut panel.state.speeds_kn.0)
+            theme::num(&mut panel.state.speeds_kn.0)
                 .speed(0.5)
                 .range(0.1..=100.0)
                 .prefix("min: "),
         );
         let r2 = ui.add(
-            egui::DragValue::new(&mut panel.state.speeds_kn.1)
+            theme::num(&mut panel.state.speeds_kn.1)
                 .speed(0.5)
                 .range(0.1..=100.0)
                 .prefix("max: "),
         );
         let r3 = ui.add(
-            egui::DragValue::new(&mut panel.state.speeds_kn.2)
+            theme::num(&mut panel.state.speeds_kn.2)
                 .speed(0.1)
                 .range(0.1..=20.0)
                 .prefix("step: "),
@@ -2080,7 +2075,8 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     ui.strong("Seakeeping (head-sea RAOs)");
     ui.add_space(2.0);
 
-    let speed_resp = ui.add(
+    let speed_resp = theme::slider(
+        ui,
         egui::Slider::new(&mut panel.state.sk_speed_kn, 0.0..=20.0)
             .text("Speed (kn)")
             .step_by(0.5),
@@ -2115,14 +2111,14 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     ui.horizontal(|ui| {
         let kyy_resp = ui.add(
-            egui::DragValue::new(&mut panel.state.kyy_frac)
+            theme::num(&mut panel.state.kyy_frac)
                 .speed(0.01)
                 .range(0.05..=1.0)
                 .prefix("kyy / Lwl: "),
         );
         let pts_resp = ui
             .add(
-                egui::DragValue::new(&mut panel.state.points)
+                theme::num(&mut panel.state.points)
                     .range(5..=200)
                     .prefix("Frequencies: "),
             )
@@ -2270,14 +2266,14 @@ fn sea_state_section(
             });
         ui.horizontal(|ui| {
             let hs = ui.add(
-                egui::DragValue::new(&mut input.hs)
+                theme::num(&mut input.hs)
                     .speed(0.05)
                     .range(0.05..=25.0)
                     .prefix("Hs: ")
                     .suffix(" m"),
             );
             let tp = ui.add(
-                egui::DragValue::new(&mut input.tp)
+                theme::num(&mut input.tp)
                     .speed(0.1)
                     .range(1.0..=30.0)
                     .prefix("Tp: ")
@@ -2289,7 +2285,7 @@ fn sea_state_section(
             if input.kind == SeaSpectrumKind::Jonswap
                 && ui
                     .add(
-                        egui::DragValue::new(&mut input.gamma)
+                        theme::num(&mut input.gamma)
                             .speed(0.05)
                             .range(1.0..=10.0)
                             .prefix("γ: "),
@@ -2320,7 +2316,7 @@ fn sea_state_section(
                     SeaPointPos::Model(x) => {
                         if ui
                             .add(
-                                egui::DragValue::new(x)
+                                theme::num(x)
                                     .speed(0.05)
                                     .range(-1000.0..=1000.0)
                                     .prefix("x: ")
@@ -2501,7 +2497,7 @@ fn unique_compartment_name(base: &str, existing: &[Compartment]) -> String {
 
 pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     let mut action = DamageAction::None;
-    ui.heading("Damage stability");
+    theme::heading(ui, "Damage stability");
     ui.add_space(4.0);
 
     // Compartments section
@@ -2565,7 +2561,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 ui.label("Permeability:");
                 if ui
                     .add(
-                        egui::DragValue::new(&mut comp.permeability)
+                        theme::num(&mut comp.permeability)
                             .speed(0.01)
                             .range(0.0..=1.0),
                     )
@@ -2582,46 +2578,28 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                         .num_columns(3)
                         .show(ui, |ui| {
                             ui.label("X range (m):");
-                            if ui
-                                .add(egui::DragValue::new(&mut comp.x_min).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut comp.x_min).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
-                            if ui
-                                .add(egui::DragValue::new(&mut comp.x_max).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut comp.x_max).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
                             ui.end_row();
 
                             ui.label("Y range (m):");
-                            if ui
-                                .add(egui::DragValue::new(&mut comp.y_min).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut comp.y_min).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
-                            if ui
-                                .add(egui::DragValue::new(&mut comp.y_max).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut comp.y_max).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
                             ui.end_row();
 
                             ui.label("Z range (m):");
-                            if ui
-                                .add(egui::DragValue::new(&mut comp.z_min).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut comp.z_min).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
-                            if ui
-                                .add(egui::DragValue::new(&mut comp.z_max).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut comp.z_max).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
                             ui.end_row();
@@ -2655,7 +2633,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Damage case picker and New / Duplicate / Delete buttons
     ui.separator();
-    ui.heading("Damage cases");
+    theme::heading(ui, "Damage cases");
     ui.add_space(4.0);
 
     let mut delete_case = false;
@@ -2908,7 +2886,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 let mut disp = case.displacement_t.unwrap_or(10.0);
                 if ui
                     .add(
-                        egui::DragValue::new(&mut disp)
+                        theme::num(&mut disp)
                             .speed(0.01)
                             .range(0.001..=f64::INFINITY),
                     )
@@ -2923,11 +2901,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 ui.label("KG (m):");
                 let mut kg = case.kg.unwrap_or(1.0);
                 if ui
-                    .add(
-                        egui::DragValue::new(&mut kg)
-                            .speed(0.01)
-                            .range(0.0..=f64::INFINITY),
-                    )
+                    .add(theme::num(&mut kg).speed(0.01).range(0.0..=f64::INFINITY))
                     .changed()
                 {
                     case.kg = Some(kg);
@@ -2939,7 +2913,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             cols[1].horizontal(|ui| {
                 ui.label("LCG (m):");
                 let mut lcg = case.lcg.unwrap_or(0.0);
-                if ui.add(egui::DragValue::new(&mut lcg).speed(0.01)).changed() {
+                if ui.add(theme::num(&mut lcg).speed(0.01)).changed() {
                     case.lcg = Some(lcg);
                     case.loading_condition_name = None;
                     action = DamageAction::Changed;
@@ -2948,7 +2922,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             cols[1].horizontal(|ui| {
                 ui.label("TCG (m):");
                 let mut tcg = case.tcg.unwrap_or(0.0);
-                if ui.add(egui::DragValue::new(&mut tcg).speed(0.01)).changed() {
+                if ui.add(theme::num(&mut tcg).speed(0.01)).changed() {
                     case.tcg = Some(tcg);
                     case.loading_condition_name = None;
                     action = DamageAction::Changed;
@@ -2978,7 +2952,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             // The results close the panel: the dimming ends with it.
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
-        ui.heading("Damaged equilibrium");
+        theme::heading(ui, "Damaged equilibrium");
         if !r.equilibrium_found {
             ui.colored_label(
                 theme::FAIL,
@@ -3939,7 +3913,7 @@ pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
 
 pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     let mut action = LoadingAction::None;
-    ui.heading("Loading condition");
+    theme::heading(ui, "Loading condition");
     ui.add_space(4.0);
 
     // Condition picker and New / Duplicate / Delete buttons
@@ -4077,7 +4051,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             ui.label("Mass (t):");
             if ui
                 .add(
-                    egui::DragValue::new(&mut cond.lightship.mass_t)
+                    theme::num(&mut cond.lightship.mass_t)
                         .speed(0.01)
                         .range(0.0..=f64::INFINITY),
                 )
@@ -4089,7 +4063,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         cols[0].horizontal(|ui| {
             ui.label("LCG x (m):");
             if ui
-                .add(egui::DragValue::new(&mut cond.lightship.x).speed(0.01))
+                .add(theme::num(&mut cond.lightship.x).speed(0.01))
                 .changed()
             {
                 action = LoadingAction::Changed;
@@ -4099,7 +4073,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         cols[1].horizontal(|ui| {
             ui.label("TCG y (m):");
             if ui
-                .add(egui::DragValue::new(&mut cond.lightship.y).speed(0.01))
+                .add(theme::num(&mut cond.lightship.y).speed(0.01))
                 .changed()
             {
                 action = LoadingAction::Changed;
@@ -4108,7 +4082,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         cols[1].horizontal(|ui| {
             ui.label("KG z (m):");
             if ui
-                .add(egui::DragValue::new(&mut cond.lightship.z).speed(0.01))
+                .add(theme::num(&mut cond.lightship.z).speed(0.01))
                 .changed()
             {
                 action = LoadingAction::Changed;
@@ -4160,7 +4134,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     }
                     if ui
                         .add(
-                            egui::DragValue::new(&mut item.mass_t)
+                            theme::num(&mut item.mass_t)
                                 .speed(0.01)
                                 .range(0.0..=f64::INFINITY),
                         )
@@ -4168,22 +4142,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     {
                         action = LoadingAction::Changed;
                     }
-                    if ui
-                        .add(egui::DragValue::new(&mut item.x).speed(0.01))
-                        .changed()
-                    {
+                    if ui.add(theme::num(&mut item.x).speed(0.01)).changed() {
                         action = LoadingAction::Changed;
                     }
-                    if ui
-                        .add(egui::DragValue::new(&mut item.y).speed(0.01))
-                        .changed()
-                    {
+                    if ui.add(theme::num(&mut item.y).speed(0.01)).changed() {
                         action = LoadingAction::Changed;
                     }
-                    if ui
-                        .add(egui::DragValue::new(&mut item.z).speed(0.01))
-                        .changed()
-                    {
+                    if ui.add(theme::num(&mut item.z).speed(0.01)).changed() {
                         action = LoadingAction::Changed;
                     }
                     if ui.button("✕").on_hover_text("Remove weight").clicked() {
@@ -4261,13 +4226,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             ui.horizontal(|ui| {
                 ui.label("Fill:");
                 let mut fill_pct = (tank.fill * 100.0).round();
-                if ui
-                    .add(
-                        egui::Slider::new(&mut fill_pct, 0.0..=100.0)
-                            .fixed_decimals(0)
-                            .suffix("%"),
-                    )
-                    .changed()
+                if theme::slider(
+                    ui,
+                    egui::Slider::new(&mut fill_pct, 0.0..=100.0)
+                        .fixed_decimals(0)
+                        .suffix("%"),
+                )
+                .changed()
                 {
                     tank.fill = (fill_pct / 100.0).clamp(0.0, 1.0);
                     action = LoadingAction::Changed;
@@ -4277,7 +4242,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 ui.label("Density (t/m³):");
                 if ui
                     .add(
-                        egui::DragValue::new(&mut tank.density_t_m3)
+                        theme::num(&mut tank.density_t_m3)
                             .speed(0.01)
                             .range(0.0..=10.0),
                     )
@@ -4288,7 +4253,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 ui.label("Perm.:");
                 if ui
                     .add(
-                        egui::DragValue::new(&mut tank.permeability)
+                        theme::num(&mut tank.permeability)
                             .speed(0.01)
                             .range(0.0..=1.0),
                     )
@@ -4305,46 +4270,28 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                         .num_columns(3)
                         .show(ui, |ui| {
                             ui.label("X range (m):");
-                            if ui
-                                .add(egui::DragValue::new(&mut tank.x_min).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut tank.x_min).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
-                            if ui
-                                .add(egui::DragValue::new(&mut tank.x_max).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut tank.x_max).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
                             ui.end_row();
 
                             ui.label("Y range (m):");
-                            if ui
-                                .add(egui::DragValue::new(&mut tank.y_min).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut tank.y_min).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
-                            if ui
-                                .add(egui::DragValue::new(&mut tank.y_max).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut tank.y_max).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
                             ui.end_row();
 
                             ui.label("Z range (m):");
-                            if ui
-                                .add(egui::DragValue::new(&mut tank.z_min).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut tank.z_min).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
-                            if ui
-                                .add(egui::DragValue::new(&mut tank.z_max).speed(0.01))
-                                .changed()
-                            {
+                            if ui.add(theme::num(&mut tank.z_max).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
                             ui.end_row();
@@ -4381,7 +4328,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             // The results close the panel: the dimming ends with it.
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
-        ui.heading("Equilibrium & hydrostatics");
+        theme::heading(ui, "Equilibrium & hydrostatics");
         if !r.equilibrium_found {
             ui.colored_label(
                 theme::WARN,
@@ -4526,7 +4473,7 @@ pub fn windage_totals(items: &[WindageItem], keel_z: f64) -> (f64, f64) {
 
 pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     let mut action = WindageAction::None;
-    ui.heading("Superstructure & windage");
+    theme::heading(ui, "Superstructure & windage");
     ui.add_space(4.0);
 
     if ui.button("+ Add windage item").clicked() {
@@ -4578,35 +4525,19 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                             ui.horizontal(|ui| {
                                 ui.label("x:");
                                 rect_changed |= ui
-                                    .add(
-                                        egui::DragValue::new(&mut rect.x_min)
-                                            .speed(0.02)
-                                            .prefix("min "),
-                                    )
+                                    .add(theme::num(&mut rect.x_min).speed(0.02).prefix("min "))
                                     .changed();
                                 rect_changed |= ui
-                                    .add(
-                                        egui::DragValue::new(&mut rect.x_max)
-                                            .speed(0.02)
-                                            .prefix("max "),
-                                    )
+                                    .add(theme::num(&mut rect.x_max).speed(0.02).prefix("max "))
                                     .changed();
                             });
                             ui.horizontal(|ui| {
                                 ui.label("z:");
                                 rect_changed |= ui
-                                    .add(
-                                        egui::DragValue::new(&mut rect.z_min)
-                                            .speed(0.02)
-                                            .prefix("min "),
-                                    )
+                                    .add(theme::num(&mut rect.z_min).speed(0.02).prefix("min "))
                                     .changed();
                                 rect_changed |= ui
-                                    .add(
-                                        egui::DragValue::new(&mut rect.z_max)
-                                            .speed(0.02)
-                                            .prefix("max "),
-                                    )
+                                    .add(theme::num(&mut rect.z_max).speed(0.02).prefix("max "))
                                     .changed();
                             });
                             ui.label(format!(
@@ -4625,7 +4556,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                                 ui.label("Area:");
                                 if ui
                                     .add(
-                                        egui::DragValue::new(&mut item.area_m2)
+                                        theme::num(&mut item.area_m2)
                                             .speed(0.02)
                                             .range(0.0..=f64::INFINITY)
                                             .suffix(" m²"),
@@ -4636,11 +4567,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                                 }
                                 ui.label("z:");
                                 if ui
-                                    .add(
-                                        egui::DragValue::new(&mut item.z_centroid)
-                                            .speed(0.02)
-                                            .suffix(" m"),
-                                    )
+                                    .add(theme::num(&mut item.z_centroid).speed(0.02).suffix(" m"))
                                     .changed()
                                 {
                                     action = WindageAction::Changed;
@@ -4837,31 +4764,68 @@ pub struct ToolbarState<'a> {
     pub params: AnalysisParams,
     pub level: u8,
     pub mode: SubdivisionMode,
-    pub maximised: bool,
-    /// A model is loaded. Without one the view controls (analysis mode,
-    /// display toggles, Fit, Maximise) are disabled; the subdivision level
+    /// A model is loaded. Without one the view controls (analysis mode and
+    /// display toggles) are disabled; the subdivision level
     /// and scheme stay editable, as settings the next model is shown with.
     pub has_model: bool,
 }
 
-/// The one line a dock shows with no model loaded, in place of controls
-/// that would have nothing to act on.
-pub const NO_MODEL_NOTE: &str = "No model — start a new design or open one";
-
-/// Draw [`NO_MODEL_NOTE`], muted and small enough for one line in the
-/// layer dock, at the top of a dock. The dock keeps its width: a panel
-/// would otherwise shrink to the note and widen again when a model arrives.
-pub fn no_model_note(ui: &mut egui::Ui) {
+/// A dock with no model loaded: empty, at its full width. The status bar
+/// and the start card say that there is no model; a dock that shrank to
+/// nothing would jump when a model arrives.
+pub fn empty_dock(ui: &mut egui::Ui) {
     ui.set_min_width(ui.available_width());
-    ui.add_space(4.0);
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(NO_MODEL_NOTE)
-                .small()
-                .color(theme::TEXT_MUTED),
-        )
-        .truncate(),
-    );
+}
+
+/// A small muted heading over a group of menu items.
+pub fn menu_heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(theme::TEXT_MUTED));
+}
+
+/// What the keyboard and the mouse do, as (keys, what happens) rows for
+/// Help > Keyboard and mouse. `keys` formats a shortcut for this platform.
+pub fn shortcuts(
+    keys: &dyn Fn(egui::Modifiers, egui::Key) -> String,
+) -> Vec<(String, &'static str)> {
+    let command = egui::Modifiers::COMMAND;
+    let plain = |text: &str| text.to_owned();
+    vec![
+        (plain("Click"), "Select a control point"),
+        (plain("Shift+click"), "Select a second point"),
+        (plain("Drag a point"), "Move it in the view's plane"),
+        (
+            plain("X, Y or Z while dragging"),
+            "Keep the point on that axis",
+        ),
+        (plain("Esc"), "Clear the selection"),
+        (plain("Drag empty space, or middle drag"), "Pan"),
+        (plain("Right drag in Perspective"), "Orbit"),
+        (plain("Wheel"), "Zoom at the pointer"),
+        (plain("F"), "Frame the model in every view"),
+        (plain("1 – 4"), "Make a view the active one"),
+        (
+            keys(command, egui::Key::Space),
+            "Maximise the active view, or restore the four",
+        ),
+        (plain("Space"), "Shaded hull on or off"),
+        (plain("F5"), "Recompute the results that are out of date"),
+        (keys(command, egui::Key::Z), "Undo"),
+        (keys(command, egui::Key::Y), "Redo"),
+    ]
+}
+
+/// Draw [`shortcuts`] as two columns: the keys, then what they do.
+pub fn shortcut_list(ui: &mut egui::Ui, rows: &[(String, &'static str)]) {
+    egui::Grid::new("shortcut_list")
+        .num_columns(2)
+        .spacing([16.0, 4.0])
+        .show(ui, |ui| {
+            for (keys, what) in rows {
+                ui.label(egui::RichText::new(keys).color(theme::TEXT_PRIMARY));
+                ui.label(egui::RichText::new(*what).color(theme::TEXT_SECONDARY));
+                ui.end_row();
+            }
+        });
 }
 
 /// The intersection-curve counts and the comb settings, for the toolbar's
@@ -4898,7 +4862,7 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
             ] {
                 ui.label(label);
                 changed |= ui
-                    .add(egui::DragValue::new(value).range(range).speed(0.1))
+                    .add(theme::num(value).range(range).speed(0.1))
                     .on_hover_text(tip)
                     .changed();
                 ui.end_row();
@@ -4912,7 +4876,7 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
             ui.label("scale");
             changed |= ui
                 .add(
-                    egui::DragValue::new(&mut display.comb_scale)
+                    theme::num(&mut display.comb_scale)
                         .range(COMB_SCALE_RANGE)
                         .speed(0.01)
                         .max_decimals(2),
@@ -4923,7 +4887,7 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
             ui.label("density");
             changed |= ui
                 .add(
-                    egui::DragValue::new(&mut display.comb_stride)
+                    theme::num(&mut display.comb_stride)
                         .range(COMB_STRIDE_RANGE)
                         .speed(0.05)
                         .prefix("1/"),
@@ -4944,15 +4908,10 @@ pub struct ToolbarOutput {
     pub display: Option<DisplayOptions>,
     pub level: Option<u8>,
     pub mode: Option<SubdivisionMode>,
-    /// Frame the model in every view (F).
-    pub fit: bool,
-    /// Maximise the active view, or restore the four views.
-    pub toggle_maximise: bool,
     /// Where each control was drawn, by name (a test hook): `shaded`,
     /// `zebra`, `curvature`, `draft`, `param`, `net`, `points`,
     /// `waterplane`, `curves`, `combs`, `sections` (the counts menu),
-    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`,
-    /// `fit`, `maximise`.
+    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`.
     pub rects: Vec<(&'static str, egui::Rect)>,
 }
 
@@ -4961,25 +4920,17 @@ const LEVEL_ITEMS: [&str; 6] = [
 ];
 
 /// The slim toolbar under the menu bar: analysis mode and its parameter,
-/// display toggles, subdivision level and scheme, Fit and Maximise. One row
+/// display toggles, subdivision level and scheme. One row
 /// at 1600 px; it wraps on a narrower window.
 pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
     let mut out = ToolbarOutput::default();
-    let ctx = ui.ctx().clone();
-    let keys = |modifiers: egui::Modifiers, key: egui::Key| {
-        ctx.format_shortcut(&egui::KeyboardShortcut::new(modifiers, key))
-    };
-    let fit_key = keys(egui::Modifiers::NONE, egui::Key::F);
-    let max_key = keys(egui::Modifiers::COMMAND, egui::Key::Space);
-
     ui.horizontal_wrapped(|ui| {
         // Analysis mode: a segmented control.
         let current = state.display.analysis;
-        ui.horizontal(|ui| {
+        theme::segmented(ui, |ui| {
             if !state.has_model {
                 ui.disable();
             }
-            ui.spacing_mut().item_spacing.x = 0.0;
             for (name, kind, label, tip) in [
                 (
                     "shaded",
@@ -5059,7 +5010,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY));
                     let response = ui
                         .add(
-                            egui::DragValue::new(&mut value)
+                            theme::num(&mut value)
                                 .range(range)
                                 .speed(speed)
                                 .max_decimals(2)
@@ -5073,9 +5024,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                             AnalysisMode::Curvature { .. } => {
                                 AnalysisMode::Curvature { radius: value }
                             }
-                            AnalysisMode::Draft { .. } => {
-                                AnalysisMode::Draft { angle_deg: value }
-                            }
+                            AnalysisMode::Draft { .. } => AnalysisMode::Draft { angle_deg: value },
                         });
                     }
                     out.rects.push(("param", response.rect));
@@ -5130,7 +5079,8 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     &mut display.wireframe,
                 ),
             ] {
-                let response = ui.selectable_label(*flag, label).on_hover_text(tip);
+                let response =
+                    theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
                 if response.clicked() {
                     *flag = !*flag;
                     toggled = true;
@@ -5145,7 +5095,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     }
                 })
                 .response
-                .on_hover_text("Section counts (stations, waterlines, buttocks) and comb scale and density");
+                .on_hover_text(
+                    "Section counts (stations, waterlines, buttocks) and comb scale and density",
+                );
             out.rects.push(("sections", menu.rect));
         });
         if toggled {
@@ -5154,19 +5106,21 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.separator();
 
         // Subdivision level and scheme, applied through the setters.
+        ui.label(egui::RichText::new("Precision").color(theme::TEXT_SECONDARY));
         let mut level = state.level;
         let combo = egui::ComboBox::from_id_salt("toolbar_level")
-            .selected_text(format!("L{level}"))
-            .width(44.0)
+            .selected_text(format!("Level {level}"))
+            .width(68.0)
             .show_ui(ui, |ui| {
                 for (n, name) in LEVEL_ITEMS.iter().enumerate() {
                     let response = ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
                     out.rects.push((name, response.rect));
                 }
             });
-        let combo = combo
-            .response
-            .on_hover_text("Subdivision level, for display and measurement (0–5)");
+        let combo = combo.response.on_hover_text(
+            "How finely the hull is subdivided, for display and for measurement: \
+                 a higher level is smoother and slower (0–5)",
+        );
         out.rects.push(("level", combo.rect));
         if level != state.level {
             out.level = Some(level);
@@ -5189,30 +5143,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         if mode != state.mode {
             out.mode = Some(mode);
         }
-        ui.separator();
-
-        let fit = ui
-            .add_enabled(state.has_model, egui::Button::new("Fit"))
-            .on_hover_text(format!("Frame the model in every view ({fit_key})"));
-        out.fit = fit.clicked();
-        out.rects.push(("fit", fit.rect));
-        // A framed button like Fit (an action, not a display toggle),
-        // highlighted while a view is maximised.
-        let max = ui
-            .add_enabled(
-                state.has_model,
-                egui::Button::new(if state.maximised {
-                    "Restore"
-                } else {
-                    "Maximise"
-                })
-                .selected(state.maximised),
-            )
-            .on_hover_text(format!(
-                "Maximise the active view, or restore the four views ({max_key}, or double-click a view's title)"
-            ));
-        out.toggle_maximise = max.clicked();
-        out.rects.push(("maximise", max.rect));
     });
     out
 }
@@ -6048,7 +5978,7 @@ mod tests {
     }
 
     #[test]
-    fn the_readout_goes_two_columns_from_a_340_px_dock() {
+    fn the_readout_goes_two_columns_from_a_364_px_dock() {
         assert!(!hydro_two_columns(300.0));
         assert!(hydro_two_columns(HYDRO_TWO_COLUMN_WIDTH));
         let h = measured();
@@ -6118,13 +6048,13 @@ mod tests {
         // Narrow: one column, KM(t) under volume.
         let (volume, km, _) = layout(300.0);
         assert!((km.left() - volume.left()).abs() < 1.0 && km.top() > volume.top());
-        // 340 px: KM(t) heads the right column, level with the first rows.
-        let (volume, km, midship) = layout(340.0);
+        // 364 px: KM(t) heads the right column, level with the first rows.
+        let (volume, km, midship) = layout(364.0);
         assert!(km.left() > volume.right() + 40.0, "{volume:?} / {km:?}");
         assert!(km.top() - volume.top() < 30.0, "{volume:?} / {km:?}");
         assert!((midship.left() - km.left()).abs() < 1.0, "{midship:?}");
-        // The default 360 px dock is two columns as well.
-        let (volume, km, _) = layout(360.0);
+        // The default 384 px dock is two columns as well.
+        let (volume, km, _) = layout(384.0);
         assert!(km.left() > volume.right() + 40.0, "{volume:?} / {km:?}");
     }
 
@@ -6676,6 +6606,10 @@ pub enum TemplatesAction {
     Export,
 }
 
+/// A tiled set of more pages than this gets a warning under its page count: every page is a
+/// sheet to print, trim and join by hand.
+pub const TEMPLATES_MANY_PAGES: usize = 40;
+
 /// Shown in place of the page count while the station list on screen does not read.
 pub const STATION_LIST_ERROR: &str = "Not a list of positions: write x, x, … in metres";
 
@@ -6732,18 +6666,11 @@ pub fn templates_options(
             match &mut params.stations {
                 StationChoice::Count(n) => {
                     ui.data_mut(|d| d.remove::<String>(list_id));
-                    ui.add(
-                        egui::DragValue::new(n).range(2..=seacraft_core::templates::MAX_STATIONS),
-                    );
+                    ui.add(theme::num(n).range(2..=seacraft_core::templates::MAX_STATIONS));
                 }
                 StationChoice::Spacing(s) => {
                     ui.data_mut(|d| d.remove::<String>(list_id));
-                    ui.add(
-                        egui::DragValue::new(s)
-                            .speed(0.01)
-                            .range(0.05..=10.0)
-                            .suffix(" m"),
-                    );
+                    ui.add(theme::num(s).speed(0.01).range(0.05..=10.0).suffix(" m"));
                 }
                 StationChoice::At(xs) => {
                     let shown = xs
@@ -6766,7 +6693,7 @@ pub fn templates_options(
 
             ui.label("Skin to deduct:");
             ui.add(
-                egui::DragValue::new(&mut params.skin_mm)
+                theme::num(&mut params.skin_mm)
                     .speed(0.1)
                     .range(0.0..=seacraft_core::templates::MAX_SKIN_M * 1000.0)
                     .suffix(" mm"),
@@ -6784,7 +6711,7 @@ pub fn templates_options(
                     params.strongback_z = on.then_some(2.0);
                 }
                 if let Some(z) = &mut params.strongback_z {
-                    ui.add(egui::DragValue::new(z).speed(0.01).suffix(" m"));
+                    ui.add(theme::num(z).speed(0.01).suffix(" m"));
                 }
             });
             ui.end_row();
@@ -6803,11 +6730,11 @@ pub fn templates_options(
                     });
                 }
                 if let Some(t) = &mut params.transom {
-                    ui.add(egui::DragValue::new(&mut t.x).speed(0.01).suffix(" m"));
+                    ui.add(theme::num(&mut t.x).speed(0.01).suffix(" m"));
                     ui.label("rake");
                     let max = seacraft_core::templates::MAX_TRANSOM_RAKE_DEG;
                     ui.add(
-                        egui::DragValue::new(&mut t.rake_deg)
+                        theme::num(&mut t.rake_deg)
                             .speed(0.5)
                             .range(-max..=max)
                             .suffix("°"),
@@ -6836,7 +6763,7 @@ pub fn templates_options(
 
             ui.label("Margin:");
             ui.add(
-                egui::DragValue::new(&mut params.margin_mm)
+                theme::num(&mut params.margin_mm)
                     .speed(0.5)
                     .range(0.0..=50.0)
                     .suffix(" mm"),
@@ -6845,7 +6772,7 @@ pub fn templates_options(
 
             ui.label("Overlap:");
             ui.add(
-                egui::DragValue::new(&mut params.overlap_mm)
+                theme::num(&mut params.overlap_mm)
                     .speed(0.5)
                     .range(0.0..=50.0)
                     .suffix(" mm"),
@@ -6892,6 +6819,15 @@ pub fn templates_options(
             warnings,
         } => {
             ui.label(format!("{pages} pages, {sheets} patterns"));
+            if *pages > TEMPLATES_MANY_PAGES && !params.single_page {
+                ui.colored_label(
+                    theme::WARN,
+                    format!(
+                        "{pages} pages to print, trim and join. A larger paper, or one page a \
+                         pattern on a plotter, needs fewer."
+                    ),
+                );
+            }
             if !warnings.is_empty() {
                 egui::ScrollArea::vertical()
                     .max_height(120.0)
@@ -6907,8 +6843,14 @@ pub fn templates_options(
         }
     }
     ui.separator();
+    // The window's one action: filled, once there is something to export.
     let ready = matches!(status, TemplatesStatus::Ready { .. });
-    ui.add_enabled(ready, egui::Button::new("Export…"))
+    let export = if ready {
+        theme::primary_button("Export…")
+    } else {
+        egui::Button::new("Export…")
+    };
+    ui.add_enabled(ready, export)
         .clicked()
         .then_some(TemplatesAction::Export)
 }
