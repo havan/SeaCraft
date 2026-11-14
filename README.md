@@ -589,6 +589,16 @@ under File ▸ Builder templates…, and the MCP server as `export_templates` an
 `export_offsets_pdf`. [`docs/building.md`](docs/building.md) is the builder's
 guide.
 
+`seacraft panels` lays a hard-chine hull's plywood panels flat for
+stitch-and-glue. Panels come from the layers and creases of the refined half
+model; each is flattened with the least stretch (the as-rigid-as-possible
+method of Liu et al., 2008) and drawn full size with station lines, seam ticks
+and what each edge is stitched to. A panel whose seams drift over 2 mm or that
+must stretch over 0.1 % RMS does not lie flat, and then nothing is written
+unless `--allow-undevelopable` is given; the limits are provisional. Offsets
+from a baseline (`--offsets-csv`, `--offsets-pdf`) and a count of plywood
+sheets end to end come with it. The GUI and MCP do not have it yet.
+
 ---
 
 ## 3. Command line
@@ -607,6 +617,11 @@ seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks 
 seacraft templates hull.fef -o moulds.pdf|.svg|.dxf [--stations N | --spacing M | --at x1,x2,...]
                               [--skin-mm MM] [--half] [--strongback Z] [--waterlines h1,h2,...]
                               [--profile] [--transom X,RAKE] [--paper a4|a3|letter|WxH] [--single-page]
+                              [--margin-mm MM] [--overlap-mm MM] [--scale 1:N] [--imperial] [--json]
+seacraft panels    hull.fef -o panels.pdf|.svg|.dxf [--layer NAME]... [--stations N | --spacing M | --at x1,...]
+                              [--max-seam-drift-mm 2] [--max-stretch-pct 0.1] [--allow-undevelopable]
+                              [--offsets-csv out.csv] [--offsets-pdf out.pdf] [--offset-spacing-mm 250]
+                              [--stock-mm 2440x1220] [--scarf-mm MM] [--paper ...] [--single-page]
                               [--margin-mm MM] [--overlap-mm MM] [--scale 1:N] [--imperial] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]

@@ -20,6 +20,11 @@ program computed from the hull. They have not been compared with a built boat, a
 measured. A builder must print at 100 %, measure the printed calibration rules, and check dimensions against
 the design before cutting anything.
 
+Plywood panel patterns are the least-stretch flattening of the modelled surface. Their stretch and seam drift
+are geometry measured against the model, not a bending test of plywood: a panel the program says lies flat may
+still not take the shape, and no plywood thickness is allowed for. The 2 mm and 0.1 % limits are the project's
+provisional judgement, not a published rule, and no boat has yet been built from these patterns.
+
 Results can be wrong, including results that look plausible. A qualified person must check them
 independently before anyone relies on them for a design, construction, operating or safety decision.
 

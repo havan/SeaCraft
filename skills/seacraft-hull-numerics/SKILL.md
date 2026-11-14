@@ -60,6 +60,18 @@ Breaking any of these produces plausible-looking but wrong numbers.
 
 These were real failures in this codebase; the fixes are load-bearing.
 
+* **Panels are found on the half mesh.** `panels::find_panels` uses
+  `subdiv::evaluate`, never `evaluate_full`: `mirror_symmetric` does not copy
+  creases, so the mirrored side would have no chines. A symmetric panel is
+  joined to its mirror only when it meets it flat across `y = 0`.
+* **Flattening is least stretch, not a bending model.** `flatten::flatten` is
+  ARAP (Liu et al. 2008). Keep every cotangent weight positive by raising each
+  one on its own: lowering one (to balance an edge whose two cotangents sum
+  below zero) can make a triangle's best rotation wrong, and a planar transom of
+  obtuse triangles then folds. An outline's straight edge read back from a
+  `.fef` is many nearly collinear pieces; `segments_cross` treats orientations
+  within rounding as collinear, or the panel is refused as crossing itself.
+
 * **Patterns are cut as the offsets table is cut.** `templates::cut` uses the
   same refined `Hull`, `plane_segments` and `chain_paths` as the offsets table,
   so the table agrees at a station with the pattern's hull line (the dashed

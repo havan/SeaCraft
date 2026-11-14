@@ -114,6 +114,56 @@ writes half-breadths on waterlines and heights on buttocks, in millimetres above
 the same tables again in feet-inches-eighths (`6-6-6` is 6 ft 6 6/8 in; a `+` is one sixteenth more). A dash means
 the section does not reach that line.
 
+## Plywood panels
+
+For a hard-chine boat built stitch-and-glue, `seacraft panels` lays each panel flat:
+
+```console
+seacraft panels skiff.fef -o panels.pdf --offsets-csv panels.csv --offsets-pdf offsets.pdf
+```
+
+**Panels come from the model's layers and creases.** Mark the layers to cut (Bottom, Side) as developable, or
+name them with `--layer`. Each piece of a layer between creases is one panel, named after the layer (`Side`, or
+`Side 1`, `Side 2` from the lowest up). Every crease must run from edge to edge of its panel: one that stops
+inside a panel cannot be cut, and the program refuses that panel and says where the crease ends. A symmetric
+panel that meets its mirror flat across the centreline, like a flat bottom, is one piece, with its centreline
+drawn on it; an edge that crosses the centreline, such as the bottom's edge to the transom, is measured whole. Any
+other, like the halves of a V bottom, is cut twice, one turned over.
+
+**Each pattern** has its cut line, the station lines, a tick wherever a station crosses an edge, and what each edge
+is stitched to. The ticks are where the two panels' edges meet, and they match from either end, so start stitching
+at the transom or the bow.
+
+**Does it lie flat?** Plywood bends one way at a time; a panel curved two ways must stretch to lie flat, and a
+sheet does not stretch. The program finds the flat shape with the least stretch and reports:
+
+- seam drift: how much an edge laid flat is longer or shorter than on the model, up to each station tick, the
+  worse of measuring from either end;
+- mismatch: how far each edge differs from the edge it is stitched to, at the ticks. Two panels can each pass
+  their drift limit and still differ by twice it; the mismatch is printed, not judged against a limit;
+- stretch: how much the panel must stretch to lie flat, RMS and largest, in per cent;
+- the outline's shift to the next refinement level, which tells you whether the model is refined enough;
+- the edge-joining gap, an older and coarser measure kept beside it.
+
+Over 2 mm of drift or 0.1 % RMS stretch, a panel does not lie flat. Nothing is written then, unless you pass
+`--allow-undevelopable`, and that pattern is headed "Does not lie flat". These limits are the project's first
+guess, not a published rule: change them with `--max-seam-drift-mm` and `--max-stretch-pct`, and expect them to
+change once a boat has been built from these patterns. A round-bilge hull such as the demo hull does not lie flat
+in plywood; that is the right answer, not a fault.
+
+**Offsets.** `--offsets-csv` and `--offsets-pdf` give each panel as offsets from a straight baseline along its
+lowest edge, every 250 mm (`--offset-spacing-mm`), for marking out with a batten instead of a full-size print. A
+spacing that gives more than 1000 rows across a panel is refused.
+
+**Plywood.** Each panel is laid along 2440 × 1220 mm sheets end to end (`--stock-mm 2440x1220`), with the sheet
+ends and joints drawn on the pattern; `--scarf-mm` sets the overlap of a scarf joint. The total is an upper bound:
+the program does not nest panels together. A panel wider than a sheet, or one that would need more than 100
+sheets end to end (a scarf nearly as long as the sheet), is reported, not split and not counted, and the count
+names it. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways) is named
+in the table and on every pattern of the set, and is not counted either.
+
+The patterns allow no plywood thickness: they are the modelled surface.
+
 ## Smoother lines
 
 The patterns are cut from the refined hull, a mesh of flat pieces. Each sheet gives the longest straight piece
@@ -124,5 +174,6 @@ along its section. If that is more than a few tens of millimetres on a curved pa
 
 The patterns are geometry computed from the hull you gave it. The program does not know your real plywood or plank
 thickness, how your printer scales, how the material will bend, or whether the design itself is sound. Nobody has
-yet printed a set of these patterns and measured it, or built a boat on them. Measure the rules, check a few
+yet printed a set of these patterns and measured it, or built a boat on them. The panels' stretch and drift are
+measured against the model; they are not a bending test of plywood. Measure the rules, check a few
 dimensions against the table of offsets before cutting, and read [`DISCLAIMER.md`](../DISCLAIMER.md).
