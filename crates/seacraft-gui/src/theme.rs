@@ -10,16 +10,41 @@
 //! No other module writes a colour literal (`Color32::from_rgb` and friends);
 //! the test at the bottom of this file reads the sources and enforces it.
 
-use eframe::egui::{self, Color32, FontFamily, FontId, TextStyle};
+use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle};
 
 // ---- surfaces ----------------------------------------------------------
 
 /// Viewport background: dark slate.
 pub const CANVAS: Color32 = Color32::from_rgb(0x13, 0x19, 0x21);
-/// Dock and window background (egui's dark panel grey, made explicit).
-pub const PANEL: Color32 = Color32::from_gray(27);
+/// Dock and window background: the canvas slate, one step lighter, so the
+/// docks and the viewports read as one surface family.
+pub const PANEL: Color32 = Color32::from_rgb(0x1a, 0x21, 0x2b);
 /// Every other row of an engineering table, a shade above the panel.
-pub const TABLE_STRIPE: Color32 = Color32::from_gray(33);
+pub const TABLE_STRIPE: Color32 = Color32::from_rgb(0x1f, 0x27, 0x32);
+/// Floating windows and menus, a step above the panel they cover.
+pub const WINDOW: Color32 = Color32::from_rgb(0x1e, 0x26, 0x31);
+/// A button at rest: raised above the panel. Something that does a thing.
+pub const RAISED: Color32 = Color32::from_rgb(0x2a, 0x34, 0x42);
+/// A button under the pointer, and while it is pressed.
+pub const RAISED_HOVER: Color32 = Color32::from_rgb(0x34, 0x40, 0x50);
+pub const RAISED_ACTIVE: Color32 = Color32::from_rgb(0x3e, 0x4c, 0x5f);
+/// A field that takes a value: sunk below the panel, with an outline.
+/// Something that holds a thing.
+pub const FIELD: Color32 = Color32::from_rgb(0x10, 0x15, 0x1c);
+pub const FIELD_HOVER: Color32 = Color32::from_rgb(0x14, 0x1b, 0x24);
+/// Outlines: of a field and a button at rest, and under the pointer.
+pub const OUTLINE: Color32 = Color32::from_rgb(0x36, 0x43, 0x53);
+pub const OUTLINE_HOVER: Color32 = Color32::from_rgb(0x52, 0x65, 0x7c);
+/// The fill of the selected thing: the active layer, the open tab, the
+/// chosen one of several. Never a switch that is merely on.
+pub const SELECTED: Color32 = Color32::from_rgb(0x24, 0x56, 0x8a);
+/// A display switch that is on: brighter than a button, and not the
+/// selection colour, so "on" and "selected" are told apart.
+pub const SWITCH_ON: Color32 = Color32::from_rgb(0x45, 0x55, 0x6b);
+/// Text on [`SELECTED`] and on the primary button.
+pub const TEXT_ON_ACCENT: Color32 = Color32::from_rgb(0xf2, 0xf6, 0xfa);
+/// The primary button of a dialog: the one action it exists for.
+pub const PRIMARY: Color32 = Color32::from_rgb(0x2f, 0x6f, 0xb0);
 /// Plot area background, a shade below the canvas.
 pub const PLOT_BG: Color32 = Color32::from_rgb(0x0f, 0x14, 0x1b);
 /// Viewport frame, inactive and active.
@@ -35,6 +60,8 @@ pub const HUD_BACKING: Color32 = Color32::from_rgba_unmultiplied_const(0x13, 0x1
 pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(0xdc, 0xe3, 0xea);
 /// Quantity names, captions on the canvas.
 pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(0x8e, 0x9e, 0xae);
+/// A plain label: between a value and a quantity's name.
+pub const TEXT_LABEL: Color32 = Color32::from_rgb(0xb6, 0xc2, 0xce);
 /// Units and other supporting text.
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x6f, 0x7f, 0x90);
 
@@ -176,10 +203,13 @@ pub fn layer_colour(rgb: i32) -> Color32 {
 
 /// Headings.
 pub const HEADING_SIZE: f32 = 15.0;
+/// Corner radius of buttons and fields, and of windows and menus.
+pub const RADIUS: u8 = 4;
+pub const WINDOW_RADIUS: u8 = 8;
 /// Body text, labels and quantity names.
-pub const BODY_SIZE: f32 = 12.0;
+pub const BODY_SIZE: f32 = 13.0;
 /// Buttons.
-pub const BUTTON_SIZE: f32 = 12.0;
+pub const BUTTON_SIZE: f32 = 13.0;
 /// Small print. Never a quantity's name.
 pub const SMALL_SIZE: f32 = 11.0;
 /// Numeric values.
@@ -252,11 +282,129 @@ pub fn style(style: &mut egui::Style) {
     spacing.window_margin = egui::Margin::same(8);
     spacing.menu_margin = egui::Margin::same(4);
 
+    spacing.button_padding = egui::vec2(8.0, 3.0);
+    spacing.interact_size.y = 22.0;
+
     let visuals = &mut style.visuals;
     visuals.panel_fill = PANEL;
-    visuals.window_fill = PANEL;
+    visuals.window_fill = WINDOW;
+    visuals.window_stroke = Stroke::new(1.0, OUTLINE);
+    visuals.window_corner_radius = CornerRadius::same(WINDOW_RADIUS);
+    visuals.menu_corner_radius = CornerRadius::same(WINDOW_RADIUS - 2);
     visuals.warn_fg_color = WARN;
     visuals.error_fg_color = FAIL;
+    visuals.hyperlink_color = AXIS_Z;
+    visuals.faint_bg_color = TABLE_STRIPE;
+    // Text fields: sunk, with the resting outline (egui draws it from
+    // `widgets.inactive.bg_stroke`) and the accent when focused.
+    visuals.extreme_bg_color = FIELD;
+    visuals.selection.bg_fill = SELECTED;
+    visuals.selection.stroke = Stroke::new(1.0, TEXT_ON_ACCENT);
+
+    let radius = CornerRadius::same(RADIUS);
+    let w = &mut visuals.widgets;
+    // Labels, separators and frames. Headings and values ask for
+    // TEXT_PRIMARY themselves; a plain label is a quantity's name.
+    w.noninteractive.bg_fill = PANEL;
+    w.noninteractive.weak_bg_fill = PANEL;
+    w.noninteractive.bg_stroke = Stroke::new(1.0, FRAME);
+    w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT_LABEL);
+    w.noninteractive.corner_radius = radius;
+    for (v, fill, outline, text) in [
+        (&mut w.inactive, RAISED, OUTLINE, TEXT_PRIMARY),
+        (&mut w.hovered, RAISED_HOVER, OUTLINE_HOVER, TEXT_ON_ACCENT),
+        (&mut w.active, RAISED_ACTIVE, ACCENT, TEXT_ON_ACCENT),
+        (&mut w.open, RAISED_HOVER, OUTLINE_HOVER, TEXT_PRIMARY),
+    ] {
+        v.bg_fill = fill;
+        v.weak_bg_fill = fill;
+        v.bg_stroke = Stroke::new(1.0, outline);
+        v.fg_stroke = Stroke::new(1.0, text);
+        v.corner_radius = radius;
+        v.expansion = 0.0;
+    }
+}
+
+/// A section heading: the brightest text in a dock, so the eye finds the
+/// section before its contents.
+pub fn heading(ui: &mut egui::Ui, text: impl Into<String>) -> egui::Response {
+    ui.label(egui::RichText::new(text).heading().color(TEXT_PRIMARY))
+}
+
+/// Runs `add` with the visuals of a value field: sunk and outlined, where a
+/// button is raised. egui draws a `DragValue` as a button, so without this
+/// a number to edit and an action to press look the same.
+pub fn as_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let w = &mut ui.visuals_mut().widgets;
+        for (v, fill) in [
+            (&mut w.inactive, FIELD),
+            (&mut w.hovered, FIELD_HOVER),
+            (&mut w.active, FIELD_HOVER),
+        ] {
+            v.bg_fill = fill;
+            v.weak_bg_fill = fill;
+        }
+        add(ui)
+    })
+    .inner
+}
+
+/// A numeric field: an `egui::DragValue` drawn as a field (see [`as_field`]).
+/// It forwards the builder methods the app uses.
+#[must_use = "add it with `ui.add`"]
+pub struct Num<'a>(egui::DragValue<'a>);
+
+/// A numeric field on `value`.
+pub fn num<N: egui::emath::Numeric>(value: &mut N) -> Num<'_> {
+    Num(egui::DragValue::new(value))
+}
+
+impl<'a> Num<'a> {
+    pub fn speed(self, speed: impl Into<f64>) -> Self {
+        Self(self.0.speed(speed))
+    }
+    pub fn range<N: egui::emath::Numeric>(self, range: std::ops::RangeInclusive<N>) -> Self {
+        Self(self.0.range(range))
+    }
+    pub fn prefix(self, prefix: impl egui::IntoAtoms<'a>) -> Self {
+        Self(self.0.prefix(prefix))
+    }
+    pub fn suffix(self, suffix: impl egui::IntoAtoms<'a>) -> Self {
+        Self(self.0.suffix(suffix))
+    }
+    pub fn fixed_decimals(self, n: usize) -> Self {
+        Self(self.0.fixed_decimals(n))
+    }
+    pub fn max_decimals(self, n: usize) -> Self {
+        Self(self.0.max_decimals(n))
+    }
+    pub fn update_while_editing(self, update: bool) -> Self {
+        Self(self.0.update_while_editing(update))
+    }
+}
+
+impl egui::Widget for Num<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        as_field(ui, |ui| ui.add(self.0))
+    }
+}
+
+/// The primary button of a dialog: filled with the accent, one per dialog.
+pub fn primary_button<'a>(text: impl Into<String>) -> egui::Button<'a> {
+    egui::Button::new(egui::RichText::new(text).color(TEXT_ON_ACCENT)).fill(PRIMARY)
+}
+
+/// Runs `add` with a switch's visuals: a `selectable_label` that is on is
+/// drawn raised and bright, not in the selection colour.
+pub fn as_switch<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let v = ui.visuals_mut();
+        v.selection.bg_fill = SWITCH_ON;
+        v.selection.stroke = Stroke::new(1.0, TEXT_ON_ACCENT);
+        add(ui)
+    })
+    .inner
 }
 
 /// Apply the theme to every style of `ctx` (dark and light).

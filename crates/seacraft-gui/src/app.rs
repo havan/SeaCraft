@@ -1572,11 +1572,11 @@ impl App {
             egui::Panel::right("analysis_dock_wide")
                 .resizable(true)
                 .default_size((window * 0.55).round())
-                .size_range(360.0..=(window * 0.85).round())
+                .size_range(384.0..=(window * 0.85).round())
         } else {
             egui::Panel::right("analysis_dock")
                 .resizable(true)
-                .default_size(360.0)
+                .default_size(384.0)
         };
         let mut tab = self.dock_tab;
         let mut toggle_wide = false;
@@ -1632,7 +1632,7 @@ impl App {
             panels::target_strip(ui, &targets, hydro_stale);
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
-                // Tight enough that the five tabs fit one row at 360 px.
+                // Tight enough that the five tabs fit one row at 384 px.
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
                 for (i, t) in DesignDock::ALL.into_iter().enumerate() {
@@ -1888,7 +1888,7 @@ impl App {
             let active_layer = self.active_layer();
             egui::Panel::left("layer_panel")
                 .resizable(true)
-                .default_size(250.0)
+                .default_size(264.0)
                 .show(ui, |ui| {
                     // The selection Inspector sits directly under the layer
                     // list, both in one scroll area, so the eye does not
@@ -3130,7 +3130,7 @@ impl App {
             .show(ui.ctx(), |ui| {
                 ui.label("There are unsaved changes. Save them first?");
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.add(crate::theme::primary_button("Save")).clicked() {
                         choice = Some(Some(action));
                     }
                     if ui.button("Discard").clicked() {
@@ -4695,6 +4695,9 @@ impl App {
             .open(&mut open)
             .resizable(true)
             .default_width(440.0)
+            // Room for every option and Export: egui's default window height is
+            // less, and the scroll area would hide the button below the fold.
+            .default_height(640.0)
             .show(ui.ctx(), |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(640.0)

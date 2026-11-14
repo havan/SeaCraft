@@ -37,6 +37,12 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - MCP: `export_templates` and `export_offsets_pdf`, headless and connected, and a `seacraft-boatbuilding` skill
   that has the agent ask for the skin thickness and relay every warning.
 - The DejaVu fonts moved into the core crate; PDFs embed a subset of DejaVu Sans. No change to the GUI's text.
+- GUI look: the docks, windows and menus take the viewports' slate instead of neutral grey; a field that holds a
+  value is sunk and outlined where a button is raised; the selection blue marks only what is selected (the active
+  layer, the open tab, the shading mode), and a display switch that is on is drawn raised instead; section headings
+  are the brightest text in a dock; body text is 13 px; Create and the unsaved-changes Save are filled primary
+  buttons. The analysis dock opens 384 px wide and the layer panel 264 px, and the hydrostatics readout goes two
+  columns from a 364 px dock. The Builder templates window opens tall enough to show Export.
 - Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
   open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
   midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is

@@ -132,7 +132,7 @@ pub fn start_card(
     };
     ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
         egui::Frame::new()
-            .fill(theme::PANEL)
+            .fill(theme::WINDOW)
             .stroke(egui::Stroke::new(1.0, theme::FRAME))
             .corner_radius(6.0)
             .inner_margin(egui::Margin::same(20))
@@ -708,7 +708,7 @@ pub(crate) fn optional(
         Some(v) => {
             changed |= ui
                 .add(
-                    egui::DragValue::new(v)
+                    theme::num(v)
                         .speed(speed)
                         .range(0.0..=1.0e5)
                         .fixed_decimals(decimals),
@@ -767,7 +767,7 @@ pub fn new_design_dialog(ctx: &egui::Context, state: &mut NewDesignState) -> New
                     StartFrom::Import => "Open…",
                     _ => "Create",
                 };
-                let create = ui.add_enabled(state.can_create(), egui::Button::new(label));
+                let create = ui.add_enabled(state.can_create(), theme::primary_button(label));
                 state.rects.create = create.rect;
                 if create.clicked() {
                     action = NewDesignAction::Create(state.request());
@@ -869,8 +869,8 @@ fn principal(ui: &mut egui::Ui, state: &mut NewDesignState) {
         .num_columns(6)
         .spacing(egui::vec2(8.0, 6.0))
         .show(ui, |ui| {
-            fn dim(v: &mut f64) -> egui::DragValue<'_> {
-                egui::DragValue::new(v)
+            fn dim(v: &mut f64) -> theme::Num<'_> {
+                theme::num(v)
                     .speed(0.01)
                     .range(0.0..=1000.0)
                     .fixed_decimals(2)
@@ -916,7 +916,7 @@ fn targets(ui: &mut egui::Ui, state: &mut NewDesignState) {
                     let mut disp = state.displacement_t().unwrap_or(0.0);
                     if ui
                         .add(
-                            egui::DragValue::new(&mut disp)
+                            theme::num(&mut disp)
                                 .speed(0.05)
                                 .range(0.0..=1.0e6)
                                 .fixed_decimals(2)
@@ -929,7 +929,7 @@ fn targets(ui: &mut egui::Ui, state: &mut NewDesignState) {
                     ui.label(egui::RichText::new("⇄").color(theme::TEXT_MUTED));
                     if let Some(cb) = state.cb.as_mut() {
                         ui.add(
-                            egui::DragValue::new(cb)
+                            theme::num(cb)
                                 .speed(0.002)
                                 .range(0.0..=1.0)
                                 .fixed_decimals(3)
@@ -979,7 +979,7 @@ fn shape(ui: &mut egui::Ui, state: &mut NewDesignState) {
             if field(
                 ui,
                 "Deadrise",
-                egui::DragValue::new(&mut state.deadrise_deg)
+                theme::num(&mut state.deadrise_deg)
                     .speed(0.5)
                     .range(0.0..=90.0)
                     .fixed_decimals(1),
@@ -993,7 +993,7 @@ fn shape(ui: &mut egui::Ui, state: &mut NewDesignState) {
             if field(
                 ui,
                 "Transom",
-                egui::DragValue::new(&mut state.transom_frac)
+                theme::num(&mut state.transom_frac)
                     .speed(0.01)
                     .range(0.0..=2.0)
                     .fixed_decimals(2),
@@ -1006,9 +1006,9 @@ fn shape(ui: &mut egui::Ui, state: &mut NewDesignState) {
             ui.end_row();
             ui.label(egui::RichText::new("Control net").color(theme::TEXT_SECONDARY));
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut state.stations).range(1..=99));
+                ui.add(theme::num(&mut state.stations).range(1..=99));
                 ui.label(egui::RichText::new("×").color(theme::TEXT_MUTED));
-                ui.add(egui::DragValue::new(&mut state.points_per_station).range(1..=99));
+                ui.add(theme::num(&mut state.points_per_station).range(1..=99));
             });
             ui.label(egui::RichText::new("stations × points").color(theme::TEXT_MUTED));
             ui.end_row();
@@ -1359,7 +1359,7 @@ pub fn project_settings_dialog(
                 field(
                     ui,
                     "Water density",
-                    egui::DragValue::new(&mut state.water_density)
+                    theme::num(&mut state.water_density)
                         .speed(0.5)
                         .range(0.0..=2000.0)
                         .fixed_decimals(1),
