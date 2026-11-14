@@ -359,18 +359,7 @@ fn extent_mm(sheet: &Sheet, scale: f64) -> Option<[f64; 4]> {
         .paths
         .iter()
         .flat_map(|p| p.points.iter().map(move |q| (q.0 * k, q.1 * k)));
-    let corners = sheet.labels.iter().flat_map(|label| {
-        let (start, end) = label_line_mm(label, k);
-        // The letters stand on the base line, a letter height tall.
-        let (sin, cos) = label.angle_deg.to_radians().sin_cos();
-        let up = (-sin * label.height_mm, cos * label.height_mm);
-        [
-            start,
-            end,
-            (start.0 + up.0, start.1 + up.1),
-            (end.0 + up.0, end.1 + up.1),
-        ]
-    });
+    let corners = sheet.labels.iter().flat_map(|label| label_box_mm(label, k));
     points
         .chain(corners)
         .filter(|p| p.0.is_finite() && p.1.is_finite())
@@ -393,6 +382,20 @@ fn label_line_mm(label: &Label, k: f64) -> ((f64, f64), (f64, f64)) {
     let (sin, cos) = label.angle_deg.to_radians().sin_cos();
     let start = (label.at.0 * k - back * cos, label.at.1 * k - back * sin);
     (start, (start.0 + width * cos, start.1 + width * sin))
+}
+
+/// The box a label's letters fill on paper, in millimetres, round from the base line's start:
+/// they stand on the base line, a letter height tall.
+fn label_box_mm(label: &Label, k: f64) -> [(f64, f64); 4] {
+    let (start, end) = label_line_mm(label, k);
+    let (sin, cos) = label.angle_deg.to_radians().sin_cos();
+    let up = (-sin * label.height_mm, cos * label.height_mm);
+    [
+        start,
+        end,
+        (end.0 + up.0, end.1 + up.1),
+        (start.0 + up.0, start.1 + up.1),
+    ]
 }
 
 /// The error for sheets that cannot make a document: none at all, or one with nothing on it.
@@ -870,9 +873,12 @@ fn tiling(
             mark(on_paper(last), on_paper(first));
         }
     }
+    // A label marks the tiles its letters reach: its box's four sides.
     for label in sheet.labels.iter().filter(|l| !l.text.is_empty()) {
-        let (start, end) = label_line_mm(label, k);
-        mark(start, end);
+        let corners = label_box_mm(label, k);
+        for i in 0..4 {
+            mark(corners[i], corners[(i + 1) % 4]);
+        }
     }
     grid.printed = used.into_iter().map(|(row, col)| (col, row)).collect();
     Ok(Some(Tiling { grid, corner_mm }))
@@ -1888,6 +1894,44 @@ mod tests {
         assert!(text_width_pt(long, 5.0 * PT_PER_MM) / PT_PER_MM > 60.0);
         assert_eq!(printed(long), [(2, 0), (1, 1), (2, 1), (0, 2)]);
         assert_eq!(printed(""), [(2, 0), (0, 2)]);
+    }
+
+    /// With no overlap, a label whose base line is 2 mm below a row's top edge rises 3 mm into
+    /// the row above: that tile is printed too, or the tops of the letters are lost.
+    #[test]
+    fn a_label_is_printed_with_the_tile_its_letters_rise_into() {
+        let setup = PageSetup {
+            overlap_mm: 0.0,
+            ..PageSetup::default()
+        };
+        let bare = tiling(&squares(), &setup, false).ok().flatten().unwrap();
+        // The middle column's tile on the top row: nothing of the squares reaches it.
+        assert!(
+            !bare.grid.printed.contains(&(1, 0)),
+            "{:?}",
+            bare.grid.printed
+        );
+        let below = tile_window_mm(&bare.grid, 1, 1);
+        let base = ((below[0] + below[2]) / 2.0, below[3] - 2.0);
+        let mut s = squares();
+        s.labels.push(Label {
+            at: (
+                (base.0 + bare.corner_mm.0) / 1000.0,
+                (base.1 + bare.corner_mm.1) / 1000.0,
+            ),
+            height_mm: 5.0,
+            angle_deg: 0.0,
+            anchor: Anchor::Start,
+            text: "x".into(),
+        });
+        let printed = tiling(&s, &setup, false)
+            .ok()
+            .flatten()
+            .unwrap()
+            .grid
+            .printed;
+        assert!(printed.contains(&(1, 1)), "{printed:?}");
+        assert!(printed.contains(&(1, 0)), "{printed:?}");
     }
 
     #[test]
