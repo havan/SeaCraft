@@ -235,16 +235,12 @@ fn vertex_offset(a: Option<((f64, f64), f64)>, b: Option<((f64, f64), f64)>) -> 
                 (-da * ma.0, -da * ma.1)
             } else {
                 // The mitre: the point that is `da` inside one segment and `db` inside the other.
-                let v = (
+                // Moving inward, that is the corner itself, however sharp; one that overshoots
+                // its segments is consumed by `collapse_consumed_segments`.
+                (
                     (-da * mb.1 + db * ma.1) / cross,
                     (-db * ma.0 + da * mb.0) / cross,
-                );
-                let (len, cap) = (v.0.hypot(v.1), 4.0 * da.max(db));
-                if len > cap {
-                    (v.0 * cap / len, v.1 * cap / len)
-                } else {
-                    v
-                }
+                )
             }
         }
     }
@@ -2002,6 +1998,48 @@ mod tests {
                 "{i}: {p:?}"
             );
         }
+    }
+
+    /// A closed section run clockwise, so the outside is on the left, each segment square to the
+    /// plane.
+    fn clockwise_section(points: Vec<(f64, f64)>) -> [SectionPath; 1] {
+        let n = points.len();
+        let meetings = (0..n)
+            .map(|i| {
+                let (p, q): ((f64, f64), (f64, f64)) = (points[i], points[(i + 1) % n]);
+                let len = (q.0 - p.0).hypot(q.1 - p.1);
+                Some(Meeting {
+                    outward: ((q.1 - p.1) / -len, (q.0 - p.0) / len),
+                    in_plane: 1.0,
+                    along: 0.0,
+                })
+            })
+            .collect();
+        [SectionPath {
+            points,
+            closed: true,
+            meetings,
+        }]
+    }
+
+    /// Closed form: a V of 20 degrees moved in by t keeps its point, t / sin 10 deg = 5.76 t above
+    /// the old one, so both sides stay t from the hull. A point held nearer would put the mould
+    /// in the skin.
+    #[test]
+    fn a_sharp_v_keeps_its_whole_mitre() {
+        let a = 10f64.to_radians().tan();
+        let section = clockwise_section(vec![(0.0, 0.0), (-a, 1.0), (a, 1.0)]);
+        let t = 0.01;
+        let mould = mould_line(&section, t);
+        assert!(!mould.crosses_itself);
+        let apex = mould.paths[0].0[0];
+        let want = t / 10f64.to_radians().sin();
+        assert!(apex.0.abs() < 1e-12, "{apex:?}");
+        assert!(
+            (apex.1 - want).abs() < 1e-9,
+            "apex at {}, want {want}",
+            apex.1
+        );
     }
 
     /// A 5 mm tube cannot hold a 12 mm skin: the mould line would turn inside out.

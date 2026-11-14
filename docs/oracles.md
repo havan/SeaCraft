@@ -688,7 +688,8 @@ draw, not a measurement: hydrostatics integrate the mesh separately.
 A station mould is the hull's section moved inward by the skin thickness $t$. Each straight piece of the section
 moves along its own normal in the drawing plane by $t / \max(|n_p|, 0.2)$, where $n_p$ is the part of the surface
 normal lying in the plane, so a surface meeting the plane at an angle $\alpha$ off square is deducted by
-$t / \cos\alpha$. Neighbouring pieces meet where their moved lines meet (a mitre). A piece the move consumes, one
+$t / \cos\alpha$. Neighbouring pieces meet where their moved lines meet (a mitre), however sharp the corner: at an
+interior angle $\theta$ the corner moves $t / \sin\tfrac{\theta}{2}$ along its bisector. A piece the move consumes, one
 shorter than its two ends' shortening $t\,(\cot\tfrac{\theta_1}{2} + \cot\tfrac{\theta_2}{2})$ at interior angles
 $\theta_1, \theta_2$, is dropped and its neighbours' moved lines meet instead.
 - Cylinder of radius $R$: the mould is a circle of radius $R - t$.
@@ -708,6 +709,8 @@ $\theta_1, \theta_2$, is dropped and its neighbours' moved lines meet instead.
 - `a_segment_shorter_than_the_skin_at_a_corner_is_consumed_not_a_crossing`: $2 \times 1$ with one corner cut by a
   4 mm chamfer at $45^\circ$, $t = 6$ mm: each end of the chamfer shortens by $0.006 \tan 22.5^\circ = 2.49$ mm, more
   than half its length, so the mould is $1.988 \times 0.988$ with the rectangle's own corner ($10^{-9}$).
+- `a_sharp_v_keeps_its_whole_mitre`: a $20^\circ$ V with $t = 0.01$: its point moves $0.01 / \sin 10^\circ =
+  0.0575877$ m ($10^{-9}$), where a mitre held at $4t$ would leave both sides nearer the hull than $t$.
 - `a_hair_of_a_segment_beside_a_bend_is_consumed_quietly`: a 0.15 mm piece beside a $3^\circ$ bend; with
   $t = 0.06$ the mould corner is $0.06$ from both long lines ($10^{-9}$).
 - `a_surface_nearly_in_the_plane_is_clamped_and_counted`: a cone 1 m in radius and 0.1 m long meets the plane at
