@@ -164,3 +164,38 @@ fn bad_limits_and_stock_are_refused_before_any_work() {
     );
     assert!(err.contains("stretch"), "{err}");
 }
+
+#[test]
+fn a_refused_panel_is_named_and_not_counted() {
+    let dir = workdir("refused");
+    let mut pram = seacraft_core::panels::pram_fixture(0.0, 0.0);
+    for layer in &mut pram.layers {
+        layer.developable = true;
+    }
+    let fi = pram.face_layer.iter().position(|&l| l == 1).unwrap() + 3;
+    pram.faces[fi].reverse();
+    pram.rebuild_edges();
+    std::fs::write(dir.join("flipped.fef"), seacraft_core::fef::write(&pram)).unwrap();
+    let err = fails(&dir, &["panels", "flipped.fef", "-o", "p.pdf"]);
+    assert!(err.contains("Side cannot be laid flat"), "{err}");
+    let out = ok(
+        &dir,
+        &[
+            "panels",
+            "flipped.fef",
+            "-o",
+            "p.pdf",
+            "--allow-undevelopable",
+        ],
+    );
+    assert!(
+        out.contains("plywood sheets for 3 of 4 panels")
+            && out.contains("Side (could not be laid flat)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("1 panel could not be laid flat and is not in the file: Side"),
+        "{out}"
+    );
+    assert!(!out.contains("their patterns are headed so"), "{out}");
+}

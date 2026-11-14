@@ -3445,9 +3445,14 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         for f in &failing {
             eprintln!("{f}");
         }
+        let what = if set.refused.is_empty() {
+            "do not lie flat within the limits"
+        } else {
+            "do not lie flat within the limits or could not be laid flat"
+        };
         bail!(
-            "{} of {} panels do not lie flat within the limits; nothing written. Pass \
-             --allow-undevelopable to write the patterns anyway",
+            "{} of {} panels {what}; nothing written. Pass --allow-undevelopable to write the \
+             others anyway",
             failing.len(),
             set.rows.len() + set.refused.len()
         );
@@ -3512,20 +3517,29 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     for r in &set.refused {
         println!("{:<16} refused: {}", r.panel, r.reason);
     }
-    println!(
-        "{} plywood sheets, end to end, no nesting: an upper bound",
-        set.total_sheets
-    );
+    println!("{}", set.sheet_count_line());
     for row in &set.stock {
         if let Some(note) = &row.note {
             println!("{}: {note}", row.panel);
         }
     }
-    if !failing.is_empty() {
-        println!(
-            "{} panels do not lie flat within the limits: their patterns are headed so",
-            failing.len()
-        );
+    let headed = set.rows.iter().filter(|r| !r.lies_flat).count();
+    match headed {
+        0 => {}
+        1 => println!("1 panel does not lie flat within the limits: its pattern is headed so"),
+        n => println!("{n} panels do not lie flat within the limits: their patterns are headed so"),
+    }
+    let refused: Vec<&str> = set.refused.iter().map(|r| r.panel.as_str()).collect();
+    match refused.len() {
+        0 => {}
+        1 => println!(
+            "1 panel could not be laid flat and is not in the file: {}",
+            refused[0]
+        ),
+        n => println!(
+            "{n} panels could not be laid flat and are not in the file: {}",
+            refused.join(", ")
+        ),
     }
     let scale_label = units::scale_label(scale);
     match (format, written.pages) {

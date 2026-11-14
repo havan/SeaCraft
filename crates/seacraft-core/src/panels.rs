@@ -1629,6 +1629,40 @@ impl PanelSet {
     pub fn all_lie_flat(&self) -> bool {
         self.refused.is_empty() && self.rows.iter().all(|r| r.lies_flat)
     }
+
+    /// The plywood count in words, naming any panel it leaves out and why: one not laid out on
+    /// the stock, or one that could not be laid flat at all.
+    pub fn sheet_count_line(&self) -> String {
+        let mut left_out: Vec<String> = self
+            .stock
+            .iter()
+            .filter(|r| r.sheets_each.is_none())
+            .map(|r| {
+                let why = r.note.as_deref().unwrap_or("not laid out");
+                let why = why.split(" (").next().unwrap_or(why);
+                format!("{} ({})", r.panel, why.trim_end_matches(": not laid out"))
+            })
+            .collect();
+        left_out.extend(
+            self.refused
+                .iter()
+                .map(|r| format!("{} (could not be laid flat)", r.panel)),
+        );
+        if left_out.is_empty() {
+            return format!(
+                "{} plywood sheets, end to end, no nesting: an upper bound",
+                self.total_sheets
+            );
+        }
+        let all = self.rows.len() + self.refused.len();
+        format!(
+            "{} plywood sheets for {} of {all} panels, end to end, no nesting: an upper bound for \
+             those; not counted: {}",
+            self.total_sheets,
+            all - left_out.len(),
+            left_out.join(", ")
+        )
+    }
 }
 
 fn positive(v: f64) -> bool {
@@ -1760,6 +1794,15 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         set.sheets.push(sheet);
     }
     set.total_sheets = total_sheets(&set.stock);
+    // A panel that could not be made is named on every pattern, before the closing sentences.
+    for sheet in &mut set.sheets {
+        for r in &set.refused {
+            let at = sheet.notes.len().saturating_sub(3);
+            sheet
+                .notes
+                .insert(at, format!("Not in this set: {}: {}", r.panel, r.reason));
+        }
+    }
     Ok(set)
 }
 
@@ -2729,6 +2772,49 @@ mod tests {
             .paths
             .iter()
             .any(|p| p.kind == crate::sheet::PathKind::Reference));
+    }
+
+    /// A sheet count that leaves panels out says which, and why; a refused panel is named on
+    /// every pattern of the set, so the file does not pass for the whole boat.
+    #[test]
+    fn panels_left_out_are_named_in_the_count_and_on_every_sheet() {
+        let mut s = pram_fixture(0.0, 0.0);
+        let fi = s.face_layer.iter().position(|&l| l == 1).unwrap() + 3;
+        s.faces[fi].reverse();
+        s.rebuild_edges();
+        let opts = PanelOptions {
+            stock: Stock {
+                width_m: 0.5,
+                ..Stock::default()
+            },
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&s, &opts).expect("a set");
+        assert_eq!(set.rows.len(), 1, "{:?}", set.rows);
+        assert_eq!(set.total_sheets, 0);
+        let line = set.sheet_count_line();
+        assert!(
+            line.starts_with("0 plywood sheets for 0 of 2 panels"),
+            "{line}"
+        );
+        assert!(line.contains("Bottom (wider than the stock)"), "{line}");
+        assert!(line.contains("Side (could not be laid flat)"), "{line}");
+        assert!(
+            set.sheets[0]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Not in this set: Side: its faces do not all face")),
+            "{:?}",
+            set.sheets[0].notes
+        );
+        let whole = panel_set(&pram_fixture(0.0, 0.0), &PanelOptions::default()).expect("a set");
+        assert_eq!(
+            whole.sheet_count_line(),
+            format!(
+                "{} plywood sheets, end to end, no nesting: an upper bound",
+                whole.total_sheets
+            )
+        );
     }
 
     #[test]

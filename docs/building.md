@@ -153,7 +153,9 @@ lowest edge, every 250 mm (`--offset-spacing-mm`), for marking out with a batten
 
 **Plywood.** Each panel is laid along 2440 × 1220 mm sheets end to end (`--stock-mm 2440x1220`), with the sheet
 ends and joints drawn on the pattern; `--scarf-mm` sets the overlap of a scarf joint. The total is an upper bound:
-the program does not nest panels together. A panel wider than a sheet is reported and not split.
+the program does not nest panels together. A panel wider than a sheet is reported, not split and not counted, and
+the count names it. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways)
+is named in the table and on every pattern of the set, and is not counted either.
 
 The patterns allow no plywood thickness: they are the modelled surface.
 
