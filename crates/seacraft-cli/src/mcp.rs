@@ -107,6 +107,8 @@ seakeeping_raos gives heave and pitch RAOs in regular head seas; seakeeping_irre
 wave spectrum for significant motions, relative motion, accelerations and MSI.
 optimize_hull {speed_kn} reshapes the hull (Cp, LCB, L/B) to cut resistance at a speed, holding displacement; it edits the model.
 Write results with export_linesplan (.svg/.dxf/.igs) and save_hull (.fef).
+For building: export_templates writes full-size station moulds, profile and transom patterns (.pdf/.svg/.dxf) with
+the skin deducted (ask the builder for skin_mm; it defaults to none), export_offsets_pdf the table of offsets.
 Project data: project_get and project_set read and write the design sidecar (loading conditions, compartments, damage cases, windage).
 Evaluate loading conditions with loading_condition {name} (or inline case / case_path).
 Evaluate damage stability with damage_stability {name} (or inline case / case_path).
@@ -850,6 +852,8 @@ impl McpServer {
             "trim_scan" => self.trim_scan(a),
             "optimize_hull" => self.optimize_hull(a),
             "export_linesplan" => self.export_linesplan(a),
+            "export_templates" => self.export_templates(a),
+            "export_offsets_pdf" => self.export_offsets_pdf(a),
             "render_png" => self.render_png(a),
             "design_report" => self.design_report(a),
             other => Err(format!("unknown tool `{}`", clip(other, 100))),
@@ -2122,6 +2126,52 @@ impl McpServer {
         }))
     }
 
+    fn export_templates(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let req = templates_args(a, self.opts.subdivision)?;
+        let set = seacraft_core::templates::template_set(&self.surface, &req.set)
+            .map_err(|e| format!("export_templates: {e}"))?;
+        let written = seacraft_core::templates::write(&set, req.format, &req.setup)
+            .map_err(|e| format!("export_templates: {e}"))?;
+        seacraft_core::io::write_atomic(&req.path, &written.bytes)
+            .map_err(|e| format!("{}: {e}", req.path.display()))?;
+        let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
+        Ok(json!({
+            "path": req.path.to_string_lossy(),
+            "format": req.format.name(),
+            "bytes": written.bytes.len(),
+            "pages": written.pages,
+            "sheets": set.rows,
+            "warnings": set.warnings,
+            "missing_characters": missing,
+            "backend": "headless",
+        }))
+    }
+
+    fn export_offsets_pdf(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let req = offsets_pdf_args(a)?;
+        let mut subdiv = self.opts.subdivision;
+        subdiv.level = req.level.unwrap_or(subdiv.level);
+        let hull = hydro::Hull::new(&self.surface, subdiv);
+        let waterlines = offsets::default_waterlines(&hull, req.waterline_steps);
+        let buttocks = offsets::default_buttocks(&hull, req.buttock_steps);
+        let table = offsets::table_of_offsets(&hull, req.stations, &waterlines, &buttocks);
+        let title = format!("{} - table of offsets", self.surface.settings.name);
+        let doc = offsets::pdf(&table, &title, req.imperial)
+            .map_err(|e| format!("export_offsets_pdf: {e}"))?;
+        seacraft_core::io::write_atomic(&req.path, &doc.bytes)
+            .map_err(|e| format!("{}: {e}", req.path.display()))?;
+        Ok(json!({
+            "path": req.path.to_string_lossy(),
+            "format": "offsets_pdf",
+            "bytes": doc.bytes.len(),
+            "pages": doc.pages,
+            "stations": req.stations,
+            "imperial": req.imperial,
+            "level": subdiv.level,
+            "backend": "headless",
+        }))
+    }
+
     fn render_png(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let path = str_arg(a, "path")
             .filter(|p| !p.trim().is_empty())
@@ -2402,6 +2452,205 @@ fn positives(v: &Value, key: &str) -> Result<Vec<f64>, String> {
     }
     out.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     Ok(out)
+}
+
+/// An optional finite number: absent or null is `None`, any other type an error.
+fn opt_number(a: &Map<String, Value>, key: &str) -> Result<Option<f64>, String> {
+    match a.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .filter(|n| n.is_finite())
+            .map(Some)
+            .ok_or_else(|| format!("`{key}` must be a finite number")),
+    }
+}
+
+/// An optional finite number inside `range`.
+fn opt_number_in(
+    a: &Map<String, Value>,
+    key: &str,
+    range: std::ops::RangeInclusive<f64>,
+) -> Result<Option<f64>, String> {
+    match opt_number(a, key)? {
+        Some(n) if !range.contains(&n) => Err(format!(
+            "`{key}` must be from {} to {}",
+            range.start(),
+            range.end()
+        )),
+        n => Ok(n),
+    }
+}
+
+fn opt_bool(a: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
+    match a.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| format!("`{key}` must be true or false")),
+    }
+}
+
+fn opt_str<'a>(a: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, String> {
+    match a.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_str()
+            .map(Some)
+            .ok_or_else(|| format!("`{key}` must be a string")),
+    }
+}
+
+/// What `export_templates` was asked for, checked.
+struct TemplatesArgs {
+    path: PathBuf,
+    format: seacraft_core::templates::Format,
+    set: seacraft_core::templates::SetOptions,
+    setup: seacraft_core::sheet::PageSetup,
+}
+
+/// Read and check `export_templates`'s arguments, which are `build.templates`'s. `subdivision`
+/// is what an omitted `level` means.
+fn templates_args(
+    a: &Map<String, Value>,
+    subdivision: SubdivisionOptions,
+) -> Result<TemplatesArgs, String> {
+    use seacraft_core::sheet::{PageSetup, Paper};
+    use seacraft_core::templates::{
+        Format, SetOptions, StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS,
+    };
+    let err = |e: String| format!("export_templates: {e}");
+    let path = str_arg(a, "path")
+        .filter(|p| !p.trim().is_empty())
+        .ok_or("export_templates: give `path` (.pdf, .svg or .dxf)")?;
+    let path = PathBuf::from(path.trim());
+    let given: Vec<&str> = ["stations", "spacing", "at"]
+        .into_iter()
+        .filter(|k| !matches!(a.get(*k), None | Some(Value::Null)))
+        .collect();
+    if given.len() > 1 {
+        return Err(err(format!(
+            "give one of `stations`, `spacing` and `at`, not `{}`",
+            given.join("` and `")
+        )));
+    }
+    let stations = if let Some(n) = opt_number_in(a, "stations", 2.0..=MAX_STATIONS as f64)? {
+        if n.fract() != 0.0 {
+            return Err(err("`stations` must be a whole number".into()));
+        }
+        StationChoice::Count(n as usize)
+    } else if let Some(spacing) = opt_number_in(a, "spacing", 0.001..=1.0e4)? {
+        StationChoice::Spacing(spacing)
+    } else if let Some(v) = a.get("at").filter(|v| !v.is_null()) {
+        StationChoice::At(numbers(v, "at")?)
+    } else {
+        StationChoice::Count(11)
+    };
+    let skin_mm = opt_number_in(a, "skin_mm", 0.0..=MAX_SKIN_M * 1000.0)?.unwrap_or(0.0);
+    let transom = match (
+        opt_number(a, "transom_x")?,
+        opt_number(a, "transom_rake_deg")?,
+    ) {
+        (Some(x), Some(rake_deg)) => Some(Transom { x, rake_deg }),
+        (None, None) => None,
+        _ => {
+            return Err(err(
+                "`transom_x` and `transom_rake_deg` go together: give both or neither".into(),
+            ))
+        }
+    };
+    let waterlines_m = match a.get("waterlines").filter(|v| !v.is_null()) {
+        Some(v) => Some(positives(v, "waterlines")?),
+        None => None,
+    };
+    let paper = match opt_str(a, "paper")? {
+        Some(text) => Paper::parse(text).map_err(|e| err(format!("`paper`: {e}")))?,
+        None => Paper::A4,
+    };
+    let scale = match opt_str(a, "scale")? {
+        Some(text) => {
+            seacraft_core::units::parse_scale(text).map_err(|e| err(format!("`scale`: {e}")))?
+        }
+        None => 1.0,
+    };
+    let imperial = opt_bool(a, "imperial")?.unwrap_or(false);
+    let defaults = PageSetup::default();
+    let setup = PageSetup {
+        paper,
+        margin_mm: opt_number_in(a, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
+        overlap_mm: opt_number_in(a, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
+        scale,
+        imperial,
+        title: String::new(),
+    };
+    setup.check().map_err(err)?;
+    let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
+    let pdf = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    let format = Format::from_path(&path, single_page && pdf).map_err(err)?;
+    let level = match a.get("level") {
+        None | Some(Value::Null) => subdivision.level,
+        Some(_) => level_arg(a)?,
+    };
+    let set = SetOptions {
+        subdivision: SubdivisionOptions {
+            level,
+            mode: subdivision.mode,
+        },
+        stations,
+        skin_m: skin_mm / 1000.0,
+        half: opt_bool(a, "half")?.unwrap_or(false),
+        strongback_z: opt_number(a, "strongback_z")?,
+        waterlines_m,
+        profile: opt_bool(a, "profile")?.unwrap_or(false),
+        transom,
+        imperial,
+    };
+    Ok(TemplatesArgs {
+        path,
+        format,
+        set,
+        setup,
+    })
+}
+
+/// What `export_offsets_pdf` was asked for, checked.
+struct OffsetsPdfArgs {
+    path: PathBuf,
+    stations: usize,
+    waterline_steps: usize,
+    buttock_steps: usize,
+    level: Option<u8>,
+    imperial: bool,
+}
+
+fn offsets_pdf_args(a: &Map<String, Value>) -> Result<OffsetsPdfArgs, String> {
+    let path = str_arg(a, "path")
+        .filter(|p| !p.trim().is_empty())
+        .ok_or("export_offsets_pdf: give `path` (.pdf)")?;
+    let path = PathBuf::from(path.trim());
+    if !path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        return Err(format!(
+            "export_offsets_pdf: `{}` must end in .pdf",
+            clip(&path.to_string_lossy(), 200)
+        ));
+    }
+    Ok(OffsetsPdfArgs {
+        stations: count_arg(a, "stations", 21, 2, 200)?,
+        waterline_steps: count_arg(a, "waterline_steps", 6, 1, 50)?,
+        buttock_steps: count_arg(a, "buttock_steps", 4, 1, 50)?,
+        level: match a.get("level") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(level_arg(a)?),
+        },
+        imperial: opt_bool(a, "imperial")?.unwrap_or(false),
+        path,
+    })
 }
 
 // ------------------------------------------------------ tool definitions --
@@ -3040,6 +3289,61 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Files,
         ),
         tool(
+            "export_templates",
+            "Export builder templates",
+            "Write full-size building patterns: a station mould at each station, and optionally the profile \
+             (backbone) and a raked transom, each cut from the refined hull and moved in by the skin thickness. \
+             The extension picks the format: `.pdf` (tiled over ordinary paper with alignment marks and 100 mm \
+             check rules, or one page a pattern with `single_page`), `.svg` or `.dxf` (one drawing, CUT and MARK \
+             layers). `skin_mm` defaults to 0, no deduction: the cut line is then the hull surface; ask the \
+             builder for the plank, plywood or strip-plus-glass thickness. Returns the pages, one row per sheet \
+             (station x, half-breadth, which mould face goes on the line, bevel) and the warnings. The patterns \
+             are not validated: the builder must print at 100 % and measure the rules before cutting.",
+            obj(
+                json!({
+                    "path": string("Output path; .pdf, .svg or .dxf"),
+                    "stations": integer("Number of stations at the middles of equal slices (default 11; give one of stations, spacing and at)"),
+                    "spacing": number("A station at every multiple of this many metres of x inside the hull"),
+                    "at": {"type": "array", "items": {"type": "number"}, "description": "Stations at these x positions in metres"},
+                    "skin_mm": number("Skin thickness to deduct in millimetres, 0-200 (default 0: none)"),
+                    "half": boolean("Draw the starboard half only, to be flipped about the centreline"),
+                    "strongback_z": number("Strongback level, model z in metres, at or above the sheer: open sections get legs up to it"),
+                    "waterlines": {"type": "array", "items": {"type": "number"}, "description": "Waterline heights above the keel to mark, metres (default: six over the depth)"},
+                    "profile": boolean("Add the profile (backbone) pattern"),
+                    "transom_x": number("Transom: where its plane meets the baseline, model x in metres (with transom_rake_deg)"),
+                    "transom_rake_deg": number("Transom: how far its top leans aft of upright, degrees (with transom_x)"),
+                    "paper": string("Paper the PDF is tiled over: a4, a3, letter or WxH in millimetres (default a4)"),
+                    "single_page": boolean("One page a pattern, sized to fit it, for a plotter (PDF only)"),
+                    "margin_mm": number("Strip around each page a printer cannot reach, mm (default 10)"),
+                    "overlap_mm": number("How much neighbouring tiles share, mm (default 10)"),
+                    "scale": string("Drawing scale, as 1:N or one number (default 1:1)"),
+                    "imperial": boolean("Add feet and inches beside the metric readings"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &["path"],
+            ),
+            Effect::Files,
+        ),
+        tool(
+            "export_offsets_pdf",
+            "Export the table of offsets as PDF",
+            "Write the table of offsets as a printable PDF: half-breadths on waterlines and heights on buttocks, \
+             in millimetres above the keel, and with `imperial` the same tables in feet-inches-eighths after them. \
+             Returns the pages and the file size.",
+            obj(
+                json!({
+                    "path": string("Output path; .pdf"),
+                    "stations": integer("Stations, slice midpoints (default 21)"),
+                    "waterline_steps": integer("Waterlines spread over the depth (default 6)"),
+                    "buttock_steps": integer("Buttocks spread over the half-breadth (default 4)"),
+                    "imperial": boolean("Add the tables in feet, inches and eighths"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &["path"],
+            ),
+            Effect::Files,
+        ),
+        tool(
             "render_png",
             "Render a preview",
             "Draw the hull with the CPU rasterizer and write a PNG: `shaded`, `zebra` (fairness stripes), \
@@ -3232,8 +3536,8 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// `transform_hull` -> `model.transform`, `unfold_plate` -> `curves.unfold`,
 /// `hydro_table` -> `hydro.table`, `trim_scan` -> `hydro.trim`,
 /// `optimize_hull` -> `model.optimize`,
-/// `export_linesplan`
-/// -> `model.export`, `render_png` -> `ui.render`. The app's reply is returned
+/// `export_linesplan` and `export_offsets_pdf` -> `model.export`,
+/// `export_templates` -> `build.templates`, `render_png` -> `ui.render`. The app's reply is returned
 /// as the tool's result (its own field names); a failure is a tool error.
 pub struct Remote {
     addr: String,
@@ -3541,6 +3845,29 @@ impl Remote {
                 }
                 self.request("model.export", p)
             }
+            "export_templates" => {
+                // Checked here as the headless tool checks it, then sent as given: the
+                // arguments are `build.templates`'s, with the same names.
+                templates_args(a, SubdivisionOptions::default())?;
+                self.request("build.templates", Value::Object(a.clone()))
+            }
+            "export_offsets_pdf" => {
+                offsets_pdf_args(a)?;
+                let mut p = json!({"format": "offsets_pdf"});
+                for key in [
+                    "path",
+                    "stations",
+                    "waterline_steps",
+                    "buttock_steps",
+                    "level",
+                    "imperial",
+                ] {
+                    if let Some(v) = a.get(key).filter(|v| !v.is_null()) {
+                        p[key] = v.clone();
+                    }
+                }
+                self.request("model.export", p)
+            }
             "render_png" => {
                 let path = str_arg(a, "path")
                     .filter(|p| !p.trim().is_empty())
@@ -3650,6 +3977,10 @@ mod tests {
             (
                 "seacraft-stability-check",
                 include_str!("../../../skills/seacraft-stability-check/SKILL.md"),
+            ),
+            (
+                "seacraft-boatbuilding",
+                include_str!("../../../skills/seacraft-boatbuilding/SKILL.md"),
             ),
         ];
         let tools: Vec<String> = tool_definitions()
@@ -3850,6 +4181,8 @@ mod tests {
                 "trim_scan",
                 "optimize_hull",
                 "export_linesplan",
+                "export_templates",
+                "export_offsets_pdf",
                 "render_png",
                 "design_report",
                 "batch",
@@ -4571,6 +4904,14 @@ mod tests {
             ("table_of_offsets", json!({"buttocks": [-0.5]})),
             ("export_linesplan", json!({"path": "/tmp/x.obj"})),
             ("export_linesplan", json!({"path": "/no/such/dir/x.svg"})),
+            ("export_templates", json!({"path": "x.png"})),
+            ("export_templates", json!({"path": "/no/such/dir/x.pdf"})),
+            (
+                "export_templates",
+                json!({"stations": 5, "spacing": 0.5, "path": "x.pdf"}),
+            ),
+            ("export_offsets_pdf", json!({"path": "x.png"})),
+            ("export_offsets_pdf", json!({"path": "/no/such/dir/x.pdf"})),
             ("render_png", json!({"path": "/no/such/dir/x.png"})),
         ];
         for (i, (tool, args)) in hostile.into_iter().enumerate() {
@@ -4717,6 +5058,8 @@ mod tests {
             "transform_hull",
             "optimize_hull",
             "export_linesplan",
+            "export_templates",
+            "export_offsets_pdf",
             "render_png",
         ] {
             assert!(!read_only.contains(&n), "{n} is not read-only");
@@ -5783,5 +6126,178 @@ mod tests {
             })
         );
         assert_eq!(seen[1], json!({"path": "/tmp/lines.svg", "format": "svg"}));
+    }
+
+    #[test]
+    fn export_templates_schema_lists_its_arguments() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tool = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "export_templates")
+            .expect("export_templates")
+            .clone();
+        let props = tool["inputSchema"]["properties"].as_object().unwrap();
+        let mut keys: Vec<&str> = props.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        let mut want = vec![
+            "path",
+            "stations",
+            "spacing",
+            "at",
+            "skin_mm",
+            "half",
+            "strongback_z",
+            "waterlines",
+            "profile",
+            "transom_x",
+            "transom_rake_deg",
+            "paper",
+            "single_page",
+            "margin_mm",
+            "overlap_mm",
+            "scale",
+            "imperial",
+            "level",
+        ];
+        want.sort_unstable();
+        assert_eq!(keys, want);
+        assert_eq!(tool["inputSchema"]["required"], json!(["path"]));
+        let description = tool["description"].as_str().unwrap();
+        for words in ["full-size", "defaults to 0", "not validated"] {
+            assert!(description.contains(words), "{words}: {description}");
+        }
+        // A wrong type is refused by the schema, before the tool runs.
+        for (id, name, args) in [
+            (
+                2,
+                "export_templates",
+                json!({"skin_mm": "thick", "path": "x.pdf"}),
+            ),
+            (
+                3,
+                "export_offsets_pdf",
+                json!({"imperial": "yes", "path": "x.pdf"}),
+            ),
+        ] {
+            let r = request(
+                &mut s,
+                id,
+                "tools/call",
+                json!({"name": name, "arguments": args}),
+            );
+            assert_eq!(r["error"]["code"], -32602, "{r}");
+        }
+        assert!(!std::path::Path::new("x.pdf").exists());
+    }
+
+    #[test]
+    fn export_templates_writes_patterns_headless() {
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "runabout-6m"}));
+        let path = temp_path("pdf");
+        let r = ok(
+            &mut s,
+            2,
+            "export_templates",
+            json!({"path": path, "skin_mm": 9}),
+        );
+        assert_eq!(r["format"], "pdf", "{r}");
+        assert!(r["pages"].as_u64().unwrap() > 0, "{r}");
+        assert_eq!(r["sheets"].as_array().unwrap().len(), 11, "{r}");
+        assert!(r["warnings"].is_array(), "{r}");
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+        let _ = std::fs::remove_file(&path);
+        // A station that misses is a warning, not a failure.
+        let dxf = temp_path("dxf");
+        let r = ok(
+            &mut s,
+            3,
+            "export_templates",
+            json!({"path": dxf, "at": [2.0, 999.0], "profile": true}),
+        );
+        assert_eq!(r["sheets"].as_array().unwrap().len(), 2, "{r}");
+        assert!(
+            r["warnings"].to_string().contains("skipped"),
+            "{}",
+            r["warnings"]
+        );
+        let _ = std::fs::remove_file(&dxf);
+    }
+
+    #[test]
+    fn export_offsets_pdf_writes_headless() {
+        let mut s = McpServer::new();
+        let path = temp_path("pdf");
+        let r = ok(&mut s, 1, "export_offsets_pdf", json!({"path": path}));
+        assert_eq!(r["pages"], 2, "{r}");
+        assert!(r["bytes"].as_u64().unwrap() > 0, "{r}");
+        let metric = std::fs::read(&path).unwrap();
+        assert!(metric.starts_with(b"%PDF-"));
+        let r = ok(
+            &mut s,
+            2,
+            "export_offsets_pdf",
+            json!({"path": path, "imperial": true, "stations": 40}),
+        );
+        assert_eq!(r["pages"], 8, "{r}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Connected to the app, the two tools forward to `build.templates` and to `model.export`
+    /// with the arguments given, after checking them as the headless tools do.
+    #[test]
+    fn connected_builder_exports_forward_their_arguments() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read");
+                let v: Value = serde_json::from_str(line.trim()).expect("json");
+                seen.push((v["method"].clone(), v["params"].clone()));
+                stream
+                    .write_all(b"{\"ok\":true,\"result\":{\"bytes\":1}}\n")
+                    .expect("write");
+            }
+            seen
+        });
+        let mut s = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
+        ok(
+            &mut s,
+            1,
+            "export_templates",
+            json!({"path": "/tmp/m.pdf", "skin_mm": 6, "transom_x": 0.1, "transom_rake_deg": 12}),
+        );
+        let err = fails(
+            &mut s,
+            2,
+            "export_templates",
+            json!({"path": "/tmp/m.pdf", "stations": 5, "spacing": 0.5}),
+        );
+        assert!(err.contains("spacing"), "{err}");
+        ok(
+            &mut s,
+            3,
+            "export_offsets_pdf",
+            json!({"path": "/tmp/o.pdf", "stations": 30, "imperial": true}),
+        );
+        let seen = handle.join().expect("server thread finished");
+        assert_eq!(seen[0].0, "build.templates");
+        assert_eq!(
+            seen[0].1,
+            json!({"path": "/tmp/m.pdf", "skin_mm": 6, "transom_x": 0.1, "transom_rake_deg": 12})
+        );
+        assert_eq!(seen[1].0, "model.export");
+        assert_eq!(
+            seen[1].1,
+            json!({"path": "/tmp/o.pdf", "format": "offsets_pdf", "stations": 30, "imperial": true})
+        );
     }
 }

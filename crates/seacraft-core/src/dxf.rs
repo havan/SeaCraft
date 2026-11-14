@@ -14,6 +14,8 @@
 //!
 //! Units: SeaCraft measures in metres, so the header declares `$INSUNITS` 6
 //! (metres) and metric measurement rather than the original's millimetres.
+//! [`write_dxf_in`] writes a drawing whose numbers are millimetres, for
+//! full-size patterns sent to a cutting machine.
 
 use crate::math::Vec3;
 use std::fmt::Write as _;
@@ -97,6 +99,10 @@ pub enum DxfShape {
     Polyline {
         points: Vec<Vec2>,
     },
+    /// A closed outline: the last point joins the first.
+    ClosedPolyline {
+        points: Vec<Vec2>,
+    },
     /// A 3D polyline (`POLYLINE` with 3D vertices), for hull curves in place.
     Polyline3 {
         points: Vec<Vec3>,
@@ -127,7 +133,9 @@ impl DxfShape {
     fn sample(&self, out: &mut Vec<Vec2>) {
         match self {
             DxfShape::Line(a, b) => out.extend([*a, *b]),
-            DxfShape::Polyline { points } => out.extend(points.iter().copied()),
+            DxfShape::Polyline { points } | DxfShape::ClosedPolyline { points } => {
+                out.extend(points.iter().copied())
+            }
             DxfShape::Polyline3 { points } => {
                 out.extend(points.iter().map(|p| Vec2::new(p.x, p.y)))
             }
@@ -274,9 +282,25 @@ fn text_value(s: &str) -> String {
         .collect()
 }
 
+/// The unit a drawing's numbers are in, declared in its header.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DxfUnits {
+    /// `$INSUNITS` 6, what every hull drawing uses.
+    #[default]
+    Metres,
+    /// `$INSUNITS` 4, for full-size patterns: cutting machines expect millimetres.
+    Millimetres,
+}
+
 /// A DXF drawing (AutoCAD 2000, metres) of `entities`. `layers` are the layers
 /// they are on; layer `0` is always present.
 pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
+    write_dxf_in(DxfUnits::Metres, layers, entities)
+}
+
+/// [`write_dxf`] for a drawing whose numbers are in `units`. The caller gives
+/// every coordinate and text height in that unit; nothing is converted here.
+pub fn write_dxf_in(units: DxfUnits, layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
     let mut pts = Vec::new();
     for e in entities {
         e.shape.sample(&mut pts);
@@ -386,7 +410,7 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
     for e in entities {
         let kind = match &e.shape {
             DxfShape::Line(..) => "LINE",
-            DxfShape::Polyline { .. } => "LWPOLYLINE",
+            DxfShape::Polyline { .. } | DxfShape::ClosedPolyline { .. } => "LWPOLYLINE",
             DxfShape::Polyline3 { .. } => "POLYLINE",
             DxfShape::Circle { .. } => "CIRCLE",
             DxfShape::Arc { .. } => "ARC",
@@ -406,11 +430,12 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
             },
         );
         match &e.shape {
-            DxfShape::Polyline { points } => {
+            DxfShape::Polyline { points } | DxfShape::ClosedPolyline { points } => {
                 o.code(100, "AcDbPolyline");
                 o.code(90, points.len());
-                // Bit 128 (PLINEGEN) continues the dash pattern.
-                o.code(70, 128);
+                // Bit 128 (PLINEGEN) continues the dash pattern; bit 1 closes the outline.
+                let closed = matches!(e.shape, DxfShape::ClosedPolyline { .. });
+                o.code(70, 128 + i32::from(closed));
                 for p in points {
                     o.num(10, p.x);
                     o.num(20, p.y);
@@ -519,9 +544,15 @@ pub fn write_dxf(layers: &[DxfLayer], entities: &[DxfEntity]) -> String {
     head.code(1, "AC1015");
     head.code(9, "$HANDSEED");
     head.code(5, format!("{:X}", o.next));
-    // 6 = metres; measurement 1 = metric.
+    // 6 = metres, 4 = millimetres; measurement 1 = metric.
     head.code(9, "$INSUNITS");
-    head.code(70, 6);
+    head.code(
+        70,
+        match units {
+            DxfUnits::Metres => 6,
+            DxfUnits::Millimetres => 4,
+        },
+    );
     head.code(9, "$MEASUREMENT");
     head.code(70, 1);
     head.code(9, "$EXTMIN");
@@ -747,5 +778,39 @@ mod tests {
                     m
                 });
         assert!(counts.get(&0).copied().unwrap_or(0) > 10);
+    }
+    /// A closed outline is one LWPOLYLINE with the closed bit (1) beside PLINEGEN (128), and a
+    /// drawing in millimetres declares `$INSUNITS` 4, as Autodesk's DXF reference numbers them.
+    #[test]
+    fn a_closed_outline_in_millimetres_says_both() {
+        let square = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1000.0, 0.0),
+            Vec2::new(1000.0, 500.0),
+            Vec2::new(0.0, 500.0),
+        ];
+        let items = [DxfEntity::new(
+            "CUT",
+            DxfShape::ClosedPolyline { points: square },
+        )];
+        let dxf = write_dxf_in(DxfUnits::Millimetres, &[DxfLayer::new("CUT", 7)], &items);
+        let e = entities(&dxf);
+        assert_eq!(e[0].0, "LWPOLYLINE");
+        assert_eq!(values(&e[0], 90), [4.0]);
+        assert_eq!(values(&e[0], 70), [129.0]);
+        assert_eq!(values(&e[0], 10), [0.0, 1000.0, 1000.0, 0.0]);
+        let p = pairs(&dxf);
+        let units = p
+            .iter()
+            .position(|(c, v)| (*c, v.as_str()) == (9, "$INSUNITS"))
+            .unwrap();
+        assert_eq!(p[units + 1], (70, "4".to_string()));
+        let ext = p
+            .iter()
+            .position(|(c, v)| (*c, v.as_str()) == (9, "$EXTMAX"))
+            .unwrap();
+        assert_eq!(p[ext + 1], (10, "1000.0".to_string()));
+        // The plain call still writes metres.
+        assert!(write_dxf(&[], &items).contains("$INSUNITS\n 70\n6\n"));
     }
 }

@@ -32,11 +32,13 @@ from solidcore's crates/solidcore/src/nurbs/srf_fit.rs, licensed under the Apach
     the Apache License, Version 2.0, except where otherwise noted.
 
 Fonts
-The desktop GUI embeds DejaVu Sans and DejaVu Sans Mono 2.37, unmodified, from
-crates/seacraft-gui/assets/fonts. They are not under the GPL. Bitstream Vera Fonts: Copyright (c)
-2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is a trademark of Bitstream, Inc. Arev
-Fonts: Copyright (c) 2006 by Tavmjong Bah. All Rights Reserved. DejaVu changes are in the public
-domain. The licence is in crates/seacraft-gui/assets/fonts/LICENSE-DejaVu.txt.
+The program embeds DejaVu Sans and DejaVu Sans Mono 2.37 from crates/seacraft-core/assets/fonts. The
+desktop GUI uses them unmodified. PDF exports embed a subset of DejaVu Sans: the glyphs the document
+uses, with the font's own name table and copyright notice. They are not under the GPL. Bitstream
+Vera Fonts: Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is a trademark
+of Bitstream, Inc. Arev Fonts: Copyright (c) 2006 by Tavmjong Bah. All Rights Reserved. DejaVu
+changes are in the public domain. The licence is in crates/seacraft-core/assets/fonts/LICENSE-
+DejaVu.txt.
 
 Dependencies
 Dependency licences are in THIRD-PARTY-LICENSES.txt: a list in this repository, and the full texts

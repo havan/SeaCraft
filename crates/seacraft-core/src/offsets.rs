@@ -296,6 +296,97 @@ pub fn html(table: &TableOfOffsets, title: &str) -> String {
     out
 }
 
+/// The table as a printable PDF: half-breadths, then heights on buttocks, in millimetres, and
+/// with `imperial` the same two again in feet, inches and eighths. Heights are above the keel
+/// datum, [`TableOfOffsets::keel_z`].
+pub fn pdf(
+    table: &TableOfOffsets,
+    title: &str,
+    imperial: bool,
+) -> Result<crate::pdf::Document, String> {
+    use crate::pdf::{add_table, Pdf, Table};
+    use crate::units::{ft_in_8ths, millimetres};
+    if table.stations.is_empty() {
+        return Err("the table of offsets has no stations: nothing to tabulate".into());
+    }
+    let subtitle = "Heights are above the baseline (keel). \"-\" means the section does not reach.";
+    let mut doc = Pdf::new(title);
+    // The unit in the titles, the x column's heading, and how a length and an x are written.
+    type Write = fn(f64) -> String;
+    let mut systems: Vec<(&str, &str, Write, Write)> =
+        vec![("millimetres", "x [m]", millimetres, |x| format!("{x:.3}"))];
+    if imperial {
+        systems.push(("feet-inches-eighths", "x [ft-in-8]", ft_in_8ths, ft_in_8ths));
+    }
+    for (unit, x_head, length, x) in systems {
+        let cell = |v: Option<f64>| v.map_or_else(|| "-".to_owned(), length);
+        let height = |z: f64| length(z - table.keel_z);
+        let station = |i: usize| (i + 1).to_string();
+
+        let mut header = vec!["Station".to_owned(), x_head.to_owned()];
+        header.extend(
+            table
+                .waterlines_m
+                .iter()
+                .map(|h| format!("WL {}", length(*h))),
+        );
+        header.extend(["Keel", "Sheer", "B/2"].map(String::from));
+        let rows: Vec<Vec<String>> = table
+            .stations
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut row = vec![station(i), x(s.x)];
+                row.extend(s.waterline_half_breadths.iter().map(|v| cell(*v)));
+                row.extend([height(s.keel_z), height(s.deck_z), length(s.half_beam)]);
+                row
+            })
+            .collect();
+        let half_breadths = format!("{title}: half-breadths, {unit}");
+        add_table(
+            &mut doc,
+            &Table {
+                title: &half_breadths,
+                subtitle,
+                header: &header,
+                rows: &rows,
+                footer: crate::NOT_VALIDATED_NOTE,
+                repeat: 2,
+            },
+        );
+
+        let mut header = vec!["Station".to_owned(), x_head.to_owned()];
+        header.extend(table.buttocks_m.iter().map(|b| format!("B {}", length(*b))));
+        let rows: Vec<Vec<String>> = table
+            .stations
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let mut row = vec![station(i), x(s.x)];
+                row.extend(
+                    s.buttock_heights
+                        .iter()
+                        .map(|v| cell(v.map(|z| z - table.keel_z))),
+                );
+                row
+            })
+            .collect();
+        let buttocks = format!("{title}: heights on buttocks, {unit}");
+        add_table(
+            &mut doc,
+            &Table {
+                title: &buttocks,
+                subtitle,
+                header: &header,
+                rows: &rows,
+                footer: crate::NOT_VALIDATED_NOTE,
+                repeat: 2,
+            },
+        );
+    }
+    doc.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,5 +591,113 @@ mod tests {
         );
         // An empty cell is a dash, not a zero.
         assert!(page.contains("<td>-</td>"));
+    }
+
+    fn box_table(stations: usize, waterlines: &[f64], buttocks: &[f64]) -> TableOfOffsets {
+        let s = barge(10.0, 4.0, 2.0);
+        let hull = Hull::new(
+            &s,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        table_of_offsets(&hull, stations, waterlines, buttocks)
+    }
+
+    const SUBTITLE: &str =
+        "Heights are above the baseline (keel). \"-\" means the section does not reach.";
+
+    /// Closed form: the box is 4 m wide, so every half-breadth below the deck is 2000 mm.
+    #[test]
+    fn a_box_table_reads_in_millimetres() {
+        let doc = pdf(&box_table(5, &[1.0], &[1.0]), "Box", false).unwrap();
+        assert_eq!(doc.pages, 2);
+        let text = crate::pdf::shown_text(&doc.bytes);
+        for want in [
+            "2000",
+            "Box: half-breadths, millimetres",
+            "Box: heights on buttocks, millimetres",
+            SUBTITLE,
+            crate::NOT_VALIDATED_NOTE,
+            "WL 1000",
+            "B 1000",
+        ] {
+            assert!(text.iter().any(|t| t == want), "{want} in {text:?}");
+        }
+        assert!(doc.missing.is_empty(), "{:?}", doc.missing);
+    }
+
+    #[test]
+    fn a_cell_the_section_does_not_reach_is_a_dash() {
+        // The box is 2 m deep: a waterline at 3 m is above every section.
+        let doc = pdf(&box_table(5, &[3.0], &[1.0]), "Box", false).unwrap();
+        let page = crate::pdf::page_text(&doc.bytes, 0);
+        // Each row reads station, x, the waterline's cell, keel, sheer, half-breadth.
+        let row = page.iter().position(|t| t == "1").unwrap();
+        assert_eq!(page[row + 2], "-", "{page:?}");
+        assert_eq!(&page[row + 3..row + 6], ["0", "2000", "2000"], "{page:?}");
+    }
+
+    /// Closed form: 2.0 m = 78.740 in = 1260/16 in = 6 ft 6 12/16 in, so `6-6-6`.
+    #[test]
+    fn imperial_adds_its_tables_after_the_metric_ones() {
+        let table = box_table(5, &[1.0], &[1.0]);
+        let metric = pdf(&table, "Box", false).unwrap();
+        let both = pdf(&table, "Box", true).unwrap();
+        assert_eq!(both.pages, 4);
+        for page in 0..2 {
+            assert_eq!(
+                crate::pdf::page_stream(&both.bytes, page),
+                crate::pdf::page_stream(&metric.bytes, page),
+                "page {page}"
+            );
+        }
+        let third = crate::pdf::page_text(&both.bytes, 2);
+        assert!(third.iter().any(|t| t == "6-6-6"), "{third:?}");
+        assert!(
+            third
+                .iter()
+                .any(|t| t == "Box: half-breadths, feet-inches-eighths"),
+            "{third:?}"
+        );
+        let fourth = crate::pdf::page_text(&both.bytes, 3);
+        assert!(
+            fourth
+                .iter()
+                .any(|t| t == "Box: heights on buttocks, feet-inches-eighths"),
+            "{fourth:?}"
+        );
+    }
+
+    #[test]
+    fn long_tables_continue_with_the_header_repeated() {
+        // 40 stations are more rows than a page holds.
+        let doc = pdf(&box_table(40, &[1.0], &[1.0]), "Box", false).unwrap();
+        assert_eq!(doc.pages, 4, "two pages for each table");
+        for page in 0..2 {
+            let text = crate::pdf::page_text(&doc.bytes, page);
+            assert!(text.iter().any(|t| t == "Station"), "page {page}");
+        }
+        // 20 waterlines are more columns than a page holds.
+        let wls: Vec<f64> = (1..=20).map(|i| i as f64 * 0.1).collect();
+        let doc = pdf(&box_table(5, &wls, &[1.0]), "Box", false).unwrap();
+        assert_eq!(doc.pages, 3, "two pages of half-breadths, one of buttocks");
+        for page in 0..2 {
+            let text = crate::pdf::page_text(&doc.bytes, page);
+            for head in ["Station", "x [m]"] {
+                assert!(text.iter().any(|t| t == head), "{head} on page {page}");
+            }
+        }
+        let second = crate::pdf::page_text(&doc.bytes, 1);
+        assert!(second.iter().any(|t| t == "B/2"), "{second:?}");
+    }
+
+    #[test]
+    fn an_empty_table_is_an_error() {
+        let mut table = box_table(5, &[1.0], &[1.0]);
+        table.stations.clear();
+        let err = pdf(&table, "Box", false).unwrap_err();
+        assert!(err.contains("nothing to tabulate"), "{err}");
     }
 }

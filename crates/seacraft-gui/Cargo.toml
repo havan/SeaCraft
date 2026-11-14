@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 seacraft-core = { path = "../seacraft-core" }
 # Every eframe default except `default_fonts`: egui's default fonts embed Ubuntu-Light, and SeaCraft
-# embeds its own (`assets/fonts`). `system_fonts` stays, for text such as file names in other scripts.
+# embeds its own (`seacraft_core::fonts`). `system_fonts` stays, for text such as file names in other scripts.
 eframe = { version = "0.37", default-features = false, features = [
     "accesskit",
     "clipboard",

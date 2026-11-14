@@ -15,6 +15,11 @@ own earlier output to catch changes. [`docs/oracles.md`](docs/oracles.md) says w
 from. Passing those tests shows that the code agrees with those cases, not that its results are right
 for a real vessel.
 
+Building patterns (station moulds, profile and transom) and the printed table of offsets are geometry the
+program computed from the hull. They have not been compared with a built boat, and no printed set has been
+measured. A builder must print at 100 %, measure the printed calibration rules, and check dimensions against
+the design before cutting anything.
+
 Results can be wrong, including results that look plausible. A qualified person must check them
 independently before anyone relies on them for a design, construction, operating or safety decision.
 

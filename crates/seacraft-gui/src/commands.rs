@@ -1934,3 +1934,131 @@ mod tests {
         assert_eq!(names(&app)[app.active_layer()], "Transom");
     }
 }
+
+// ---- builder templates ----------------------------------------------------
+
+/// What the Builder templates window and `build.templates` make patterns with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplatesParams {
+    /// Subdivision level; `None` is the app's level.
+    pub level: Option<u8>,
+    pub stations: seacraft_core::templates::StationChoice,
+    /// Skin to deduct, in millimetres.
+    pub skin_mm: f64,
+    pub half: bool,
+    /// Strongback level, model z in metres.
+    pub strongback_z: Option<f64>,
+    /// Waterlines to mark, heights above the keel in metres; `None`: six over the depth.
+    pub waterlines: Option<Vec<f64>>,
+    pub profile: bool,
+    pub transom: Option<seacraft_core::templates::Transom>,
+    /// `a4`, `a3`, `letter` or `WxH` in millimetres.
+    pub paper: String,
+    pub single_page: bool,
+    pub margin_mm: f64,
+    pub overlap_mm: f64,
+    /// Paper size over real size: 1 is full size.
+    pub scale: f64,
+    pub imperial: bool,
+}
+
+impl Default for TemplatesParams {
+    fn default() -> Self {
+        let setup = seacraft_core::sheet::PageSetup::default();
+        Self {
+            level: None,
+            stations: seacraft_core::templates::StationChoice::Count(11),
+            skin_mm: 0.0,
+            half: false,
+            strongback_z: None,
+            waterlines: None,
+            profile: false,
+            transom: None,
+            paper: "a4".into(),
+            single_page: false,
+            margin_mm: setup.margin_mm,
+            overlap_mm: setup.overlap_mm,
+            scale: setup.scale,
+            imperial: false,
+        }
+    }
+}
+
+impl TemplatesParams {
+    /// The PDF the window previews: tiled, or one page a pattern.
+    pub fn pdf_format(&self) -> seacraft_core::templates::Format {
+        if self.single_page {
+            seacraft_core::templates::Format::PdfSingle
+        } else {
+            seacraft_core::templates::Format::PdfTiled
+        }
+    }
+
+    /// The format a file at `path` is written in: its extension picks it, and `single_page`
+    /// counts for a PDF only.
+    pub fn format_for(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<seacraft_core::templates::Format, String> {
+        let pdf = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+        seacraft_core::templates::Format::from_path(path, self.single_page && pdf)
+    }
+}
+
+/// A set of patterns written in one format.
+#[derive(Debug, Clone)]
+pub struct TemplatesResult {
+    pub bytes: Vec<u8>,
+    pub format: seacraft_core::templates::Format,
+    pub pages: Option<usize>,
+    pub rows: Vec<seacraft_core::templates::TemplateRow>,
+    pub warnings: Vec<String>,
+    pub missing: Vec<char>,
+}
+
+/// Cut the patterns and write them in `format`. Pure: safe to run on a job thread.
+pub fn templates_in(
+    surface: &Surface,
+    level: u8,
+    mode: SubdivisionMode,
+    params: &TemplatesParams,
+    format: seacraft_core::templates::Format,
+) -> Result<TemplatesResult, String> {
+    use seacraft_core::sheet::{PageSetup, Paper};
+    use seacraft_core::templates::{template_set, write, SetOptions};
+    let setup = PageSetup {
+        paper: Paper::parse(&params.paper)?,
+        margin_mm: params.margin_mm,
+        overlap_mm: params.overlap_mm,
+        scale: params.scale,
+        imperial: params.imperial,
+        title: String::new(),
+    };
+    setup.check()?;
+    let opts = SetOptions {
+        subdivision: SubdivisionOptions {
+            level: params.level.unwrap_or(level),
+            mode,
+        },
+        stations: params.stations.clone(),
+        skin_m: params.skin_mm / 1000.0,
+        half: params.half,
+        strongback_z: params.strongback_z,
+        waterlines_m: params.waterlines.clone(),
+        profile: params.profile,
+        transom: params.transom,
+        imperial: params.imperial,
+    };
+    let set = template_set(surface, &opts)?;
+    let written = write(&set, format, &setup)?;
+    Ok(TemplatesResult {
+        bytes: written.bytes,
+        format,
+        pages: written.pages,
+        rows: set.rows,
+        warnings: set.warnings,
+        missing: written.missing,
+    })
+}

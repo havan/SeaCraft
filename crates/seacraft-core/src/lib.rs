@@ -37,6 +37,8 @@ pub mod dxf;
 pub mod examples;
 pub mod export;
 pub mod fef;
+/// The embedded DejaVu fonts and their licence.
+pub mod fonts;
 pub mod hydro;
 pub mod iges;
 /// Crash-safe file output: temporary sibling, sync, rename.
@@ -51,6 +53,8 @@ pub mod offsets;
 pub mod optimize;
 mod par;
 pub mod parametric;
+/// A small PDF writer: pages, reusable drawings, stroked lines, Unicode text.
+pub mod pdf;
 pub mod planing;
 pub mod project;
 pub mod raster;
@@ -60,13 +64,21 @@ pub mod resistance;
 pub mod seakeeping;
 /// Irregular head-sea responses: spectra, significant motions, accelerations, MSI.
 pub mod seastate;
+/// A 2D drawing in metres and its writers: tiled PDF, single-page PDF, SVG, DXF.
+pub mod sheet;
 pub mod stability;
 pub mod subdiv;
 pub mod table;
+/// Full-size patterns from a hull: station moulds, the profile, the transom.
+pub mod templates;
 pub mod threemf;
 pub mod topology;
 pub mod transform;
 pub mod trimopt;
+/// Read a TrueType font and write a subset of it.
+pub mod ttf;
+/// Lengths as text: metric first, imperial beside it when asked.
+pub mod units;
 pub mod weather;
 
 pub use analysis::AnalysisMode;

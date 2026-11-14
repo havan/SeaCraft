@@ -48,6 +48,7 @@ fn every_export_format_writes_a_plausible_file() {
                 assert!(head.to_lowercase().starts_with("<!doctype html"), "{head}")
             }
             ExportKind::Linesplan => assert!(head.starts_with("<?xml"), "{head}"),
+            ExportKind::OffsetsPdf => assert!(head.starts_with("%PDF-"), "{head}"),
             ExportKind::LinesplanDxf => assert!(head.starts_with("  0\nSECTION"), "{head}"),
             // The Start section is free text; the Global section follows.
             ExportKind::LinesplanIges | ExportKind::HullIges => {

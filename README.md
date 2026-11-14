@@ -569,6 +569,26 @@ surfaces (entity 128) across the resampled starboard and port station curves,
 and `export::threemf` (`-o hull.3mf`) writes a welded, watertight 3MF 1.3
 archive in metres.
 
+### Building patterns
+
+`seacraft templates` cuts full-size station moulds from the refined hull, and
+optionally the profile (backbone) and a raked transom drawn true in its own
+plane. Each section is moved inward by the skin thickness (`--skin-mm`), by
+`t / cos α` where the hull meets the plane at α off square, so the outside of
+the planking lands on the designed surface; a piece of the section the skin
+consumes at a corner is dropped, as an inward offset does. Each sheet names the
+face of the mould that goes on the station line, the largest bevel and the
+longest straight piece of mesh, and can carry strongback legs, waterlines and
+the design waterline. The PDF writer is the project's own (no dependency): it
+tiles a pattern over A4, A3 or Letter with join marks, a map page and two
+100 mm check rules, or puts one pattern on each page for a plotter; SVG and DXF
+(millimetres, `CUT`/`MARK`/`REFERENCE`/`TEXT` layers) are one drawing.
+`seacraft offsets --pdf` prints the table of offsets in millimetres, with
+feet-inches-eighths beside it on `--imperial`. The desktop app has the same
+under File ▸ Builder templates…, and the MCP server as `export_templates` and
+`export_offsets_pdf`. [`docs/building.md`](docs/building.md) is the builder's
+guide.
+
 ---
 
 ## 3. Command line
@@ -583,7 +603,11 @@ seacraft sac       hull.fef [--stations N] [--csv out.csv] [--svg sac.svg] [--js
 seacraft bonjean   hull.fef [--stations N] [--drafts T1,T2,...] [--draft-steps N]
                               [--csv out.csv] [--svg bonjean.svg] [--json]
 seacraft offsets   hull.fef [--stations N] [--waterlines h1,h2,...] [--buttocks y1,y2,...]
-                              [--csv out.csv] [--html offsets.html] [--json]
+                              [--csv out.csv] [--html offsets.html] [--pdf offsets.pdf [--imperial]] [--json]
+seacraft templates hull.fef -o moulds.pdf|.svg|.dxf [--stations N | --spacing M | --at x1,x2,...]
+                              [--skin-mm MM] [--half] [--strongback Z] [--waterlines h1,h2,...]
+                              [--profile] [--transom X,RAKE] [--paper a4|a3|letter|WxH] [--single-page]
+                              [--margin-mm MM] [--overlap-mm MM] [--scale 1:N] [--imperial] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
 seacraft resistance hull.fef [--method holtrop|michell|dsyhs] [--cat-spacing S]
@@ -752,6 +776,9 @@ software. Comparing them with published data is the most useful contribution any
   and hydrostatics docks, file actions) is implemented and tested headlessly.
 * DXF export of the linesplan (2D views plus 3D curve copies) is implemented
   and audit-clean under `ezdxf`.
+* Building patterns are checked against closed-form shapes and against
+  poppler's rendering of the PDF; nobody has yet measured a printed set or built
+  on one, and the PDFs have not been opened on Windows or macOS.
 * Zebra / curvature / draft analysis and a CPU z-buffer renderer with PNG
   output are implemented, in the CLI and in all four GUI viewports. Curvature
   combs are drawn both on the linesplan (`--combs`, SVG and DXF) and in the four
@@ -773,7 +800,8 @@ software. Comparing them with published data is the most useful contribution any
   `save_hull`, `move_point`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
-  `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan` and `render_png`.
+  `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,
+  `export_offsets_pdf` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install
   steps and the CI test that keeps them in step with the tools.

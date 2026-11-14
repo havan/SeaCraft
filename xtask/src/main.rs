@@ -776,7 +776,7 @@ fn step_dist(root: &Path, target: &str) {
     copy(root.join("packaging/README.txt"), stage.join("README.txt"));
     copy_folder("LICENSES", &stage.join("LICENSES"));
     copy(
-        root.join("crates/seacraft-gui/assets/fonts/LICENSE-DejaVu.txt"),
+        root.join("crates/seacraft-core/assets/fonts/LICENSE-DejaVu.txt"),
         stage.join("LICENSES/DejaVu.txt"),
     );
     copy_folder("examples", &stage.join("examples"));

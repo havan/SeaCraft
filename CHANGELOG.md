@@ -2,6 +2,35 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
+## Unreleased
+
+- Builder patterns: `seacraft templates hull.fef -o moulds.pdf --skin-mm 6` cuts full-size station moulds from the
+  refined hull, moved in by the skin thickness along the surface normal, with the mould face that goes on the
+  station line, the largest bevel, waterlines, the design waterline and optional strongback legs or half moulds.
+  `--profile` adds the backbone and `--transom X,RAKE` a raked transom drawn true in its own plane. A PDF is tiled
+  over A4, A3, Letter or any paper size with join marks, a map page and two 100 mm check rules, or put one pattern
+  on each page (`--single-page`); `.svg` and `.dxf` (millimetres, layered) give one drawing. The patterns are
+  checked against closed-form shapes (cylinder, cone, box, raked plane) and against poppler's rendering of the
+  PDF (100 mm drew as 1000 px at 254 dpi). Nobody has printed and measured a set yet, and the PDFs have not been
+  opened on Windows or macOS. [`docs/building.md`](docs/building.md) is the builder's guide.
+- `seacraft offsets --pdf offsets.pdf [--imperial]` prints the table of offsets in millimetres above the keel, and
+  with `--imperial` the same tables in feet-inches-eighths.
+- `seacraft offsets --json` keeps its standard output to the JSON table when it also writes `--pdf`, `--html` or
+  `--csv`: the "wrote" lines now go to standard error.
+- GUI: File ▸ Builder templates… previews the page count on a background job and exports the patterns; File ▸
+  Export ▸ Offsets table PDF…. The control channel gains `build.templates`, `model.export` format `offsets_pdf`
+  (with `stations`, `waterline_steps`, `buttock_steps`, `level`, `imperial`) and `ui.set` `templates`.
+- MCP: `export_templates` and `export_offsets_pdf`, headless and connected, and a `seacraft-boatbuilding` skill
+  that has the agent ask for the skin thickness and relay every warning.
+- The DejaVu fonts moved into the core crate; PDFs embed a subset of DejaVu Sans. No change to the GUI's text.
+- Fix: cutting a hull into sections lost the last point of the first closed loop and could report a later loop as
+  open. This changes computed numbers where a section has closed loops. On the example hulls: the Wigley hull's
+  midship section area and midship coefficient rise 9.5 % (Cm 0.6066 to 0.6639; the Wigley form's own value is
+  2/3) and its prismatic coefficient falls 8.6 % (0.7286 to 0.6656, also 2/3 for the form); the demo hull's
+  section area at its transom falls 1.0 %, so `seacraft sac` gives Cp 0.7097 instead of 0.7029. Every other
+  quantity `hydro` and `sac` report for the seven example hulls moved by less than 0.01 %, and the demo-hull
+  reference numbers checked in CI did not change.
+
 ## 0.3.0 (2026-11-13)
 
 0.3.0-beta.1 with one fix:
