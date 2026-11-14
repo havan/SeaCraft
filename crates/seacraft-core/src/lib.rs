@@ -52,6 +52,7 @@ pub mod mesh;
 pub mod michell;
 pub mod offsets;
 pub mod optimize;
+pub mod panels;
 mod par;
 pub mod parametric;
 /// A small PDF writer: pages, reusable drawings, stroked lines, Unicode text.
