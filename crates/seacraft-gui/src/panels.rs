@@ -6676,6 +6676,21 @@ pub enum TemplatesAction {
     Export,
 }
 
+/// Shown in place of the page count while the station list on screen does not read.
+pub const STATION_LIST_ERROR: &str = "Not a list of positions: write x, x, … in metres";
+
+/// Station positions typed as `x, x, …` in metres; `None` unless every entry is a finite number
+/// and there is at least one.
+fn station_list(text: &str) -> Option<Vec<f64>> {
+    let parsed: Option<Vec<f64>> = text
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite()))
+        .collect();
+    parsed.filter(|v| !v.is_empty())
+}
+
 /// The scales the window offers, paper over real size.
 const TEMPLATE_SCALES: [f64; 5] = [1.0, 0.5, 0.2, 0.1, 0.05];
 
@@ -6689,6 +6704,8 @@ pub fn templates_options(
     use seacraft_core::templates::{StationChoice, Transom};
     // The list as typed, kept while it is being edited; forgotten in the other modes.
     let list_id = egui::Id::unique("templates_at_text");
+    // Whether the list on screen reads as the stations the preview and Export use.
+    let mut list_reads = true;
     egui::Grid::new("templates_grid")
         .num_columns(2)
         .spacing([12.0, 4.0])
@@ -6737,16 +6754,10 @@ pub fn templates_options(
                     let mut text: String = ui.data_mut(|d| d.get_temp(list_id)).unwrap_or(shown);
                     let response = ui
                         .add(egui::TextEdit::singleline(&mut text).hint_text("x, x, … in metres"));
-                    if response.changed() {
-                        let parsed: Option<Vec<f64>> = text
-                            .split(',')
-                            .map(|t| t.trim())
-                            .filter(|t| !t.is_empty())
-                            .map(|t| t.parse::<f64>().ok().filter(|v| v.is_finite()))
-                            .collect();
-                        if let Some(parsed) = parsed.filter(|v| !v.is_empty()) {
-                            *xs = parsed;
-                        }
+                    match station_list(&text) {
+                        Some(parsed) if response.changed() => *xs = parsed,
+                        Some(_) => {}
+                        None => list_reads = false,
                     }
                     ui.data_mut(|d| d.insert_temp(list_id, text));
                 }
@@ -6861,6 +6872,13 @@ pub fn templates_options(
         });
 
     ui.separator();
+    if !list_reads {
+        // The preview and Export would use the last list that read, not the one on screen.
+        ui.colored_label(theme::FAIL, STATION_LIST_ERROR);
+        ui.separator();
+        ui.add_enabled(false, egui::Button::new("Export…"));
+        return None;
+    }
     match status {
         TemplatesStatus::Working => {
             ui.horizontal(|ui| {

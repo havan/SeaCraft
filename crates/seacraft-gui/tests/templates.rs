@@ -109,7 +109,21 @@ impl Window {
         let (_, rect) = self
             .button(label)
             .unwrap_or_else(|| panic!("no `{label}` button: {:?}", self.widgets));
-        let pos = rect.center();
+        self.click_at(rect.center());
+    }
+
+    /// Click the widget of `role` whose text is `label`.
+    fn click_widget(&mut self, role: Role, label: &str) {
+        let rect = self
+            .widgets
+            .iter()
+            .find(|(r, l, _, _)| *r == role && l == label)
+            .map(|(_, _, _, rect)| *rect)
+            .unwrap_or_else(|| panic!("no {role:?} `{label}`: {:?}", self.widgets));
+        self.click_at(rect.center());
+    }
+
+    fn click_at(&mut self, pos: egui::Pos2) {
         let press = |pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -281,4 +295,34 @@ fn offsets_pdf_is_an_export_kind() {
         app.status()
     );
     assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+}
+
+#[test]
+fn a_station_list_that_does_not_read_stops_the_export() {
+    let mut w = Window::new(demo());
+    w.app.set_show_templates(true);
+    w.until("the preview", |app| app.templates_pages().is_some());
+    w.click_widget(Role::RadioButton, "At x");
+    w.until("the preview for x = 1", |app| {
+        app.templates_pages().is_some()
+    });
+    w.frame(vec![]);
+    w.click_widget(Role::TextInput, "1");
+    w.frame(vec![egui::Event::Text(", two".into())]);
+    w.frame(vec![]);
+    let error = "Not a list of positions: write x, x, … in metres";
+    assert!(
+        w.widgets.iter().any(|(_, l, _, _)| l == error),
+        "the error is on screen: {:?}",
+        w.widgets
+            .iter()
+            .filter(|(r, ..)| *r == Role::Label)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !w.widgets.iter().any(|(_, l, _, _)| l.ends_with("patterns")),
+        "no page count for a list that is not the one shown"
+    );
+    let (disabled, _) = w.button("Export…").expect("the Export button");
+    assert!(disabled, "nothing to export for a list that does not read");
 }
