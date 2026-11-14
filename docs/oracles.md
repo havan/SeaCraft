@@ -711,6 +711,8 @@ $\theta_1, \theta_2$, is dropped and its neighbours' moved lines meet instead.
   than half its length, so the mould is $1.988 \times 0.988$ with the rectangle's own corner ($10^{-9}$).
 - `a_sharp_v_keeps_its_whole_mitre`: a $20^\circ$ V with $t = 0.01$: its point moves $0.01 / \sin 10^\circ =
   0.0575877$ m ($10^{-9}$), where a mitre held at $4t$ would leave both sides nearer the hull than $t$.
+- `a_section_the_skin_closes_to_nothing_is_reported`: a 20 mm square with $t = 10$ mm closes to a point (area
+  0), which is reported as the skin being thicker than the hull's radius.
 - `a_hair_of_a_segment_beside_a_bend_is_consumed_quietly`: a 0.15 mm piece beside a $3^\circ$ bend; with
   $t = 0.06$ the mould corner is $0.06$ from both long lines ($10^{-9}$).
 - `a_surface_nearly_in_the_plane_is_clamped_and_counted`: a cone 1 m in radius and 0.1 m long meets the plane at

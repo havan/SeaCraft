@@ -481,8 +481,13 @@ pub fn mould_line(section: &[SectionPath], skin_m: f64) -> MouldLine {
         if collapse_consumed_segments(&path.points, &moves, path.closed, &mut moved) {
             out.crosses_itself = true;
         }
-        // Turned inside out as a whole, as a tube thinner than its skin is.
-        if path.closed && area2(&path.points) * area2(&moved) < 0.0 {
+        // Turned inside out as a whole, as a tube thinner than its skin is, or closed up to
+        // nothing, as one exactly two skins across is.
+        let (before, after) = (area2(&path.points), area2(&moved));
+        if path.closed
+            && before != 0.0
+            && (before * after < 0.0 || after.abs() <= before.abs() * 1e-9)
+        {
             out.crosses_itself = true;
         }
         if !out.crosses_itself {
@@ -2040,6 +2045,15 @@ mod tests {
             "apex at {}, want {want}",
             apex.1
         );
+    }
+
+    /// A square exactly two skins wide closes up to a point: nothing is left to cut.
+    #[test]
+    fn a_section_the_skin_closes_to_nothing_is_reported() {
+        let section =
+            clockwise_section(vec![(0.01, 0.0), (-0.01, 0.0), (-0.01, 0.02), (0.01, 0.02)]);
+        let mould = mould_line(&section, 0.01);
+        assert!(mould.crosses_itself, "{:?}", mould.paths);
     }
 
     /// A 5 mm tube cannot hold a 12 mm skin: the mould line would turn inside out.
