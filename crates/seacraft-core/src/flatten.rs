@@ -461,35 +461,27 @@ pub fn flatten(verts: &[Vec3], tris: &[[usize; 3]]) -> Result<Flat, FlattenError
             w
         })
         .collect();
-    // An edge whose cotangent sum is not positive would make the system indefinite: give its
-    // half-edges a small share of the mean positive weight instead. The energy keeps its zero
-    // at an exact isometry, so a developable mesh still flattens exactly.
-    let mut edge_sum: HashMap<(usize, usize), (f64, usize)> = HashMap::new();
-    for (f, w) in tris.iter().zip(&weight) {
-        for k in 0..3 {
-            let (a, b) = (f[k], f[(k + 1) % 3]);
-            let e = edge_sum.entry((a.min(b), a.max(b))).or_default();
-            e.0 += w[k];
-            e.1 += 1;
-        }
-    }
-    let positive: Vec<f64> = edge_sum
-        .values()
-        .map(|e| e.0)
-        .filter(|&s| s > 0.0)
+    // A cotangent that is not positive (an obtuse angle opposite the edge) is raised to a small
+    // share of the mean positive one, each half-edge on its own. Weights are only ever raised:
+    // a triangle's cotangent cross-covariance Σ cot θ_k e_k e_kᵀ is 2·area·I, so raising keeps
+    // it positive definite and the local step finds the triangle's own rotation. Lowering one
+    // (say, to balance an edge whose two cotangents sum below zero) can make it indefinite, and
+    // then even a flat panel folds. Every weight positive keeps the energy at least zero, with its
+    // zero at an exact isometry, so a developable mesh still flattens exactly.
+    let positive: Vec<f64> = weight
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|&c| c > 0.0)
         .collect();
     let mean = if positive.is_empty() {
         1.0
     } else {
         positive.iter().sum::<f64>() / positive.len() as f64
     };
-    for (f, w) in tris.iter().zip(weight.iter_mut()) {
-        for k in 0..3 {
-            let (a, b) = (f[k], f[(k + 1) % 3]);
-            let (sum, count) = edge_sum[&(a.min(b), a.max(b))];
-            if sum <= 0.0 {
-                w[k] = 1e-6 * mean / count as f64;
-            }
+    for c in weight.iter_mut().flatten() {
+        if *c <= 1e-6 * mean {
+            *c = 1e-6 * mean;
         }
     }
 
@@ -644,21 +636,58 @@ pub(crate) fn check_flat(tris: &[[usize; 3]], xy: &[(f64, f64)]) -> Result<(), F
             segs.push((lp[k], lp[(k + 1) % lp.len()]));
         }
     }
-    let orient = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| signed_area(a, b, c).signum();
     for (s, &(a, b)) in segs.iter().enumerate() {
         for &(c, d) in &segs[s + 1..] {
             if a == c || a == d || b == c || b == d {
                 continue;
             }
-            let (pa, pb, pc, pd) = (xy[a], xy[b], xy[c], xy[d]);
-            if orient(pa, pb, pc) * orient(pa, pb, pd) < 0.0
-                && orient(pc, pd, pa) * orient(pc, pd, pb) < 0.0
-            {
+            if segments_cross(xy[a], xy[b], xy[c], xy[d]) {
                 return Err(FlattenError::SelfCrossing);
             }
         }
     }
     Ok(())
+}
+
+/// Whether two segments that share no end cross, touch or overlap. An orientation within rounding of zero (1e-12 of the
+/// segments' squared size) counts as collinear, so pieces of one straight edge that only lie on
+/// the same line, as a straight sheer does, do not read as crossing.
+fn segments_cross(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+    let len2 = |p: (f64, f64), q: (f64, f64)| (q.0 - p.0).powi(2) + (q.1 - p.1).powi(2);
+    let tol = 1e-12 * len2(a, b).max(len2(c, d));
+    let side = |p, q, r| {
+        let o = 2.0 * signed_area(p, q, r);
+        if o.abs() <= tol {
+            0
+        } else if o > 0.0 {
+            1
+        } else {
+            -1
+        }
+    };
+    let (o1, o2, o3, o4) = (side(a, b, c), side(a, b, d), side(c, d, a), side(c, d, b));
+    if o1 == 0 && o2 == 0 {
+        // On one line: they cross only if they overlap by more than rounding.
+        let dir = (b.0 - a.0, b.1 - a.1);
+        let at = |p: (f64, f64)| (p.0 - a.0) * dir.0 + (p.1 - a.1) * dir.1;
+        let (lo1, hi1): (f64, f64) = (0.0, at(b));
+        let (lo2, hi2) = (at(c).min(at(d)), at(c).max(at(d)));
+        let overlap = hi1.min(hi2) - lo1.max(lo2);
+        return overlap > 1e-9 * hi1.max(1e-300);
+    }
+    if o1 * o2 < 0 && o3 * o4 < 0 {
+        return true;
+    }
+    // An end of one lying on the other: an outline that touches itself is not one piece.
+    let on = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        let l = len2(p, q);
+        let t = (r.0 - p.0) * (q.0 - p.0) + (r.1 - p.1) * (q.1 - p.1);
+        t > 1e-9 * l && t < (1.0 - 1e-9) * l
+    };
+    (o1 == 0 && on(a, b, c))
+        || (o2 == 0 && on(a, b, d))
+        || (o3 == 0 && on(c, d, a))
+        || (o4 == 0 && on(c, d, b))
 }
 
 /// How far a flat pattern stretches its triangles' edges, as fractions of their 3D lengths.
@@ -954,6 +983,46 @@ mod tests {
         assert!(matches!(
             check_flat(&t, &folded),
             Err(FlattenError::Fold { .. })
+        ));
+    }
+
+    /// Two pieces of one straight edge, as a transom's sheer laid flat gives them: on one line to
+    /// within rounding (orientations of ±9e-19) and apart, so they do not cross.
+    #[test]
+    fn pieces_of_one_straight_edge_do_not_cross() {
+        let (a, b) = (
+            (0.7060163739627878, 0.16069616334075532),
+            (0.7552816131489581, 0.18784388346472577),
+        );
+        let (c, d) = (
+            (0.21336398210108434, -0.11078103789894946),
+            (0.26262922128725463, -0.08363331777497901),
+        );
+        assert!(!segments_cross(a, b, c, d));
+        // Overlapping on one line, crossing, and an end touching the other's middle all do.
+        assert!(segments_cross(
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (1.0, 0.0),
+            (3.0, 0.0)
+        ));
+        assert!(segments_cross(
+            (0.0, 0.0),
+            (2.0, 2.0),
+            (0.0, 2.0),
+            (2.0, 0.0)
+        ));
+        assert!(segments_cross(
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0)
+        ));
+        assert!(!segments_cross(
+            (0.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (3.0, 1.0)
         ));
     }
 
