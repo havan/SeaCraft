@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The tags, so the programs can say how far this build is from a release.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install what the build and the packages need
         run: |
@@ -45,9 +47,8 @@ jobs:
           fi
           desktop-file-validate packaging/linux/io.github.havan.SeaCraft.desktop
 
-          "$stage/seacraft" --version
+          packaging/check-version.sh "$version" "$stage/seacraft" "$stage/seacraft-gui"
           "$stage/seacraft" hydro "$stage/examples/demo-hull.fef" --kg 2.2
-          "$stage/seacraft-gui" --version
 
           mkdir out
           tar -C "$stage/.." -czf "out/$folder.tar.gz" "$folder"
@@ -73,6 +74,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The tags, so the programs can say how far this build is from a release.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Nobody tests Windows by hand, so its whole test suite must pass before it ships.
       - name: Test
@@ -85,7 +88,7 @@ jobs:
           folder=seacraft-$version-x86_64-pc-windows-msvc
           stage=$PWD/target/seacraft-dist/$folder
 
-          "$stage/seacraft.exe" --version
+          packaging/check-version.sh "$version" "$stage/seacraft.exe"
           "$stage/seacraft.exe" hydro "$stage/examples/demo-hull.fef" --kg 2.2
 
           mkdir out
@@ -115,6 +118,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The tags, so the programs can say how far this build is from a release.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Nobody tests macOS by hand either, so its whole test suite must pass before it ships.
       - name: Test
@@ -133,9 +138,8 @@ jobs:
           hdiutil attach "$image" -nobrowse -readonly -mountpoint "$PWD/mounted"
           codesign --verify --deep --strict mounted/SeaCraft.app
           programs=mounted/SeaCraft.app/Contents/MacOS
-          "$programs/seacraft" --version
+          packaging/check-version.sh "$version" "$programs/seacraft" "$programs/seacraft-gui"
           "$programs/seacraft" hydro mounted/SeaCraft.app/Contents/Resources/examples/demo-hull.fef --kg 2.2
-          "$programs/seacraft-gui" --version
           hdiutil detach "$PWD/mounted"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

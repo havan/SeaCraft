@@ -294,7 +294,7 @@ fn step_versions(root: &Path) {
     }
     let sc_ver_str = String::from_utf8_lossy(&sc_out.stdout).trim().to_string();
     let sc_ver = sc_ver_str.split_whitespace().last().unwrap_or("");
-    if sc_ver != ws_version {
+    if release_of(sc_ver) != ws_version {
         fail(
             "versions",
             &format!("seacraft binary version '{sc_ver}' != workspace version '{ws_version}'"),
@@ -328,7 +328,13 @@ fn step_versions(root: &Path) {
         .trim()
         .to_string();
     let sc_gui_ver = sc_gui_ver_str.split_whitespace().last().unwrap_or("");
-    if sc_gui_ver != ws_version {
+    if sc_gui_ver != sc_ver {
+        fail(
+            "versions",
+            &format!("seacraft-gui binary version '{sc_gui_ver}' != seacraft '{sc_ver}'"),
+        );
+    }
+    if release_of(sc_gui_ver) != ws_version {
         fail(
             "versions",
             &format!(
@@ -338,8 +344,18 @@ fn step_versions(root: &Path) {
     }
 
     println!(
-        "[ci] versions: pass ({ws_version} in Cargo.toml, Cargo.lock, seacraft, seacraft-gui)"
+        "[ci] versions: pass ({ws_version} in Cargo.toml, Cargo.lock, seacraft, seacraft-gui; \
+         this build is {sc_ver})"
     );
+}
+
+/// The package version a build version starts from: `0.3.0` from `0.3.0+67-ga4b51c2-dirty`, and
+/// `0.3.1` from `0.3.1-dev+gabc1234`.
+fn release_of(build_version: &str) -> &str {
+    let v = build_version.split('+').next().unwrap_or(build_version);
+    v.strip_suffix("-dev")
+        .or_else(|| v.strip_suffix(".dev"))
+        .unwrap_or(v)
 }
 
 fn parse_workspace_version(toml: &str) -> Option<String> {

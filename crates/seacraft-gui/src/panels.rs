@@ -734,14 +734,7 @@ pub fn about(ui: &mut egui::Ui) {
         "Results are not validated and may be wrong. Do not rely on them for design or safety \
          decisions without independent checks by a qualified person.",
     );
-    ui.hyperlink_to(
-        "Source code of this version",
-        format!(
-            "{}/tree/v{}",
-            env!("CARGO_PKG_REPOSITORY"),
-            seacraft_core::VERSION
-        ),
-    );
+    ui.hyperlink_to("Source code of this version", seacraft_core::source_url());
     ui.separator();
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (title, text) in [

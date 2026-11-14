@@ -31,7 +31,9 @@ cargo run --bin seacraft -- hydro examples/demo-hull.fef --kg 2.2
 - Colours only from `crates/seacraft-gui/src/theme.rs`: `cargo xtask colours`.
 - Slow work stays off the window thread, in `Job<T>`, and a stale result is never shown as current. Reviewed in PRs.
 - Every user file goes through `write_atomic`. Reviewed in PRs.
-- The version is identical in `Cargo.toml`, `Cargo.lock`, the window title and `seacraft --version`: `cargo xtask ci`.
+- The version is identical in `Cargo.toml`, `Cargo.lock`, the window title and `seacraft --version`. Only a clean
+  checkout of the tag `vX.Y.Z` says `X.Y.Z` alone; any other build names its commit, by the rule in
+  `crates/seacraft-core/src/build_version.rs`: `cargo xtask ci`, `packaging/check-version.sh` in the Release workflow.
 - Run `cargo xtask ci` before every commit. `cargo xtask skills` keeps this file and `skills/` honest.
 
 ## Working on X: read the skill first

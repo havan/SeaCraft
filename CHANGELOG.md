@@ -4,6 +4,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- Every program says which source it was built from. `seacraft --version`, the window title, About and the MCP
+  server show `0.3.0` only for a clean build of the tag `v0.3.0`; any other build names its commit, such as
+  `0.3.0+67-ga4b51c2-dirty` after the release or `0.3.1-dev+gabc1234` before it, and reports name it too. About links to the exact commit.
 - Builder patterns: `seacraft templates hull.fef -o moulds.pdf --skin-mm 6` cuts full-size station moulds from the
   refined hull, moved in by the skin thickness along the surface normal, with the mould face that goes on the
   station line, the largest bevel, waterlines, the design waterline and optional strongback legs or half moulds.

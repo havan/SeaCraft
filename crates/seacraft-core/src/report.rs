@@ -1524,7 +1524,7 @@ pub fn design_report_with_project(
     }
 
     // ------------------------------------------------------------- Footer
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::VERSION;
     out.push_str("<footer>\n");
     let _ = writeln!(
         out,

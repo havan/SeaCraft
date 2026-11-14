@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Parser, Debug)]
 #[command(
     name = "seacraft",
-    version,
+    version = seacraft_core::VERSION,
     about = "Subdivision-surface hull design, hydrostatics and stability (FREE!ship compatible)",
     long_about = "SeaCraft is a Rust reimplementation of the FREE!ship hull modeller.\n\
                   It reads and writes FREE!ship .fef exchange files, refines the control\n\

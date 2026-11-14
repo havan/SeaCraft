@@ -92,5 +92,28 @@ pub use seakeeping::{
 };
 pub use subdiv::{SubdivisionMode, SubdivisionOptions};
 
-/// Crate version.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+#[cfg(test)]
+mod build_version;
+
+/// The version of this build: the release version alone for a clean checkout of its tag, otherwise
+/// naming the commit, such as `0.3.0+67-ga4b51c2-dirty` or `0.3.1-dev+gabc1234`. The rule is in
+/// `build_version.rs`.
+pub const VERSION: &str = env!("SEACRAFT_VERSION");
+
+/// The release version from `Cargo.toml`, without build metadata.
+pub const RELEASE: &str = env!("CARGO_PKG_VERSION");
+
+/// The full commit this was built from, or `None` when the source was not a git checkout.
+pub const GIT_COMMIT: Option<&str> = match env!("SEACRAFT_GIT_COMMIT").as_bytes() {
+    [] => None,
+    _ => Some(env!("SEACRAFT_GIT_COMMIT")),
+};
+
+/// Where the source of this build can be browsed: the commit when known, otherwise the release tag.
+pub fn source_url() -> String {
+    let repo = env!("CARGO_PKG_REPOSITORY");
+    match GIT_COMMIT {
+        Some(commit) => format!("{repo}/tree/{commit}"),
+        None => format!("{repo}/tree/v{RELEASE}"),
+    }
+}

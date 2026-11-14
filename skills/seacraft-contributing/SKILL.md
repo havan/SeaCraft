@@ -34,6 +34,10 @@ Commit subjects follow `type(scope): summary`, such as `fix(core): ...`. History
   `0.3.0-beta.N` per completed feature until the next readiness review, whose criterion is: open, edit, measure,
   load, report, save and reopen with no known blocking defect.
 * The version must be identical in `Cargo.toml`, `Cargo.lock`, the window title and `seacraft --version`.
+  A build that is not a clean checkout of its tag says so: `0.3.0+67-ga4b51c2-dirty` is 67 commits after
+  `v0.3.0` with uncommitted changes, `0.3.1-dev+gabc1234` is work towards an untagged 0.3.1, `0.3.0+ga4b51c2`
+  is a clone without tags, and `0.3.0+unknown` was not built from git. Show `seacraft_core::VERSION`, never
+  `CARGO_PKG_VERSION`. A packager building from an archive sets `SEACRAFT_BUILD_VERSION=X.Y.Z`.
 * The maintainer may commit directly to `main`. Everyone else sends a pull request.
 
 ## Cutting a release
