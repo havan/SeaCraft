@@ -22,6 +22,13 @@ use crate::templates::{station_positions, StationChoice};
 /// this angle of its mirror image.
 pub const CENTRELINE_JOIN_DEG: f64 = 2.0;
 
+/// The most plywood sheets one panel is laid along end to end. A 10 m panel takes five 2.44 m
+/// sheets; more than this means a scarf nearly as long as the sheet.
+pub const MAX_SHEETS_EACH: usize = 100;
+
+/// The most offset rows across one panel: a 10 m panel at 10 mm spacing.
+pub const MAX_OFFSET_ROWS: usize = 1000;
+
 /// How many copies of a panel are cut.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Copies {
@@ -1544,8 +1551,18 @@ pub struct PanelOffsets {
     pub rows: Vec<OffsetRow>,
 }
 
+/// How many rows [`panel_offsets`] makes across `panel` at `spacing_m`, counted without making
+/// them; `None` when the count is not a finite number.
+fn offset_rows(panel: &FlatPanel, spacing_m: f64) -> Option<f64> {
+    let (_, _, width, _) = extent(panel);
+    let rows = (width / spacing_m).ceil().max(0.0) + 1.0;
+    rows.is_finite().then_some(rows)
+}
+
 /// The offsets of a flat panel from a baseline along its lowest edge (`y` = the pattern's least
 /// `y`), with rows every `spacing_m` from its aft end (least `x`) and one at its forward end.
+/// [`panel_set`] refuses a spacing that gives more than [`MAX_OFFSET_ROWS`] rows before calling
+/// this.
 pub fn panel_offsets(panel: &FlatPanel, spacing_m: f64) -> PanelOffsets {
     let xy = &panel.xy;
     let loops = boundary_loops(&panel.found.tris);
@@ -1747,6 +1764,16 @@ pub fn lay_out(panel: &FlatPanel, stock: Stock) -> StockRow {
         row.note = Some("the scarf is as long as the sheet: not laid out".into());
         return row;
     }
+    // Counted before any joint is placed, so a reach of almost nothing cannot run away.
+    let further = ((length - 1e-9 - stock.length_m) / reach).ceil().max(0.0);
+    if !further.is_finite() || further + 1.0 > MAX_SHEETS_EACH as f64 {
+        row.note = Some(format!(
+            "would take more than {MAX_SHEETS_EACH} sheets end to end, the scarf leaving {} mm of \
+             each further sheet: not laid out",
+            crate::units::millimetres(reach)
+        ));
+        return row;
+    }
     let mut end = stock.length_m;
     let mut sheets = 1;
     while end < length - 1e-9 {
@@ -1945,10 +1972,9 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         return Err("the scarf must be from 0 to less than the sheet's length".into());
     }
     let layers = chosen_layers(surface, opts.layers.as_deref())?;
+    // Only the model's extent is read from the hull: the panels' layers need not be in its
+    // hydrostatics, and a chosen layer with no faces finds no panel below.
     let hull = crate::hydro::Hull::new(surface, opts.subdivision);
-    if hull.tris.is_empty() {
-        return Err("the model has no surface to make panels from".into());
-    }
     let xs = station_positions(&hull, &opts.stations)?;
     let stations: Vec<(String, f64)> = xs
         .iter()
@@ -1959,6 +1985,19 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         measure_panels(surface, opts.subdivision, &layers, &xs, opts.limits);
     if panels.is_empty() && refused.is_empty() {
         return Err("no panel was found on the chosen layers".into());
+    }
+    for p in &panels {
+        let rows = offset_rows(p, opts.offset_spacing_m);
+        if rows.is_none_or(|n| n > MAX_OFFSET_ROWS as f64) {
+            let (_, _, length, _) = extent(p);
+            return Err(format!(
+                "an offset spacing of {} mm gives more than the {MAX_OFFSET_ROWS} rows a panel may \
+                 have across {} ({} mm long): use a larger offset spacing",
+                opts.offset_spacing_m * 1000.0,
+                p.found.name,
+                crate::units::millimetres(length)
+            ));
+        }
     }
     let name = surface.settings.name.trim();
     let mut set = PanelSet {
@@ -3086,6 +3125,42 @@ mod tests {
         assert_eq!(total_sheets(&rows), 4);
     }
 
+    /// A scarf nearly as long as the sheet leaves each further sheet adding almost nothing:
+    /// the count is bounded before any joint is placed, and the panel is reported, not laid out.
+    #[test]
+    fn a_scarf_that_leaves_too_many_sheets_is_reported() {
+        let plank5 = plank(5.0, 0.5, Copies::One);
+        let short_reach = Stock {
+            scarf_m: 2.43999,
+            ..Stock::default()
+        };
+        let row = lay_out(&plank5, short_reach);
+        assert_eq!(row.sheets_each, None);
+        assert!(row.joints_m.is_empty());
+        let note = row.note.as_deref().unwrap_or_default();
+        assert!(
+            note.contains(&format!("more than {MAX_SHEETS_EACH} sheets"))
+                && note.contains("not laid out"),
+            "{note}"
+        );
+        assert_eq!(total_sheets(&[row]), 0);
+        // A reach below one floating-point step of the sheet's end would never advance it.
+        let no_reach = Stock {
+            scarf_m: 2.44 - 1e-15,
+            ..Stock::default()
+        };
+        assert_eq!(lay_out(&plank5, no_reach).sheets_each, None);
+        // The limit itself still lays out.
+        let at_limit = Stock {
+            scarf_m: 2.44 - (5.0 - 2.44) / (MAX_SHEETS_EACH as f64 - 1.0) - 1e-9,
+            ..Stock::default()
+        };
+        assert_eq!(
+            lay_out(&plank5, at_limit).sheets_each,
+            Some(MAX_SHEETS_EACH)
+        );
+    }
+
     #[test]
     fn panel_set_on_the_flat_pram() {
         let mut s = pram_fixture(0.0, 0.0);
@@ -3212,6 +3287,45 @@ mod tests {
         };
         let e = panel_set(&s2, &opts).unwrap_err();
         assert!(e.contains("Deck") && e.contains("no faces"), "{e}");
+    }
+
+    /// Panels are cut from the layers chosen, whether or not hydrostatics counts them.
+    #[test]
+    fn layers_left_out_of_hydrostatics_still_make_panels() {
+        let mut s = pram_fixture(0.0, 0.0);
+        for layer in &mut s.layers {
+            layer.use_in_hydrostatics = false;
+        }
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        let names: Vec<&str> = set.rows.iter().map(|r| r.panel.as_str()).collect();
+        assert_eq!(names, ["Bottom", "Side"]);
+        assert_eq!(set.stations.len(), 11);
+    }
+
+    /// The offset rows across a panel are counted before any is made.
+    #[test]
+    fn an_offset_spacing_that_gives_too_many_rows_is_refused() {
+        let s = pram_fixture(0.0, 0.0);
+        for spacing_m in [0.001, 1e-12] {
+            let opts = PanelOptions {
+                offset_spacing_m: spacing_m,
+                ..PanelOptions::default()
+            };
+            let e = panel_set(&s, &opts).unwrap_err();
+            assert!(
+                e.contains("Bottom")
+                    && e.contains(&format!("more than the {MAX_OFFSET_ROWS}"))
+                    && e.contains("larger offset spacing"),
+                "{e}"
+            );
+        }
+        // 10 mm on the 2.4 m pram is about 241 rows: within the limit.
+        let opts = PanelOptions {
+            offset_spacing_m: 0.01,
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&s, &opts).expect("a set");
+        assert!(set.offsets.iter().all(|o| o.rows.len() <= MAX_OFFSET_ROWS));
     }
 
     #[test]

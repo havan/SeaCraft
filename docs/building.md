@@ -152,13 +152,15 @@ change once a boat has been built from these patterns. A round-bilge hull such a
 in plywood; that is the right answer, not a fault.
 
 **Offsets.** `--offsets-csv` and `--offsets-pdf` give each panel as offsets from a straight baseline along its
-lowest edge, every 250 mm (`--offset-spacing-mm`), for marking out with a batten instead of a full-size print.
+lowest edge, every 250 mm (`--offset-spacing-mm`), for marking out with a batten instead of a full-size print. A
+spacing that gives more than 1000 rows across a panel is refused.
 
 **Plywood.** Each panel is laid along 2440 × 1220 mm sheets end to end (`--stock-mm 2440x1220`), with the sheet
 ends and joints drawn on the pattern; `--scarf-mm` sets the overlap of a scarf joint. The total is an upper bound:
-the program does not nest panels together. A panel wider than a sheet is reported, not split and not counted, and
-the count names it. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways)
-is named in the table and on every pattern of the set, and is not counted either.
+the program does not nest panels together. A panel wider than a sheet, or one that would need more than 100
+sheets end to end (a scarf nearly as long as the sheet), is reported, not split and not counted, and the count
+names it. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways) is named
+in the table and on every pattern of the set, and is not counted either.
 
 The patterns allow no plywood thickness: they are the modelled surface.
 
