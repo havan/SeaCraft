@@ -1614,7 +1614,7 @@ impl App {
         if self.surface.is_none() {
             // Nothing to measure: the dock keeps its frame (the layout does
             // not jump when a model arrives) but not its empty controls.
-            panel.show(ui, panels::no_model_note);
+            panel.show(ui, panels::empty_dock);
             return;
         }
         panel.show(ui, |ui| {
@@ -1864,7 +1864,7 @@ impl App {
                     // travel the height of the window between them.
                     if self.surface.is_none() {
                         // No layers to list and nothing to inspect.
-                        panels::no_model_note(ui);
+                        panels::empty_dock(ui);
                         return;
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {

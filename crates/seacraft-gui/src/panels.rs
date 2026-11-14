@@ -4770,24 +4770,11 @@ pub struct ToolbarState<'a> {
     pub has_model: bool,
 }
 
-/// The one line a dock shows with no model loaded, in place of controls
-/// that would have nothing to act on.
-pub const NO_MODEL_NOTE: &str = "No model — start a new design or open one";
-
-/// Draw [`NO_MODEL_NOTE`], muted and small enough for one line in the
-/// layer dock, at the top of a dock. The dock keeps its width: a panel
-/// would otherwise shrink to the note and widen again when a model arrives.
-pub fn no_model_note(ui: &mut egui::Ui) {
+/// A dock with no model loaded: empty, at its full width. The status bar
+/// and the start card say that there is no model; a dock that shrank to
+/// nothing would jump when a model arrives.
+pub fn empty_dock(ui: &mut egui::Ui) {
     ui.set_min_width(ui.available_width());
-    ui.add_space(4.0);
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(NO_MODEL_NOTE)
-                .small()
-                .color(theme::TEXT_MUTED),
-        )
-        .truncate(),
-    );
 }
 
 /// A small muted heading over a group of menu items.

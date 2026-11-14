@@ -179,9 +179,17 @@ pub fn start_card(
                     ui.label(egui::RichText::new("Recent").color(theme::TEXT_SECONDARY));
                     for (i, entry) in recent.iter().take(shown).enumerate() {
                         let full_path = entry.path.display().to_string();
+                        // The folder beside the name: two files of one
+                        // name are otherwise the same row twice.
+                        let name = entry.label();
+                        let folder = egui::RichText::new(
+                            entry.folder(crate::recent::folder_room(&name, 46)),
+                        )
+                        .small()
+                        .color(theme::TEXT_MUTED);
                         let r = ui.add_enabled(
                             entry.exists,
-                            egui::Button::new(entry.label())
+                            egui::Button::new((name, egui::Atom::grow(), folder))
                                 .frame(false)
                                 .min_size(egui::vec2(size.x - 40.0, ROW - 4.0)),
                         );
