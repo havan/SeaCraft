@@ -841,3 +841,154 @@ either part is right.
   `runabout-6m` station mould is at least $0.99\,t$ from the section ($t = 6$ mm), and none crosses itself.
 - `crates/seacraft-gui/tests/templates.rs::the_window_shows_the_page_count_once_it_is_computed`: the count the
   window shows equals `sheet::page_count` of the same set.
+
+---
+
+## 30. The Flattening's Linear Solver
+
+### Formula
+A symmetric positive-definite $A$ factors as $A = L L^\top$ (Cholesky); after a reverse Cuthill–McKee reordering
+the factor stays inside the matrix's envelope.
+- $A = \begin{pmatrix}4&1&0\\1&3&1\\0&1&2\end{pmatrix}$, $b = (1, 2, 3)$: the answer by Cramer's rule,
+  $x_k = \det A_k / \det A$, computed in the test.
+- A path of $n$ nodes joined by unit springs, node 0 held at 0, a unit load on every other node: node $i$
+  carries the load of nodes $i..n-1$, so $x_i - x_{i-1} = n - i$ and $x_i = i(2n - 1 - i)/2$ ($n = 3$: 2, 3).
+- $\begin{pmatrix}1&2\\2&1\end{pmatrix}$ has eigenvalues 3 and $-1$: no Cholesky factor.
+
+### Tests
+`crates/seacraft-core/src/flatten.rs`: `cholesky_solves_a_small_spd_system` ($10^{-12}$),
+`cholesky_on_a_path_laplacian_matches_closed_form` ($n = 50$, $10^{-9}$), `cholesky_refuses_an_indefinite_matrix`.
+
+### Provenance
+Closed forms worked by hand (2026-11-14). Not published values.
+
+---
+
+## 31. Laying a Panel Flat
+
+### Formula
+`flatten` is the as-rigid-as-possible (ARAP) local/global method of Liu, Zhang, Xu, Gotsman and Gortler, "A
+Local/Global Approach to Mesh Parameterization", Symposium on Geometry Processing 2008 (Computer Graphics Forum
+27(5)), sections 4.3–4.4, equations 1 and 4: least squares over every triangle edge, each against its true length
+turned by the triangle's best rotation, weighted by the cotangent of the opposite angle. It is exact (every edge its
+3D length) on a mesh that is developable as meshed:
+- A cylinder of radius $r$ faceted on its rulings, $N$ facets over $\Phi$: a rectangle of length $\ell$ and width
+  $N \cdot 2r\sin(\Phi / 2N)$.
+- A cone of half-angle $\alpha$ faceted on its rulings, $N$ facets over $\Phi$: two rulings $\Phi/N$ apart meet at the
+  apex at $2\arcsin(\sin\alpha \sin(\Phi / 2N))$, so the pattern is a sector of $N$ times that, its radii the slant
+  distances.
+- A strip folded along a straight line: the strip.
+- A planar panel: itself.
+
+A surface with Gaussian curvature cannot lie flat. Gauss–Bonnet, discrete and exact for any faceted disc: the angle
+defects at interior vertices plus the turning $\pi - \theta$ at boundary vertices sum to $2\pi$. Smooth: a cap of
+polar angle $\varphi$ on a unit sphere holds $2\pi(1 - \cos\varphi)$.
+
+### Tests
+`crates/seacraft-core/src/flatten.rs`:
+- `a_cylinder_meshed_on_its_rulings_flattens_to_its_rectangle`: $r = 0.5$, $\ell = 2$, 24 facets over $120°$; every
+  edge and the rectangle's sides and diagonal to $10^{-9}$.
+- `a_cone_meshed_on_its_rulings_flattens_to_its_sector`: $\alpha = 30°$, slant 0.3 to 1, 36 facets over $180°$;
+  sector angle and both radii to $10^{-9}$.
+- `a_cone_to_its_apex_flattens_after_cleaning`: the same cone from slant 0, a pole of 37 coincident vertices and 36
+  collapsed triangles that `clean` welds and drops; sector and radius to $10^{-9}$.
+- `a_folded_strip_flattens_exactly`: $0.2 \times 1$ m folded $90°$; edges to $10^{-9}$, area 0.2 m² to $10^{-12}$.
+- `a_spherical_cap_has_its_gauss_bonnet_defect_and_stretches`: $\varphi = 40°$, 10 rings of 48: discrete
+  Gauss–Bonnet to $10^{-9}$; interior defects 1.3333 against $2\pi(1 - \cos 38°) = 1.3320$ (each interior vertex
+  stands for the surface half way to its neighbours, so they hold the cap to half a ring short of the edge,
+  $\varphi' = 40° \times 9.5/10$), within 2 %; the flattening stretches it (RMS 2.40 %, above 0.1 %).
+- `crates/seacraft-core/src/panels.rs::a_planar_transom_with_obtuse_triangles_flattens_exactly`: the demo hull's
+  transom, one planar 11-sided face, whose subdivision has edges with cotangent sums below zero; largest edge strain
+  under $10^{-9}$.
+
+Convergence, stated as such: `skewed_diagonals_leave_a_residual_that_shrinks`: a cylinder whose alternate rings are
+turned half a facet is not developable as meshed; its RMS strain at 12, 24 and 48 facets is $8.4 \times 10^{-6}$,
+$4.9 \times 10^{-7}$, $2.9 \times 10^{-8}$ (about $N^{-4}$), asserted falling and under $10^{-4}$.
+
+Refusals, by construction: `a_ring_is_not_a_disc` (two edge loops), `a_fold_is_refused` (a triangle turned over),
+`a_self_crossing_outline_is_refused` (a strip wound 1.2 times round a spiral, whose end line passes through a
+vertex of the first turn), `pieces_of_one_straight_edge_do_not_cross` (two pieces of one line with orientations of
+$\pm 9 \times 10^{-19}$, from the pram's transom read back from its file, are apart).
+
+Internal consistency, not an oracle: `the_result_does_not_depend_on_face_order_or_placement` (faces scrambled and
+the mesh turned and moved: outlines agree after the best rigid fit to $10^{-9}$; measured $3.3 \times 10^{-11}$).
+
+### Provenance
+The method was read in the paper itself (2026-11-14); the closed forms were worked by hand for these tests. Two
+choices differ from the paper: the start is SeaCraft's edge-joining development, and a turned-over triangle is
+refused instead of repaired. Cotangents that are not positive are raised to $10^{-6}$ of the mean positive one,
+each on its own; this keeps the exact cases exact (every weight positive, zero energy at an isometry). The least
+stretch is geometry: nothing here models plywood bending.
+
+---
+
+## 32. Panels of a Hard-Chine Pram: Measures
+
+### Formula
+The test pram (`panels::pram_fixture`, test code, not an example hull) has straight chines and planar sides, bottom
+and transoms, so every panel lies flat exactly: zero stretch, seams their 3D length, flat area the 3D area. Seam
+drift is the largest $|s_\text{flat} - s_\text{3D}|$ of the cumulative lengths at the station ticks and the seam's
+end, measured from the first tick and again from the last.
+
+### Tests
+`crates/seacraft-core/src/panels.rs`:
+- `a_flat_pram_lies_flat_with_true_seams`: four panels; RMS stretch under $10^{-9}$, every seam drift under
+  $10^{-6}$ m, areas equal to $10^{-9}$ m². Measured on the file round trip: drift $\le 2.1 \times 10^{-11}$ m.
+- `drift_is_measured_from_both_ends`: ticks $(0, 1, 2)$ against $(0, 1.003, 2.003)$ and against
+  $(0, 1, 2.003)$ both drift 3 mm; against $(0, 1.004, 2)$, 4 mm. Arithmetic.
+- `mating_seams_are_compared`: the chine as the bottom and the side lay it flat differs by under $10^{-6}$ m; five
+  seam pairs.
+- `a_pram_read_back_from_its_file_still_flattens`: flat, V and bowed prams written to a `.fef` and read back (points
+  rounded by up to $4.6 \times 10^{-6}$ m) give four panels each.
+
+Convergence, stated as such: `a_curved_side_reports_its_level_shift`: with the sides bowed 80 mm out amidships, the
+side's largest corner shift between subdivision levels is 0.13 mm from level 1 to 2 and 0.037 mm from 3 to 4.
+
+Internal consistency: `the_edge_join_gap_is_kept` (the `develop::unfold` gap is reported as is), `limits_decide_
+lies_flat` (a cap of measured RMS $r$ fails at a limit of $0.99r$ and passes at $1.01r$).
+
+### Limits
+"Does not lie flat" above 2 mm seam drift or 0.1 % RMS stretch. **Project judgement with no published source**,
+chosen by the maintainer (2026-11-14) as provisional, to be recalibrated when a skiff has been built from the
+patterns. `--max-seam-drift-mm` and `--max-stretch-pct` change them.
+
+### Provenance
+Closed forms and arithmetic worked by hand (2026-11-14). Not published values.
+
+---
+
+## 33. Panel Offsets
+
+### Formula
+Offsets are measured square off a straight baseline along the pattern's lowest edge, at rows every spacing from its
+aft end and one at its forward end.
+- A $2.4 \times 0.6$ m rectangle: rows at 0, 250, …, 2250 and 2400 mm, every row crossing at 0 and 600 mm.
+- The development of a cone of half-angle $30°$ taken $180°$ round, slant 0.3 to 1, with 1440 facets: a sector of
+  angle $S = 1440 \cdot 2\arcsin(\sin 30° \sin(\pi / 2880))$; a row at $x$ crosses the arcs at $\pm\sqrt{r^2 - x^2}$
+  (where within the sector) and the end rulings at $\pm x\tan(S/2)$ (where $0.3 \le x / \cos(S/2) \le 1$). The
+  chords lie within $1 - \cos(\delta/2) \approx 1.5 \times 10^{-7}$ m of the arcs.
+
+### Tests
+`crates/seacraft-core/src/panels.rs`: `a_rectangle_has_constant_ordinates` ($10^{-6}$ m),
+`the_cone_sector_ordinates_follow_its_arcs` (three rows, $10^{-6}$ m), `csv_and_pdf_carry_every_row` (one CSV line
+per crossing), `a_name_with_a_comma_is_quoted_in_the_csv`.
+
+### Provenance
+Closed forms worked by hand (2026-11-14). Not published values.
+
+---
+
+## 34. Plywood Sheets End to End
+
+### Formula
+The first sheet reaches its length $L$; each further one adds $L - s$ for a scarf $s$. A panel wider than the sheet
+is not laid out. Totals are sheets per copy times copies: no nesting, an upper bound.
+
+### Tests
+`crates/seacraft-core/src/panels.rs`: `a_panel_shorter_than_a_sheet_takes_one` (2.0 m: 1);
+`butt_and_scarf_counts` (5.0 m on 2440 mm: 3 sheets, joints at 2.44 and 4.88 m; with a 200 mm scarf: 3 sheets,
+joints at 2.44 and 4.68 m); `a_panel_wider_than_the_stock_is_reported` (1300 mm on 1220 mm: not laid out, not
+counted); `total_counts_copies` (a pair of one-sheet panels and a two-sheet panel: 4).
+
+### Provenance
+Arithmetic (2026-11-14). Not published values.

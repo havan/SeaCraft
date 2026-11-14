@@ -24,7 +24,9 @@ MCP. See `docs/architecture.md`.
 * **New builder output** (patterns, printable tables): build `sheet::Sheet`s
   and let `sheet.rs` write them (`pdf_tiled`, `pdf_single`, `svg`, `dxf`);
   never write PDF from a hull module. Lengths on paper go through `units.rs`,
-  metric first. A table to print goes through `pdf::add_table`.
+  metric first. A table to print goes through `pdf::add_table`. A command that
+  judges its output (`seacraft panels`) writes nothing when the judgement fails
+  unless the user overrides it, and says which flag does.
 * **New analysis shade**: extend `analysis::AnalysisMode`, add its colour in
   `analysis_color`, then give it a default in both front ends (`RenderModeArg`
   in the CLI, the View menu and `render::frame_key` in the GUI — the key must

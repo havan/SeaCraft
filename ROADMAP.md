@@ -104,7 +104,11 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
   skill.
 - [ ] Print the calibration page and one station and measure them.
 - [ ] Open the PDFs on Windows and macOS viewers.
-- [ ] Plywood panels: developed shapes of hull panels for stitch-and-glue, with their joins.
+- [x] Plywood panels in the core and CLI: panels found from layers and creases, laid flat by least stretch, seam
+  drift and stretch against provisional limits, station marks and seam ticks, offsets from a baseline, plywood
+  sheets end to end (`flatten.rs`, `panels.rs`, `seacraft panels`).
+- [ ] Plywood panels in the GUI, the control channel and MCP; the offsets tables inside the pattern PDF.
+- [ ] Build a skiff from the panel patterns and recalibrate the 2 mm / 0.1 % limits on it.
 - [ ] Materials and weight: skin area, plywood sheets, glass and resin, and the weight they add.
 - [ ] A build pack: patterns, offsets, panels and a cutting list in one document.
 

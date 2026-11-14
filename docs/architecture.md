@@ -38,6 +38,8 @@ crates/seacraft-core/
   src/linesplan.rs          stations/buttocks/waterlines -> SVG/DXF/IGES + combs
   src/dxf.rs                AutoCAD 2000 (AC1015) writer (ported, see ATTRIBUTION)
   src/templates.rs          builder patterns: station moulds, profile, transom; skin deduction
+  src/flatten.rs            least-stretch flattening of a triangle mesh (ARAP, Liu et al. 2008), strain, folds
+  src/panels.rs             plywood panels: found from layers and creases, flattened, measured, drawn, offsets, stock
   src/sheet.rs              a drawing sheet in metres -> tiled/single-page PDF, SVG, DXF (mm)
   src/pdf.rs                dependency-free PDF writer: pages, reusable forms, text, tables
   src/ttf.rs                TrueType reader and subsetter for the PDF font
@@ -120,9 +122,11 @@ Builder output goes one way, from the hull to paper:
 ```
 Hull --templates.rs--> Sheet (paths, labels, notes in metres) --sheet.rs--> pdf.rs / SVG / dxf.rs
 offsets.rs TableOfOffsets --pdf::add_table--> PDF
+half mesh --panels.rs (flatten.rs)--> FlatPanel --> Sheet --sheet.rs--> PDF / SVG / DXF; PanelOffsets --> CSV / PDF
 ```
 
-`templates.rs` knows hulls and nothing about paper; `sheet.rs` knows paper and nothing about hulls.
+`templates.rs` and `panels.rs` know hulls and nothing about paper; `sheet.rs` knows paper and nothing about
+hulls; `flatten.rs` knows triangles and nothing about hulls.
 
 ## Commands
 
