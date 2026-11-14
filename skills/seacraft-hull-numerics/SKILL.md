@@ -62,12 +62,14 @@ These were real failures in this codebase; the fixes are load-bearing.
 
 * **Patterns are cut as the offsets table is cut.** `templates::cut` uses the
   same refined `Hull`, `plane_segments` and `chain_paths` as the offsets table,
-  so a mould and the table agree at a station. The skin comes off by
-  `t / |n_p|` (the surface normal's part in the drawing plane, held at 0.2), not
-  by `t`: a surface meeting the plane off square needs more. A piece the move
-  consumes at a corner (shorter than its ends' shortening) is dropped and its
-  neighbours' moved lines meet; only a line consumed whole, one turned inside
-  out, or moved pieces that cross are a "skin thicker than the radius" warning.
+  so the table agrees at a station with the pattern's hull line (the dashed
+  reference), not with its cut line once a skin is deducted. The skin comes off
+  by `t / |n_p|` (the surface normal's part in the drawing plane, held at 0.2),
+  not by `t`: a surface meeting the plane off square needs more. A corner moves
+  to its full mitre, however sharp. A piece the move consumes at a corner
+  (shorter than its ends' shortening) is dropped and its neighbours' moved lines
+  meet; only a line consumed whole or closed to no area, one turned inside out,
+  or moved pieces that cross are a "skin thicker than the radius" warning.
 * **A plane lying in a face has no section.** Cutting exactly on a transom or
   an end face gives degenerate segments; the transom is cut 1 mm forward of the
   plane given, and triangles lying in the plane are left out of a cut.

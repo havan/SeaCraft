@@ -698,8 +698,9 @@ $\theta_1, \theta_2$, is dropped and its neighbours' moved lines meet instead.
 
 ### Tests
 `crates/seacraft-core/src/templates.rs`:
-- `a_cylinder_mould_is_smaller_by_the_skin`: 720 flat strips, within $R(1 - \cos(\pi / 720)) = 10^{-5}$ of the
-  cylinder.
+- `a_cylinder_mould_is_smaller_by_the_skin`: 720 flat strips, which lie within $R(1 - \cos(\pi / 720)) =
+  9.5 \times 10^{-6}$ m of the cylinder; the test asserts each mould point within $5 \times 10^{-5}$ m of
+  $R - t = 0.988$ m.
 - `a_cone_mould_is_deducted_along_the_slope`: $a = \arctan(0.5 / 4) = 7.125^\circ$; at $x = 2$, $R = 0.75$, $t =
   0.012$: mould radius $0.75 - 0.012 \times 1.007782 = 0.737907$ m, bevel $a$.
 - `a_box_mould_has_mitred_corners`: a $10 \times 4 \times 2$ m box with a deck and $t = 10$ mm gives a
