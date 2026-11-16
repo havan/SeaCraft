@@ -52,6 +52,8 @@ pub mod mesh;
 pub mod michell;
 /// The control net read as lengthwise lines and stations.
 pub mod netlines;
+/// Moving control points: one rule for the window and the agents.
+pub mod netmove;
 pub mod offsets;
 pub mod optimize;
 pub mod panels;
