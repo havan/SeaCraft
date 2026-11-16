@@ -270,7 +270,7 @@ impl GpuHullResources {
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
-                // The Body view flips winding, and open shells show both sides.
+                // The Profile and Body views flip winding, and open shells show both sides.
                 cull_mode: None,
                 ..Default::default()
             },

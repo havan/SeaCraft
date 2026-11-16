@@ -314,7 +314,7 @@ pub fn viewport_with_texture(
         &painter,
         title_pos(rect),
         Align2::LEFT_TOP,
-        camera.kind.label().to_owned(),
+        camera.kind.title(),
     );
     // The scale in metres rather than m/px: the side of a grid square is
     // what the eye judges a length against.
@@ -368,7 +368,7 @@ fn title_pos(rect: Rect) -> Pos2 {
 /// with `camera`: the caption a double-click maximises.
 pub fn title_rect(painter: &egui::Painter, rect: Rect, camera: &Camera) -> Rect {
     let galley = painter.layout_no_wrap(
-        camera.kind.label().to_owned(),
+        camera.kind.title(),
         theme::caption_font(),
         theme::TEXT_SECONDARY,
     );
@@ -1812,6 +1812,40 @@ mod tests {
     }
 
     #[test]
+    fn symmetric_profile_shading_matches_old_port_view() {
+        // Closed form: key_light = (-forward + 0.45 * up + 0.35 * right).norm() and
+        // to_eye = -forward. Flipping forward from +y to -y while keeping right = +x
+        // and up = +z negates the y component of both light and to_eye, so
+        // face_shade(n, light_new, to_eye_new) == face_shade(mirror_y(n), light_old, to_eye_old).
+        let new_view = Camera::ortho(ViewKind::Profile, Vec3::ZERO, 10.0).transform();
+        let old_view = crate::camera::ViewTransform {
+            eye: Vec3::new(0.0, -1000.0, 0.0),
+            right: Vec3::new(1.0, 0.0, 0.0),
+            up: Vec3::new(0.0, 0.0, 1.0),
+            forward: Vec3::new(0.0, 1.0, 0.0),
+            ortho_height: new_view.ortho_height,
+            fit_aspect: new_view.fit_aspect,
+            fov_tan: new_view.fov_tan,
+            perspective: false,
+        };
+        let (new_light, old_light) = (key_light(&new_view), key_light(&old_view));
+        let (new_eye, old_eye) = (-new_view.forward, -old_view.forward);
+        for n in [
+            Vec3::new(0.2, 0.8, 0.5).norm(),
+            Vec3::new(-0.4, 0.3, -0.7).norm(),
+            Vec3::new(0.1, -0.6, 0.7).norm(),
+        ] {
+            let mirrored_n = Vec3::new(n.x, -n.y, n.z);
+            let s_new = face_shade(n, new_light, new_eye);
+            let s_old = face_shade(mirrored_n, old_light, old_eye);
+            assert!(
+                (s_new - s_old).abs() < 1e-6,
+                "normal {n:?}: new {s_new} vs old mirrored {s_old}"
+            );
+        }
+    }
+
+    #[test]
     fn a_shaded_hull_is_opaque() {
         let s = seacraft_core::demo::demo_hull(false);
         let mesh = export::render_mesh(&s, 1, Default::default());
@@ -2126,7 +2160,9 @@ mod tests {
                 "caption {text:?} has no backing"
             );
         }
-        assert!(captions.iter().any(|(t, _)| t == "Profile"));
+        assert!(captions
+            .iter()
+            .any(|(t, _)| t == "Profile · from starboard"));
         assert!(
             captions.iter().any(|(t, _)| t.starts_with("grid ")),
             "{captions:?}"

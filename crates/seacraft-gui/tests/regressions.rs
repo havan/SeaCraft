@@ -539,7 +539,7 @@ fn control_point_drag_followed_by_dock_edit_undoes_in_reverse_order() {
             .points
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0 && p.p.y > 0.0)
             .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
             .map(|(i, _)| i)
             .expect("a sheer point")

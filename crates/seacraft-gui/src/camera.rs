@@ -5,16 +5,18 @@
 //! scale factors needed to map world points to a screen rectangle and back.
 //!
 //! Screen bases (all orthographic views):
-//! * profile — looking to starboard (`forward = +y`), `+x` right, `+z` up
-//! * plan    — looking down (`forward = -z`), `+x` right, `+y` up
+//! * profile — looking from starboard (`forward = -y`), `+x` right, `+z` up
+//! * plan    — looking down (`forward = -z`), `+x` right, `+y` up (starboard at the top)
 //! * body    — looking forward from aft (`forward = +x`), `+y` right, `+z` up
 //!
 //! The right vector follows `right = forward × up`, which keeps the basis
-//! right-handed, except in the body plan. `x` forward, `y` starboard, `z` up
-//! is a left-handed triple, so looking forward with starboard on the right
-//! (the drawing convention, and what the SVG and DXF body plans do) needs a
-//! mirrored basis there. Nothing downstream depends on the handedness: shading
-//! and depth use world normals and the rasterizer's barycentrics are signed.
+//! right-handed, except in the profile and body views. `x` forward, `y`
+//! starboard, `z` up is a left-handed triple, so looking from starboard with
+//! the bow on the right and looking forward with starboard on the right (the
+//! drawing convention, and what the SVG and DXF plans do) both need a
+//! mirrored basis (`right = -forward × up`). Plan is not mirrored. Nothing
+//! downstream depends on the handedness: shading and depth use world normals
+//! and the rasterizer's barycentrics are signed.
 
 use eframe::egui::{Pos2, Rect};
 use seacraft_core::math::Vec3;
@@ -52,6 +54,28 @@ impl ViewKind {
 
     pub fn is_perspective(self) -> bool {
         matches!(self, ViewKind::Perspective)
+    }
+
+    pub fn mirrored(self) -> bool {
+        matches!(self, Self::Profile | Self::Body)
+    }
+
+    pub fn subtitle(self) -> &'static str {
+        match self {
+            Self::Perspective => "",
+            Self::Profile => "from starboard",
+            Self::Plan => "half-breadths, starboard up",
+            Self::Body => "looking forward",
+        }
+    }
+
+    pub fn title(self) -> String {
+        let sub = self.subtitle();
+        if sub.is_empty() {
+            self.label().to_owned()
+        } else {
+            format!("{} · {sub}", self.label())
+        }
     }
 }
 
@@ -132,8 +156,8 @@ impl Camera {
             }
             // Far eye points keep the orthographic views depth-independent.
             ViewKind::Profile => (
-                self.target - Vec3::new(0.0, 1.0, 0.0) * 1000.0,
-                Vec3::new(0.0, 1.0, 0.0),
+                self.target + Vec3::new(0.0, 1.0, 0.0) * 1000.0,
+                Vec3::new(0.0, -1.0, 0.0),
                 Vec3::new(0.0, 0.0, 1.0),
             ),
             ViewKind::Plan => (
@@ -156,12 +180,8 @@ impl Camera {
         }
         let right = right.norm();
         let up = right.cross(forward).norm();
-        // Starboard on the right, see the module header.
-        let right = if self.kind == ViewKind::Body {
-            -right
-        } else {
-            right
-        };
+        // Bow and starboard on the right, see the module header.
+        let right = if self.kind.mirrored() { -right } else { right };
 
         ViewTransform {
             eye,
@@ -466,6 +486,31 @@ mod tests {
             (up.x - origin.x).abs() < 0.5,
             "+z must not move horizontally"
         );
+    }
+
+    #[test]
+    fn profile_looks_from_starboard_with_mirrored_basis() {
+        // Closed form by hand: eye = target + (0, 1000, 0), forward = (0, -1, 0),
+        // mirrored right = -(forward x up_hint) = (1, 0, 0), up = (0, 0, 1).
+        let cam = Camera::new(ViewKind::Profile, Vec3::ZERO, Vec3::new(12.0, 4.0, 2.0));
+        let t = cam.transform();
+        assert!((t.eye - (cam.target + Vec3::new(0.0, 1000.0, 0.0))).length() < 1e-9);
+        assert_eq!(t.forward, Vec3::new(0.0, -1.0, 0.0));
+        assert_eq!(t.right, Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(t.up, Vec3::new(0.0, 0.0, 1.0));
+        assert!(ViewKind::Profile.mirrored() && ViewKind::Body.mirrored());
+        assert!(!ViewKind::Perspective.mirrored() && !ViewKind::Plan.mirrored());
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0));
+        let aft = t.project(Vec3::new(1.0, 0.0, 0.0), rect).unwrap();
+        let fwd = t.project(Vec3::new(5.0, 0.0, 0.0), rect).unwrap();
+        assert!(
+            fwd.x > aft.x,
+            "larger x projects further right: {aft:?} vs {fwd:?}"
+        );
+        assert_eq!(ViewKind::Perspective.title(), "Perspective");
+        assert_eq!(ViewKind::Profile.title(), "Profile · from starboard");
+        assert_eq!(ViewKind::Plan.title(), "Plan · half-breadths, starboard up");
+        assert_eq!(ViewKind::Body.title(), "Body plan · looking forward");
     }
 
     #[test]

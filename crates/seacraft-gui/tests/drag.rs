@@ -44,14 +44,14 @@ fn dragging_a_control_point_moves_it_and_undo_restores_it() {
     frame(&ctx, &mut app, Vec::new());
     frame(&ctx, &mut app, Vec::new());
 
-    // A point on the sheer line, well inside the hull so nothing else is near.
+    // A starboard point on the sheer line, well inside the hull so nothing else is near.
     let index = {
         let surface = app.surface().expect("model loaded");
         surface
             .points
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0 && p.p.y > 0.0)
             .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
             .map(|(i, _)| i)
             .expect("a sheer point")
@@ -96,6 +96,16 @@ fn dragging_a_control_point_moves_it_and_undo_restores_it() {
         "point moved {moved:?}, expected about {} in x",
         50.0 * per_px
     );
+    assert!(moved.x > 0.0, "dragging right increases x: {moved:?}");
+    let projected_after = app.cameras()[1]
+        .transform()
+        .project(after, rect)
+        .expect("moved point still visible");
+    let expected_screen = screen + egui::vec2(50.0, 0.0);
+    assert!(
+        (projected_after - expected_screen).length() < 1.0,
+        "moved point projected to {projected_after:?}, expected {expected_screen:?}"
+    );
     assert!(moved.z.abs() < 1e-6, "the drag plane keeps z: {moved:?}");
     assert!(app.undo_len() >= 1, "the drag is undoable");
     assert_eq!(app.selected(), Some(index));
@@ -132,7 +142,7 @@ fn a_click_without_movement_leaves_no_undo_entry() {
             .points
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0 && p.p.y > 0.0)
             .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
             .map(|(i, _)| i)
             .expect("a sheer point")
@@ -161,7 +171,7 @@ fn selecting_a_point_keeps_the_redo_stack() {
         .points
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+        .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0 && p.p.y > 0.0)
         .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
         .map(|(i, _)| i)
         .expect("a sheer point");
@@ -297,7 +307,7 @@ fn hidden_control_points_cannot_be_dragged() {
             .points
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0)
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0 && p.p.y > 0.0)
             .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
             .map(|(i, _)| i)
             .expect("a sheer point")
