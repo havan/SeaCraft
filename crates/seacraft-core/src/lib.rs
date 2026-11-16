@@ -50,6 +50,8 @@ pub mod loading;
 pub mod math;
 pub mod mesh;
 pub mod michell;
+/// The control net read as lengthwise lines and stations.
+pub mod netlines;
 pub mod offsets;
 pub mod optimize;
 pub mod panels;
