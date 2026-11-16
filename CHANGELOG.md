@@ -2,7 +2,7 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
-## Unreleased
+## 0.4.0 (2026-11-16)
 
 - Every program says which source it was built from. `seacraft --version`, the window title, About and the MCP
   server show `0.3.0` only for a clean build of the tag `v0.3.0`; any other build names its commit, such as
