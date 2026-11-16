@@ -60,6 +60,8 @@ pub mod pdf;
 pub mod planing;
 pub mod project;
 pub mod raster;
+/// Whether a segment is blocked by a triangle mesh.
+pub mod raycast;
 pub mod report;
 pub mod resistance;
 /// Lewis conformal mapping and Ursell–Tasai 2D heave radiation.
