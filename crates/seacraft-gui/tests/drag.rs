@@ -1499,11 +1499,12 @@ fn follower_markers_appear_on_hover_only_when_connected_is_on() {
     use seacraft_core::netlines::NetLines;
     use seacraft_gui::theme;
 
-    fn collect_circles(shape: &egui::Shape, cell: egui::Rect, out: &mut Vec<(f32, egui::Color32)>) {
+    type Ring = (egui::Pos2, f32, egui::Color32);
+    fn collect_circles(shape: &egui::Shape, cell: egui::Rect, out: &mut Vec<Ring>) {
         match shape {
             egui::Shape::Vec(v) => v.iter().for_each(|s| collect_circles(s, cell, out)),
             egui::Shape::Circle(c) if cell.contains(c.center) && c.stroke.width > 0.0 => {
-                out.push((c.radius, c.stroke.color));
+                out.push((c.center, c.radius, c.stroke.color));
             }
             _ => {}
         }
@@ -1532,7 +1533,7 @@ fn follower_markers_appear_on_hover_only_when_connected_is_on() {
         .project(point_pos, profile_rect)
         .expect("projects in Profile");
 
-    let run_hover = |ctx: &egui::Context, app: &mut App| -> Vec<(f32, egui::Color32)> {
+    let run_hover = |ctx: &egui::Context, app: &mut App| -> Vec<Ring> {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
@@ -1553,12 +1554,41 @@ fn follower_markers_appear_on_hover_only_when_connected_is_on() {
         circles
     };
 
+    // Each follower in the view has a ring of its own at its own place, of
+    // the size and colour its weight gives; one ring cannot stand for two.
+    let expect_rings = |app: &App, rings: &[Ring], followers: &[(usize, f64)], case: &str| {
+        let surface = app.surface().unwrap();
+        let cell = app.viewport_rect(1);
+        let view = app.cameras()[1].transform();
+        let mut used = vec![false; rings.len()];
+        let mut checked = 0;
+        for &(point, w) in followers {
+            let Some(at) = view
+                .project(surface.points[point].p, cell)
+                .filter(|p| cell.contains(*p))
+            else {
+                continue;
+            };
+            let col = theme::follower_marker(w);
+            let r = 3.5 + 3.5 * (w as f32);
+            let hit = rings.iter().enumerate().position(|(i, &(c, cr, cc))| {
+                !used[i] && cc == col && (cr - r).abs() < 1e-3 && (c - at).length() < 0.5
+            });
+            match hit {
+                Some(i) => used[i] = true,
+                None => panic!("{case}: no ring of radius {r}, colour {col:?} at {at:?} for follower {point} in {rings:?}"),
+            }
+            checked += 1;
+        }
+        assert!(checked > 0, "{case}: some follower is in the view");
+    };
+
     // Connected off: no follower marker rings.
     let circles_off = run_hover(&ctx, &mut app);
     for &(_, w) in &expected_followers {
         let col = theme::follower_marker(w);
         assert!(
-            !circles_off.iter().any(|&(_, c)| c == col),
+            !circles_off.iter().any(|&(_, _, c)| c == col),
             "connected off must draw no follower rings"
         );
     }
@@ -1566,32 +1596,19 @@ fn follower_markers_appear_on_hover_only_when_connected_is_on() {
     // Connected on with points shown: every follower gets its ring, even when hidden by the hull.
     app.set_connected_on(true);
     let circles_on = run_hover(&ctx, &mut app);
-    for &(_, w) in &expected_followers {
-        let col = theme::follower_marker(w);
-        let r = 3.5 + 3.5 * (w as f32);
-        assert!(
-            circles_on
-                .iter()
-                .any(|&(cr, cc)| cc == col && (cr - r).abs() < 1e-3),
-            "expected follower ring radius {r}, colour {col:?} in {circles_on:?}"
-        );
-    }
+    expect_rings(&app, &circles_on, &expected_followers, "connected on");
 
     // Even in HiddenNet::Hidden with shaded hull on, occluded followers (e.g. in Perspective/Body)
     // still get their follower rings drawn.
     app.display_mut().shaded = true;
     app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Hidden;
     let circles_hidden_mode = run_hover(&ctx, &mut app);
-    for &(_, w) in &expected_followers {
-        let col = theme::follower_marker(w);
-        let r = 3.5 + 3.5 * (w as f32);
-        assert!(
-            circles_hidden_mode
-                .iter()
-                .any(|&(cr, cc)| cc == col && (cr - r).abs() < 1e-3),
-            "expected follower ring even in HiddenNet::Hidden"
-        );
-    }
+    expect_rings(
+        &app,
+        &circles_hidden_mode,
+        &expected_followers,
+        "HiddenNet::Hidden",
+    );
     app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Dimmed;
 
     // When the hovered point is in a multi-point selection, all selected points act as seeds.
@@ -1611,23 +1628,14 @@ fn follower_markers_appear_on_hover_only_when_connected_is_on() {
         follower_weights(s, &nl, &[index, other_idx], &preset, preset.reach.metres(s))
     };
     let circles_multi = run_hover(&ctx, &mut app);
-    for &(_, w) in &combined_followers {
-        let col = theme::follower_marker(w);
-        let r = 3.5 + 3.5 * (w as f32);
-        assert!(
-            circles_multi
-                .iter()
-                .any(|&(cr, cc)| cc == col && (cr - r).abs() < 1e-3),
-            "expected multi-seed follower ring for radius {r}"
-        );
-    }
+    expect_rings(&app, &circles_multi, &combined_followers, "two seeds");
 
     // Points hidden: no follower marker rings on hover.
     app.display_mut().points = false;
     let circles_no_pts = run_hover(&ctx, &mut app);
     for &(_, w) in &expected_followers {
         let col = theme::follower_marker(w);
-        assert!(!circles_no_pts.iter().any(|&(_, c)| c == col));
+        assert!(!circles_no_pts.iter().any(|&(_, _, c)| c == col));
     }
     let _ = index;
 }
