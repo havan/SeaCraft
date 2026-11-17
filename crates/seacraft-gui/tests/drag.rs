@@ -2495,3 +2495,72 @@ fn an_agent_cannot_move_points_while_a_point_is_being_dragged() {
     );
     assert_eq!(after["ok"], json!(true), "{after}");
 }
+
+#[test]
+fn letting_go_of_ctrl_after_a_save_mid_drag_leaves_the_model_unsaved() {
+    // PR #5 review: Ctrl let go mid-drag re-plans the drag and puts the
+    // followers back without touching the unsaved-changes flag, so after a
+    // save with Ctrl held the model could differ from its file and read as
+    // saved. It does not, because while the button is held egui reports the
+    // view as dragged every frame and `drag_to` marks the model unsaved in
+    // the same frame as the re-plan. This test keeps that so.
+    let dir = std::env::temp_dir().join(format!("seacraft-drag-ctrl-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    assert!(!app.connected().on);
+    let before = app.surface().unwrap().clone();
+    let (index, screen) = sheer_point_in_profile(&app);
+    let moved_count = |app: &App| {
+        app.surface()
+            .unwrap()
+            .points
+            .iter()
+            .zip(&before.points)
+            .filter(|(a, b)| (a.p - b.p).length() > 1e-9)
+            .count()
+    };
+
+    frame_mods(
+        &ctx,
+        &mut app,
+        true,
+        vec![egui::Event::PointerMoved(screen)],
+    );
+    frame_mods(&ctx, &mut app, true, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame_mods(
+            &ctx,
+            &mut app,
+            true,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    assert!(moved_count(&app) > 1, "Ctrl drew followers along");
+    assert!(app.save_to(&dir.join("ctrl-drag.fef")));
+    assert!(!app.is_dirty());
+
+    // Ctrl let go, pointer still: the followers go back, the seed stays.
+    frame_mods(&ctx, &mut app, false, Vec::new());
+    assert_eq!(
+        moved_count(&app),
+        1,
+        "only the dragged point is still moved"
+    );
+    assert!((app.surface().unwrap().points[index].p - before.points[index].p).length() > 1e-3);
+    assert!(app.is_dirty(), "the followers moved back since the save");
+
+    frame_mods(
+        &ctx,
+        &mut app,
+        false,
+        vec![button(screen + egui::vec2(40.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+    assert!(app.is_dirty(), "and the release keeps it unsaved");
+    let _ = std::fs::remove_dir_all(&dir);
+}
