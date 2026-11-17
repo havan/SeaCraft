@@ -4857,7 +4857,14 @@ pub fn shortcuts(
     let plain = |text: &str| text.to_owned();
     vec![
         (plain("Click"), "Select a control point"),
-        (plain("Shift+click"), "Select a second point"),
+        (
+            plain("Shift+click"),
+            "Add a point to the selection, or take it out",
+        ),
+        (
+            plain("Shift+drag empty space"),
+            "Select the points in a rectangle",
+        ),
         (plain("Drag a point"), "Move it in the view's plane"),
         (
             plain("X, Y or Z while dragging"),
@@ -4867,7 +4874,10 @@ pub fn shortcuts(
             plain("Alt+Left / Alt+Right"),
             "Select the previous or next station along the line",
         ),
-        (plain("Esc"), "Clear the selection"),
+        (
+            plain("Esc"),
+            "Cancel a selection rectangle, or clear the selection",
+        ),
         (plain("Drag empty space, or middle drag"), "Pan"),
         (plain("Right drag in Perspective"), "Orbit"),
         (plain("Wheel"), "Zoom at the pointer"),

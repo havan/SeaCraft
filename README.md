@@ -692,6 +692,10 @@ Perspective | Profile
 Plan        | Body plan
 ```
 
+Profile looks from starboard with the bow on the right; Plan shows half-breadths with starboard at the top; the
+Body plan looks forward with starboard on the right. Each view's title says so, and an axis triad and edge labels
+(Aft, Fwd, Port, Stbd) repeat it.
+
 * Drag a control point to deform the hull; the preview refines at level 2
   while dragging and at the full level on release. **Ctrl+Z** / **Ctrl+Shift+Z**
   undo and redo (64 snapshots across control-net edits and project edits in the
@@ -701,6 +705,18 @@ Plan        | Body plan
   shading.
 * Primary drag on empty space pans, secondary drag in the perspective view
   orbits, the wheel zooms.
+* Control net that the shaded hull hides is drawn dimmed (View ▸ Hidden net: dimmed, hidden, as drawn), and a
+  click picks the point in front. The station of the point under the pointer, or of the selected point, is
+  highlighted in every view; the Body plan fades the rest of the net and names the station ("Station at
+  x ≈ 5.20 m · 6 points"). **Alt+Left** / **Alt+Right** step the selection aft and forward along the net.
+* **Shift+click** adds a point to the selection or removes it, **Shift+drag** on empty space selects with a
+  rectangle, and Model ▸ Select station / Select lengthwise line take a whole line. Dragging one selected point
+  drags them all. On a half model a centreline point moved with others stays on the centreline.
+* **Connected** (toolbar): a dragged point draws its neighbours along the net with it, by a preset that says
+  which neighbours follow, how the pull fades and how far it reaches. Hovering shows the followers; the wheel
+  changes the reach while dragging. Off by default. Add your own presets in `connected-edit.json` beside
+  `seacraft-gui.json` in the data directory (Model ▸ Create example presets file). A preset describes a move; it
+  checks nothing about the result.
 * A slim toolbar under the menu bar carries the surface-analysis mode
   (Shaded / Zebra / Curvature / Draft) with its parameter (stripes, radius,
   draft angle; 14, 1 m and 3° by default), the display toggles (net, points,
@@ -814,7 +830,7 @@ software. Comparing them with published data is the most useful contribution any
   against the running GUI (without `--token-file` and no default token file, it
   connects unauthenticated, for a GUI started with `--control-no-auth`).
   Tools include `hull_info`, `load_hull`,
-  `save_hull`, `move_point`, `set_crease`, `split_face`, `insert_edge`,
+  `save_hull`, `move_point`, `move_points`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
   `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,

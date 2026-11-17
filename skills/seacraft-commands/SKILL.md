@@ -56,7 +56,10 @@ MCP. See `docs/architecture.md`.
   checked or made fair by it. `points.select` takes `{points: [..]}` (empty clears) and replaces the selection with
   the last entry active; `points.select_line` takes `{kind: "station" | "lengthwise"}` and adds the active point's
   line(s) while keeping it active. `ui.set` toggles viewport display switches (`shaded`, `wireframe`, `control_net`,
-  `points`, `waterplane`, `volumes`, `windage`, `grid`, `orientation`, `curves`, `combs`).
+  `points`, `waterplane`, `volumes`, `windage`, `grid`, `orientation`, `station_focus`, `curves`, `combs`), sets
+  `hidden_net` (`"dimmed"`, `"hidden"`, `"same"`) and the window's own connected editing (`connected`,
+  `connected_preset`, `connected_reach_m`), which changes what a person's drag does and nothing about an agent's
+  moves.
 
 New MCP tools go in `tool_definitions()` in `crates/seacraft-cli/src/mcp.rs`. If a skill describes the area,
 update it: `skills_name_only_real_tools` checks that each tool it names exists.
