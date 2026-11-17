@@ -418,6 +418,9 @@ struct DragState {
     /// Whether the model had unsaved changes before the press, for a
     /// cancelled drag to put back.
     dirty_before: bool,
+    /// Whether `plan` pulls neighbours along ([`App::connected_now`] when it
+    /// was last built): Ctrl pressed or let go mid-drag re-plans it.
+    connected: bool,
 }
 
 /// What the File menu can produce besides a `.fef`.
@@ -1119,6 +1122,9 @@ pub struct App {
     axis_lock: Option<seacraft_core::transform::Axis>,
     /// Connected-editing switch, preset name and optional reach override.
     connected: ConnectedState,
+    /// Ctrl (Cmd on macOS) is held over the window: connected editing is
+    /// the opposite of the switch until it is let go.
+    connected_flip: bool,
     /// Built-in and user connected-editing presets (`connected-edit.json`).
     preset_store: crate::connected_presets::PresetStore,
     /// Cached hover follower weights, keyed by hover, revision, preset, reach and seeds.
@@ -1324,6 +1330,7 @@ impl App {
             optimise_job: None,
             axis_lock: None,
             connected: ConnectedState::default(),
+            connected_flip: false,
             preset_store: crate::connected_presets::PresetStore::load(None),
             hover_followers: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
@@ -1887,6 +1894,7 @@ impl App {
         // gets the same type scale on its first frame.
         crate::theme::ensure(ui);
         self.shortcuts(ui);
+        self.read_connected_flip(ui);
         self.menu(ui);
         egui::Window::new("About SeaCraft")
             .open(&mut self.about_open)
@@ -2584,6 +2592,7 @@ impl App {
             mode: self.mode,
             has_model: self.surface.is_some(),
             connected: &self.connected,
+            connected_flipped: self.connected_flip,
             presets: &self.preset_store.presets,
             default_reach_m,
             preset_error: self.preset_store.error.as_deref(),
@@ -3697,10 +3706,16 @@ impl App {
             }
 
             if response.hovered() {
-                let (scroll, cursor) =
-                    ui.input(|i| (i.smooth_scroll_delta.y, i.pointer.hover_pos()));
+                // Ctrl (Cmd) + wheel reaches us as egui's zoom delta,
+                // exp(wheel / 200); turned back into wheel points it zooms
+                // the view, or sets the reach during a Ctrl-connected drag.
+                let (scroll, cursor) = ui.input(|i| {
+                    let zoom = i.zoom_delta();
+                    let from_zoom = if zoom > 0.0 { zoom.ln() * 200.0 } else { 0.0 };
+                    (i.smooth_scroll_delta.y + from_zoom, i.pointer.hover_pos())
+                });
                 if scroll.abs() > 0.0 {
-                    if self.drag.is_some() && self.connected.on {
+                    if self.drag.as_ref().is_some_and(|d| d.connected) {
                         self.scale_connected_drag_reach(scroll);
                     } else {
                         let factor = (-scroll as f64 * 0.0025).exp();
@@ -3821,12 +3836,12 @@ impl App {
                             self.revision += 1;
                             self.touch_geometry();
                             let count = drag.plan.weights().len();
-                            if self.connected.on && count > 1 {
+                            if drag.connected && count > 1 {
                                 self.set_status(format!("{count} control points moved"));
                             } else {
                                 self.set_status("control point moved".to_owned());
                             }
-                            if self.connected.on {
+                            if drag.connected {
                                 self.persist_recent();
                             }
                         } else {
@@ -3923,10 +3938,10 @@ impl App {
         let drag_followers: Option<Vec<(usize, f64)>> = self
             .drag
             .as_ref()
-            .filter(|_| self.connected.on)
+            .filter(|d| d.connected)
             .map(|d| d.plan.followers());
         let hover_followers: Vec<(usize, f64)> =
-            if drag_followers.is_none() && self.connected.on && self.display.points {
+            if drag_followers.is_none() && self.connected_now() && self.display.points {
                 self.hovered_followers().to_vec()
             } else {
                 Vec::new()
@@ -4352,8 +4367,7 @@ impl App {
         }
         let surface = self.surface.as_ref().expect("checked above");
         let connected = self
-            .connected
-            .on
+            .connected_now()
             .then(|| (self.active_connected_preset(), self.connected.reach_m));
         let plan = build_move_plan(
             surface,
@@ -4384,7 +4398,49 @@ impl App {
             added_on_press,
             target: center,
             dirty_before: self.dirty,
+            connected: connected.is_some(),
         });
+    }
+
+    /// Whether a drag now pulls neighbours along: the Connected switch,
+    /// flipped while Ctrl (Cmd on macOS) is held.
+    pub fn connected_now(&self) -> bool {
+        self.connected.on != self.connected_flip
+    }
+
+    /// Read whether Ctrl (Cmd) is held, and re-plan a drag under way when
+    /// that changes whether it pulls neighbours along. A key held for a
+    /// text field is typing, never a flip.
+    fn read_connected_flip(&mut self, ui: &egui::Ui) {
+        let typing = self.keyboard_taken || ui.ctx().egui_wants_keyboard_input();
+        self.connected_flip = !typing && ui.input(|i| i.modifiers.command);
+        let now = self.connected_now();
+        if !self.drag.as_ref().is_some_and(|d| d.connected != now) {
+            return;
+        }
+        let preset = self.active_connected_preset();
+        let reach_m = self.connected.reach_m;
+        let (Some(drag), Some(surface)) = (self.drag.as_mut(), self.surface.as_mut()) else {
+            return;
+        };
+        rebuild_drag_plan(drag, surface, now.then_some((&preset, reach_m)));
+        drag.connected = now;
+        let count = drag.plan.weights().len();
+        let point = drag.point;
+        if now {
+            let reach = self.effective_connected_reach_m();
+            self.set_status(format!(
+                "{} · reach {reach:.2} m · {count} points",
+                preset.name
+            ));
+        } else {
+            self.set_status(format!(
+                "dragging control point {point} · hold X, Y or Z to lock an axis"
+            ));
+        }
+        self.revision += 1;
+        self.touch_geometry();
+        self.sync_cache();
     }
 
     /// Escape during a point drag: every point goes back where it started,
@@ -4429,7 +4485,7 @@ impl App {
             target = crate::model_menu::lock_to_axis(drag.original, target, axis);
         }
         if lock != self.axis_lock {
-            let connected_status = if lock.is_none() && self.connected.on {
+            let connected_status = if lock.is_none() && drag.connected {
                 let preset = self.active_connected_preset();
                 let reach = self.effective_connected_reach_m();
                 Some(format!(

@@ -1866,3 +1866,166 @@ fn escape_during_a_connected_drag_cancels_it_and_keeps_the_selection() {
     assert_eq!(app.connected().reach_m, reach, "and leaves the reach alone");
     assert_eq!(app.undo_len(), undo_before);
 }
+
+/// One frame with Ctrl (Cmd on macOS: egui's `command`) held or not.
+fn frame_mods(ctx: &egui::Context, app: &mut App, ctrl: bool, events: Vec<egui::Event>) {
+    let modifiers = if ctrl {
+        egui::Modifiers::CTRL | egui::Modifiers::COMMAND
+    } else {
+        egui::Modifiers::NONE
+    };
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events: std::iter::once(egui::Event::ModifiersChanged(modifiers))
+            .chain(events)
+            .collect(),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+    out.textures_delta.clear();
+}
+
+#[test]
+fn holding_ctrl_flips_connected_for_the_drag_and_switches_live() {
+    // Maintainer's ask after the visual check: Ctrl held turns connected
+    // editing on for a drag (off when the switch is on) until it is let go.
+    use seacraft_core::netlines::NetLines;
+    use seacraft_core::netmove::MovePlan;
+
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    assert!(!app.connected().on);
+    let before = app.surface().unwrap().clone();
+    let index = before
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.p.x > 3.0 && p.p.x < 9.0 && p.p.y > 0.0)
+        .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+        .map(|(i, _)| i)
+        .expect("a mid-hull sheer point");
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before.points[index].p, app.viewport_rect(1))
+        .expect("visible");
+
+    // Hover: Ctrl shows the connected state without changing the switch.
+    frame_mods(
+        &ctx,
+        &mut app,
+        true,
+        vec![egui::Event::PointerMoved(screen)],
+    );
+    assert!(app.connected_now(), "Ctrl flips the switch while held");
+    assert!(!app.connected().on, "the switch itself is untouched");
+    frame_mods(
+        &ctx,
+        &mut app,
+        false,
+        vec![egui::Event::PointerMoved(screen)],
+    );
+    assert!(!app.connected_now());
+
+    // Drag with the switch off and Ctrl held: followers follow.
+    frame_mods(&ctx, &mut app, true, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame_mods(
+            &ctx,
+            &mut app,
+            true,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    let moved_count = |app: &App| {
+        app.surface()
+            .unwrap()
+            .points
+            .iter()
+            .zip(&before.points)
+            .filter(|(a, b)| (a.p - b.p).length() > 1e-9)
+            .count()
+    };
+    assert!(moved_count(&app) > 1, "Ctrl held: neighbours follow");
+
+    // Ctrl+wheel during the drag sets the reach (egui turns it into a zoom
+    // delta) and leaves the camera alone.
+    let ortho = app.cameras()[1].ortho_height;
+    let reach_before = app.effective_connected_reach_m();
+    frame_mods(
+        &ctx,
+        &mut app,
+        true,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+        }],
+    );
+    for _ in 0..10 {
+        frame_mods(&ctx, &mut app, true, Vec::new());
+    }
+    assert!(
+        app.effective_connected_reach_m() > reach_before,
+        "Ctrl+wheel grows the reach"
+    );
+    assert_eq!(app.cameras()[1].ortho_height, ortho, "and does not zoom");
+
+    // Let Ctrl go mid-drag: rigid again, the followers go back.
+    frame_mods(
+        &ctx,
+        &mut app,
+        false,
+        vec![egui::Event::PointerMoved(screen + egui::vec2(40.0, 0.0))],
+    );
+    assert_eq!(
+        moved_count(&app),
+        1,
+        "Ctrl released: only the dragged point is moved"
+    );
+    // And press it again: they follow again, by the connected plan.
+    frame_mods(
+        &ctx,
+        &mut app,
+        true,
+        vec![egui::Event::PointerMoved(screen + egui::vec2(40.0, 0.0))],
+    );
+    let dragged = app.surface().unwrap().points[index].p;
+    let plan = MovePlan::connected(
+        &before,
+        &NetLines::of(&before),
+        &[index],
+        &app.active_connected_preset(),
+        app.effective_connected_reach_m(),
+    );
+    for m in plan.positions_to(index, dragged) {
+        assert!(
+            (app.surface().unwrap().points[m.point].p - m.to).length() < 1e-9,
+            "point {} follows the connected plan again",
+            m.point
+        );
+    }
+    frame_mods(
+        &ctx,
+        &mut app,
+        true,
+        vec![button(screen + egui::vec2(40.0, 0.0), false)],
+    );
+    frame_mods(&ctx, &mut app, false, Vec::new());
+    assert!(
+        !app.connected().on,
+        "the switch is still off after the drag"
+    );
+
+    // With the switch on, Ctrl makes a drag rigid.
+    app.set_connected_on(true);
+    frame_mods(&ctx, &mut app, true, Vec::new());
+    assert!(!app.connected_now());
+}

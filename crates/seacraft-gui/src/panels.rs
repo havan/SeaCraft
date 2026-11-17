@@ -4831,6 +4831,8 @@ pub struct ToolbarState<'a> {
     /// and scheme stay editable, as settings the next model is shown with.
     pub has_model: bool,
     pub connected: &'a crate::app::ConnectedState,
+    /// Ctrl (Cmd) is held: the switch shows the flipped state it stands for.
+    pub connected_flipped: bool,
     pub presets: &'a [seacraft_core::connected::ConnectedPreset],
     pub default_reach_m: f64,
     pub preset_error: Option<&'a str>,
@@ -5242,9 +5244,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let toggle = theme::as_switch(ui, |ui| {
-                ui.selectable_label(state.connected.on, "Connected")
+                ui.selectable_label(state.connected.on != state.connected_flipped, "Connected")
             })
-            .on_hover_text("Connected editing: drag neighbours along with the moved points");
+            .on_hover_text(
+                "Connected editing: drag neighbours along with the moved points. \
+                 Hold Ctrl (Cmd on macOS) to flip it for one drag",
+            );
             if toggle.clicked() {
                 out.connected = Some(ToolbarConnectedAction::Toggle(!state.connected.on));
             }
