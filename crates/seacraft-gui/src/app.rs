@@ -1084,6 +1084,23 @@ pub struct App {
     autosave: crate::autosave::AutosaveState,
 }
 
+/// Build a [`MovePlan`] for `seeds`: rigid when `connected` is `None`, or
+/// connected using `reach_m` if given and the preset's own reach otherwise.
+fn build_move_plan(
+    surface: &Surface,
+    seeds: &[usize],
+    connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+) -> seacraft_core::netmove::MovePlan {
+    match connected {
+        Some((preset, reach_m)) => {
+            let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
+            let lines = seacraft_core::netlines::NetLines::of(surface);
+            seacraft_core::netmove::MovePlan::connected(surface, &lines, seeds, preset, reach)
+        }
+        None => seacraft_core::netmove::MovePlan::rigid(surface, seeds),
+    }
+}
+
 /// Name, model revision and box bounds (bits) of a cached clipped solid.
 type ClippedMeshEntry = (String, [u64; 7], (Vec<Vec3>, Vec<[usize; 3]>));
 
@@ -6356,6 +6373,20 @@ impl App {
     /// supplies the other half). Returns the position the point took and
     /// whether it sits on the centreline of a symmetric layer.
     pub fn move_point(&mut self, index: usize, target: Vec3) -> Result<(Vec3, bool), String> {
+        let (to, clamped, _) = self.move_point_with(index, target, None)?;
+        Ok((to, clamped))
+    }
+
+    /// Move control point `index` to `target` as one undoable edit, optionally
+    /// drawing neighbours along as `connected` says. Returns the position the
+    /// point took, whether it sits on the centreline of a symmetric layer, and
+    /// every point that moved.
+    pub fn move_point_with(
+        &mut self,
+        index: usize,
+        target: Vec3,
+        connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+    ) -> Result<(Vec3, bool, Vec<seacraft_core::netmove::Moved>), String> {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
         if index >= surface.points.len() {
             return Err(format!(
@@ -6367,10 +6398,11 @@ impl App {
             return Err("the new position must be finite".into());
         }
         let symmetric = seacraft_core::netmove::point_on_symmetric_layer(surface, index);
-        let plan = seacraft_core::netmove::MovePlan::rigid(surface, &[index]);
-        let to = plan
-            .positions_to(index, target)
-            .first()
+        let plan = build_move_plan(surface, &[index], connected);
+        let moved = plan.positions_to(index, target);
+        let to = moved
+            .iter()
+            .find(|m| m.point == index)
             .map_or(target, |m| m.to);
         self.snapshot_undo();
         if let Some(surface) = self.surface.as_mut() {
@@ -6378,8 +6410,12 @@ impl App {
         }
         self.select_point(Some(index));
         self.mark_geometry_changed();
-        self.status_note(format!("control point {index} moved"));
-        Ok((to, symmetric && to.y == 0.0))
+        if moved.len() > 1 {
+            self.status_note(format!("{} control points moved", moved.len()));
+        } else {
+            self.status_note(format!("control point {index} moved"));
+        }
+        Ok((to, symmetric && to.y == 0.0, moved))
     }
 
     /// Move every control point in `seeds` by `delta` as one undoable edit.
@@ -6387,6 +6423,17 @@ impl App {
         &mut self,
         seeds: &[usize],
         delta: Vec3,
+    ) -> Result<Vec<seacraft_core::netmove::Moved>, String> {
+        self.move_points_with(seeds, delta, None)
+    }
+
+    /// Move every control point in `seeds` by `delta` as one undoable edit,
+    /// optionally drawing neighbours along as `connected` says.
+    pub fn move_points_with(
+        &mut self,
+        seeds: &[usize],
+        delta: Vec3,
+        connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
     ) -> Result<Vec<seacraft_core::netmove::Moved>, String> {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
         if seeds.is_empty() {
@@ -6404,7 +6451,7 @@ impl App {
         if !delta.is_finite() {
             return Err("`delta` must be finite".into());
         }
-        let plan = seacraft_core::netmove::MovePlan::rigid(surface, seeds);
+        let plan = build_move_plan(surface, seeds, connected);
         let moved = plan.positions(delta);
         self.snapshot_undo();
         if let Some(surface) = self.surface.as_mut() {

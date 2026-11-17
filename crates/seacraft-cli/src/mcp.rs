@@ -1134,11 +1134,13 @@ impl McpServer {
                 _ => p.z = n,
             }
         }
-        let plan = seacraft_core::netmove::MovePlan::rigid(&self.surface, &[index]);
-        let moved = plan
-            .positions_to(index, p)
-            .into_iter()
-            .next()
+        let connected = connected_arg(a)?;
+        let plan = build_move_plan(&self.surface, &[index], connected.as_ref());
+        let moved_list = plan.positions_to(index, p);
+        let moved = moved_list
+            .iter()
+            .find(|m| m.point == index)
+            .copied()
             .ok_or_else(|| "move_point: point vanished".to_string())?;
         let clamped = moved.to.y != p.y;
         plan.apply_to(&mut self.surface, index, p);
@@ -1147,6 +1149,7 @@ impl McpServer {
             "before": moved.from,
             "after": moved.to,
             "clamped": clamped,
+            "moved": moved_list,
         }))
     }
 
@@ -1202,7 +1205,8 @@ impl McpServer {
                 _ => delta.z = n,
             }
         }
-        let plan = seacraft_core::netmove::MovePlan::rigid(&self.surface, &seeds);
+        let connected = connected_arg(a)?;
+        let plan = build_move_plan(&self.surface, &seeds, connected.as_ref());
         let moved = plan.positions(delta);
         plan.apply(&mut self.surface, delta);
         Ok(json!({
@@ -2874,11 +2878,18 @@ pub fn tool_definitions() -> Vec<Value> {
             "Move a control point",
             "Set control point `index` to `xyz` in metres (x forward, y starboard, z up). On a symmetric layer y \
              is clamped to 0 or above, because only the starboard half exists and the port side is mirrored. \
-             Returns the point before and after.",
+             Pass optional `connected` (a built-in preset name or a preset object) to draw neighbouring points along, \
+             and optional `reach_m` (metres) to override the preset's reach; a preset only describes how points move \
+             and does not check or guarantee fairness. Returns `before`, `after`, `clamped`, and `moved`.",
             obj(
                 json!({
                     "index": integer("Control point index (see hull_info for the count)"),
                     "xyz": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "New position [x, y, z] in metres"},
+                    "connected": {
+                        "oneOf": [{"type": "string"}, {"type": "object"}],
+                        "description": "Optional connected-editing preset: built-in name (\"Blend both ways\", \"Blend lengthwise\", \"Blend around station\", \"Nudge\", \"Move station\", \"Beam only\", \"Height only\") or preset object {name, reach, falloff, spread, follow_axes?, stop_at_creases?}. Does not read the user's presets file."
+                    },
+                    "reach_m": number("Optional reach override in metres (positive finite number; requires `connected`)"),
                 }),
                 &["index", "xyz"],
             ),
@@ -2889,11 +2900,19 @@ pub fn tool_definitions() -> Vec<Value> {
             "Move control points by a displacement",
             "Shift every control point in `points` by `delta` [dx, dy, dz] in metres (x forward, y starboard, z up). \
              On a symmetric layer y is clamped to 0 or above, and when more than one point moves any seed that starts \
-             on the centreline stays on it. Returns `moved` with each point's `from` and `to` positions.",
+             on the centreline stays on it. Pass optional `connected` (a built-in preset name or a preset object) to \
+             draw neighbouring points along, and optional `reach_m` (metres) to override the preset's reach; a preset \
+             only describes how points move and does not check or guarantee fairness. Returns `moved` with each \
+             point's `from` and `to` positions.",
             obj(
                 json!({
                     "points": {"type": "array", "items": {"type": "integer"}, "minItems": 1, "description": "Control point indices to move"},
                     "delta": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Displacement [dx, dy, dz] in metres"},
+                    "connected": {
+                        "oneOf": [{"type": "string"}, {"type": "object"}],
+                        "description": "Optional connected-editing preset: built-in name (\"Blend both ways\", \"Blend lengthwise\", \"Blend around station\", \"Nudge\", \"Move station\", \"Beam only\", \"Height only\") or preset object {name, reach, falloff, spread, follow_axes?, stop_at_creases?}. Does not read the user's presets file."
+                    },
+                    "reach_m": number("Optional reach override in metres (positive finite number; requires `connected`)"),
                 }),
                 &["points", "delta"],
             ),
@@ -3759,7 +3778,10 @@ impl Remote {
                             .ok_or("move_point: `xyz` must be three finite numbers")?,
                     );
                 }
-                self.request("point.move", json!({"index": index, "xyz": p}))
+                let mut params = json!({"index": index, "xyz": p});
+                connected_arg(a)?;
+                forward_connected_args(a, &mut params);
+                self.request("point.move", params)
             }
             "move_points" => {
                 let list = a
@@ -3798,7 +3820,10 @@ impl Remote {
                             .ok_or("move_points: `delta` must be three finite numbers")?,
                     );
                 }
-                self.request("points.move", json!({"points": points, "delta": d}))
+                let mut params = json!({"points": points, "delta": d});
+                connected_arg(a)?;
+                forward_connected_args(a, &mut params);
+                self.request("points.move", params)
             }
             "split_face" => self.request("model.split_face", Value::Object(a.clone())),
             "insert_edge" => self.request("model.insert_edge", Value::Object(a.clone())),
@@ -4038,6 +4063,52 @@ fn flatten_hydro(reply: &Value) -> Value {
         o.insert("backend".into(), json!("app"));
     }
     v
+}
+
+/// Parse optional `"connected"` preset and `"reach_m"` override from MCP arguments.
+fn connected_arg(
+    a: &Map<String, Value>,
+) -> Result<Option<(seacraft_core::connected::ConnectedPreset, Option<f64>)>, String> {
+    let preset = match a.get("connected") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(seacraft_core::connected::preset_from_json(v)?),
+    };
+    let reach_m = match a.get("reach_m") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_f64()
+                .filter(|x| x.is_finite() && *x > 0.0)
+                .ok_or("`reach_m` must be a finite number greater than 0")?,
+        ),
+    };
+    if reach_m.is_some() && preset.is_none() {
+        return Err("`reach_m` requires `connected`".into());
+    }
+    Ok(preset.map(|p| (p, reach_m)))
+}
+
+fn build_move_plan(
+    surface: &Surface,
+    seeds: &[usize],
+    connected: Option<&(seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+) -> seacraft_core::netmove::MovePlan {
+    match connected {
+        Some((preset, reach_m)) => {
+            let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
+            let lines = seacraft_core::netlines::NetLines::of(surface);
+            seacraft_core::netmove::MovePlan::connected(surface, &lines, seeds, preset, reach)
+        }
+        None => seacraft_core::netmove::MovePlan::rigid(surface, seeds),
+    }
+}
+
+fn forward_connected_args(a: &Map<String, Value>, params: &mut Value) {
+    if let Some(c) = a.get("connected").filter(|v| !v.is_null()) {
+        params["connected"] = c.clone();
+    }
+    if let Some(r) = a.get("reach_m").filter(|v| !v.is_null()) {
+        params["reach_m"] = r.clone();
+    }
 }
 
 #[cfg(test)]
@@ -6460,5 +6531,246 @@ mod tests {
         );
         assert_eq!(unsym_only["clamped"], false, "{unsym_only}");
         assert_eq!(unsym_only["after"]["y"], -0.5, "{unsym_only}");
+    }
+
+    #[test]
+    fn mcp_move_point_and_move_points_support_connected_presets_and_match_control() {
+        // Closed-form oracle: `MovePlan::connected` on the same surface, and agreement between
+        // headless MCP and `--connect` control replies.
+        use seacraft_core::connected::preset_from_json;
+        use seacraft_core::netlines::NetLines;
+        use seacraft_core::netmove::MovePlan;
+        use std::io::Write;
+
+        let mut s = McpServer::new();
+        let surface_0 = s.surface.clone();
+        let seed = 14;
+        let target = surface_0.points[seed].p + Vec3::new(0.1, 0.2, 0.3);
+        let preset = preset_from_json(&json!("Blend lengthwise")).unwrap();
+        let wire = |v: Value| -> Value {
+            serde_json::from_str(&serde_json::to_string_pretty(&v).unwrap()).unwrap()
+        };
+        let expected_single = wire(
+            serde_json::to_value(
+                MovePlan::connected(
+                    &surface_0,
+                    &NetLines::of(&surface_0),
+                    &[seed],
+                    &preset,
+                    preset.reach.metres(&surface_0),
+                )
+                .positions_to(seed, target),
+            )
+            .unwrap(),
+        );
+
+        let r1 = ok(
+            &mut s,
+            1,
+            "move_point",
+            json!({
+                "index": seed,
+                "xyz": [target.x, target.y, target.z],
+                "connected": "Blend lengthwise",
+            }),
+        );
+        assert_eq!(r1["index"], seed);
+        assert_eq!(r1["after"]["x"], target.x);
+        assert_eq!(r1["after"]["y"], target.y);
+        assert_eq!(r1["after"]["z"], target.z);
+        assert_eq!(r1["clamped"], false);
+        assert_eq!(r1["moved"], expected_single);
+
+        // Inline preset object on `move_points` and `reach_m` override.
+        let mut s2 = McpServer::new();
+        let inline = json!({
+            "name": "inline",
+            "reach": {"m": 3.0},
+            "falloff": "linear",
+            "spread": "lengthwise",
+        });
+        let inline_preset = preset_from_json(&inline).unwrap();
+        let delta = Vec3::new(0.0, 0.15, 0.25);
+        let expected_multi = wire(
+            serde_json::to_value(
+                MovePlan::connected(
+                    &surface_0,
+                    &NetLines::of(&surface_0),
+                    &[14, 15],
+                    &inline_preset,
+                    3.0,
+                )
+                .positions(delta),
+            )
+            .unwrap(),
+        );
+        let r2 = ok(
+            &mut s2,
+            2,
+            "move_points",
+            json!({
+                "points": [14, 15],
+                "delta": [delta.x, delta.y, delta.z],
+                "connected": inline.clone(),
+            }),
+        );
+        assert_eq!(r2["moved"], expected_multi);
+
+        // `reach_m` overrides the preset's reach.
+        let mut s3 = McpServer::new();
+        let expected_override = wire(
+            serde_json::to_value(
+                MovePlan::connected(&surface_0, &NetLines::of(&surface_0), &[14], &preset, 1.8)
+                    .positions(delta),
+            )
+            .unwrap(),
+        );
+        let r3 = ok(
+            &mut s3,
+            3,
+            "move_points",
+            json!({
+                "points": [14],
+                "delta": [delta.x, delta.y, delta.z],
+                "connected": "Blend lengthwise",
+                "reach_m": 1.8,
+            }),
+        );
+        assert_eq!(r3["moved"], expected_override);
+
+        // Symmetric half demo hull: no point goes below y = 0 and centreline followers keep y = 0.
+        let mut half = McpServer::from_surface(demo::demo_hull(true));
+        let half_seed = (0..half.surface.points.len())
+            .find(|&i| {
+                let p = half.surface.points[i].p;
+                p.x > 3.0 && p.x < 9.0 && p.y > 0.1 && p.y < 1.2
+            })
+            .expect("starboard seed");
+        let r_half = ok(
+            &mut half,
+            4,
+            "move_points",
+            json!({
+                "points": [half_seed],
+                "delta": [0.1, -3.0, 0.2],
+                "connected": "Blend both ways",
+                "reach_m": 4.0,
+            }),
+        );
+        let moved_half = r_half["moved"].as_array().expect("moved array");
+        assert!(moved_half.len() > 2);
+        let mut saw_cl = false;
+        for entry in moved_half {
+            let idx = entry["point"].as_u64().unwrap() as usize;
+            let from_y = entry["from"]["y"].as_f64().unwrap();
+            let to_y = entry["to"]["y"].as_f64().unwrap();
+            assert!(to_y >= 0.0, "point {idx} below y = 0: {entry}");
+            if idx != half_seed && from_y.abs() <= 1e-9 {
+                saw_cl = true;
+                assert_eq!(to_y, 0.0, "centreline follower {idx} left y = 0");
+            }
+        }
+        assert!(saw_cl);
+
+        // Errors from `preset_from_json` are returned unchanged, and `reach_m: 0` and `connected: 3`
+        // leave the model unchanged.
+        let snap: Vec<Vec3> = half.surface.points.iter().map(|p| p.p).collect();
+        let err_unknown = fails(
+            &mut half,
+            5,
+            "move_point",
+            json!({"index": half_seed, "xyz": [1.0, 1.0, 1.0], "connected": "Smudge"}),
+        );
+        assert_eq!(err_unknown, preset_from_json(&json!("Smudge")).unwrap_err());
+        let err_num = fails(
+            &mut half,
+            6,
+            "move_points",
+            json!({"points": [half_seed], "delta": [0.1, 0.0, 0.0], "connected": 3}),
+        );
+        assert_eq!(err_num, preset_from_json(&json!(3)).unwrap_err());
+        fails(
+            &mut half,
+            7,
+            "move_point",
+            json!({"index": half_seed, "xyz": [1.0, 1.0, 1.0], "connected": "Nudge", "reach_m": 0}),
+        );
+        fails(
+            &mut half,
+            8,
+            "move_points",
+            json!({"points": [half_seed], "delta": [0.1, 0.0, 0.0], "reach_m": 0}),
+        );
+        let after_snap: Vec<Vec3> = half.surface.points.iter().map(|p| p.p).collect();
+        assert_eq!(after_snap, snap);
+
+        // `--connect` remote backend forwards `connected` and `reach_m` to `point.move` and `points.move`
+        // and returns the exact same `moved` list as headless MCP.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let exp_single = expected_single.clone();
+        let exp_multi = expected_multi.clone();
+        let inline_for_thread = inline.clone();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read");
+            let v: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v["method"], "point.move");
+            assert_eq!(v["params"]["connected"], "Blend lengthwise");
+            let reply1 = json!({
+                "ok": true,
+                "result": {
+                    "index": seed,
+                    "point": [target.x, target.y, target.z],
+                    "clamped": false,
+                    "moved": exp_single,
+                    "undo_len": 1,
+                }
+            });
+            writeln!(stream, "{reply1}").expect("write");
+
+            line.clear();
+            reader.read_line(&mut line).expect("read");
+            let v2: Value = serde_json::from_str(line.trim()).expect("json");
+            assert_eq!(v2["method"], "points.move");
+            assert_eq!(v2["params"]["connected"], inline_for_thread);
+            assert_eq!(v2["params"]["reach_m"], 2.5);
+            let reply2 = json!({
+                "ok": true,
+                "result": {
+                    "moved": exp_multi,
+                }
+            });
+            writeln!(stream, "{reply2}").expect("write");
+        });
+
+        let mut remote = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
+        let rem1 = ok(
+            &mut remote,
+            1,
+            "move_point",
+            json!({
+                "index": seed,
+                "xyz": [target.x, target.y, target.z],
+                "connected": "Blend lengthwise",
+            }),
+        );
+        assert_eq!(rem1["moved"], r1["moved"]);
+        let rem2 = ok(
+            &mut remote,
+            2,
+            "move_points",
+            json!({
+                "points": [14, 15],
+                "delta": [delta.x, delta.y, delta.z],
+                "connected": inline,
+                "reach_m": 2.5,
+            }),
+        );
+        assert_eq!(rem2["moved"], r2["moved"]);
+        handle.join().expect("server thread finished");
     }
 }
