@@ -1036,6 +1036,11 @@ $u^{4.596}$: tree depth at most 64, nearest hits at $t = 1/3$ and $(2 - x_\text{
 $+x$ at the same box: a point in front is visible, one behind is hidden, one on the near face is visible; the
 edge $(2, -3, 0) \to (2, 3, 0)$ is hidden for $y \in [-1, 1]$, that is $t \in [1/3, 2/3]$, to one sample).
 
+`crates/seacraft-gui/src/render.rs`: `a_hidden_span_ends_where_its_world_point_projects_in_perspective` (pinhole
+camera at the origin looking along $+z$; edge $(0, 0, 2) \to (6, 0, 6)$ hidden from $t = 1/2$: the world point
+$(3, 0, 4)$ projects to $x/z = 3/4$, between $0$ and $1$ at the ends, so the dimmed stretch starts three quarters
+along the screen segment, not halfway).
+
 ### Provenance
 Geometry worked by hand (2026-11-17). Not published values.
 

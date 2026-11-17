@@ -1376,7 +1376,12 @@ fn draw_control_net(
         } else {
             theme::CONTROL_NET_HIDDEN
         };
-        let at = |t: f32| p + (q - p) * t;
+        // A span is a fraction of the edge in the world; perspective does
+        // not keep fractions on screen, so project the world point.
+        let at = |t: f32| {
+            view.project(wa + (wb - wa) * t as f64, rect)
+                .unwrap_or_else(|| p + (q - p) * t)
+        };
         let mut cursor = 0.0_f32;
         for &(t0, t1) in spans {
             let t0 = t0.clamp(cursor, 1.0);
@@ -2681,6 +2686,92 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_hidden_span_ends_where_its_world_point_projects_in_perspective() {
+        // PR #5 review: hidden spans are fractions of the edge in the world,
+        // and perspective does not keep them as fractions on screen. Edge
+        // from (0, 0, 2) to (6, 0, 6) in view space, hidden from t = 0.5: the
+        // world point there, (3, 0, 4), sits at x/z = 0.75 of the way along
+        // the screen segment (x/z goes 0 at one end, 1 at the other), not
+        // halfway.
+        use seacraft_core::mesh::ControlEdge;
+        let view = ViewTransform {
+            eye: Vec3::ZERO,
+            right: Vec3::new(1.0, 0.0, 0.0),
+            up: Vec3::new(0.0, 1.0, 0.0),
+            forward: Vec3::new(0.0, 0.0, 1.0),
+            ortho_height: 1.0,
+            fit_aspect: 0.0,
+            fov_tan: 1.0,
+            perspective: true,
+        };
+        let mut surface = Surface::new();
+        let wa = Vec3::new(0.0, 0.0, 2.0);
+        let wb = Vec3::new(6.0, 0.0, 6.0);
+        surface.add_point(wa);
+        surface.add_point(wb);
+        surface.edges.push(ControlEdge {
+            a: 0,
+            b: 1,
+            crease: false,
+        });
+        let vis = crate::visibility::NetVisibility {
+            points: vec![true, true],
+            hidden_spans: vec![vec![(0.5, 1.0)]],
+        };
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 800.0));
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            draw_control_net(
+                &painter,
+                &view,
+                rect,
+                &surface,
+                true,
+                Some(&vis),
+                HiddenNet::Dimmed,
+                None,
+                None,
+                false,
+            );
+        });
+        out.textures_delta.clear();
+        let mut hidden = Vec::new();
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut |shape| {
+                if let egui::Shape::LineSegment { points, stroke } = shape {
+                    if stroke.color == theme::CONTROL_NET_HIDDEN {
+                        hidden.push(*points);
+                    }
+                }
+            });
+        }
+        assert_eq!(hidden.len(), 1, "{hidden:?}");
+        let boundary = view.project(wa + (wb - wa) * 0.5, rect).unwrap();
+        let (p, q) = (
+            view.project(wa, rect).unwrap(),
+            view.project(wb, rect).unwrap(),
+        );
+        assert!(
+            ((boundary - p).length() / (q - p).length() - 0.75).abs() < 1e-4,
+            "the world midpoint is three quarters along on screen"
+        );
+        assert!(
+            (hidden[0][0] - boundary).length() < 0.01,
+            "the hidden stretch starts at {:?}, its world point projects to {boundary:?}",
+            hidden[0][0]
+        );
+        assert!((hidden[0][1] - q).length() < 0.01);
     }
 
     #[test]
