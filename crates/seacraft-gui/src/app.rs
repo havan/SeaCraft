@@ -3764,7 +3764,13 @@ impl App {
                         }
                     }
                 }
-                if response.hovered() && !on_button && self.drag.is_none() && self.marquee.is_none()
+                // Nothing is hovered while the view itself is dragged (a pan
+                // or an orbit): the highlight would flicker under the pointer.
+                if response.hovered()
+                    && !on_button
+                    && !response.dragged()
+                    && self.drag.is_none()
+                    && self.marquee.is_none()
                 {
                     self.sync_net_visibility(index, cell);
                     self.hovered_point = self.pick_at(ui, &view, cell, index);
@@ -6291,6 +6297,11 @@ impl App {
 
     pub fn selection(&self) -> &crate::selection::Selection {
         &self.selection
+    }
+
+    /// The control point under the pointer this frame, if any (test hook).
+    pub fn hovered_point(&self) -> Option<usize> {
+        self.hovered_point
     }
 
     /// Whether the hull's ray index is built for the current mesh (test hook):

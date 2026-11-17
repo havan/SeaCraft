@@ -2029,3 +2029,65 @@ fn holding_ctrl_flips_connected_for_the_drag_and_switches_live() {
     frame_mods(&ctx, &mut app, true, Vec::new());
     assert!(!app.connected_now());
 }
+
+#[test]
+fn nothing_is_hovered_while_a_view_is_being_panned() {
+    // Final review of feat/hull-editing, M6: hover picking ran during a pan,
+    // so the station highlight and the rings flickered under the pointer.
+    // The pick of a frame uses the camera before that frame's pan, so a pan
+    // that brings the pointer onto a point's old place would hover it.
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let index = {
+        let s = app.surface().unwrap();
+        (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 3.0 && s.points[i].p.x < 9.0 && s.points[i].p.y > 0.0)
+            .max_by(|&a, &b| s.points[a].p.z.total_cmp(&s.points[b].p.z))
+            .expect("mid-hull sheer point")
+    };
+    let project = |app: &App, i: usize| {
+        app.cameras()[1]
+            .transform()
+            .project(app.surface().unwrap().points[i].p, app.viewport_rect(1))
+    };
+    let at = project(&app, index).expect("visible");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    assert_eq!(app.hovered_point(), Some(index), "hovering picks the point");
+
+    // Pan from empty sky in Profile onto the point's place.
+    let empty = app.viewport_rect(1).left_top() + egui::vec2(12.0, 40.0);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(empty)]);
+    frame(&ctx, &mut app, vec![button(empty, true)]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(empty + egui::vec2(10.0, 0.0))],
+    );
+    let target = app.cameras()[1].target;
+    let at = project(&app, index).expect("visible");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    assert!(
+        (app.cameras()[1].target - target).length() > 1e-6,
+        "the view is being panned"
+    );
+    assert_eq!(app.hovered_point(), None, "nothing is hovered during a pan");
+    frame(&ctx, &mut app, vec![button(at, false)]);
+    frame(&ctx, &mut app, Vec::new());
+
+    // After the pan, hovering works again (on a point still in the view).
+    let inner = app.viewport_rect(1).shrink(20.0);
+    let (visible, at) = (0..app.surface().unwrap().points.len())
+        .find_map(|i| {
+            project(&app, i)
+                .filter(|p| inner.contains(*p))
+                .map(|p| (i, p))
+        })
+        .expect("a point still in the view");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    assert!(
+        app.hovered_point().is_some(),
+        "hover is back after the pan (point {visible})"
+    );
+}
