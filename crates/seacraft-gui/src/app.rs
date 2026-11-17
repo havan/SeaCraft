@@ -377,6 +377,9 @@ struct DragState {
     /// Position when grabbed, so a click that never moved can drop its
     /// snapshot again.
     original: Vec3,
+    /// Whether Shift+press added `point` to the selection (so a release
+    /// without movement does not immediately toggle it off again).
+    added_on_press: bool,
 }
 
 /// What the File menu can produce besides a `.fef`.
@@ -920,7 +923,7 @@ pub struct App {
     cameras: [Camera; 4],
     active: usize,
     cache: Option<RenderCache>,
-    selected: Option<usize>,
+    selection: crate::selection::Selection,
     selected_volume: Option<VolumeRef>,
     selected_windage: Option<usize>,
     last_highlighted_tank: Option<usize>,
@@ -1060,9 +1063,6 @@ pub struct App {
     control_roots: seacraft_core::control_auth::ControlRoots,
     /// Token file removed on clean shutdown.
     token_file: Option<seacraft_core::control_auth::TokenFile>,
-    /// The control point picked before `selected` (Shift+click): with it,
-    /// the two picked points the Model menu's edge tools act on.
-    second_pick: Option<usize>,
     /// Model > Transform…, while open.
     transform_dialog: Option<crate::model_menu::TransformDialog>,
     /// Model > Optimise…, while open.
@@ -1169,7 +1169,7 @@ impl App {
             ],
             active: 0,
             cache: None,
-            selected: None,
+            selection: crate::selection::Selection::default(),
             selected_volume: None,
             selected_windage: None,
             last_highlighted_tank: None,
@@ -1242,7 +1242,6 @@ impl App {
             synthetic: Vec::new(),
             control_roots: seacraft_core::control_auth::ControlRoots::default(),
             token_file: None,
-            second_pick: None,
             transform_dialog: None,
             optimise_dialog: None,
             optimise_job: None,
@@ -1449,7 +1448,7 @@ impl App {
         // Measured on the previous model: left in place, it would trim the
         // new one to a point that means nothing there.
         self.hydro.lcg = None;
-        self.selected = None;
+        self.selection.clear();
         self.selected_volume = None;
         self.selected_windage = None;
         self.last_highlighted_tank = None;
@@ -1920,7 +1919,7 @@ impl App {
                             ui,
                             panels::InspectorPanel {
                                 surface: self.surface.as_ref(),
-                                selected: self.selected,
+                                selection: &self.selection,
                                 pending: &mut self.inspector_pending,
                             },
                         );
@@ -2092,8 +2091,7 @@ impl App {
             )
         });
         if escape {
-            self.selected = None;
-            self.second_pick = None;
+            self.selection.clear();
             self.selected_volume = None;
             self.selected_windage = None;
         }
@@ -3363,6 +3361,8 @@ impl App {
             || self.hydro.options.draft != snap.draft
             || snap.model.is_some();
         self.surface = snap.surface;
+        let n = self.surface.as_ref().map_or(0, |s| s.points.len());
+        self.selection.retain_valid(n);
         if let Some(m) = snap.model {
             self.project = m.project;
             self.project_error = m.project_error;
@@ -3438,7 +3438,8 @@ impl App {
         self.project_edit_source = None;
         self.history.truncate_undo(undo_len);
         self.history.clear_redo();
-        self.selected = None;
+        let n = self.surface.as_ref().map_or(0, |s| s.points.len());
+        self.selection.retain_valid(n);
         self.mark_geometry_changed();
         self.refresh_dirty();
         self.set_status(format!("restored to mark {id}"));
@@ -3535,6 +3536,7 @@ impl App {
                 self.cameras[index].pan(delta.x, delta.y, cell);
             }
             let secondary = ui.input(|i| i.pointer.secondary_down());
+            let mut added_on_press = false;
             if response.dragged() && secondary && self.cameras[index].kind.is_perspective() {
                 let delta = response.drag_delta();
                 self.cameras[index].orbit(delta.x, -delta.y);
@@ -3560,6 +3562,7 @@ impl App {
                 }
                 if ui.input(|i| i.pointer.any_released()) {
                     if let Some(drag) = self.drag.take_if(|d| d.view == index) {
+                        added_on_press = drag.added_on_press;
                         self.axis_lock = None;
                         let moved = self
                             .surface
@@ -3580,14 +3583,21 @@ impl App {
             }
             if response.clicked() {
                 self.active = index;
-                self.selected = self.pick_at(ui, &view, cell);
-                // The press (`begin_drag`) already decided whether this
-                // click adds a second point; a click on nothing drops both.
-                if self.selected.is_none() || self.second_pick == self.selected {
-                    self.second_pick = None;
+                let picked = self.pick_at(ui, &view, cell);
+                let shift = pointer_shift(ui);
+                if shift {
+                    if let Some(p) = picked {
+                        if !added_on_press {
+                            self.selection.toggle(p);
+                        }
+                    }
+                } else if let Some(p) = picked {
+                    self.selection.set_only(p);
+                } else {
+                    self.selection.clear();
                 }
                 self.picked_face = self.pick_face_at(ui, &view, cell);
-                if self.selected.is_none() {
+                if self.selection.is_empty() {
                     let cursor = ui.input(|i| i.pointer.interact_pos());
                     let mut hit_windage = false;
                     if self.display.windage && self.cameras[index].kind == ViewKind::Profile {
@@ -3767,7 +3777,7 @@ impl App {
                     Some(&scene),
                     display,
                     self.active == index,
-                    self.selected,
+                    &self.selection,
                     texture.as_ref(),
                     hull,
                     gpu_hull,
@@ -4030,17 +4040,15 @@ impl App {
         let snap = Snapshot::edit(surface, self.hydro.options.draft);
         self.project_edit_source = None;
         self.history.snapshot(&snap);
-        // Shift+press keeps the point selected so far as the first of two
-        // picked points (the Model menu's edge tools); a plain press picks
-        // one point.
+        let mut added_on_press = false;
         if pointer_shift(ui) {
-            if self.selected != Some(point) {
-                self.second_pick = self.selected;
+            if !self.selection.contains(point) {
+                self.selection.toggle(point);
+                added_on_press = true;
             }
-        } else {
-            self.second_pick = None;
+        } else if !self.selection.contains(point) {
+            self.selection.set_only(point);
         }
-        self.selected = Some(point);
         self.active = index;
         self.set_status(format!(
             "dragging control point {point} · hold X, Y or Z to lock an axis"
@@ -4051,6 +4059,7 @@ impl App {
             offset,
             view: index,
             original: center,
+            added_on_press,
         });
     }
 
@@ -5785,7 +5794,11 @@ impl App {
     }
 
     pub fn selected(&self) -> Option<usize> {
-        self.selected
+        self.selection.active()
+    }
+
+    pub fn selection(&self) -> &crate::selection::Selection {
+        &self.selection
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -5830,6 +5843,8 @@ impl App {
     }
 
     pub fn mark_geometry_changed(&mut self) {
+        let n = self.surface.as_ref().map_or(0, |s| s.points.len());
+        self.selection.retain_valid(n);
         self.revision += 1;
         self.dirty = true;
         self.autosave.note_dirty();
@@ -6214,8 +6229,10 @@ impl App {
 
     /// Select a control point (`None` clears the selection).
     pub fn select_point(&mut self, index: Option<usize>) {
-        self.selected = index;
-        self.second_pick = None;
+        match index {
+            Some(i) => self.selection.set_only(i),
+            None => self.selection.clear(),
+        }
     }
 
     /// Record the current model on the undo stack, as a drag does on grab.
@@ -6842,18 +6859,17 @@ impl App {
     /// The two picked control points, first then second (click one,
     /// Shift+click the other).
     pub fn picked_points(&self) -> Option<[usize; 2]> {
-        let count = self.surface.as_ref().map_or(0, |s| s.points.len());
-        match (self.second_pick, self.selected) {
-            (Some(a), Some(b)) if a != b && a < count && b < count => Some([a, b]),
-            _ => None,
-        }
+        self.selection.pair()
     }
 
     /// Pick two control points as a click and a Shift+click would (tests,
     /// scripts); `None` clears both.
     pub fn set_picked_points(&mut self, points: Option<[usize; 2]>) {
-        self.second_pick = points.map(|[a, _]| a);
-        self.selected = points.map(|[_, b]| b);
+        self.selection.clear();
+        if let Some([first, second]) = points {
+            self.selection.set_only(first);
+            self.selection.toggle(second);
+        }
     }
 
     /// The world axis the point drag is locked to, while X, Y or Z is held.
@@ -6983,8 +6999,8 @@ impl App {
     }
 
     /// What the Model menu's tools would act on, drawn over one viewport:
-    /// the picked face's outline, a ring on the first of two picked points,
-    /// and the axis a locked drag follows with its caption.
+    /// the picked face's outline, and the axis a locked drag follows with
+    /// its caption.
     fn draw_pick_overlays(&self, ui: &egui::Ui, cell: egui::Rect, index: usize) {
         let Some(surface) = self.surface.as_ref() else {
             return;
@@ -7001,14 +7017,6 @@ impl App {
                     pts,
                     egui::Stroke::new(1.5, crate::theme::FACE_PICKED),
                 ));
-            }
-        }
-        if self.display.points {
-            if let Some(s) = self
-                .picked_points()
-                .and_then(|[first, _]| view.project(surface.points[first].p, cell))
-            {
-                painter.circle_stroke(s, 7.0, egui::Stroke::new(1.5, crate::theme::POINT_PICKED));
             }
         }
         let (Some(axis), Some(drag)) = (self.axis_lock, self.drag.as_ref()) else {

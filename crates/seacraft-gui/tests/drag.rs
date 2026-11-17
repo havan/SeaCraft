@@ -335,3 +335,93 @@ fn hidden_control_points_cannot_be_dragged() {
     assert_eq!(app.surface().unwrap().points[index].p, before);
     assert_eq!(app.undo_len(), 0);
 }
+
+#[test]
+fn stale_selection_indices_are_dropped_after_undo_redo_and_topology_edit() {
+    use seacraft_gui::commands::{self, SplitFaceParams};
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let split = commands::split_face(&mut app, &SplitFaceParams { face: 0 }).unwrap();
+    let n = app.control_point_count();
+    assert_eq!(split.point, n - 1);
+    app.select_point(Some(n - 1));
+    assert_eq!(app.selected(), Some(n - 1));
+    assert!(app.selection().contains(n - 1));
+    app.undo();
+    assert!(!app.selection().contains(n - 1));
+    assert!(app.selected().is_none());
+}
+
+#[test]
+fn shift_click_adds_a_point_and_a_second_shift_click_removes_it() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let sheer: Vec<usize> = {
+        let s = app.surface().expect("model loaded");
+        let mut pts: Vec<usize> = (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 2.0 && s.points[i].p.x < 10.0 && s.points[i].p.y > 0.0)
+            .collect();
+        pts.sort_by(|&a, &b| s.points[b].p.z.total_cmp(&s.points[a].p.z));
+        let mut out: Vec<usize> = Vec::new();
+        for i in pts {
+            if out
+                .iter()
+                .all(|&o| (s.points[o].p.x - s.points[i].p.x).abs() > 2.0)
+            {
+                out.push(i);
+            }
+        }
+        out
+    };
+    let rect = app.viewport_rect(1);
+    let view = app.cameras()[1].transform();
+    let pos_a = view
+        .project(app.surface().unwrap().points[sheer[0]].p, rect)
+        .unwrap();
+    let pos_b = view
+        .project(app.surface().unwrap().points[sheer[1]].p, rect)
+        .unwrap();
+    let click = |ctx: &egui::Context, app: &mut App, pos: egui::Pos2, shift: bool| {
+        let modifiers = if shift {
+            egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::NONE
+        };
+        let btn = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers,
+        };
+        frame(ctx, app, vec![egui::Event::PointerMoved(pos), btn(true)]);
+        frame(ctx, app, vec![btn(false)]);
+        frame(ctx, app, Vec::new());
+    };
+
+    click(&ctx, &mut app, pos_a, false);
+    let first = app.selected().expect("first point selected");
+    assert_eq!(app.selection().points(), &[first]);
+
+    // Shift+click adds the second point and makes it active.
+    click(&ctx, &mut app, pos_b, true);
+    let second = app.selected().expect("second point active");
+    assert_ne!(first, second);
+    assert_eq!(app.selection().points(), &[first, second]);
+    assert_eq!(app.picked_points(), Some([first, second]));
+
+    // A second Shift+click on the same point removes it and restores `first` as active.
+    click(&ctx, &mut app, pos_b, true);
+    assert_eq!(app.selection().points(), &[first]);
+    assert_eq!(app.selected(), Some(first));
+    assert_eq!(app.picked_points(), None);
+
+    // Re-add `second`, then plain-click `first` to collapse the selection to `first`.
+    click(&ctx, &mut app, pos_b, true);
+    assert_eq!(app.selection().points(), &[first, second]);
+    click(&ctx, &mut app, pos_a, false);
+    assert_eq!(app.selection().points(), &[first]);
+    assert_eq!(app.selected(), Some(first));
+    assert_eq!(app.picked_points(), None);
+}

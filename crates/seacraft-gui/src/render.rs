@@ -228,8 +228,12 @@ pub fn viewport(
     active: bool,
     selected: Option<usize>,
 ) {
+    let mut selection = crate::selection::Selection::default();
+    if let Some(p) = selected {
+        selection.set_only(p);
+    }
     viewport_with_texture(
-        ui, rect, camera, scene, opts, active, selected, None, None, None, None,
+        ui, rect, camera, scene, opts, active, &selection, None, None, None, None,
     )
 }
 
@@ -246,7 +250,7 @@ pub fn viewport_with_texture(
     scene: Option<&Scene>,
     opts: &DisplayOptions,
     active: bool,
-    selected: Option<usize>,
+    selection: &crate::selection::Selection,
     texture: Option<&egui::TextureHandle>,
     hull: Option<Arc<egui::Mesh>>,
     gpu_hull: Option<egui::PaintCallback>,
@@ -306,10 +310,10 @@ pub fn viewport_with_texture(
         }
     }
     if opts.control_net {
-        draw_control_net(&painter, &view, rect, scene.surface, selected.is_some());
+        draw_control_net(&painter, &view, rect, scene.surface, !selection.is_empty());
     }
     if opts.points {
-        draw_points(&painter, &view, rect, scene.surface, selected);
+        draw_points(&painter, &view, rect, scene.surface, selection);
     }
 
     // Caption and scale, on a backing so the hull behind stays readable.
@@ -1193,15 +1197,18 @@ fn draw_points(
     view: &ViewTransform,
     rect: Rect,
     surface: &Surface,
-    selected: Option<usize>,
+    selection: &crate::selection::Selection,
 ) {
     for (i, p) in surface.points.iter().enumerate() {
         let Some(s) = view.project(p.p, rect) else {
             continue;
         };
-        if i == selected.unwrap_or(usize::MAX) {
+        if selection.contains(i) {
             painter.circle_filled(s, 5.0, theme::POINT_SELECTED);
             painter.circle_stroke(s, 5.0, Stroke::new(1.0, theme::POINT_SELECTED_OUTLINE));
+            if selection.active() == Some(i) {
+                painter.circle_stroke(s, 7.0, Stroke::new(1.5, theme::POINT_SELECTED));
+            }
         } else {
             painter.circle_filled(s, 2.0, theme::POINT);
         }

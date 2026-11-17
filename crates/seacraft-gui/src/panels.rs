@@ -525,7 +525,7 @@ pub enum InspectorAction {
 /// Everything the Inspector draws.
 pub struct InspectorPanel<'a> {
     pub surface: Option<&'a Surface>,
-    pub selected: Option<usize>,
+    pub selection: &'a crate::selection::Selection,
     /// A value being dragged: committed on release, so a drag is one edit.
     pub pending: &'a mut Option<(usize, [f64; 3])>,
 }
@@ -577,7 +577,7 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
     let mut out = InspectorOutput::default();
     theme::heading(ui, "Inspector");
     ui.add_space(4.0);
-    let point = match (panel.surface, panel.selected) {
+    let point = match (panel.surface, panel.selection.active()) {
         (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
         _ => None,
     };

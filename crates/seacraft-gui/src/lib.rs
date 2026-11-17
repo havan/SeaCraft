@@ -29,6 +29,7 @@ pub mod panels;
 pub mod picking;
 pub mod recent;
 pub mod render;
+pub mod selection;
 pub mod theme;
 pub mod visibility;
 

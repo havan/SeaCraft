@@ -2473,6 +2473,34 @@ fn whole_opt(
 fn inspect(app: &App) -> Value {
     let d = app.display();
     let h = app.hydro_options();
+    let display = json!({
+        "shaded": d.shaded,
+        "wireframe": d.wireframe,
+        "control_net": d.control_net,
+        "points": d.points,
+        "waterplane": d.waterplane,
+        "volumes": d.volumes,
+        "windage": d.windage,
+        "grid": d.grid,
+        "orientation": d.orientation,
+        "curves": d.curves,
+        "combs": d.combs,
+        "stations": d.stations,
+        "buttocks": d.buttocks,
+        "waterlines": d.waterlines,
+        "comb_scale": d.comb_scale,
+        "comb_density": d.comb_stride,
+        "analysis": d.analysis.label(),
+    });
+    let hydro = json!({
+        "draft": h.draft,
+        "trim": h.trim,
+        "heel_deg": h.heel_deg,
+        "kg": app.kg(),
+        "free_trim": app.free_trim(),
+        "lcg": app.lcg(),
+        "result": serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null),
+    });
     json!({
         "version": seacraft_core::VERSION,
         "status": app.status(),
@@ -2483,6 +2511,7 @@ fn inspect(app: &App) -> Value {
         "active_view": app.active_view(),
         "maximised": app.maximised().is_some(),
         "selected_point": app.selected(),
+        "selected_points": app.selection().points(),
         "selected_volume": match app.selected_volume_info() {
             Some((kind, index, name)) => json!({
                 "kind": kind,
@@ -2510,25 +2539,7 @@ fn inspect(app: &App) -> Value {
         "layers": app.layer_count(),
         "active_layer": app.active_layer(),
         "picked_face": app.picked_face(),
-        "display": {
-            "shaded": d.shaded,
-            "wireframe": d.wireframe,
-            "control_net": d.control_net,
-            "points": d.points,
-            "waterplane": d.waterplane,
-            "volumes": d.volumes,
-            "windage": d.windage,
-            "grid": d.grid,
-            "orientation": d.orientation,
-            "curves": d.curves,
-            "combs": d.combs,
-            "stations": d.stations,
-            "buttocks": d.buttocks,
-            "waterlines": d.waterlines,
-            "comb_scale": d.comb_scale,
-            "comb_density": d.comb_stride,
-            "analysis": d.analysis.label(),
-        },
+        "display": display,
         "status_level": app.status_level().label(),
         "messages_open": app.show_messages(),
         // The newest 20 messages, newest first.
@@ -2545,15 +2556,7 @@ fn inspect(app: &App) -> Value {
             .iter()
             .map(|e| json!({ "path": e.path.to_string_lossy(), "exists": e.exists }))
             .collect::<Vec<_>>(),
-        "hydro": {
-            "draft": h.draft,
-            "trim": h.trim,
-            "heel_deg": h.heel_deg,
-            "kg": app.kg(),
-            "free_trim": app.free_trim(),
-            "lcg": app.lcg(),
-            "result": serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null),
-        },
+        "hydro": hydro,
     })
 }
 
