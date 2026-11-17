@@ -11,6 +11,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - `michell::wigley_grid` integrated the Wigley hull's wetted surface with a wrong slope and gave 15.14 m² for
   the 10 m hull instead of 14.88 m², so Cw on that grid read 1.8 % low (R_w was right). Hull-file Michell results
   take S from the hydrostatics and are unchanged.
+- Michell wave resistance on the Wigley hull is now compared with published tank tests, Kajitani et al. (1983),
+  and with an independent computation of Michell's integral (Peri 2026, arXiv:2610.14027): `docs/oracles.md` §39.
+  Michell's hollow near Fn 0.35 is at the measured speed; its hump near Fn 0.32 is about 0.02 early and 18–54 %
+  high. `DISCLAIMER.md` and the README say what this covers.
 
 ## 0.5.0 (2026-11-17)
 

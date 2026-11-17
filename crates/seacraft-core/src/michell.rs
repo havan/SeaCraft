@@ -764,6 +764,123 @@ mod tests {
         assert!((s / 14.879_063 - 1.0).abs() < 1e-4, "S {s}");
     }
 
+    /// Michell's Cw on the 10 m Wigley grid (`nx` × `nz` offsets, `ntheta` angles) at Froude number `fn_`.
+    fn wigley_cw(fn_: f64, nx: usize, nz: usize, ntheta: usize) -> f64 {
+        let (l, g) = (10.0, 9.80665);
+        let grid = wigley_grid(l, 1.0, 0.625, nx, nz);
+        let opts = MichellOptions {
+            nx,
+            nz,
+            ntheta,
+            catamaran_spacing: None,
+        };
+        michell_wave_resistance_from_grid(&grid, fn_ * (g * l).sqrt(), 1000.0, g, &opts).cw
+    }
+
+    #[test]
+    #[allow(clippy::approx_constant)] // Fn 0.318 is read off a figure, not 1/π
+    fn wigley_michell_against_kajitani_1983_towing_tests() {
+        // Kajitani, Miyata, Ikehata, Tanaka, Adachi, Namimatsu & Ogiwara (1983), "The summary
+        // of the cooperative experiment on Wigley parabolic model in Japan", Proc. 2nd DTNSRDC
+        // Workshop on Ship Wave-Resistance Computations, pp. 5-35 (DTIC ADP003037): Wigley
+        // geosims with B/L = 0.1, D/L = 0.0625, the proportions of `wigley_grid`. Cw =
+        // C_T - (1 + k) C_F0 (Schoenherr) on S = 0.661 L (2D + B). Read from Fig. 2 (fixed
+        // sinkage and trim) and Figs. 1 and 5 (free), on a calibrated grid over 300 dpi
+        // renders: Cw (×1e-3) ± 0.05, Fn ± 0.005. docs/oracles.md §39 has the method.
+        //           model         hump Fn, Cw    hollow Fn, Cw
+        let fixed = [
+            ("SRI 4.0 m FX", 0.320, 1.39, 0.350, 1.21),
+            ("UT 2.5 m FX", 0.318, 1.45, 0.350, 1.30),
+        ];
+        let free = [
+            ("IHI 6.0 m FR", 0.313, 1.81, 0.345, 1.62),
+            ("SRI 4.0 m FR", 0.320, 1.61, 0.350, 1.45),
+            ("UT 2.5 m FR", 0.320, 1.70, 0.345, 1.53),
+            ("YNU 2.0 m FR", 0.322, 1.59, 0.347, 1.48),
+        ];
+
+        // Michell's interference hump and the hollow after it, to 0.001 in Fn.
+        let curve: Vec<(f64, f64)> = (0..=90)
+            .map(|i| {
+                let f = 0.28 + 0.001 * i as f64;
+                (f, wigley_cw(f, 65, 25, 256) * 1e3)
+            })
+            .collect();
+        let (hump_fn, hump) = curve
+            .iter()
+            .filter(|(f, _)| *f < 0.33)
+            .copied()
+            .fold((0.0, f64::MIN), |a, b| if b.1 > a.1 { b } else { a });
+        let (hollow_fn, hollow) = curve
+            .iter()
+            .filter(|(f, _)| *f > 0.33)
+            .copied()
+            .fold((0.0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a });
+        // Michell: hump 2.14e-3 at Fn 0.299, hollow 1.235e-3 at 0.346.
+        assert!((hump_fn - 0.299).abs() < 0.0015, "hump at {hump_fn}");
+        assert!((hollow_fn - 0.346).abs() < 0.0015, "hollow at {hollow_fn}");
+
+        // What thin-ship theory gets right and wrong on this hull, as bands round
+        // the measured spread widened by the reading uncertainty. Not tuned: the
+        // hump is 0.014-0.023 early and 18-54 % high; the hollow is in place, and
+        // in the fixed condition, which Michell models, within 5 % in size.
+        for (model, h_fn, h_cw, l_fn, l_cw) in fixed.iter().chain(free.iter()) {
+            let early = h_fn - hump_fn;
+            assert!(
+                (0.009..=0.028).contains(&early),
+                "{model}: hump {early:.3} early"
+            );
+            assert!(
+                (l_fn - hollow_fn).abs() <= 0.009,
+                "{model}: hollow at {l_fn} vs {hollow_fn}"
+            );
+            let high = hump / h_cw;
+            assert!(
+                (1.14..=1.60).contains(&high),
+                "{model}: hump ratio {high:.3}"
+            );
+            let low = hollow / l_cw;
+            assert!(
+                (0.73..=1.07).contains(&low),
+                "{model}: hollow ratio {low:.3}"
+            );
+        }
+        for (model, _, _, _, l_cw) in fixed {
+            let r = hollow / l_cw;
+            assert!(
+                (0.91..=1.07).contains(&r),
+                "{model}: fixed hollow ratio {r:.3}"
+            );
+        }
+    }
+
+    #[test]
+    fn wigley_michell_matches_siren_independent_computation() {
+        // Peri, D. (2026), "SIREN: A nonlinear Rankine-source boundary element solver for the
+        // stationary motion of a marine vehicle in calm water", arXiv:2610.14027, Table 3,
+        // column "Michell": Michell's integral for the same Wigley hull from an independent
+        // Python script (λ = cosh t, Simpson quadrature), Cw on the true wetted surface. An
+        // independent computation of the same theory, not experiment.
+        let siren = [
+            (0.250, 1.064),
+            (0.267, 0.976),
+            (0.289, 1.987),
+            (0.316, 1.831),
+            (0.354, 1.284),
+            (0.408, 3.030),
+            (0.450, 4.154),
+        ];
+        for (fn_, cw) in siren {
+            let ours = wigley_cw(fn_, 129, 49, 512) * 1e3;
+            let diff = (ours / cw - 1.0).abs();
+            assert!(
+                diff < 0.002,
+                "Fn {fn_}: {ours:.4} vs SIREN {cw} ({:.3} %)",
+                diff * 100.0
+            );
+        }
+    }
+
     #[test]
     fn transom_ratio_is_the_aft_section_over_the_largest_one() {
         // Every Wigley station has the same z-shape, so a section's area is

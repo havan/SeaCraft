@@ -25,7 +25,9 @@ see [`DISCLAIMER.md`](DISCLAIMER.md).
 The most important milestone: most results have never been compared with reality.
 
 - [ ] Compare hydrostatics and GZ with a published or independently computed hull.
-- [ ] Compare Holtrop-Mennen and Savitsky with published worked examples, and Michell with published Wigley hull data.
+- [ ] Compare Holtrop-Mennen and Savitsky with published worked examples.
+- [x] Compare Michell with published Wigley hull data: Kajitani et al. (1983) towing tests and an independent
+  computation (`docs/oracles.md` §39).
 - [ ] Compare seakeeping RAOs with published experiments.
 - Done when each area has at least one oracle in `docs/oracles.md` with a checkable published source,
   and `DISCLAIMER.md` and the README say exactly what is covered.

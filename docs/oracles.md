@@ -191,6 +191,9 @@ with $k_x = k_0 \sec\theta$, $k_z = k_0 \sec^2\theta$, $k_0 = g / U^2$.
 ### Provenance
 Independent numerical quadrature using variable substitution $\lambda = \sec\theta = \cosh u$ ($u \in [0, 6]$) over an $801 \times 201$ offset grid using the trapezoidal rule, computed specifically for this regression check. As documented in the module comments, these are not published experimental or tabulated values.
 
+The comparison with published experiment (Kajitani et al., 1983) and with a published independent computation
+(Peri, 2026) is §39.
+
 ---
 
 ## 8. DSYHS Yacht Residuary Resistance Polynomial Cross-Check
@@ -1138,3 +1141,83 @@ $1 - 0.6^2 = 0.64$ on a Wigley grid cut off at $x = -0.3L$.
 Closed form by hand (2026-11-18). The 5 % limit (`MICHELL_TRANSOM_AREA_LIMIT`) is the project's own threshold,
 not a published limit: the example hulls that close at the stern measure below 2 % (yacht 1.4 %, trawler 1.8 %,
 container ship 0.5 %, kayık 0.01 %), the demo hull 84 % and the runabout 100 %.
+
+---
+
+## 39. Wigley Michell Wave Resistance against Kajitani et al. (1983)
+
+### Sources
+- **Primary, experiment.** Kajitani, H., Miyata, H., Ikehata, M., Tanaka, H., Adachi, H., Namimatsu, M. &
+  Ogiwara, S. (1983). "The summary of the cooperative experiment on Wigley parabolic model in Japan." *Proc. 2nd
+  DTNSRDC Workshop on Ship Wave-Resistance Computations*, Bethesda, MD, pp. 5–35. DTIC ADP003037. Read
+  2026-11-18 from the DTIC scan: geosim Wigley models of 6.0 m (IHI), 4.0 m (SRI), 2.5 m (UT) and 2.0 m (YNU),
+  $y = (B/2)[1 - (2x/L)^2][1 - (z/D)^2]$, $B/L = 0.1$, $D/L = 0.0625$ (report p. 8), the proportions of
+  `wigley_grid`. $C_w = R_w / (\tfrac12 \rho U^2 S)$ is "derived from towing test" using a form factor $k$ on the
+  Schoenherr line, i.e. $C_T - (1 + k) C_{F0}$, and $C_{wp}$ from wave-pattern analysis (Newman–Sharma), both on
+  $S = 0.661\,L(2D + B)$ (Nomenclature, p. 6). Fig. 1: free to sink and trim (FR), 6, 4 and 2.5 m; Fig. 2:
+  fixed (FX), 4 and 2.5 m; Fig. 5: 2.0 m, FR.
+- **Independent computation, not experiment.** Peri, D. (2026). "SIREN: A nonlinear Rankine-source boundary
+  element solver for the stationary motion of a marine vehicle in calm water." arXiv:2610.14027, Table 3,
+  column "Michell": the same hull from an independent Python script ($\lambda = \cosh t$, Simpson), $C_w$ on the
+  true wetted surface.
+
+### Formula
+Michell's integral as in §7, on `wigley_grid` ($L = 10$ m, $B = 1$ m, $T = 0.625$ m); $C_w$ on the grid's
+$S = 14.879\text{ m}^2$, which is Kajitani's $S$ to 0.05 % (§7). Michell models a hull held at its rest
+waterline, so the fixed (FX) runs are the like-for-like case; the free (FR) runs sink and trim, which raises
+$C_w$.
+
+### Test Location
+- `crates/seacraft-core/src/michell.rs::wigley_michell_against_kajitani_1983_towing_tests`
+- `crates/seacraft-core/src/michell.rs::wigley_michell_matches_siren_independent_computation`
+- Readings and crops: [`docs/oracles/kajitani_1983_wigley.py`](oracles/kajitani_1983_wigley.py)
+
+### Numbers Used
+$C_w$ is plotted, not tabulated, so it was digitised: pages rendered at 300 dpi, axes calibrated on the printed
+scale ticks (the graph paper is 0.01 Fn × 0.2e-3 per cell; the typed ticks sit on its half-rows), and markers and
+faired curves read against a 0.005 Fn × 0.05e-3 grid over enlarged crops. Uncertainty of a reading: Fn ± 0.005,
+$C_w$ ± 0.05e-3. $C_w \times 10^3$:
+
+| Model | Condition | Figure | Hump Fn | Hump $C_w$ | Hollow Fn | Hollow $C_w$ |
+|---|---|---|---|---|---|---|
+| SRI 4.0 m | FX | 2 | 0.320 | 1.39 | 0.350 | 1.21 |
+| UT 2.5 m | FX | 2 | 0.318 | 1.45 | 0.350 | 1.30 |
+| IHI 6.0 m | FR | 1 | 0.313 | 1.81 | 0.345 | 1.62 |
+| SRI 4.0 m | FR | 1 | 0.320 | 1.61 | 0.350 | 1.45 |
+| UT 2.5 m | FR | 1 | 0.320 | 1.70 | 0.345 | 1.53 |
+| YNU 2.0 m | FR | 5 | 0.322 | 1.59 | 0.347 | 1.48 |
+
+Michell (129 × 49 grid, 1024 angles): hump $2.14 \times 10^{-3}$ at Fn 0.299, hollow $1.235 \times 10^{-3}$ at
+Fn 0.346 (65 × 25, 256 angles in the test: the same to 0.1 %). So Michell's hump comes 0.014–0.023 in Fn early
+and is 18–54 % high (FX: 48–54 %); its hollow is within 0.004 of the measured Fn, 0.95–1.02 of the FX values and
+0.76–0.85 of the FR values. The test asserts, for every row: hump 0.009–0.028 early, hump ratio 1.14–1.60, hollow
+Fn within 0.009, hollow ratio 0.73–1.07, and for the FX rows a hollow ratio of 0.91–1.07: the measured ranges
+widened by the reading uncertainty. These bands record what thin-ship theory gets right and wrong on this hull;
+they were not tuned, and the overprediction of the hump is the known behaviour of Michell's theory on the Wigley
+hull, not something to remove.
+
+$C_{wp}$ (wave-pattern analysis) is the quantity Michell's far-field integral corresponds to, but scatters more:
+hump $\times 10^3$ SRI FX 1.37, UT FX 1.48, IHI FR 1.57, SRI FR 1.45, YNU FR 1.32 (Fn 0.313–0.322), against which
+Michell is 1.36–1.62 times high. Recorded, not tested.
+
+SIREN Table 3 (Michell, $\times 10^3$) at Fn 0.250, 0.267, 0.289, 0.316, 0.354, 0.408, 0.450: 1.064, 0.976, 1.987,
+1.831, 1.284, 3.030, 4.154. SeaCraft on a 129 × 49 grid with 512 angles agrees within 0.06 %; the test allows
+0.2 %. SIREN's value at Fn 0.25 equals the §7 reference.
+
+### Provenance
+Read from the primary source (2026-11-18) as described above; the figure pages,
+calibrations and every reading are in `docs/oracles/kajitani_1983_wigley.py`, which redraws the crops from a
+render of the DTIC PDF so each reading can be checked. Consistency of the reading: Fig. 3 replots the UT 2.5 m
+model and, read at half that resolution, gives a hump of about 1.65 (FR) and 1.46 (FX), against 1.70 and 1.45
+from Figs. 1 and 2.
+
+Not used: the report's typed pressure-resistance table (p. 23, $C_{PR}$ by integrating hull pressure at Fn 0.250,
+0.267, 0.289 and 0.316) includes viscous pressure drag, so it is not a wave resistance. SIREN's Table 5 lists
+$C_{t,exp}$ attributed to the SRI 4 m model that does not match Fig. 1 as read here (3.94 against 4.23 at
+Fn 0.25), so it is not used as a reproduction. Wu et al. (2019, *Phys. Fluids* 31, 047102) and Weymouth & Yue
+(2014, arXiv:1401.3816) reproduce Wigley wave profiles and waterline elevations, not wave resistance, so they
+could not check these readings; thin-ship theory gives no hull wave profile, and those profiles are not an
+oracle here.
+
+What this covers: Michell's $R_w$ for the Wigley hull ($L/B = 10$, $B/T = 1.6$) at Fn 0.28–0.37, in the bands
+above. It says nothing about other hulls, about transom sterns (flagged, §38), or about catamaran interference.
