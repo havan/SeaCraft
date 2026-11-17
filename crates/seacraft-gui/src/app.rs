@@ -367,6 +367,33 @@ impl RasterImage {
     }
 }
 
+/// Connected-editing switch, chosen preset name and optional reach override.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectedState {
+    pub on: bool,
+    pub preset: String,
+    pub reach_m: Option<f64>,
+}
+
+impl Default for ConnectedState {
+    fn default() -> Self {
+        Self {
+            on: false,
+            preset: seacraft_core::connected::DEFAULT_PRESET.to_owned(),
+            reach_m: None,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct HoverFollowersKey {
+    hovered: usize,
+    revision: u64,
+    preset: seacraft_core::connected::ConnectedPreset,
+    reach_bits: u64,
+    seeds: Vec<usize>,
+}
+
 /// A control point being dragged in one viewport.
 struct DragState {
     point: usize,
@@ -383,6 +410,9 @@ struct DragState {
     /// Whether Shift+press added `point` to the selection (so a release
     /// without movement does not immediately toggle it off again).
     added_on_press: bool,
+    /// Last cursor target computed by `drag_to` (or `original` before the
+    /// first movement), so changing the reach mid-drag can re-apply the move.
+    target: Vec3,
 }
 
 /// What the File menu can produce besides a `.fef`.
@@ -1082,6 +1112,12 @@ pub struct App {
     optimise_job: Option<OptimiseJob>,
     /// The world axis the point drag is locked to this frame (X, Y or Z held).
     axis_lock: Option<seacraft_core::transform::Axis>,
+    /// Connected-editing switch, preset name and optional reach override.
+    connected: ConnectedState,
+    /// Built-in and user connected-editing presets (`connected-edit.json`).
+    preset_store: crate::connected_presets::PresetStore,
+    /// Cached hover follower weights, keyed by hover, revision, preset, reach and seeds.
+    hover_followers: Option<(HoverFollowersKey, Vec<(usize, f64)>)>,
     /// Cache of triangulated solids for clip_to_hull compartments and tanks.
     clipped_volumes_cache: std::sync::Mutex<Vec<ClippedMeshEntry>>,
     /// Periodic autosave state machine and startup orphan recovery queue.
@@ -1121,6 +1157,8 @@ impl App {
         let mut app = Self::new_detached();
         app.status =
             "No model loaded — start a new design (Ctrl+N) or open a .fef (Ctrl+O).".to_owned();
+        app.preset_store =
+            crate::connected_presets::PresetStore::load(crate::recent::data_dir().as_deref());
         // The recent list lives in the user's data directory. eframe's own
         // storage (`cc.storage`) exists only with its `persistence` feature;
         // a list kept there is taken over when ours is empty.
@@ -1134,6 +1172,9 @@ impl App {
         }
         if let Some(p) = open {
             app.load(p);
+        }
+        if let Some(err) = app.preset_store.error.clone() {
+            app.log(Level::Warning, err);
         }
         app
     }
@@ -1264,6 +1305,9 @@ impl App {
             optimise_dialog: None,
             optimise_job: None,
             axis_lock: None,
+            connected: ConnectedState::default(),
+            preset_store: crate::connected_presets::PresetStore::load(None),
+            hover_followers: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
             autosave: crate::autosave::AutosaveState::new(),
         }
@@ -2506,12 +2550,22 @@ impl App {
     /// The slim toolbar under the menu bar; its actions are applied here,
     /// after the panel has drawn.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let default_reach_m = {
+            let preset = self.active_connected_preset();
+            self.surface
+                .as_ref()
+                .map_or(0.0, |s| preset.reach.metres(s))
+        };
         let state = panels::ToolbarState {
             display: &self.display,
             params: self.analysis_params,
             level: self.level,
             mode: self.mode,
             has_model: self.surface.is_some(),
+            connected: &self.connected,
+            presets: &self.preset_store.presets,
+            default_reach_m,
+            preset_error: self.preset_store.error.as_deref(),
         };
         let out = egui::Panel::top("toolbar")
             .frame(
@@ -2530,6 +2584,17 @@ impl App {
         }
         if let Some(mode) = out.mode {
             self.set_subdivision_mode(mode);
+        }
+        if let Some(action) = out.connected {
+            match action {
+                panels::ToolbarConnectedAction::Toggle(on) => self.set_connected_on(on),
+                panels::ToolbarConnectedAction::SelectPreset(name) => {
+                    self.set_connected_preset(name);
+                }
+                panels::ToolbarConnectedAction::SetReach(reach_m) => {
+                    self.set_connected_reach(reach_m);
+                }
+            }
         }
         self.toolbar_rects = out.rects;
     }
@@ -3614,11 +3679,15 @@ impl App {
                 let (scroll, cursor) =
                     ui.input(|i| (i.smooth_scroll_delta.y, i.pointer.hover_pos()));
                 if scroll.abs() > 0.0 {
-                    let factor = (-scroll as f64 * 0.0025).exp();
-                    match cursor {
-                        // The world point under the cursor stays put.
-                        Some(cursor) => self.cameras[index].zoom_at(factor, cursor, cell),
-                        None => self.cameras[index].zoom(factor),
+                    if self.drag.is_some() && self.connected.on {
+                        self.scale_connected_drag_reach(scroll);
+                    } else {
+                        let factor = (-scroll as f64 * 0.0025).exp();
+                        match cursor {
+                            // The world point under the cursor stays put.
+                            Some(cursor) => self.cameras[index].zoom_at(factor, cursor, cell),
+                            None => self.cameras[index].zoom(factor),
+                        }
                     }
                 }
             }
@@ -3730,7 +3799,15 @@ impl App {
                             // automatic recomputes count from the release.
                             self.revision += 1;
                             self.touch_geometry();
-                            self.set_status("control point moved".to_owned());
+                            let count = drag.plan.weights().len();
+                            if self.connected.on && count > 1 {
+                                self.set_status(format!("{count} control points moved"));
+                            } else {
+                                self.set_status("control point moved".to_owned());
+                            }
+                            if self.connected.on {
+                                self.persist_recent();
+                            }
                         } else {
                             self.history.discard_last();
                         }
@@ -3821,6 +3898,21 @@ impl App {
         // and every view's GPU callback of a frame must share one geometry. The resources hold one,
         // so a second mesh in a frame would leave the views already rendered with nothing to show.
         self.refresh_gpu_hull_geometry();
+
+        let drag_followers: Option<Vec<(usize, f64)>> = self
+            .drag
+            .as_ref()
+            .filter(|_| self.connected.on)
+            .map(|d| d.plan.followers());
+        let hover_followers: Vec<(usize, f64)> =
+            if drag_followers.is_none() && self.connected.on && self.display.points {
+                self.hovered_followers().to_vec()
+            } else {
+                Vec::new()
+            };
+        let followers: &[(usize, f64)] = drag_followers
+            .as_deref()
+            .unwrap_or(hover_followers.as_slice());
 
         for &(cell, index) in &cells {
             self.sync_net_visibility(index, cell);
@@ -3949,6 +4041,7 @@ impl App {
                     drawn_selection,
                     net_lines,
                     focus_point,
+                    followers,
                     vis,
                     texture.as_ref(),
                     hull,
@@ -4236,11 +4329,29 @@ impl App {
             self.selection.set_only(point);
         }
         let surface = self.surface.as_ref().expect("checked above");
-        let plan = seacraft_core::netmove::MovePlan::rigid(surface, self.selection.points());
+        let connected = self
+            .connected
+            .on
+            .then(|| (self.active_connected_preset(), self.connected.reach_m));
+        let plan = build_move_plan(
+            surface,
+            self.selection.points(),
+            connected.as_ref().map(|(p, r)| (p, *r)),
+        );
         self.active = index;
-        self.set_status(format!(
-            "dragging control point {point} · hold X, Y or Z to lock an axis"
-        ));
+        if let Some((preset, reach_m)) = &connected {
+            let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
+            self.set_status(format!(
+                "{} · reach {:.2} m · {} points",
+                preset.name,
+                reach,
+                plan.weights().len()
+            ));
+        } else {
+            self.set_status(format!(
+                "dragging control point {point} · hold X, Y or Z to lock an axis"
+            ));
+        }
         self.drag = Some(DragState {
             point,
             plane,
@@ -4249,6 +4360,7 @@ impl App {
             original: center,
             plan,
             added_on_press,
+            target: center,
         });
     }
 
@@ -4276,16 +4388,31 @@ impl App {
             target = crate::model_menu::lock_to_axis(drag.original, target, axis);
         }
         if lock != self.axis_lock {
+            let connected_status = if lock.is_none() && self.connected.on {
+                let preset = self.active_connected_preset();
+                let reach = self.effective_connected_reach_m();
+                Some(format!(
+                    "{} · reach {:.2} m · {} points",
+                    preset.name,
+                    reach,
+                    drag.plan.weights().len()
+                ))
+            } else {
+                None
+            };
             self.set_status(match lock {
                 Some(axis) => format!(
                     "dragging control point {point} along {} (locked)",
                     crate::model_menu::axis_name(axis)
                 ),
-                None => format!("dragging control point {point} · hold X, Y or Z to lock an axis"),
+                None => connected_status.unwrap_or_else(|| {
+                    format!("dragging control point {point} · hold X, Y or Z to lock an axis")
+                }),
             });
         }
         self.axis_lock = lock;
-        if let (Some(drag), Some(surface)) = (self.drag.as_ref(), self.surface.as_mut()) {
+        if let (Some(drag), Some(surface)) = (self.drag.as_mut(), self.surface.as_mut()) {
+            drag.target = target;
             drag.plan.apply_to(surface, point, target);
         }
         self.dirty = true;
@@ -4295,6 +4422,84 @@ impl App {
         // Refine now (at the drag level), so the dragged view shows the point
         // under the cursor this frame instead of the next.
         self.sync_cache();
+    }
+
+    fn scale_connected_drag_reach(&mut self, scroll_y: f32) {
+        let preset = self.active_connected_preset();
+        let (Some(drag), Some(surface)) = (self.drag.as_mut(), self.surface.as_mut()) else {
+            return;
+        };
+        let current = self
+            .connected
+            .reach_m
+            .unwrap_or_else(|| preset.reach.metres(surface))
+            .max(1e-3);
+        let next = (current * 1.1_f64.powf(scroll_y as f64 / 40.0)).clamp(1e-3, 1e4);
+        self.connected.reach_m = Some(next);
+        drag.plan.apply(surface, Vec3::ZERO);
+        drag.plan = build_move_plan(
+            surface,
+            self.selection.points(),
+            Some((&preset, Some(next))),
+        );
+        drag.plan.apply_to(surface, drag.point, drag.target);
+        let count = drag.plan.weights().len();
+        self.set_status(format!(
+            "{} · reach {next:.2} m · {count} points",
+            preset.name
+        ));
+        self.dirty = true;
+        self.autosave.note_dirty();
+        self.revision += 1;
+        self.touch_geometry();
+        self.sync_cache();
+    }
+
+    fn hovered_followers(&mut self) -> &[(usize, f64)] {
+        let Some(hovered) = self.hovered_point else {
+            return &[];
+        };
+        self.sync_cache();
+        let Some(surface) = self.surface.as_ref() else {
+            return &[];
+        };
+        let Some(cache) = self.cache.as_ref() else {
+            return &[];
+        };
+        let preset = self.active_connected_preset();
+        let reach_m = self
+            .connected
+            .reach_m
+            .unwrap_or_else(|| preset.reach.metres(surface));
+        let seeds = if self.selection.contains(hovered) {
+            self.selection.points().to_vec()
+        } else {
+            vec![hovered]
+        };
+        let key = HoverFollowersKey {
+            hovered,
+            revision: self.revision,
+            preset,
+            reach_bits: reach_m.to_bits(),
+            seeds,
+        };
+        let stale = self
+            .hover_followers
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != key);
+        if stale {
+            let weights = seacraft_core::connected::follower_weights(
+                surface,
+                &cache.net_lines,
+                &key.seeds,
+                &key.preset,
+                reach_m,
+            );
+            self.hover_followers = Some((key, weights));
+        }
+        self.hover_followers
+            .as_ref()
+            .map_or(&[], |(_, w)| w.as_slice())
     }
 
     // ---- background jobs and the recompute rule -----------------------
@@ -6652,12 +6857,160 @@ impl App {
     /// already stored there. Headless apps have none until a test gives one.
     pub fn set_storage(&mut self, storage: Box<dyn eframe::Storage>) {
         self.recent = RecentFiles::load(storage.as_ref());
+        let choice = crate::recent::ConnectedChoice::load(storage.as_ref());
+        self.connected = ConnectedState {
+            on: choice.on,
+            preset: choice.preset,
+            reach_m: choice.reach_m,
+        };
         self.storage = Some(storage);
+        self.reconcile_connected_preset();
     }
 
     /// Take the storage back (tests: to read what was written).
     pub fn take_storage(&mut self) -> Option<Box<dyn eframe::Storage>> {
         self.storage.take()
+    }
+
+    /// The connected-editing switch, chosen preset name and reach override.
+    pub fn connected(&self) -> &ConnectedState {
+        &self.connected
+    }
+
+    /// Turn connected editing on or off and remember the choice.
+    pub fn set_connected_on(&mut self, on: bool) {
+        self.connected.on = on;
+        self.hover_followers = None;
+        self.persist_recent();
+    }
+
+    /// Choose a connected-editing preset by name; switching presets clears
+    /// any reach override.
+    pub fn set_connected_preset(&mut self, name: String) {
+        if self.connected.preset != name {
+            self.connected.preset = name;
+            self.connected.reach_m = None;
+        }
+        self.hover_followers = None;
+        self.persist_recent();
+    }
+
+    /// Set or clear the reach override in metres.
+    pub fn set_connected_reach(&mut self, reach_m: Option<f64>) {
+        self.connected.reach_m = reach_m
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .map(|r| r.clamp(1e-3, 1e4));
+        self.hover_followers = None;
+        self.persist_recent();
+    }
+
+    /// Built-in and user connected-editing presets, plus any file error.
+    pub fn preset_store(&self) -> &crate::connected_presets::PresetStore {
+        &self.preset_store
+    }
+
+    /// Load presets from `dir/connected-edit.json` (or built-ins only when `None`).
+    pub fn set_preset_dir(&mut self, dir: Option<PathBuf>) {
+        self.preset_store = crate::connected_presets::PresetStore::load(dir.as_deref());
+        self.hover_followers = None;
+        self.reconcile_connected_preset();
+        if let Some(err) = self.preset_store.error.clone() {
+            self.log(Level::Warning, err);
+        }
+    }
+
+    /// Re-read `connected-edit.json` and report the count or any error.
+    pub fn reload_presets(&mut self) {
+        self.preset_store.reload();
+        self.hover_followers = None;
+        let fell_back = self.reconcile_connected_preset();
+        if let Some(err) = self.preset_store.error.clone() {
+            self.log(Level::Warning, err);
+        } else if !fell_back {
+            let n = self.preset_store.presets.len();
+            let msg = match &self.preset_store.path {
+                Some(p) => format!("loaded {n} connected presets from {}", p.display()),
+                None => format!("loaded {n} built-in connected presets"),
+            };
+            self.set_status(msg);
+        }
+        if fell_back {
+            self.persist_recent();
+        }
+    }
+
+    /// Write an example `connected-edit.json` without overwriting, and report
+    /// the path written or why it could not be written.
+    pub fn create_example_presets(&mut self) {
+        match self.preset_store.write_example() {
+            Ok(path) => {
+                self.preset_store.reload();
+                self.hover_followers = None;
+                self.reconcile_connected_preset();
+                self.set_status(format!("wrote example presets to {}", path.display()));
+            }
+            Err(err) => {
+                self.log(Level::Warning, err);
+            }
+        }
+    }
+
+    /// The preset currently selected (falling back to the default built-in if missing).
+    pub fn active_connected_preset(&self) -> seacraft_core::connected::ConnectedPreset {
+        self.preset_store
+            .presets
+            .iter()
+            .find(|p| p.name == self.connected.preset)
+            .cloned()
+            .unwrap_or_else(|| {
+                seacraft_core::connected::builtin_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in presets are non-empty")
+            })
+    }
+
+    /// The reach in metres used for connected editing on the current model.
+    pub fn effective_connected_reach_m(&self) -> f64 {
+        let preset = self.active_connected_preset();
+        self.connected.reach_m.unwrap_or_else(|| {
+            self.surface
+                .as_ref()
+                .map_or(0.0, |s| preset.reach.metres(s))
+        })
+    }
+
+    fn connected_choice(&self) -> crate::recent::ConnectedChoice {
+        crate::recent::ConnectedChoice {
+            on: self.connected.on,
+            preset: self.connected.preset.clone(),
+            reach_m: self.connected.reach_m,
+        }
+    }
+
+    fn reconcile_connected_preset(&mut self) -> bool {
+        if self
+            .preset_store
+            .presets
+            .iter()
+            .any(|p| p.name == self.connected.preset)
+        {
+            return false;
+        }
+        let missing = std::mem::replace(
+            &mut self.connected.preset,
+            seacraft_core::connected::DEFAULT_PRESET.to_owned(),
+        );
+        self.connected.reach_m = None;
+        self.hover_followers = None;
+        self.log(
+            Level::Warning,
+            format!(
+                "connected preset \"{missing}\" is no longer available; using \"{}\"",
+                self.connected.preset
+            ),
+        );
+        true
     }
 
     /// File > Open recent, most recent first.
@@ -6679,10 +7032,12 @@ impl App {
 
     /// Write the recent list to the storage now, so a crash does not lose it.
     fn persist_recent(&mut self) {
+        let choice = self.connected_choice();
         let Some(storage) = self.storage.as_mut() else {
             return;
         };
         self.recent.save(storage.as_mut());
+        choice.save(storage.as_mut());
         storage.flush();
         let failure = storage.get_string(crate::recent::FLUSH_ERROR_KEY);
         // Warn once per distinct failure, not on every open.
@@ -7087,6 +7442,14 @@ impl App {
                 c::set_crease(self, &c::CreaseParams { edge, crease }).map(|_| ())
             }
             A::SelectLine(kind) => c::select_line(self, kind).map(|_| ()),
+            A::ReloadPresets => {
+                self.reload_presets();
+                return;
+            }
+            A::CreateExamplePresets => {
+                self.create_example_presets();
+                return;
+            }
         };
         if let Err(e) = result {
             self.log(Level::Error, e);
@@ -7359,12 +7722,14 @@ impl eframe::App for App {
     /// periodically when eframe has its `persistence` feature), and in ours.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.recent.save(storage);
+        self.connected_choice().save(storage);
         self.persist_recent();
     }
 
     /// Clean shutdown: join any in-flight autosave write and remove the
     /// session's `.json` and `.lock` files.
     fn on_exit(&mut self) {
+        self.persist_recent();
         self.autosave_shutdown();
     }
 

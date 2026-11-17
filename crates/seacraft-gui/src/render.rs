@@ -323,6 +323,7 @@ pub fn viewport(
         &selection,
         lines.as_ref(),
         selected,
+        &[],
         None,
         None,
         None,
@@ -347,6 +348,7 @@ pub fn viewport_with_texture(
     selection: &crate::selection::Selection,
     lines: Option<&seacraft_core::netlines::NetLines>,
     focus_point: Option<usize>,
+    followers: &[(usize, f64)],
     vis: Option<&crate::visibility::NetVisibility>,
     texture: Option<&egui::TextureHandle>,
     hull: Option<Arc<egui::Mesh>>,
@@ -430,6 +432,7 @@ pub fn viewport_with_texture(
             selection,
             vis,
             opts.hidden_net,
+            followers,
         );
     }
 
@@ -1400,6 +1403,7 @@ pub fn control_net_colours(editing: bool) -> (Color32, Color32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_points(
     painter: &egui::Painter,
     view: &ViewTransform,
@@ -1408,6 +1412,7 @@ fn draw_points(
     selection: &crate::selection::Selection,
     vis: Option<&crate::visibility::NetVisibility>,
     mode: HiddenNet,
+    followers: &[(usize, f64)],
 ) {
     let vis = vis.filter(|_| mode != HiddenNet::Same);
     for (i, p) in surface.points.iter().enumerate() {
@@ -1428,6 +1433,19 @@ fn draw_points(
                 painter.circle_filled(s, 2.0, theme::POINT_HIDDEN);
             }
         }
+    }
+    for &(i, w) in followers {
+        if !(w.is_finite() && w > 0.0) {
+            continue;
+        }
+        let Some(p) = surface.points.get(i) else {
+            continue;
+        };
+        let Some(s) = view.project(p.p, rect) else {
+            continue;
+        };
+        let radius = 3.5 + 3.5 * (w as f32);
+        painter.circle_stroke(s, radius, Stroke::new(1.5, theme::follower_marker(w)));
     }
 }
 

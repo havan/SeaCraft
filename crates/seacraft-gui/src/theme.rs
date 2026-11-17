@@ -119,6 +119,16 @@ pub const POINT_SELECTED_OUTLINE: Color32 = Color32::BLACK;
 /// The first of two picked control points (Shift+click), ringed for the
 /// Model menu's edge tools.
 pub const POINT_PICKED: Color32 = POINT_SELECTED;
+/// Follower rings in connected editing, opacity rising with the weight.
+pub fn follower_marker(weight: f64) -> Color32 {
+    let w = if weight.is_finite() {
+        weight.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let alpha = (65.0 + (235.0 - 65.0) * w).round() as u8;
+    Color32::from_rgba_unmultiplied(110, 212, 168, alpha)
+}
 /// Outline of the control face the last click picked (Model > Split face).
 pub const FACE_PICKED: Color32 = Color32::from_rgba_unmultiplied_const(0x5a, 0xd0, 0x6a, 0x90);
 /// The world axis a locked drag follows: x red, y green, z blue.
@@ -881,5 +891,18 @@ mod tests {
             assert_ne!(hidden, full);
             assert!(hidden.a() > 0 && hidden.a() < idle.a());
         }
+    }
+
+    #[test]
+    fn follower_marker_interpolates_alpha_with_weight() {
+        let low = follower_marker(0.0);
+        let mid = follower_marker(0.5);
+        let high = follower_marker(1.0);
+        assert_eq!(low.a(), 65);
+        assert_eq!(mid.a(), 150);
+        assert_eq!(high.a(), 235);
+        assert_eq!(high.to_srgba_unmultiplied(), [110, 212, 168, 235]);
+        assert_eq!(follower_marker(f64::NAN).a(), 65);
+        assert_eq!(follower_marker(2.0).a(), 235);
     }
 }

@@ -4830,6 +4830,10 @@ pub struct ToolbarState<'a> {
     /// display toggles) are disabled; the subdivision level
     /// and scheme stay editable, as settings the next model is shown with.
     pub has_model: bool,
+    pub connected: &'a crate::app::ConnectedState,
+    pub presets: &'a [seacraft_core::connected::ConnectedPreset],
+    pub default_reach_m: f64,
+    pub preset_error: Option<&'a str>,
 }
 
 /// A dock with no model loaded: empty, at its full width. The status bar
@@ -4867,6 +4871,10 @@ pub fn shortcuts(
         (plain("Drag empty space, or middle drag"), "Pan"),
         (plain("Right drag in Perspective"), "Orbit"),
         (plain("Wheel"), "Zoom at the pointer"),
+        (
+            plain("Wheel during connected drag"),
+            "Change connected-editing reach",
+        ),
         (plain("F"), "Frame the model in every view"),
         (plain("1 – 4"), "Make a view the active one"),
         (
@@ -4965,6 +4973,14 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
     changed
 }
 
+/// What the toolbar's connected-editing controls asked for; `App::draw` applies it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolbarConnectedAction {
+    Toggle(bool),
+    SelectPreset(String),
+    SetReach(Option<f64>),
+}
+
 /// What the user asked the toolbar for; `App::draw` applies it.
 #[derive(Debug, Clone, Default)]
 pub struct ToolbarOutput {
@@ -4974,10 +4990,13 @@ pub struct ToolbarOutput {
     pub display: Option<DisplayOptions>,
     pub level: Option<u8>,
     pub mode: Option<SubdivisionMode>,
+    pub connected: Option<ToolbarConnectedAction>,
     /// Where each control was drawn, by name (a test hook): `shaded`,
     /// `zebra`, `curvature`, `draft`, `param`, `net`, `points`,
     /// `waterplane`, `curves`, `combs`, `sections` (the counts menu),
-    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`.
+    /// `wireframe`, `connected`, `connected_preset`, `connected_error`,
+    /// `connected_reach`, `connected_reset`, `level`, `level:N` (while the
+    /// list is open), `mode`.
     pub rects: Vec<(&'static str, egui::Rect)>,
 }
 
@@ -5035,7 +5054,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
 
         // The active mode's parameter, in a fixed-width slot so the toggles
         // to its right do not jump when the mode changes.
-        let slot = egui::vec2(126.0, ui.spacing().interact_size.y);
+        let slot = egui::vec2(114.0, ui.spacing().interact_size.y);
         ui.allocate_ui_with_layout(
             slot,
             egui::Layout::left_to_right(egui::Align::Center),
@@ -5177,10 +5196,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     "Section counts (stations, waterlines, buttocks) and comb scale and density",
                 );
             out.rects.push(("sections", menu.rect));
-            ui.label(egui::RichText::new("Hidden net").color(theme::TEXT_SECONDARY));
+            ui.label(egui::RichText::new("Hidden").color(theme::TEXT_SECONDARY));
             let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
                 .selected_text(display.hidden_net.label())
-                .width(76.0)
+                .width(66.0)
                 .show_ui(ui, |ui| {
                     for mode in crate::render::HiddenNet::ALL {
                         ui.selectable_value(&mut display.hidden_net, mode, mode.label());
@@ -5199,44 +5218,119 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         }
         ui.separator();
 
-        // Subdivision level and scheme, applied through the setters.
-        ui.label(egui::RichText::new("Precision").color(theme::TEXT_SECONDARY));
-        let mut level = state.level;
-        let combo = egui::ComboBox::from_id_salt("toolbar_level")
-            .selected_text(format!("Level {level}"))
-            .width(68.0)
-            .show_ui(ui, |ui| {
-                for (n, name) in LEVEL_ITEMS.iter().enumerate() {
-                    let response = ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
-                    out.rects.push((name, response.rect));
-                }
-            });
-        let combo = combo.response.on_hover_text(
-            "How finely the hull is subdivided, for display and for measurement: \
-                 a higher level is smoother and slower (0–5)",
-        );
-        out.rects.push(("level", combo.rect));
-        if level != state.level {
-            out.level = Some(level);
-        }
-        let mut mode = state.mode;
-        let combo = egui::ComboBox::from_id_salt("toolbar_mode")
-            .selected_text(match mode {
-                SubdivisionMode::Loop => "Loop",
-                SubdivisionMode::CatmullClark => "Catmull-Clark",
+        // Connected editing: toggle, preset list (with error mark if any), reach and reset.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let toggle = theme::as_switch(ui, |ui| {
+                ui.selectable_label(state.connected.on, "Connected")
             })
-            .width(104.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
-                ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
-            });
-        let combo = combo
-            .response
-            .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
-        out.rects.push(("mode", combo.rect));
-        if mode != state.mode {
-            out.mode = Some(mode);
-        }
+            .on_hover_text("Connected editing: drag neighbours along with the moved points");
+            if toggle.clicked() {
+                out.connected = Some(ToolbarConnectedAction::Toggle(!state.connected.on));
+            }
+            out.rects.push(("connected", toggle.rect));
+
+            let mut selected_preset = state.connected.preset.clone();
+            let combo = egui::ComboBox::from_id_salt("toolbar_connected_preset")
+                .selected_text(&selected_preset)
+                .width(114.0)
+                .show_ui(ui, |ui| {
+                    for p in state.presets {
+                        ui.selectable_value(&mut selected_preset, p.name.clone(), &p.name);
+                    }
+                });
+            let combo_resp = combo
+                .response
+                .on_hover_text("Connected-editing preset (spread, falloff and axes)");
+            out.rects.push(("connected_preset", combo_resp.rect));
+            if selected_preset != state.connected.preset {
+                out.connected = Some(ToolbarConnectedAction::SelectPreset(selected_preset));
+            }
+
+            if let Some(err) = state.preset_error {
+                let warn = ui.colored_label(theme::WARN, "⚠").on_hover_text(err);
+                out.rects.push(("connected_error", warn.rect));
+            }
+
+            let has_reach =
+                state.has_model || state.connected.reach_m.is_some() || state.default_reach_m > 0.0;
+            let mut reach = state
+                .connected
+                .reach_m
+                .unwrap_or(state.default_reach_m)
+                .max(0.0);
+            let range = if has_reach { 1e-3..=1e4 } else { 0.0..=1e4 };
+            let reach_resp = ui
+                .add_enabled(
+                    has_reach,
+                    theme::num(&mut reach)
+                        .range(range)
+                        .speed(0.02)
+                        .fixed_decimals(2)
+                        .suffix(" m"),
+                )
+                .on_hover_text("Reach in metres (scroll during a connected drag to adjust)");
+            out.rects.push(("connected_reach", reach_resp.rect));
+            if reach_resp.changed() {
+                out.connected = Some(ToolbarConnectedAction::SetReach(Some(
+                    reach.clamp(1e-3, 1e4),
+                )));
+            }
+
+            let reset_resp = ui
+                .add_enabled(
+                    state.connected.reach_m.is_some(),
+                    egui::Button::new(egui::RichText::new("reset").small()),
+                )
+                .on_hover_text("Reset reach to the preset's own value");
+            out.rects.push(("connected_reset", reset_resp.rect));
+            if reset_resp.clicked() {
+                out.connected = Some(ToolbarConnectedAction::SetReach(None));
+            }
+        });
+        ui.separator();
+
+        // Subdivision level and scheme, applied through the setters.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let mut level = state.level;
+            let combo = egui::ComboBox::from_id_salt("toolbar_level")
+                .selected_text(format!("Level {level}"))
+                .width(62.0)
+                .show_ui(ui, |ui| {
+                    for (n, name) in LEVEL_ITEMS.iter().enumerate() {
+                        let response =
+                            ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
+                        out.rects.push((name, response.rect));
+                    }
+                });
+            let combo = combo.response.on_hover_text(
+                "How finely the hull is subdivided, for display and for measurement: \
+                     a higher level is smoother and slower (0–5)",
+            );
+            out.rects.push(("level", combo.rect));
+            if level != state.level {
+                out.level = Some(level);
+            }
+            let mut mode = state.mode;
+            let combo = egui::ComboBox::from_id_salt("toolbar_mode")
+                .selected_text(match mode {
+                    SubdivisionMode::Loop => "Loop",
+                    SubdivisionMode::CatmullClark => "Catmull-Clark",
+                })
+                .width(92.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
+                    ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
+                });
+            let combo = combo
+                .response
+                .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
+            out.rects.push(("mode", combo.rect));
+            if mode != state.mode {
+                out.mode = Some(mode);
+            }
+        });
     });
     out
 }

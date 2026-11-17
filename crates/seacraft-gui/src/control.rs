@@ -720,6 +720,9 @@ fn handle_inner(
             let mut maximised: Option<bool> = None;
             let mut messages: Option<bool> = None;
             let mut templates: Option<bool> = None;
+            let mut connected_on: Option<bool> = None;
+            let mut connected_preset: Option<String> = None;
+            let mut connected_reach: Option<Option<f64>> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -893,6 +896,37 @@ fn handle_inner(
                         maximised =
                             Some(value.as_bool().ok_or("`maximised` must be true or false")?)
                     }
+                    "connected" => {
+                        connected_on =
+                            Some(value.as_bool().ok_or("`connected` must be true or false")?)
+                    }
+                    "connected_preset" => {
+                        let name = value
+                            .as_str()
+                            .ok_or("`connected_preset` must be a string")?;
+                        let presets = &app.preset_store().presets;
+                        if !presets.iter().any(|p| p.name == name) {
+                            let names: Vec<String> =
+                                presets.iter().map(|p| format!("\"{}\"", p.name)).collect();
+                            return Err(format!(
+                                "unknown connected preset `{name}`; available: {}",
+                                names.join(", ")
+                            ));
+                        }
+                        connected_preset = Some(name.to_owned());
+                    }
+                    "connected_reach_m" => {
+                        connected_reach = Some(if value.is_null() {
+                            None
+                        } else {
+                            Some(
+                                value
+                                    .as_f64()
+                                    .filter(|x| x.is_finite() && *x > 0.0)
+                                    .ok_or("`connected_reach_m` must be a finite number greater than 0 or null")?,
+                            )
+                        });
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
@@ -936,6 +970,15 @@ fn handle_inner(
             // After `active_view`: maximising takes the (new) active view.
             if let Some(max) = maximised {
                 app.set_maximised(max);
+            }
+            if let Some(on) = connected_on {
+                app.set_connected_on(on);
+            }
+            if let Some(preset) = connected_preset {
+                app.set_connected_preset(preset);
+            }
+            if let Some(reach) = connected_reach {
+                app.set_connected_reach(reach);
             }
             Ok(inspect(app))
         }
@@ -2617,6 +2660,12 @@ fn inspect(app: &App) -> Value {
         "lcg": app.lcg(),
         "result": serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null),
     });
+    let connected_presets: Vec<&str> = app
+        .preset_store()
+        .presets
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
     json!({
         "version": seacraft_core::VERSION,
         "status": app.status(),
@@ -2628,6 +2677,11 @@ fn inspect(app: &App) -> Value {
         "maximised": app.maximised().is_some(),
         "selected_point": app.selected(),
         "selected_points": app.selection().points(),
+        "connected": app.connected().on,
+        "connected_preset": app.connected().preset,
+        "connected_reach_m": app.connected().reach_m,
+        "connected_presets": connected_presets,
+        "connected_error": app.preset_store().error,
         "selected_volume": match app.selected_volume_info() {
             Some((kind, index, name)) => json!({
                 "kind": kind,

@@ -928,3 +928,756 @@ fn marquee_with_no_model_is_a_noop() {
     );
     assert!(app.selection().is_empty());
 }
+
+#[test]
+fn connected_off_moves_only_the_dragged_point() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    assert!(!app.connected().on, "connected editing starts off");
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let index = {
+        let s = app.surface().expect("model loaded");
+        s.points
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.p.x > 2.0 && p.p.x < 10.0 && p.p.y > 0.0)
+            .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+            .map(|(i, _)| i)
+            .expect("a sheer point")
+    };
+    let before: Vec<_> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+    let rect = app.viewport_rect(1);
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before[index], rect)
+        .expect("visible");
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(40.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+
+    let after: Vec<_> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+    assert!((after[index] - before[index]).length() > 0.05);
+    for (i, (a, b)) in after.iter().zip(&before).enumerate() {
+        if i != index {
+            assert!(
+                (*a - *b).length() < 1e-12,
+                "connected off must not move point {i}: {a:?} vs {b:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn connected_on_moves_followers_matching_move_plan_and_undoes_in_one_step() {
+    use seacraft_core::connected::builtin_presets;
+    use seacraft_core::netlines::NetLines;
+    use seacraft_core::netmove::MovePlan;
+
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_connected_on(true);
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let before_surface = app.surface().expect("model loaded").clone();
+    let index = before_surface
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.p.x > 3.0 && p.p.x < 9.0 && p.p.y > 0.0)
+        .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+        .map(|(i, _)| i)
+        .expect("a mid-hull sheer point");
+    let rect = app.viewport_rect(1);
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before_surface.points[index].p, rect)
+        .expect("visible");
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 50.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(50.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+
+    let after_surface = app.surface().unwrap();
+    let delta = after_surface.points[index].p - before_surface.points[index].p;
+    assert!(delta.length() > 0.05);
+    let preset = builtin_presets()
+        .into_iter()
+        .find(|p| p.name == "Blend both ways")
+        .unwrap();
+    let reach_m = preset.reach.metres(&before_surface);
+    let plan = MovePlan::connected(
+        &before_surface,
+        &NetLines::of(&before_surface),
+        &[index],
+        &preset,
+        reach_m,
+    );
+    let moved = plan.positions(delta);
+    assert!(moved.len() > 1, "connected drag must move followers");
+    for (i, cp) in after_surface.points.iter().enumerate() {
+        let want = moved
+            .iter()
+            .find(|m| m.point == i)
+            .map_or(before_surface.points[i].p, |m| m.to);
+        assert!(
+            (cp.p - want).length() < 1e-9,
+            "point {i}: got {:?}, want {want:?}",
+            cp.p
+        );
+    }
+    assert_eq!(app.undo_len(), 1, "one connected drag is one undo step");
+
+    // One Ctrl+Z restores seeds and every follower.
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        }],
+    );
+    for (i, cp) in app.surface().unwrap().points.iter().enumerate() {
+        assert!(
+            (cp.p - before_surface.points[i].p).length() < 1e-9,
+            "undo must restore point {i}"
+        );
+    }
+}
+
+#[test]
+fn scroll_during_connected_drag_scales_reach_without_zooming_camera() {
+    use seacraft_core::connected::builtin_presets;
+    use seacraft_core::netlines::NetLines;
+    use seacraft_core::netmove::MovePlan;
+
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_connected_on(true);
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let before_surface = app.surface().unwrap().clone();
+    let preset = builtin_presets()
+        .into_iter()
+        .find(|p| p.name == "Blend both ways")
+        .unwrap();
+    let base_reach = preset.reach.metres(&before_surface);
+    let index = before_surface
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.p.x > 3.0 && p.p.x < 9.0 && p.p.y > 0.0)
+        .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+        .map(|(i, _)| i)
+        .expect("a mid-hull sheer point");
+    let rect = app.viewport_rect(1);
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before_surface.points[index].p, rect)
+        .expect("visible");
+
+    let ortho_before = app.cameras()[1].ortho_height;
+    let target_before = app.cameras()[1].target;
+
+    // Start drag in Profile.
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+
+    // Scroll up while drag is active.
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    for _ in 0..30 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+
+    let reach = app.connected().reach_m.expect("scroll sets reach_m");
+    assert!(
+        reach > base_reach,
+        "reach {reach} should grow from {base_reach}"
+    );
+    assert_eq!(app.cameras()[1].ortho_height, ortho_before);
+    assert_eq!(app.cameras()[1].target, target_before);
+
+    let plan = MovePlan::connected(
+        &before_surface,
+        &NetLines::of(&before_surface),
+        &[index],
+        &preset,
+        reach,
+    );
+    let expected_status = format!(
+        "{} · reach {:.2} m · {} points",
+        preset.name,
+        reach,
+        plan.weights().len()
+    );
+    assert_eq!(app.status(), expected_status);
+
+    // Release and confirm override persists and positions match the rebuilt plan from drag start.
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(40.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.connected().reach_m, Some(reach));
+    let delta = app.surface().unwrap().points[index].p - before_surface.points[index].p;
+    let moved = plan.positions(delta);
+    for (i, cp) in app.surface().unwrap().points.iter().enumerate() {
+        let want = moved
+            .iter()
+            .find(|m| m.point == i)
+            .map_or(before_surface.points[i].p, |m| m.to);
+        assert!(
+            (cp.p - want).length() < 1e-9,
+            "point {i} after scroll drag: got {:?}, want {want:?}",
+            cp.p
+        );
+    }
+}
+
+#[test]
+fn no_model_loaded_every_new_overlay_switch_and_operation_is_a_noop() {
+    use seacraft_gui::render::HiddenNet;
+
+    let mut app = App::headless_empty();
+    app.display_mut().orientation = true;
+    app.display_mut().hidden_net = HiddenNet::Dimmed;
+    app.display_mut().station_focus = true;
+    app.set_connected_on(true);
+
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let pos = app.central_rect().center();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+    frame(&ctx, &mut app, vec![button(pos, true)]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(pos + egui::vec2(25.0, 10.0))],
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(pos + egui::vec2(25.0, 10.0), false)],
+    );
+    for (key, modifiers) in [
+        (egui::Key::ArrowLeft, egui::Modifiers::ALT),
+        (egui::Key::ArrowRight, egui::Modifiers::ALT),
+        (egui::Key::Escape, egui::Modifiers::NONE),
+    ] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+        );
+    }
+    app.reload_presets();
+    app.display_mut().hidden_net = HiddenNet::Hidden;
+    frame(&ctx, &mut app, Vec::new());
+    assert!(app.surface().is_none());
+}
+
+#[test]
+fn remembered_connected_choice_round_trips_through_storage_and_missing_preset_falls_back() {
+    use seacraft_core::connected::DEFAULT_PRESET;
+    use seacraft_gui::recent::{ConnectedChoice, JsonFileStorage};
+
+    let dir = std::env::temp_dir().join(format!(
+        "seacraft-drag-connected-storage-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(JsonFileStorage::FILE_NAME);
+
+    // Fresh settings file keeps connected editing off.
+    {
+        let storage = JsonFileStorage::open(&path);
+        let mut app = App::headless_for_test(None);
+        app.set_storage(Box::new(storage));
+        assert!(!app.connected().on);
+        assert_eq!(app.connected().preset, DEFAULT_PRESET);
+        assert_eq!(app.connected().reach_m, None);
+
+        // Toggle on, pick preset, set reach override, save.
+        app.set_connected_on(true);
+        app.set_connected_preset("Nudge".to_owned());
+        app.set_connected_reach(Some(1.75));
+        let mut out_storage = app.take_storage().unwrap();
+        eframe::App::save(&mut app, out_storage.as_mut());
+        out_storage.flush();
+    }
+
+    // Round-trip into a fresh App.
+    {
+        let storage = JsonFileStorage::open(&path);
+        let mut app = App::headless_for_test(None);
+        app.set_storage(Box::new(storage));
+        assert!(app.connected().on);
+        assert_eq!(app.connected().preset, "Nudge");
+        assert_eq!(app.connected().reach_m, Some(1.75));
+
+        // Choosing another preset clears the reach override.
+        app.set_connected_preset("Blend both ways".to_owned());
+        assert_eq!(app.connected().preset, "Blend both ways");
+        assert_eq!(app.connected().reach_m, None);
+    }
+
+    // Missing remembered preset falls back to default and says so once in status.
+    {
+        let mut storage = JsonFileStorage::open(&path);
+        ConnectedChoice {
+            on: true,
+            preset: "Disappeared preset".to_owned(),
+            reach_m: Some(2.5),
+        }
+        .save(&mut storage);
+        eframe::Storage::flush(&mut storage);
+        let reopened = JsonFileStorage::open(&path);
+        let mut app = App::headless_for_test(None);
+        app.set_storage(Box::new(reopened));
+        assert_eq!(app.connected().preset, DEFAULT_PRESET);
+        assert_eq!(app.connected().reach_m, None);
+        assert!(
+            app.status().contains("Disappeared preset") && app.status().contains(DEFAULT_PRESET),
+            "status must explain fallback: {:?}",
+            app.status()
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn connected_drag_on_half_demo_hull_keeps_centreline_followers_at_y_zero() {
+    let mut app = App::headless_for_test(None);
+    {
+        let surface = app.surface_mut().expect("model");
+        *surface = seacraft_core::demo::demo_hull(true);
+    }
+    app.mark_geometry_changed();
+    app.set_connected_on(true);
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    // Find a starboard point whose connected followers include at least one centreline point.
+    let (seed, cl_followers) = {
+        let s = app.surface().unwrap();
+        let nl = seacraft_core::netlines::NetLines::of(s);
+        let preset = app.active_connected_preset();
+        let reach = preset.reach.metres(s);
+        (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 2.0 && s.points[i].p.x < 10.0 && s.points[i].p.y > 0.1)
+            .find_map(|i| {
+                let fw = seacraft_core::connected::follower_weights(s, &nl, &[i], &preset, reach);
+                let cl: Vec<usize> = fw
+                    .into_iter()
+                    .map(|(p, _)| p)
+                    .filter(|&p| s.points[p].p.y.abs() <= 1e-9)
+                    .collect();
+                (!cl.is_empty()).then_some((i, cl))
+            })
+            .expect("a starboard point with centreline followers")
+    };
+    let before: Vec<_> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+    let rect = app.viewport_rect(2); // plan
+    let screen = app.cameras()[2]
+        .transform()
+        .project(before[seed], rect)
+        .expect("visible in Plan");
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for step in [egui::vec2(10.0, -10.0), egui::vec2(40.0, -30.0)] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + step)],
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(40.0, -30.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+
+    let after = app.surface().unwrap();
+    assert!((after.points[seed].p.y - before[seed].y).abs() > 0.05);
+    for cl in cl_followers {
+        assert_eq!(
+            after.points[cl].p.y, 0.0,
+            "centreline follower {cl} must stay at y = 0"
+        );
+        assert!(
+            (after.points[cl].p.x - before[cl].x).abs() > 1e-4,
+            "centreline follower {cl} should still follow in x"
+        );
+    }
+}
+
+#[test]
+fn follower_markers_appear_on_hover_only_when_connected_is_on() {
+    use seacraft_core::connected::follower_weights;
+    use seacraft_core::netlines::NetLines;
+    use seacraft_gui::theme;
+
+    fn collect_circles(shape: &egui::Shape, cell: egui::Rect, out: &mut Vec<(f32, egui::Color32)>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_circles(s, cell, out)),
+            egui::Shape::Circle(c) if cell.contains(c.center) && c.stroke.width > 0.0 => {
+                out.push((c.radius, c.stroke.color));
+            }
+            _ => {}
+        }
+    }
+
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let (index, point_pos, expected_followers) = {
+        let s = app.surface().unwrap();
+        let nl = NetLines::of(s);
+        let idx = (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 3.0 && s.points[i].p.x < 9.0 && s.points[i].p.y > 0.0)
+            .max_by(|&a, &b| s.points[a].p.z.total_cmp(&s.points[b].p.z))
+            .expect("mid-hull sheer point");
+        let preset = app.active_connected_preset();
+        let fw = follower_weights(s, &nl, &[idx], &preset, preset.reach.metres(s));
+        assert!(!fw.is_empty());
+        (idx, s.points[idx].p, fw)
+    };
+    let profile_rect = app.viewport_rect(1);
+    let hover = app.cameras()[1]
+        .transform()
+        .project(point_pos, profile_rect)
+        .expect("projects in Profile");
+
+    let run_hover = |ctx: &egui::Context, app: &mut App| -> Vec<(f32, egui::Color32)> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1600.0, 1000.0),
+            )),
+            events: vec![egui::Event::PointerMoved(hover)],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
+        let cell = app.viewport_rect(1);
+        let mut circles = Vec::new();
+        for clipped in &out.shapes {
+            if clipped.clip_rect.intersects(cell) {
+                collect_circles(&clipped.shape, cell, &mut circles);
+            }
+        }
+        circles
+    };
+
+    // Connected off: no follower marker rings.
+    let circles_off = run_hover(&ctx, &mut app);
+    for &(_, w) in &expected_followers {
+        let col = theme::follower_marker(w);
+        assert!(
+            !circles_off.iter().any(|&(_, c)| c == col),
+            "connected off must draw no follower rings"
+        );
+    }
+
+    // Connected on with points shown: every follower gets its ring, even when hidden by the hull.
+    app.set_connected_on(true);
+    let circles_on = run_hover(&ctx, &mut app);
+    for &(_, w) in &expected_followers {
+        let col = theme::follower_marker(w);
+        let r = 3.5 + 3.5 * (w as f32);
+        assert!(
+            circles_on
+                .iter()
+                .any(|&(cr, cc)| cc == col && (cr - r).abs() < 1e-3),
+            "expected follower ring radius {r}, colour {col:?} in {circles_on:?}"
+        );
+    }
+
+    // Even in HiddenNet::Hidden with shaded hull on, occluded followers (e.g. in Perspective/Body)
+    // still get their follower rings drawn.
+    app.display_mut().shaded = true;
+    app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Hidden;
+    let circles_hidden_mode = run_hover(&ctx, &mut app);
+    for &(_, w) in &expected_followers {
+        let col = theme::follower_marker(w);
+        let r = 3.5 + 3.5 * (w as f32);
+        assert!(
+            circles_hidden_mode
+                .iter()
+                .any(|&(cr, cc)| cc == col && (cr - r).abs() < 1e-3),
+            "expected follower ring even in HiddenNet::Hidden"
+        );
+    }
+    app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Dimmed;
+
+    // When the hovered point is in a multi-point selection, all selected points act as seeds.
+    let other_idx = {
+        let s = app.surface().unwrap();
+        (0..s.points.len())
+            .filter(|&i| i != index && s.points[i].p.x > 1.0 && s.points[i].p.y > 0.0)
+            .min_by(|&a, &b| s.points[a].p.z.total_cmp(&s.points[b].p.z))
+            .expect("a second point far from sheer")
+    };
+    app.selection_mut().clear();
+    app.selection_mut().add_all([index, other_idx]);
+    let combined_followers = {
+        let s = app.surface().unwrap();
+        let nl = NetLines::of(s);
+        let preset = app.active_connected_preset();
+        follower_weights(s, &nl, &[index, other_idx], &preset, preset.reach.metres(s))
+    };
+    let circles_multi = run_hover(&ctx, &mut app);
+    for &(_, w) in &combined_followers {
+        let col = theme::follower_marker(w);
+        let r = 3.5 + 3.5 * (w as f32);
+        assert!(
+            circles_multi
+                .iter()
+                .any(|&(cr, cc)| cc == col && (cr - r).abs() < 1e-3),
+            "expected multi-seed follower ring for radius {r}"
+        );
+    }
+
+    // Points hidden: no follower marker rings on hover.
+    app.display_mut().points = false;
+    let circles_no_pts = run_hover(&ctx, &mut app);
+    for &(_, w) in &expected_followers {
+        let col = theme::follower_marker(w);
+        assert!(!circles_no_pts.iter().any(|&(_, c)| c == col));
+    }
+    let _ = index;
+}
+
+#[test]
+fn bad_presets_file_keeps_builtins_and_reports_error_in_toolbar_and_inspect() {
+    use seacraft_core::connected::builtin_presets;
+    use seacraft_gui::control::{handle, ControlRequest};
+    use serde_json::json;
+    use std::sync::mpsc;
+
+    let dir =
+        std::env::temp_dir().join(format!("seacraft-drag-bad-presets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(seacraft_gui::connected_presets::PresetStore::FILE_NAME);
+    std::fs::write(
+        &file,
+        r#"{"version": 1, "presets": [{"name": "Broken", "reach": {"m": -2.0}, "falloff": "smooth", "spread": "both"}]}"#,
+    )
+    .unwrap();
+
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_preset_dir(Some(dir.clone()));
+    assert_eq!(app.preset_store().presets, builtin_presets());
+    assert!(
+        app.status().contains("Broken"),
+        "status should report preset error: {:?}",
+        app.status()
+    );
+
+    let ctx = egui::Context::default();
+    let call = |app: &mut App, method: &str, params: serde_json::Value| {
+        let (tx, _rx) = mpsc::channel();
+        handle(app, &ctx, &ControlRequest::new(method, params, tx))
+    };
+
+    let insp = call(&mut app, "ui.inspect", json!({}));
+    assert_eq!(insp["result"]["connected"], false, "{insp}");
+    assert_eq!(insp["result"]["connected_preset"], "Blend both ways");
+    assert_eq!(insp["result"]["connected_reach_m"], serde_json::Value::Null);
+    let err = insp["result"]["connected_error"]
+        .as_str()
+        .expect("error visible in ui.inspect");
+    assert!(err.contains("Broken"), "{err}");
+    let names: Vec<_> = insp["result"]["connected_presets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        names,
+        builtin_presets()
+            .into_iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>()
+    );
+
+    // Built-ins stay selectable via ui.set.
+    let set_ok = call(
+        &mut app,
+        "ui.set",
+        json!({ "connected": true, "connected_preset": "Nudge", "connected_reach_m": 2.5 }),
+    );
+    assert_eq!(set_ok["ok"], true, "{set_ok}");
+    assert_eq!(set_ok["result"]["connected"], true);
+    assert_eq!(set_ok["result"]["connected_preset"], "Nudge");
+    assert_eq!(set_ok["result"]["connected_reach_m"], 2.5);
+
+    // `connected_reach_m: null` clears the override via ui.set.
+    let clear_reach = call(&mut app, "ui.set", json!({ "connected_reach_m": null }));
+    assert_eq!(clear_reach["ok"], true, "{clear_reach}");
+    assert_eq!(
+        clear_reach["result"]["connected_reach_m"],
+        serde_json::Value::Null
+    );
+
+    // Unknown preset returns an error listing the available names.
+    let bad_preset = call(
+        &mut app,
+        "ui.set",
+        json!({ "connected_preset": "NoSuchPreset" }),
+    );
+    assert_eq!(bad_preset["ok"], false, "{bad_preset}");
+    let msg = bad_preset["error"].as_str().unwrap();
+    assert!(
+        msg.contains("Blend both ways") && msg.contains("Nudge"),
+        "{msg}"
+    );
+
+    // Re-set reach override so toolbar reset check tests clearing it.
+    let set_reach = call(&mut app, "ui.set", json!({ "connected_reach_m": 2.5 }));
+    assert_eq!(set_reach["ok"], true, "{set_reach}");
+
+    // Toolbar draws the warning mark next to the preset list, and toolbar buttons work.
+    assert!(app.toolbar_rect("connected_error").is_none());
+    frame(&ctx, &mut app, Vec::new());
+    assert!(
+        app.toolbar_rect("connected_error").is_some(),
+        "toolbar must show a warning mark on preset error"
+    );
+    let reset_rect = app
+        .toolbar_rect("connected_reset")
+        .expect("connected reset button");
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(reset_rect.center())],
+    );
+    frame(&ctx, &mut app, vec![button(reset_rect.center(), true)]);
+    frame(&ctx, &mut app, vec![button(reset_rect.center(), false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.connected().reach_m, None, "reset clears reach_m");
+    let toggle_rect = app
+        .toolbar_rect("connected")
+        .expect("connected toggle button");
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(toggle_rect.center())],
+    );
+    frame(&ctx, &mut app, vec![button(toggle_rect.center(), true)]);
+    frame(&ctx, &mut app, vec![button(toggle_rect.center(), false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert!(!app.connected().on, "toolbar toggle flips connected off");
+
+    // Create example refuses to overwrite existing file; on a clean dir it writes and reports path.
+    app.apply_model_action(seacraft_gui::model_menu::ModelAction::CreateExamplePresets);
+    assert!(
+        app.status().contains("exists") || app.status().contains("overwrite"),
+        "{:?}",
+        app.status()
+    );
+    std::fs::remove_file(&file).unwrap();
+    app.apply_model_action(seacraft_gui::model_menu::ModelAction::CreateExamplePresets);
+    assert!(
+        app.status().contains(&file.display().to_string()),
+        "status should report path written: {:?}",
+        app.status()
+    );
+    app.apply_model_action(seacraft_gui::model_menu::ModelAction::ReloadPresets);
+    assert!(
+        app.status().contains("presets"),
+        "reload status reports count: {:?}",
+        app.status()
+    );
+    let after = call(&mut app, "ui.inspect", json!({}));
+    assert_eq!(after["result"]["connected_error"], serde_json::Value::Null);
+    assert!(
+        after["result"]["connected_presets"]
+            .as_array()
+            .unwrap()
+            .len()
+            > builtin_presets().len()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

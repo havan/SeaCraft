@@ -161,6 +161,8 @@ pub enum ModelAction {
     SplitFace(usize),
     Crease { edge: [usize; 2], crease: bool },
     SelectLine(seacraft_core::netlines::LineKind),
+    ReloadPresets,
+    CreateExamplePresets,
 }
 
 /// One menu item: enabled with a hover description, or disabled with the
@@ -242,6 +244,25 @@ pub fn menu_body(ui: &mut egui::Ui, t: &ModelTargets) -> ModelAction {
         format!("Select every control point on the lengthwise line through point {p}.")
     }) {
         action = ModelAction::SelectLine(seacraft_core::netlines::LineKind::Lengthwise);
+    }
+    ui.separator();
+    if ui
+        .button("Reload presets")
+        .on_hover_text("Re-read connected-edit.json from disk.")
+        .clicked()
+    {
+        action = ModelAction::ReloadPresets;
+        ui.close();
+    }
+    if ui
+        .button("Create example presets file")
+        .on_hover_text(
+            "Write a starter connected-edit.json beside seacraft-gui.json (never overwrites).",
+        )
+        .clicked()
+    {
+        action = ModelAction::CreateExamplePresets;
+        ui.close();
     }
     ui.separator();
     ui.label(
