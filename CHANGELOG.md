@@ -2,6 +2,55 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
+## Unreleased
+
+Seeing and shaping the control net. All of this is covered by headless tests; the look of it (colours, the
+triad, the markers) has been reviewed by eye on Linux only.
+
+- The Profile view now looks from starboard, with the bow still on the right, so the half of a hull that is
+  modelled is the half you see. A symmetric hull looks as it did. Each view's title says which way it faces
+  ("Profile · from starboard", "Plan · half-breadths, starboard up", "Body plan · looking forward"), and an axis
+  triad in the corner and edge labels (Aft, Fwd, Port, Stbd) say the same; View ▸ Orientation turns them off.
+  `seacraft render --view profile` is unchanged and still looks from port.
+- Control net behind the shaded hull is drawn dimmed. View ▸ Hidden net, or the toolbar's choice beside Net and
+  Points, says whether it is dimmed, hidden or shown; an analysis mode (Zebra, Curvature, Draft) hides it too, and
+  with no solid hull nothing is hidden. A click prefers the point in front; a hidden point can still be picked
+  when nothing visible is in reach, except in the hidden mode. The point under the pointer is ringed.
+- The station of the control point under the pointer, or of the selected one, is highlighted in all four views.
+  In the Body plan the rest of the net is drawn fainter (View ▸ Station focus) and a caption gives the station's
+  `x` and point count; the Inspector shows the same. **Alt+Left** and **Alt+Right** step the selection aft and
+  forward along the point's lengthwise line. Stations are read from the net's own lines, so a station whose
+  points lean is still one station.
+- Several control points can be selected: **Shift+click** adds or removes one, **Shift+drag** on empty space
+  draws a rectangle that adds the points in it (hidden ones are left out unless the hidden net is drawn as
+  normal), Model ▸ Select station and Select lengthwise line add a whole line. Dragging one selected point drags
+  them all as one undo step, and with several selected the Inspector moves them by a typed displacement. A plain
+  drag on empty space still pans. **Esc** during a drag cancels it and puts the points back.
+- **Ctrl+wheel** and a trackpad pinch zoom the views like the wheel; before they did nothing.
+- Connected editing: with the **Connected** switch on, a dragged point draws its neighbours along, less the
+  further they are along the net. A preset says how: which neighbours follow (lengthwise, round the station, or
+  both), how the pull fades, how far it reaches, and which of x, y, z the followers move in. Seven presets are
+  built in ("Blend both ways", "Blend lengthwise", "Blend around station", "Nudge", "Move station", "Beam only",
+  "Height only"). Hovering shows which points would follow and how strongly; the wheel changes the reach during a
+  drag. Holding **Ctrl** (**Cmd** on macOS) flips the switch for as long as it is held, also mid-drag. It is off
+  by default and the choice is remembered. Your own presets go in `connected-edit.json` beside
+  `seacraft-gui.json` (Model ▸ Create example presets file writes a commented example, Reload presets re-reads
+  it); a mistake in that file is reported in the window and leaves the built-in presets working. A preset says
+  how points move; it does not check or make anything fair.
+- On a half model, a point on the centreline that is moved as part of a group or as a follower stays on the
+  centreline, and no point of a symmetric layer goes below it. A centreline point moved on its own behaves as
+  before.
+- Control channel: `points.move`, `points.select`, `points.select_line`; `point.move` and `points.move` take an
+  optional `"connected"` (a built-in preset's name or a preset object) and `"reach_m"`, and report every point
+  moved; `ui.set` gains `orientation`, `hidden_net`, `station_focus`, `connected`, `connected_preset` and
+  `connected_reach_m`; `ui.inspect` reports them and `selected_points`. MCP: `move_points`, and `"connected"` on
+  `move_point` and `move_points`. An agent's move is connected only when the call says so, and never reads the
+  user's presets file. While a point is being dragged in the window, an agent's point move is refused with an
+  error, so the drag cannot silently undo it.
+- Changed: the headless MCP server's `move_point` now holds a point at `y >= 0` when any face it belongs to is
+  on a symmetric layer, as the window always did. It used to require all of them, so a point shared between a
+  symmetric and an unsymmetric layer could be moved below the centreline headless and not in the window.
+
 ## 0.4.0 (2026-11-16)
 
 - Every program says which source it was built from. `seacraft --version`, the window title, About and the MCP

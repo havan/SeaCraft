@@ -520,12 +520,15 @@ pub enum InspectorAction {
     /// Move control point `index` to `to` (one undo step; the app clamps a
     /// symmetric layer's point to `y >= 0`).
     Move { index: usize, to: Vec3 },
+    /// Move every selected control point by `delta` (one undo step).
+    MoveSelection { delta: Vec3 },
 }
 
 /// Everything the Inspector draws.
 pub struct InspectorPanel<'a> {
     pub surface: Option<&'a Surface>,
-    pub selected: Option<usize>,
+    pub selection: &'a crate::selection::Selection,
+    pub station_caption: Option<String>,
     /// A value being dragged: committed on release, so a drag is one edit.
     pub pending: &'a mut Option<(usize, [f64; 3])>,
 }
@@ -536,6 +539,7 @@ pub struct InspectorPanel<'a> {
 pub struct InspectorOutput {
     pub action: InspectorAction,
     pub fields: [egui::Rect; 3],
+    pub move_button: egui::Rect,
 }
 
 impl Default for InspectorOutput {
@@ -543,6 +547,7 @@ impl Default for InspectorOutput {
         Self {
             action: InspectorAction::None,
             fields: [egui::Rect::NOTHING; 3],
+            move_button: egui::Rect::NOTHING,
         }
     }
 }
@@ -577,18 +582,79 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
     let mut out = InspectorOutput::default();
     theme::heading(ui, "Inspector");
     ui.add_space(4.0);
-    let point = match (panel.surface, panel.selected) {
+    let point = match (panel.surface, panel.selection.active()) {
         (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
         _ => None,
     };
+    let delta_id = egui::Id::unique("inspector_multi_delta");
     let Some((surface, index)) = point else {
         *panel.pending = None;
+        ui.data_mut(|d| d.remove::<[f64; 3]>(delta_id));
         ui.label(
             egui::RichText::new("Click a point to edit it — Esc clears").color(theme::TEXT_MUTED),
         );
         ui.add_space(4.0);
         return out;
     };
+    if panel.selection.len() > 1 {
+        let pts: Vec<Vec3> = panel
+            .selection
+            .points()
+            .iter()
+            .filter_map(|&i| surface.points.get(i).map(|cp| cp.p))
+            .collect();
+        if pts.len() > 1 {
+            *panel.pending = None;
+            let mut min = pts[0];
+            let mut max = pts[0];
+            for &p in &pts[1..] {
+                min = Vec3::new(min.x.min(p.x), min.y.min(p.y), min.z.min(p.z));
+                max = Vec3::new(max.x.max(p.x), max.y.max(p.y), max.z.max(p.z));
+            }
+            ui.label(
+                egui::RichText::new(format!("{} points selected", pts.len()))
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "x {:.3}..{:.3} · y {:.3}..{:.3} · z {:.3}..{:.3} m",
+                    min.x, max.x, min.y, max.y, min.z, max.z
+                ))
+                .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_space(2.0);
+            let mut delta: [f64; 3] = ui.data_mut(|d| d.get_temp(delta_id)).unwrap_or([0.0; 3]);
+            egui::Grid::new("inspector_dxyz")
+                .num_columns(3)
+                .spacing(egui::vec2(8.0, 4.0))
+                .show(ui, |ui| {
+                    for (axis, name) in ["dx", "dy", "dz"].into_iter().enumerate() {
+                        ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY));
+                        let r = ui.add_sized(
+                            [96.0, 20.0],
+                            theme::num(&mut delta[axis]).speed(0.005).fixed_decimals(3),
+                        );
+                        out.fields[axis] = r.rect;
+                        ui.label(egui::RichText::new("m").color(theme::TEXT_MUTED));
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(4.0);
+            let move_btn = ui.button("Move");
+            out.move_button = move_btn.rect;
+            if move_btn.clicked() {
+                out.action = InspectorAction::MoveSelection {
+                    delta: Vec3::new(delta[0], delta[1], delta[2]),
+                };
+                delta = [0.0; 3];
+            }
+            ui.data_mut(|d| d.insert_temp(delta_id, delta));
+            ui.add_space(4.0);
+            return out;
+        }
+    }
+    ui.data_mut(|d| d.remove::<[f64; 3]>(delta_id));
     if panel.pending.is_some_and(|(i, _)| i != index) {
         *panel.pending = None;
     }
@@ -605,6 +671,9 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
             .color(theme::TEXT_PRIMARY),
     );
     ui.label(egui::RichText::new(layer).color(theme::TEXT_SECONDARY));
+    if let Some(caption) = panel.station_caption {
+        ui.label(egui::RichText::new(caption).color(theme::TEXT_SECONDARY));
+    }
     ui.add_space(2.0);
 
     let mut shown = panel.pending.map_or([cp.p.x, cp.p.y, cp.p.z], |(_, v)| v);
@@ -4761,6 +4830,12 @@ pub struct ToolbarState<'a> {
     /// display toggles) are disabled; the subdivision level
     /// and scheme stay editable, as settings the next model is shown with.
     pub has_model: bool,
+    pub connected: &'a crate::app::ConnectedState,
+    /// Ctrl (Cmd) is held: the switch shows the flipped state it stands for.
+    pub connected_flipped: bool,
+    pub presets: &'a [seacraft_core::connected::ConnectedPreset],
+    pub default_reach_m: f64,
+    pub preset_error: Option<&'a str>,
 }
 
 /// A dock with no model loaded: empty, at its full width. The status bar
@@ -4784,16 +4859,42 @@ pub fn shortcuts(
     let plain = |text: &str| text.to_owned();
     vec![
         (plain("Click"), "Select a control point"),
-        (plain("Shift+click"), "Select a second point"),
+        (
+            plain("Shift+click"),
+            "Add a point to the selection, or take it out",
+        ),
+        (
+            plain("Shift+drag empty space"),
+            "Select the points in a rectangle",
+        ),
         (plain("Drag a point"), "Move it in the view's plane"),
         (
             plain("X, Y or Z while dragging"),
             "Keep the point on that axis",
         ),
-        (plain("Esc"), "Clear the selection"),
+        (
+            plain("Alt+Left / Alt+Right"),
+            "Select the previous or next station along the line",
+        ),
+        (
+            plain(if cfg!(target_os = "macos") {
+                "Hold Cmd while dragging"
+            } else {
+                "Hold Ctrl while dragging"
+            }),
+            "Connected editing the other way from the switch, for that drag",
+        ),
+        (
+            plain("Esc"),
+            "Cancel a point drag or a selection rectangle, or clear the selection",
+        ),
         (plain("Drag empty space, or middle drag"), "Pan"),
         (plain("Right drag in Perspective"), "Orbit"),
-        (plain("Wheel"), "Zoom at the pointer"),
+        (plain("Wheel, Ctrl+wheel or pinch"), "Zoom at the pointer"),
+        (
+            plain("Wheel during connected drag"),
+            "Change connected-editing reach",
+        ),
         (plain("F"), "Frame the model in every view"),
         (plain("1 – 4"), "Make a view the active one"),
         (
@@ -4892,6 +4993,14 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
     changed
 }
 
+/// What the toolbar's connected-editing controls asked for; `App::draw` applies it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolbarConnectedAction {
+    Toggle(bool),
+    SelectPreset(String),
+    SetReach(Option<f64>),
+}
+
 /// What the user asked the toolbar for; `App::draw` applies it.
 #[derive(Debug, Clone, Default)]
 pub struct ToolbarOutput {
@@ -4901,10 +5010,13 @@ pub struct ToolbarOutput {
     pub display: Option<DisplayOptions>,
     pub level: Option<u8>,
     pub mode: Option<SubdivisionMode>,
+    pub connected: Option<ToolbarConnectedAction>,
     /// Where each control was drawn, by name (a test hook): `shaded`,
     /// `zebra`, `curvature`, `draft`, `param`, `net`, `points`,
     /// `waterplane`, `curves`, `combs`, `sections` (the counts menu),
-    /// `wireframe`, `level`, `level:N` (while the list is open), `mode`.
+    /// `wireframe`, `connected`, `connected_preset`, `connected_error`,
+    /// `connected_reach`, `connected_reset`, `level`, `level:N` (while the
+    /// list is open), `mode`.
     pub rects: Vec<(&'static str, egui::Rect)>,
 }
 
@@ -4962,7 +5074,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
 
         // The active mode's parameter, in a fixed-width slot so the toggles
         // to its right do not jump when the mode changes.
-        let slot = egui::vec2(126.0, ui.spacing().interact_size.y);
+        let slot = egui::vec2(114.0, ui.spacing().interact_size.y);
         ui.allocate_ui_with_layout(
             slot,
             egui::Layout::left_to_right(egui::Align::Center),
@@ -5034,24 +5146,62 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 ui.disable();
             }
             ui.spacing_mut().item_spacing.x = 2.0;
+            // One display switch; true when it was clicked.
+            fn switch(
+                ui: &mut egui::Ui,
+                rects: &mut Vec<(&'static str, egui::Rect)>,
+                name: &'static str,
+                label: &str,
+                tip: &str,
+                flag: &mut bool,
+            ) -> bool {
+                let response =
+                    theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
+                rects.push((name, response.rect));
+                if response.clicked() {
+                    *flag = !*flag;
+                }
+                response.clicked()
+            }
+            toggled |= switch(
+                ui,
+                &mut out.rects,
+                "net",
+                "Net",
+                "Control net",
+                &mut display.control_net,
+            );
+            toggled |= switch(
+                ui,
+                &mut out.rects,
+                "points",
+                "Points",
+                "Control points (hidden points cannot be picked)",
+                &mut display.points,
+            );
+            // How the net and its points behind the shaded hull are drawn:
+            // beside the two switches it qualifies, each choice its own label.
+            let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
+                .selected_text(display.hidden_net.toolbar_label())
+                .width(82.0)
+                .show_ui(ui, |ui| {
+                    for mode in crate::render::HiddenNet::ALL {
+                        ui.selectable_value(&mut display.hidden_net, mode, mode.toolbar_label());
+                    }
+                });
+            let combo = combo
+                .response
+                .on_hover_text("How control-net edges and points behind the shaded hull are drawn");
+            out.rects.push(("hidden_net", combo.rect));
+            if display.hidden_net != state.display.hidden_net {
+                toggled = true;
+            }
             for (name, label, tip, flag) in [
-                (
-                    "net",
-                    "Net",
-                    "Control net",
-                    &mut display.control_net as &mut bool,
-                ),
-                (
-                    "points",
-                    "Points",
-                    "Control points (hidden points cannot be picked)",
-                    &mut display.points,
-                ),
                 (
                     "waterplane",
                     "Waterplane",
                     "Waterplane at the current draft",
-                    &mut display.waterplane,
+                    &mut display.waterplane as &mut bool,
                 ),
                 (
                     "curves",
@@ -5071,14 +5221,14 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     "Wireframe of the refined mesh",
                     &mut display.wireframe,
                 ),
+                (
+                    "orientation",
+                    "Orient",
+                    "Orientation triad and edge labels",
+                    &mut display.orientation,
+                ),
             ] {
-                let response =
-                    theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
-                if response.clicked() {
-                    *flag = !*flag;
-                    toggled = true;
-                }
-                out.rects.push((name, response.rect));
+                toggled |= switch(ui, &mut out.rects, name, label, tip, flag);
             }
             // The curve counts and comb settings, in a small menu.
             let menu = ui
@@ -5098,44 +5248,122 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         }
         ui.separator();
 
-        // Subdivision level and scheme, applied through the setters.
-        ui.label(egui::RichText::new("Precision").color(theme::TEXT_SECONDARY));
-        let mut level = state.level;
-        let combo = egui::ComboBox::from_id_salt("toolbar_level")
-            .selected_text(format!("Level {level}"))
-            .width(68.0)
-            .show_ui(ui, |ui| {
-                for (n, name) in LEVEL_ITEMS.iter().enumerate() {
-                    let response = ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
-                    out.rects.push((name, response.rect));
-                }
-            });
-        let combo = combo.response.on_hover_text(
-            "How finely the hull is subdivided, for display and for measurement: \
-                 a higher level is smoother and slower (0–5)",
-        );
-        out.rects.push(("level", combo.rect));
-        if level != state.level {
-            out.level = Some(level);
-        }
-        let mut mode = state.mode;
-        let combo = egui::ComboBox::from_id_salt("toolbar_mode")
-            .selected_text(match mode {
-                SubdivisionMode::Loop => "Loop",
-                SubdivisionMode::CatmullClark => "Catmull-Clark",
+        // Connected editing: toggle, preset list (with error mark if any), reach and reset.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let toggle = theme::as_switch(ui, |ui| {
+                ui.selectable_label(state.connected.on != state.connected_flipped, "Connected")
             })
-            .width(104.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
-                ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
-            });
-        let combo = combo
-            .response
-            .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
-        out.rects.push(("mode", combo.rect));
-        if mode != state.mode {
-            out.mode = Some(mode);
-        }
+            .on_hover_text(
+                "Connected editing: drag neighbours along with the moved points. \
+                 Hold Ctrl (Cmd on macOS) to flip it for one drag",
+            );
+            if toggle.clicked() {
+                out.connected = Some(ToolbarConnectedAction::Toggle(!state.connected.on));
+            }
+            out.rects.push(("connected", toggle.rect));
+
+            let mut selected_preset = state.connected.preset.clone();
+            let combo = egui::ComboBox::from_id_salt("toolbar_connected_preset")
+                .selected_text(&selected_preset)
+                .width(114.0)
+                .show_ui(ui, |ui| {
+                    for p in state.presets {
+                        ui.selectable_value(&mut selected_preset, p.name.clone(), &p.name);
+                    }
+                });
+            let combo_resp = combo
+                .response
+                .on_hover_text("Connected-editing preset (spread, falloff and axes)");
+            out.rects.push(("connected_preset", combo_resp.rect));
+            if selected_preset != state.connected.preset {
+                out.connected = Some(ToolbarConnectedAction::SelectPreset(selected_preset));
+            }
+
+            if let Some(err) = state.preset_error {
+                let warn = ui.colored_label(theme::WARN, "⚠").on_hover_text(err);
+                out.rects.push(("connected_error", warn.rect));
+            }
+
+            let has_reach =
+                state.has_model || state.connected.reach_m.is_some() || state.default_reach_m > 0.0;
+            let mut reach = state
+                .connected
+                .reach_m
+                .unwrap_or(state.default_reach_m)
+                .max(0.0);
+            let range = if has_reach { 1e-3..=1e4 } else { 0.0..=1e4 };
+            let reach_resp = ui
+                .add_enabled(
+                    has_reach,
+                    theme::num(&mut reach)
+                        .range(range)
+                        .speed(0.02)
+                        .fixed_decimals(2)
+                        .suffix(" m"),
+                )
+                .on_hover_text("Reach in metres (scroll during a connected drag to adjust)");
+            out.rects.push(("connected_reach", reach_resp.rect));
+            if reach_resp.changed() {
+                out.connected = Some(ToolbarConnectedAction::SetReach(Some(
+                    reach.clamp(1e-3, 1e4),
+                )));
+            }
+
+            let reset_resp = ui
+                .add_enabled(
+                    state.connected.reach_m.is_some(),
+                    egui::Button::new(egui::RichText::new("reset").small()),
+                )
+                .on_hover_text("Reset reach to the preset's own value");
+            out.rects.push(("connected_reset", reset_resp.rect));
+            if reset_resp.clicked() {
+                out.connected = Some(ToolbarConnectedAction::SetReach(None));
+            }
+        });
+        ui.separator();
+
+        // Subdivision level and scheme, applied through the setters.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let mut level = state.level;
+            let combo = egui::ComboBox::from_id_salt("toolbar_level")
+                .selected_text(format!("Level {level}"))
+                .width(62.0)
+                .show_ui(ui, |ui| {
+                    for (n, name) in LEVEL_ITEMS.iter().enumerate() {
+                        let response =
+                            ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
+                        out.rects.push((name, response.rect));
+                    }
+                });
+            let combo = combo.response.on_hover_text(
+                "How finely the hull is subdivided, for display and for measurement: \
+                     a higher level is smoother and slower (0–5)",
+            );
+            out.rects.push(("level", combo.rect));
+            if level != state.level {
+                out.level = Some(level);
+            }
+            let mut mode = state.mode;
+            let combo = egui::ComboBox::from_id_salt("toolbar_mode")
+                .selected_text(match mode {
+                    SubdivisionMode::Loop => "Loop",
+                    SubdivisionMode::CatmullClark => "Catmull-Clark",
+                })
+                .width(92.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
+                    ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
+                });
+            let combo = combo
+                .response
+                .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
+            out.rects.push(("mode", combo.rect));
+            if mode != state.mode {
+                out.mode = Some(mode);
+            }
+        });
     });
     out
 }

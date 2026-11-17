@@ -277,6 +277,15 @@ mod tests {
         let p = Vec3::new(0.0, 1.0, 0.0);
         assert!(view.project(p, rect).unwrap().x > rect.center().x);
         assert!(to_screen(&u, p, Vec3::ZERO, rect).0 > rect.center().x);
+
+        let pview = camera(ViewKind::Profile, Vec3::ZERO, size, None).transform();
+        let pu = view_uniform(&pview, rect, 1.0, Vec3::ZERO, bmin, bmax, theme::WIREFRAME);
+        let px = Vec3::new(1.0, 0.0, 0.0);
+        assert!(pview.forward.y < -0.999);
+        assert!(pview.project(px, rect).unwrap().x > rect.center().x);
+        let pc = clip(&pu, px, Vec3::ZERO);
+        assert!(pc[0] / pc[3] > 0.0);
+        assert!(to_screen(&pu, px, Vec3::ZERO, rect).0 > rect.center().x);
     }
 
     #[test]

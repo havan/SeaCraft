@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use seacraft_core::curves::{Bonjean, BonjeanSection};
 use seacraft_core::develop::{BandAxis, PatchSelection, Unfolded};
 use seacraft_core::hydro::HydroOptions;
+use seacraft_core::netlines::LineKind;
 use seacraft_core::offsets::{OffsetStation, TableOfOffsets};
 use seacraft_core::optimize::{OptimizeReport, OptimizeSpec};
 use seacraft_core::parametric::{GenerateReport, HullSpec};
@@ -24,6 +25,7 @@ use seacraft_core::table::HydrostaticRow;
 use seacraft_core::transform::{TransformReport, TransformRequest};
 use seacraft_core::trimopt::{TrimPoint, TrimScan};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::App;
 use seacraft_core::Surface;
@@ -139,6 +141,60 @@ pub fn install_generated(
         faces: app.face_count(),
         layers: app.layer_count(),
     }
+}
+
+// ---- points.select / points.select_line ----------------------------------
+
+/// Replace the selection with `points` (an empty slice clears it), making the
+/// last point active, and return the selection as `ui.inspect` reports it.
+pub fn select_points(app: &mut App, points: &[usize]) -> Result<Value, String> {
+    let surface = app.surface().ok_or("no model loaded")?;
+    let count = surface.points.len();
+    for &idx in points {
+        if idx >= count {
+            return Err(format!(
+                "point index {idx} is out of range (0..{})",
+                count.saturating_sub(1)
+            ));
+        }
+    }
+    app.selection_mut().clear();
+    app.selection_mut().add_all(points.iter().copied());
+    Ok(serde_json::json!({
+        "selected_point": app.selected(),
+        "selected_points": app.selection().points(),
+    }))
+}
+
+/// Add every point of the net lines of `kind` through the active point to the
+/// selection while keeping the active point active.
+pub fn select_line(app: &mut App, kind: LineKind) -> Result<Value, String> {
+    if app.surface().is_none() {
+        return Err("no model loaded".into());
+    }
+    let active = app.selected().ok_or("select a control point first")?;
+    app.refresh_cache();
+    let pts: Vec<usize> = {
+        let net_lines = app.net_lines().ok_or("no net lines available")?;
+        let lines = net_lines.through(active, kind);
+        if lines.is_empty() {
+            let what = match kind {
+                LineKind::Transverse => "station",
+                LineKind::Lengthwise => "lengthwise line",
+            };
+            return Err(format!("point {active} is not on a {what}"));
+        }
+        lines
+            .into_iter()
+            .flat_map(|li| net_lines.lines[li].points.iter().copied())
+            .collect()
+    };
+    app.selection_mut().add_all(pts);
+    app.selection_mut().set_active(active);
+    Ok(serde_json::json!({
+        "selected_point": app.selected(),
+        "selected_points": app.selection().points(),
+    }))
 }
 
 // ---- edge.crease ---------------------------------------------------------

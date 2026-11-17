@@ -1014,3 +1014,95 @@ counted); `total_counts_copies` (a pair of one-sheet panels and a two-sheet pane
 
 ### Provenance
 Arithmetic (2026-11-14). Not published values.
+
+---
+
+## 35. Segments Blocked by a Triangle Mesh
+
+### Formula
+A segment $a \to b$ meets a triangle where the Möller–Trumbore solution has $0 < t < 1$ and barycentrics inside
+the triangle, from either side. The index only decides which triangles are tried; its answer must be the brute
+force one.
+
+### Tests
+`crates/seacraft-core/src/raycast.rs`: `box_segment_hits_at_quarter_and_beside_misses` (box $[-1, 1]^3$, segment
+along an axis from 2 outside to 2 beyond the far face: first hit at $t = 1/4$; a parallel segment beside the box:
+none); `lcg_random_triangles_and_segments_match_brute_force` (fixed-seed triangles and segments: same hit or miss
+and same nearest $t$ as testing every triangle); `of_render_mesh_triangulates_quad_and_hits` (a quad is fanned
+into two triangles); `a_lopsided_mesh_does_not_outgrow_the_traversal_stack` (600 000 triangles crowded as
+$u^{4.596}$: tree depth at most 64, nearest hits at $t = 1/3$ and $(2 - x_\text{last})/3$).
+
+`crates/seacraft-gui/src/visibility.rs`: `box_occludes_far_point_and_middle_third_of_far_edge` (looking along
+$+x$ at the same box: a point in front is visible, one behind is hidden, one on the near face is visible; the
+edge $(2, -3, 0) \to (2, 3, 0)$ is hidden for $y \in [-1, 1]$, that is $t \in [1/3, 2/3]$, to one sample).
+
+`crates/seacraft-gui/src/render.rs`: `a_hidden_span_ends_where_its_world_point_projects_in_perspective` (pinhole
+camera at the origin looking along $+z$; edge $(0, 0, 2) \to (6, 0, 6)$ hidden from $t = 1/2$: the world point
+$(3, 0, 4)$ projects to $x/z = 3/4$, between $0$ and $1$ at the ends, so the dimmed stretch starts three quarters
+along the screen segment, not halfway).
+
+### Provenance
+Geometry worked by hand (2026-11-17). Not published values.
+
+---
+
+## 36. Net Lines and Stations
+
+### Formula
+A line continues through a point to the edge two steps away in the fan of quads round it: opposite across four
+quads, along the rim across two, straight on at a three-quad corner; anywhere else it ends. Neighbouring sides of
+a quad are of different families; the family running further along $x$ is lengthwise.
+
+### Tests
+`crates/seacraft-core/src/netlines.rs`: `grid_5x4_has_five_transverse_and_four_lengthwise_lines` (a $5 \times 4$
+grid: 5 stations of 4 points at $x = i$, 4 lengthwise lines of 5 points; its outline is four lines);
+`a_line_lists_its_points_in_order_with_the_edges_between_them`; `a_ring_of_a_tube_is_one_closed_line` (4 rings of
+6 points: 4 closed stations, 6 open lengthwise lines); `demo_hull_stations_follow_its_station_table` (the half
+demo hull: 8 stations of 6 points at the $x$ of its station table, the transom rim one line of 6 at $x = 0$, 6
+lengthwise lines of 9, 17 lines in all with the two apex edges); `the_full_demo_hull_has_whole_stations_port_to_starboard`
+(11 points a station); `a_hole_inside_the_net_leaves_the_grid_lines_whole` (a $5 \times 5$ grid with one quad
+split into a fan: still 5 and 5 lines of 5 points, plus 4 spokes); `a_pole_ends_the_lines_that_reach_it`;
+`a_boundary_point_with_four_quads_ends_its_lines`; `every_shipped_example_classifies_every_edge`.
+
+`crates/seacraft-gui/src/render.rs`: `station_caption_formats_single_x_and_leaning_range` (stations 2.5 m apart
+on a 10 m net: "x ≈ 5.00 m"; one point moved 0.20 m, more than 0.5 % of the length: "x 5.00–5.20 m").
+
+### Provenance
+Counted by hand on nets built for the purpose, and from the demo hull's own station table in `demo.rs`
+(2026-11-17). Not published values.
+
+---
+
+## 37. Moving Points Together
+
+### Formula
+A seed moves by the whole displacement $\Delta$; a follower at distance $d$ along the allowed edges from the
+nearest seed moves by $w(d / r)\,\Delta$ in the followed axes, with reach $r$ and $w(t)$: linear $1 - t$, smooth
+$1 - 3t^2 + 2t^3$, sharp $(1 - t)^2$, constant $1$, or straight lines through given points; $w = 0$ for $t > 1$.
+On a symmetric layer no point goes below $y = 0$, and a point on the centreline stays on it unless it is the
+only seed. Followers take their share of the move the seeds could make: a move towards the centreline is cut
+to the room $\min y_{\text{seed}}$ of the symmetric seeds, so a seed stopped at $y = 0$ stops its followers too.
+
+### Tests
+`crates/seacraft-core/src/connected.rs`, on a unit grid: `falloff_and_grid_dijkstra_weights_match_closed_forms`
+(reach 3, linear: $2/3$ and $1/3$ at one and two edges; lengthwise leaves the station neighbours out; both ways
+the distance is the Manhattan distance; smooth and sharp at $t = 0.5$: $0.5$ and $0.25$);
+`a_curve_is_read_in_order_of_t_and_holds_its_end_values`; `stop_at_creases_holds_a_move_on_one_side` (a creased
+row: a seed below reaches the crease points and nothing beyond, 14 followers; a seed on the crease reaches all
+24); `two_seeds_use_the_nearer_and_constant_reaches_the_rim`; `a_centreline_follower_stays_on_the_centreline`
+(seed moved $(0, 0.6, 0.3)$: the centreline neighbour goes to $z = 0.2$ and keeps $y = 0$);
+`a_split_face_fan_still_yields_follower_weights` (the fan's centre, $\sqrt{0.5}$ away: $1 - \sqrt{0.5}/3$);
+`move_station_on_the_demo_hull_moves_the_station_and_nothing_else` (the station's other 5 points, weight 1);
+`the_built_in_presets_are_these_seven`; `parse_presets_rejects_each_invalid_input_naming_the_preset`.
+
+`crates/seacraft-core/src/netmove.rs`: `centreline_and_symmetric_layer_rules_hold_for_single_and_multi_seed_moves`;
+`followers_move_by_their_weight_in_the_masked_axes_and_seeds_by_all_of_it` (weight 0.5 in "yz" of
+$(0.2, 0.4, 0.6)$: $(0, 0.2, 0.3)$); `a_zero_move_puts_every_point_back_exactly`;
+`moving_the_anchor_to_a_position_lands_on_it_exactly` ($0.3 + (0.9 - 0.3) \ne 0.9$ in floating point);
+`followers_move_by_what_the_seeds_could_move_when_the_centreline_stops_them` (seed at $y = 1$ moved by
+$-3$ stops at $0$; a weight-0.5 follower at $y = 2$ goes to $2 - 0.5 = 1.5$, and to $1.8$ for a move of
+$-0.4$; with a second seed at $y = 2$ the room is still $1$).
+
+### Provenance
+Arithmetic by hand (2026-11-17). Not published values. A preset says how points move; nothing here measures or
+claims fairness.

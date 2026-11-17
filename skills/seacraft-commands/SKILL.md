@@ -45,5 +45,22 @@ MCP. See `docs/architecture.md`.
   `egui::Context::run_ui`; the docks settle on the second frame, so draw two
   before reading `App::viewport_rect`.
 
+* **Control channel (`point.move`, `points.move`, `points.select`, `points.select_line`, `ui.set`) and MCP point moves (`move_point`, `move_points`)**:
+  `point.move` / `move_point` move one control point to `xyz` (or by `delta` on `point.move`), and `points.move` /
+  `move_points` shift a non-empty `points` list by `delta`. Both accept optional `"connected"` (one of the built-in
+  names `"Blend both ways"`, `"Blend lengthwise"`, `"Blend around station"`, `"Nudge"`, `"Move station"`,
+  `"Beam only"`, `"Height only"`, or an inline preset object `{name?, reach, falloff, spread, follow_axes?,
+  stop_at_creases?}`, `name` defaulting to `"custom"`) and optional `"reach_m"` (a positive finite number in metres overriding the preset's reach);
+  agents never read the user's `connected-edit.json` or the window's connected switch, and every point-move reply
+  includes `"moved": [{point, from, to}, ...]`. In the window, `point.move` and `points.move` are refused while
+  the user is dragging a point (the drag would overwrite them); retry after the release. A preset only says how
+  points move: nothing about the result is checked or made fair by it. `points.select` takes `{points: [..]}` (empty clears) and replaces the selection with
+  the last entry active; `points.select_line` takes `{kind: "station" | "lengthwise"}` and adds the active point's
+  line(s) while keeping it active. `ui.set` toggles viewport display switches (`shaded`, `wireframe`, `control_net`,
+  `points`, `waterplane`, `volumes`, `windage`, `grid`, `orientation`, `station_focus`, `curves`, `combs`), sets
+  `hidden_net` (`"dimmed"`, `"hidden"`, `"same"`) and the window's own connected editing (`connected`,
+  `connected_preset`, `connected_reach_m`), which changes what a person's drag does and nothing about an agent's
+  moves.
+
 New MCP tools go in `tool_definitions()` in `crates/seacraft-cli/src/mcp.rs`. If a skill describes the area,
 update it: `skills_name_only_real_tools` checks that each tool it names exists.

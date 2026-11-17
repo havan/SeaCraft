@@ -28,6 +28,10 @@ crates/seacraft-core/
   src/mesh.rs               Surface = control points/edges/faces/layers, extents,
                             edge incidence, boundary/crease initialisation
   src/subdiv.rs             refinement kernel: refine_once, average, mirroring
+  src/netlines.rs           the control net read as lengthwise lines and stations
+  src/netmove.rs            MovePlan: where moved control points go (seeds, followers, centreline rules)
+  src/connected.rs          connected-editing presets, their file format, follower weights
+  src/raycast.rs            triangle index: is a segment blocked by the mesh
   src/fef.rs                .fef parse/write (format documented in file header)
   src/hydro.rs              Hull, waterplane, clipping, integration, sections,
                             waterline chaining, coefficients
@@ -80,7 +84,11 @@ crates/seacraft-gui/
   src/render.rs             viewport painter: grid, shading, control net
   src/gpu_hull/             the viewport hull on the GPU: vertex data, view uniforms, offscreen pipelines
   src/theme.rs              colour tokens (the only colour literals), type scale, spacing
-  src/picking.rs            screen-space picking, drag plane
+  src/picking.rs            screen-space picking (visible points first), marquee, drag plane
+  src/orientation.rs        axis triad and edge labels of a view
+  src/visibility.rs         which control points and edge stretches the hull hides, per view
+  src/selection.rs          the selected control points and the active one
+  src/connected_presets.rs  the user's connected-edit.json beside the settings
   src/history.rs            snapshot undo/redo (64)
   src/messages.rs           typed message log (level, text, time) + Messages window
   src/recent.rs             File > Open recent list, JSON eframe::Storage in the data dir

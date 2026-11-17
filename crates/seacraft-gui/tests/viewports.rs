@@ -200,6 +200,9 @@ fn line_colours(ctx: &egui::Context, app: &mut App) -> Vec<egui::Color32> {
 fn the_control_net_is_dimmed_until_a_point_is_selected() {
     use seacraft_gui::theme;
     let mut app = App::headless_for_test(Some(&demo_path()));
+    // The orientation triad's X axis shares `theme::CREASE`'s RGB, so turn the
+    // overlay off when checking that idle frames emit no crease-coloured lines.
+    app.display_mut().orientation = false;
     let ctx = egui::Context::default();
     frame(&ctx, &mut app, Vec::new());
     let idle = line_colours(&ctx, &mut app);

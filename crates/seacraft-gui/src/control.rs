@@ -521,6 +521,28 @@ fn triple(v: &Value, key: &str) -> Result<Vec3, String> {
     Ok(Vec3::new(out[0], out[1], out[2]))
 }
 
+/// Parse optional `"connected"` preset and `"reach_m"` override for point moves.
+fn connected_arg(
+    p: &Value,
+) -> Result<Option<(seacraft_core::connected::ConnectedPreset, Option<f64>)>, String> {
+    let preset = match p.get("connected") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(seacraft_core::connected::preset_from_json(v)?),
+    };
+    let reach_m = match p.get("reach_m") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_f64()
+                .filter(|x| x.is_finite() && *x > 0.0)
+                .ok_or("`reach_m` must be a finite number greater than 0")?,
+        ),
+    };
+    if reach_m.is_some() && preset.is_none() {
+        return Err("`reach_m` requires `connected`".into());
+    }
+    Ok(preset.map(|p| (p, reach_m)))
+}
+
 /// A pointer position in window points.
 fn position(p: &Value) -> Result<egui::Pos2, String> {
     let bad = || "`x` and `y` must be finite window coordinates".to_string();
@@ -698,6 +720,9 @@ fn handle_inner(
             let mut maximised: Option<bool> = None;
             let mut messages: Option<bool> = None;
             let mut templates: Option<bool> = None;
+            let mut connected_on: Option<bool> = None;
+            let mut connected_preset: Option<String> = None;
+            let mut connected_reach: Option<Option<f64>> = None;
             for (key, value) in object {
                 match key.as_str() {
                     "shaded" => {
@@ -715,6 +740,18 @@ fn handle_inner(
                     "points" => {
                         display.points = value.as_bool().ok_or("`points` must be true or false")?
                     }
+                    "hidden_net" => {
+                        let name = value.as_str().ok_or("`hidden_net` must be a string")?;
+                        display.hidden_net =
+                            crate::render::HiddenNet::from_key(name).ok_or_else(|| {
+                                format!("`hidden_net` must be dimmed, hidden or same, not `{name}`")
+                            })?;
+                    }
+                    "station_focus" => {
+                        display.station_focus = value
+                            .as_bool()
+                            .ok_or("`station_focus` must be true or false")?
+                    }
                     "waterplane" => {
                         display.waterplane = value
                             .as_bool()
@@ -730,6 +767,11 @@ fn handle_inner(
                     }
                     "grid" => {
                         display.grid = value.as_bool().ok_or("`grid` must be true or false")?
+                    }
+                    "orientation" => {
+                        display.orientation = value
+                            .as_bool()
+                            .ok_or("`orientation` must be true or false")?
                     }
                     "combs" => {
                         display.combs = value.as_bool().ok_or("`combs` must be true or false")?
@@ -854,6 +896,37 @@ fn handle_inner(
                         maximised =
                             Some(value.as_bool().ok_or("`maximised` must be true or false")?)
                     }
+                    "connected" => {
+                        connected_on =
+                            Some(value.as_bool().ok_or("`connected` must be true or false")?)
+                    }
+                    "connected_preset" => {
+                        let name = value
+                            .as_str()
+                            .ok_or("`connected_preset` must be a string")?;
+                        let presets = &app.preset_store().presets;
+                        if !presets.iter().any(|p| p.name == name) {
+                            let names: Vec<String> =
+                                presets.iter().map(|p| format!("\"{}\"", p.name)).collect();
+                            return Err(format!(
+                                "unknown connected preset `{name}`; available: {}",
+                                names.join(", ")
+                            ));
+                        }
+                        connected_preset = Some(name.to_owned());
+                    }
+                    "connected_reach_m" => {
+                        connected_reach = Some(if value.is_null() {
+                            None
+                        } else {
+                            Some(
+                                value
+                                    .as_f64()
+                                    .filter(|x| x.is_finite() && *x > 0.0)
+                                    .ok_or("`connected_reach_m` must be a finite number greater than 0 or null")?,
+                            )
+                        });
+                    }
                     other => return Err(format!("unknown setting `{other}`")),
                 }
             }
@@ -897,6 +970,15 @@ fn handle_inner(
             // After `active_view`: maximising takes the (new) active view.
             if let Some(max) = maximised {
                 app.set_maximised(max);
+            }
+            if let Some(on) = connected_on {
+                app.set_connected_on(on);
+            }
+            if let Some(preset) = connected_preset {
+                app.set_connected_preset(preset);
+            }
+            if let Some(reach) = connected_reach {
+                app.set_connected_reach(reach);
             }
             Ok(inspect(app))
         }
@@ -1291,15 +1373,95 @@ fn handle_inner(
                 }
                 _ => return Err("give `xyz` [x, y, z] or `delta` [dx, dy, dz]".into()),
             };
+            let connected = connected_arg(p)?;
+            let connected_ref = connected
+                .as_ref()
+                .map(|(preset, reach_m)| (preset, *reach_m));
             // The Inspector's path: one undo step, the symmetric-layer clamp
             // (y >= 0), the geometry marked changed.
-            let (target, clamped) = app.move_point(index, target)?;
+            let (target, clamped, moved) = app.move_point_with(index, target, connected_ref)?;
             Ok(json!({
                 "index": index,
                 "point": [target.x, target.y, target.z],
                 "clamped": clamped,
+                "moved": moved,
                 "undo_len": app.undo_len(),
             }))
+        }
+        "points.move" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let count = app.control_point_count();
+            let list = p
+                .get("points")
+                .and_then(Value::as_array)
+                .filter(|a| !a.is_empty())
+                .ok_or("`points` must be a non-empty array of control point indices")?;
+            let mut seeds = Vec::with_capacity(list.len());
+            for value in list {
+                let idx = value
+                    .as_f64()
+                    .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
+                    .ok_or_else(|| {
+                        format!(
+                            "a `points` index must be from 0 to {}",
+                            count.saturating_sub(1)
+                        )
+                    })? as usize;
+                seeds.push(idx);
+            }
+            let delta_val = p
+                .get("delta")
+                .filter(|v| !v.is_null())
+                .ok_or("missing `delta` [dx, dy, dz]")?;
+            let delta = triple(delta_val, "delta")?;
+            if delta.x.abs() > 1.0e6 || delta.y.abs() > 1.0e6 || delta.z.abs() > 1.0e6 {
+                return Err("`delta` must be three finite numbers within 1000 km".into());
+            }
+            let connected = connected_arg(p)?;
+            let connected_ref = connected
+                .as_ref()
+                .map(|(preset, reach_m)| (preset, *reach_m));
+            let moved = app.move_points_with(&seeds, delta, connected_ref)?;
+            Ok(json!({
+                "moved": moved,
+            }))
+        }
+        "points.select" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let count = app.control_point_count();
+            let list = p
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or("`points` must be an array of control point indices")?;
+            let mut indices = Vec::with_capacity(list.len());
+            for value in list {
+                let idx = value
+                    .as_f64()
+                    .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
+                    .ok_or_else(|| {
+                        format!(
+                            "a `points` index must be from 0 to {}",
+                            count.saturating_sub(1)
+                        )
+                    })? as usize;
+                indices.push(idx);
+            }
+            commands::select_points(app, &indices)
+        }
+        "points.select_line" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let kind = match p.get("kind").and_then(Value::as_str) {
+                Some("station") => seacraft_core::netlines::LineKind::Transverse,
+                Some("lengthwise") => seacraft_core::netlines::LineKind::Lengthwise,
+                _ => return Err("`kind` must be \"station\" or \"lengthwise\"".into()),
+            };
+            commands::select_line(app, kind)
         }
         "edge.crease" => {
             let count = app.surface().ok_or("no model loaded")?.points.len();
@@ -2468,6 +2630,42 @@ fn whole_opt(
 fn inspect(app: &App) -> Value {
     let d = app.display();
     let h = app.hydro_options();
+    let display = json!({
+        "shaded": d.shaded,
+        "wireframe": d.wireframe,
+        "control_net": d.control_net,
+        "points": d.points,
+        "hidden_net": d.hidden_net.key(),
+        "station_focus": d.station_focus,
+        "waterplane": d.waterplane,
+        "volumes": d.volumes,
+        "windage": d.windage,
+        "grid": d.grid,
+        "orientation": d.orientation,
+        "curves": d.curves,
+        "combs": d.combs,
+        "stations": d.stations,
+        "buttocks": d.buttocks,
+        "waterlines": d.waterlines,
+        "comb_scale": d.comb_scale,
+        "comb_density": d.comb_stride,
+        "analysis": d.analysis.label(),
+    });
+    let hydro = json!({
+        "draft": h.draft,
+        "trim": h.trim,
+        "heel_deg": h.heel_deg,
+        "kg": app.kg(),
+        "free_trim": app.free_trim(),
+        "lcg": app.lcg(),
+        "result": serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null),
+    });
+    let connected_presets: Vec<&str> = app
+        .preset_store()
+        .presets
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
     json!({
         "version": seacraft_core::VERSION,
         "status": app.status(),
@@ -2478,6 +2676,12 @@ fn inspect(app: &App) -> Value {
         "active_view": app.active_view(),
         "maximised": app.maximised().is_some(),
         "selected_point": app.selected(),
+        "selected_points": app.selection().points(),
+        "connected": app.connected().on,
+        "connected_preset": app.connected().preset,
+        "connected_reach_m": app.connected().reach_m,
+        "connected_presets": connected_presets,
+        "connected_error": app.preset_store().error,
         "selected_volume": match app.selected_volume_info() {
             Some((kind, index, name)) => json!({
                 "kind": kind,
@@ -2505,24 +2709,7 @@ fn inspect(app: &App) -> Value {
         "layers": app.layer_count(),
         "active_layer": app.active_layer(),
         "picked_face": app.picked_face(),
-        "display": {
-            "shaded": d.shaded,
-            "wireframe": d.wireframe,
-            "control_net": d.control_net,
-            "points": d.points,
-            "waterplane": d.waterplane,
-            "volumes": d.volumes,
-            "windage": d.windage,
-            "grid": d.grid,
-            "curves": d.curves,
-            "combs": d.combs,
-            "stations": d.stations,
-            "buttocks": d.buttocks,
-            "waterlines": d.waterlines,
-            "comb_scale": d.comb_scale,
-            "comb_density": d.comb_stride,
-            "analysis": d.analysis.label(),
-        },
+        "display": display,
         "status_level": app.status_level().label(),
         "messages_open": app.show_messages(),
         // The newest 20 messages, newest first.
@@ -2539,15 +2726,7 @@ fn inspect(app: &App) -> Value {
             .iter()
             .map(|e| json!({ "path": e.path.to_string_lossy(), "exists": e.exists }))
             .collect::<Vec<_>>(),
-        "hydro": {
-            "draft": h.draft,
-            "trim": h.trim,
-            "heel_deg": h.heel_deg,
-            "kg": app.kg(),
-            "free_trim": app.free_trim(),
-            "lcg": app.lcg(),
-            "result": serde_json::to_value(app.hydrostatics()).unwrap_or(Value::Null),
-        },
+        "hydro": hydro,
     })
 }
 
@@ -4134,6 +4313,9 @@ mod tests {
             "performance.compute",
             "seakeeping.irregular",
             "point.move",
+            "points.move",
+            "points.select",
+            "points.select_line",
             "edge.crease",
             "layer.list",
             "layer.add",
@@ -4543,6 +4725,78 @@ mod tests {
         }
         assert!(app.display().curves, "a refused batch changed nothing");
         assert_eq!(app.display().stations, 21);
+    }
+
+    #[test]
+    fn ui_set_toggles_orientation_and_inspect_reports_it() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["display"]["orientation"], true, "{v}");
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "orientation": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["orientation"], false);
+        assert!(!app.display().orientation);
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "orientation": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["orientation"], true);
+        assert!(app.display().orientation);
+
+        let bad = call(&mut app, &ctx, "ui.set", json!({ "orientation": "yes" }));
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(app.display().orientation);
+    }
+
+    #[test]
+    fn ui_set_sets_hidden_net_and_inspect_reports_it() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["display"]["hidden_net"], "dimmed", "{v}");
+
+        for (key, expected) in [
+            ("hidden", crate::render::HiddenNet::Hidden),
+            ("same", crate::render::HiddenNet::Same),
+            ("dimmed", crate::render::HiddenNet::Dimmed),
+        ] {
+            let r = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": key }));
+            assert_eq!(r["ok"], true, "{r}");
+            assert_eq!(r["result"]["display"]["hidden_net"], key);
+            assert_eq!(app.display().hidden_net, expected);
+        }
+
+        let bad = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": "ghost" }));
+        assert_eq!(bad["ok"], false, "{bad}");
+        let err = bad["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("dimmed") && err.contains("hidden") && err.contains("same"),
+            "error must list dimmed, hidden, same: {err:?}"
+        );
+        assert_eq!(app.display().hidden_net, crate::render::HiddenNet::Dimmed);
+
+        let non_str = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": true }));
+        assert_eq!(non_str["ok"], false, "{non_str}");
+    }
+
+    #[test]
+    fn ui_set_toggles_station_focus_and_inspect_reports_it() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["display"]["station_focus"], true, "{v}");
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "station_focus": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["station_focus"], false);
+        assert!(!app.display().station_focus);
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "station_focus": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["station_focus"], true);
+        assert!(app.display().station_focus);
+
+        let bad = call(&mut app, &ctx, "ui.set", json!({ "station_focus": "yes" }));
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(app.display().station_focus);
     }
 
     #[test]
@@ -5027,5 +5281,429 @@ mod tests {
         }
         assert_eq!(app.layer_count(), 3);
         assert_eq!(app.surface().unwrap().layer_face_counts()[1], 32);
+    }
+
+    #[test]
+    fn points_move_shifts_a_group_and_refuses_empty_or_out_of_range() {
+        // By hand: shifting points 2 and 5 by (0.25, 0.0, 0.1) adds that vector to each.
+        let (mut app, ctx) = demo();
+        let before_2 = app.surface().unwrap().points[2].p;
+        let before_5 = app.surface().unwrap().points[5].p;
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.move",
+            json!({ "points": [2, 5], "delta": [0.25, 0.0, 0.1] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let moved = r["result"]["moved"].as_array().expect("moved array");
+        assert_eq!(moved.len(), 2, "{r}");
+        assert_eq!(moved[0]["point"], 2);
+        assert_eq!(moved[1]["point"], 5);
+        let delta = Vec3::new(0.25, 0.0, 0.1);
+        assert!((app.surface().unwrap().points[2].p - (before_2 + delta)).length() < 1e-12);
+        assert!((app.surface().unwrap().points[5].p - (before_5 + delta)).length() < 1e-12);
+        assert_eq!(app.undo_len(), 1);
+        assert_eq!(app.selection().points(), &[2, 5]);
+        assert_eq!(app.selected(), Some(5));
+
+        // Empty list and out-of-range indices are refused without changing the model.
+        for bad in [
+            json!({ "points": [], "delta": [1.0, 0.0, 0.0] }),
+            json!({ "points": [2, 99999], "delta": [1.0, 0.0, 0.0] }),
+            json!({ "points": [-1], "delta": [1.0, 0.0, 0.0] }),
+        ] {
+            let r = call(&mut app, &ctx, "points.move", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        assert_eq!(app.undo_len(), 1);
+        assert!((app.surface().unwrap().points[2].p - (before_2 + delta)).length() < 1e-12);
+    }
+
+    #[test]
+    fn point_move_and_points_move_support_connected_presets_and_reach_m() {
+        // Closed-form oracle: `MovePlan::connected` on the same surface with the same preset and reach.
+        use seacraft_core::connected::preset_from_json;
+        use seacraft_core::netlines::NetLines;
+        use seacraft_core::netmove::MovePlan;
+
+        let (mut app, ctx) = demo();
+        // Even if the user's remembered choice in storage has connected editing on,
+        // control commands without `"connected"` stay rigid.
+        let storage_path = scratch("connected-storage.json");
+        let mut storage = crate::recent::JsonFileStorage::open(&storage_path);
+        (crate::recent::ConnectedChoice {
+            on: true,
+            preset: "Blend both ways".into(),
+            reach_m: Some(5.0),
+        })
+        .save(&mut storage);
+        app.set_storage(Box::new(storage));
+
+        let rigid_seed = 14;
+        let rigid_before = app.surface().unwrap().points[rigid_seed].p;
+        let rigid_target = rigid_before + Vec3::new(0.0, 0.0, 0.2);
+        let r = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({ "index": rigid_seed, "xyz": [rigid_target.x, rigid_target.y, rigid_target.z] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let rigid_moved = r["result"]["moved"].as_array().expect("moved array");
+        assert_eq!(
+            rigid_moved.len(),
+            1,
+            "absent connected is a rigid move of only the seed"
+        );
+        assert_eq!(rigid_moved[0]["point"], rigid_seed);
+        app.undo();
+
+        // 1. `point.move` with built-in `"Blend lengthwise"`.
+        let surface_before = app.surface().unwrap().clone();
+        let seed = 14;
+        let target = surface_before.points[seed].p + Vec3::new(0.1, 0.2, 0.3);
+        let preset = preset_from_json(&json!("Blend lengthwise")).unwrap();
+        let expected_plan = MovePlan::connected(
+            &surface_before,
+            &NetLines::of(&surface_before),
+            &[seed],
+            &preset,
+            preset.reach.metres(&surface_before),
+        );
+        let expected_moved =
+            serde_json::to_value(expected_plan.positions_to(seed, target)).unwrap();
+        assert!(
+            expected_moved.as_array().unwrap().len() > 1,
+            "preset pulls lengthwise followers"
+        );
+
+        let r = call(
+            &mut app,
+            &ctx,
+            "point.move",
+            json!({
+                "index": seed,
+                "xyz": [target.x, target.y, target.z],
+                "connected": "Blend lengthwise",
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["index"], seed);
+        assert_eq!(r["result"]["point"], json!([target.x, target.y, target.z]));
+        assert_eq!(r["result"]["clamped"], false);
+        assert_eq!(r["result"]["moved"], expected_moved);
+        assert_eq!(r["result"]["undo_len"], 1);
+        app.undo();
+        for (a, b) in app
+            .surface()
+            .unwrap()
+            .points
+            .iter()
+            .zip(&surface_before.points)
+        {
+            assert_eq!(a.p, b.p, "one undo restores seed and all followers");
+        }
+
+        // 2. `points.move` with inline preset object and `reach_m` override.
+        let inline = json!({
+            "name": "inline",
+            "reach": {"m": 3.0},
+            "falloff": "linear",
+            "spread": "lengthwise",
+        });
+        let inline_preset = preset_from_json(&inline).unwrap();
+        let delta = Vec3::new(0.0, 0.15, 0.25);
+        let expected_inline = serde_json::to_value(
+            MovePlan::connected(
+                &surface_before,
+                &NetLines::of(&surface_before),
+                &[14, 15],
+                &inline_preset,
+                3.0,
+            )
+            .positions(delta),
+        )
+        .unwrap();
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.move",
+            json!({
+                "points": [14, 15],
+                "delta": [delta.x, delta.y, delta.z],
+                "connected": inline,
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["moved"], expected_inline);
+        assert_eq!(app.undo_len(), 1);
+        app.undo();
+
+        // 3. `reach_m` overrides the preset's own reach.
+        let expected_override = serde_json::to_value(
+            MovePlan::connected(
+                &surface_before,
+                &NetLines::of(&surface_before),
+                &[14],
+                &preset,
+                1.8,
+            )
+            .positions(delta),
+        )
+        .unwrap();
+        assert_ne!(
+            expected_override,
+            serde_json::to_value(
+                MovePlan::connected(
+                    &surface_before,
+                    &NetLines::of(&surface_before),
+                    &[14],
+                    &preset,
+                    preset.reach.metres(&surface_before),
+                )
+                .positions(delta),
+            )
+            .unwrap()
+        );
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.move",
+            json!({
+                "points": [14],
+                "delta": [delta.x, delta.y, delta.z],
+                "connected": "Blend lengthwise",
+                "reach_m": 1.8,
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["moved"], expected_override);
+        let _ = std::fs::remove_file(storage_path);
+    }
+
+    #[test]
+    fn connected_move_on_half_demo_hull_respects_centreline_and_refuses_bad_args() {
+        // On the symmetric half demo hull (`y >= 0`), a connected move with negative dy
+        // clamps every moved point to `y >= 0` and locks every centreline follower at `y = 0.0`.
+        use seacraft_core::connected::preset_from_json;
+
+        let (mut app, ctx) = demo();
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.load_demo",
+            json!({ "symmetric": true }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let surface_before = app.surface().unwrap().clone();
+        // Find a starboard point near a centreline neighbour on the same station.
+        let seed = (0..surface_before.points.len())
+            .find(|&i| {
+                let p = surface_before.points[i].p;
+                p.x > 3.0 && p.x < 9.0 && p.y > 0.1 && p.y < 1.2
+            })
+            .expect("starboard seed near centreline");
+
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.move",
+            json!({
+                "points": [seed],
+                "delta": [0.1, -3.0, 0.2],
+                "connected": "Blend both ways",
+                "reach_m": 4.0,
+            }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let moved = r["result"]["moved"].as_array().expect("moved array");
+        assert!(moved.len() > 2, "connected move has followers");
+        let mut saw_centreline_follower = false;
+        for entry in moved {
+            let idx = entry["point"].as_u64().unwrap() as usize;
+            let from_y = entry["from"]["y"].as_f64().unwrap();
+            let to_y = entry["to"]["y"].as_f64().unwrap();
+            let to_x = entry["to"]["x"].as_f64().unwrap();
+            let from_x = entry["from"]["x"].as_f64().unwrap();
+            assert!(to_y >= 0.0, "point {idx} crossed y = 0: {entry}");
+            if idx != seed && from_y.abs() <= 1e-9 {
+                saw_centreline_follower = true;
+                assert_eq!(to_y, 0.0, "centreline follower {idx} must stay on y = 0");
+                assert!(to_x > from_x, "centreline follower {idx} still moves in x");
+            }
+        }
+        assert!(
+            saw_centreline_follower,
+            "at least one centreline follower moved"
+        );
+        for p in &app.surface().unwrap().points {
+            assert!(p.p.y >= 0.0, "surface point below y = 0: {:?}", p.p);
+        }
+
+        // Invalid `connected` or `reach_m` returns the exact error and leaves the model and undo stack untouched.
+        let snap_points: Vec<Vec3> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+        let undo_before = app.undo_len();
+        for (method, bad_params, check_preset_err) in [
+            (
+                "point.move",
+                json!({ "index": seed, "xyz": [1.0, 1.0, 1.0], "connected": "Smudge" }),
+                Some(json!("Smudge")),
+            ),
+            (
+                "points.move",
+                json!({ "points": [seed], "delta": [0.1, 0.0, 0.0], "connected": 3 }),
+                Some(json!(3)),
+            ),
+            (
+                "point.move",
+                json!({ "index": seed, "xyz": [1.0, 1.0, 1.0], "connected": "Nudge", "reach_m": 0 }),
+                None,
+            ),
+            (
+                "points.move",
+                json!({ "points": [seed], "delta": [0.1, 0.0, 0.0], "connected": "Nudge", "reach_m": -1.0 }),
+                None,
+            ),
+            (
+                "points.move",
+                json!({ "points": [seed], "delta": [0.1, 0.0, 0.0], "reach_m": 0 }),
+                None,
+            ),
+        ] {
+            let r = call(&mut app, &ctx, method, bad_params.clone());
+            assert_eq!(r["ok"], false, "{method} {bad_params}: {r}");
+            if let Some(val) = check_preset_err {
+                let want = preset_from_json(&val).unwrap_err();
+                assert_eq!(r["error"].as_str().unwrap(), want);
+            }
+        }
+        assert_eq!(app.undo_len(), undo_before);
+        let after_points: Vec<Vec3> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+        assert_eq!(after_points, snap_points);
+    }
+
+    #[test]
+    fn points_select_and_select_line_round_trip_and_reject_bad_input() {
+        let (mut app, ctx) = demo();
+
+        // Replace selection with [3, 7, 2] -> 2 becomes active, matches ui.inspect.
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.select",
+            json!({ "points": [3, 7, 2] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let insp = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(r["result"]["selected_point"], json!(2));
+        assert_eq!(r["result"]["selected_points"], json!([3, 7, 2]));
+        assert_eq!(
+            r["result"]["selected_point"],
+            insp["result"]["selected_point"]
+        );
+        assert_eq!(
+            r["result"]["selected_points"],
+            insp["result"]["selected_points"]
+        );
+
+        // Reject out-of-range index without changing the existing selection.
+        let bad_idx = app.control_point_count();
+        for bad in [
+            json!({ "points": [4, bad_idx] }),
+            json!({ "points": [-1] }),
+            json!({ "points": [1.5] }),
+            json!({}),
+            json!({ "points": "nope" }),
+        ] {
+            let err = call(&mut app, &ctx, "points.select", bad.clone());
+            assert_eq!(err["ok"], false, "{bad}: {err}");
+            assert_eq!(app.selected(), Some(2));
+            assert_eq!(app.selection().points(), &[3, 7, 2]);
+        }
+
+        // `points.select_line` on the full demo hull (11 points per station, 9 per lengthwise line):
+        // pick a point on midship station x = 5.20.
+        let mid = app
+            .surface()
+            .unwrap()
+            .points
+            .iter()
+            .position(|p| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 1.0 && p.p.z < 0.8)
+            .expect("midship bilge point");
+        let r = call(&mut app, &ctx, "points.select", json!({ "points": [mid] }));
+        assert_eq!(r["ok"], true, "{r}");
+
+        let st = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "station" }),
+        );
+        assert_eq!(st["ok"], true, "{st}");
+        assert_eq!(st["result"]["selected_point"], json!(mid));
+        assert_eq!(
+            st["result"]["selected_points"].as_array().unwrap().len(),
+            11
+        );
+
+        let lw = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "lengthwise" }),
+        );
+        assert_eq!(lw["ok"], true, "{lw}");
+        assert_eq!(lw["result"]["selected_point"], json!(mid));
+        // 11 from station + 8 other points on the lengthwise line = 19.
+        assert_eq!(
+            lw["result"]["selected_points"].as_array().unwrap().len(),
+            19
+        );
+
+        // Invalid kind leaves selection unchanged.
+        let bad_kind = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "diagonal" }),
+        );
+        assert_eq!(bad_kind["ok"], false, "{bad_kind}");
+
+        // Empty list clears selection.
+        let cleared = call(&mut app, &ctx, "points.select", json!({ "points": [] }));
+        assert_eq!(cleared["ok"], true, "{cleared}");
+        assert_eq!(cleared["result"]["selected_point"], Value::Null);
+        assert_eq!(cleared["result"]["selected_points"], json!([]));
+
+        // `points.select_line` with no active point is an error.
+        let no_active = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "station" }),
+        );
+        assert_eq!(no_active["ok"], false, "{no_active}");
+
+        // With no model loaded, both return errors without panicking.
+        let mut empty_app = App::headless_empty();
+        assert_eq!(
+            call(
+                &mut empty_app,
+                &ctx,
+                "points.select",
+                json!({ "points": [] })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut empty_app,
+                &ctx,
+                "points.select_line",
+                json!({ "kind": "station" })
+            )["ok"],
+            false
+        );
     }
 }

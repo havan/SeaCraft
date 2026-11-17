@@ -27,6 +27,8 @@ pub const NOT_VALIDATED_NOTE: &str =
     "Not validated: results may be wrong and are not class, flag or statutory approval; see DISCLAIMER.md.";
 
 pub mod analysis;
+/// Connected editing: presets and the weights of the points that follow a move.
+pub mod connected;
 pub mod control_auth;
 pub mod curves;
 pub mod damage;
@@ -50,6 +52,10 @@ pub mod loading;
 pub mod math;
 pub mod mesh;
 pub mod michell;
+/// The control net read as lengthwise lines and stations.
+pub mod netlines;
+/// Moving control points: one rule for the window and the agents.
+pub mod netmove;
 pub mod offsets;
 pub mod optimize;
 pub mod panels;
@@ -60,6 +66,8 @@ pub mod pdf;
 pub mod planing;
 pub mod project;
 pub mod raster;
+/// Whether a segment is blocked by a triangle mesh.
+pub mod raycast;
 pub mod report;
 pub mod resistance;
 /// Lewis conformal mapping and Ursell–Tasai 2D heave radiation.

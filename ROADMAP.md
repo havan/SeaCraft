@@ -72,7 +72,8 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 
 ### M3: Selection
 
-- [ ] Multi-select, marquee and edge picking, and moving several points together.
+- [ ] Edge picking. Multi-select (Shift+click, a Shift+drag rectangle, a whole station or lengthwise line) and
+  moving several points together are done, with connected editing on top.
 - Done when headless tests cover each, and topology tools use the selection rather than picked pairs.
 
 ### M4: More naval architecture
@@ -122,7 +123,7 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 | Resistance | Holtrop-Mennen, Michell, Savitsky, within each method's range | Appendage detail, sailing yacht performance |
 | Small craft | None | ISO 12217-2 STIX (the formula is in a paid standard) |
 | Seakeeping | Strip theory, heave and pitch in head seas | 3D panel method, oblique seas, roll |
-| Modelling | Point edits, split face, insert edge, crease, layers | Multi-select, marquee, edge extrusion |
+| Modelling | Point edits alone, in groups or with followers; split face, insert edge, crease, layers | Edge picking, edge extrusion |
 | File formats | `.fef`, SVG, DXF, IGES, OBJ, STL, 3MF, PLY | FREE!ship's binary `.fbm`, VRML import |
 | GUI | Dark theme, four viewports, docks | Light theme, command palette, smooth 3D on large models |
 

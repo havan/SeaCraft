@@ -186,7 +186,8 @@ fn the_inspector_clamps_a_symmetric_point_to_the_centreline() {
     let surface = app.surface().unwrap();
     let index = (0..surface.points.len())
         .find(|&i| {
-            seacraft_gui::app::point_on_symmetric_layer(surface, i) && surface.points[i].p.y > 0.1
+            seacraft_core::netmove::point_on_symmetric_layer(surface, i)
+                && surface.points[i].p.y > 0.1
         })
         .expect("a point off the centreline of a symmetric layer");
     let before = surface.points[index].p;
@@ -269,4 +270,62 @@ fn dragging_an_inspector_value_moves_the_point_once_on_release() {
     assert!(after.x > before.x + 0.05, "x {} -> {}", before.x, after.x);
     assert_eq!((after.y, after.z), (before.y, before.z));
     assert_eq!(app.undo_len(), 1, "a drag is one undo entry");
+}
+
+#[test]
+fn the_inspector_moves_a_multi_point_selection_in_one_undo_step() {
+    // By hand: two points shifted by (0.0, 0.0, 0.25) through the Inspector's dx/dy/dz + "Move"
+    // button each gain +0.25 in z in a single undo entry.
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    let a = sheer_point(&app);
+    let b = (0..app.surface().unwrap().points.len())
+        .find(|&i| i != a && app.surface().unwrap().points[i].p.y > 0.1)
+        .expect("a second point");
+    let before_a = app.surface().unwrap().points[a].p;
+    let before_b = app.surface().unwrap().points[b].p;
+
+    app.selection_mut().clear();
+    app.selection_mut().add_all([a, b]);
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+    let drawn = texts(&out);
+    assert!(
+        drawn.iter().any(|t| t.contains("2 points")),
+        "count shown: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|t| t.contains("..")),
+        "extents shown: {drawn:?}"
+    );
+    assert!(app.inspector_field_rect(2).width() > 0.0, "dz field drawn");
+    assert!(
+        app.inspector_move_button_rect().width() > 0.0,
+        "Move button drawn"
+    );
+
+    // Type 0.25 into dz, press Enter, then click "Move".
+    let dz_field = app.inspector_field_rect(2).center();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(dz_field)]);
+    frame(&ctx, &mut app, vec![button(dz_field, true)]);
+    frame(&ctx, &mut app, vec![button(dz_field, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, vec![egui::Event::Text("0.25".into())]);
+    frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.undo_len(), 0, "not committed before clicking Move");
+
+    let move_btn = app.inspector_move_button_rect().center();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(move_btn)]);
+    frame(&ctx, &mut app, vec![button(move_btn, true)]);
+    frame(&ctx, &mut app, vec![button(move_btn, false)]);
+    frame(&ctx, &mut app, Vec::new());
+
+    let delta = Vec3::new(0.0, 0.0, 0.25);
+    assert!((app.surface().unwrap().points[a].p - (before_a + delta)).length() < 1e-12);
+    assert!((app.surface().unwrap().points[b].p - (before_b + delta)).length() < 1e-12);
+    assert_eq!(app.undo_len(), 1, "one undo entry for the group move");
+    app.undo();
+    assert!((app.surface().unwrap().points[a].p - before_a).length() < 1e-12);
+    assert!((app.surface().unwrap().points[b].p - before_b).length() < 1e-12);
 }

@@ -101,14 +101,38 @@ pub const CREASE: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
 /// hues, quiet enough that the hull under them is what the eye reads.
 pub const CONTROL_NET_IDLE: Color32 = Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x66);
 pub const CREASE_IDLE: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x80);
+/// Control net edges, creases and points hidden behind the shaded hull.
+pub const CONTROL_NET_HIDDEN: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x30);
+pub const CREASE_HIDDEN: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x40);
+pub const POINT_HIDDEN: Color32 = Color32::from_rgba_unmultiplied_const(0xcf, 0xd8, 0xe3, 0x48);
+/// The active or hovered station highlighted across all views, and the rest
+/// of the control net in the Body plan while station focus is on.
+pub const STATION_HIGHLIGHT: Color32 = Color32::from_rgb(0x7d, 0xc6, 0xff);
+pub const CONTROL_NET_FAINT: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x20);
 /// Control points.
 pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
+/// The control point under the pointer: the one a click or drag would take.
+/// Warm, apart from the green selection, the teal followers and the blue
+/// station highlight.
+pub const POINT_HOVER: Color32 = Color32::from_rgb(0xff, 0xd8, 0x6b);
 /// The picked control point and its outline.
 pub const POINT_SELECTED: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
 pub const POINT_SELECTED_OUTLINE: Color32 = Color32::BLACK;
 /// The first of two picked control points (Shift+click), ringed for the
 /// Model menu's edge tools.
 pub const POINT_PICKED: Color32 = POINT_SELECTED;
+/// Follower rings in connected editing, opacity rising with the weight.
+pub fn follower_marker(weight: f64) -> Color32 {
+    let w = if weight.is_finite() {
+        weight.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let alpha = (65.0 + (235.0 - 65.0) * w).round() as u8;
+    Color32::from_rgba_unmultiplied(110, 212, 168, alpha)
+}
 /// Outline of the control face the last click picked (Model > Split face).
 pub const FACE_PICKED: Color32 = Color32::from_rgba_unmultiplied_const(0x5a, 0xd0, 0x6a, 0x90);
 /// The world axis a locked drag follows: x red, y green, z blue.
@@ -648,12 +672,13 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 21] = [
+    const SOURCES: [(&str, &str); 25] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
         ("camera.rs", include_str!("camera.rs")),
         ("commands.rs", include_str!("commands.rs")),
+        ("connected_presets.rs", include_str!("connected_presets.rs")),
         ("control.rs", include_str!("control.rs")),
         ("gpu_hull/mod.rs", include_str!("gpu_hull/mod.rs")),
         ("gpu_hull/geometry.rs", include_str!("gpu_hull/geometry.rs")),
@@ -666,10 +691,13 @@ mod tests {
         ("messages.rs", include_str!("messages.rs")),
         ("model_menu.rs", include_str!("model_menu.rs")),
         ("new_design.rs", include_str!("new_design.rs")),
+        ("orientation.rs", include_str!("orientation.rs")),
         ("panels.rs", include_str!("panels.rs")),
         ("picking.rs", include_str!("picking.rs")),
         ("recent.rs", include_str!("recent.rs")),
         ("render.rs", include_str!("render.rs")),
+        ("selection.rs", include_str!("selection.rs")),
+        ("visibility.rs", include_str!("visibility.rs")),
     ];
 
     #[test]
@@ -853,5 +881,46 @@ mod tests {
             Color32::from_rgb(0x12, 0x34, 0x56)
         );
         assert_eq!(layer_colour(-1), Color32::from_rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn hidden_net_tokens_are_quieter_than_idle_and_distinct_from_canvas() {
+        for (hidden, idle, full) in [
+            (CONTROL_NET_HIDDEN, CONTROL_NET_IDLE, CONTROL_NET),
+            (CREASE_HIDDEN, CREASE_IDLE, CREASE),
+            (POINT_HIDDEN, POINT, POINT),
+        ] {
+            assert_ne!(hidden, CANVAS);
+            assert_ne!(hidden, idle);
+            assert_ne!(hidden, full);
+            assert!(hidden.a() > 0 && hidden.a() < idle.a());
+        }
+    }
+
+    #[test]
+    fn the_hover_ring_stands_apart_from_the_canvas_and_the_other_point_marks() {
+        assert!(contrast_ratio(POINT_HOVER, CANVAS) >= 3.0);
+        for other in [
+            POINT,
+            POINT_SELECTED,
+            STATION_HIGHLIGHT,
+            CONTROL_NET,
+            follower_marker(1.0),
+        ] {
+            assert_ne!(POINT_HOVER, other);
+        }
+    }
+
+    #[test]
+    fn follower_marker_interpolates_alpha_with_weight() {
+        let low = follower_marker(0.0);
+        let mid = follower_marker(0.5);
+        let high = follower_marker(1.0);
+        assert_eq!(low.a(), 65);
+        assert_eq!(mid.a(), 150);
+        assert_eq!(high.a(), 235);
+        assert_eq!(high.to_srgba_unmultiplied(), [110, 212, 168, 235]);
+        assert_eq!(follower_marker(f64::NAN).a(), 65);
+        assert_eq!(follower_marker(2.0).a(), 235);
     }
 }

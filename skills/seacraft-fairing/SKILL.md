@@ -28,11 +28,12 @@ Run `hull_info {}` and check `validation.ok`; fairing a leaking net measures not
 
 ## Fix in small steps
 
-1. Pick the control point nearest the defect. `move_point {"index": 40, "xyz": [x, y, z]}` returns `before` and `after`, so the first call tells you where the point is.
-2. Move it by at most 1 to 2 % of the local beam or depth, toward the average of its neighbours. One point per step.
-3. Re-render the same view under the same file name pattern and compare the stripes. Repeat, up to about 10 moves, then re-baseline.
-4. Do not fair across a crease: use `set_crease {"a": 4, "b": 5, "crease": false}` only when the edge was never meant to be sharp, and say so in the report.
-5. A defect that persists across moves needs more control detail: `split_face {"face": 12}` (a triangle fan, the face keeps its index) or `insert_edge {"face": 12, "a": 3, "b": 7}` (non-adjacent points of that face).
+1. Pick the control point nearest the defect. `move_point {"index": 40, "xyz": [x, y, z]}` returns `before`, `after`, `clamped` and `moved`, so the first call tells you where the point is. To shift several points together by one displacement, use `move_points {"points": [40, 41], "delta": [dx, dy, dz]}`.
+2. Move by at most 1 to 2 % of the local beam or depth, toward the average of its neighbours. One move per step.
+3. Optional `"connected"` on `move_point` or `move_points` draws neighbouring points along using a built-in preset name (`"Blend both ways"`, `"Blend lengthwise"`, `"Blend around station"`, `"Nudge"`, `"Move station"`, `"Beam only"`, `"Height only"`) or an inline preset object (`{name?, reach, falloff, spread, follow_axes?, stop_at_creases?}`, `name` defaulting to `"custom"`), with optional `"reach_m"` (positive finite metres) overriding the preset's reach: e.g. `move_points {"points": [40], "delta": [0.0, 0.02, 0.0], "connected": "Blend lengthwise", "reach_m": 2.5}`. Every moved point (seed and follower) is returned in `moved`; on a symmetric layer, centreline followers stay on `y = 0` and no moved point goes below `y = 0`. A preset only says how points move: nothing about the result is checked or made fair by it, so judge every move yourself with zebra, curvature, combs and hydrostatics.
+4. Re-render the same view under the same file name pattern and compare the stripes. Repeat, up to about 10 moves, then re-baseline.
+5. Do not fair across a crease: use `set_crease {"a": 4, "b": 5, "crease": false}` only when the edge was never meant to be sharp, and say so in the report.
+6. A defect that persists across moves needs more control detail: `split_face {"face": 12}` (a triangle fan, the face keeps its index) or `insert_edge {"face": 12, "a": 3, "b": 7}` (non-adjacent points of that face).
 
 ## Verify
 

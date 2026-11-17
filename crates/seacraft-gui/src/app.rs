@@ -49,6 +49,10 @@ struct RenderCache {
     level: u8,
     mode: SubdivisionMode,
     mesh: RenderMesh,
+    /// The ray index over `mesh`, built on first use by a view that
+    /// classifies the hidden net (see `App::net_visibility_wanted`).
+    bvh: Option<seacraft_core::raycast::Bvh>,
+    net_lines: seacraft_core::netlines::NetLines,
     curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
     /// The section settings `curves` were cut with ([`SectionCut`]).
     curves_for: Option<SectionCut>,
@@ -89,6 +93,28 @@ impl RenderCache {
     fn stamp(&self) -> u64 {
         (self.revision << 4) | u64::from(self.level)
     }
+}
+
+/// Hash of a [`crate::camera::ViewTransform`]'s basis and projection parameters.
+fn view_key(view: &crate::camera::ViewTransform) -> u64 {
+    revision_key(&[
+        view.eye.x.to_bits(),
+        view.eye.y.to_bits(),
+        view.eye.z.to_bits(),
+        view.right.x.to_bits(),
+        view.right.y.to_bits(),
+        view.right.z.to_bits(),
+        view.up.x.to_bits(),
+        view.up.y.to_bits(),
+        view.up.z.to_bits(),
+        view.forward.x.to_bits(),
+        view.forward.y.to_bits(),
+        view.forward.z.to_bits(),
+        view.ortho_height.to_bits(),
+        view.fit_aspect.to_bits(),
+        view.fov_tan.to_bits(),
+        view.perspective as u64,
+    ])
 }
 
 /// Live hydrostatics: the floating condition, the last report and the hull
@@ -343,6 +369,33 @@ impl RasterImage {
     }
 }
 
+/// Connected-editing switch, chosen preset name and optional reach override.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectedState {
+    pub on: bool,
+    pub preset: String,
+    pub reach_m: Option<f64>,
+}
+
+impl Default for ConnectedState {
+    fn default() -> Self {
+        Self {
+            on: false,
+            preset: seacraft_core::connected::DEFAULT_PRESET.to_owned(),
+            reach_m: None,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct HoverFollowersKey {
+    hovered: usize,
+    revision: u64,
+    preset: seacraft_core::connected::ConnectedPreset,
+    reach_bits: u64,
+    seeds: Vec<usize>,
+}
+
 /// A control point being dragged in one viewport.
 struct DragState {
     point: usize,
@@ -354,6 +407,17 @@ struct DragState {
     /// Position when grabbed, so a click that never moved can drop its
     /// snapshot again.
     original: Vec3,
+    /// Which points move with the drag, and where each started.
+    plan: seacraft_core::netmove::MovePlan,
+    /// Whether Shift+press added `point` to the selection (so a release
+    /// without movement does not immediately toggle it off again).
+    added_on_press: bool,
+    /// Last cursor target computed by `drag_to` (or `original` before the
+    /// first movement), so changing the reach mid-drag can re-apply the move.
+    target: Vec3,
+    /// Whether `plan` pulls neighbours along ([`App::connected_now`] when it
+    /// was last built): Ctrl pressed or let go mid-drag re-plans it.
+    connected: bool,
 }
 
 /// What the File menu can produce besides a `.fef`.
@@ -897,7 +961,8 @@ pub struct App {
     cameras: [Camera; 4],
     active: usize,
     cache: Option<RenderCache>,
-    selected: Option<usize>,
+    selection: crate::selection::Selection,
+    hovered_point: Option<usize>,
     selected_volume: Option<VolumeRef>,
     selected_windage: Option<usize>,
     last_highlighted_tank: Option<usize>,
@@ -909,6 +974,10 @@ pub struct App {
     marks: Vec<(u64, Option<Surface>, Project, usize)>,
     next_mark_id: u64,
     drag: Option<DragState>,
+    /// Active Shift+drag marquee selection rectangle: `(viewport, origin, end)`.
+    marquee: Option<(usize, egui::Pos2, egui::Pos2)>,
+    /// Set when Escape cancels a marquee so moving before release does not pan.
+    marquee_cancelled: bool,
     /// Unsaved edits since the last save / load.
     dirty: bool,
     /// The model (as `.fef` text) and project as last loaded or saved, so an
@@ -945,6 +1014,8 @@ pub struct App {
     inspector_pending: Option<(usize, [f64; 3])>,
     /// Where the inspector's x/y/z fields were drawn last frame (test hook).
     inspector_rects: [egui::Rect; 3],
+    /// Where the inspector's "Move" button was drawn last frame (test hook).
+    inspector_move_button_rect: egui::Rect,
     /// Where the layer list and the Inspector under it were drawn last
     /// frame (test hooks).
     layer_list_rect: egui::Rect,
@@ -1023,6 +1094,8 @@ pub struct App {
     /// Each viewport's waterline, tessellated once, and the [`render::waterline_key`] it was built
     /// for: orbiting one view rebuilds its own, and the other three draw theirs again.
     waterline_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
+    /// Each viewport's control-net visibility and the revision key it was computed for.
+    net_visibilities: [Option<(u64, crate::visibility::NetVisibility)>; 4],
     /// The hull drawn on the GPU.
     gpu_hull: GpuHullState,
     /// Requests from the loopback control socket (`--control`), served once
@@ -1035,9 +1108,6 @@ pub struct App {
     control_roots: seacraft_core::control_auth::ControlRoots,
     /// Token file removed on clean shutdown.
     token_file: Option<seacraft_core::control_auth::TokenFile>,
-    /// The control point picked before `selected` (Shift+click): with it,
-    /// the two picked points the Model menu's edge tools act on.
-    second_pick: Option<usize>,
     /// Model > Transform…, while open.
     transform_dialog: Option<crate::model_menu::TransformDialog>,
     /// Model > Optimise…, while open.
@@ -1047,10 +1117,52 @@ pub struct App {
     optimise_job: Option<OptimiseJob>,
     /// The world axis the point drag is locked to this frame (X, Y or Z held).
     axis_lock: Option<seacraft_core::transform::Axis>,
+    /// Connected-editing switch, preset name and optional reach override.
+    connected: ConnectedState,
+    /// Ctrl (Cmd on macOS) is held over the window: connected editing is
+    /// the opposite of the switch until it is let go.
+    connected_flip: bool,
+    /// The connected choice last written to the settings, so a drag release
+    /// writes only a choice that changed (the wheel's reach).
+    persisted_choice: Option<crate::recent::ConnectedChoice>,
+    /// Built-in and user connected-editing presets (`connected-edit.json`).
+    preset_store: crate::connected_presets::PresetStore,
+    /// Cached hover follower weights, keyed by hover, revision, preset, reach and seeds.
+    hover_followers: Option<(HoverFollowersKey, Vec<(usize, f64)>)>,
     /// Cache of triangulated solids for clip_to_hull compartments and tanks.
     clipped_volumes_cache: std::sync::Mutex<Vec<ClippedMeshEntry>>,
     /// Periodic autosave state machine and startup orphan recovery queue.
     autosave: crate::autosave::AutosaveState,
+}
+
+/// Build a [`MovePlan`] for `seeds`: rigid when `connected` is `None`, or
+/// connected using `reach_m` if given and the preset's own reach otherwise.
+fn build_move_plan(
+    surface: &Surface,
+    seeds: &[usize],
+    connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+) -> seacraft_core::netmove::MovePlan {
+    match connected {
+        Some((preset, reach_m)) => {
+            let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
+            let lines = seacraft_core::netlines::NetLines::of(surface);
+            seacraft_core::netmove::MovePlan::connected(surface, &lines, seeds, preset, reach)
+        }
+        None => seacraft_core::netmove::MovePlan::rigid(surface, seeds),
+    }
+}
+
+/// Re-plan a drag under way: put every point back where it started, build
+/// the plan again from the drag's own seeds (not the selection, which Escape
+/// may have cleared since the press) and move them to the drag's target.
+fn rebuild_drag_plan(
+    drag: &mut DragState,
+    surface: &mut Surface,
+    connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+) {
+    drag.plan.apply(surface, Vec3::ZERO);
+    drag.plan = build_move_plan(surface, &drag.plan.seeds(), connected);
+    drag.plan.apply_to(surface, drag.point, drag.target);
 }
 
 /// Name, model revision and box bounds (bits) of a cached clipped solid.
@@ -1063,25 +1175,14 @@ struct OptimiseJob {
     kg: Option<f64>,
 }
 
-/// Whether control point `point` belongs to a face on a symmetric layer
-/// (only `y >= 0` modelled), so it must not cross the centreline.
-pub fn point_on_symmetric_layer(surface: &Surface, point: usize) -> bool {
-    surface.faces.iter().enumerate().any(|(fi, f)| {
-        f.contains(&point)
-            && surface
-                .face_layer
-                .get(fi)
-                .and_then(|&li| surface.layers.get(li))
-                .is_some_and(|l| l.symmetric)
-    })
-}
-
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::new_detached();
         app.status =
             "No model loaded — start a new design (Ctrl+N) or open a .fef (Ctrl+O).".to_owned();
+        app.preset_store =
+            crate::connected_presets::PresetStore::load(crate::recent::data_dir().as_deref());
         // The recent list lives in the user's data directory. eframe's own
         // storage (`cc.storage`) exists only with its `persistence` feature;
         // a list kept there is taken over when ours is empty.
@@ -1095,6 +1196,9 @@ impl App {
         }
         if let Some(p) = open {
             app.load(p);
+        }
+        if let Some(err) = app.preset_store.error.clone() {
+            app.log(Level::Warning, err);
         }
         app
     }
@@ -1144,7 +1248,8 @@ impl App {
             ],
             active: 0,
             cache: None,
-            selected: None,
+            selection: crate::selection::Selection::default(),
+            hovered_point: None,
             selected_volume: None,
             selected_windage: None,
             last_highlighted_tank: None,
@@ -1154,6 +1259,8 @@ impl App {
             marks: Vec::new(),
             next_mark_id: 1,
             drag: None,
+            marquee: None,
+            marquee_cancelled: false,
             dirty: false,
             saved_state: None,
             dialog: None,
@@ -1170,6 +1277,7 @@ impl App {
             dock_wide: false,
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
+            inspector_move_button_rect: egui::Rect::NOTHING,
             layer_list_rect: egui::Rect::NOTHING,
             inspector_rect: egui::Rect::NOTHING,
             show_report_options: false,
@@ -1211,16 +1319,21 @@ impl App {
             waterline_cuts: 0,
             shaded_hulls: Default::default(),
             waterline_meshes: Default::default(),
+            net_visibilities: Default::default(),
             gpu_hull: GpuHullState::default(),
             control: None,
             synthetic: Vec::new(),
             control_roots: seacraft_core::control_auth::ControlRoots::default(),
             token_file: None,
-            second_pick: None,
             transform_dialog: None,
             optimise_dialog: None,
             optimise_job: None,
             axis_lock: None,
+            connected: ConnectedState::default(),
+            connected_flip: false,
+            persisted_choice: None,
+            preset_store: crate::connected_presets::PresetStore::load(None),
+            hover_followers: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
             autosave: crate::autosave::AutosaveState::new(),
         }
@@ -1423,7 +1536,8 @@ impl App {
         // Measured on the previous model: left in place, it would trim the
         // new one to a point that means nothing there.
         self.hydro.lcg = None;
-        self.selected = None;
+        self.selection.clear();
+        self.hovered_point = None;
         self.selected_volume = None;
         self.selected_windage = None;
         self.last_highlighted_tank = None;
@@ -1454,6 +1568,7 @@ impl App {
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
+        self.net_visibilities = [None, None, None, None];
         if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
             guard.clear();
         }
@@ -1486,6 +1601,7 @@ impl App {
         };
         if stale {
             let mesh = export::render_mesh(surface, level, self.mode);
+            let net_lines = seacraft_core::netlines::NetLines::of(surface);
             let (min, max) = crate::render::display_extents(surface);
             // Section curves and combs cost more than the refinement: a drag
             // keeps the ones from before it and rebuilds them on release.
@@ -1505,6 +1621,8 @@ impl App {
                 level,
                 mode: self.mode,
                 mesh,
+                bvh: None,
+                net_lines,
                 curves_stale: curves.is_some(),
                 curves,
                 curves_for,
@@ -1777,6 +1895,7 @@ impl App {
         // gets the same type scale on its first frame.
         crate::theme::ensure(ui);
         self.shortcuts(ui);
+        self.read_connected_flip(ui);
         self.menu(ui);
         egui::Window::new("About SeaCraft")
             .open(&mut self.about_open)
@@ -1852,6 +1971,17 @@ impl App {
         });
 
         if self.show_layers {
+            if self.selection.active().is_some() {
+                self.sync_cache();
+            }
+            let station_caption = match (
+                self.surface.as_ref(),
+                self.cache.as_ref(),
+                self.selection.active(),
+            ) {
+                (Some(s), Some(c), Some(p)) => render::station_caption(s, &c.net_lines, p),
+                _ => None,
+            };
             let mut layer_action = panels::LayerAction::None;
             let mut inspector = panels::InspectorOutput::default();
             let active_layer = self.active_layer();
@@ -1891,7 +2021,8 @@ impl App {
                             ui,
                             panels::InspectorPanel {
                                 surface: self.surface.as_ref(),
-                                selected: self.selected,
+                                selection: &self.selection,
+                                station_caption: station_caption.clone(),
                                 pending: &mut self.inspector_pending,
                             },
                         );
@@ -1907,9 +2038,11 @@ impl App {
                 self.inspector_rect = egui::Rect::NOTHING;
             }
             self.inspector_rects = inspector.fields;
+            self.inspector_move_button_rect = inspector.move_button;
             self.apply_inspector_action(inspector.action);
         } else {
             self.inspector_rects = [egui::Rect::NOTHING; 3];
+            self.inspector_move_button_rect = egui::Rect::NOTHING;
             self.layer_list_rect = egui::Rect::NOTHING;
             self.inspector_rect = egui::Rect::NOTHING;
         }
@@ -1924,6 +2057,8 @@ impl App {
             self.start_rects = None;
             egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         } else {
+            self.marquee = None;
+            self.marquee_cancelled = false;
             self.start_screen(ui);
         }
         self.new_design_window(ui);
@@ -2063,10 +2198,17 @@ impl App {
             )
         });
         if escape {
-            self.selected = None;
-            self.second_pick = None;
-            self.selected_volume = None;
-            self.selected_windage = None;
+            if self.drag.is_some() {
+                // egui ends its drag on Escape too, so the point drag is
+                // cancelled rather than left without a pointer behind it.
+                self.cancel_drag();
+            } else if self.marquee.take().is_some() {
+                self.marquee_cancelled = true;
+            } else {
+                self.selection.clear();
+                self.selected_volume = None;
+                self.selected_windage = None;
+            }
         }
         if frame {
             self.reset_cameras();
@@ -2086,6 +2228,45 @@ impl App {
             if ui.input(|i| i.key_pressed(key)) {
                 self.set_active_view(i);
             }
+        }
+        let step_dir: Option<bool> = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt && !modifiers.ctrl && !modifiers.command && !modifiers.shift => {
+                    match key {
+                        egui::Key::ArrowRight => Some(true),
+                        egui::Key::ArrowLeft => Some(false),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+        });
+        if let Some(forward) = step_dir {
+            self.step_station(forward);
+        }
+    }
+
+    /// Step the active selection along its lengthwise net line (`forward` moves
+    /// towards the bow).
+    fn step_station(&mut self, forward: bool) {
+        let Some(active) = self.selection.active() else {
+            return;
+        };
+        self.sync_cache();
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        if let Some(next) = cache.net_lines.step(
+            active,
+            seacraft_core::netlines::LineKind::Lengthwise,
+            forward,
+        ) {
+            self.select_point(Some(next));
         }
     }
 
@@ -2256,10 +2437,23 @@ impl App {
                     ui.checkbox(&mut self.display.wireframe, "Wireframe");
                     ui.checkbox(&mut self.display.control_net, "Control net");
                     ui.checkbox(&mut self.display.points, "Control points");
+                    ui.menu_button("Hidden net", |ui| {
+                        for mode in render::HiddenNet::ALL {
+                            if ui
+                                .radio(self.display.hidden_net == mode, mode.label())
+                                .clicked()
+                            {
+                                self.display.hidden_net = mode;
+                                ui.close();
+                            }
+                        }
+                    });
+                    ui.checkbox(&mut self.display.station_focus, "Station focus");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
                     ui.checkbox(&mut self.display.windage, "Windage outlines");
                     ui.checkbox(&mut self.display.grid, "Grid");
+                    ui.checkbox(&mut self.display.orientation, "Orientation");
                     ui.checkbox(&mut self.display.curves, "Intersection curves");
                     ui.checkbox(&mut self.display.combs, "Curvature combs");
                     ui.menu_button("Curves and combs", |ui| {
@@ -2386,12 +2580,23 @@ impl App {
     /// The slim toolbar under the menu bar; its actions are applied here,
     /// after the panel has drawn.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let default_reach_m = {
+            let preset = self.active_connected_preset();
+            self.surface
+                .as_ref()
+                .map_or(0.0, |s| preset.reach.metres(s))
+        };
         let state = panels::ToolbarState {
             display: &self.display,
             params: self.analysis_params,
             level: self.level,
             mode: self.mode,
             has_model: self.surface.is_some(),
+            connected: &self.connected,
+            connected_flipped: self.connected_flip,
+            presets: &self.preset_store.presets,
+            default_reach_m,
+            preset_error: self.preset_store.error.as_deref(),
         };
         let out = egui::Panel::top("toolbar")
             .frame(
@@ -2410,6 +2615,17 @@ impl App {
         }
         if let Some(mode) = out.mode {
             self.set_subdivision_mode(mode);
+        }
+        if let Some(action) = out.connected {
+            match action {
+                panels::ToolbarConnectedAction::Toggle(on) => self.set_connected_on(on),
+                panels::ToolbarConnectedAction::SelectPreset(name) => {
+                    self.set_connected_preset(name);
+                }
+                panels::ToolbarConnectedAction::SetReach(reach_m) => {
+                    self.set_connected_reach(reach_m);
+                }
+            }
         }
         self.toolbar_rects = out.rects;
     }
@@ -3333,6 +3549,8 @@ impl App {
             || self.hydro.options.draft != snap.draft
             || snap.model.is_some();
         self.surface = snap.surface;
+        let n = self.surface.as_ref().map_or(0, |s| s.points.len());
+        self.selection.retain_valid(n);
         if let Some(m) = snap.model {
             self.project = m.project;
             self.project_error = m.project_error;
@@ -3408,7 +3626,8 @@ impl App {
         self.project_edit_source = None;
         self.history.truncate_undo(undo_len);
         self.history.clear_redo();
-        self.selected = None;
+        let n = self.surface.as_ref().map_or(0, |s| s.points.len());
+        self.selection.retain_valid(n);
         self.mark_geometry_changed();
         self.refresh_dirty();
         self.set_status(format!("restored to mark {id}"));
@@ -3470,6 +3689,7 @@ impl App {
         // frame after release, which refreshes all of them once.
         let drag_view = self.drag.as_ref().map(|d| d.view);
         let mut ready = self.raster_stale_views(&cells, &volume_overlays, &windage_overlays);
+        self.hovered_point = None;
 
         for &(cell, index) in &cells {
             self.viewport_rects[index] = cell;
@@ -3487,14 +3707,24 @@ impl App {
             }
 
             if response.hovered() {
-                let (scroll, cursor) =
-                    ui.input(|i| (i.smooth_scroll_delta.y, i.pointer.hover_pos()));
+                // Ctrl (Cmd) + wheel reaches us as egui's zoom delta,
+                // exp(wheel / 200); turned back into wheel points it zooms
+                // the view, or sets the reach during a Ctrl-connected drag.
+                let (scroll, cursor) = ui.input(|i| {
+                    let zoom = i.zoom_delta();
+                    let from_zoom = if zoom > 0.0 { zoom.ln() * 200.0 } else { 0.0 };
+                    (i.smooth_scroll_delta.y + from_zoom, i.pointer.hover_pos())
+                });
                 if scroll.abs() > 0.0 {
-                    let factor = (-scroll as f64 * 0.0025).exp();
-                    match cursor {
-                        // The world point under the cursor stays put.
-                        Some(cursor) => self.cameras[index].zoom_at(factor, cursor, cell),
-                        None => self.cameras[index].zoom(factor),
+                    if self.drag.as_ref().is_some_and(|d| d.connected) {
+                        self.scale_connected_drag_reach(scroll);
+                    } else {
+                        let factor = (-scroll as f64 * 0.0025).exp();
+                        match cursor {
+                            // The world point under the cursor stays put.
+                            Some(cursor) => self.cameras[index].zoom_at(factor, cursor, cell),
+                            None => self.cameras[index].zoom(factor),
+                        }
                     }
                 }
             }
@@ -3505,6 +3735,7 @@ impl App {
                 self.cameras[index].pan(delta.x, delta.y, cell);
             }
             let secondary = ui.input(|i| i.pointer.secondary_down());
+            let mut added_on_press = false;
             if response.dragged() && secondary && self.cameras[index].kind.is_perspective() {
                 let delta = response.drag_delta();
                 self.cameras[index].orbit(delta.x, -delta.y);
@@ -3515,49 +3746,136 @@ impl App {
                 // A press on a corner button is not a grab at the point
                 // that happens to lie under it.
                 let on_button = ui
-                    .input(|i| i.pointer.interact_pos())
+                    .input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
                     .is_some_and(|p| render::view_buttons(cell).iter().any(|b| b.contains(p)));
                 if response.hovered() && !on_button && ui.input(|i| i.pointer.primary_pressed()) {
+                    self.marquee_cancelled = false;
+                    self.sync_net_visibility(index, cell);
                     self.begin_drag(ui, &view, cell, index);
+                    if self.drag.is_none()
+                        && pointer_shift(ui)
+                        && self.display.points
+                        && self.surface.is_some()
+                    {
+                        if let Some(origin) =
+                            ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
+                        {
+                            self.active = index;
+                            self.marquee = Some((index, origin, origin));
+                        }
+                    }
+                }
+                // Nothing is hovered while the view itself is dragged (a pan
+                // or an orbit): the highlight would flicker under the pointer.
+                if response.hovered()
+                    && !on_button
+                    && !response.dragged()
+                    && self.drag.is_none()
+                    && self.marquee.is_none()
+                {
+                    self.sync_net_visibility(index, cell);
+                    self.hovered_point = self.pick_at(ui, &view, cell, index);
+                }
+                if let Some(m) = self.marquee.as_mut().filter(|m| m.0 == index) {
+                    if ui.input(|i| i.pointer.primary_down()) {
+                        if let Some(pos) =
+                            ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
+                        {
+                            m.2 = pos;
+                        }
+                    } else if !ui.input(|i| i.pointer.any_released()) {
+                        self.marquee = None;
+                    }
                 }
                 if response.dragged_by(egui::PointerButton::Primary) {
                     if self.drag.as_ref().is_some_and(|d| d.view == index) {
                         self.drag_to(ui, &view, cell);
-                    } else if self.drag.is_none() {
+                    } else if self.drag.is_none()
+                        && self.marquee.is_none()
+                        && !self.marquee_cancelled
+                    {
                         let delta = response.drag_delta();
                         self.cameras[index].pan(delta.x, delta.y, cell);
                     }
                 }
                 if ui.input(|i| i.pointer.any_released()) {
+                    self.marquee_cancelled = false;
+                    if let Some((_, from, to)) = self.marquee.take_if(|m| m.0 == index) {
+                        let rect = egui::Rect::from_two_pos(from, to).intersect(cell);
+                        if (rect.width() >= 4.0 || rect.height() >= 4.0) && self.display.points {
+                            self.sync_net_visibility(index, cell);
+                            let vis = self.net_visibility(index);
+                            if let Some(surface) = self.surface.as_ref() {
+                                let hits = picking::points_in_rect(
+                                    surface,
+                                    &view,
+                                    cell,
+                                    rect,
+                                    vis,
+                                    self.display.hidden_net,
+                                );
+                                if !hits.is_empty() {
+                                    self.selection.add_all(hits);
+                                    self.selected_windage = None;
+                                    self.selected_volume = None;
+                                }
+                            }
+                        }
+                    }
                     if let Some(drag) = self.drag.take_if(|d| d.view == index) {
+                        added_on_press = drag.added_on_press;
                         self.axis_lock = None;
-                        let moved = self
-                            .surface
-                            .as_ref()
-                            .map(|s| (s.points[drag.point].p - drag.original).length() > 1e-12)
-                            .unwrap_or(false);
+                        let moved = self.surface.as_ref().is_some_and(|s| {
+                            drag.plan.weights().into_iter().any(|(p, _)| {
+                                drag.plan
+                                    .start(p)
+                                    .zip(s.points.get(p))
+                                    .is_some_and(|(from, cp)| (cp.p - from).length() > 1e-12)
+                            })
+                        });
                         if moved {
                             // Full refinement and measurement again; the
                             // automatic recomputes count from the release.
                             self.revision += 1;
                             self.touch_geometry();
-                            self.set_status("control point moved".to_owned());
+                            let count = drag.plan.weights().len();
+                            if count > 1 {
+                                self.set_status(format!("{count} control points moved"));
+                            } else {
+                                self.set_status("control point moved".to_owned());
+                            }
+                            if drag.connected
+                                && self.persisted_choice.as_ref() != Some(&self.connected_choice())
+                            {
+                                self.persist_recent();
+                            }
                         } else {
                             self.history.discard_last();
+                            // The wheel may have re-planned the press
+                            // without moving anything.
+                            self.refresh_dirty();
                         }
                     }
                 }
             }
             if response.clicked() {
                 self.active = index;
-                self.selected = self.pick_at(ui, &view, cell);
-                // The press (`begin_drag`) already decided whether this
-                // click adds a second point; a click on nothing drops both.
-                if self.selected.is_none() || self.second_pick == self.selected {
-                    self.second_pick = None;
+                self.sync_net_visibility(index, cell);
+                let picked = self.pick_at(ui, &view, cell, index);
+                let shift = pointer_shift(ui);
+                if shift {
+                    if let Some(p) = picked {
+                        if !added_on_press {
+                            self.selection.toggle(p);
+                        }
+                    }
+                } else if let Some(p) = picked {
+                    self.selection.set_only(p);
+                } else {
+                    self.selection.clear();
                 }
                 self.picked_face = self.pick_face_at(ui, &view, cell);
-                if self.selected.is_none() {
+                if self.selection.is_empty() {
                     let cursor = ui.input(|i| i.pointer.interact_pos());
                     let mut hit_windage = false;
                     if self.display.windage && self.cameras[index].kind == ViewKind::Profile {
@@ -3625,7 +3943,23 @@ impl App {
         // so a second mesh in a frame would leave the views already rendered with nothing to show.
         self.refresh_gpu_hull_geometry();
 
+        let drag_followers: Option<Vec<(usize, f64)>> = self
+            .drag
+            .as_ref()
+            .filter(|d| d.connected)
+            .map(|d| d.plan.followers());
+        let hover_followers: Vec<(usize, f64)> =
+            if drag_followers.is_none() && self.connected_now() && self.display.points {
+                self.hovered_followers().to_vec()
+            } else {
+                Vec::new()
+            };
+        let followers: &[(usize, f64)] = drag_followers
+            .as_deref()
+            .unwrap_or(hover_followers.as_slice());
+
         for &(cell, index) in &cells {
+            self.sync_net_visibility(index, cell);
             if let Some(scene) = self.scene(&volume_overlays, &windage_overlays) {
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
@@ -3729,6 +4063,18 @@ impl App {
                         (&no_hull, None)
                     }
                 };
+                let mut sel_with_drag;
+                let drawn_selection = match &self.drag {
+                    Some(d) if !self.selection.contains(d.point) => {
+                        sel_with_drag = self.selection.clone();
+                        sel_with_drag.add_all([d.point]);
+                        &sel_with_drag
+                    }
+                    _ => &self.selection,
+                };
+                let vis = self.net_visibility(index);
+                let focus_point = self.hovered_point.or_else(|| drawn_selection.active());
+                let net_lines = self.cache.as_ref().map(|c| &c.net_lines);
                 render::viewport_with_texture(
                     ui,
                     cell,
@@ -3736,7 +4082,12 @@ impl App {
                     Some(&scene),
                     display,
                     self.active == index,
-                    self.selected,
+                    drawn_selection,
+                    net_lines,
+                    focus_point,
+                    self.hovered_point,
+                    followers,
+                    vis,
                     texture.as_ref(),
                     hull,
                     gpu_hull,
@@ -3911,16 +4262,26 @@ impl App {
         ui: &egui::Ui,
         view: &crate::camera::ViewTransform,
         cell: egui::Rect,
+        index: usize,
     ) -> Option<usize> {
         // Hidden control points cannot be grabbed: a drag would move a point
         // the user cannot see.
         if !self.display.points {
             return None;
         }
-        let cursor = ui.input(|i| i.pointer.interact_pos())?;
+        let cursor = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))?;
         let surface = self.surface.as_ref()?;
         let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
-        picking::pick_point(view, cell, cursor, &pts, PICK_RADIUS)
+        let vis = self.net_visibility(index);
+        picking::pick_point(
+            view,
+            cell,
+            cursor,
+            &pts,
+            PICK_RADIUS,
+            vis,
+            self.display.hidden_net,
+        )
     }
 
     /// The control face under the cursor (see [`picking::pick_face`]).
@@ -3982,7 +4343,7 @@ impl App {
         cell: egui::Rect,
         index: usize,
     ) {
-        let Some(point) = self.pick_at(ui, view, cell) else {
+        let Some(point) = self.pick_at(ui, view, cell, index) else {
             return;
         };
         let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else {
@@ -3999,28 +4360,110 @@ impl App {
         let snap = Snapshot::edit(surface, self.hydro.options.draft);
         self.project_edit_source = None;
         self.history.snapshot(&snap);
-        // Shift+press keeps the point selected so far as the first of two
-        // picked points (the Model menu's edge tools); a plain press picks
-        // one point.
+        let mut added_on_press = false;
         if pointer_shift(ui) {
-            if self.selected != Some(point) {
-                self.second_pick = self.selected;
+            if !self.selection.contains(point) {
+                self.selection.toggle(point);
+                added_on_press = true;
             }
-        } else {
-            self.second_pick = None;
+        } else if !self.selection.contains(point) {
+            self.selection.set_only(point);
         }
-        self.selected = Some(point);
+        let surface = self.surface.as_ref().expect("checked above");
+        let connected = self
+            .connected_now()
+            .then(|| (self.active_connected_preset(), self.connected.reach_m));
+        let plan = build_move_plan(
+            surface,
+            self.selection.points(),
+            connected.as_ref().map(|(p, r)| (p, *r)),
+        );
         self.active = index;
-        self.set_status(format!(
-            "dragging control point {point} · hold X, Y or Z to lock an axis"
-        ));
+        if let Some((preset, reach_m)) = &connected {
+            let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
+            self.set_status(format!(
+                "{} · reach {:.2} m · {} points",
+                preset.name,
+                reach,
+                plan.weights().len()
+            ));
+        } else {
+            self.set_status(format!(
+                "dragging control point {point} · hold X, Y or Z to lock an axis"
+            ));
+        }
         self.drag = Some(DragState {
             point,
             plane,
             offset,
             view: index,
             original: center,
+            plan,
+            added_on_press,
+            target: center,
+            connected: connected.is_some(),
         });
+    }
+
+    /// Whether a drag now pulls neighbours along: the Connected switch,
+    /// flipped while Ctrl (Cmd on macOS) is held.
+    pub fn connected_now(&self) -> bool {
+        self.connected.on != self.connected_flip
+    }
+
+    /// Read whether Ctrl (Cmd) is held, and re-plan a drag under way when
+    /// that changes whether it pulls neighbours along. A key held for a
+    /// text field is typing, never a flip.
+    fn read_connected_flip(&mut self, ui: &egui::Ui) {
+        let typing = self.keyboard_taken || ui.ctx().egui_wants_keyboard_input();
+        self.connected_flip = !typing && ui.input(|i| i.modifiers.command);
+        let now = self.connected_now();
+        if !self.drag.as_ref().is_some_and(|d| d.connected != now) {
+            return;
+        }
+        let preset = self.active_connected_preset();
+        let reach_m = self.connected.reach_m;
+        let (Some(drag), Some(surface)) = (self.drag.as_mut(), self.surface.as_mut()) else {
+            return;
+        };
+        rebuild_drag_plan(drag, surface, now.then_some((&preset, reach_m)));
+        drag.connected = now;
+        let count = drag.plan.weights().len();
+        let point = drag.point;
+        if now {
+            let reach = self.effective_connected_reach_m();
+            self.set_status(format!(
+                "{} · reach {reach:.2} m · {count} points",
+                preset.name
+            ));
+        } else {
+            self.set_status(format!(
+                "dragging control point {point} · hold X, Y or Z to lock an axis"
+            ));
+        }
+        self.revision += 1;
+        self.touch_geometry();
+        self.sync_cache();
+    }
+
+    /// Escape during a point drag: every point goes back where it started,
+    /// the press's undo snapshot is dropped and the selection stays.
+    fn cancel_drag(&mut self) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        self.axis_lock = None;
+        if let Some(surface) = self.surface.as_mut() {
+            drag.plan.apply(surface, Vec3::ZERO);
+        }
+        self.history.discard_last();
+        // Against the file, not the flag at the press: a save may have
+        // happened since.
+        self.refresh_dirty();
+        self.revision += 1;
+        self.touch_geometry();
+        self.sync_cache();
+        self.set_status("drag cancelled".to_owned());
     }
 
     fn drag_to(&mut self, ui: &egui::Ui, view: &crate::camera::ViewTransform, cell: egui::Rect) {
@@ -4047,20 +4490,32 @@ impl App {
             target = crate::model_menu::lock_to_axis(drag.original, target, axis);
         }
         if lock != self.axis_lock {
+            let connected_status = if lock.is_none() && drag.connected {
+                let preset = self.active_connected_preset();
+                let reach = self.effective_connected_reach_m();
+                Some(format!(
+                    "{} · reach {:.2} m · {} points",
+                    preset.name,
+                    reach,
+                    drag.plan.weights().len()
+                ))
+            } else {
+                None
+            };
             self.set_status(match lock {
                 Some(axis) => format!(
                     "dragging control point {point} along {} (locked)",
                     crate::model_menu::axis_name(axis)
                 ),
-                None => format!("dragging control point {point} · hold X, Y or Z to lock an axis"),
+                None => connected_status.unwrap_or_else(|| {
+                    format!("dragging control point {point} · hold X, Y or Z to lock an axis")
+                }),
             });
         }
         self.axis_lock = lock;
-        if let Some(surface) = self.surface.as_mut() {
-            if point_on_symmetric_layer(surface, point) {
-                target.y = target.y.max(0.0);
-            }
-            surface.points[point].p = target;
+        if let (Some(drag), Some(surface)) = (self.drag.as_mut(), self.surface.as_mut()) {
+            drag.target = target;
+            drag.plan.apply_to(surface, point, target);
         }
         self.dirty = true;
         self.autosave.note_dirty();
@@ -4069,6 +4524,78 @@ impl App {
         // Refine now (at the drag level), so the dragged view shows the point
         // under the cursor this frame instead of the next.
         self.sync_cache();
+    }
+
+    fn scale_connected_drag_reach(&mut self, scroll_y: f32) {
+        let preset = self.active_connected_preset();
+        let (Some(drag), Some(surface)) = (self.drag.as_mut(), self.surface.as_mut()) else {
+            return;
+        };
+        let current = self
+            .connected
+            .reach_m
+            .unwrap_or_else(|| preset.reach.metres(surface))
+            .max(1e-3);
+        let next = (current * 1.1_f64.powf(scroll_y as f64 / 40.0)).clamp(1e-3, 1e4);
+        self.connected.reach_m = Some(next);
+        rebuild_drag_plan(drag, surface, Some((&preset, Some(next))));
+        let count = drag.plan.weights().len();
+        self.set_status(format!(
+            "{} · reach {next:.2} m · {count} points",
+            preset.name
+        ));
+        self.dirty = true;
+        self.autosave.note_dirty();
+        self.revision += 1;
+        self.touch_geometry();
+        self.sync_cache();
+    }
+
+    fn hovered_followers(&mut self) -> &[(usize, f64)] {
+        let Some(hovered) = self.hovered_point else {
+            return &[];
+        };
+        self.sync_cache();
+        let Some(surface) = self.surface.as_ref() else {
+            return &[];
+        };
+        let Some(cache) = self.cache.as_ref() else {
+            return &[];
+        };
+        let preset = self.active_connected_preset();
+        let reach_m = self
+            .connected
+            .reach_m
+            .unwrap_or_else(|| preset.reach.metres(surface));
+        let seeds = if self.selection.contains(hovered) {
+            self.selection.points().to_vec()
+        } else {
+            vec![hovered]
+        };
+        let key = HoverFollowersKey {
+            hovered,
+            revision: self.revision,
+            preset,
+            reach_bits: reach_m.to_bits(),
+            seeds,
+        };
+        let stale = self
+            .hover_followers
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != key);
+        if stale {
+            let weights = seacraft_core::connected::follower_weights(
+                surface,
+                &cache.net_lines,
+                &key.seeds,
+                &key.preset,
+                reach_m,
+            );
+            self.hover_followers = Some((key, weights));
+        }
+        self.hover_followers
+            .as_ref()
+            .map_or(&[], |(_, w)| w.as_slice())
     }
 
     // ---- background jobs and the recompute rule -----------------------
@@ -5667,6 +6194,11 @@ impl App {
         self.cache.as_ref().map(|c| &c.mesh)
     }
 
+    /// Cached net lines for the current surface, once [`Self::refresh_cache`] has run.
+    pub fn net_lines(&self) -> Option<&seacraft_core::netlines::NetLines> {
+        self.cache.as_ref().map(|c| &c.net_lines)
+    }
+
     /// The waterline cached for the current mesh, while it was cut with the
     /// waterplane of the current floating condition: a cut from any other
     /// plane is never shown.
@@ -5700,8 +6232,93 @@ impl App {
         self.viewport_rects[i]
     }
 
+    fn net_visibility_key(&self, view: usize, cell: egui::Rect) -> Option<u64> {
+        let cache = self.cache.as_ref()?;
+        if cache.revision != self.revision || !cell.is_positive() {
+            return None;
+        }
+        let transform = self.cameras.get(view)?.transform();
+        Some(revision_key(&[
+            cache.stamp(),
+            view_key(&transform),
+            u64::from(cell.width().to_bits()),
+            u64::from(cell.height().to_bits()),
+            self.display.shaded as u64,
+        ]))
+    }
+
+    /// Whether any view classifies the control net against the hull: only a
+    /// solid hull (shaded, or an analysis mode) hides it, "same" draws it as is, and with the net and its
+    /// points both off there is nothing to classify. Otherwise neither the ray
+    /// index nor the per-view visibility is built.
+    fn net_visibility_wanted(&self) -> bool {
+        self.display.hull_is_solid()
+            && self.display.hidden_net != crate::render::HiddenNet::Same
+            && (self.display.control_net || self.display.points)
+    }
+
+    fn sync_net_visibility(&mut self, index: usize, cell: egui::Rect) {
+        let key = self
+            .net_visibility_wanted()
+            .then(|| self.net_visibility_key(index, cell))
+            .flatten();
+        let Some(key) = key else {
+            if let Some(slot) = self.net_visibilities.get_mut(index) {
+                *slot = None;
+            }
+            return;
+        };
+        if self.net_visibilities[index]
+            .as_ref()
+            .is_some_and(|(k, _)| *k == key)
+        {
+            return;
+        }
+        let (Some(surface), Some(cache)) = (self.surface.as_ref(), self.cache.as_mut()) else {
+            return;
+        };
+        let view = self.cameras[index].transform();
+        let bvh = cache
+            .bvh
+            .get_or_insert_with(|| seacraft_core::raycast::Bvh::of_render_mesh(&cache.mesh));
+        let vis = crate::visibility::net_visibility(surface, bvh, &view, cell, 0.0);
+        self.net_visibilities[index] = Some((key, vis));
+    }
+
+    /// Cached control-net visibility for viewport `view` (`0..4`), when current.
+    pub fn net_visibility(&self, view: usize) -> Option<&crate::visibility::NetVisibility> {
+        if !self.net_visibility_wanted() {
+            return None;
+        }
+        let cell = *self.viewport_rects.get(view)?;
+        let key = self.net_visibility_key(view, cell)?;
+        self.net_visibilities
+            .get(view)?
+            .as_ref()
+            .and_then(|(k, vis)| (*k == key).then_some(vis))
+    }
+
     pub fn selected(&self) -> Option<usize> {
-        self.selected
+        self.selection.active()
+    }
+
+    pub fn selection(&self) -> &crate::selection::Selection {
+        &self.selection
+    }
+
+    /// The control point under the pointer this frame, if any (test hook).
+    pub fn hovered_point(&self) -> Option<usize> {
+        self.hovered_point
+    }
+
+    /// Whether the hull's ray index is built for the current mesh (test hook):
+    /// it is built only when a view classifies the net behind the hull.
+    pub fn ray_index_built(&self) -> bool {
+        self.cache.as_ref().is_some_and(|c| c.bvh.is_some())
+    }
+
+    pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
+        &mut self.selection
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -5746,6 +6363,8 @@ impl App {
     }
 
     pub fn mark_geometry_changed(&mut self) {
+        let n = self.surface.as_ref().map_or(0, |s| s.points.len());
+        self.selection.retain_valid(n);
         self.revision += 1;
         self.dirty = true;
         self.autosave.note_dirty();
@@ -6130,8 +6749,10 @@ impl App {
 
     /// Select a control point (`None` clears the selection).
     pub fn select_point(&mut self, index: Option<usize>) {
-        self.selected = index;
-        self.second_pick = None;
+        match index {
+            Some(i) => self.selection.set_only(i),
+            None => self.selection.clear(),
+        }
     }
 
     /// Record the current model on the undo stack, as a drag does on grab.
@@ -6149,7 +6770,22 @@ impl App {
     /// supplies the other half). Returns the position the point took and
     /// whether it sits on the centreline of a symmetric layer.
     pub fn move_point(&mut self, index: usize, target: Vec3) -> Result<(Vec3, bool), String> {
+        let (to, clamped, _) = self.move_point_with(index, target, None)?;
+        Ok((to, clamped))
+    }
+
+    /// Move control point `index` to `target` as one undoable edit, optionally
+    /// drawing neighbours along as `connected` says. Returns the position the
+    /// point took, whether it sits on the centreline of a symmetric layer, and
+    /// every point that moved.
+    pub fn move_point_with(
+        &mut self,
+        index: usize,
+        target: Vec3,
+        connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+    ) -> Result<(Vec3, bool, Vec<seacraft_core::netmove::Moved>), String> {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        self.refuse_while_dragging()?;
         if index >= surface.points.len() {
             return Err(format!(
                 "`index` must be from 0 to {}",
@@ -6159,38 +6795,118 @@ impl App {
         if !target.is_finite() {
             return Err("the new position must be finite".into());
         }
-        let symmetric = point_on_symmetric_layer(surface, index);
-        let target = if symmetric && target.y < 0.0 {
-            Vec3::new(target.x, 0.0, target.z)
-        } else {
-            target
-        };
+        let symmetric = seacraft_core::netmove::point_on_symmetric_layer(surface, index);
+        let plan = build_move_plan(surface, &[index], connected);
+        let moved = plan.positions_to(index, target);
+        let to = moved
+            .iter()
+            .find(|m| m.point == index)
+            .map_or(target, |m| m.to);
         self.snapshot_undo();
         if let Some(surface) = self.surface.as_mut() {
-            surface.points[index].p = target;
+            plan.apply_to(surface, index, target);
         }
         self.select_point(Some(index));
         self.mark_geometry_changed();
-        self.status_note(format!("control point {index} moved"));
-        Ok((target, symmetric && target.y == 0.0))
+        if moved.len() > 1 {
+            self.status_note(format!("{} control points moved", moved.len()));
+        } else {
+            self.status_note(format!("control point {index} moved"));
+        }
+        Ok((to, symmetric && to.y == 0.0, moved))
+    }
+
+    /// A move asked for while a point is being dragged in the window would be
+    /// overwritten by the drag, which recomputes its points from where they
+    /// started; the hand on the mouse wins and the caller tries again.
+    fn refuse_while_dragging(&self) -> Result<(), String> {
+        if self.drag.is_some() {
+            return Err(
+                "a control point is being dragged in the window; try again once it is released"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Move every control point in `seeds` by `delta` as one undoable edit.
+    pub fn move_points(
+        &mut self,
+        seeds: &[usize],
+        delta: Vec3,
+    ) -> Result<Vec<seacraft_core::netmove::Moved>, String> {
+        self.move_points_with(seeds, delta, None)
+    }
+
+    /// Move every control point in `seeds` by `delta` as one undoable edit,
+    /// optionally drawing neighbours along as `connected` says.
+    pub fn move_points_with(
+        &mut self,
+        seeds: &[usize],
+        delta: Vec3,
+        connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+    ) -> Result<Vec<seacraft_core::netmove::Moved>, String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        self.refuse_while_dragging()?;
+        if seeds.is_empty() {
+            return Err("`points` must name at least one control point".into());
+        }
+        let count = surface.points.len();
+        for &index in seeds {
+            if index >= count {
+                return Err(format!(
+                    "point index {index} is out of range (0..{})",
+                    count.saturating_sub(1)
+                ));
+            }
+        }
+        if !delta.is_finite() {
+            return Err("`delta` must be finite".into());
+        }
+        let plan = build_move_plan(surface, seeds, connected);
+        let moved = plan.positions(delta);
+        self.snapshot_undo();
+        if let Some(surface) = self.surface.as_mut() {
+            plan.apply(surface, delta);
+        }
+        self.selection.clear();
+        self.selection.add_all(seeds.iter().copied());
+        self.mark_geometry_changed();
+        self.status_note(format!(
+            "{} control point{} moved",
+            moved.len(),
+            if moved.len() == 1 { "" } else { "s" }
+        ));
+        Ok(moved)
     }
 
     /// Apply what the Inspector asked for. A value equal to the point's
     /// position changes nothing and records no undo step.
     pub fn apply_inspector_action(&mut self, action: panels::InspectorAction) {
-        let panels::InspectorAction::Move { index, to } = action else {
-            return;
-        };
-        let unchanged = self
-            .surface
-            .as_ref()
-            .and_then(|s| s.points.get(index))
-            .is_some_and(|p| p.p == to);
-        if unchanged {
-            return;
-        }
-        if let Err(e) = self.move_point(index, to) {
-            self.log(Level::Error, e);
+        match action {
+            panels::InspectorAction::None => {}
+            panels::InspectorAction::Move { index, to } => {
+                let unchanged = self
+                    .surface
+                    .as_ref()
+                    .and_then(|s| s.points.get(index))
+                    .is_some_and(|p| p.p == to);
+                if unchanged {
+                    return;
+                }
+                if let Err(e) = self.move_point(index, to) {
+                    self.log(Level::Error, e);
+                }
+            }
+            panels::InspectorAction::MoveSelection { delta } => {
+                if delta == Vec3::ZERO {
+                    return;
+                }
+                let seeds = self.selection.points().to_vec();
+                if let Err(e) = self.move_points(&seeds, delta) {
+                    self.log(Level::Error, e);
+                }
+            }
         }
     }
 
@@ -6198,6 +6914,12 @@ impl App {
     /// frame; `Rect::NOTHING` with no point selected (test hook).
     pub fn inspector_field_rect(&self, axis: usize) -> egui::Rect {
         self.inspector_rects[axis]
+    }
+
+    /// Where the Inspector's "Move" button was drawn last frame;
+    /// `Rect::NOTHING` when fewer than two points are selected (test hook).
+    pub fn inspector_move_button_rect(&self) -> egui::Rect {
+        self.inspector_move_button_rect
     }
 
     /// Where the left dock's layer list was drawn last frame (test hook).
@@ -6270,12 +6992,161 @@ impl App {
     /// already stored there. Headless apps have none until a test gives one.
     pub fn set_storage(&mut self, storage: Box<dyn eframe::Storage>) {
         self.recent = RecentFiles::load(storage.as_ref());
+        let choice = crate::recent::ConnectedChoice::load(storage.as_ref());
+        self.connected = ConnectedState {
+            on: choice.on,
+            preset: choice.preset,
+            reach_m: choice.reach_m,
+        };
         self.storage = Some(storage);
+        self.persisted_choice = Some(self.connected_choice());
+        self.reconcile_connected_preset();
     }
 
     /// Take the storage back (tests: to read what was written).
     pub fn take_storage(&mut self) -> Option<Box<dyn eframe::Storage>> {
         self.storage.take()
+    }
+
+    /// The connected-editing switch, chosen preset name and reach override.
+    pub fn connected(&self) -> &ConnectedState {
+        &self.connected
+    }
+
+    /// Turn connected editing on or off and remember the choice.
+    pub fn set_connected_on(&mut self, on: bool) {
+        self.connected.on = on;
+        self.hover_followers = None;
+        self.persist_recent();
+    }
+
+    /// Choose a connected-editing preset by name; switching presets clears
+    /// any reach override.
+    pub fn set_connected_preset(&mut self, name: String) {
+        if self.connected.preset != name {
+            self.connected.preset = name;
+            self.connected.reach_m = None;
+        }
+        self.hover_followers = None;
+        self.persist_recent();
+    }
+
+    /// Set or clear the reach override in metres.
+    pub fn set_connected_reach(&mut self, reach_m: Option<f64>) {
+        self.connected.reach_m = reach_m
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .map(|r| r.clamp(1e-3, 1e4));
+        self.hover_followers = None;
+        self.persist_recent();
+    }
+
+    /// Built-in and user connected-editing presets, plus any file error.
+    pub fn preset_store(&self) -> &crate::connected_presets::PresetStore {
+        &self.preset_store
+    }
+
+    /// Load presets from `dir/connected-edit.json` (or built-ins only when `None`).
+    pub fn set_preset_dir(&mut self, dir: Option<PathBuf>) {
+        self.preset_store = crate::connected_presets::PresetStore::load(dir.as_deref());
+        self.hover_followers = None;
+        self.reconcile_connected_preset();
+        if let Some(err) = self.preset_store.error.clone() {
+            self.log(Level::Warning, err);
+        }
+    }
+
+    /// Re-read `connected-edit.json` and report the count or any error.
+    pub fn reload_presets(&mut self) {
+        self.preset_store.reload();
+        self.hover_followers = None;
+        let fell_back = self.reconcile_connected_preset();
+        if let Some(err) = self.preset_store.error.clone() {
+            self.log(Level::Warning, err);
+        } else if !fell_back {
+            let n = self.preset_store.presets.len();
+            let msg = match &self.preset_store.path {
+                Some(p) => format!("loaded {n} connected presets from {}", p.display()),
+                None => format!("loaded {n} built-in connected presets"),
+            };
+            self.set_status(msg);
+        }
+        if fell_back {
+            self.persist_recent();
+        }
+    }
+
+    /// Write an example `connected-edit.json` without overwriting, and report
+    /// the path written or why it could not be written.
+    pub fn create_example_presets(&mut self) {
+        match self.preset_store.write_example() {
+            Ok(path) => {
+                self.preset_store.reload();
+                self.hover_followers = None;
+                self.reconcile_connected_preset();
+                self.set_status(format!("wrote example presets to {}", path.display()));
+            }
+            Err(err) => {
+                self.log(Level::Warning, err);
+            }
+        }
+    }
+
+    /// The preset currently selected (falling back to the default built-in if missing).
+    pub fn active_connected_preset(&self) -> seacraft_core::connected::ConnectedPreset {
+        self.preset_store
+            .presets
+            .iter()
+            .find(|p| p.name == self.connected.preset)
+            .cloned()
+            .unwrap_or_else(|| {
+                seacraft_core::connected::builtin_presets()
+                    .into_iter()
+                    .next()
+                    .expect("built-in presets are non-empty")
+            })
+    }
+
+    /// The reach in metres used for connected editing on the current model.
+    pub fn effective_connected_reach_m(&self) -> f64 {
+        let preset = self.active_connected_preset();
+        self.connected.reach_m.unwrap_or_else(|| {
+            self.surface
+                .as_ref()
+                .map_or(0.0, |s| preset.reach.metres(s))
+        })
+    }
+
+    fn connected_choice(&self) -> crate::recent::ConnectedChoice {
+        crate::recent::ConnectedChoice {
+            on: self.connected.on,
+            preset: self.connected.preset.clone(),
+            reach_m: self.connected.reach_m,
+        }
+    }
+
+    fn reconcile_connected_preset(&mut self) -> bool {
+        if self
+            .preset_store
+            .presets
+            .iter()
+            .any(|p| p.name == self.connected.preset)
+        {
+            return false;
+        }
+        let missing = std::mem::replace(
+            &mut self.connected.preset,
+            seacraft_core::connected::DEFAULT_PRESET.to_owned(),
+        );
+        self.connected.reach_m = None;
+        self.hover_followers = None;
+        self.log(
+            Level::Warning,
+            format!(
+                "connected preset \"{missing}\" is no longer available; using \"{}\"",
+                self.connected.preset
+            ),
+        );
+        true
     }
 
     /// File > Open recent, most recent first.
@@ -6297,11 +7168,14 @@ impl App {
 
     /// Write the recent list to the storage now, so a crash does not lose it.
     fn persist_recent(&mut self) {
+        let choice = self.connected_choice();
         let Some(storage) = self.storage.as_mut() else {
             return;
         };
         self.recent.save(storage.as_mut());
+        choice.save(storage.as_mut());
         storage.flush();
+        self.persisted_choice = Some(choice);
         let failure = storage.get_string(crate::recent::FLUSH_ERROR_KEY);
         // Warn once per distinct failure, not on every open.
         if failure.is_some() && failure != self.recent_failure {
@@ -6677,6 +7551,7 @@ impl App {
             self.picked_points(),
             self.picked_face(),
             self.optimise_job.is_some(),
+            self.selected(),
         )
     }
 
@@ -6702,6 +7577,15 @@ impl App {
             A::SplitFace(face) => c::split_face(self, &c::SplitFaceParams { face }).map(|_| ()),
             A::Crease { edge, crease } => {
                 c::set_crease(self, &c::CreaseParams { edge, crease }).map(|_| ())
+            }
+            A::SelectLine(kind) => c::select_line(self, kind).map(|_| ()),
+            A::ReloadPresets => {
+                self.reload_presets();
+                return;
+            }
+            A::CreateExamplePresets => {
+                self.create_example_presets();
+                return;
             }
         };
         if let Err(e) = result {
@@ -6758,18 +7642,17 @@ impl App {
     /// The two picked control points, first then second (click one,
     /// Shift+click the other).
     pub fn picked_points(&self) -> Option<[usize; 2]> {
-        let count = self.surface.as_ref().map_or(0, |s| s.points.len());
-        match (self.second_pick, self.selected) {
-            (Some(a), Some(b)) if a != b && a < count && b < count => Some([a, b]),
-            _ => None,
-        }
+        self.selection.pair()
     }
 
     /// Pick two control points as a click and a Shift+click would (tests,
     /// scripts); `None` clears both.
     pub fn set_picked_points(&mut self, points: Option<[usize; 2]>) {
-        self.second_pick = points.map(|[a, _]| a);
-        self.selected = points.map(|[_, b]| b);
+        self.selection.clear();
+        if let Some([first, second]) = points {
+            self.selection.set_only(first);
+            self.selection.toggle(second);
+        }
     }
 
     /// The world axis the point drag is locked to, while X, Y or Z is held.
@@ -6899,8 +7782,8 @@ impl App {
     }
 
     /// What the Model menu's tools would act on, drawn over one viewport:
-    /// the picked face's outline, a ring on the first of two picked points,
-    /// and the axis a locked drag follows with its caption.
+    /// the picked face's outline, and the axis a locked drag follows with
+    /// its caption.
     fn draw_pick_overlays(&self, ui: &egui::Ui, cell: egui::Rect, index: usize) {
         let Some(surface) = self.surface.as_ref() else {
             return;
@@ -6919,12 +7802,24 @@ impl App {
                 ));
             }
         }
-        if self.display.points {
-            if let Some(s) = self
-                .picked_points()
-                .and_then(|[first, _]| view.project(surface.points[first].p, cell))
-            {
-                painter.circle_stroke(s, 7.0, egui::Stroke::new(1.5, crate::theme::POINT_PICKED));
+        if let Some((view_idx, from, to)) = self.marquee {
+            if view_idx == index {
+                let rect = egui::Rect::from_two_pos(from, to);
+                if rect.width() >= 4.0 || rect.height() >= 4.0 {
+                    let corners = [
+                        rect.left_top(),
+                        rect.right_top(),
+                        rect.right_bottom(),
+                        rect.left_bottom(),
+                        rect.left_top(),
+                    ];
+                    painter.extend(egui::Shape::dashed_line(
+                        &corners,
+                        egui::Stroke::new(1.5, crate::theme::POINT_SELECTED),
+                        6.0,
+                        4.0,
+                    ));
+                }
             }
         }
         let (Some(axis), Some(drag)) = (self.axis_lock, self.drag.as_ref()) else {
@@ -6964,12 +7859,14 @@ impl eframe::App for App {
     /// periodically when eframe has its `persistence` feature), and in ours.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.recent.save(storage);
+        self.connected_choice().save(storage);
         self.persist_recent();
     }
 
     /// Clean shutdown: join any in-flight autosave write and remove the
     /// session's `.json` and `.lock` files.
     fn on_exit(&mut self) {
+        self.persist_recent();
         self.autosave_shutdown();
     }
 
