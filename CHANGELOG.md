@@ -5,7 +5,7 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 ## Unreleased
 
 Seeing and shaping the control net. All of this is covered by headless tests; the look of it (colours, the
-triad, the markers) has not yet been reviewed by eye.
+triad, the markers) has been reviewed by eye on Linux only.
 
 - The Profile view now looks from starboard, with the bow still on the right, so the half of a hull that is
   modelled is the half you see. A symmetric hull looks as it did. Each view's title says which way it faces
