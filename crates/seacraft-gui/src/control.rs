@@ -1385,6 +1385,41 @@ fn handle_inner(
                 "moved": moved,
             }))
         }
+        "points.select" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let count = app.control_point_count();
+            let list = p
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or("`points` must be an array of control point indices")?;
+            let mut indices = Vec::with_capacity(list.len());
+            for value in list {
+                let idx = value
+                    .as_f64()
+                    .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
+                    .ok_or_else(|| {
+                        format!(
+                            "a `points` index must be from 0 to {}",
+                            count.saturating_sub(1)
+                        )
+                    })? as usize;
+                indices.push(idx);
+            }
+            commands::select_points(app, &indices)
+        }
+        "points.select_line" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let kind = match p.get("kind").and_then(Value::as_str) {
+                Some("station") => seacraft_core::netlines::LineKind::Transverse,
+                Some("lengthwise") => seacraft_core::netlines::LineKind::Lengthwise,
+                _ => return Err("`kind` must be \"station\" or \"lengthwise\"".into()),
+            };
+            commands::select_line(app, kind)
+        }
         "edge.crease" => {
             let count = app.surface().ok_or("no model loaded")?.points.len();
             let list = p
@@ -4225,6 +4260,8 @@ mod tests {
             "seakeeping.irregular",
             "point.move",
             "points.move",
+            "points.select",
+            "points.select_line",
             "edge.crease",
             "layer.list",
             "layer.add",
@@ -5490,5 +5527,129 @@ mod tests {
         assert_eq!(app.undo_len(), undo_before);
         let after_points: Vec<Vec3> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
         assert_eq!(after_points, snap_points);
+    }
+
+    #[test]
+    fn points_select_and_select_line_round_trip_and_reject_bad_input() {
+        let (mut app, ctx) = demo();
+
+        // Replace selection with [3, 7, 2] -> 2 becomes active, matches ui.inspect.
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.select",
+            json!({ "points": [3, 7, 2] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let insp = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(r["result"]["selected_point"], json!(2));
+        assert_eq!(r["result"]["selected_points"], json!([3, 7, 2]));
+        assert_eq!(
+            r["result"]["selected_point"],
+            insp["result"]["selected_point"]
+        );
+        assert_eq!(
+            r["result"]["selected_points"],
+            insp["result"]["selected_points"]
+        );
+
+        // Reject out-of-range index without changing the existing selection.
+        let bad_idx = app.control_point_count();
+        for bad in [
+            json!({ "points": [4, bad_idx] }),
+            json!({ "points": [-1] }),
+            json!({ "points": [1.5] }),
+            json!({}),
+            json!({ "points": "nope" }),
+        ] {
+            let err = call(&mut app, &ctx, "points.select", bad.clone());
+            assert_eq!(err["ok"], false, "{bad}: {err}");
+            assert_eq!(app.selected(), Some(2));
+            assert_eq!(app.selection().points(), &[3, 7, 2]);
+        }
+
+        // `points.select_line` on the full demo hull (11 points per station, 9 per lengthwise line):
+        // pick a point on midship station x = 5.20.
+        let mid = app
+            .surface()
+            .unwrap()
+            .points
+            .iter()
+            .position(|p| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 1.0 && p.p.z < 0.8)
+            .expect("midship bilge point");
+        let r = call(&mut app, &ctx, "points.select", json!({ "points": [mid] }));
+        assert_eq!(r["ok"], true, "{r}");
+
+        let st = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "station" }),
+        );
+        assert_eq!(st["ok"], true, "{st}");
+        assert_eq!(st["result"]["selected_point"], json!(mid));
+        assert_eq!(
+            st["result"]["selected_points"].as_array().unwrap().len(),
+            11
+        );
+
+        let lw = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "lengthwise" }),
+        );
+        assert_eq!(lw["ok"], true, "{lw}");
+        assert_eq!(lw["result"]["selected_point"], json!(mid));
+        // 11 from station + 8 other points on the lengthwise line = 19.
+        assert_eq!(
+            lw["result"]["selected_points"].as_array().unwrap().len(),
+            19
+        );
+
+        // Invalid kind leaves selection unchanged.
+        let bad_kind = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "diagonal" }),
+        );
+        assert_eq!(bad_kind["ok"], false, "{bad_kind}");
+
+        // Empty list clears selection.
+        let cleared = call(&mut app, &ctx, "points.select", json!({ "points": [] }));
+        assert_eq!(cleared["ok"], true, "{cleared}");
+        assert_eq!(cleared["result"]["selected_point"], Value::Null);
+        assert_eq!(cleared["result"]["selected_points"], json!([]));
+
+        // `points.select_line` with no active point is an error.
+        let no_active = call(
+            &mut app,
+            &ctx,
+            "points.select_line",
+            json!({ "kind": "station" }),
+        );
+        assert_eq!(no_active["ok"], false, "{no_active}");
+
+        // With no model loaded, both return errors without panicking.
+        let mut empty_app = App::headless_empty();
+        assert_eq!(
+            call(
+                &mut empty_app,
+                &ctx,
+                "points.select",
+                json!({ "points": [] })
+            )["ok"],
+            false
+        );
+        assert_eq!(
+            call(
+                &mut empty_app,
+                &ctx,
+                "points.select_line",
+                json!({ "kind": "station" })
+            )["ok"],
+            false
+        );
     }
 }

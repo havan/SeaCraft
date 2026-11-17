@@ -71,6 +71,13 @@ impl Selection {
         self.active = None;
     }
 
+    /// Make `p` the active point if it is already in the selection.
+    pub fn set_active(&mut self, p: usize) {
+        if self.points.contains(&p) {
+            self.active = Some(p);
+        }
+    }
+
     /// The two selected points in pick order when `len() == 2`.
     pub fn pair(&self) -> Option<[usize; 2]> {
         match self.points.as_slice() {

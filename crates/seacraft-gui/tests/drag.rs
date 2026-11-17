@@ -609,3 +609,322 @@ fn model_with_no_symmetric_layer_moves_across_y_zero_freely() {
     assert_eq!(app.undo_len(), 1);
     assert_eq!(app.surface().unwrap().points[cl].p, after_cl);
 }
+
+fn shift_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::SHIFT,
+    }
+}
+
+fn marquee_drag(ctx: &egui::Context, app: &mut App, from: egui::Pos2, to: egui::Pos2) {
+    let mid = egui::pos2((from.x + to.x) * 0.5, (from.y + to.y) * 0.5);
+    frame(ctx, app, vec![egui::Event::PointerMoved(from)]);
+    frame(ctx, app, vec![shift_button(from, true)]);
+    frame(ctx, app, vec![egui::Event::PointerMoved(mid)]);
+    frame(ctx, app, vec![egui::Event::PointerMoved(to)]);
+    frame(ctx, app, vec![shift_button(to, false)]);
+    frame(ctx, app, Vec::new());
+}
+
+#[test]
+fn shift_drag_marquee_selects_visible_points_in_dimmed_and_all_in_same_without_panning() {
+    let mut app = App::headless_for_test(None);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let rect = app.viewport_rect(1); // Profile
+    let view = app.cameras()[1].transform();
+    let target_before = app.cameras()[1].target;
+
+    // Midship station x = 5.20 on the full demo hull: starboard bilge point is visible,
+    // port bilge twin is hidden behind the hull in Profile.
+    let (sb_idx, pt_idx, from, to) = {
+        let s = app.surface().expect("model loaded");
+        let sb_idx = s
+            .points
+            .iter()
+            .enumerate()
+            .find(|(_, p)| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 1.0 && p.p.z < 0.8)
+            .map(|(i, _)| i)
+            .expect("starboard midship bilge");
+        let sb_pt = s.points[sb_idx].p;
+        let pt_idx = s
+            .points
+            .iter()
+            .enumerate()
+            .find(|(_, p)| {
+                (p.p.x - sb_pt.x).abs() < 1e-6
+                    && (p.p.y + sb_pt.y).abs() < 1e-6
+                    && (p.p.z - sb_pt.z).abs() < 1e-6
+            })
+            .map(|(i, _)| i)
+            .expect("port midship bilge twin");
+
+        let station_screen: Vec<egui::Pos2> = s
+            .points
+            .iter()
+            .filter(|p| (p.p.x - 5.20).abs() < 1e-6)
+            .map(|p| view.project(p.p, rect).unwrap())
+            .collect();
+        let x = station_screen[0].x;
+        let top = station_screen
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::INFINITY, f32::min);
+        let bottom = station_screen
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        // Start well above every point in empty sky and sweep past the keel.
+        let from = egui::pos2(x - 14.0, (top - 30.0).max(rect.top() + 4.0));
+        let to = egui::pos2(x + 14.0, (bottom + 15.0).min(rect.bottom() - 4.0));
+        (sb_idx, pt_idx, from, to)
+    };
+    assert!(rect.contains(from) && rect.contains(to));
+
+    // In Dimmed mode (default) with hull shaded: visible points inside are taken,
+    // hidden port twin is skipped, and the camera does not pan.
+    marquee_drag(&ctx, &mut app, from, to);
+    assert!(
+        (app.cameras()[1].target - target_before).length() < 1e-12,
+        "Shift+drag marquee must not pan the camera"
+    );
+    assert!(app.selection().contains(sb_idx));
+    assert!(!app.selection().contains(pt_idx));
+    assert_eq!(app.selected(), app.selection().points().last().copied());
+
+    // In Hidden mode with hull shaded: hidden port twin is also skipped.
+    app.selection_mut().clear();
+    app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Hidden;
+    frame(&ctx, &mut app, Vec::new());
+    marquee_drag(&ctx, &mut app, from, to);
+    assert!(app.selection().contains(sb_idx));
+    assert!(!app.selection().contains(pt_idx));
+
+    // In Dimmed mode with shading off: all points inside are taken.
+    app.selection_mut().clear();
+    app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Dimmed;
+    app.display_mut().shaded = false;
+    frame(&ctx, &mut app, Vec::new());
+    marquee_drag(&ctx, &mut app, from, to);
+    assert!(app.selection().contains(sb_idx));
+    assert!(app.selection().contains(pt_idx));
+
+    // In As-drawn (Same) mode with shading on: hidden port twin is also taken.
+    app.selection_mut().clear();
+    app.display_mut().shaded = true;
+    app.display_mut().hidden_net = seacraft_gui::render::HiddenNet::Same;
+    frame(&ctx, &mut app, Vec::new());
+    marquee_drag(&ctx, &mut app, from, to);
+    assert!(app.selection().contains(sb_idx));
+    assert!(app.selection().contains(pt_idx));
+
+    // Mid-marquee: the dashed marquee rectangle is drawn only in Profile, clipped to its cell,
+    // even when the drag extends outside the Profile cell.
+    app.display_mut().orientation = false;
+    frame(&ctx, &mut app, Vec::new());
+    let outside = egui::pos2(rect.right() + 40.0, to.y);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![shift_button(from, true)]);
+    let mut out = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1600.0, 1000.0),
+            )),
+            events: vec![egui::Event::PointerMoved(outside)],
+            ..Default::default()
+        },
+        |ui| app.draw(ui),
+    );
+    out.textures_delta.clear();
+    let marquee_clips: Vec<egui::Rect> = out
+        .shapes
+        .iter()
+        .filter(|cs| {
+            matches!(
+                &cs.shape,
+                egui::epaint::Shape::LineSegment { stroke, .. }
+                    if stroke.color == seacraft_gui::theme::POINT_SELECTED
+                        && (stroke.width - 1.5).abs() < 1e-4
+            )
+        })
+        .map(|cs| cs.clip_rect)
+        .collect();
+    assert!(!marquee_clips.is_empty(), "marquee dashed lines drawn");
+    for clip in &marquee_clips {
+        assert_eq!(*clip, rect, "marquee clipped strictly to Profile cell");
+    }
+    frame(&ctx, &mut app, vec![shift_button(outside, false)]);
+    frame(&ctx, &mut app, Vec::new());
+
+    // With control points switched off (`display.points = false`): no marquee, nothing selected.
+    app.selection_mut().clear();
+    app.display_mut().points = false;
+    frame(&ctx, &mut app, Vec::new());
+    marquee_drag(&ctx, &mut app, from, to);
+    assert!(app.selection().is_empty());
+}
+
+#[test]
+fn shift_drag_marquee_adds_to_selection_and_tiny_drag_or_escape_does_not() {
+    let mut app = App::headless_for_test(None);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    let rect = app.viewport_rect(1); // Profile
+    let view = app.cameras()[1].transform();
+
+    // Seed an existing selection at the bow (x = 12.0).
+    let bow_pt = app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .position(|p| (p.p.x - 12.0).abs() < 1e-6)
+        .expect("bow point");
+    app.select_point(Some(bow_pt));
+
+    // Marquee around midship station x = 5.20 adds to `bow_pt` instead of replacing it.
+    let (sb_idx, from, to) = {
+        let s = app.surface().unwrap();
+        let sb_idx = s
+            .points
+            .iter()
+            .position(|p| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 1.0 && p.p.z < 0.8)
+            .expect("starboard midship bilge");
+        let p_screen = view.project(s.points[sb_idx].p, rect).unwrap();
+        let top = s
+            .points
+            .iter()
+            .filter(|p| (p.p.x - 5.20).abs() < 1e-6)
+            .map(|p| view.project(p.p, rect).unwrap().y)
+            .fold(f32::INFINITY, f32::min);
+        (
+            sb_idx,
+            egui::pos2(p_screen.x - 14.0, (top - 30.0).max(rect.top() + 4.0)),
+            egui::pos2(p_screen.x + 14.0, p_screen.y + 20.0),
+        )
+    };
+    marquee_drag(&ctx, &mut app, from, to);
+    assert!(app.selection().contains(bow_pt));
+    assert!(app.selection().contains(sb_idx));
+    let before_tiny = app.selection().points().to_vec();
+    let active_before_tiny = app.selected();
+
+    // A tiny Shift+drag (< 4 px on both sides) over a different point is a click and selects nothing.
+    let stern_pt = app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .position(|p| p.p.x.abs() < 1e-6 && p.p.y > 0.5)
+        .expect("stern starboard point");
+    let stern_screen = view
+        .project(app.surface().unwrap().points[stern_pt].p, rect)
+        .unwrap();
+    let tiny_from = stern_screen - egui::vec2(1.5, 1.5);
+    let tiny_to = stern_screen + egui::vec2(1.5, 1.5);
+    // Start slightly away from `stern_pt` (> PICK_RADIUS) so it's empty space, 2x2 px box.
+    let sky_tiny_from = egui::pos2(rect.left() + 12.0, rect.top() + 12.0);
+    let sky_tiny_to = sky_tiny_from + egui::vec2(2.0, 2.0);
+    marquee_drag(&ctx, &mut app, sky_tiny_from, sky_tiny_to);
+    assert_eq!(app.selection().points(), before_tiny.as_slice());
+    assert_eq!(app.selected(), active_before_tiny);
+    let _ = (tiny_from, tiny_to);
+
+    // Escape during a marquee cancels it without changing the selection.
+    let target_before = app.cameras()[1].target;
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![shift_button(from, true)]);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(to)]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    frame(&ctx, &mut app, vec![shift_button(to, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.selection().points(), before_tiny.as_slice());
+    assert_eq!(app.selected(), active_before_tiny);
+    assert!((app.cameras()[1].target - target_before).length() < 1e-12);
+}
+
+#[test]
+fn select_line_adds_station_and_lengthwise_points_keeping_active_and_rejects_invalid() {
+    use seacraft_core::netlines::LineKind;
+    use seacraft_gui::commands;
+
+    let mut app = App::headless_empty();
+    // With no model loaded, select_line and select_points return Err without panicking.
+    assert!(commands::select_line(&mut app, LineKind::Transverse).is_err());
+    assert!(commands::select_points(&mut app, &[]).is_err());
+
+    let mut app = App::headless_for_test(None);
+    {
+        let s = app.surface_mut().unwrap();
+        *s = seacraft_core::demo::demo_hull(true);
+    }
+    app.mark_geometry_changed();
+
+    // With no active point, select_line returns Err.
+    assert!(commands::select_line(&mut app, LineKind::Transverse).is_err());
+
+    // Pick a point on midship station x = 5.20 (half demo hull: 6 points per station, 9 per lengthwise line).
+    let active = app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .position(|p| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 0.1 && p.p.z < 0.8)
+        .expect("midship point on half demo hull");
+    app.select_point(Some(active));
+
+    commands::select_line(&mut app, LineKind::Transverse).expect("select station");
+    assert_eq!(app.selection().len(), 6);
+    assert_eq!(app.selected(), Some(active));
+
+    app.select_point(Some(active));
+    commands::select_line(&mut app, LineKind::Lengthwise).expect("select lengthwise line");
+    assert_eq!(app.selection().len(), 9);
+    assert_eq!(app.selected(), Some(active));
+
+    // A point on no line of that kind returns Err and leaves selection unchanged.
+    {
+        let s = app.surface_mut().unwrap();
+        *s = seacraft_core::Surface::new();
+        s.add_point(seacraft_core::math::Vec3::ZERO);
+    }
+    app.mark_geometry_changed();
+    app.select_point(Some(0));
+    assert!(commands::select_line(&mut app, LineKind::Transverse).is_err());
+    assert!(commands::select_line(&mut app, LineKind::Lengthwise).is_err());
+    assert_eq!(app.selection().points(), &[0]);
+    assert_eq!(app.selected(), Some(0));
+}
+
+#[test]
+fn marquee_with_no_model_is_a_noop() {
+    let mut app = App::headless_empty();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    marquee_drag(
+        &ctx,
+        &mut app,
+        egui::pos2(100.0, 100.0),
+        egui::pos2(300.0, 300.0),
+    );
+    assert!(app.selection().is_empty());
+}

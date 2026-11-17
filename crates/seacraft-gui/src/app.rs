@@ -939,6 +939,10 @@ pub struct App {
     marks: Vec<(u64, Option<Surface>, Project, usize)>,
     next_mark_id: u64,
     drag: Option<DragState>,
+    /// Active Shift+drag marquee selection rectangle: `(viewport, origin, end)`.
+    marquee: Option<(usize, egui::Pos2, egui::Pos2)>,
+    /// Set when Escape cancels a marquee so moving before release does not pan.
+    marquee_cancelled: bool,
     /// Unsaved edits since the last save / load.
     dirty: bool,
     /// The model (as `.fef` text) and project as last loaded or saved, so an
@@ -1190,6 +1194,8 @@ impl App {
             marks: Vec::new(),
             next_mark_id: 1,
             drag: None,
+            marquee: None,
+            marquee_cancelled: false,
             dirty: false,
             saved_state: None,
             dialog: None,
@@ -1981,6 +1987,8 @@ impl App {
             self.start_rects = None;
             egui::CentralPanel::default().show(ui, |ui| self.viewports(ui));
         } else {
+            self.marquee = None;
+            self.marquee_cancelled = false;
             self.start_screen(ui);
         }
         self.new_design_window(ui);
@@ -2120,9 +2128,13 @@ impl App {
             )
         });
         if escape {
-            self.selection.clear();
-            self.selected_volume = None;
-            self.selected_windage = None;
+            if self.marquee.take().is_some() {
+                self.marquee_cancelled = true;
+            } else {
+                self.selection.clear();
+                self.selected_volume = None;
+                self.selected_windage = None;
+            }
         }
         if frame {
             self.reset_cameras();
@@ -3631,22 +3643,77 @@ impl App {
                     .input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
                     .is_some_and(|p| render::view_buttons(cell).iter().any(|b| b.contains(p)));
                 if response.hovered() && !on_button && ui.input(|i| i.pointer.primary_pressed()) {
+                    self.marquee_cancelled = false;
                     self.sync_net_visibility(index, cell);
                     self.begin_drag(ui, &view, cell, index);
+                    if self.drag.is_none()
+                        && pointer_shift(ui)
+                        && self.display.points
+                        && self.surface.is_some()
+                    {
+                        if let Some(origin) =
+                            ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
+                        {
+                            self.active = index;
+                            self.marquee = Some((index, origin, origin));
+                        }
+                    }
                 }
-                if response.hovered() && !on_button && self.drag.is_none() {
+                if response.hovered() && !on_button && self.drag.is_none() && self.marquee.is_none()
+                {
                     self.sync_net_visibility(index, cell);
                     self.hovered_point = self.pick_at(ui, &view, cell, index);
+                }
+                if let Some(m) = self.marquee.as_mut().filter(|m| m.0 == index) {
+                    if ui.input(|i| i.pointer.primary_down()) {
+                        if let Some(pos) =
+                            ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
+                        {
+                            m.2 = pos;
+                        }
+                    } else if !ui.input(|i| i.pointer.any_released()) {
+                        self.marquee = None;
+                    }
                 }
                 if response.dragged_by(egui::PointerButton::Primary) {
                     if self.drag.as_ref().is_some_and(|d| d.view == index) {
                         self.drag_to(ui, &view, cell);
-                    } else if self.drag.is_none() {
+                    } else if self.drag.is_none()
+                        && self.marquee.is_none()
+                        && !self.marquee_cancelled
+                    {
                         let delta = response.drag_delta();
                         self.cameras[index].pan(delta.x, delta.y, cell);
                     }
                 }
                 if ui.input(|i| i.pointer.any_released()) {
+                    self.marquee_cancelled = false;
+                    if let Some((_, from, to)) = self.marquee.take_if(|m| m.0 == index) {
+                        let rect = egui::Rect::from_two_pos(from, to).intersect(cell);
+                        if (rect.width() >= 4.0 || rect.height() >= 4.0) && self.display.points {
+                            self.sync_net_visibility(index, cell);
+                            let vis = self
+                                .display
+                                .shaded
+                                .then(|| self.net_visibility(index))
+                                .flatten();
+                            if let Some(surface) = self.surface.as_ref() {
+                                let hits = picking::points_in_rect(
+                                    surface,
+                                    &view,
+                                    cell,
+                                    rect,
+                                    vis,
+                                    self.display.hidden_net,
+                                );
+                                if !hits.is_empty() {
+                                    self.selection.add_all(hits);
+                                    self.selected_windage = None;
+                                    self.selected_volume = None;
+                                }
+                            }
+                        }
+                    }
                     if let Some(drag) = self.drag.take_if(|d| d.view == index) {
                         added_on_press = drag.added_on_press;
                         self.axis_lock = None;
@@ -5826,6 +5893,11 @@ impl App {
         self.cache.as_ref().map(|c| &c.mesh)
     }
 
+    /// Cached net lines for the current surface, once [`Self::refresh_cache`] has run.
+    pub fn net_lines(&self) -> Option<&seacraft_core::netlines::NetLines> {
+        self.cache.as_ref().map(|c| &c.net_lines)
+    }
+
     /// The waterline cached for the current mesh, while it was cut with the
     /// waterplane of the current floating condition: a cut from any other
     /// plane is never shown.
@@ -6987,6 +7059,7 @@ impl App {
             self.picked_points(),
             self.picked_face(),
             self.optimise_job.is_some(),
+            self.selected(),
         )
     }
 
@@ -7013,6 +7086,7 @@ impl App {
             A::Crease { edge, crease } => {
                 c::set_crease(self, &c::CreaseParams { edge, crease }).map(|_| ())
             }
+            A::SelectLine(kind) => c::select_line(self, kind).map(|_| ()),
         };
         if let Err(e) = result {
             self.log(Level::Error, e);
@@ -7226,6 +7300,26 @@ impl App {
                     pts,
                     egui::Stroke::new(1.5, crate::theme::FACE_PICKED),
                 ));
+            }
+        }
+        if let Some((view_idx, from, to)) = self.marquee {
+            if view_idx == index {
+                let rect = egui::Rect::from_two_pos(from, to);
+                if rect.width() >= 4.0 || rect.height() >= 4.0 {
+                    let corners = [
+                        rect.left_top(),
+                        rect.right_top(),
+                        rect.right_bottom(),
+                        rect.left_bottom(),
+                        rect.left_top(),
+                    ];
+                    painter.extend(egui::Shape::dashed_line(
+                        &corners,
+                        egui::Stroke::new(1.5, crate::theme::POINT_SELECTED),
+                        6.0,
+                        4.0,
+                    ));
+                }
             }
         }
         let (Some(axis), Some(drag)) = (self.axis_lock, self.drag.as_ref()) else {

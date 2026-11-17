@@ -7,6 +7,7 @@
 
 use eframe::egui::{Pos2, Rect};
 use seacraft_core::math::{Plane, Vec3};
+use seacraft_core::Surface;
 
 use crate::camera::{Ray, ViewTransform};
 use crate::render::HiddenNet;
@@ -47,6 +48,35 @@ pub fn pick_point(
         }
     }
     best.map(|(i, _, _, _)| i)
+}
+
+/// Indices of control points whose screen projections in `cell` lie inside `rect`.
+///
+/// In [`HiddenNet::Dimmed`] and [`HiddenNet::Hidden`], points marked hidden in
+/// `vis` are skipped; in [`HiddenNet::Same`] (or when `vis` is `None`), all
+/// points inside `rect` are returned.
+pub fn points_in_rect(
+    surface: &Surface,
+    view: &ViewTransform,
+    cell: Rect,
+    rect: Rect,
+    vis: Option<&NetVisibility>,
+    mode: HiddenNet,
+) -> Vec<usize> {
+    let vis = vis.filter(|_| mode != HiddenNet::Same);
+    let mut out = Vec::new();
+    for (i, cp) in surface.points.iter().enumerate() {
+        if vis.is_some_and(|v| !v.points.get(i).copied().unwrap_or(true)) {
+            continue;
+        }
+        let Some(pos) = view.project(cp.p, cell) else {
+            continue;
+        };
+        if rect.contains(pos) {
+            out.push(i);
+        }
+    }
+    out
 }
 
 /// Distance along `ray` to triangle `a b c` (Möller–Trumbore), either side.
@@ -234,6 +264,58 @@ mod tests {
             pick_point(&view, r, cursor, &pts, 3.0, Some(&vis), HiddenNet::Hidden),
             None,
             "Hidden mode must skip hidden points"
+        );
+    }
+
+    #[test]
+    fn points_in_rect_respects_hidden_net_mode() {
+        // Closed form by hand: ortho Profile view in an 800x600 rect centred at (6, 0, 1)
+        // with ortho_height = 8.0 projects (6, ±1, 1) to (400, 300) and (20, 0, 1) outside
+        // a 100x100 rect centred at (400, 300).
+        let camera = Camera::ortho(ViewKind::Profile, Vec3::new(6.0, 0.0, 1.0), 8.0);
+        let view = camera.transform();
+        let cell = rect();
+        let center = view.project(Vec3::new(6.0, 0.0, 1.0), cell).unwrap();
+        let marquee = Rect::from_center_size(center, vec2(100.0, 100.0));
+
+        let mut surface = Surface::new();
+        surface.add_point(Vec3::new(6.0, -1.0, 1.0)); // 0: hidden
+        surface.add_point(Vec3::new(6.0, 1.0, 1.0)); // 1: visible
+        surface.add_point(Vec3::new(20.0, 0.0, 1.0)); // 2: visible, outside marquee
+
+        let vis = NetVisibility {
+            points: vec![false, true, true],
+            hidden_spans: Vec::new(),
+        };
+        assert_eq!(
+            points_in_rect(
+                &surface,
+                &view,
+                cell,
+                marquee,
+                Some(&vis),
+                HiddenNet::Dimmed
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            points_in_rect(
+                &surface,
+                &view,
+                cell,
+                marquee,
+                Some(&vis),
+                HiddenNet::Hidden
+            ),
+            vec![1]
+        );
+        assert_eq!(
+            points_in_rect(&surface, &view, cell, marquee, Some(&vis), HiddenNet::Same),
+            vec![0, 1]
+        );
+        assert_eq!(
+            points_in_rect(&surface, &view, cell, marquee, None, HiddenNet::Dimmed),
+            vec![0, 1]
         );
     }
 

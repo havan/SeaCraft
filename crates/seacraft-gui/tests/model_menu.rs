@@ -557,3 +557,51 @@ fn axis_keys_are_text_while_a_field_has_focus() {
     assert_eq!(w.app.axis_lock(), None, "X typed into a field is no lock");
     assert!(moved.x > 0.0 && moved.z > 0.0, "a free drag: {moved:?}");
 }
+
+#[test]
+fn select_station_and_lengthwise_line_menu_items_respect_active_point() {
+    let mut w = Window::demo();
+    // With no active point, both menu items are disabled with hover text.
+    w.app.select_point(None);
+    w.frame(vec![]);
+    w.click("Model");
+    let station_btn = w.find("Select station");
+    let lengthwise_btn = w.find("Select lengthwise line");
+    assert!(station_btn.disabled);
+    assert!(lengthwise_btn.disabled);
+    w.frame(vec![egui::Event::PointerMoved(station_btn.rect.center())]);
+    for _ in 0..30 {
+        w.frame(vec![]);
+    }
+    let reason = "Select a control point first.";
+    assert!(
+        w.widgets.iter().any(|x| x.value == reason),
+        "no tooltip `{reason}` among {:?}",
+        w.widgets.iter().map(|x| &x.value).collect::<Vec<_>>()
+    );
+    w.frame(vec![
+        key(egui::Key::Escape, true),
+        key(egui::Key::Escape, false),
+    ]);
+
+    // Pick a midship bilge point and click Model > Select station, then Select lengthwise line.
+    let mid = w
+        .app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .position(|p| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 1.0 && p.p.z < 0.8)
+        .expect("midship bilge point");
+    w.app.select_point(Some(mid));
+    w.frame(vec![]);
+    w.model("Select station");
+    assert_eq!(w.app.selected(), Some(mid));
+    assert_eq!(w.app.selection().len(), 11);
+
+    w.app.select_point(Some(mid));
+    w.frame(vec![]);
+    w.model("Select lengthwise line");
+    assert_eq!(w.app.selected(), Some(mid));
+    assert_eq!(w.app.selection().len(), 9);
+}

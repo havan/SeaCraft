@@ -38,16 +38,21 @@ pub struct ModelTargets {
     /// The edge to crease, and the creased edge to smooth.
     pub crease: Target<[usize; 2]>,
     pub smooth: Target<[usize; 2]>,
+    /// Select the active point's station or lengthwise line.
+    pub select_station: Target<usize>,
+    pub select_lengthwise: Target<usize>,
 }
 
 impl ModelTargets {
     /// The targets for a model (if any), the two picked points (first, then
-    /// second), the picked face and whether an optimisation is running.
+    /// second), the picked face, whether an optimisation is running, and the
+    /// active control point.
     pub fn compute(
         surface: Option<&Surface>,
         picked: Option<[usize; 2]>,
         face: Option<usize>,
         optimising: bool,
+        active: Option<usize>,
     ) -> Self {
         let Some(surface) = surface else {
             fn none<T>() -> Target<T> {
@@ -60,8 +65,11 @@ impl ModelTargets {
                 split_face: none(),
                 crease: none(),
                 smooth: none(),
+                select_station: none(),
+                select_lengthwise: none(),
             };
         };
+        let select_target = active.ok_or_else(|| "Select a control point first.".to_owned());
         Self {
             transform: Ok(()),
             optimise: if optimising {
@@ -73,6 +81,8 @@ impl ModelTargets {
             split_face: split_face_target(surface, face),
             crease: edge_target(surface, picked, true),
             smooth: edge_target(surface, picked, false),
+            select_station: select_target.clone(),
+            select_lengthwise: select_target,
         }
     }
 }
@@ -150,6 +160,7 @@ pub enum ModelAction {
     InsertEdge { face: usize, a: usize, b: usize },
     SplitFace(usize),
     Crease { edge: [usize; 2], crease: bool },
+    SelectLine(seacraft_core::netlines::LineKind),
 }
 
 /// One menu item: enabled with a hover description, or disabled with the
@@ -220,6 +231,17 @@ pub fn menu_body(ui: &mut egui::Ui, t: &ModelTargets) -> ModelAction {
                 crease: false,
             };
         }
+    }
+    ui.separator();
+    if item(ui, "Select station", &t.select_station, |p| {
+        format!("Select every control point on point {p}'s station.")
+    }) {
+        action = ModelAction::SelectLine(seacraft_core::netlines::LineKind::Transverse);
+    }
+    if item(ui, "Select lengthwise line", &t.select_lengthwise, |p| {
+        format!("Select every control point on the lengthwise line through point {p}.")
+    }) {
+        action = ModelAction::SelectLine(seacraft_core::netlines::LineKind::Lengthwise);
     }
     ui.separator();
     ui.label(
@@ -733,20 +755,31 @@ mod tests {
     #[test]
     fn targets_name_what_they_act_on_or_why_not() {
         let s = quad();
-        let t = ModelTargets::compute(Some(&s), Some([0, 2]), Some(0), false);
+        let t = ModelTargets::compute(Some(&s), Some([0, 2]), Some(0), false, Some(2));
         assert_eq!(t.insert_edge, Ok((0, 0, 2)));
         assert_eq!(t.split_face, Ok(0));
         assert!(t.crease.as_ref().unwrap_err().contains("not joined"));
-        let t = ModelTargets::compute(Some(&s), Some([0, 1]), None, true);
+        assert_eq!(t.select_station, Ok(2));
+        assert_eq!(t.select_lengthwise, Ok(2));
+        let t = ModelTargets::compute(Some(&s), Some([0, 1]), None, true, None);
         assert!(t.insert_edge.unwrap_err().contains("already share an edge"));
         assert_eq!(t.crease, Ok([0, 1]));
         assert!(t.smooth.unwrap_err().contains("not a crease"));
         assert!(t.split_face.unwrap_err().contains("Click a face"));
         assert!(t.optimise.is_err() && t.transform.is_ok());
-        let t = ModelTargets::compute(Some(&s), None, None, false);
+        assert!(t
+            .select_station
+            .unwrap_err()
+            .contains("Select a control point"));
+        assert!(t
+            .select_lengthwise
+            .unwrap_err()
+            .contains("Select a control point"));
+        let t = ModelTargets::compute(Some(&s), None, None, false, None);
         assert!(t.insert_edge.unwrap_err().contains("Shift+click"));
-        let t = ModelTargets::compute(None, Some([0, 2]), Some(0), false);
+        let t = ModelTargets::compute(None, Some([0, 2]), Some(0), false, Some(2));
         assert!(t.transform.unwrap_err().contains("No model"));
+        assert!(t.select_station.unwrap_err().contains("No model"));
     }
 
     #[test]
