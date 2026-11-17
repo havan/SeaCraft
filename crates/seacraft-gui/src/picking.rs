@@ -9,6 +9,8 @@ use eframe::egui::{Pos2, Rect};
 use seacraft_core::math::{Plane, Vec3};
 
 use crate::camera::{Ray, ViewTransform};
+use crate::render::HiddenNet;
+use crate::visibility::NetVisibility;
 
 /// Pixels within which a control point can be grabbed.
 pub const PICK_RADIUS: f32 = 9.0;
@@ -20,8 +22,11 @@ pub fn pick_point(
     cursor: Pos2,
     pts: &[Vec3],
     max_px: f32,
+    vis: Option<&NetVisibility>,
+    mode: HiddenNet,
 ) -> Option<usize> {
-    let mut best: Option<(usize, f32, f64)> = None;
+    let vis = vis.filter(|_| mode != HiddenNet::Same);
+    let mut best: Option<(usize, bool, f32, f64)> = None;
     for (i, p) in pts.iter().enumerate() {
         let Some(screen) = view.project(*p, rect) else {
             continue;
@@ -30,12 +35,18 @@ pub fn pick_point(
         if d > max_px {
             continue;
         }
+        let hidden = vis.is_some_and(|v| !v.points.get(i).copied().unwrap_or(true));
+        if hidden && mode == HiddenNet::Hidden {
+            continue;
+        }
         let depth = (*p - view.eye).length();
-        if best.is_none_or(|(_, bd, bz)| d < bd || (d == bd && depth < bz)) {
-            best = Some((i, d, depth));
+        if best.is_none_or(|(_, b_hid, bd, bz)| {
+            (!hidden && b_hid) || (hidden == b_hid && (d < bd || (d == bd && depth < bz)))
+        }) {
+            best = Some((i, hidden, d, depth));
         }
     }
-    best.map(|(i, _, _)| i)
+    best.map(|(i, _, _, _)| i)
 }
 
 /// Distance along `ray` to triangle `a b c` (Möller–Trumbore), either side.
@@ -141,12 +152,164 @@ mod tests {
         ];
         let on_middle = view.project(pts[1], rect()).unwrap();
         assert_eq!(
-            pick_point(&view, rect(), on_middle, &pts, PICK_RADIUS),
+            pick_point(
+                &view,
+                rect(),
+                on_middle,
+                &pts,
+                PICK_RADIUS,
+                None,
+                HiddenNet::Dimmed
+            ),
             Some(1)
         );
         // 30 px away from any point: nothing.
         let far = pos2(on_middle.x, on_middle.y - 30.0);
-        assert_eq!(pick_point(&view, rect(), far, &pts, PICK_RADIUS), None);
+        assert_eq!(
+            pick_point(
+                &view,
+                rect(),
+                far,
+                &pts,
+                PICK_RADIUS,
+                None,
+                HiddenNet::Dimmed
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pick_point_prefers_visible_in_dimmed_skips_in_hidden_and_ignores_in_same() {
+        // Closed form by hand: ortho Profile view in an 800x600 rect with ortho_height = 8.0
+        // has scale = 600 / 8 = 75 px/m along +x (right). At cursor = (400, 300) (the projection
+        // of (6, 0, 1)), a hidden point at x = 6.0 + 2/75 projects 2 px right of cursor, and a
+        // visible point at x = 6.0 + 5/75 projects 5 px right of cursor (both within max_px = 9).
+        let camera = Camera::ortho(ViewKind::Profile, Vec3::new(6.0, 0.0, 1.0), 8.0);
+        let view = camera.transform();
+        let r = rect();
+        let cursor = view.project(Vec3::new(6.0, 0.0, 1.0), r).unwrap();
+        let world_per_px = 8.0 / r.height() as f64;
+        let pts = [
+            Vec3::new(6.0 + 2.0 * world_per_px, -1.0, 1.0), // index 0: hidden, 2 px from cursor
+            Vec3::new(6.0 + 5.0 * world_per_px, 1.0, 1.0),  // index 1: visible, 5 px from cursor
+        ];
+        let vis = NetVisibility {
+            points: vec![false, true],
+            hidden_spans: Vec::new(),
+        };
+        assert_eq!(
+            pick_point(
+                &view,
+                r,
+                cursor,
+                &pts,
+                PICK_RADIUS,
+                Some(&vis),
+                HiddenNet::Dimmed
+            ),
+            Some(1),
+            "Dimmed mode must prefer the visible point within max_px over a closer hidden point"
+        );
+        assert_eq!(
+            pick_point(
+                &view,
+                r,
+                cursor,
+                &pts,
+                PICK_RADIUS,
+                Some(&vis),
+                HiddenNet::Same
+            ),
+            Some(0),
+            "Same mode must pick the closer (hidden) point"
+        );
+        // When no visible point is within max_px (e.g. max_px = 3.0, only index 0 at 2 px is in reach):
+        assert_eq!(
+            pick_point(&view, r, cursor, &pts, 3.0, Some(&vis), HiddenNet::Dimmed),
+            Some(0),
+            "Dimmed mode must still pick a hidden point when no visible point is within max_px"
+        );
+        assert_eq!(
+            pick_point(&view, r, cursor, &pts, 3.0, Some(&vis), HiddenNet::Hidden),
+            None,
+            "Hidden mode must skip hidden points"
+        );
+    }
+
+    #[test]
+    fn clicking_coincident_port_and_starboard_twins_in_profile_selects_starboard_in_dimmed_mode() {
+        // Closed form by hand: on the full (unmirrored) demo hull at midship station x = 5.20,
+        // the starboard bilge point (y > 0) and its port twin (y < 0) project to the same screen
+        // position in Profile. Even when the port twin is nudged by 1 mm in x so its projection
+        // is 0 px from the click and ~0.04 px closer than the starboard point (both well within
+        // PICK_RADIUS = 9 px), clicking in Dimmed mode selects the visible starboard point.
+        let ctx = eframe::egui::Context::default();
+        let mut app = crate::App::headless_for_test(None);
+        let run = |ctx: &eframe::egui::Context,
+                   app: &mut crate::App,
+                   events: Vec<eframe::egui::Event>| {
+            let input = eframe::egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 1000.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+            out.textures_delta.clear();
+        };
+        run(&ctx, &mut app, Vec::new());
+        run(&ctx, &mut app, Vec::new());
+
+        let surface = app.surface().unwrap();
+        let (sb_idx, sb_pt) = surface
+            .points
+            .iter()
+            .enumerate()
+            .find(|(_, p)| (p.p.x - 5.20).abs() < 1e-6 && p.p.y > 1.0 && p.p.z < 0.8)
+            .map(|(i, p)| (i, p.p))
+            .expect("starboard midship bilge point");
+        let pt_idx = surface
+            .points
+            .iter()
+            .enumerate()
+            .find(|(_, p)| {
+                (p.p.x - sb_pt.x).abs() < 1e-6
+                    && (p.p.y + sb_pt.y).abs() < 1e-6
+                    && (p.p.z - sb_pt.z).abs() < 1e-6
+            })
+            .map(|(i, _)| i)
+            .expect("port midship bilge twin");
+
+        // Nudge the port twin by 1 mm in x so its projection is strictly closer to `pos`
+        // than `sb_idx` while still coinciding within < 0.05 px on screen.
+        let nudged = Vec3::new(sb_pt.x + 1e-3, -sb_pt.y, sb_pt.z);
+        app.move_point(pt_idx, nudged).unwrap();
+        run(&ctx, &mut app, Vec::new());
+
+        let profile_rect = app.viewport_rect(1);
+        let pos = app.cameras()[1]
+            .transform()
+            .project(nudged, profile_rect)
+            .unwrap();
+        let btn = |pressed| eframe::egui::Event::PointerButton {
+            pos,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        };
+        run(
+            &ctx,
+            &mut app,
+            vec![eframe::egui::Event::PointerMoved(pos), btn(true)],
+        );
+        run(&ctx, &mut app, vec![btn(false)]);
+        run(&ctx, &mut app, Vec::new());
+
+        assert_eq!(
+            app.selected(),
+            Some(sb_idx),
+            "clicking coincident twins in Profile in Dimmed mode must select the visible starboard point ({sb_idx}), not the hidden port twin ({pt_idx})"
+        );
     }
 
     #[test]

@@ -18,6 +18,43 @@ use seacraft_core::weather::WindageRect;
 use crate::camera::{Camera, ViewTransform};
 use crate::theme;
 
+/// How control-net edges and points occluded by the shaded hull are drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HiddenNet {
+    #[default]
+    Dimmed,
+    Hidden,
+    Same,
+}
+
+impl HiddenNet {
+    /// Every mode, in menu and toolbar order.
+    pub const ALL: [Self; 3] = [Self::Dimmed, Self::Hidden, Self::Same];
+
+    /// The menu and toolbar label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dimmed => "Dimmed",
+            Self::Hidden => "Hidden",
+            Self::Same => "As drawn",
+        }
+    }
+
+    /// The control channel's name (`ui.set {"hidden_net": …}`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Dimmed => "dimmed",
+            Self::Hidden => "hidden",
+            Self::Same => "same",
+        }
+    }
+
+    /// The mode a control-channel name stands for.
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == key)
+    }
+}
+
 /// What the viewports may draw.
 #[derive(Debug, Clone)]
 pub struct DisplayOptions {
@@ -29,6 +66,8 @@ pub struct DisplayOptions {
     pub control_net: bool,
     /// Draw the control points.
     pub points: bool,
+    /// How control-net edges and points behind the shaded hull are drawn.
+    pub hidden_net: HiddenNet,
     /// Draw the waterplane at the current draft.
     pub waterplane: bool,
     /// Draw project tanks and compartments.
@@ -71,6 +110,7 @@ impl Default for DisplayOptions {
             wireframe: false,
             control_net: true,
             points: true,
+            hidden_net: HiddenNet::Dimmed,
             waterplane: true,
             volumes: true,
             windage: true,
@@ -233,7 +273,7 @@ pub fn viewport(
         selection.set_only(p);
     }
     viewport_with_texture(
-        ui, rect, camera, scene, opts, active, &selection, None, None, None, None,
+        ui, rect, camera, scene, opts, active, &selection, None, None, None, None, None,
     )
 }
 
@@ -251,6 +291,7 @@ pub fn viewport_with_texture(
     opts: &DisplayOptions,
     active: bool,
     selection: &crate::selection::Selection,
+    vis: Option<&crate::visibility::NetVisibility>,
     texture: Option<&egui::TextureHandle>,
     hull: Option<Arc<egui::Mesh>>,
     gpu_hull: Option<egui::PaintCallback>,
@@ -309,11 +350,28 @@ pub fn viewport_with_texture(
             draw_sections(&painter, &view, camera.kind, rect, curves, opts);
         }
     }
+    let vis = vis.filter(|_| opts.shaded);
     if opts.control_net {
-        draw_control_net(&painter, &view, rect, scene.surface, !selection.is_empty());
+        draw_control_net(
+            &painter,
+            &view,
+            rect,
+            scene.surface,
+            !selection.is_empty(),
+            vis,
+            opts.hidden_net,
+        );
     }
     if opts.points {
-        draw_points(&painter, &view, rect, scene.surface, selection);
+        draw_points(
+            &painter,
+            &view,
+            rect,
+            scene.surface,
+            selection,
+            vis,
+            opts.hidden_net,
+        );
     }
 
     // Caption and scale, on a backing so the hull behind stays readable.
@@ -1145,39 +1203,69 @@ pub(crate) fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
 
 /// The control net, creases heavier. At full strength while a point is
 /// selected (`editing`); otherwise dimmed, so it does not compete with the
-/// hull it shapes.
+/// hull it shapes. Stretches occluded by the shaded hull are dimmed or
+/// skipped according to `mode`.
 fn draw_control_net(
     painter: &egui::Painter,
     view: &ViewTransform,
     rect: Rect,
     surface: &Surface,
     editing: bool,
+    vis: Option<&crate::visibility::NetVisibility>,
+    mode: HiddenNet,
 ) {
     let (net, crease_colour) = control_net_colours(editing);
-    let mut creases: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
-    for e in &surface.edges {
-        if e.crease {
-            creases.insert(e.key());
+    let vis = vis.filter(|_| mode != HiddenNet::Same);
+    // The idle net is translucent and an edge has always been stroked once
+    // for each face it borders, so an edge inside the net reads stronger than
+    // one on its boundary. Keep that: the depth cue must not change how the
+    // net in front looks.
+    let faces_at = surface.edge_face_counts();
+    for (ei, e) in surface.edges.iter().enumerate() {
+        let (Some(wa), Some(wb)) = (
+            surface.points.get(e.a).map(|cp| cp.p),
+            surface.points.get(e.b).map(|cp| cp.p),
+        ) else {
+            continue;
+        };
+        let (Some(p), Some(q)) = (view.project(wa, rect), view.project(wb, rect)) else {
+            continue;
+        };
+        let width = if e.crease { 1.6 } else { 1.0 };
+        let vis_colour = if e.crease { crease_colour } else { net };
+        let passes = faces_at.get(ei).copied().unwrap_or(1).max(1);
+        let in_front = |a: Pos2, b: Pos2| {
+            for _ in 0..passes {
+                painter.line_segment([a, b], Stroke::new(width, vis_colour));
+            }
+        };
+        let spans = vis
+            .and_then(|v| v.hidden_spans.get(ei))
+            .map_or(&[][..], Vec::as_slice);
+        if spans.is_empty() {
+            in_front(p, q);
+            continue;
         }
-    }
-    for f in &surface.faces {
-        for i in 0..f.len() {
-            let a = f[i];
-            let b = f[(i + 1) % f.len()];
-            let (Some(p), Some(q)) = (
-                view.project(surface.points[a].p, rect),
-                view.project(surface.points[b].p, rect),
-            ) else {
-                continue;
-            };
-            let crease = creases.contains(&seacraft_core::mesh::ordered(a, b));
-            painter.line_segment(
-                [p, q],
-                Stroke::new(
-                    if crease { 1.6 } else { 1.0 },
-                    if crease { crease_colour } else { net },
-                ),
-            );
+        let hid_colour = if e.crease {
+            theme::CREASE_HIDDEN
+        } else {
+            theme::CONTROL_NET_HIDDEN
+        };
+        let at = |t: f32| p + (q - p) * t;
+        let mut cursor = 0.0_f32;
+        for &(t0, t1) in spans {
+            let t0 = t0.clamp(cursor, 1.0);
+            let t1 = t1.clamp(t0, 1.0);
+            if t0 > cursor {
+                in_front(at(cursor), at(t0));
+            }
+            if t1 > t0 && mode == HiddenNet::Dimmed {
+                painter.line_segment([at(t0), at(t1)], Stroke::new(width, hid_colour));
+            }
+            cursor = t1;
+        }
+        if cursor < 1.0 {
+            in_front(at(cursor), at(1.0));
         }
     }
 }
@@ -1198,7 +1286,10 @@ fn draw_points(
     rect: Rect,
     surface: &Surface,
     selection: &crate::selection::Selection,
+    vis: Option<&crate::visibility::NetVisibility>,
+    mode: HiddenNet,
 ) {
+    let vis = vis.filter(|_| mode != HiddenNet::Same);
     for (i, p) in surface.points.iter().enumerate() {
         let Some(s) = view.project(p.p, rect) else {
             continue;
@@ -1210,7 +1301,12 @@ fn draw_points(
                 painter.circle_stroke(s, 7.0, Stroke::new(1.5, theme::POINT_SELECTED));
             }
         } else {
-            painter.circle_filled(s, 2.0, theme::POINT);
+            let visible = vis.is_none_or(|v| v.points.get(i).copied().unwrap_or(true));
+            if visible {
+                painter.circle_filled(s, 2.0, theme::POINT);
+            } else if mode == HiddenNet::Dimmed {
+                painter.circle_filled(s, 2.0, theme::POINT_HIDDEN);
+            }
         }
     }
 }
@@ -2419,5 +2515,204 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn profile_hidden_net_modes_dim_hide_or_keep_occluded_edges_and_points() {
+        let ctx = egui::Context::default();
+        let mut app = crate::App::headless_for_test(None);
+
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+
+        let run_and_collect_profile = |ctx: &egui::Context, app: &mut crate::App| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    Pos2::new(0.0, 0.0),
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+            out.textures_delta.clear();
+            let profile_rect = app.viewport_rect(1);
+            let mut line_colours = Vec::new();
+            let mut circle_colours = Vec::new();
+            for clipped in &out.shapes {
+                if !clipped.clip_rect.intersects(profile_rect) {
+                    continue;
+                }
+                walk(&clipped.shape, &mut |shape| match shape {
+                    egui::Shape::LineSegment { points, stroke }
+                        if profile_rect.contains(points[0]) || profile_rect.contains(points[1]) =>
+                    {
+                        line_colours.push(stroke.color);
+                    }
+                    egui::Shape::Circle(c)
+                        if profile_rect.contains(c.center) && c.fill != Color32::TRANSPARENT =>
+                    {
+                        circle_colours.push(c.fill);
+                    }
+                    _ => {}
+                });
+            }
+            (line_colours, circle_colours)
+        };
+
+        // Settle docks first.
+        run_and_collect_profile(&ctx, &mut app);
+
+        // Shaded + Dimmed (default): Profile on full demo hull has hidden net and hidden points.
+        app.display_mut().shaded = true;
+        app.display_mut().hidden_net = HiddenNet::Dimmed;
+        let (dim_lines, dim_circles) = run_and_collect_profile(&ctx, &mut app);
+        assert!(
+            dim_lines.contains(&theme::CONTROL_NET_HIDDEN),
+            "Dimmed mode must draw occluded control net stretches in CONTROL_NET_HIDDEN"
+        );
+        assert!(
+            dim_circles.contains(&theme::POINT_HIDDEN),
+            "Dimmed mode must draw occluded control points in POINT_HIDDEN"
+        );
+
+        // Shaded + Same: no hidden colours appear.
+        app.display_mut().hidden_net = HiddenNet::Same;
+        let (same_lines, same_circles) = run_and_collect_profile(&ctx, &mut app);
+        assert!(
+            !same_lines.contains(&theme::CONTROL_NET_HIDDEN)
+                && !same_lines.contains(&theme::CREASE_HIDDEN),
+            "Same mode must not use hidden net colours"
+        );
+        assert!(
+            !same_circles.contains(&theme::POINT_HIDDEN),
+            "Same mode must not use POINT_HIDDEN"
+        );
+        let is_net_colour = |c: Color32| {
+            matches!(
+                c,
+                theme::CONTROL_NET
+                    | theme::CONTROL_NET_IDLE
+                    | theme::CONTROL_NET_HIDDEN
+                    | theme::CREASE
+                    | theme::CREASE_IDLE
+                    | theme::CREASE_HIDDEN
+            )
+        };
+        let same_net_count = same_lines
+            .iter()
+            .copied()
+            .filter(|&c| is_net_colour(c))
+            .count();
+
+        // Shaded + Hidden: no hidden colours appear, and fewer net shapes than in Same mode.
+        app.display_mut().hidden_net = HiddenNet::Hidden;
+        let (hidden_lines, hidden_circles) = run_and_collect_profile(&ctx, &mut app);
+        assert!(
+            !hidden_lines.contains(&theme::CONTROL_NET_HIDDEN)
+                && !hidden_lines.contains(&theme::CREASE_HIDDEN),
+            "Hidden mode must skip occluded stretches rather than dimming them"
+        );
+        assert!(
+            !hidden_circles.contains(&theme::POINT_HIDDEN),
+            "Hidden mode must skip occluded points"
+        );
+        let hidden_net_count = hidden_lines
+            .iter()
+            .copied()
+            .filter(|&c| is_net_colour(c))
+            .count();
+        assert!(
+            hidden_net_count < same_net_count,
+            "Hidden mode ({hidden_net_count} net segments) must draw fewer net shapes than Same mode ({same_net_count})"
+        );
+
+        // Selected hidden point draws at full strength even in Hidden mode.
+        let hidden_pt_idx = app
+            .net_visibility(1)
+            .unwrap()
+            .points
+            .iter()
+            .position(|&v| !v)
+            .expect("a hidden point in Profile");
+        app.select_point(Some(hidden_pt_idx));
+        let (_, sel_circles) = run_and_collect_profile(&ctx, &mut app);
+        assert!(
+            sel_circles.contains(&theme::POINT_SELECTED),
+            "a selected hidden point must still draw at full strength in Hidden mode"
+        );
+        app.select_point(None);
+
+        // With shading off, no hidden colour appears in any mode.
+        app.display_mut().shaded = false;
+        for mode in HiddenNet::ALL {
+            app.display_mut().hidden_net = mode;
+            let (lines, circles) = run_and_collect_profile(&ctx, &mut app);
+            assert!(
+                !lines.contains(&theme::CONTROL_NET_HIDDEN)
+                    && !lines.contains(&theme::CREASE_HIDDEN)
+                    && !circles.contains(&theme::POINT_HIDDEN),
+                "with shading off, no hidden colour may appear in {mode:?}"
+            );
+        }
+    }
+    #[test]
+    fn the_net_in_front_is_drawn_as_strongly_as_before_the_depth_cue() {
+        // The idle net is translucent, and an edge between two faces has always been stroked once for each
+        // of them, so it reads stronger than a boundary edge. By hand on a 3 x 3 grid of points: 4 quads,
+        // 12 edges of which 4 are inside, so 4 * 2 + 8 = 16 strokes (4 faces * 4 sides).
+        let s = seacraft_core::netlines::grid_net(3, 3);
+        let mesh = export::render_mesh(&s, 1, Default::default());
+        let (min, max) = s.extents();
+        let scene = Scene {
+            surface: &s,
+            mesh: &mesh,
+            curves: None,
+            volumes: &[],
+            windage: &[],
+            min,
+            max,
+            draft: 0.0,
+            trim: 0.0,
+            heel_deg: 0.0,
+            waterline: None,
+        };
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
+        let camera = Camera::new(ViewKind::Plan, (min + max) * 0.5, max - min);
+        let opts = DisplayOptions {
+            shaded: false,
+            control_net: true,
+            points: false,
+            waterplane: false,
+            orientation: false,
+            ..Default::default()
+        };
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            viewport(ui, rect, &camera, Some(&scene), &opts, true, None);
+        });
+        out.textures_delta.clear();
+        let mut strokes = 0;
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut |shape| {
+                if let egui::Shape::LineSegment { stroke, .. } = shape {
+                    if stroke.color == theme::CONTROL_NET_IDLE {
+                        strokes += 1;
+                    }
+                }
+            });
+        }
+        assert_eq!(strokes, 16);
     }
 }

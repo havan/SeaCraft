@@ -5098,6 +5098,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     "Section counts (stations, waterlines, buttocks) and comb scale and density",
                 );
             out.rects.push(("sections", menu.rect));
+            ui.label(egui::RichText::new("Hidden net").color(theme::TEXT_SECONDARY));
+            let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
+                .selected_text(display.hidden_net.label())
+                .width(76.0)
+                .show_ui(ui, |ui| {
+                    for mode in crate::render::HiddenNet::ALL {
+                        ui.selectable_value(&mut display.hidden_net, mode, mode.label());
+                    }
+                });
+            let combo = combo
+                .response
+                .on_hover_text("How control-net edges and points behind the shaded hull are drawn");
+            out.rects.push(("hidden_net", combo.rect));
+            if display.hidden_net != state.display.hidden_net {
+                toggled = true;
+            }
         });
         if toggled {
             out.display = Some(display);

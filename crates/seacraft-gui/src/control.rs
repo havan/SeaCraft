@@ -715,6 +715,13 @@ fn handle_inner(
                     "points" => {
                         display.points = value.as_bool().ok_or("`points` must be true or false")?
                     }
+                    "hidden_net" => {
+                        let name = value.as_str().ok_or("`hidden_net` must be a string")?;
+                        display.hidden_net =
+                            crate::render::HiddenNet::from_key(name).ok_or_else(|| {
+                                format!("`hidden_net` must be dimmed, hidden or same, not `{name}`")
+                            })?;
+                    }
                     "waterplane" => {
                         display.waterplane = value
                             .as_bool()
@@ -2478,6 +2485,7 @@ fn inspect(app: &App) -> Value {
         "wireframe": d.wireframe,
         "control_net": d.control_net,
         "points": d.points,
+        "hidden_net": d.hidden_net.key(),
         "waterplane": d.waterplane,
         "volumes": d.volumes,
         "windage": d.windage,
@@ -4573,6 +4581,36 @@ mod tests {
         let bad = call(&mut app, &ctx, "ui.set", json!({ "orientation": "yes" }));
         assert_eq!(bad["ok"], false, "{bad}");
         assert!(app.display().orientation);
+    }
+
+    #[test]
+    fn ui_set_sets_hidden_net_and_inspect_reports_it() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["display"]["hidden_net"], "dimmed", "{v}");
+
+        for (key, expected) in [
+            ("hidden", crate::render::HiddenNet::Hidden),
+            ("same", crate::render::HiddenNet::Same),
+            ("dimmed", crate::render::HiddenNet::Dimmed),
+        ] {
+            let r = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": key }));
+            assert_eq!(r["ok"], true, "{r}");
+            assert_eq!(r["result"]["display"]["hidden_net"], key);
+            assert_eq!(app.display().hidden_net, expected);
+        }
+
+        let bad = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": "ghost" }));
+        assert_eq!(bad["ok"], false, "{bad}");
+        let err = bad["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("dimmed") && err.contains("hidden") && err.contains("same"),
+            "error must list dimmed, hidden, same: {err:?}"
+        );
+        assert_eq!(app.display().hidden_net, crate::render::HiddenNet::Dimmed);
+
+        let non_str = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": true }));
+        assert_eq!(non_str["ok"], false, "{non_str}");
     }
 
     #[test]

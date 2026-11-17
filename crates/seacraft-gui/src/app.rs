@@ -2283,6 +2283,17 @@ impl App {
                     ui.checkbox(&mut self.display.wireframe, "Wireframe");
                     ui.checkbox(&mut self.display.control_net, "Control net");
                     ui.checkbox(&mut self.display.points, "Control points");
+                    ui.menu_button("Hidden net", |ui| {
+                        for mode in render::HiddenNet::ALL {
+                            if ui
+                                .radio(self.display.hidden_net == mode, mode.label())
+                                .clicked()
+                            {
+                                self.display.hidden_net = mode;
+                                ui.close();
+                            }
+                        }
+                    });
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
                     ui.checkbox(&mut self.display.windage, "Windage outlines");
@@ -3550,6 +3561,7 @@ impl App {
                     .input(|i| i.pointer.interact_pos())
                     .is_some_and(|p| render::view_buttons(cell).iter().any(|b| b.contains(p)));
                 if response.hovered() && !on_button && ui.input(|i| i.pointer.primary_pressed()) {
+                    self.sync_net_visibility(index, cell);
                     self.begin_drag(ui, &view, cell, index);
                 }
                 if response.dragged_by(egui::PointerButton::Primary) {
@@ -3583,7 +3595,8 @@ impl App {
             }
             if response.clicked() {
                 self.active = index;
-                let picked = self.pick_at(ui, &view, cell);
+                self.sync_net_visibility(index, cell);
+                let picked = self.pick_at(ui, &view, cell, index);
                 let shift = pointer_shift(ui);
                 if shift {
                     if let Some(p) = picked {
@@ -3770,6 +3783,16 @@ impl App {
                         (&no_hull, None)
                     }
                 };
+                let mut sel_with_drag;
+                let drawn_selection = match &self.drag {
+                    Some(d) if !self.selection.contains(d.point) => {
+                        sel_with_drag = self.selection.clone();
+                        sel_with_drag.add_all([d.point]);
+                        &sel_with_drag
+                    }
+                    _ => &self.selection,
+                };
+                let vis = display.shaded.then(|| self.net_visibility(index)).flatten();
                 render::viewport_with_texture(
                     ui,
                     cell,
@@ -3777,7 +3800,8 @@ impl App {
                     Some(&scene),
                     display,
                     self.active == index,
-                    &self.selection,
+                    drawn_selection,
+                    vis,
                     texture.as_ref(),
                     hull,
                     gpu_hull,
@@ -3952,6 +3976,7 @@ impl App {
         ui: &egui::Ui,
         view: &crate::camera::ViewTransform,
         cell: egui::Rect,
+        index: usize,
     ) -> Option<usize> {
         // Hidden control points cannot be grabbed: a drag would move a point
         // the user cannot see.
@@ -3961,7 +3986,20 @@ impl App {
         let cursor = ui.input(|i| i.pointer.interact_pos())?;
         let surface = self.surface.as_ref()?;
         let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
-        picking::pick_point(view, cell, cursor, &pts, PICK_RADIUS)
+        let vis = self
+            .display
+            .shaded
+            .then(|| self.net_visibility(index))
+            .flatten();
+        picking::pick_point(
+            view,
+            cell,
+            cursor,
+            &pts,
+            PICK_RADIUS,
+            vis,
+            self.display.hidden_net,
+        )
     }
 
     /// The control face under the cursor (see [`picking::pick_face`]).
@@ -4023,7 +4061,7 @@ impl App {
         cell: egui::Rect,
         index: usize,
     ) {
-        let Some(point) = self.pick_at(ui, view, cell) else {
+        let Some(point) = self.pick_at(ui, view, cell, index) else {
             return;
         };
         let Some(cursor) = ui.input(|i| i.pointer.interact_pos()) else {

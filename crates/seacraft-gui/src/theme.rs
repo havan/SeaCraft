@@ -101,6 +101,11 @@ pub const CREASE: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
 /// hues, quiet enough that the hull under them is what the eye reads.
 pub const CONTROL_NET_IDLE: Color32 = Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x66);
 pub const CREASE_IDLE: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x80);
+/// Control net edges, creases and points hidden behind the shaded hull.
+pub const CONTROL_NET_HIDDEN: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x30);
+pub const CREASE_HIDDEN: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x40);
+pub const POINT_HIDDEN: Color32 = Color32::from_rgba_unmultiplied_const(0xcf, 0xd8, 0xe3, 0x48);
 /// Control points.
 pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
 /// The picked control point and its outline.
@@ -857,5 +862,19 @@ mod tests {
             Color32::from_rgb(0x12, 0x34, 0x56)
         );
         assert_eq!(layer_colour(-1), Color32::from_rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn hidden_net_tokens_are_quieter_than_idle_and_distinct_from_canvas() {
+        for (hidden, idle, full) in [
+            (CONTROL_NET_HIDDEN, CONTROL_NET_IDLE, CONTROL_NET),
+            (CREASE_HIDDEN, CREASE_IDLE, CREASE),
+            (POINT_HIDDEN, POINT, POINT),
+        ] {
+            assert_ne!(hidden, CANVAS);
+            assert_ne!(hidden, idle);
+            assert_ne!(hidden, full);
+            assert!(hidden.a() > 0 && hidden.a() < idle.a());
+        }
     }
 }
