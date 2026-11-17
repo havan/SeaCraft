@@ -2094,3 +2094,92 @@ fn nothing_is_hovered_while_a_view_is_being_panned() {
         "hover is back after the pan (point {visible})"
     );
 }
+
+#[test]
+fn a_connected_drag_writes_the_settings_only_when_the_wheel_changed_the_reach() {
+    // Final review of feat/hull-editing, M9: the settings file was written on
+    // every connected drag release. It is written when the remembered choice
+    // changed, which a drag does only through the wheel's reach.
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Counting(HashMap<String, String>, Arc<AtomicUsize>);
+    impl eframe::Storage for Counting {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let flushes = Arc::new(AtomicUsize::new(0));
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_storage(Box::new(Counting(HashMap::new(), flushes.clone())));
+    app.set_connected_on(true);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let index = {
+        let s = app.surface().unwrap();
+        (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 3.0 && s.points[i].p.x < 9.0 && s.points[i].p.y > 0.0)
+            .max_by(|&a, &b| s.points[a].p.z.total_cmp(&s.points[b].p.z))
+            .expect("mid-hull sheer point")
+    };
+    let drag = |app: &mut App, wheel: bool| {
+        let at = app.cameras()[1]
+            .transform()
+            .project(app.surface().unwrap().points[index].p, app.viewport_rect(1))
+            .expect("visible");
+        frame(&ctx, app, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, app, vec![button(at, true)]);
+        for dx in [10.0, 30.0] {
+            frame(
+                &ctx,
+                app,
+                vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))],
+            );
+        }
+        if wheel {
+            frame(
+                &ctx,
+                app,
+                vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, 40.0),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            for _ in 0..10 {
+                frame(&ctx, app, Vec::new());
+            }
+        }
+        frame(&ctx, app, vec![button(at + egui::vec2(30.0, 0.0), false)]);
+        frame(&ctx, app, Vec::new());
+    };
+
+    let before = flushes.load(Ordering::SeqCst);
+    drag(&mut app, false);
+    assert!(app.undo_len() > 0, "the drag moved points");
+    assert_eq!(
+        flushes.load(Ordering::SeqCst),
+        before,
+        "nothing to remember"
+    );
+    drag(&mut app, true);
+    assert_eq!(
+        flushes.load(Ordering::SeqCst),
+        before + 1,
+        "the reach the wheel set is remembered once"
+    );
+}

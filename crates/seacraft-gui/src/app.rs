@@ -1125,6 +1125,9 @@ pub struct App {
     /// Ctrl (Cmd on macOS) is held over the window: connected editing is
     /// the opposite of the switch until it is let go.
     connected_flip: bool,
+    /// The connected choice last written to the settings, so a drag release
+    /// writes only a choice that changed (the wheel's reach).
+    persisted_choice: Option<crate::recent::ConnectedChoice>,
     /// Built-in and user connected-editing presets (`connected-edit.json`).
     preset_store: crate::connected_presets::PresetStore,
     /// Cached hover follower weights, keyed by hover, revision, preset, reach and seeds.
@@ -1331,6 +1334,7 @@ impl App {
             axis_lock: None,
             connected: ConnectedState::default(),
             connected_flip: false,
+            persisted_choice: None,
             preset_store: crate::connected_presets::PresetStore::load(None),
             hover_followers: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
@@ -3843,7 +3847,9 @@ impl App {
                             } else {
                                 self.set_status("control point moved".to_owned());
                             }
-                            if drag.connected {
+                            if drag.connected
+                                && self.persisted_choice.as_ref() != Some(&self.connected_choice())
+                            {
                                 self.persist_recent();
                             }
                         } else {
@@ -6977,6 +6983,7 @@ impl App {
             reach_m: choice.reach_m,
         };
         self.storage = Some(storage);
+        self.persisted_choice = Some(self.connected_choice());
         self.reconcile_connected_preset();
     }
 
@@ -7152,6 +7159,7 @@ impl App {
         self.recent.save(storage.as_mut());
         choice.save(storage.as_mut());
         storage.flush();
+        self.persisted_choice = Some(choice);
         let failure = storage.get_string(crate::recent::FLUSH_ERROR_KEY);
         // Warn once per distinct failure, not on every open.
         if failure.is_some() && failure != self.recent_failure {
