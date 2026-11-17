@@ -49,6 +49,7 @@ struct RenderCache {
     level: u8,
     mode: SubdivisionMode,
     mesh: RenderMesh,
+    bvh: seacraft_core::raycast::Bvh,
     curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
     /// The section settings `curves` were cut with ([`SectionCut`]).
     curves_for: Option<SectionCut>,
@@ -89,6 +90,28 @@ impl RenderCache {
     fn stamp(&self) -> u64 {
         (self.revision << 4) | u64::from(self.level)
     }
+}
+
+/// Hash of a [`crate::camera::ViewTransform`]'s basis and projection parameters.
+fn view_key(view: &crate::camera::ViewTransform) -> u64 {
+    revision_key(&[
+        view.eye.x.to_bits(),
+        view.eye.y.to_bits(),
+        view.eye.z.to_bits(),
+        view.right.x.to_bits(),
+        view.right.y.to_bits(),
+        view.right.z.to_bits(),
+        view.up.x.to_bits(),
+        view.up.y.to_bits(),
+        view.up.z.to_bits(),
+        view.forward.x.to_bits(),
+        view.forward.y.to_bits(),
+        view.forward.z.to_bits(),
+        view.ortho_height.to_bits(),
+        view.fit_aspect.to_bits(),
+        view.fov_tan.to_bits(),
+        view.perspective as u64,
+    ])
 }
 
 /// Live hydrostatics: the floating condition, the last report and the hull
@@ -1023,6 +1046,8 @@ pub struct App {
     /// Each viewport's waterline, tessellated once, and the [`render::waterline_key`] it was built
     /// for: orbiting one view rebuilds its own, and the other three draw theirs again.
     waterline_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
+    /// Each viewport's control-net visibility and the revision key it was computed for.
+    net_visibilities: [Option<(u64, crate::visibility::NetVisibility)>; 4],
     /// The hull drawn on the GPU.
     gpu_hull: GpuHullState,
     /// Requests from the loopback control socket (`--control`), served once
@@ -1211,6 +1236,7 @@ impl App {
             waterline_cuts: 0,
             shaded_hulls: Default::default(),
             waterline_meshes: Default::default(),
+            net_visibilities: Default::default(),
             gpu_hull: GpuHullState::default(),
             control: None,
             synthetic: Vec::new(),
@@ -1454,6 +1480,7 @@ impl App {
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
+        self.net_visibilities = [None, None, None, None];
         if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
             guard.clear();
         }
@@ -1486,6 +1513,7 @@ impl App {
         };
         if stale {
             let mesh = export::render_mesh(surface, level, self.mode);
+            let bvh = seacraft_core::raycast::Bvh::of_render_mesh(&mesh);
             let (min, max) = crate::render::display_extents(surface);
             // Section curves and combs cost more than the refinement: a drag
             // keeps the ones from before it and rebuilds them on release.
@@ -1505,6 +1533,7 @@ impl App {
                 level,
                 mode: self.mode,
                 mesh,
+                bvh,
                 curves_stale: curves.is_some(),
                 curves,
                 curves_for,
@@ -3627,6 +3656,7 @@ impl App {
         self.refresh_gpu_hull_geometry();
 
         for &(cell, index) in &cells {
+            self.sync_net_visibility(index, cell);
             if let Some(scene) = self.scene(&volume_overlays, &windage_overlays) {
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
@@ -5699,6 +5729,59 @@ impl App {
     /// Where viewport `i` was drawn last frame (test hook).
     pub fn viewport_rect(&self, i: usize) -> egui::Rect {
         self.viewport_rects[i]
+    }
+
+    fn net_visibility_key(&self, view: usize, cell: egui::Rect) -> Option<u64> {
+        let cache = self.cache.as_ref()?;
+        if cache.revision != self.revision || !cell.is_positive() {
+            return None;
+        }
+        let transform = self.cameras.get(view)?.transform();
+        Some(revision_key(&[
+            cache.stamp(),
+            view_key(&transform),
+            u64::from(cell.width().to_bits()),
+            u64::from(cell.height().to_bits()),
+            self.display.shaded as u64,
+        ]))
+    }
+
+    fn sync_net_visibility(&mut self, index: usize, cell: egui::Rect) {
+        let Some(key) = self.net_visibility_key(index, cell) else {
+            if let Some(slot) = self.net_visibilities.get_mut(index) {
+                *slot = None;
+            }
+            return;
+        };
+        if self.net_visibilities[index]
+            .as_ref()
+            .is_some_and(|(k, _)| *k == key)
+        {
+            return;
+        }
+        let (Some(surface), Some(cache)) = (self.surface.as_ref(), self.cache.as_ref()) else {
+            return;
+        };
+        let view = self.cameras[index].transform();
+        let empty;
+        let bvh = if self.display.shaded {
+            &cache.bvh
+        } else {
+            empty = seacraft_core::raycast::Bvh::build(&[], &[]);
+            &empty
+        };
+        let vis = crate::visibility::net_visibility(surface, bvh, &view, cell, 0.0);
+        self.net_visibilities[index] = Some((key, vis));
+    }
+
+    /// Cached control-net visibility for viewport `view` (`0..4`), when current.
+    pub fn net_visibility(&self, view: usize) -> Option<&crate::visibility::NetVisibility> {
+        let cell = *self.viewport_rects.get(view)?;
+        let key = self.net_visibility_key(view, cell)?;
+        self.net_visibilities
+            .get(view)?
+            .as_ref()
+            .and_then(|(k, vis)| (*k == key).then_some(vis))
     }
 
     pub fn selected(&self) -> Option<usize> {

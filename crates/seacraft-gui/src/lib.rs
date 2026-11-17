@@ -30,5 +30,6 @@ pub mod picking;
 pub mod recent;
 pub mod render;
 pub mod theme;
+pub mod visibility;
 
 pub use app::App;
