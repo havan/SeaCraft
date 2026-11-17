@@ -4042,6 +4042,7 @@ impl App {
                     drawn_selection,
                     net_lines,
                     focus_point,
+                    self.hovered_point,
                     followers,
                     vis,
                     texture.as_ref(),

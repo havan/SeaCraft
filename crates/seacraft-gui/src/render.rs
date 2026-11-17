@@ -333,6 +333,7 @@ pub fn viewport(
         &selection,
         lines.as_ref(),
         selected,
+        None,
         &[],
         None,
         None,
@@ -358,6 +359,7 @@ pub fn viewport_with_texture(
     selection: &crate::selection::Selection,
     lines: Option<&seacraft_core::netlines::NetLines>,
     focus_point: Option<usize>,
+    hovered: Option<usize>,
     followers: &[(usize, f64)],
     vis: Option<&crate::visibility::NetVisibility>,
     texture: Option<&egui::TextureHandle>,
@@ -442,6 +444,7 @@ pub fn viewport_with_texture(
             selection,
             vis,
             opts.hidden_net,
+            hovered,
             followers,
         );
     }
@@ -1422,6 +1425,7 @@ fn draw_points(
     selection: &crate::selection::Selection,
     vis: Option<&crate::visibility::NetVisibility>,
     mode: HiddenNet,
+    hovered: Option<usize>,
     followers: &[(usize, f64)],
 ) {
     let vis = vis.filter(|_| mode != HiddenNet::Same);
@@ -1456,6 +1460,13 @@ fn draw_points(
         };
         let radius = 3.5 + 3.5 * (w as f32);
         painter.circle_stroke(s, radius, Stroke::new(1.5, theme::follower_marker(w)));
+    }
+    // The point a click or drag would take, ringed outside any follower ring.
+    if let Some(s) = hovered
+        .and_then(|i| surface.points.get(i))
+        .and_then(|p| view.project(p.p, rect))
+    {
+        painter.circle_stroke(s, 8.5, Stroke::new(2.0, theme::POINT_HOVER));
     }
 }
 

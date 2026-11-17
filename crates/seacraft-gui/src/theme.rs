@@ -113,6 +113,10 @@ pub const CONTROL_NET_FAINT: Color32 =
     Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x20);
 /// Control points.
 pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
+/// The control point under the pointer: the one a click or drag would take.
+/// Warm, apart from the green selection, the teal followers and the blue
+/// station highlight.
+pub const POINT_HOVER: Color32 = Color32::from_rgb(0xff, 0xd8, 0x6b);
 /// The picked control point and its outline.
 pub const POINT_SELECTED: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
 pub const POINT_SELECTED_OUTLINE: Color32 = Color32::BLACK;
@@ -890,6 +894,20 @@ mod tests {
             assert_ne!(hidden, idle);
             assert_ne!(hidden, full);
             assert!(hidden.a() > 0 && hidden.a() < idle.a());
+        }
+    }
+
+    #[test]
+    fn the_hover_ring_stands_apart_from_the_canvas_and_the_other_point_marks() {
+        assert!(contrast_ratio(POINT_HOVER, CANVAS) >= 3.0);
+        for other in [
+            POINT,
+            POINT_SELECTED,
+            STATION_HIGHLIGHT,
+            CONTROL_NET,
+            follower_marker(1.0),
+        ] {
+            assert_ne!(POINT_HOVER, other);
         }
     }
 

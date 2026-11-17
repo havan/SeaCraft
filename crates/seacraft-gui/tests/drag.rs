@@ -1681,3 +1681,82 @@ fn bad_presets_file_keeps_builtins_and_reports_error_in_toolbar_and_inspect() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_point_under_the_pointer_is_ringed_with_or_without_connected() {
+    // Maintainer, after the visual check: with Connected on the followers
+    // light up on hover but the point itself did not, which looked wrong.
+    use seacraft_gui::theme;
+
+    fn hover_rings(shape: &egui::Shape, near: egui::Pos2, out: &mut Vec<egui::Color32>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| hover_rings(s, near, out)),
+            egui::Shape::Circle(c) if c.center.distance(near) < 0.5 && c.stroke.width > 0.0 => {
+                out.push(c.stroke.color);
+            }
+            _ => {}
+        }
+    }
+
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let point = {
+        let s = app.surface().unwrap();
+        (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 3.0 && s.points[i].p.x < 9.0 && s.points[i].p.y > 0.0)
+            .max_by(|&a, &b| s.points[a].p.z.total_cmp(&s.points[b].p.z))
+            .expect("mid-hull sheer point")
+    };
+    let at = app.cameras()[1]
+        .transform()
+        .project(app.surface().unwrap().points[point].p, app.viewport_rect(1))
+        .expect("projects in Profile");
+    let rings_at = |app: &mut App| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1600.0, 1000.0),
+            )),
+            events: vec![egui::Event::PointerMoved(at)],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+        out.textures_delta.clear();
+        let mut rings = Vec::new();
+        for clipped in &out.shapes {
+            hover_rings(&clipped.shape, at, &mut rings);
+        }
+        rings
+    };
+    for on in [false, true] {
+        app.set_connected_on(on);
+        let rings = rings_at(&mut app);
+        assert!(
+            rings.contains(&theme::POINT_HOVER),
+            "connected {on}: the hovered point is ringed, rings there: {rings:?}"
+        );
+    }
+    // Moving off the point drops the ring.
+    app.set_connected_on(false);
+    let off = app.viewport_rect(1).left_top() + egui::vec2(3.0, 3.0);
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 1000.0),
+        )),
+        events: vec![egui::Event::PointerMoved(off)],
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+    out.textures_delta.clear();
+    let mut rings = Vec::new();
+    for clipped in &out.shapes {
+        hover_rings(&clipped.shape, at, &mut rings);
+    }
+    assert!(
+        !rings.contains(&theme::POINT_HOVER),
+        "no ring once the pointer leaves"
+    );
+}
