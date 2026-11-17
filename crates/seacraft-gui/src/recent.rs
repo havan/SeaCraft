@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 use crate::theme;
 
@@ -20,6 +21,64 @@ pub const RECENT_CAP: usize = 8;
 
 /// The storage key the list is kept under (a JSON array of paths).
 pub const STORAGE_KEY: &str = "recent_files";
+
+/// The storage key the last connected-editing choice is kept under.
+pub const CONNECTED_STORAGE_KEY: &str = "connected_edit";
+
+fn default_preset_name() -> String {
+    seacraft_core::connected::DEFAULT_PRESET.to_owned()
+}
+
+/// The user's remembered connected-editing switch, preset and reach override.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectedChoice {
+    #[serde(default)]
+    pub on: bool,
+    #[serde(default = "default_preset_name")]
+    pub preset: String,
+    #[serde(default)]
+    pub reach_m: Option<f64>,
+}
+
+impl Default for ConnectedChoice {
+    fn default() -> Self {
+        Self {
+            on: false,
+            preset: default_preset_name(),
+            reach_m: None,
+        }
+    }
+}
+
+impl ConnectedChoice {
+    /// Serialise as JSON for storage.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned())
+    }
+
+    /// Read from stored JSON, falling back to defaults on invalid JSON or a
+    /// reach that is not a positive finite number.
+    pub fn from_json(text: &str) -> Self {
+        let mut choice: Self = serde_json::from_str(text).unwrap_or_default();
+        if !choice.reach_m.is_some_and(|r| r.is_finite() && r > 0.0) {
+            choice.reach_m = None;
+        }
+        choice
+    }
+
+    /// Read the remembered choice from `storage`, or [`Self::default`].
+    pub fn load(storage: &dyn eframe::Storage) -> Self {
+        storage
+            .get_string(CONNECTED_STORAGE_KEY)
+            .map(|text| Self::from_json(&text))
+            .unwrap_or_default()
+    }
+
+    /// Keep the choice in `storage` (the caller flushes).
+    pub fn save(&self, storage: &mut dyn eframe::Storage) {
+        storage.set_string(CONNECTED_STORAGE_KEY, self.to_json());
+    }
+}
 
 /// One entry of the list as the menu shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -403,5 +462,86 @@ mod tests {
         assert_eq!(RecentFiles::from_json(&list.to_json()), list);
         assert!(RecentFiles::from_json("not json").is_empty());
         assert!(RecentFiles::from_json("{\"a\": 1}").is_empty());
+    }
+
+    fn temp_storage_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "seacraft-gui-recent-unit-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(JsonFileStorage::FILE_NAME)
+    }
+
+    #[test]
+    fn old_storage_without_connected_edit_loads_default_choice() {
+        let path = temp_storage_path("old");
+        std::fs::write(&path, r#"{"recent_files": "[]"}"#).unwrap();
+        let storage = JsonFileStorage::open(&path);
+        assert_eq!(
+            ConnectedChoice::load(&storage),
+            ConnectedChoice {
+                on: false,
+                preset: "Blend both ways".to_owned(),
+                reach_m: None,
+            }
+        );
+        assert_eq!(ConnectedChoice::load(&storage), ConnectedChoice::default());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn invalid_json_or_non_positive_reach_falls_back_to_default() {
+        let path = temp_storage_path("invalid");
+        std::fs::write(&path, r#"{"connected_edit": "not valid json"}"#).unwrap();
+        let storage = JsonFileStorage::open(&path);
+        assert_eq!(ConnectedChoice::load(&storage), ConnectedChoice::default());
+
+        for bad_reach in ["0.0", "-2.5"] {
+            let payload = format!(r#"{{"on": true, "preset": "Nudge", "reach_m": {bad_reach}}}"#);
+            let outer = serde_json::json!({ CONNECTED_STORAGE_KEY: payload });
+            std::fs::write(&path, outer.to_string()).unwrap();
+            let storage = JsonFileStorage::open(&path);
+            assert_eq!(
+                ConnectedChoice::load(&storage),
+                ConnectedChoice {
+                    on: true,
+                    preset: "Nudge".to_owned(),
+                    reach_m: None,
+                },
+                "bad reach {bad_reach}"
+            );
+        }
+
+        // Non-finite values in memory also fall back to None on from_json/load.
+        assert_eq!(
+            ConnectedChoice::from_json(r#"{"on": true, "preset": "Nudge", "reach_m": null}"#),
+            ConnectedChoice {
+                on: true,
+                preset: "Nudge".to_owned(),
+                reach_m: None,
+            }
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn connected_choice_round_trips_through_storage() {
+        let path = temp_storage_path("roundtrip");
+        let choice = ConnectedChoice {
+            on: true,
+            preset: "Nudge".to_owned(),
+            reach_m: Some(1.75),
+        };
+        {
+            let mut storage = JsonFileStorage::open(&path);
+            choice.save(&mut storage);
+            eframe::Storage::flush(&mut storage);
+        }
+        let reloaded = JsonFileStorage::open(&path);
+        assert_eq!(ConnectedChoice::load(&reloaded), choice);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

@@ -648,12 +648,13 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 24] = [
+    const SOURCES: [(&str, &str); 25] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
         ("camera.rs", include_str!("camera.rs")),
         ("commands.rs", include_str!("commands.rs")),
+        ("connected_presets.rs", include_str!("connected_presets.rs")),
         ("control.rs", include_str!("control.rs")),
         ("gpu_hull/mod.rs", include_str!("gpu_hull/mod.rs")),
         ("gpu_hull/geometry.rs", include_str!("gpu_hull/geometry.rs")),

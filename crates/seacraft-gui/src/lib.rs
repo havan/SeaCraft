@@ -17,6 +17,7 @@ pub mod app;
 pub mod autosave;
 pub mod camera;
 pub mod commands;
+pub mod connected_presets;
 pub mod control;
 pub mod gpu_hull;
 pub mod history;
