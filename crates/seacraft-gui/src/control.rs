@@ -1318,6 +1318,42 @@ fn handle_inner(
                 "undo_len": app.undo_len(),
             }))
         }
+        "points.move" => {
+            if app.surface().is_none() {
+                return Err("no model loaded".into());
+            }
+            let count = app.control_point_count();
+            let list = p
+                .get("points")
+                .and_then(Value::as_array)
+                .filter(|a| !a.is_empty())
+                .ok_or("`points` must be a non-empty array of control point indices")?;
+            let mut seeds = Vec::with_capacity(list.len());
+            for value in list {
+                let idx = value
+                    .as_f64()
+                    .filter(|x| x.is_finite() && x.fract() == 0.0 && *x >= 0.0 && *x < count as f64)
+                    .ok_or_else(|| {
+                        format!(
+                            "a `points` index must be from 0 to {}",
+                            count.saturating_sub(1)
+                        )
+                    })? as usize;
+                seeds.push(idx);
+            }
+            let delta_val = p
+                .get("delta")
+                .filter(|v| !v.is_null())
+                .ok_or("missing `delta` [dx, dy, dz]")?;
+            let delta = triple(delta_val, "delta")?;
+            if delta.x.abs() > 1.0e6 || delta.y.abs() > 1.0e6 || delta.z.abs() > 1.0e6 {
+                return Err("`delta` must be three finite numbers within 1000 km".into());
+            }
+            let moved = app.move_points(&seeds, delta)?;
+            Ok(json!({
+                "moved": moved,
+            }))
+        }
         "edge.crease" => {
             let count = app.surface().ok_or("no model loaded")?.points.len();
             let list = p
@@ -4157,6 +4193,7 @@ mod tests {
             "performance.compute",
             "seakeeping.irregular",
             "point.move",
+            "points.move",
             "edge.crease",
             "layer.list",
             "layer.add",
@@ -5122,5 +5159,42 @@ mod tests {
         }
         assert_eq!(app.layer_count(), 3);
         assert_eq!(app.surface().unwrap().layer_face_counts()[1], 32);
+    }
+
+    #[test]
+    fn points_move_shifts_a_group_and_refuses_empty_or_out_of_range() {
+        // By hand: shifting points 2 and 5 by (0.25, 0.0, 0.1) adds that vector to each.
+        let (mut app, ctx) = demo();
+        let before_2 = app.surface().unwrap().points[2].p;
+        let before_5 = app.surface().unwrap().points[5].p;
+        let r = call(
+            &mut app,
+            &ctx,
+            "points.move",
+            json!({ "points": [2, 5], "delta": [0.25, 0.0, 0.1] }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let moved = r["result"]["moved"].as_array().expect("moved array");
+        assert_eq!(moved.len(), 2, "{r}");
+        assert_eq!(moved[0]["point"], 2);
+        assert_eq!(moved[1]["point"], 5);
+        let delta = Vec3::new(0.25, 0.0, 0.1);
+        assert!((app.surface().unwrap().points[2].p - (before_2 + delta)).length() < 1e-12);
+        assert!((app.surface().unwrap().points[5].p - (before_5 + delta)).length() < 1e-12);
+        assert_eq!(app.undo_len(), 1);
+        assert_eq!(app.selection().points(), &[2, 5]);
+        assert_eq!(app.selected(), Some(5));
+
+        // Empty list and out-of-range indices are refused without changing the model.
+        for bad in [
+            json!({ "points": [], "delta": [1.0, 0.0, 0.0] }),
+            json!({ "points": [2, 99999], "delta": [1.0, 0.0, 0.0] }),
+            json!({ "points": [-1], "delta": [1.0, 0.0, 0.0] }),
+        ] {
+            let r = call(&mut app, &ctx, "points.move", bad.clone());
+            assert_eq!(r["ok"], false, "{bad}: {r}");
+        }
+        assert_eq!(app.undo_len(), 1);
+        assert!((app.surface().unwrap().points[2].p - (before_2 + delta)).length() < 1e-12);
     }
 }

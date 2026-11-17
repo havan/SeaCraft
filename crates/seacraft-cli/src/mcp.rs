@@ -102,7 +102,7 @@ Workflow: load_hull {path} (or {demo: true}, or example {name} for a ready-made 
 hydro_compute {draft, trim, heel_deg, kg} for one floating condition (free_trim solves trim so LCB meets LCG) ->
 stability_cross_curves for KN/GZ and the IMO A.749 criteria -> render_png to look at the result.
 Other measurements: bonjean_curves, table_of_offsets, hydro_table, trim_scan, resistance_curve, planing_curve,
-unfold_plate. Edit with move_point, set_crease, split_face, insert_edge and transform_hull.
+unfold_plate. Edit with move_point, move_points, set_crease, split_face, insert_edge and transform_hull.
 seakeeping_raos gives heave and pitch RAOs in regular head seas; seakeeping_irregular {hs, tp, gamma?} integrates them over a
 wave spectrum for significant motions, relative motion, accelerations and MSI.
 optimize_hull {speed_kn} reshapes the hull (Cp, LCB, L/B) to cut resistance at a speed, holding displacement; it edits the model.
@@ -832,6 +832,7 @@ impl McpServer {
             "project_get" => self.project_get(a),
             "project_set" => self.project_set(a),
             "move_point" => self.move_point(a),
+            "move_points" => self.move_points(a),
             "set_crease" => self.set_crease(a),
             "split_face" => self.split_face(a),
             "insert_edge" => self.insert_edge(a),
@@ -1133,52 +1134,80 @@ impl McpServer {
                 _ => p.z = n,
             }
         }
-        let before = match self.surface.points.get(index) {
-            Some(cp) => cp.p,
-            None => return Err("move_point: point vanished".to_string()),
-        };
-        // A symmetric layer is modelled for y >= 0 only; mirroring would put a
-        // point moved to negative y back on top of itself.
-        let clamped = if p.y < 0.0 && self.point_is_symmetric(index) {
-            p.y = 0.0;
-            true
-        } else {
-            false
-        };
-        if let Some(cp) = self.surface.points.get_mut(index) {
-            cp.p = p;
-        }
+        let plan = seacraft_core::netmove::MovePlan::rigid(&self.surface, &[index]);
+        let moved = plan
+            .positions_to(index, p)
+            .into_iter()
+            .next()
+            .ok_or_else(|| "move_point: point vanished".to_string())?;
+        let clamped = moved.to.y != p.y;
+        plan.apply_to(&mut self.surface, index, p);
         Ok(json!({
             "index": index,
-            "before": before,
-            "after": p,
+            "before": moved.from,
+            "after": moved.to,
             "clamped": clamped,
         }))
     }
 
-    fn point_is_symmetric(&self, index: usize) -> bool {
-        let mut touched = false;
-        let mut all = true;
-        for (fi, face) in self.surface.faces.iter().enumerate() {
-            if face.contains(&index) {
-                touched = true;
-                let symmetric = self
-                    .surface
-                    .face_layer
-                    .get(fi)
-                    .and_then(|&l| self.surface.layers.get(l))
-                    .map(|l| l.symmetric)
-                    .unwrap_or(false);
-                all &= symmetric;
+    fn move_points(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let list = a
+            .get("points")
+            .and_then(Value::as_array)
+            .filter(|pts| !pts.is_empty())
+            .ok_or("move_points: `points` must be a non-empty array of point indices")?;
+        let count = self.surface.points.len();
+        let mut seeds = Vec::with_capacity(list.len());
+        for v in list {
+            let idx = v
+                .as_u64()
+                .and_then(|n| usize::try_from(n).ok())
+                .or_else(|| {
+                    v.as_f64()
+                        .filter(|x| {
+                            x.is_finite()
+                                && x.fract() == 0.0
+                                && *x >= 0.0
+                                && *x <= usize::MAX as f64
+                        })
+                        .map(|x| x as usize)
+                })
+                .ok_or("move_points: each entry in `points` must be a point index")?;
+            if idx >= count {
+                return Err(format!(
+                    "move_points: point index {idx} is out of range (the model has {count} points)"
+                ));
+            }
+            seeds.push(idx);
+        }
+        let delta_arr = a
+            .get("delta")
+            .and_then(Value::as_array)
+            .ok_or("move_points: `delta` must be [dx, dy, dz]")?;
+        if delta_arr.len() != 3 {
+            return Err(format!(
+                "move_points: `delta` needs 3 numbers, got {}",
+                delta_arr.len()
+            ));
+        }
+        let mut delta = Vec3::ZERO;
+        for (i, v) in delta_arr.iter().enumerate() {
+            let n = v
+                .as_f64()
+                .filter(|n| n.is_finite() && n.abs() <= 1.0e6)
+                .ok_or("move_points: `delta` must be three finite numbers within 1000 km")?;
+            match i {
+                0 => delta.x = n,
+                1 => delta.y = n,
+                _ => delta.z = n,
             }
         }
-        if touched {
-            all
-        } else if self.surface.layers.is_empty() {
-            false
-        } else {
-            self.surface.layers.iter().all(|l| l.symmetric)
-        }
+        let plan = seacraft_core::netmove::MovePlan::rigid(&self.surface, &seeds);
+        let moved = plan.positions(delta);
+        plan.apply(&mut self.surface, delta);
+        Ok(json!({
+            "moved": moved,
+        }))
     }
 
     fn set_crease(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
@@ -2856,6 +2885,21 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Edits,
         ),
         tool(
+            "move_points",
+            "Move control points by a displacement",
+            "Shift every control point in `points` by `delta` [dx, dy, dz] in metres (x forward, y starboard, z up). \
+             On a symmetric layer y is clamped to 0 or above, and when more than one point moves any seed that starts \
+             on the centreline stays on it. Returns `moved` with each point's `from` and `to` positions.",
+            obj(
+                json!({
+                    "points": {"type": "array", "items": {"type": "integer"}, "minItems": 1, "description": "Control point indices to move"},
+                    "delta": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Displacement [dx, dy, dz] in metres"},
+                }),
+                &["points", "delta"],
+            ),
+            Effect::Edits,
+        ),
+        tool(
             "set_crease",
             "Set an edge crease",
             "Mark the edge between control points `a` and `b` as a crease (a hard edge FREE!ship keeps sharp through \
@@ -3527,7 +3571,7 @@ fn text_result(v: &Value, is_error: bool) -> Value {
 /// tools, so each tool is translated to the one that does the same thing:
 /// `hull_info` -> `ui.inspect`, `load_hull` -> `model.open` / `model.load_demo`,
 /// `example` -> `model.example`,
-/// `save_hull` -> `model.save`, `move_point` -> `point.move`,
+/// `save_hull` -> `model.save`, `move_point` -> `point.move`, `move_points` -> `points.move`,
 /// `set_crease` -> `edge.crease`, `split_face` -> `model.split_face`,
 /// `insert_edge` -> `model.insert_edge`, `hydro_compute` -> `hydro.compute`,
 /// `stability_cross_curves` -> `stability.cross_curves`,
@@ -3716,6 +3760,45 @@ impl Remote {
                     );
                 }
                 self.request("point.move", json!({"index": index, "xyz": p}))
+            }
+            "move_points" => {
+                let list = a
+                    .get("points")
+                    .and_then(Value::as_array)
+                    .filter(|pts| !pts.is_empty())
+                    .ok_or("move_points: `points` must be a non-empty array of point indices")?;
+                let mut points = Vec::with_capacity(list.len());
+                for v in list {
+                    let idx = v
+                        .as_u64()
+                        .and_then(|n| usize::try_from(n).ok())
+                        .or_else(|| {
+                            v.as_f64()
+                                .filter(|x| {
+                                    x.is_finite()
+                                        && x.fract() == 0.0
+                                        && *x >= 0.0
+                                        && *x <= usize::MAX as f64
+                                })
+                                .map(|x| x as usize)
+                        })
+                        .ok_or("move_points: each entry in `points` must be a point index")?;
+                    points.push(idx);
+                }
+                let delta = a
+                    .get("delta")
+                    .and_then(Value::as_array)
+                    .filter(|d| d.len() == 3)
+                    .ok_or("move_points: `delta` must be [dx, dy, dz]")?;
+                let mut d = Vec::with_capacity(3);
+                for v in delta {
+                    d.push(
+                        v.as_f64()
+                            .filter(|n| n.is_finite() && n.abs() <= 1.0e6)
+                            .ok_or("move_points: `delta` must be three finite numbers")?,
+                    );
+                }
+                self.request("points.move", json!({"points": points, "delta": d}))
             }
             "split_face" => self.request("model.split_face", Value::Object(a.clone())),
             "insert_edge" => self.request("model.insert_edge", Value::Object(a.clone())),
@@ -4161,6 +4244,7 @@ mod tests {
                 "project_get",
                 "project_set",
                 "move_point",
+                "move_points",
                 "set_crease",
                 "split_face",
                 "insert_edge",
@@ -5055,6 +5139,7 @@ mod tests {
             "save_hull",
             "project_set",
             "move_point",
+            "move_points",
             "transform_hull",
             "optimize_hull",
             "export_linesplan",
@@ -6299,5 +6384,81 @@ mod tests {
             seen[1].1,
             json!({"path": "/tmp/o.pdf", "format": "offsets_pdf", "stations": 30, "imperial": true})
         );
+    }
+
+    #[test]
+    fn move_points_and_shared_symmetric_layer_point_follow_move_plan() {
+        // By hand: moving points 0 and 3 by (0.25, 0.0, 0.1) shifts each by that delta;
+        // on grid_net(3, 2) with face 0 on symmetric layer 0 and face 1 on unsymmetric layer 1,
+        // point 3 at (1, 1, 0) touches both faces so it is clamped to y >= 0, whereas point 5
+        // at (2, 1, 0) touches only face 1 and moves freely to y < 0.
+        let mut s = McpServer::new();
+        let b0 = s.surface.points[0].p;
+        let b3 = s.surface.points[3].p;
+        let r = ok(
+            &mut s,
+            1,
+            "move_points",
+            json!({"points": [0, 3], "delta": [0.25, 0.0, 0.1]}),
+        );
+        let moved = r["moved"].as_array().expect("moved array");
+        assert_eq!(moved.len(), 2, "{r}");
+        assert_eq!(moved[0]["point"], 0);
+        assert_eq!(moved[1]["point"], 3);
+        let delta = Vec3::new(0.25, 0.0, 0.1);
+        assert!((s.surface.points[0].p - (b0 + delta)).length() < 1e-12);
+        assert!((s.surface.points[3].p - (b3 + delta)).length() < 1e-12);
+
+        // Empty list and out-of-range indices fail without modifying the surface.
+        let snapshot: Vec<Vec3> = s.surface.points.iter().map(|p| p.p).collect();
+        fails(
+            &mut s,
+            2,
+            "move_points",
+            json!({"points": [], "delta": [1.0, 0.0, 0.0]}),
+        );
+        fails(
+            &mut s,
+            3,
+            "move_points",
+            json!({"points": [0, 99999], "delta": [1.0, 0.0, 0.0]}),
+        );
+        let after_fail: Vec<Vec3> = s.surface.points.iter().map(|p| p.p).collect();
+        assert_eq!(after_fail, snapshot);
+
+        // Shared point between a symmetric and an unsymmetric layer.
+        let mut net = seacraft_core::netlines::grid_net(3, 2);
+        net.layers.push(seacraft_core::mesh::Layer {
+            symmetric: false,
+            ..Default::default()
+        });
+        net.face_layer[1] = 1;
+        let mut shared = McpServer::from_surface(net);
+        let clamped = ok(
+            &mut shared,
+            4,
+            "move_point",
+            json!({"index": 3, "xyz": [1.0, -0.5, 0.2]}),
+        );
+        assert_eq!(clamped["clamped"], true, "{clamped}");
+        assert_eq!(clamped["after"]["y"], 0.0, "{clamped}");
+
+        let unclamped = ok(
+            &mut shared,
+            5,
+            "move_point",
+            json!({"index": 3, "xyz": [1.0, 0.5, 0.2]}),
+        );
+        assert_eq!(unclamped["clamped"], false, "{unclamped}");
+        assert_eq!(unclamped["after"]["y"], 0.5, "{unclamped}");
+
+        let unsym_only = ok(
+            &mut shared,
+            6,
+            "move_point",
+            json!({"index": 5, "xyz": [2.0, -0.5, 0.2]}),
+        );
+        assert_eq!(unsym_only["clamped"], false, "{unsym_only}");
+        assert_eq!(unsym_only["after"]["y"], -0.5, "{unsym_only}");
     }
 }

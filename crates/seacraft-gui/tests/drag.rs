@@ -425,3 +425,187 @@ fn shift_click_adds_a_point_and_a_second_shift_click_removes_it() {
     assert_eq!(app.selected(), Some(first));
     assert_eq!(app.picked_points(), None);
 }
+
+#[test]
+fn shift_selecting_two_points_and_dragging_moves_both_in_one_undo_step() {
+    let mut app = App::headless_for_test(None);
+    {
+        let surface = app.surface_mut().expect("model");
+        *surface = seacraft_core::demo::demo_hull(true);
+    }
+    app.mark_geometry_changed();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+
+    // Pick two starboard sheer points well separated in x in the Profile viewport.
+    let sheer: Vec<usize> = {
+        let s = app.surface().expect("model loaded");
+        let mut pts: Vec<usize> = (0..s.points.len())
+            .filter(|&i| s.points[i].p.x > 2.0 && s.points[i].p.x < 10.0 && s.points[i].p.y > 0.0)
+            .collect();
+        pts.sort_by(|&a, &b| s.points[b].p.z.total_cmp(&s.points[a].p.z));
+        let mut out: Vec<usize> = Vec::new();
+        for i in pts {
+            if out
+                .iter()
+                .all(|&o| (s.points[o].p.x - s.points[i].p.x).abs() > 2.0)
+            {
+                out.push(i);
+            }
+        }
+        out
+    };
+    let (a, b) = (sheer[0], sheer[1]);
+    let before_a = app.surface().unwrap().points[a].p;
+    let before_b = app.surface().unwrap().points[b].p;
+    let rect = app.viewport_rect(1); // profile
+    let view = app.cameras()[1].transform();
+    let pos_a = view.project(before_a, rect).unwrap();
+    let pos_b = view.project(before_b, rect).unwrap();
+
+    // Click `a`, Shift+click `b`, then drag `a` 40 px right (+x).
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(pos_a), button(pos_a, true)],
+    );
+    frame(&ctx, &mut app, vec![button(pos_a, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    let shift_btn = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::SHIFT,
+    };
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(pos_b), shift_btn(pos_b, true)],
+    );
+    frame(&ctx, &mut app, vec![shift_btn(pos_b, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.selection().points(), &[a, b]);
+    assert_eq!(app.undo_len(), 0);
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(pos_a)]);
+    frame(&ctx, &mut app, vec![button(pos_a, true)]);
+    for dx in [10.0, 40.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(pos_a + egui::vec2(dx, 0.0))],
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(pos_a + egui::vec2(40.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+
+    let after_a = app.surface().unwrap().points[a].p;
+    let after_b = app.surface().unwrap().points[b].p;
+    let delta_a = after_a - before_a;
+    let delta_b = after_b - before_b;
+    assert!(delta_a.x > 0.05, "point a moved in +x: {delta_a:?}");
+    assert!(
+        (delta_a - delta_b).length() < 1e-9,
+        "both selected points move by the same displacement: {delta_a:?} vs {delta_b:?}"
+    );
+    assert_eq!(app.undo_len(), 1, "one group drag is one undo step");
+    app.undo();
+    assert!((app.surface().unwrap().points[a].p - before_a).length() < 1e-9);
+    assert!((app.surface().unwrap().points[b].p - before_b).length() < 1e-9);
+
+    // Centreline rule in a group drag on the symmetric half-hull:
+    // dragging a group that includes a centreline point in Plan view (+x right, +y up)
+    // moves both in x while keeping the centreline point at y = 0.
+    let cl = (0..app.surface().unwrap().points.len())
+        .find(|&i| {
+            let p = app.surface().unwrap().points[i].p;
+            p.x > 3.0 && p.x < 9.0 && p.y.abs() <= 1e-9
+        })
+        .expect("a centreline point");
+    let before_cl = app.surface().unwrap().points[cl].p;
+    assert_eq!(before_cl.y, 0.0);
+    app.selection_mut().clear();
+    app.selection_mut().add_all([cl, a]);
+    frame(&ctx, &mut app, Vec::new());
+
+    let plan_rect = app.viewport_rect(2);
+    let plan_pos_a = app.cameras()[2]
+        .transform()
+        .project(before_a, plan_rect)
+        .expect("projected in plan");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(plan_pos_a)]);
+    frame(&ctx, &mut app, vec![button(plan_pos_a, true)]);
+    for step in [egui::vec2(10.0, -10.0), egui::vec2(40.0, -30.0)] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(plan_pos_a + step)],
+        );
+    }
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(plan_pos_a + egui::vec2(40.0, -30.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+
+    let after_a = app.surface().unwrap().points[a].p;
+    let after_cl = app.surface().unwrap().points[cl].p;
+    assert!(after_a.x - before_a.x > 0.05 && after_a.y - before_a.y > 0.05);
+    assert!(
+        ((after_cl.x - before_cl.x) - (after_a.x - before_a.x)).abs() < 1e-9,
+        "centreline point moves by the same dx"
+    );
+    assert_eq!(
+        after_cl.y, 0.0,
+        "centreline point in a group drag stays at y = 0"
+    );
+    assert_eq!(app.undo_len(), 1);
+    app.undo();
+    assert!((app.surface().unwrap().points[cl].p - before_cl).length() < 1e-9);
+    assert!((app.surface().unwrap().points[a].p - before_a).length() < 1e-9);
+}
+
+#[test]
+fn model_with_no_symmetric_layer_moves_across_y_zero_freely() {
+    // Review Focus 5: on an unsymmetric model (`demo_hull(false)`), neither the centreline lock
+    // nor the y >= 0 floor applies; by hand, shifting by (0.1, -0.5, 0.2) subtracts 0.5 from y.
+    use seacraft_core::math::Vec3;
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    assert!(app.surface().unwrap().layers.iter().all(|l| !l.symmetric));
+    let (cl, stbd) = {
+        let s = app.surface().unwrap();
+        let cl = (0..s.points.len())
+            .find(|&i| s.points[i].p.y.abs() <= 1e-9)
+            .expect("a point at y = 0");
+        let stbd = (0..s.points.len())
+            .find(|&i| s.points[i].p.y > 0.05 && s.points[i].p.y < 0.4)
+            .expect("a point with 0.05 < y < 0.4");
+        (cl, stbd)
+    };
+    let before_cl = app.surface().unwrap().points[cl].p;
+    let before_stbd = app.surface().unwrap().points[stbd].p;
+    let delta = Vec3::new(0.1, -0.5, 0.2);
+
+    let moved = app.move_points(&[cl, stbd], delta).expect("move_points");
+    assert_eq!(moved.len(), 2);
+    let after_cl = app.surface().unwrap().points[cl].p;
+    let after_stbd = app.surface().unwrap().points[stbd].p;
+    assert!((after_cl - (before_cl + delta)).length() < 1e-12);
+    assert!((after_stbd - (before_stbd + delta)).length() < 1e-12);
+    assert!(after_cl.y < 0.0 && after_stbd.y < 0.0);
+    assert_eq!(app.undo_len(), 1);
+    assert_eq!(app.selection().points(), &[cl, stbd]);
+    assert_eq!(app.selected(), Some(stbd));
+
+    // Empty and out-of-range calls fail without changing the model or undo stack.
+    assert!(app.move_points(&[], delta).is_err());
+    assert!(app.move_points(&[cl, 999_999], delta).is_err());
+    assert_eq!(app.undo_len(), 1);
+    assert_eq!(app.surface().unwrap().points[cl].p, after_cl);
+}

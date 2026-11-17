@@ -520,6 +520,8 @@ pub enum InspectorAction {
     /// Move control point `index` to `to` (one undo step; the app clamps a
     /// symmetric layer's point to `y >= 0`).
     Move { index: usize, to: Vec3 },
+    /// Move every selected control point by `delta` (one undo step).
+    MoveSelection { delta: Vec3 },
 }
 
 /// Everything the Inspector draws.
@@ -537,6 +539,7 @@ pub struct InspectorPanel<'a> {
 pub struct InspectorOutput {
     pub action: InspectorAction,
     pub fields: [egui::Rect; 3],
+    pub move_button: egui::Rect,
 }
 
 impl Default for InspectorOutput {
@@ -544,6 +547,7 @@ impl Default for InspectorOutput {
         Self {
             action: InspectorAction::None,
             fields: [egui::Rect::NOTHING; 3],
+            move_button: egui::Rect::NOTHING,
         }
     }
 }
@@ -582,14 +586,75 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
         (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
         _ => None,
     };
+    let delta_id = egui::Id::unique("inspector_multi_delta");
     let Some((surface, index)) = point else {
         *panel.pending = None;
+        ui.data_mut(|d| d.remove::<[f64; 3]>(delta_id));
         ui.label(
             egui::RichText::new("Click a point to edit it — Esc clears").color(theme::TEXT_MUTED),
         );
         ui.add_space(4.0);
         return out;
     };
+    if panel.selection.len() > 1 {
+        let pts: Vec<Vec3> = panel
+            .selection
+            .points()
+            .iter()
+            .filter_map(|&i| surface.points.get(i).map(|cp| cp.p))
+            .collect();
+        if pts.len() > 1 {
+            *panel.pending = None;
+            let mut min = pts[0];
+            let mut max = pts[0];
+            for &p in &pts[1..] {
+                min = Vec3::new(min.x.min(p.x), min.y.min(p.y), min.z.min(p.z));
+                max = Vec3::new(max.x.max(p.x), max.y.max(p.y), max.z.max(p.z));
+            }
+            ui.label(
+                egui::RichText::new(format!("{} points selected", pts.len()))
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "x {:.3}..{:.3} · y {:.3}..{:.3} · z {:.3}..{:.3} m",
+                    min.x, max.x, min.y, max.y, min.z, max.z
+                ))
+                .color(theme::TEXT_SECONDARY),
+            );
+            ui.add_space(2.0);
+            let mut delta: [f64; 3] = ui.data_mut(|d| d.get_temp(delta_id)).unwrap_or([0.0; 3]);
+            egui::Grid::new("inspector_dxyz")
+                .num_columns(3)
+                .spacing(egui::vec2(8.0, 4.0))
+                .show(ui, |ui| {
+                    for (axis, name) in ["dx", "dy", "dz"].into_iter().enumerate() {
+                        ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY));
+                        let r = ui.add_sized(
+                            [96.0, 20.0],
+                            theme::num(&mut delta[axis]).speed(0.005).fixed_decimals(3),
+                        );
+                        out.fields[axis] = r.rect;
+                        ui.label(egui::RichText::new("m").color(theme::TEXT_MUTED));
+                        ui.end_row();
+                    }
+                });
+            ui.add_space(4.0);
+            let move_btn = ui.button("Move");
+            out.move_button = move_btn.rect;
+            if move_btn.clicked() {
+                out.action = InspectorAction::MoveSelection {
+                    delta: Vec3::new(delta[0], delta[1], delta[2]),
+                };
+                delta = [0.0; 3];
+            }
+            ui.data_mut(|d| d.insert_temp(delta_id, delta));
+            ui.add_space(4.0);
+            return out;
+        }
+    }
+    ui.data_mut(|d| d.remove::<[f64; 3]>(delta_id));
     if panel.pending.is_some_and(|(i, _)| i != index) {
         *panel.pending = None;
     }

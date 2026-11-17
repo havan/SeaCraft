@@ -378,6 +378,8 @@ struct DragState {
     /// Position when grabbed, so a click that never moved can drop its
     /// snapshot again.
     original: Vec3,
+    /// Which points move with the drag, and where each started.
+    plan: seacraft_core::netmove::MovePlan,
     /// Whether Shift+press added `point` to the selection (so a release
     /// without movement does not immediately toggle it off again).
     added_on_press: bool,
@@ -973,6 +975,8 @@ pub struct App {
     inspector_pending: Option<(usize, [f64; 3])>,
     /// Where the inspector's x/y/z fields were drawn last frame (test hook).
     inspector_rects: [egui::Rect; 3],
+    /// Where the inspector's "Move" button was drawn last frame (test hook).
+    inspector_move_button_rect: egui::Rect,
     /// Where the layer list and the Inspector under it were drawn last
     /// frame (test hooks).
     layer_list_rect: egui::Rect,
@@ -1090,19 +1094,6 @@ struct OptimiseJob {
     kg: Option<f64>,
 }
 
-/// Whether control point `point` belongs to a face on a symmetric layer
-/// (only `y >= 0` modelled), so it must not cross the centreline.
-pub fn point_on_symmetric_layer(surface: &Surface, point: usize) -> bool {
-    surface.faces.iter().enumerate().any(|(fi, f)| {
-        f.contains(&point)
-            && surface
-                .face_layer
-                .get(fi)
-                .and_then(|&li| surface.layers.get(li))
-                .is_some_and(|l| l.symmetric)
-    })
-}
-
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
@@ -1198,6 +1189,7 @@ impl App {
             dock_wide: false,
             inspector_pending: None,
             inspector_rects: [egui::Rect::NOTHING; 3],
+            inspector_move_button_rect: egui::Rect::NOTHING,
             layer_list_rect: egui::Rect::NOTHING,
             inspector_rect: egui::Rect::NOTHING,
             show_report_options: false,
@@ -1953,9 +1945,11 @@ impl App {
                 self.inspector_rect = egui::Rect::NOTHING;
             }
             self.inspector_rects = inspector.fields;
+            self.inspector_move_button_rect = inspector.move_button;
             self.apply_inspector_action(inspector.action);
         } else {
             self.inspector_rects = [egui::Rect::NOTHING; 3];
+            self.inspector_move_button_rect = egui::Rect::NOTHING;
             self.layer_list_rect = egui::Rect::NOTHING;
             self.inspector_rect = egui::Rect::NOTHING;
         }
@@ -3639,11 +3633,14 @@ impl App {
                     if let Some(drag) = self.drag.take_if(|d| d.view == index) {
                         added_on_press = drag.added_on_press;
                         self.axis_lock = None;
-                        let moved = self
-                            .surface
-                            .as_ref()
-                            .map(|s| (s.points[drag.point].p - drag.original).length() > 1e-12)
-                            .unwrap_or(false);
+                        let moved = self.surface.as_ref().is_some_and(|s| {
+                            drag.plan.weights().into_iter().any(|(p, _)| {
+                                drag.plan
+                                    .start(p)
+                                    .zip(s.points.get(p))
+                                    .is_some_and(|(from, cp)| (cp.p - from).length() > 1e-12)
+                            })
+                        });
                         if moved {
                             // Full refinement and measurement again; the
                             // automatic recomputes count from the release.
@@ -4154,6 +4151,8 @@ impl App {
         } else if !self.selection.contains(point) {
             self.selection.set_only(point);
         }
+        let surface = self.surface.as_ref().expect("checked above");
+        let plan = seacraft_core::netmove::MovePlan::rigid(surface, self.selection.points());
         self.active = index;
         self.set_status(format!(
             "dragging control point {point} · hold X, Y or Z to lock an axis"
@@ -4164,6 +4163,7 @@ impl App {
             offset,
             view: index,
             original: center,
+            plan,
             added_on_press,
         });
     }
@@ -4201,11 +4201,8 @@ impl App {
             });
         }
         self.axis_lock = lock;
-        if let Some(surface) = self.surface.as_mut() {
-            if point_on_symmetric_layer(surface, point) {
-                target.y = target.y.max(0.0);
-            }
-            surface.points[point].p = target;
+        if let (Some(drag), Some(surface)) = (self.drag.as_ref(), self.surface.as_mut()) {
+            drag.plan.apply_to(surface, point, target);
         }
         self.dirty = true;
         self.autosave.note_dirty();
@@ -5906,6 +5903,10 @@ impl App {
         &self.selection
     }
 
+    pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
+        &mut self.selection
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -6365,38 +6366,88 @@ impl App {
         if !target.is_finite() {
             return Err("the new position must be finite".into());
         }
-        let symmetric = point_on_symmetric_layer(surface, index);
-        let target = if symmetric && target.y < 0.0 {
-            Vec3::new(target.x, 0.0, target.z)
-        } else {
-            target
-        };
+        let symmetric = seacraft_core::netmove::point_on_symmetric_layer(surface, index);
+        let plan = seacraft_core::netmove::MovePlan::rigid(surface, &[index]);
+        let to = plan
+            .positions_to(index, target)
+            .first()
+            .map_or(target, |m| m.to);
         self.snapshot_undo();
         if let Some(surface) = self.surface.as_mut() {
-            surface.points[index].p = target;
+            plan.apply_to(surface, index, target);
         }
         self.select_point(Some(index));
         self.mark_geometry_changed();
         self.status_note(format!("control point {index} moved"));
-        Ok((target, symmetric && target.y == 0.0))
+        Ok((to, symmetric && to.y == 0.0))
+    }
+
+    /// Move every control point in `seeds` by `delta` as one undoable edit.
+    pub fn move_points(
+        &mut self,
+        seeds: &[usize],
+        delta: Vec3,
+    ) -> Result<Vec<seacraft_core::netmove::Moved>, String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        if seeds.is_empty() {
+            return Err("`points` must name at least one control point".into());
+        }
+        let count = surface.points.len();
+        for &index in seeds {
+            if index >= count {
+                return Err(format!(
+                    "point index {index} is out of range (0..{})",
+                    count.saturating_sub(1)
+                ));
+            }
+        }
+        if !delta.is_finite() {
+            return Err("`delta` must be finite".into());
+        }
+        let plan = seacraft_core::netmove::MovePlan::rigid(surface, seeds);
+        let moved = plan.positions(delta);
+        self.snapshot_undo();
+        if let Some(surface) = self.surface.as_mut() {
+            plan.apply(surface, delta);
+        }
+        self.selection.clear();
+        self.selection.add_all(seeds.iter().copied());
+        self.mark_geometry_changed();
+        self.status_note(format!(
+            "{} control point{} moved",
+            moved.len(),
+            if moved.len() == 1 { "" } else { "s" }
+        ));
+        Ok(moved)
     }
 
     /// Apply what the Inspector asked for. A value equal to the point's
     /// position changes nothing and records no undo step.
     pub fn apply_inspector_action(&mut self, action: panels::InspectorAction) {
-        let panels::InspectorAction::Move { index, to } = action else {
-            return;
-        };
-        let unchanged = self
-            .surface
-            .as_ref()
-            .and_then(|s| s.points.get(index))
-            .is_some_and(|p| p.p == to);
-        if unchanged {
-            return;
-        }
-        if let Err(e) = self.move_point(index, to) {
-            self.log(Level::Error, e);
+        match action {
+            panels::InspectorAction::None => {}
+            panels::InspectorAction::Move { index, to } => {
+                let unchanged = self
+                    .surface
+                    .as_ref()
+                    .and_then(|s| s.points.get(index))
+                    .is_some_and(|p| p.p == to);
+                if unchanged {
+                    return;
+                }
+                if let Err(e) = self.move_point(index, to) {
+                    self.log(Level::Error, e);
+                }
+            }
+            panels::InspectorAction::MoveSelection { delta } => {
+                if delta == Vec3::ZERO {
+                    return;
+                }
+                let seeds = self.selection.points().to_vec();
+                if let Err(e) = self.move_points(&seeds, delta) {
+                    self.log(Level::Error, e);
+                }
+            }
         }
     }
 
@@ -6404,6 +6455,12 @@ impl App {
     /// frame; `Rect::NOTHING` with no point selected (test hook).
     pub fn inspector_field_rect(&self, axis: usize) -> egui::Rect {
         self.inspector_rects[axis]
+    }
+
+    /// Where the Inspector's "Move" button was drawn last frame;
+    /// `Rect::NOTHING` when fewer than two points are selected (test hook).
+    pub fn inspector_move_button_rect(&self) -> egui::Rect {
+        self.inspector_move_button_rect
     }
 
     /// Where the left dock's layer list was drawn last frame (test hook).
