@@ -731,6 +731,11 @@ fn handle_inner(
                     "grid" => {
                         display.grid = value.as_bool().ok_or("`grid` must be true or false")?
                     }
+                    "orientation" => {
+                        display.orientation = value
+                            .as_bool()
+                            .ok_or("`orientation` must be true or false")?
+                    }
                     "combs" => {
                         display.combs = value.as_bool().ok_or("`combs` must be true or false")?
                     }
@@ -2514,6 +2519,7 @@ fn inspect(app: &App) -> Value {
             "volumes": d.volumes,
             "windage": d.windage,
             "grid": d.grid,
+            "orientation": d.orientation,
             "curves": d.curves,
             "combs": d.combs,
             "stations": d.stations,
@@ -4543,6 +4549,27 @@ mod tests {
         }
         assert!(app.display().curves, "a refused batch changed nothing");
         assert_eq!(app.display().stations, 21);
+    }
+
+    #[test]
+    fn ui_set_toggles_orientation_and_inspect_reports_it() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["display"]["orientation"], true, "{v}");
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "orientation": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["orientation"], false);
+        assert!(!app.display().orientation);
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "orientation": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["orientation"], true);
+        assert!(app.display().orientation);
+
+        let bad = call(&mut app, &ctx, "ui.set", json!({ "orientation": "yes" }));
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(app.display().orientation);
     }
 
     #[test]

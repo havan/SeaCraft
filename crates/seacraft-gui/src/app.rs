@@ -2260,6 +2260,7 @@ impl App {
                     ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
                     ui.checkbox(&mut self.display.windage, "Windage outlines");
                     ui.checkbox(&mut self.display.grid, "Grid");
+                    ui.checkbox(&mut self.display.orientation, "Orientation");
                     ui.checkbox(&mut self.display.curves, "Intersection curves");
                     ui.checkbox(&mut self.display.combs, "Curvature combs");
                     ui.menu_button("Curves and combs", |ui| {

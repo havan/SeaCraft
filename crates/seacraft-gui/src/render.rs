@@ -37,6 +37,8 @@ pub struct DisplayOptions {
     pub windage: bool,
     /// Draw the ground grid.
     pub grid: bool,
+    /// Draw the viewport orientation triad and edge labels.
+    pub orientation: bool,
     /// Draw the station, buttock and waterline intersection curves.
     pub curves: bool,
     /// Draw curvature combs (porcupines) along those curves. Independent of
@@ -73,6 +75,7 @@ impl Default for DisplayOptions {
             volumes: true,
             windage: true,
             grid: true,
+            orientation: true,
             curves: false,
             combs: false,
             stations: lines.stations,
@@ -332,6 +335,9 @@ pub fn viewport_with_texture(
             &painter,
             &scale_bar(rect, view.world_per_px(rect, 1.0), minor),
         );
+    }
+    if opts.orientation {
+        crate::orientation::draw(&painter, rect, &view);
     }
     painter.rect_stroke(
         rect,
@@ -2102,6 +2108,7 @@ mod tests {
             control_net: false,
             points: false,
             waterplane: false,
+            orientation: false,
             ..Default::default()
         };
         let ctx = egui::Context::default();
@@ -2320,5 +2327,90 @@ mod tests {
         let outside = Pos2::new(5.0, 5.0);
         let miss = pick_windage(&view, rect, outside, &windage);
         assert_eq!(miss, None, "outside yields None");
+    }
+
+    #[test]
+    fn orientation_edge_labels_drawn_in_profile_only_when_enabled() {
+        let s = seacraft_core::demo::demo_hull(false);
+        let mesh = export::render_mesh(&s, 1, Default::default());
+        let (min, max) = s.extents();
+        let scene = Scene {
+            surface: &s,
+            mesh: &mesh,
+            curves: None,
+            volumes: &[],
+            windage: &[],
+            min,
+            max,
+            draft: 0.62,
+            trim: 0.0,
+            heel_deg: 0.0,
+            waterline: None,
+        };
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+        let collect = |kind: ViewKind, orientation: bool| {
+            let cam = Camera::new(kind, (min + max) * 0.5, max - min);
+            let opts = DisplayOptions {
+                shaded: false,
+                control_net: false,
+                points: false,
+                waterplane: false,
+                orientation,
+                ..Default::default()
+            };
+            let ctx = egui::Context::default();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                viewport(ui, rect, &cam, Some(&scene), &opts, true, None);
+            });
+            out.textures_delta.clear();
+            let mut backings = Vec::new();
+            let mut captions = Vec::new();
+            for clipped in &out.shapes {
+                walk(&clipped.shape, &mut |shape| match shape {
+                    egui::Shape::Rect(r) if r.fill == theme::HUD_BACKING => backings.push(r.rect),
+                    egui::Shape::Text(t) => captions.push((
+                        t.galley.text().to_string(),
+                        t.pos,
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    )),
+                    _ => {}
+                });
+            }
+            (captions, backings)
+        };
+
+        let (on_captions, on_backings) = collect(ViewKind::Profile, true);
+        let texts_on: Vec<&str> = on_captions.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert!(texts_on.contains(&"Aft"), "{texts_on:?}");
+        assert!(texts_on.contains(&"Fwd"), "{texts_on:?}");
+        for (text, pos, _) in &on_captions {
+            assert!(
+                on_backings.iter().any(|b| b.contains(*pos)),
+                "caption {text:?} has no backing"
+            );
+        }
+
+        let (off_captions, _) = collect(ViewKind::Profile, false);
+        let texts_off: Vec<&str> = off_captions.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert!(!texts_off.contains(&"Aft"), "{texts_off:?}");
+        assert!(!texts_off.contains(&"Fwd"), "{texts_off:?}");
+
+        // Every caption in Plan view stays pairwise disjoint (no overlap with title, grid, or scale bar).
+        let (plan_captions, _) = collect(ViewKind::Plan, true);
+        for (i, (ta, _, ra)) in plan_captions.iter().enumerate() {
+            for (tb, _, rb) in &plan_captions[i + 1..] {
+                assert!(
+                    !ra.intersects(*rb),
+                    "Plan HUD texts {ta:?} ({ra:?}) and {tb:?} ({rb:?}) overlap"
+                );
+            }
+        }
     }
 }

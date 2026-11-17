@@ -5071,6 +5071,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     "Wireframe of the refined mesh",
                     &mut display.wireframe,
                 ),
+                (
+                    "orientation",
+                    "Orient",
+                    "Orientation triad and edge labels",
+                    &mut display.orientation,
+                ),
             ] {
                 let response =
                     theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
