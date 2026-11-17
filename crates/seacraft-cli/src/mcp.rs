@@ -6705,7 +6705,9 @@ mod tests {
         assert_eq!(after_snap, snap);
 
         // `--connect` remote backend forwards `connected` and `reach_m` to `point.move` and `points.move`
-        // and returns the exact same `moved` list as headless MCP.
+        // and passes the window's `moved` list through unchanged. The stub window below answers with the
+        // headless lists; that the window computes those same lists is checked against `MovePlan` in
+        // `seacraft-gui`'s `control.rs` tests of `point.move` / `points.move`, not here.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let exp_single = expected_single.clone();
