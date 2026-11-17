@@ -27,6 +27,8 @@ pub const NOT_VALIDATED_NOTE: &str =
     "Not validated: results may be wrong and are not class, flag or statutory approval; see DISCLAIMER.md.";
 
 pub mod analysis;
+/// Connected editing: presets and the weights of the points that follow a move.
+pub mod connected;
 pub mod control_auth;
 pub mod curves;
 pub mod damage;
