@@ -349,6 +349,39 @@ fn stale_selection_indices_are_dropped_after_undo_redo_and_topology_edit() {
     app.undo();
     assert!(!app.selection().contains(n - 1));
     assert!(app.selected().is_none());
+
+    // Final review of feat/hull-editing, M4: the name promises redo and a
+    // load too. A partly stale selection keeps its valid points, and redo
+    // drops nothing that is still there.
+    app.selection_mut().add_all([1, 2]);
+    app.redo();
+    assert_eq!(app.control_point_count(), n);
+    assert_eq!(app.selection().points(), &[1, 2], "redo keeps valid points");
+    app.selection_mut().add_all([n - 1]);
+    app.undo();
+    assert_eq!(
+        app.selection().points(),
+        &[1, 2],
+        "undo drops only the point it removed"
+    );
+
+    // Loading a smaller model drops what it does not have.
+    let big = app.control_point_count();
+    app.selection_mut().clear();
+    app.selection_mut().add_all([0, big - 1]);
+    // runabout-6m has 65 control points, the demo hull 99.
+    let runabout = format!(
+        "{}/../../examples/runabout-6m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    app.load(std::path::PathBuf::from(runabout));
+    let small = app.control_point_count();
+    assert!(
+        small > 0 && small < big,
+        "the runabout ({small}) is smaller than the demo ({big})"
+    );
+    assert!(app.selection().points().iter().all(|&p| p < small));
+    assert!(!app.selection().contains(big - 1));
 }
 
 #[test]
@@ -1247,6 +1280,76 @@ fn no_model_loaded_every_new_overlay_switch_and_operation_is_a_noop() {
     app.display_mut().hidden_net = HiddenNet::Hidden;
     frame(&ctx, &mut app, Vec::new());
     assert!(app.surface().is_none());
+
+    // Final review of feat/hull-editing, M4: with no model no viewport is
+    // drawn, so the same again on an empty surface, whose viewports are.
+    app.load_generated(seacraft_core::Surface::new());
+    app.display_mut().hidden_net = HiddenNet::Dimmed;
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let cell = app.viewport_rect(1);
+    assert!(
+        cell.width() > 10.0,
+        "an empty model draws its viewports: {cell:?}"
+    );
+    let pos = cell.center();
+    let shift = egui::Modifiers::SHIFT;
+    let shift_button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: shift,
+    };
+    for events in [
+        vec![egui::Event::PointerMoved(pos)],
+        vec![button(pos, true)],
+        vec![egui::Event::PointerMoved(pos + egui::vec2(25.0, 10.0))],
+        vec![button(pos + egui::vec2(25.0, 10.0), false)],
+        vec![
+            egui::Event::ModifiersChanged(shift),
+            shift_button(pos, true),
+        ],
+        vec![egui::Event::PointerMoved(pos + egui::vec2(40.0, 30.0))],
+        vec![shift_button(pos + egui::vec2(40.0, 30.0), false)],
+        vec![
+            egui::Event::ModifiersChanged(egui::Modifiers::CTRL | egui::Modifiers::COMMAND),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, 40.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+                modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
+            },
+        ],
+        vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)],
+    ] {
+        frame(&ctx, &mut app, events);
+    }
+    for (key, modifiers) in [
+        (egui::Key::ArrowLeft, egui::Modifiers::ALT),
+        (egui::Key::ArrowRight, egui::Modifiers::ALT),
+        (egui::Key::Escape, egui::Modifiers::NONE),
+    ] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+        );
+    }
+    assert!(seacraft_gui::commands::select_line(
+        &mut app,
+        seacraft_core::netlines::LineKind::Transverse
+    )
+    .is_err());
+    assert_eq!(app.surface().unwrap().points.len(), 0);
+    assert!(app.selection().is_empty());
+    assert!(app.net_visibility(1).is_none_or(|v| v.points.is_empty()));
 }
 
 #[test]
