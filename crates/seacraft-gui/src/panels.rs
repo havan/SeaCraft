@@ -526,6 +526,7 @@ pub enum InspectorAction {
 pub struct InspectorPanel<'a> {
     pub surface: Option<&'a Surface>,
     pub selection: &'a crate::selection::Selection,
+    pub station_caption: Option<String>,
     /// A value being dragged: committed on release, so a drag is one edit.
     pub pending: &'a mut Option<(usize, [f64; 3])>,
 }
@@ -605,6 +606,9 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
             .color(theme::TEXT_PRIMARY),
     );
     ui.label(egui::RichText::new(layer).color(theme::TEXT_SECONDARY));
+    if let Some(caption) = panel.station_caption {
+        ui.label(egui::RichText::new(caption).color(theme::TEXT_SECONDARY));
+    }
     ui.add_space(2.0);
 
     let mut shown = panel.pending.map_or([cp.p.x, cp.p.y, cp.p.z], |(_, v)| v);
@@ -4790,6 +4794,10 @@ pub fn shortcuts(
             plain("X, Y or Z while dragging"),
             "Keep the point on that axis",
         ),
+        (
+            plain("Alt+Left / Alt+Right"),
+            "Select the previous or next station along the line",
+        ),
         (plain("Esc"), "Clear the selection"),
         (plain("Drag empty space, or middle drag"), "Pan"),
         (plain("Right drag in Perspective"), "Orbit"),
@@ -5046,6 +5054,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     "Points",
                     "Control points (hidden points cannot be picked)",
                     &mut display.points,
+                ),
+                (
+                    "station_focus",
+                    "Station",
+                    "Focus on the active station in the Body plan",
+                    &mut display.station_focus,
                 ),
                 (
                     "waterplane",

@@ -722,6 +722,11 @@ fn handle_inner(
                                 format!("`hidden_net` must be dimmed, hidden or same, not `{name}`")
                             })?;
                     }
+                    "station_focus" => {
+                        display.station_focus = value
+                            .as_bool()
+                            .ok_or("`station_focus` must be true or false")?
+                    }
                     "waterplane" => {
                         display.waterplane = value
                             .as_bool()
@@ -2486,6 +2491,7 @@ fn inspect(app: &App) -> Value {
         "control_net": d.control_net,
         "points": d.points,
         "hidden_net": d.hidden_net.key(),
+        "station_focus": d.station_focus,
         "waterplane": d.waterplane,
         "volumes": d.volumes,
         "windage": d.windage,
@@ -4611,6 +4617,27 @@ mod tests {
 
         let non_str = call(&mut app, &ctx, "ui.set", json!({ "hidden_net": true }));
         assert_eq!(non_str["ok"], false, "{non_str}");
+    }
+
+    #[test]
+    fn ui_set_toggles_station_focus_and_inspect_reports_it() {
+        let (mut app, ctx) = demo();
+        let v = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(v["result"]["display"]["station_focus"], true, "{v}");
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "station_focus": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["station_focus"], false);
+        assert!(!app.display().station_focus);
+
+        let r = call(&mut app, &ctx, "ui.set", json!({ "station_focus": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["display"]["station_focus"], true);
+        assert!(app.display().station_focus);
+
+        let bad = call(&mut app, &ctx, "ui.set", json!({ "station_focus": "yes" }));
+        assert_eq!(bad["ok"], false, "{bad}");
+        assert!(app.display().station_focus);
     }
 
     #[test]

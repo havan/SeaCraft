@@ -68,6 +68,8 @@ pub struct DisplayOptions {
     pub points: bool,
     /// How control-net edges and points behind the shaded hull are drawn.
     pub hidden_net: HiddenNet,
+    /// Dim non-station control-net edges in the Body plan while a station is highlighted.
+    pub station_focus: bool,
     /// Draw the waterplane at the current draft.
     pub waterplane: bool,
     /// Draw project tanks and compartments.
@@ -111,6 +113,7 @@ impl Default for DisplayOptions {
             control_net: true,
             points: true,
             hidden_net: HiddenNet::Dimmed,
+            station_focus: true,
             waterplane: true,
             volumes: true,
             windage: true,
@@ -258,6 +261,42 @@ pub fn project_verts(view: &ViewTransform, verts: &[Vec3], rect: Rect) -> Vec<Op
     verts.iter().map(|p| view.project(*p, rect)).collect()
 }
 
+/// Caption for the transverse station through `point`, or `None` when `point`
+/// belongs to no transverse line.
+pub fn station_caption(
+    surface: &Surface,
+    lines: &seacraft_core::netlines::NetLines,
+    point: usize,
+) -> Option<String> {
+    if lines
+        .through(point, seacraft_core::netlines::LineKind::Transverse)
+        .is_empty()
+    {
+        return None;
+    }
+    let pts = lines.station_points(point);
+    if pts.is_empty() {
+        return None;
+    }
+    let (x_min, x_max) = lines.station_x(surface, point)?;
+    let (lo, hi) = surface.extents();
+    let span = (hi.x - lo.x).max(0.0);
+    if x_max - x_min <= 0.005 * span {
+        Some(format!(
+            "Station at x ≈ {:.2} m · {} points",
+            0.5 * (x_min + x_max),
+            pts.len()
+        ))
+    } else {
+        Some(format!(
+            "Station at x {:.2}–{:.2} m · {} points",
+            x_min,
+            x_max,
+            pts.len()
+        ))
+    }
+}
+
 /// Draw one viewport. `active` marks the viewport that receives picking.
 pub fn viewport(
     ui: &mut egui::Ui,
@@ -272,8 +311,23 @@ pub fn viewport(
     if let Some(p) = selected {
         selection.set_only(p);
     }
+    let lines =
+        scene.and_then(|s| selected.map(|_| seacraft_core::netlines::NetLines::of(s.surface)));
     viewport_with_texture(
-        ui, rect, camera, scene, opts, active, &selection, None, None, None, None, None,
+        ui,
+        rect,
+        camera,
+        scene,
+        opts,
+        active,
+        &selection,
+        lines.as_ref(),
+        selected,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -291,6 +345,8 @@ pub fn viewport_with_texture(
     opts: &DisplayOptions,
     active: bool,
     selection: &crate::selection::Selection,
+    lines: Option<&seacraft_core::netlines::NetLines>,
+    focus_point: Option<usize>,
     vis: Option<&crate::visibility::NetVisibility>,
     texture: Option<&egui::TextureHandle>,
     hull: Option<Arc<egui::Mesh>>,
@@ -360,6 +416,9 @@ pub fn viewport_with_texture(
             !selection.is_empty(),
             vis,
             opts.hidden_net,
+            lines,
+            focus_point,
+            camera.kind == crate::camera::ViewKind::Body && opts.station_focus,
         );
     }
     if opts.points {
@@ -381,6 +440,18 @@ pub fn viewport_with_texture(
         Align2::LEFT_TOP,
         camera.kind.title(),
     );
+    if camera.kind == crate::camera::ViewKind::Body {
+        if let (Some(lines), Some(point)) = (lines, focus_point) {
+            if let Some(caption) = station_caption(scene.surface, lines, point) {
+                hud_caption(
+                    &painter,
+                    rect.center_bottom() + egui::vec2(0.0, -8.0),
+                    Align2::CENTER_BOTTOM,
+                    caption,
+                );
+            }
+        }
+    }
     // The scale in metres rather than m/px: the side of a grid square is
     // what the eye judges a length against.
     let (minor, major) = view_grid_steps(&view, rect, scene.min, scene.max);
@@ -1204,7 +1275,10 @@ pub(crate) fn layer_color(surface: &Surface, layer: Option<usize>) -> Color32 {
 /// The control net, creases heavier. At full strength while a point is
 /// selected (`editing`); otherwise dimmed, so it does not compete with the
 /// hull it shapes. Stretches occluded by the shaded hull are dimmed or
-/// skipped according to `mode`.
+/// skipped according to `mode`. The transverse station of `focus_point` is
+/// highlighted on top at full strength, and when `station_focus` is on (in the
+/// Body plan) non-station edges are drawn in `CONTROL_NET_FAINT`.
+#[allow(clippy::too_many_arguments)]
 fn draw_control_net(
     painter: &egui::Painter,
     view: &ViewTransform,
@@ -1213,7 +1287,20 @@ fn draw_control_net(
     editing: bool,
     vis: Option<&crate::visibility::NetVisibility>,
     mode: HiddenNet,
+    lines: Option<&seacraft_core::netlines::NetLines>,
+    focus_point: Option<usize>,
+    station_focus: bool,
 ) {
+    let station_lines = match (lines, focus_point) {
+        (Some(nl), Some(p)) => nl.through(p, seacraft_core::netlines::LineKind::Transverse),
+        _ => Vec::new(),
+    };
+    let is_station_edge = |ei: usize| -> bool {
+        lines
+            .and_then(|nl| nl.edge_line.get(ei))
+            .is_some_and(|li| station_lines.contains(li))
+    };
+    let faint = station_focus && !station_lines.is_empty();
     let (net, crease_colour) = control_net_colours(editing);
     let vis = vis.filter(|_| mode != HiddenNet::Same);
     // The idle net is translucent and an edge has always been stroked once
@@ -1222,6 +1309,9 @@ fn draw_control_net(
     // net in front looks.
     let faces_at = surface.edge_face_counts();
     for (ei, e) in surface.edges.iter().enumerate() {
+        if is_station_edge(ei) {
+            continue;
+        }
         let (Some(wa), Some(wb)) = (
             surface.points.get(e.a).map(|cp| cp.p),
             surface.points.get(e.b).map(|cp| cp.p),
@@ -1232,8 +1322,18 @@ fn draw_control_net(
             continue;
         };
         let width = if e.crease { 1.6 } else { 1.0 };
-        let vis_colour = if e.crease { crease_colour } else { net };
-        let passes = faces_at.get(ei).copied().unwrap_or(1).max(1);
+        let vis_colour = if faint {
+            theme::CONTROL_NET_FAINT
+        } else if e.crease {
+            crease_colour
+        } else {
+            net
+        };
+        let passes = if faint {
+            1
+        } else {
+            faces_at.get(ei).copied().unwrap_or(1).max(1)
+        };
         let in_front = |a: Pos2, b: Pos2| {
             for _ in 0..passes {
                 painter.line_segment([a, b], Stroke::new(width, vis_colour));
@@ -1246,7 +1346,9 @@ fn draw_control_net(
             in_front(p, q);
             continue;
         }
-        let hid_colour = if e.crease {
+        let hid_colour = if faint {
+            theme::CONTROL_NET_FAINT
+        } else if e.crease {
             theme::CREASE_HIDDEN
         } else {
             theme::CONTROL_NET_HIDDEN
@@ -1266,6 +1368,24 @@ fn draw_control_net(
         }
         if cursor < 1.0 {
             in_front(at(cursor), at(1.0));
+        }
+    }
+    if let Some(nl) = lines {
+        for &li in &station_lines {
+            for &ei in &nl.lines[li].edges {
+                let Some(e) = surface.edges.get(ei) else {
+                    continue;
+                };
+                let (Some(wa), Some(wb)) = (
+                    surface.points.get(e.a).map(|cp| cp.p),
+                    surface.points.get(e.b).map(|cp| cp.p),
+                ) else {
+                    continue;
+                };
+                if let (Some(p), Some(q)) = (view.project(wa, rect), view.project(wb, rect)) {
+                    painter.line_segment([p, q], Stroke::new(1.8, theme::STATION_HIGHLIGHT));
+                }
+            }
         }
     }
 }
@@ -2714,5 +2834,372 @@ mod tests {
             });
         }
         assert_eq!(strokes, 16);
+    }
+
+    #[test]
+    fn station_caption_formats_single_x_and_leaning_range() {
+        // Closed form by hand: net x extent is 10.0 m (0..10), 0.5% threshold is 0.05 m.
+        let mut s = seacraft_core::netlines::grid_net(5, 4);
+        for p in &mut s.points {
+            p.p.x *= 2.5;
+        } // stations at 0.0, 2.5, 5.0, 7.5, 10.0 m
+        let nl = seacraft_core::netlines::NetLines::of(&s);
+        assert_eq!(
+            station_caption(&s, &nl, 2 * 4 + 1).as_deref(),
+            Some("Station at x ≈ 5.00 m · 4 points")
+        );
+        s.points[2 * 4 + 3].p.x = 5.20; // span 0.20 m > 0.05 m
+        let nl = seacraft_core::netlines::NetLines::of(&s);
+        assert_eq!(
+            station_caption(&s, &nl, 2 * 4 + 1).as_deref(),
+            Some("Station at x 5.00–5.20 m · 4 points")
+        );
+        // A point with no station returns None.
+        let loose = s.add_point(Vec3::new(3.0, 0.0, 0.0));
+        let nl = seacraft_core::netlines::NetLines::of(&s);
+        assert_eq!(station_caption(&s, &nl, loose), None);
+    }
+
+    #[test]
+    fn hovering_a_point_highlights_station_in_all_views_and_captions_body_only() {
+        let ctx = egui::Context::default();
+        let mut app = crate::App::headless_for_test(None);
+
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+
+        let run_frame = |ctx: &egui::Context,
+                         app: &mut crate::App,
+                         events: Vec<egui::Event>|
+         -> egui::FullOutput {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    Pos2::new(0.0, 0.0),
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+            out.textures_delta.clear();
+            out
+        };
+
+        let cell_lines_and_texts =
+            |out: &egui::FullOutput, cell: Rect| -> (Vec<Color32>, Vec<String>) {
+                let mut colours = Vec::new();
+                let mut texts = Vec::new();
+                for clipped in &out.shapes {
+                    if !clipped.clip_rect.intersects(cell) {
+                        continue;
+                    }
+                    walk(&clipped.shape, &mut |shape| match shape {
+                        egui::Shape::LineSegment { points, stroke }
+                            if cell.contains(points[0]) || cell.contains(points[1]) =>
+                        {
+                            colours.push(stroke.color);
+                        }
+                        egui::Shape::Text(t) if cell.contains(t.pos) => {
+                            texts.push(t.galley.text().to_string());
+                        }
+                        _ => {}
+                    });
+                }
+                (colours, texts)
+            };
+
+        // Settle docks.
+        run_frame(&ctx, &mut app, Vec::new());
+        run_frame(&ctx, &mut app, Vec::new());
+
+        // Find a mid-hull sheer point on the starboard side in the Profile view (view 1).
+        let (point_idx, point_pos, expected_caption, station_edge_count) = {
+            let s = app.surface().expect("model loaded");
+            let nl = seacraft_core::netlines::NetLines::of(s);
+            let idx = (0..s.points.len())
+                .filter(|&i| {
+                    s.points[i].p.x > 4.0 && s.points[i].p.x < 8.0 && s.points[i].p.y > 0.0
+                })
+                .max_by(|&a, &b| s.points[a].p.z.total_cmp(&s.points[b].p.z))
+                .expect("mid-hull sheer point");
+            let cap = station_caption(s, &nl, idx).expect("station caption");
+            let edges: usize = nl
+                .through(idx, seacraft_core::netlines::LineKind::Transverse)
+                .iter()
+                .map(|&li| nl.lines[li].edges.len())
+                .sum();
+            (idx, s.points[idx].p, cap, edges)
+        };
+        assert_eq!(app.selected(), None);
+        let profile_rect = app.viewport_rect(1);
+        let hover_screen = app.cameras()[1]
+            .transform()
+            .project(point_pos, profile_rect)
+            .expect("projects in Profile");
+
+        // Move pointer over the point with no button pressed.
+        let out = run_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(hover_screen)],
+        );
+        assert_eq!(app.selected(), None, "hovering must not select the point");
+
+        for view_idx in 0..4 {
+            let cell = app.viewport_rect(view_idx);
+            let (colours, texts) = cell_lines_and_texts(&out, cell);
+            let highlight_count = colours
+                .iter()
+                .filter(|&&c| c == theme::STATION_HIGHLIGHT)
+                .count();
+            assert_eq!(
+                highlight_count, station_edge_count,
+                "view {view_idx} must highlight all {station_edge_count} station edges on hover"
+            );
+            let has_caption = texts.iter().any(|t| t == &expected_caption);
+            if view_idx == 3 {
+                assert!(
+                    has_caption,
+                    "Body cell (view 3) must show station caption {expected_caption:?}, got {texts:?}"
+                );
+                assert!(
+                    colours.contains(&theme::CONTROL_NET_FAINT),
+                    "Body cell with station_focus on must draw non-station edges in CONTROL_NET_FAINT"
+                );
+            } else {
+                assert!(
+                    !has_caption,
+                    "view {view_idx} must not show the Body station caption, got {texts:?}"
+                );
+                assert!(
+                    !colours.contains(&theme::CONTROL_NET_FAINT),
+                    "view {view_idx} must not use CONTROL_NET_FAINT"
+                );
+            }
+        }
+
+        // With `station_focus` off, the Body cell has no CONTROL_NET_FAINT shapes.
+        app.display_mut().station_focus = false;
+        let out_no_focus = run_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(hover_screen)],
+        );
+        let (body_colours, _) = cell_lines_and_texts(&out_no_focus, app.viewport_rect(3));
+        assert!(
+            !body_colours.contains(&theme::CONTROL_NET_FAINT),
+            "with station_focus off, Body cell must have no CONTROL_NET_FAINT shapes"
+        );
+        assert!(
+            body_colours.contains(&theme::STATION_HIGHLIGHT),
+            "with station_focus off, Body cell still highlights the station"
+        );
+        app.display_mut().station_focus = true;
+
+        // Even with HiddenNet::Hidden, the highlighted station is drawn at full strength in all views.
+        app.display_mut().hidden_net = HiddenNet::Hidden;
+        let out_hidden = run_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(hover_screen)],
+        );
+        for view_idx in 0..4 {
+            let (colours, _) = cell_lines_and_texts(&out_hidden, app.viewport_rect(view_idx));
+            let highlight_count = colours
+                .iter()
+                .filter(|&&c| c == theme::STATION_HIGHLIGHT)
+                .count();
+            assert_eq!(
+                highlight_count, station_edge_count,
+                "view {view_idx} in HiddenNet::Hidden must still draw all {station_edge_count} highlighted station edges"
+            );
+        }
+        let _ = point_idx;
+    }
+
+    #[test]
+    fn alt_arrows_step_selection_along_lengthwise_line_and_inspector_shows_station_caption() {
+        let ctx = egui::Context::default();
+        let mut app = crate::App::headless_for_test(None);
+
+        fn walk_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk_texts(s, out)),
+                egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+                _ => {}
+            }
+        }
+
+        let run_frame =
+            |ctx: &egui::Context, app: &mut crate::App, events: Vec<egui::Event>| -> Vec<String> {
+                let input = egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        Pos2::new(0.0, 0.0),
+                        egui::vec2(1600.0, 1000.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+                out.textures_delta.clear();
+                let insp = app.inspector_rect();
+                let mut texts = Vec::new();
+                for clipped in &out.shapes {
+                    if clipped.clip_rect.intersects(insp) {
+                        walk_texts(&clipped.shape, &mut texts);
+                    }
+                }
+                texts
+            };
+
+        run_frame(&ctx, &mut app, Vec::new());
+        run_frame(&ctx, &mut app, Vec::new());
+
+        let (mid_pt, next_pt, prev_pt, mid_caption, next_caption) = {
+            let s = app.surface().expect("model");
+            let nl = seacraft_core::netlines::NetLines::of(s);
+            let mid = (0..s.points.len())
+                .find(|&i| {
+                    s.points[i].p.x > 4.0
+                        && s.points[i].p.x < 8.0
+                        && s.points[i].p.y > 0.1
+                        && !nl
+                            .through(i, seacraft_core::netlines::LineKind::Lengthwise)
+                            .is_empty()
+                })
+                .expect("mid-hull point on a lengthwise line");
+            let next = nl
+                .step(mid, seacraft_core::netlines::LineKind::Lengthwise, true)
+                .expect("next bowward point");
+            let prev = nl
+                .step(mid, seacraft_core::netlines::LineKind::Lengthwise, false)
+                .expect("previous sternward point");
+            assert!(
+                s.points[next].p.x > s.points[mid].p.x,
+                "next point must have larger x ({} vs {})",
+                s.points[next].p.x,
+                s.points[mid].p.x
+            );
+            assert!(
+                s.points[prev].p.x < s.points[mid].p.x,
+                "previous point must have smaller x"
+            );
+            let mid_cap = station_caption(s, &nl, mid).expect("mid caption");
+            let next_cap = station_caption(s, &nl, next).expect("next caption");
+            (mid, next, prev, mid_cap, next_cap)
+        };
+
+        let pts_before: Vec<Vec3> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+        app.select_point(Some(mid_pt));
+        let insp_texts = run_frame(&ctx, &mut app, Vec::new());
+        assert!(
+            insp_texts.iter().any(|t| t == &mid_caption),
+            "inspector must show station caption {mid_caption:?} for selected point, got {insp_texts:?}"
+        );
+
+        let alt_key = |key: egui::Key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::ALT,
+        };
+
+        // Alt+Right steps forward along the lengthwise line to `next_pt` without editing the model.
+        let insp_after_right = run_frame(&ctx, &mut app, vec![alt_key(egui::Key::ArrowRight)]);
+        assert_eq!(app.selected(), Some(next_pt));
+        assert_eq!(app.undo_len(), 0, "Alt+Right must not record an undo step");
+        let pts_after: Vec<Vec3> = app.surface().unwrap().points.iter().map(|p| p.p).collect();
+        assert_eq!(pts_before, pts_after, "Alt+Right must not move any point");
+        assert!(
+            insp_after_right.iter().any(|t| t == &next_caption),
+            "inspector must update station caption to {next_caption:?}, got {insp_after_right:?}"
+        );
+
+        // Alt+Left steps back to `mid_pt`, and once more to `prev_pt`.
+        run_frame(&ctx, &mut app, vec![alt_key(egui::Key::ArrowLeft)]);
+        assert_eq!(app.selected(), Some(mid_pt));
+        run_frame(&ctx, &mut app, vec![alt_key(egui::Key::ArrowLeft)]);
+        assert_eq!(app.selected(), Some(prev_pt));
+        assert_eq!(app.undo_len(), 0);
+    }
+
+    #[test]
+    fn point_without_station_and_empty_model_show_no_station_cue() {
+        fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
+            if let egui::Shape::Vec(v) = shape {
+                v.iter().for_each(|s| walk(s, f));
+            } else {
+                f(shape);
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let mut empty = crate::App::headless_empty();
+        let alt_right = egui::Event::Key {
+            key: egui::Key::ArrowRight,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::ALT,
+        };
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1200.0, 800.0))),
+                events: vec![alt_right],
+                ..Default::default()
+            },
+            |ui| empty.draw(ui),
+        );
+        out.textures_delta.clear();
+        assert_eq!(empty.selected(), None);
+        assert_eq!(empty.undo_len(), 0);
+        assert!(empty.surface().is_none());
+
+        let mut app = crate::App::headless_empty();
+        let mut s = seacraft_core::netlines::grid_net(3, 3);
+        let loose = s.add_point(Vec3::new(1.0, 1.0, 0.5));
+        assert!(seacraft_core::netlines::NetLines::of(&s)
+            .station_points(loose)
+            .is_empty());
+        app.load_generated(s);
+        app.select_point(Some(loose));
+        let mut out = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1000.0))),
+                ..Default::default()
+            },
+            |ui| app.draw(ui),
+        );
+        out.textures_delta.clear();
+        let mut has_station_colour = false;
+        let mut has_station_text = false;
+        for clipped in &out.shapes {
+            walk(&clipped.shape, &mut |shape| match shape {
+                egui::Shape::LineSegment { stroke, .. }
+                    if stroke.color == theme::STATION_HIGHLIGHT
+                        || stroke.color == theme::CONTROL_NET_FAINT =>
+                {
+                    has_station_colour = true;
+                }
+                egui::Shape::Text(t) if t.galley.text().starts_with("Station at") => {
+                    has_station_text = true;
+                }
+                _ => {}
+            });
+        }
+        assert!(
+            !has_station_colour,
+            "a point with no station must not draw highlight or faint net"
+        );
+        assert!(
+            !has_station_text,
+            "a point with no station must show no station caption"
+        );
     }
 }

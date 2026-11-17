@@ -50,6 +50,7 @@ struct RenderCache {
     mode: SubdivisionMode,
     mesh: RenderMesh,
     bvh: seacraft_core::raycast::Bvh,
+    net_lines: seacraft_core::netlines::NetLines,
     curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
     /// The section settings `curves` were cut with ([`SectionCut`]).
     curves_for: Option<SectionCut>,
@@ -924,6 +925,7 @@ pub struct App {
     active: usize,
     cache: Option<RenderCache>,
     selection: crate::selection::Selection,
+    hovered_point: Option<usize>,
     selected_volume: Option<VolumeRef>,
     selected_windage: Option<usize>,
     last_highlighted_tank: Option<usize>,
@@ -1170,6 +1172,7 @@ impl App {
             active: 0,
             cache: None,
             selection: crate::selection::Selection::default(),
+            hovered_point: None,
             selected_volume: None,
             selected_windage: None,
             last_highlighted_tank: None,
@@ -1449,6 +1452,7 @@ impl App {
         // new one to a point that means nothing there.
         self.hydro.lcg = None;
         self.selection.clear();
+        self.hovered_point = None;
         self.selected_volume = None;
         self.selected_windage = None;
         self.last_highlighted_tank = None;
@@ -1513,6 +1517,7 @@ impl App {
         if stale {
             let mesh = export::render_mesh(surface, level, self.mode);
             let bvh = seacraft_core::raycast::Bvh::of_render_mesh(&mesh);
+            let net_lines = seacraft_core::netlines::NetLines::of(surface);
             let (min, max) = crate::render::display_extents(surface);
             // Section curves and combs cost more than the refinement: a drag
             // keeps the ones from before it and rebuilds them on release.
@@ -1533,6 +1538,7 @@ impl App {
                 mode: self.mode,
                 mesh,
                 bvh,
+                net_lines,
                 curves_stale: curves.is_some(),
                 curves,
                 curves_for,
@@ -1880,6 +1886,17 @@ impl App {
         });
 
         if self.show_layers {
+            if self.selection.active().is_some() {
+                self.sync_cache();
+            }
+            let station_caption = match (
+                self.surface.as_ref(),
+                self.cache.as_ref(),
+                self.selection.active(),
+            ) {
+                (Some(s), Some(c), Some(p)) => render::station_caption(s, &c.net_lines, p),
+                _ => None,
+            };
             let mut layer_action = panels::LayerAction::None;
             let mut inspector = panels::InspectorOutput::default();
             let active_layer = self.active_layer();
@@ -1920,6 +1937,7 @@ impl App {
                             panels::InspectorPanel {
                                 surface: self.surface.as_ref(),
                                 selection: &self.selection,
+                                station_caption: station_caption.clone(),
                                 pending: &mut self.inspector_pending,
                             },
                         );
@@ -2114,6 +2132,45 @@ impl App {
                 self.set_active_view(i);
             }
         }
+        let step_dir: Option<bool> = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.alt && !modifiers.ctrl && !modifiers.command && !modifiers.shift => {
+                    match key {
+                        egui::Key::ArrowRight => Some(true),
+                        egui::Key::ArrowLeft => Some(false),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+        });
+        if let Some(forward) = step_dir {
+            self.step_station(forward);
+        }
+    }
+
+    /// Step the active selection along its lengthwise net line (`forward` moves
+    /// towards the bow).
+    fn step_station(&mut self, forward: bool) {
+        let Some(active) = self.selection.active() else {
+            return;
+        };
+        self.sync_cache();
+        let Some(cache) = self.cache.as_ref() else {
+            return;
+        };
+        if let Some(next) = cache.net_lines.step(
+            active,
+            seacraft_core::netlines::LineKind::Lengthwise,
+            forward,
+        ) {
+            self.select_point(Some(next));
+        }
     }
 
     fn menu(&mut self, ui: &mut egui::Ui) {
@@ -2294,6 +2351,7 @@ impl App {
                             }
                         }
                     });
+                    ui.checkbox(&mut self.display.station_focus, "Station focus");
                     ui.checkbox(&mut self.display.waterplane, "Waterplane");
                     ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
                     ui.checkbox(&mut self.display.windage, "Windage outlines");
@@ -3512,6 +3570,7 @@ impl App {
         // frame after release, which refreshes all of them once.
         let drag_view = self.drag.as_ref().map(|d| d.view);
         let mut ready = self.raster_stale_views(&cells, &volume_overlays, &windage_overlays);
+        self.hovered_point = None;
 
         for &(cell, index) in &cells {
             self.viewport_rects[index] = cell;
@@ -3558,11 +3617,15 @@ impl App {
                 // A press on a corner button is not a grab at the point
                 // that happens to lie under it.
                 let on_button = ui
-                    .input(|i| i.pointer.interact_pos())
+                    .input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))
                     .is_some_and(|p| render::view_buttons(cell).iter().any(|b| b.contains(p)));
                 if response.hovered() && !on_button && ui.input(|i| i.pointer.primary_pressed()) {
                     self.sync_net_visibility(index, cell);
                     self.begin_drag(ui, &view, cell, index);
+                }
+                if response.hovered() && !on_button && self.drag.is_none() {
+                    self.sync_net_visibility(index, cell);
+                    self.hovered_point = self.pick_at(ui, &view, cell, index);
                 }
                 if response.dragged_by(egui::PointerButton::Primary) {
                     if self.drag.as_ref().is_some_and(|d| d.view == index) {
@@ -3793,6 +3856,8 @@ impl App {
                     _ => &self.selection,
                 };
                 let vis = display.shaded.then(|| self.net_visibility(index)).flatten();
+                let focus_point = self.hovered_point.or_else(|| drawn_selection.active());
+                let net_lines = self.cache.as_ref().map(|c| &c.net_lines);
                 render::viewport_with_texture(
                     ui,
                     cell,
@@ -3801,6 +3866,8 @@ impl App {
                     display,
                     self.active == index,
                     drawn_selection,
+                    net_lines,
+                    focus_point,
                     vis,
                     texture.as_ref(),
                     hull,
@@ -3983,7 +4050,7 @@ impl App {
         if !self.display.points {
             return None;
         }
-        let cursor = ui.input(|i| i.pointer.interact_pos())?;
+        let cursor = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))?;
         let surface = self.surface.as_ref()?;
         let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
         let vis = self

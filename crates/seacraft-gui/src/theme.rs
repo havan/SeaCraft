@@ -106,6 +106,11 @@ pub const CONTROL_NET_HIDDEN: Color32 =
     Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x30);
 pub const CREASE_HIDDEN: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x40);
 pub const POINT_HIDDEN: Color32 = Color32::from_rgba_unmultiplied_const(0xcf, 0xd8, 0xe3, 0x48);
+/// The active or hovered station highlighted across all views, and the rest
+/// of the control net in the Body plan while station focus is on.
+pub const STATION_HIGHLIGHT: Color32 = Color32::from_rgb(0x7d, 0xc6, 0xff);
+pub const CONTROL_NET_FAINT: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xe8, 0x9d, 0x3a, 0x20);
 /// Control points.
 pub const POINT: Color32 = Color32::from_rgb(0xcf, 0xd8, 0xe3);
 /// The picked control point and its outline.
