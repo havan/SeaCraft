@@ -415,9 +415,6 @@ struct DragState {
     /// Last cursor target computed by `drag_to` (or `original` before the
     /// first movement), so changing the reach mid-drag can re-apply the move.
     target: Vec3,
-    /// Whether the model had unsaved changes before the press, for a
-    /// cancelled drag to put back.
-    dirty_before: bool,
     /// Whether `plan` pulls neighbours along ([`App::connected_now`] when it
     /// was last built): Ctrl pressed or let go mid-drag re-plans it.
     connected: bool,
@@ -3854,6 +3851,9 @@ impl App {
                             }
                         } else {
                             self.history.discard_last();
+                            // The wheel may have re-planned the press
+                            // without moving anything.
+                            self.refresh_dirty();
                         }
                     }
                 }
@@ -4401,7 +4401,6 @@ impl App {
             plan,
             added_on_press,
             target: center,
-            dirty_before: self.dirty,
             connected: connected.is_some(),
         });
     }
@@ -4458,7 +4457,9 @@ impl App {
             drag.plan.apply(surface, Vec3::ZERO);
         }
         self.history.discard_last();
-        self.dirty = drag.dirty_before;
+        // Against the file, not the flag at the press: a save may have
+        // happened since.
+        self.refresh_dirty();
         self.revision += 1;
         self.touch_geometry();
         self.sync_cache();

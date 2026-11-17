@@ -2286,3 +2286,122 @@ fn a_connected_drag_writes_the_settings_only_when_the_wheel_changed_the_reach() 
         "the reach the wheel set is remembered once"
     );
 }
+
+/// A mid-hull sheer point of the demo and where it shows in Profile.
+fn sheer_point_in_profile(app: &App) -> (usize, egui::Pos2) {
+    let surface = app.surface().unwrap();
+    let index = surface
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.p.x > 3.0 && p.p.x < 9.0 && p.p.y > 0.0)
+        .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+        .map(|(i, _)| i)
+        .expect("a mid-hull sheer point");
+    let screen = app.cameras()[1]
+        .transform()
+        .project(surface.points[index].p, app.viewport_rect(1))
+        .expect("visible");
+    (index, screen)
+}
+
+#[test]
+fn a_drag_saved_midway_and_then_cancelled_leaves_the_model_unsaved() {
+    // PR #5 review: Escape restored the dirty flag recorded at the press. A
+    // save in the middle of the drag wrote the dragged geometry, so after the
+    // cancel the model differed from its file and still read as saved.
+    let dir =
+        std::env::temp_dir().join(format!("seacraft-drag-save-cancel-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    assert!(!app.is_dirty(), "a freshly loaded model is saved");
+    let (index, screen) = sheer_point_in_profile(&app);
+    let start = app.surface().unwrap().points[index].p;
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    assert!((app.surface().unwrap().points[index].p - start).length() > 1e-3);
+    assert!(app.save_to(&dir.join("mid-drag.fef")));
+    assert!(!app.is_dirty(), "the dragged geometry is what was saved");
+
+    let escape = |pressed| egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&ctx, &mut app, vec![escape(true), escape(false)]);
+    assert_eq!(app.surface().unwrap().points[index].p, start);
+    assert!(
+        app.is_dirty(),
+        "the cancelled drag put back geometry the file does not hold"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_connected_press_that_only_changes_the_reach_leaves_the_model_saved() {
+    // PR #5 review: the wheel during a connected press marked the model
+    // unsaved, and a release with nothing moved kept that mark.
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_connected_on(true);
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    assert!(!app.is_dirty(), "a freshly loaded model is saved");
+    let before = app.surface().unwrap().clone();
+    let undo_before = app.undo_len();
+    let (_, screen) = sheer_point_in_profile(&app);
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    for _ in 0..30 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+    assert!(
+        app.connected().reach_m.is_some(),
+        "the wheel set the reach during the press"
+    );
+    frame(&ctx, &mut app, vec![button(screen, false)]);
+    frame(&ctx, &mut app, Vec::new());
+
+    for (i, (a, b)) in app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .zip(&before.points)
+        .enumerate()
+    {
+        assert_eq!(a.p, b.p, "point {i} did not move");
+    }
+    assert_eq!(app.undo_len(), undo_before, "nothing moved, no undo entry");
+    assert!(
+        !app.is_dirty(),
+        "nothing moved, so the model is still saved"
+    );
+}
