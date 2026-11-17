@@ -12,9 +12,10 @@ triad, the markers) has not yet been reviewed by eye.
   ("Profile · from starboard", "Plan · half-breadths, starboard up", "Body plan · looking forward"), and an axis
   triad in the corner and edge labels (Aft, Fwd, Port, Stbd) say the same; View ▸ Orientation turns them off.
   `seacraft render --view profile` is unchanged and still looks from port.
-- Control net behind the shaded hull is drawn dimmed. View ▸ Hidden net chooses dimmed, hidden or as drawn; with
-  shading off nothing is hidden. A click prefers the point in front; a hidden point can still be picked when
-  nothing visible is in reach, except in the hidden mode.
+- Control net behind the shaded hull is drawn dimmed. View ▸ Hidden net, or the toolbar's choice beside Net and
+  Points, says whether it is dimmed, hidden or shown; an analysis mode (Zebra, Curvature, Draft) hides it too, and
+  with no solid hull nothing is hidden. A click prefers the point in front; a hidden point can still be picked
+  when nothing visible is in reach, except in the hidden mode. The point under the pointer is ringed.
 - The station of the control point under the pointer, or of the selected one, is highlighted in all four views.
   In the Body plan the rest of the net is drawn fainter (View ▸ Station focus) and a caption gives the station's
   `x` and point count; the Inspector shows the same. **Alt+Left** and **Alt+Right** step the selection aft and
@@ -24,13 +25,15 @@ triad, the markers) has not yet been reviewed by eye.
   draws a rectangle that adds the points in it (hidden ones are left out unless the hidden net is drawn as
   normal), Model ▸ Select station and Select lengthwise line add a whole line. Dragging one selected point drags
   them all as one undo step, and with several selected the Inspector moves them by a typed displacement. A plain
-  drag on empty space still pans.
+  drag on empty space still pans. **Esc** during a drag cancels it and puts the points back.
+- **Ctrl+wheel** and a trackpad pinch zoom the views like the wheel; before they did nothing.
 - Connected editing: with the **Connected** switch on, a dragged point draws its neighbours along, less the
   further they are along the net. A preset says how: which neighbours follow (lengthwise, round the station, or
   both), how the pull fades, how far it reaches, and which of x, y, z the followers move in. Seven presets are
   built in ("Blend both ways", "Blend lengthwise", "Blend around station", "Nudge", "Move station", "Beam only",
   "Height only"). Hovering shows which points would follow and how strongly; the wheel changes the reach during a
-  drag. It is off by default and the choice is remembered. Your own presets go in `connected-edit.json` beside
+  drag. Holding **Ctrl** (**Cmd** on macOS) flips the switch for as long as it is held, also mid-drag. It is off
+  by default and the choice is remembered. Your own presets go in `connected-edit.json` beside
   `seacraft-gui.json` (Model ▸ Create example presets file writes a commented example, Reload presets re-reads
   it); a mistake in that file is reported in the window and leaves the built-in presets working. A preset says
   how points move; it does not check or make anything fair.

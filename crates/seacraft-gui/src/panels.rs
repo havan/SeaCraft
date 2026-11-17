@@ -4877,12 +4877,20 @@ pub fn shortcuts(
             "Select the previous or next station along the line",
         ),
         (
+            plain(if cfg!(target_os = "macos") {
+                "Hold Cmd while dragging"
+            } else {
+                "Hold Ctrl while dragging"
+            }),
+            "Connected editing the other way from the switch, for that drag",
+        ),
+        (
             plain("Esc"),
-            "Cancel a selection rectangle, or clear the selection",
+            "Cancel a point drag or a selection rectangle, or clear the selection",
         ),
         (plain("Drag empty space, or middle drag"), "Pan"),
         (plain("Right drag in Perspective"), "Orbit"),
-        (plain("Wheel"), "Zoom at the pointer"),
+        (plain("Wheel, Ctrl+wheel or pinch"), "Zoom at the pointer"),
         (
             plain("Wheel during connected drag"),
             "Change connected-editing reach",

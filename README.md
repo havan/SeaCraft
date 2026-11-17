@@ -700,13 +700,14 @@ Body plan looks forward with starboard on the right. Each view's title says so, 
   while dragging and at the full level on release. **Ctrl+Z** / **Ctrl+Shift+Z**
   undo and redo (64 snapshots across control-net edits and project edits in the
   design docks, Report options and Project settings, with continuous drags and
-  text-field typing coalesced into single steps), **Esc** clears the selection,
+  text-field typing coalesced into single steps), **Esc** cancels a point drag or clears the selection,
   **F** frames the model, **1**–**4** activate a viewport, **Space** toggles
   shading.
 * Primary drag on empty space pans, secondary drag in the perspective view
   orbits, the wheel zooms.
-* Control net that the shaded hull hides is drawn dimmed (View ▸ Hidden net: dimmed, hidden, as drawn), and a
-  click picks the point in front. The station of the point under the pointer, or of the selected point, is
+* Control net that the shaded hull hides is drawn dimmed (View ▸ Hidden net, or the toolbar's choice beside Net
+  and Points: dim, hide or show behind), and a click picks the point in front. The point under the pointer is
+  ringed. The station of the point under the pointer, or of the selected point, is
   highlighted in every view; the Body plan fades the rest of the net and names the station ("Station at
   x ≈ 5.20 m · 6 points"). **Alt+Left** / **Alt+Right** step the selection aft and forward along the net.
 * **Shift+click** adds a point to the selection or removes it, **Shift+drag** on empty space selects with a
@@ -714,13 +715,15 @@ Body plan looks forward with starboard on the right. Each view's title says so, 
   drags them all. On a half model a centreline point moved with others stays on the centreline.
 * **Connected** (toolbar): a dragged point draws its neighbours along the net with it, by a preset that says
   which neighbours follow, how the pull fades and how far it reaches. Hovering shows the followers; the wheel
-  changes the reach while dragging. Off by default. Add your own presets in `connected-edit.json` beside
+  changes the reach while dragging. Holding **Ctrl** (**Cmd** on macOS) flips the switch for as long as it is
+  held, also mid-drag. Off by default. Add your own presets in `connected-edit.json` beside
   `seacraft-gui.json` in the data directory (Model ▸ Create example presets file). A preset describes a move; it
   checks nothing about the result.
 * A slim toolbar under the menu bar carries the surface-analysis mode
   (Shaded / Zebra / Curvature / Draft) with its parameter (stripes, radius,
-  draft angle; 14, 1 m and 3° by default), the display toggles (net, points,
-  waterplane, combs, wireframe) and the precision (subdivision level) and scheme.
+  draft angle; 14, 1 m and 3° by default), the display toggles (net, points and
+  how the net behind the hull is drawn, waterplane, curves, combs, wireframe,
+  orientation) and the precision (subdivision level) and scheme.
   Each view has two buttons in its top right corner: one frames the model in that
   view, the other maximises it. **Ctrl+Space**, that button or a double-click on a
   view's title makes a view fill the whole viewport area (control
