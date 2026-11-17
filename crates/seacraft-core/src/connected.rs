@@ -374,12 +374,18 @@ pub fn preset_from_json(value: &Value) -> Result<ConnectedPreset, String> {
                     )
                 })
         }
-        Value::Object(_) => {
-            let label = label_of(value, || "the preset".to_string());
-            if !label.starts_with("preset \"") {
-                return Err(format!("{label}: a preset needs a name"));
+        Value::Object(fields) => {
+            // An agent's one-off preset may leave its name out: "custom".
+            let named = fields
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| !n.trim().is_empty());
+            let mut value = value.clone();
+            if !named {
+                value["name"] = Value::String("custom".into());
             }
-            preset_of(value, &label)
+            let label = label_of(&value, || "the preset".to_string());
+            preset_of(&value, &label)
         }
         _ => Err("a preset is the name of a built-in one or a preset object".into()),
     }
@@ -1026,5 +1032,19 @@ mod tests {
         assert!(err.contains("\"Mine\"") && err.contains("reach"), "{err}");
         let err = preset_from_json(&serde_json::json!(3)).unwrap_err();
         assert!(err.contains("name") && err.contains("object"), "{err}");
+        // Final review of feat/hull-editing, M8: the plan gives an inline
+        // preset without a name the name "custom".
+        for unnamed in [
+            serde_json::json!({ "reach": { "m": 1.5 }, "falloff": "linear", "spread": "station" }),
+            serde_json::json!({ "name": " ", "reach": { "m": 1.5 }, "falloff": "linear", "spread": "station" }),
+        ] {
+            assert_eq!(
+                preset_from_json(&unnamed).unwrap(),
+                ConnectedPreset {
+                    name: "custom".into(),
+                    ..preset(Falloff::Linear, Spread::Station, 1.5)
+                }
+            );
+        }
     }
 }

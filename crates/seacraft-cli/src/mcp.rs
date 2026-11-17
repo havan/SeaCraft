@@ -2887,7 +2887,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "xyz": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "New position [x, y, z] in metres"},
                     "connected": {
                         "oneOf": [{"type": "string"}, {"type": "object"}],
-                        "description": "Optional connected-editing preset: built-in name (\"Blend both ways\", \"Blend lengthwise\", \"Blend around station\", \"Nudge\", \"Move station\", \"Beam only\", \"Height only\") or preset object {name, reach, falloff, spread, follow_axes?, stop_at_creases?}. Does not read the user's presets file."
+                        "description": "Optional connected-editing preset: built-in name (\"Blend both ways\", \"Blend lengthwise\", \"Blend around station\", \"Nudge\", \"Move station\", \"Beam only\", \"Height only\") or preset object {name?, reach, falloff, spread, follow_axes?, stop_at_creases?}; name defaults to \"custom\". Does not read the user's presets file."
                     },
                     "reach_m": number("Optional reach override in metres (positive finite number; requires `connected`)"),
                 }),
@@ -2910,7 +2910,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "delta": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "Displacement [dx, dy, dz] in metres"},
                     "connected": {
                         "oneOf": [{"type": "string"}, {"type": "object"}],
-                        "description": "Optional connected-editing preset: built-in name (\"Blend both ways\", \"Blend lengthwise\", \"Blend around station\", \"Nudge\", \"Move station\", \"Beam only\", \"Height only\") or preset object {name, reach, falloff, spread, follow_axes?, stop_at_creases?}. Does not read the user's presets file."
+                        "description": "Optional connected-editing preset: built-in name (\"Blend both ways\", \"Blend lengthwise\", \"Blend around station\", \"Nudge\", \"Move station\", \"Beam only\", \"Height only\") or preset object {name?, reach, falloff, spread, follow_axes?, stop_at_creases?}; name defaults to \"custom\". Does not read the user's presets file."
                     },
                     "reach_m": number("Optional reach override in metres (positive finite number; requires `connected`)"),
                 }),

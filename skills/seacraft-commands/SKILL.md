@@ -49,8 +49,8 @@ MCP. See `docs/architecture.md`.
   `point.move` / `move_point` move one control point to `xyz` (or by `delta` on `point.move`), and `points.move` /
   `move_points` shift a non-empty `points` list by `delta`. Both accept optional `"connected"` (one of the built-in
   names `"Blend both ways"`, `"Blend lengthwise"`, `"Blend around station"`, `"Nudge"`, `"Move station"`,
-  `"Beam only"`, `"Height only"`, or an inline preset object `{name, reach, falloff, spread, follow_axes?,
-  stop_at_creases?}`) and optional `"reach_m"` (a positive finite number in metres overriding the preset's reach);
+  `"Beam only"`, `"Height only"`, or an inline preset object `{name?, reach, falloff, spread, follow_axes?,
+  stop_at_creases?}`, `name` defaulting to `"custom"`) and optional `"reach_m"` (a positive finite number in metres overriding the preset's reach);
   agents never read the user's `connected-edit.json` or the window's connected switch, and every point-move reply
   includes `"moved": [{point, from, to}, ...]`. A preset only says how points move: nothing about the result is
   checked or made fair by it. `points.select` takes `{points: [..]}` (empty clears) and replaces the selection with
