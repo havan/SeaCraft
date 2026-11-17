@@ -150,6 +150,13 @@ pub const COMB_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.05..=10.0;
 pub const COMB_STRIDE_RANGE: std::ops::RangeInclusive<usize> = 1..=8;
 
 impl DisplayOptions {
+    /// Whether the hull is drawn solid, hiding what is behind it: shaded, or
+    /// an analysis mode, whose raster frame replaces the hull whether or not
+    /// "Shaded hull" is on.
+    pub fn hull_is_solid(&self) -> bool {
+        self.shaded || !self.analysis.is_shaded()
+    }
+
     /// Whether the section curves have to be cut at all (for the lines or
     /// for their combs).
     pub fn wants_sections(&self) -> bool {
@@ -420,7 +427,7 @@ pub fn viewport_with_texture(
             draw_sections(&painter, &view, camera.kind, rect, curves, opts);
         }
     }
-    let vis = vis.filter(|_| opts.shaded);
+    let vis = vis.filter(|_| opts.hull_is_solid());
     if opts.control_net {
         draw_control_net(
             &painter,

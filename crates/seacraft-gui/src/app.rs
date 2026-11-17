@@ -3797,11 +3797,7 @@ impl App {
                         let rect = egui::Rect::from_two_pos(from, to).intersect(cell);
                         if (rect.width() >= 4.0 || rect.height() >= 4.0) && self.display.points {
                             self.sync_net_visibility(index, cell);
-                            let vis = self
-                                .display
-                                .shaded
-                                .then(|| self.net_visibility(index))
-                                .flatten();
+                            let vis = self.net_visibility(index);
                             if let Some(surface) = self.surface.as_ref() {
                                 let hits = picking::points_in_rect(
                                     surface,
@@ -4064,7 +4060,7 @@ impl App {
                     }
                     _ => &self.selection,
                 };
-                let vis = display.shaded.then(|| self.net_visibility(index)).flatten();
+                let vis = self.net_visibility(index);
                 let focus_point = self.hovered_point.or_else(|| drawn_selection.active());
                 let net_lines = self.cache.as_ref().map(|c| &c.net_lines);
                 render::viewport_with_texture(
@@ -4264,11 +4260,7 @@ impl App {
         let cursor = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()))?;
         let surface = self.surface.as_ref()?;
         let pts: Vec<Vec3> = surface.points.iter().map(|p| p.p).collect();
-        let vis = self
-            .display
-            .shaded
-            .then(|| self.net_visibility(index))
-            .flatten();
+        let vis = self.net_visibility(index);
         picking::pick_point(
             view,
             cell,
@@ -6243,11 +6235,11 @@ impl App {
     }
 
     /// Whether any view classifies the control net against the hull: only a
-    /// shaded hull hides it, "same" draws it as is, and with the net and its
+    /// solid hull (shaded, or an analysis mode) hides it, "same" draws it as is, and with the net and its
     /// points both off there is nothing to classify. Otherwise neither the ray
     /// index nor the per-view visibility is built.
     fn net_visibility_wanted(&self) -> bool {
-        self.display.shaded
+        self.display.hull_is_solid()
             && self.display.hidden_net != crate::render::HiddenNet::Same
             && (self.display.control_net || self.display.points)
     }

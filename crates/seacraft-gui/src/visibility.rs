@@ -251,6 +251,31 @@ mod tests {
     }
 
     #[test]
+    fn an_analysis_mode_hides_the_net_behind_the_hull_with_shading_off() {
+        // Final review of feat/hull-editing, M2: Zebra, Curvature and Draft
+        // draw a solid hull even with "Shaded hull" off, so the net behind it
+        // is dimmed and picking prefers the front there too.
+        let ctx = egui::Context::default();
+        let mut app = App::headless_for_test(None);
+        app.display_mut().shaded = false;
+        app.display_mut().analysis = seacraft_core::AnalysisMode::Zebra { stripes: 14.0 };
+        assert!(app.display().hull_is_solid());
+        run_frame(&ctx, &mut app);
+        let vis = app
+            .net_visibility(1)
+            .expect("the net is classified behind a zebra hull");
+        assert!(
+            vis.points.iter().any(|&v| !v),
+            "some points are behind the hull"
+        );
+
+        app.display_mut().analysis = seacraft_core::AnalysisMode::Shaded;
+        assert!(!app.display().hull_is_solid());
+        run_frame(&ctx, &mut app);
+        assert!(app.net_visibility(1).is_none());
+    }
+
+    #[test]
     fn ray_index_is_built_only_when_a_view_classifies_the_hidden_net() {
         // The index costs about half a refinement on the largest example
         // (final review of feat/hull-editing), so it is built only when the
