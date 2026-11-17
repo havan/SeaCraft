@@ -1075,7 +1075,8 @@ A seed moves by the whole displacement $\Delta$; a follower at distance $d$ alon
 nearest seed moves by $w(d / r)\,\Delta$ in the followed axes, with reach $r$ and $w(t)$: linear $1 - t$, smooth
 $1 - 3t^2 + 2t^3$, sharp $(1 - t)^2$, constant $1$, or straight lines through given points; $w = 0$ for $t > 1$.
 On a symmetric layer no point goes below $y = 0$, and a point on the centreline stays on it unless it is the
-only seed.
+only seed. Followers take their share of the move the seeds could make: a move towards the centreline is cut
+to the room $\min y_{\text{seed}}$ of the symmetric seeds, so a seed stopped at $y = 0$ stops its followers too.
 
 ### Tests
 `crates/seacraft-core/src/connected.rs`, on a unit grid: `falloff_and_grid_dijkstra_weights_match_closed_forms`
@@ -1092,7 +1093,10 @@ row: a seed below reaches the crease points and nothing beyond, 14 followers; a 
 `crates/seacraft-core/src/netmove.rs`: `centreline_and_symmetric_layer_rules_hold_for_single_and_multi_seed_moves`;
 `followers_move_by_their_weight_in_the_masked_axes_and_seeds_by_all_of_it` (weight 0.5 in "yz" of
 $(0.2, 0.4, 0.6)$: $(0, 0.2, 0.3)$); `a_zero_move_puts_every_point_back_exactly`;
-`moving_the_anchor_to_a_position_lands_on_it_exactly` ($0.3 + (0.9 - 0.3) \ne 0.9$ in floating point).
+`moving_the_anchor_to_a_position_lands_on_it_exactly` ($0.3 + (0.9 - 0.3) \ne 0.9$ in floating point);
+`followers_move_by_what_the_seeds_could_move_when_the_centreline_stops_them` (seed at $y = 1$ moved by
+$-3$ stops at $0$; a weight-0.5 follower at $y = 2$ goes to $2 - 0.5 = 1.5$, and to $1.8$ for a move of
+$-0.4$; with a second seed at $y = 2$ the room is still $1$).
 
 ### Provenance
 Arithmetic by hand (2026-11-17). Not published values. A preset says how points move; nothing here measures or

@@ -141,12 +141,14 @@ struct Entry {
 impl Entry {
     /// Where this point is for the seeds' displacement `delta`; `exact` is the
     /// position asked for outright, for the anchor of a move to a position.
-    fn moved(&self, delta: Vec3, exact: Option<Vec3>) -> Moved {
+    /// A follower takes its share of `follow`, the displacement the seeds
+    /// could make (see [`MovePlan::follow_delta`]).
+    fn moved(&self, delta: Vec3, follow: Vec3, exact: Option<Vec3>) -> Moved {
         let mut to = exact.unwrap_or_else(|| {
             if self.is_seed {
                 self.start + delta
             } else {
-                self.start + self.mask.apply(delta) * self.weight
+                self.start + self.mask.apply(follow) * self.weight
             }
         });
         if self.lock_centreline {
@@ -224,10 +226,28 @@ impl MovePlan {
         MovePlan { entries }
     }
 
+    /// The displacement the followers take their share of: `delta`, with a
+    /// move towards the centreline cut to what the seed with least room on a
+    /// symmetric layer can make, so a seed stopped at `y = 0` stops its
+    /// followers too. Each seed is still stopped on its own.
+    fn follow_delta(&self, delta: Vec3) -> Vec3 {
+        let room = self
+            .entries
+            .iter()
+            .filter(|e| e.is_seed && e.sym && !e.lock_centreline)
+            .map(|e| e.start.y.max(0.0))
+            .fold(f64::INFINITY, f64::min);
+        Vec3::new(delta.x, delta.y.max(-room), delta.z)
+    }
+
     /// Where every point of the plan is when the seeds have moved by `delta`
     /// from where they started, in point order.
     pub fn positions(&self, delta: Vec3) -> Vec<Moved> {
-        self.entries.iter().map(|e| e.moved(delta, None)).collect()
+        let follow = self.follow_delta(delta);
+        self.entries
+            .iter()
+            .map(|e| e.moved(delta, follow, None))
+            .collect()
     }
 
     /// As [`MovePlan::positions`], for the displacement that takes the seed
@@ -239,9 +259,10 @@ impl MovePlan {
             return Vec::new();
         };
         let delta = target - from.start;
+        let follow = self.follow_delta(delta);
         self.entries
             .iter()
-            .map(|e| e.moved(delta, (e.point == anchor).then_some(target)))
+            .map(|e| e.moved(delta, follow, (e.point == anchor).then_some(target)))
             .collect()
     }
 
@@ -345,6 +366,34 @@ mod tests {
         let moved = unsym.positions(Vec3::new(0.0, -0.4, 0.0));
         assert_eq!(moved[0].to.y, -0.4);
         assert_eq!(moved[1].to.y, 0.6);
+    }
+
+    #[test]
+    fn followers_move_by_what_the_seeds_could_move_when_the_centreline_stops_them() {
+        // Final review of feat/hull-editing, M5. By hand on grid_net(2, 3)
+        // (point i*3 + j at (i, j, 0), one symmetric layer): seed 1 at y = 1,
+        // follower 2 at y = 2 with weight 0.5. Dragged by y = -3 the seed
+        // stops at y = 0, a move of -1, so the follower moves by 0.5 * -1 to
+        // y = 1.5 (it used to take half the asked -3, to y = 0.5).
+        let s = grid_net(2, 3);
+        let plan = MovePlan::weighted(&s, &[1], &[(2, 0.5)], AxisMask::ALL);
+        let moved = plan.positions(Vec3::new(0.0, -3.0, 0.0));
+        assert_eq!(moved[0].to, Vec3::new(0.0, 0.0, 0.0));
+        assert_eq!(moved[1].to, Vec3::new(0.0, 1.5, 0.0));
+        // The same through the anchor form, to (0, -2, 0).
+        let moved = plan.positions_to(1, Vec3::new(0.0, -2.0, 0.0));
+        assert_eq!(moved[1].to, Vec3::new(0.0, 1.5, 0.0));
+        // Not stopped: the follower takes half of -0.4.
+        let moved = plan.positions(Vec3::new(0.0, -0.4, 0.0));
+        assert_eq!(moved[1].to, Vec3::new(0.0, 1.8, 0.0));
+        // Two seeds, 1 at y = 1 and 5 at (1, 2, 0): the followers go no
+        // further than the seed with least room (1), to 2 - 0.5 = 1.5; each
+        // seed still stops at the centreline on its own (5 goes to y = 0).
+        let plan = MovePlan::weighted(&s, &[1, 5], &[(2, 0.5)], AxisMask::ALL);
+        let moved = plan.positions(Vec3::new(0.0, -3.0, 0.0));
+        let at = |p: usize| moved.iter().find(|m| m.point == p).unwrap().to;
+        assert_eq!(at(2), Vec3::new(0.0, 1.5, 0.0));
+        assert_eq!(at(5), Vec3::new(1.0, 0.0, 0.0));
     }
 
     #[test]
