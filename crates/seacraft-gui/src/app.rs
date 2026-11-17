@@ -3838,7 +3838,7 @@ impl App {
                             self.revision += 1;
                             self.touch_geometry();
                             let count = drag.plan.weights().len();
-                            if drag.connected && count > 1 {
+                            if count > 1 {
                                 self.set_status(format!("{count} control points moved"));
                             } else {
                                 self.set_status("control point moved".to_owned());

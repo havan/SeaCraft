@@ -514,6 +514,9 @@ fn shift_selecting_two_points_and_dragging_moves_both_in_one_undo_step() {
         "both selected points move by the same displacement: {delta_a:?} vs {delta_b:?}"
     );
     assert_eq!(app.undo_len(), 1, "one group drag is one undo step");
+    // Final review of feat/hull-editing, M7: a rigid group drag said
+    // "control point moved".
+    assert_eq!(app.status(), "2 control points moved");
     app.undo();
     assert!((app.surface().unwrap().points[a].p - before_a).length() < 1e-9);
     assert!((app.surface().unwrap().points[b].p - before_b).length() < 1e-9);
