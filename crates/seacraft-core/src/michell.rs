@@ -181,10 +181,10 @@ pub fn wigley_grid(length: f64, beam: f64, draft: f64, nx: usize, nz: usize) -> 
     for i in 0..nx - 1 {
         let dx = xs[i + 1] - xs[i];
         let x_mid = 0.5 * (xs[i] + xs[i + 1]);
-        let fx = -4.0 * half_b * x_mid / (half_l * half_l);
         for j in 0..nz - 1 {
             let dz = zs[j + 1] - zs[j];
             let z_mid = 0.5 * (zs[j] + zs[j + 1]);
+            let fx = -2.0 * half_b * x_mid / (half_l * half_l) * (1.0 - (z_mid / draft).powi(2));
             let fz =
                 -2.0 * half_b * (1.0 - (2.0 * x_mid / length).powi(2)) * z_mid / (draft * draft);
             let ds = (1.0 + fx * fx + fz * fz).sqrt() * dx * dz;
@@ -652,9 +652,10 @@ mod tests {
         //   Fn   0.25      0.30      0.35      0.40      0.50
         //   Cw   1.064e-3  2.142e-3  1.248e-3  2.734e-3  4.517e-3
         // It reproduces the interference hump at Fn 0.30, the hollow at 0.35
-        // and the main hump at 0.50; this module sits ~2 % lower throughout
-        // (the reference under-resolves the x oscillation at large λ). These
-        // are not published experimental or tabulated values.
+        // and the main hump at 0.50, with S = 14.88 m² (the exact Wigley wetted
+        // surface, `wigley_grid_wetted_surface_matches_kajitani`); this module
+        // agrees within 0.3 %. These are not published experimental or
+        // tabulated values.
         let (l, b, t) = (10.0, 1.0, 0.625);
         let grid = wigley_grid(l, b, t, 65, 25);
         let rho = 1000.0;
@@ -679,7 +680,7 @@ mod tests {
             let res = michell_wave_resistance_from_grid(&grid, u, rho, g, &opts);
             let diff = (res.cw - ref_cw).abs() / ref_cw;
             assert!(
-                diff < 0.05,
+                diff < 0.01,
                 "at Fn = {fn_val}, computed Cw = {:.4e}, expected reference {:.4e} (diff {:.2}%)",
                 res.cw,
                 ref_cw,
@@ -718,11 +719,13 @@ mod tests {
             );
         }
 
-        // Self-consistency check 2: Cw -> 0 as Fn -> 0.1
+        // Self-consistency check 2: Cw is small at Fn 0.10. Converged (513 × 97
+        // grid, 8192 θ points) it is 9.997e-5, about a tenth of the Fn 0.25
+        // value; the bound leaves room for this grid's 0.3 % error.
         let u_low = 0.10 * (g * l).sqrt();
         let res_low = michell_wave_resistance_from_grid(&grid, u_low, rho, g, &opts);
         assert!(
-            res_low.cw < 1e-4,
+            res_low.cw < 1.5e-4,
             "at Fn=0.10, Cw must be negligible, got {:.3e}",
             res_low.cw
         );
@@ -746,6 +749,19 @@ mod tests {
             "Rw must scale linearly with rho: r2/r1 = {}",
             r2 / r1
         );
+    }
+
+    #[test]
+    fn wigley_grid_wetted_surface_matches_kajitani() {
+        // Kajitani et al. (1983), Nomenclature (report p. 6): S = Cs L (2D + B)
+        // with Cs = 0.661 for the Wigley model, i.e. 14.87 m² at L = 10,
+        // B = 1, D = 0.625 m. A Gauss-Legendre quadrature (400 × 200) of
+        // 2 ∬ sqrt(1 + f_x² + f_z²) dx dz gives 14.8791 m² (Cs = 0.66129).
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let s = wigley_grid(l, b, t, 65, 25).wetted_surface_m2;
+        let kajitani = 0.661 * l * (2.0 * t + b);
+        assert!((s / kajitani - 1.0).abs() < 1e-3, "S {s} vs {kajitani}");
+        assert!((s / 14.879_063 - 1.0).abs() < 1e-4, "S {s}");
     }
 
     #[test]

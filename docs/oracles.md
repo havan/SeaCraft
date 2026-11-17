@@ -177,7 +177,16 @@ with $k_x = k_0 \sec\theta$, $k_z = k_0 \sec^2\theta$, $k_0 = g / U^2$.
   - $Fn = 0.35$: $C_w = 1.248 \times 10^{-3}$ (hollow)
   - $Fn = 0.40$: $C_w = 2.734 \times 10^{-3}$
   - $Fn = 0.50$: $C_w = 4.517 \times 10^{-3}$ (main hump)
+- The module's $C_w$ agrees with these within $1\%$ (0.3 % in fact), with $S = 14.879\text{ m}^2$ from
+  `wigley_grid`, the exact Wigley wetted surface (see `wigley_grid_wetted_surface_matches_kajitani` below).
+  Until 2026-11-18 `wigley_grid` integrated $S$ with a wrong slope $f_x$ (twice too large, without its
+  $(1 - z^2/T^2)$ factor), giving $15.14\text{ m}^2$ and $C_w$ 1.8 % low; $R_w$ was unaffected.
 - Grid result matches 1D analytical quadrature `wigley_analytic_rw` within $1\%$.
+- $C_w(Fn = 0.10)$ converges to $9.997 \times 10^{-5}$ (513 × 97 grid, 8192 $\theta$ points); the test bounds it
+  by $1.5 \times 10^{-4}$.
+- `wigley_grid_wetted_surface_matches_kajitani`: $S$ within 0.1 % of $0.661\,L(2T + B) = 14.87\text{ m}^2$, the
+  definition printed in Kajitani et al. (1983, Nomenclature), and within 0.01 % of a $400 \times 200$
+  Gauss-Legendre quadrature of $2\iint\sqrt{1 + f_x^2 + f_z^2}\,dx\,dz$ ($14.8791\text{ m}^2$, $C_s = 0.66129$).
 
 ### Provenance
 Independent numerical quadrature using variable substitution $\lambda = \sec\theta = \cosh u$ ($u \in [0, 6]$) over an $801 \times 201$ offset grid using the trapezoidal rule, computed specifically for this regression check. As documented in the module comments, these are not published experimental or tabulated values.

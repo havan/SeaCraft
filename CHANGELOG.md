@@ -8,6 +8,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   transom larger than 5 % of its largest section, since Michell's integral assumes the hull closes at the stern.
   The demo hull and the runabout example are flagged at their design drafts. The four front ends now share one
   set of Michell warnings (`michell::michell_warnings`); the L/B and Fn messages are unchanged.
+- `michell::wigley_grid` integrated the Wigley hull's wetted surface with a wrong slope and gave 15.14 m² for
+  the 10 m hull instead of 14.88 m², so Cw on that grid read 1.8 % low (R_w was right). Hull-file Michell results
+  take S from the hydrostatics and are unchanged.
 
 ## 0.5.0 (2026-11-17)
 
