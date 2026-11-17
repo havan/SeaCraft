@@ -2899,8 +2899,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "move_points",
             "Move control points by a displacement",
             "Shift every control point in `points` by `delta` [dx, dy, dz] in metres (x forward, y starboard, z up). \
-             On a symmetric layer y is clamped to 0 or above, and when more than one point moves any seed that starts \
-             on the centreline stays on it. Pass optional `connected` (a built-in preset name or a preset object) to \
+             On a symmetric layer y is clamped to 0 or above, a follower that starts on the centreline stays on it, \
+             and when more than one distinct seed is given each seed that starts on the centreline stays on it too. Pass optional `connected` (a built-in preset name or a preset object) to \
              draw neighbouring points along, and optional `reach_m` (metres) to override the preset's reach; a preset \
              only describes how points move and does not check or guarantee fairness. Returns `moved` with each \
              point's `from` and `to` positions.",
