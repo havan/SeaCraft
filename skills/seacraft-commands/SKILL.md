@@ -52,8 +52,9 @@ MCP. See `docs/architecture.md`.
   `"Beam only"`, `"Height only"`, or an inline preset object `{name?, reach, falloff, spread, follow_axes?,
   stop_at_creases?}`, `name` defaulting to `"custom"`) and optional `"reach_m"` (a positive finite number in metres overriding the preset's reach);
   agents never read the user's `connected-edit.json` or the window's connected switch, and every point-move reply
-  includes `"moved": [{point, from, to}, ...]`. A preset only says how points move: nothing about the result is
-  checked or made fair by it. `points.select` takes `{points: [..]}` (empty clears) and replaces the selection with
+  includes `"moved": [{point, from, to}, ...]`. In the window, `point.move` and `points.move` are refused while
+  the user is dragging a point (the drag would overwrite them); retry after the release. A preset only says how
+  points move: nothing about the result is checked or made fair by it. `points.select` takes `{points: [..]}` (empty clears) and replaces the selection with
   the last entry active; `points.select_line` takes `{kind: "station" | "lengthwise"}` and adds the active point's
   line(s) while keeping it active. `ui.set` toggles viewport display switches (`shaded`, `wireframe`, `control_net`,
   `points`, `waterplane`, `volumes`, `windage`, `grid`, `orientation`, `station_focus`, `curves`, `combs`), sets

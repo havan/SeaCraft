@@ -2405,3 +2405,85 @@ fn a_connected_press_that_only_changes_the_reach_leaves_the_model_saved() {
         "nothing moved, so the model is still saved"
     );
 }
+
+#[test]
+fn an_agent_cannot_move_points_while_a_point_is_being_dragged() {
+    // PR #5 review: an agent's point.move or points.move during a human drag
+    // was answered as done and then undone by the drag, which recomputes its
+    // points from where they started. The hand on the mouse wins: the agent
+    // is told to try again, and nothing it asked for is applied.
+    use seacraft_gui::control::{handle, ControlRequest};
+    use serde_json::json;
+    use std::sync::mpsc;
+
+    let call = |app: &mut App, ctx: &egui::Context, method: &str, params| {
+        let (tx, _rx) = mpsc::channel();
+        handle(app, ctx, &ControlRequest::new(method, params, tx))
+    };
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let (index, screen) = sheer_point_in_profile(&app);
+    let other = (index + 1) % app.surface().unwrap().points.len();
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    let mid = app.surface().unwrap().clone();
+    let undo_mid = app.undo_len();
+
+    let one = call(
+        &mut app,
+        &ctx,
+        "point.move",
+        json!({ "index": other, "xyz": [1.0, 1.0, 1.0] }),
+    );
+    let many = call(
+        &mut app,
+        &ctx,
+        "points.move",
+        json!({ "points": [other], "delta": [0.1, 0.0, 0.0] }),
+    );
+    for reply in [&one, &many] {
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        assert!(
+            reply["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("dragged")),
+            "{reply}"
+        );
+    }
+    for (i, (a, b)) in app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .zip(&mid.points)
+        .enumerate()
+    {
+        assert_eq!(a.p, b.p, "point {i}: nothing the agent asked for moved");
+    }
+    assert_eq!(app.undo_len(), undo_mid);
+
+    // Once the drag is released the same call goes through.
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(40.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+    let after = call(
+        &mut app,
+        &ctx,
+        "points.move",
+        json!({ "points": [other], "delta": [0.1, 0.0, 0.0] }),
+    );
+    assert_eq!(after["ok"], json!(true), "{after}");
+}

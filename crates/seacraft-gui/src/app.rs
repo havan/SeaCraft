@@ -6785,6 +6785,7 @@ impl App {
         connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
     ) -> Result<(Vec3, bool, Vec<seacraft_core::netmove::Moved>), String> {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        self.refuse_while_dragging()?;
         if index >= surface.points.len() {
             return Err(format!(
                 "`index` must be from 0 to {}",
@@ -6815,6 +6816,19 @@ impl App {
         Ok((to, symmetric && to.y == 0.0, moved))
     }
 
+    /// A move asked for while a point is being dragged in the window would be
+    /// overwritten by the drag, which recomputes its points from where they
+    /// started; the hand on the mouse wins and the caller tries again.
+    fn refuse_while_dragging(&self) -> Result<(), String> {
+        if self.drag.is_some() {
+            return Err(
+                "a control point is being dragged in the window; try again once it is released"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Move every control point in `seeds` by `delta` as one undoable edit.
     pub fn move_points(
         &mut self,
@@ -6833,6 +6847,7 @@ impl App {
         connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
     ) -> Result<Vec<seacraft_core::netmove::Moved>, String> {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        self.refuse_while_dragging()?;
         if seeds.is_empty() {
             return Err("`points` must name at least one control point".into());
         }

@@ -45,7 +45,8 @@ triad, the markers) has been reviewed by eye on Linux only.
   moved; `ui.set` gains `orientation`, `hidden_net`, `station_focus`, `connected`, `connected_preset` and
   `connected_reach_m`; `ui.inspect` reports them and `selected_points`. MCP: `move_points`, and `"connected"` on
   `move_point` and `move_points`. An agent's move is connected only when the call says so, and never reads the
-  user's presets file.
+  user's presets file. While a point is being dragged in the window, an agent's point move is refused with an
+  error, so the drag cannot silently undo it.
 - Changed: the headless MCP server's `move_point` now holds a point at `y >= 0` when any face it belongs to is
   on a symmetric layer, as the window always did. It used to require all of them, so a point shared between a
   symmetric and an unsymmetric layer could be moved below the centreline headless and not in the window.
