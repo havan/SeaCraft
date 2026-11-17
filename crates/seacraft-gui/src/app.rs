@@ -49,7 +49,9 @@ struct RenderCache {
     level: u8,
     mode: SubdivisionMode,
     mesh: RenderMesh,
-    bvh: seacraft_core::raycast::Bvh,
+    /// The ray index over `mesh`, built on first use by a view that
+    /// classifies the hidden net (see `App::net_visibility_wanted`).
+    bvh: Option<seacraft_core::raycast::Bvh>,
     net_lines: seacraft_core::netlines::NetLines,
     curves: Option<seacraft_core::linesplan::LinesplanCurves3d>,
     /// The section settings `curves` were cut with ([`SectionCut`]).
@@ -1575,7 +1577,6 @@ impl App {
         };
         if stale {
             let mesh = export::render_mesh(surface, level, self.mode);
-            let bvh = seacraft_core::raycast::Bvh::of_render_mesh(&mesh);
             let net_lines = seacraft_core::netlines::NetLines::of(surface);
             let (min, max) = crate::render::display_extents(surface);
             // Section curves and combs cost more than the refinement: a drag
@@ -1596,7 +1597,7 @@ impl App {
                 level,
                 mode: self.mode,
                 mesh,
-                bvh,
+                bvh: None,
                 net_lines,
                 curves_stale: curves.is_some(),
                 curves,
@@ -6151,8 +6152,22 @@ impl App {
         ]))
     }
 
+    /// Whether any view classifies the control net against the hull: only a
+    /// shaded hull hides it, "same" draws it as is, and with the net and its
+    /// points both off there is nothing to classify. Otherwise neither the ray
+    /// index nor the per-view visibility is built.
+    fn net_visibility_wanted(&self) -> bool {
+        self.display.shaded
+            && self.display.hidden_net != crate::render::HiddenNet::Same
+            && (self.display.control_net || self.display.points)
+    }
+
     fn sync_net_visibility(&mut self, index: usize, cell: egui::Rect) {
-        let Some(key) = self.net_visibility_key(index, cell) else {
+        let key = self
+            .net_visibility_wanted()
+            .then(|| self.net_visibility_key(index, cell))
+            .flatten();
+        let Some(key) = key else {
             if let Some(slot) = self.net_visibilities.get_mut(index) {
                 *slot = None;
             }
@@ -6164,23 +6179,22 @@ impl App {
         {
             return;
         }
-        let (Some(surface), Some(cache)) = (self.surface.as_ref(), self.cache.as_ref()) else {
+        let (Some(surface), Some(cache)) = (self.surface.as_ref(), self.cache.as_mut()) else {
             return;
         };
         let view = self.cameras[index].transform();
-        let empty;
-        let bvh = if self.display.shaded {
-            &cache.bvh
-        } else {
-            empty = seacraft_core::raycast::Bvh::build(&[], &[]);
-            &empty
-        };
+        let bvh = cache
+            .bvh
+            .get_or_insert_with(|| seacraft_core::raycast::Bvh::of_render_mesh(&cache.mesh));
         let vis = crate::visibility::net_visibility(surface, bvh, &view, cell, 0.0);
         self.net_visibilities[index] = Some((key, vis));
     }
 
     /// Cached control-net visibility for viewport `view` (`0..4`), when current.
     pub fn net_visibility(&self, view: usize) -> Option<&crate::visibility::NetVisibility> {
+        if !self.net_visibility_wanted() {
+            return None;
+        }
         let cell = *self.viewport_rects.get(view)?;
         let key = self.net_visibility_key(view, cell)?;
         self.net_visibilities
@@ -6195,6 +6209,12 @@ impl App {
 
     pub fn selection(&self) -> &crate::selection::Selection {
         &self.selection
+    }
+
+    /// Whether the hull's ray index is built for the current mesh (test hook):
+    /// it is built only when a view classifies the net behind the hull.
+    pub fn ray_index_built(&self) -> bool {
+        self.cache.as_ref().is_some_and(|c| c.bvh.is_some())
     }
 
     pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {

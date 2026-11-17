@@ -244,14 +244,46 @@ mod tests {
             "moved point at y = +3.0 must now be visible in Profile"
         );
 
-        // With shading off nothing is hidden.
+        // With shading off nothing is hidden, so nothing is classified.
         app.display_mut().shaded = false;
         run_frame(&ctx, &mut app);
-        let unshaded = app
-            .net_visibility(1)
-            .expect("Profile visibility updated when shading is toggled off");
-        assert!(unshaded.points.iter().all(|&v| v));
-        assert!(unshaded.hidden_spans.iter().all(|s| s.is_empty()));
+        assert!(app.net_visibility(1).is_none());
+    }
+
+    #[test]
+    fn ray_index_is_built_only_when_a_view_classifies_the_hidden_net() {
+        // The index costs about half a refinement on the largest example
+        // (final review of feat/hull-editing), so it is built only when the
+        // shaded hull hides some of the net and the net or its points are shown.
+        let ctx = egui::Context::default();
+        let mut app = App::headless_for_test(None);
+        app.display_mut().shaded = false;
+        run_frame(&ctx, &mut app);
+        assert!(!app.ray_index_built(), "shading off: no index");
+        assert!(app.net_visibility(1).is_none());
+
+        app.display_mut().shaded = true;
+        app.display_mut().hidden_net = crate::render::HiddenNet::Same;
+        run_frame(&ctx, &mut app);
+        assert!(!app.ray_index_built(), "hidden net drawn as is: no index");
+
+        app.display_mut().hidden_net = crate::render::HiddenNet::Dimmed;
+        app.display_mut().control_net = false;
+        app.display_mut().points = false;
+        run_frame(&ctx, &mut app);
+        assert!(!app.ray_index_built(), "net and points hidden: no index");
+
+        app.display_mut().control_net = true;
+        run_frame(&ctx, &mut app);
+        assert!(app.ray_index_built(), "dimmed net shown on a shaded hull");
+        assert!(app.net_visibility(1).is_some());
+
+        // A new mesh drops the index; it comes back only when wanted again.
+        app.display_mut().hidden_net = crate::render::HiddenNet::Same;
+        let p = app.surface().unwrap().points[0].p;
+        app.move_point(0, p + Vec3::new(0.0, 0.0, 0.01)).unwrap();
+        run_frame(&ctx, &mut app);
+        assert!(!app.ray_index_built(), "new mesh, hidden net drawn as is");
     }
 
     #[test]
