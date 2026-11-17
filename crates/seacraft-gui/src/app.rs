@@ -7479,25 +7479,7 @@ fn compute_resistance_impl(
                 speeds,
                 &mopts,
             );
-            let mut warnings = Vec::new();
-            let lb = if grid.beam_wl > 1e-6 {
-                grid.length_wl / grid.beam_wl
-            } else {
-                0.0
-            };
-            if lb < 6.0 {
-                warnings.push(format!(
-                    "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
-                ));
-            }
-            for r in &core_rows {
-                if !(0.20..=1.0).contains(&r.fn_) {
-                    warnings.push(format!(
-                        "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
-                        r.fn_, r.speed_kn
-                    ));
-                }
-            }
+            let warnings = seacraft_core::michell::michell_warnings(&grid, &core_rows);
             let rows = core_rows
                 .into_iter()
                 .map(|r| ResistanceRow {

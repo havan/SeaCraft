@@ -223,6 +223,8 @@ catamarans, the demihull interference factor `2 * (1 + cos(k0 * s * sec(theta) *
 superimposes the twin wave patterns at centreline separation `s`, which converges
 to `2 * R_W(monohull)` as separation grows. Total resistance pairs Michell wave
 resistance with the ITTC-57 friction line and form factor `1+k` (`seacraft resistance --method michell`).
+The integral assumes the hull closes at the stern, so a wetted transom larger than 5 % of the largest section
+(the project's own threshold) is flagged, as are L/B below 6 and Fn outside 0.2–1.0.
 
 `dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
 bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending

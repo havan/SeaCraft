@@ -1106,3 +1106,26 @@ $-0.4$; with a second seed at $y = 2$ the room is still $1$).
 ### Provenance
 Arithmetic by hand (2026-11-17). Not published values. A preset says how points move; nothing here measures or
 claims fairness.
+
+---
+
+## 38. Michell Transom Area Ratio
+
+### Formula
+The ratio is the immersed area of the aftmost grid station over the largest immersed station area, each
+$A(x_i) = 2\int_{-T}^{0} f(x_i, z)\,dz$ by the trapezoid rule. On the Wigley grid every station has the same
+$z$-shape, so $A(x) \propto 1 - (2x/L)^2$ whatever the quadrature: $0$ at the closed stern $x = -L/2$, and
+$1 - 0.6^2 = 0.64$ on a Wigley grid cut off at $x = -0.3L$.
+
+### Test Location
+- `crates/seacraft-core/src/michell.rs::transom_ratio_is_the_aft_section_over_the_largest_one`: $L = 10$,
+  $B = 1$, $T = 0.625$ m, $81 \times 25$ grid ($x = -3$ m is a station): exactly $0$ closed, $0.64$ within
+  $10^{-12}$ cut; the warning fires on the cut grid and not on the closed one.
+- `crates/seacraft-core/src/michell.rs::transom_warning_fires_on_the_demo_hull_and_not_on_the_wigley_example`:
+  surface grids at design draft (65 × 25, level 3 Loop). The demo hull measures 0.84, above the 5 % limit; the
+  Wigley example below 0.01 (its end station is cut 0.05 % of $L$ inside the hull, so not exactly 0).
+
+### Provenance
+Closed form by hand (2026-11-18). The 5 % limit (`MICHELL_TRANSOM_AREA_LIMIT`) is the project's own threshold,
+not a published limit: the example hulls that close at the stern measure below 2 % (yacht 1.4 %, trawler 1.8 %,
+container ship 0.5 %, kayık 0.01 %), the demo hull 84 % and the runabout 100 %.

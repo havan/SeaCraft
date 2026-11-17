@@ -79,6 +79,36 @@ impl MichellGrid {
         }
         Ok(())
     }
+
+    /// Immersed area of the station at `xs[i]`, both sides (m²), by the trapezoid rule in `z`.
+    pub fn section_area(&self, i: usize) -> f64 {
+        let f = &self.half_breadths[i];
+        let half: f64 = self
+            .zs
+            .windows(2)
+            .zip(f.windows(2))
+            .map(|(z, y)| 0.5 * (y[0] + y[1]) * (z[1] - z[0]))
+            .sum();
+        2.0 * half
+    }
+
+    /// Wetted transom area over the largest section area: the immersed area of the aftmost
+    /// station (least `x`, since `x` points forward) divided by the largest immersed station area.
+    /// Zero for a hull that closes at the stern, such as the Wigley hull; zero for an empty grid.
+    pub fn transom_area_ratio(&self) -> f64 {
+        let Some(aft) = (0..self.xs.len()).min_by(|&a, &b| self.xs[a].total_cmp(&self.xs[b]))
+        else {
+            return 0.0;
+        };
+        let largest = (0..self.xs.len())
+            .map(|i| self.section_area(i))
+            .fold(0.0, f64::max);
+        if largest > 0.0 {
+            self.section_area(aft) / largest
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Options controlling the Michell integral evaluation.
@@ -515,11 +545,19 @@ pub fn michell_wave_resistance<'a>(
     }
 }
 
-/// Check thin-ship validity warnings: Fn outside 0.2..=1.0 or L/B < 6.0.
-pub fn michell_warnings(length_wl: f64, beam_wl: f64, fn_: f64) -> Vec<String> {
+/// Wetted transom area, as a fraction of the largest section area, above which a Michell result
+/// is flagged. The project's own threshold, not a published limit: the example hulls that close at
+/// the stern (Wigley, kayık, yacht, trawler, container ship) measure below 2 % on the default 65 × 25
+/// grid, the demo hull and the runabout above 80 %.
+pub const MICHELL_TRANSOM_AREA_LIMIT: f64 = 0.05;
+
+/// Thin-ship validity warnings for a Michell curve on `grid`: L/B below 6, each row whose Fn is
+/// outside 0.2..=1.0, and a wetted transom larger than [`MICHELL_TRANSOM_AREA_LIMIT`] of the largest
+/// section (Michell's integral assumes the hull closes at the stern).
+pub fn michell_warnings(grid: &MichellGrid, rows: &[Resistance]) -> Vec<String> {
     let mut warnings = Vec::new();
-    let lb = if beam_wl > 1e-6 {
-        length_wl / beam_wl
+    let lb = if grid.beam_wl > 1e-6 {
+        grid.length_wl / grid.beam_wl
     } else {
         0.0
     };
@@ -528,10 +566,22 @@ pub fn michell_warnings(length_wl: f64, beam_wl: f64, fn_: f64) -> Vec<String> {
             "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
         ));
     }
-    if !(0.20..=1.0).contains(&fn_) {
+    let transom = grid.transom_area_ratio();
+    if transom > MICHELL_TRANSOM_AREA_LIMIT {
         warnings.push(format!(
-            "Fn {fn_:.3} is outside typical Michell applicability range (0.20..=1.0)"
+            "wetted transom is {:.0} % of the largest section: Michell's integral assumes the hull \
+             closes at the stern, so R_w for a transom stern is outside the method (flagged above {:.0} %)",
+            transom * 100.0,
+            MICHELL_TRANSOM_AREA_LIMIT * 100.0
         ));
+    }
+    for r in rows {
+        if !(0.20..=1.0).contains(&r.fn_) {
+            warnings.push(format!(
+                "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+                r.fn_, r.speed_kn
+            ));
+        }
     }
     warnings
 }
@@ -696,6 +746,71 @@ mod tests {
             "Rw must scale linearly with rho: r2/r1 = {}",
             r2 / r1
         );
+    }
+
+    #[test]
+    fn transom_ratio_is_the_aft_section_over_the_largest_one() {
+        // Every Wigley station has the same z-shape, so a section's area is
+        // proportional to 1 - (2x/L)^2 whatever the z-quadrature: 0 at the closed
+        // stern, and 1 - 0.6^2 = 0.64 on a Wigley cut off at x = -0.3 L.
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let closed = wigley_grid(l, b, t, 81, 25);
+        assert_eq!(closed.transom_area_ratio(), 0.0);
+
+        let mut cut = closed.clone();
+        let first = cut.xs.iter().position(|&x| x >= -0.3 * l - 1e-9).unwrap();
+        assert!(
+            (cut.xs[first] + 3.0).abs() < 1e-9,
+            "x = -3 m is a grid station"
+        );
+        cut.xs.drain(..first);
+        cut.half_breadths.drain(..first);
+        assert!(
+            (cut.transom_area_ratio() - 0.64).abs() < 1e-12,
+            "{}",
+            cut.transom_area_ratio()
+        );
+
+        let rows = |g: &MichellGrid| {
+            michell_resistance_curve(
+                g,
+                1.0,
+                1.19e-6,
+                1000.0,
+                9.80665,
+                &[6.0],
+                &MichellOptions::default(),
+            )
+        };
+        let flagged = |g: &MichellGrid| {
+            michell_warnings(g, &rows(g))
+                .iter()
+                .any(|w| w.contains("wetted transom"))
+        };
+        assert!(!flagged(&closed));
+        assert!(flagged(&cut));
+    }
+
+    #[test]
+    fn transom_warning_fires_on_the_demo_hull_and_not_on_the_wigley_example() {
+        let subdiv = SubdivisionOptions {
+            level: 3,
+            mode: crate::subdiv::SubdivisionMode::Loop,
+        };
+        let ratio = |s: &Surface| {
+            let draft = HydroOptions::from_surface(s, subdiv).draft;
+            michell_grid_from_surface(s, draft, 65, 25, subdiv)
+                .expect("grid")
+                .transom_area_ratio()
+        };
+        // The demo hull's transom is immersed at its 0.62 m design draft.
+        let demo = ratio(&crate::demo::demo_hull(true));
+        assert!(demo > MICHELL_TRANSOM_AREA_LIMIT, "demo {demo}");
+        // The Wigley example closes at the stern: what remains is the grid's
+        // end station, cut 0.05 % of L inside the hull.
+        let (wigley, _) = crate::examples::build(crate::examples::Example::Wigley).unwrap();
+        let w = ratio(&wigley);
+        assert!(w < 0.01, "wigley {w}");
     }
 
     #[test]

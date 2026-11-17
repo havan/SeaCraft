@@ -2,6 +2,13 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
+## Unreleased
+
+- Michell resistance (CLI, MCP, the Performance tab and the control channel) now warns when the hull has a wetted
+  transom larger than 5 % of its largest section, since Michell's integral assumes the hull closes at the stern.
+  The demo hull and the runabout example are flagged at their design drafts. The four front ends now share one
+  set of Michell warnings (`michell::michell_warnings`); the L/B and Fn messages are unchanged.
+
 ## 0.5.0 (2026-11-17)
 
 Seeing and shaping the control net. All of this is covered by headless tests; the look of it (colours, the
