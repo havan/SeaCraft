@@ -2,7 +2,7 @@
 
 Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning that anything may change.
 
-## Unreleased
+## 0.5.0 (2026-11-17)
 
 Seeing and shaping the control net. All of this is covered by headless tests; the look of it (colours, the
 triad, the markers) has been reviewed by eye on Linux only.
