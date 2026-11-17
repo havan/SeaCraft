@@ -40,6 +40,16 @@ impl HiddenNet {
         }
     }
 
+    /// The toolbar label: the combo sits beside Net and Points with no label
+    /// of its own, so each choice says the whole thing.
+    pub fn toolbar_label(self) -> &'static str {
+        match self {
+            Self::Dimmed => "Dim behind",
+            Self::Hidden => "Hide behind",
+            Self::Same => "Show behind",
+        }
+    }
+
     /// The control channel's name (`ui.set {"hidden_net": …}`).
     pub fn key(self) -> &'static str {
         match self {

@@ -301,3 +301,27 @@ fn a_hidden_view_is_not_picked() {
     );
     assert_eq!(app.selected(), None);
 }
+
+#[test]
+fn the_hidden_net_choice_sits_beside_net_and_points_and_station_focus_is_menu_only() {
+    // Maintainer's ruling after the visual check of feat/hull-editing: the
+    // toolbar read "Hidden: Hidden"; the choice belongs to the net and its
+    // points, and Body-plan station focus is a set-once View menu option.
+    let (app, _ctx) = demo();
+    let points = app.toolbar_rect("points").expect("the Points switch");
+    let hidden = app
+        .toolbar_rect("hidden_net")
+        .expect("the hidden-net combo");
+    let waterplane = app
+        .toolbar_rect("waterplane")
+        .expect("the Waterplane switch");
+    assert!(
+        hidden.left() > points.right() && hidden.right() < waterplane.left(),
+        "the hidden-net combo sits between Points and Waterplane: {points:?} {hidden:?} {waterplane:?}"
+    );
+    assert!(app.toolbar_rect("station_focus").is_none());
+    assert_eq!(
+        seacraft_gui::render::HiddenNet::ALL.map(|m| m.toolbar_label()),
+        ["Dim behind", "Hide behind", "Show behind"]
+    );
+}

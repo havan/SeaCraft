@@ -5136,30 +5136,62 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 ui.disable();
             }
             ui.spacing_mut().item_spacing.x = 2.0;
+            // One display switch; true when it was clicked.
+            fn switch(
+                ui: &mut egui::Ui,
+                rects: &mut Vec<(&'static str, egui::Rect)>,
+                name: &'static str,
+                label: &str,
+                tip: &str,
+                flag: &mut bool,
+            ) -> bool {
+                let response =
+                    theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
+                rects.push((name, response.rect));
+                if response.clicked() {
+                    *flag = !*flag;
+                }
+                response.clicked()
+            }
+            toggled |= switch(
+                ui,
+                &mut out.rects,
+                "net",
+                "Net",
+                "Control net",
+                &mut display.control_net,
+            );
+            toggled |= switch(
+                ui,
+                &mut out.rects,
+                "points",
+                "Points",
+                "Control points (hidden points cannot be picked)",
+                &mut display.points,
+            );
+            // How the net and its points behind the shaded hull are drawn:
+            // beside the two switches it qualifies, each choice its own label.
+            let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
+                .selected_text(display.hidden_net.toolbar_label())
+                .width(82.0)
+                .show_ui(ui, |ui| {
+                    for mode in crate::render::HiddenNet::ALL {
+                        ui.selectable_value(&mut display.hidden_net, mode, mode.toolbar_label());
+                    }
+                });
+            let combo = combo
+                .response
+                .on_hover_text("How control-net edges and points behind the shaded hull are drawn");
+            out.rects.push(("hidden_net", combo.rect));
+            if display.hidden_net != state.display.hidden_net {
+                toggled = true;
+            }
             for (name, label, tip, flag) in [
-                (
-                    "net",
-                    "Net",
-                    "Control net",
-                    &mut display.control_net as &mut bool,
-                ),
-                (
-                    "points",
-                    "Points",
-                    "Control points (hidden points cannot be picked)",
-                    &mut display.points,
-                ),
-                (
-                    "station_focus",
-                    "Station",
-                    "Focus on the active station in the Body plan",
-                    &mut display.station_focus,
-                ),
                 (
                     "waterplane",
                     "Waterplane",
                     "Waterplane at the current draft",
-                    &mut display.waterplane,
+                    &mut display.waterplane as &mut bool,
                 ),
                 (
                     "curves",
@@ -5186,13 +5218,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     &mut display.orientation,
                 ),
             ] {
-                let response =
-                    theme::as_switch(ui, |ui| ui.selectable_label(*flag, label)).on_hover_text(tip);
-                if response.clicked() {
-                    *flag = !*flag;
-                    toggled = true;
-                }
-                out.rects.push((name, response.rect));
+                toggled |= switch(ui, &mut out.rects, name, label, tip, flag);
             }
             // The curve counts and comb settings, in a small menu.
             let menu = ui
@@ -5206,22 +5232,6 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     "Section counts (stations, waterlines, buttocks) and comb scale and density",
                 );
             out.rects.push(("sections", menu.rect));
-            ui.label(egui::RichText::new("Hidden").color(theme::TEXT_SECONDARY));
-            let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
-                .selected_text(display.hidden_net.label())
-                .width(66.0)
-                .show_ui(ui, |ui| {
-                    for mode in crate::render::HiddenNet::ALL {
-                        ui.selectable_value(&mut display.hidden_net, mode, mode.label());
-                    }
-                });
-            let combo = combo
-                .response
-                .on_hover_text("How control-net edges and points behind the shaded hull are drawn");
-            out.rects.push(("hidden_net", combo.rect));
-            if display.hidden_net != state.display.hidden_net {
-                toggled = true;
-            }
         });
         if toggled {
             out.display = Some(display);
