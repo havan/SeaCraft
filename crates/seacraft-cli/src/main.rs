@@ -2519,6 +2519,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             return Ok(());
         }
         if a.csv.is_some() {
+            // The CSV has no place for warnings; say them on stderr.
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
             return Ok(());
         }
 
@@ -2606,6 +2610,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             return Ok(());
         }
         if a.csv.is_some() {
+            // The CSV has no place for warnings; say them on stderr.
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
             return Ok(());
         }
 
@@ -2724,6 +2732,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         return Ok(());
     }
     if a.csv.is_some() {
+        // The CSV has no place for warnings; say them on stderr.
+        for w in &warnings {
+            eprintln!("warning: {w} (outside the method's fitted range)");
+        }
         return Ok(());
     }
 
