@@ -415,6 +415,9 @@ struct DragState {
     /// Last cursor target computed by `drag_to` (or `original` before the
     /// first movement), so changing the reach mid-drag can re-apply the move.
     target: Vec3,
+    /// Whether the model had unsaved changes before the press, for a
+    /// cancelled drag to put back.
+    dirty_before: bool,
 }
 
 /// What the File menu can produce besides a `.fef`.
@@ -1141,6 +1144,19 @@ fn build_move_plan(
         }
         None => seacraft_core::netmove::MovePlan::rigid(surface, seeds),
     }
+}
+
+/// Re-plan a drag under way: put every point back where it started, build
+/// the plan again from the drag's own seeds (not the selection, which Escape
+/// may have cleared since the press) and move them to the drag's target.
+fn rebuild_drag_plan(
+    drag: &mut DragState,
+    surface: &mut Surface,
+    connected: Option<(&seacraft_core::connected::ConnectedPreset, Option<f64>)>,
+) {
+    drag.plan.apply(surface, Vec3::ZERO);
+    drag.plan = build_move_plan(surface, &drag.plan.seeds(), connected);
+    drag.plan.apply_to(surface, drag.point, drag.target);
 }
 
 /// Name, model revision and box bounds (bits) of a cached clipped solid.
@@ -2173,7 +2189,11 @@ impl App {
             )
         });
         if escape {
-            if self.marquee.take().is_some() {
+            if self.drag.is_some() {
+                // egui ends its drag on Escape too, so the point drag is
+                // cancelled rather than left without a pointer behind it.
+                self.cancel_drag();
+            } else if self.marquee.take().is_some() {
                 self.marquee_cancelled = true;
             } else {
                 self.selection.clear();
@@ -4363,7 +4383,26 @@ impl App {
             plan,
             added_on_press,
             target: center,
+            dirty_before: self.dirty,
         });
+    }
+
+    /// Escape during a point drag: every point goes back where it started,
+    /// the press's undo snapshot is dropped and the selection stays.
+    fn cancel_drag(&mut self) {
+        let Some(drag) = self.drag.take() else {
+            return;
+        };
+        self.axis_lock = None;
+        if let Some(surface) = self.surface.as_mut() {
+            drag.plan.apply(surface, Vec3::ZERO);
+        }
+        self.history.discard_last();
+        self.dirty = drag.dirty_before;
+        self.revision += 1;
+        self.touch_geometry();
+        self.sync_cache();
+        self.set_status("drag cancelled".to_owned());
     }
 
     fn drag_to(&mut self, ui: &egui::Ui, view: &crate::camera::ViewTransform, cell: egui::Rect) {
@@ -4438,13 +4477,7 @@ impl App {
             .max(1e-3);
         let next = (current * 1.1_f64.powf(scroll_y as f64 / 40.0)).clamp(1e-3, 1e4);
         self.connected.reach_m = Some(next);
-        drag.plan.apply(surface, Vec3::ZERO);
-        drag.plan = build_move_plan(
-            surface,
-            self.selection.points(),
-            Some((&preset, Some(next))),
-        );
-        drag.plan.apply_to(surface, drag.point, drag.target);
+        rebuild_drag_plan(drag, surface, Some((&preset, Some(next))));
         let count = drag.plan.weights().len();
         self.set_status(format!(
             "{} · reach {next:.2} m · {count} points",

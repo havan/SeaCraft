@@ -286,6 +286,15 @@ impl MovePlan {
             .collect()
     }
 
+    /// The seeds alone, in point order.
+    pub fn seeds(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .filter(|e| e.is_seed)
+            .map(|e| e.point)
+            .collect()
+    }
+
     pub fn seed_count(&self) -> usize {
         self.entries.iter().filter(|e| e.is_seed).count()
     }
@@ -315,6 +324,10 @@ mod tests {
         assert_eq!(moved[1].to, Vec3::new(0.0, 1.5, 0.2));
         assert_eq!((moved[0].point, moved[0].from), (0, Vec3::ZERO));
         assert_eq!(two.seed_count(), 2);
+        // The seeds a drag is re-planned from, whatever the selection is by then.
+        assert_eq!(MovePlan::rigid(&s, &[1, 0, 1]).seeds(), vec![0, 1]);
+        let weighted = MovePlan::weighted(&s, &[2], &[(0, 0.5), (3, 0.25)], AxisMask::ALL);
+        assert_eq!(weighted.seeds(), vec![2]);
 
         let lone = MovePlan::rigid(&s, &[0]);
         assert_eq!(

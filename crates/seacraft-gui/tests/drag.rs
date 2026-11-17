@@ -1760,3 +1760,109 @@ fn the_point_under_the_pointer_is_ringed_with_or_without_connected() {
         "no ring once the pointer leaves"
     );
 }
+
+#[test]
+fn escape_during_a_connected_drag_cancels_it_and_keeps_the_selection() {
+    // Final review of feat/hull-editing, M1: egui ends a drag on Escape
+    // (interaction.rs), but the app kept its own drag: Escape cleared the
+    // selection, the wheel rebuilt the plan from it, the points snapped back
+    // and the drag was dead until release. Escape now cancels the point
+    // drag, as it cancels a rectangle: the points go back, no undo entry is
+    // left, the selection stays, and the wheel zooms again.
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_connected_on(true);
+    app.set_connected_preset("Blend both ways".to_owned());
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, Vec::new());
+    let before = app.surface().unwrap().clone();
+    let undo_before = app.undo_len();
+    let dirty_before = app.is_dirty();
+    let index = before
+        .points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.p.x > 3.0 && p.p.x < 9.0 && p.p.y > 0.0)
+        .max_by(|a, b| a.1.p.z.total_cmp(&b.1.p.z))
+        .map(|(i, _)| i)
+        .expect("a mid-hull sheer point");
+    let screen = app.cameras()[1]
+        .transform()
+        .project(before.points[index].p, app.viewport_rect(1))
+        .expect("visible");
+
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    for dx in [10.0, 40.0] {
+        frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(screen + egui::vec2(dx, 0.0))],
+        );
+    }
+    assert!((app.surface().unwrap().points[index].p - before.points[index].p).length() > 1e-3);
+
+    let escape = |pressed| egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    frame(&ctx, &mut app, vec![escape(true), escape(false)]);
+    for (i, (a, b)) in app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .zip(&before.points)
+        .enumerate()
+    {
+        assert_eq!(a.p, b.p, "point {i} is back where it started");
+    }
+    assert_eq!(
+        app.undo_len(),
+        undo_before,
+        "a cancelled drag leaves no undo entry"
+    );
+    assert_eq!(app.is_dirty(), dirty_before);
+    assert!(
+        app.selection().contains(index),
+        "Escape cancels the drag, not the selection"
+    );
+
+    // Moving and releasing do nothing more, and the wheel zooms again.
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(screen + egui::vec2(60.0, 0.0))],
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(screen + egui::vec2(60.0, 0.0), false)],
+    );
+    frame(&ctx, &mut app, Vec::new());
+    for (a, b) in app.surface().unwrap().points.iter().zip(&before.points) {
+        assert_eq!(a.p, b.p);
+    }
+    let reach = app.connected().reach_m;
+    let ortho = app.cameras()[1].ortho_height;
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    for _ in 0..10 {
+        frame(&ctx, &mut app, Vec::new());
+    }
+    assert_ne!(app.cameras()[1].ortho_height, ortho, "the wheel zooms");
+    assert_eq!(app.connected().reach_m, reach, "and leaves the reach alone");
+    assert_eq!(app.undo_len(), undo_before);
+}
