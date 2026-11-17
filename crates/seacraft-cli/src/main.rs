@@ -2485,25 +2485,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             &mopts,
         );
 
-        let mut warnings = Vec::new();
-        let lb = if grid.beam_wl > 1e-6 {
-            grid.length_wl / grid.beam_wl
-        } else {
-            0.0
-        };
-        if lb < 6.0 {
-            warnings.push(format!(
-                "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
-            ));
-        }
-        for r in &rows {
-            if !(0.20..=1.0).contains(&r.fn_) {
-                warnings.push(format!(
-                    "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
-                    r.fn_, r.speed_kn
-                ));
-            }
-        }
+        let warnings = michell::michell_warnings(&grid, &rows);
 
         if let Some(path) = &a.csv {
             let mut text = String::from(
@@ -2537,6 +2519,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             return Ok(());
         }
         if a.csv.is_some() {
+            // The CSV has no place for warnings; say them on stderr.
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
             return Ok(());
         }
 
@@ -2552,7 +2538,11 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         );
         println!(
             "  LWL {:.3}  BWL {:.3}  S {:.2} m2  L/B {:.2}  1+k {:.3}",
-            grid.length_wl, grid.beam_wl, grid.wetted_surface_m2, lb, form_factor
+            grid.length_wl,
+            grid.beam_wl,
+            grid.wetted_surface_m2,
+            grid.length_wl / grid.beam_wl,
+            form_factor
         );
         for w in &warnings {
             println!("  warning: {w}");
@@ -2620,6 +2610,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             return Ok(());
         }
         if a.csv.is_some() {
+            // The CSV has no place for warnings; say them on stderr.
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
             return Ok(());
         }
 
@@ -2738,6 +2732,10 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         return Ok(());
     }
     if a.csv.is_some() {
+        // The CSV has no place for warnings; say them on stderr.
+        for w in &warnings {
+            eprintln!("warning: {w} (outside the method's fitted range)");
+        }
         return Ok(());
     }
 

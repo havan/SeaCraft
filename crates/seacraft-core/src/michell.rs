@@ -79,6 +79,36 @@ impl MichellGrid {
         }
         Ok(())
     }
+
+    /// Immersed area of the station at `xs[i]`, both sides (m²), by the trapezoid rule in `z`.
+    pub fn section_area(&self, i: usize) -> f64 {
+        let f = &self.half_breadths[i];
+        let half: f64 = self
+            .zs
+            .windows(2)
+            .zip(f.windows(2))
+            .map(|(z, y)| 0.5 * (y[0] + y[1]) * (z[1] - z[0]))
+            .sum();
+        2.0 * half
+    }
+
+    /// Wetted transom area over the largest section area: the immersed area of the aftmost
+    /// station (least `x`, since `x` points forward) divided by the largest immersed station area.
+    /// Zero for a hull that closes at the stern, such as the Wigley hull; zero for an empty grid.
+    pub fn transom_area_ratio(&self) -> f64 {
+        let Some(aft) = (0..self.xs.len()).min_by(|&a, &b| self.xs[a].total_cmp(&self.xs[b]))
+        else {
+            return 0.0;
+        };
+        let largest = (0..self.xs.len())
+            .map(|i| self.section_area(i))
+            .fold(0.0, f64::max);
+        if largest > 0.0 {
+            self.section_area(aft) / largest
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Options controlling the Michell integral evaluation.
@@ -151,10 +181,10 @@ pub fn wigley_grid(length: f64, beam: f64, draft: f64, nx: usize, nz: usize) -> 
     for i in 0..nx - 1 {
         let dx = xs[i + 1] - xs[i];
         let x_mid = 0.5 * (xs[i] + xs[i + 1]);
-        let fx = -4.0 * half_b * x_mid / (half_l * half_l);
         for j in 0..nz - 1 {
             let dz = zs[j + 1] - zs[j];
             let z_mid = 0.5 * (zs[j] + zs[j + 1]);
+            let fx = -2.0 * half_b * x_mid / (half_l * half_l) * (1.0 - (z_mid / draft).powi(2));
             let fz =
                 -2.0 * half_b * (1.0 - (2.0 * x_mid / length).powi(2)) * z_mid / (draft * draft);
             let ds = (1.0 + fx * fx + fz * fz).sqrt() * dx * dz;
@@ -515,11 +545,19 @@ pub fn michell_wave_resistance<'a>(
     }
 }
 
-/// Check thin-ship validity warnings: Fn outside 0.2..=1.0 or L/B < 6.0.
-pub fn michell_warnings(length_wl: f64, beam_wl: f64, fn_: f64) -> Vec<String> {
+/// Wetted transom area, as a fraction of the largest section area, above which a Michell result
+/// is flagged. The project's own threshold, not a published limit: the example hulls that close at
+/// the stern (Wigley, kayık, yacht, trawler, container ship) measure below 2 % on the default 65 × 25
+/// grid, the demo hull and the runabout above 80 %.
+pub const MICHELL_TRANSOM_AREA_LIMIT: f64 = 0.05;
+
+/// Thin-ship validity warnings for a Michell curve on `grid`: L/B below 6, each row whose Fn is
+/// outside 0.2..=1.0, and a wetted transom larger than [`MICHELL_TRANSOM_AREA_LIMIT`] of the largest
+/// section (Michell's integral assumes the hull closes at the stern).
+pub fn michell_warnings(grid: &MichellGrid, rows: &[Resistance]) -> Vec<String> {
     let mut warnings = Vec::new();
-    let lb = if beam_wl > 1e-6 {
-        length_wl / beam_wl
+    let lb = if grid.beam_wl > 1e-6 {
+        grid.length_wl / grid.beam_wl
     } else {
         0.0
     };
@@ -528,10 +566,22 @@ pub fn michell_warnings(length_wl: f64, beam_wl: f64, fn_: f64) -> Vec<String> {
             "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
         ));
     }
-    if !(0.20..=1.0).contains(&fn_) {
+    let transom = grid.transom_area_ratio();
+    if transom > MICHELL_TRANSOM_AREA_LIMIT {
         warnings.push(format!(
-            "Fn {fn_:.3} is outside typical Michell applicability range (0.20..=1.0)"
+            "wetted transom is {:.0} % of the largest section: Michell's integral assumes the hull \
+             closes at the stern, so R_w for a transom stern is outside the method (flagged above {:.0} %)",
+            transom * 100.0,
+            MICHELL_TRANSOM_AREA_LIMIT * 100.0
         ));
+    }
+    for r in rows {
+        if !(0.20..=1.0).contains(&r.fn_) {
+            warnings.push(format!(
+                "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+                r.fn_, r.speed_kn
+            ));
+        }
     }
     warnings
 }
@@ -602,9 +652,10 @@ mod tests {
         //   Fn   0.25      0.30      0.35      0.40      0.50
         //   Cw   1.064e-3  2.142e-3  1.248e-3  2.734e-3  4.517e-3
         // It reproduces the interference hump at Fn 0.30, the hollow at 0.35
-        // and the main hump at 0.50; this module sits ~2 % lower throughout
-        // (the reference under-resolves the x oscillation at large λ). These
-        // are not published experimental or tabulated values.
+        // and the main hump at 0.50, with S = 14.88 m² (the exact Wigley wetted
+        // surface, `wigley_grid_wetted_surface_matches_kajitani`); this module
+        // agrees within 0.3 %. These are not published experimental or
+        // tabulated values.
         let (l, b, t) = (10.0, 1.0, 0.625);
         let grid = wigley_grid(l, b, t, 65, 25);
         let rho = 1000.0;
@@ -629,7 +680,7 @@ mod tests {
             let res = michell_wave_resistance_from_grid(&grid, u, rho, g, &opts);
             let diff = (res.cw - ref_cw).abs() / ref_cw;
             assert!(
-                diff < 0.05,
+                diff < 0.01,
                 "at Fn = {fn_val}, computed Cw = {:.4e}, expected reference {:.4e} (diff {:.2}%)",
                 res.cw,
                 ref_cw,
@@ -668,11 +719,13 @@ mod tests {
             );
         }
 
-        // Self-consistency check 2: Cw -> 0 as Fn -> 0.1
+        // Self-consistency check 2: Cw is small at Fn 0.10. Converged (513 × 97
+        // grid, 8192 θ points) it is 9.997e-5, about a tenth of the Fn 0.25
+        // value; the bound leaves room for this grid's 0.3 % error.
         let u_low = 0.10 * (g * l).sqrt();
         let res_low = michell_wave_resistance_from_grid(&grid, u_low, rho, g, &opts);
         assert!(
-            res_low.cw < 1e-4,
+            res_low.cw < 1.5e-4,
             "at Fn=0.10, Cw must be negligible, got {:.3e}",
             res_low.cw
         );
@@ -696,6 +749,201 @@ mod tests {
             "Rw must scale linearly with rho: r2/r1 = {}",
             r2 / r1
         );
+    }
+
+    #[test]
+    fn wigley_grid_wetted_surface_matches_kajitani() {
+        // Kajitani et al. (1983), Nomenclature (report p. 6): S = Cs L (2D + B)
+        // with Cs = 0.661 for the Wigley model, i.e. 14.87 m² at L = 10,
+        // B = 1, D = 0.625 m. A Gauss-Legendre quadrature (400 × 200) of
+        // 2 ∬ sqrt(1 + f_x² + f_z²) dx dz gives 14.8791 m² (Cs = 0.66129).
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let s = wigley_grid(l, b, t, 65, 25).wetted_surface_m2;
+        let kajitani = 0.661 * l * (2.0 * t + b);
+        assert!((s / kajitani - 1.0).abs() < 1e-3, "S {s} vs {kajitani}");
+        assert!((s / 14.879_063 - 1.0).abs() < 1e-4, "S {s}");
+    }
+
+    /// Michell's Cw on the 10 m Wigley grid (`nx` × `nz` offsets, `ntheta` angles) at Froude number `fn_`.
+    fn wigley_cw(fn_: f64, nx: usize, nz: usize, ntheta: usize) -> f64 {
+        let (l, g) = (10.0, 9.80665);
+        let grid = wigley_grid(l, 1.0, 0.625, nx, nz);
+        let opts = MichellOptions {
+            nx,
+            nz,
+            ntheta,
+            catamaran_spacing: None,
+        };
+        michell_wave_resistance_from_grid(&grid, fn_ * (g * l).sqrt(), 1000.0, g, &opts).cw
+    }
+
+    #[test]
+    #[allow(clippy::approx_constant)] // Fn 0.318 is read off a figure, not 1/π
+    fn wigley_michell_against_kajitani_1983_towing_tests() {
+        // Kajitani, Miyata, Ikehata, Tanaka, Adachi, Namimatsu & Ogiwara (1983), "The summary
+        // of the cooperative experiment on Wigley parabolic model in Japan", Proc. 2nd DTNSRDC
+        // Workshop on Ship Wave-Resistance Computations, pp. 5-35 (DTIC ADP003037): Wigley
+        // geosims with B/L = 0.1, D/L = 0.0625, the proportions of `wigley_grid`. Cw =
+        // C_T - (1 + k) C_F0 (Schoenherr) on S = 0.661 L (2D + B). Read from Fig. 2 (fixed
+        // sinkage and trim) and Figs. 1 and 5 (free), on a calibrated grid over 300 dpi
+        // renders: Cw (×1e-3) ± 0.05, Fn ± 0.005. docs/oracles.md §39 has the method.
+        //           model         hump Fn, Cw    hollow Fn, Cw
+        let fixed = [
+            ("SRI 4.0 m FX", 0.320, 1.39, 0.350, 1.21),
+            ("UT 2.5 m FX", 0.318, 1.45, 0.350, 1.30),
+        ];
+        let free = [
+            ("IHI 6.0 m FR", 0.313, 1.81, 0.345, 1.62),
+            ("SRI 4.0 m FR", 0.320, 1.61, 0.350, 1.45),
+            ("UT 2.5 m FR", 0.320, 1.70, 0.345, 1.53),
+            ("YNU 2.0 m FR", 0.322, 1.59, 0.347, 1.48),
+        ];
+
+        // Michell's interference hump and the hollow after it, to 0.001 in Fn.
+        let curve: Vec<(f64, f64)> = (0..=90)
+            .map(|i| {
+                let f = 0.28 + 0.001 * i as f64;
+                (f, wigley_cw(f, 65, 25, 256) * 1e3)
+            })
+            .collect();
+        let (hump_fn, hump) = curve
+            .iter()
+            .filter(|(f, _)| *f < 0.33)
+            .copied()
+            .fold((0.0, f64::MIN), |a, b| if b.1 > a.1 { b } else { a });
+        let (hollow_fn, hollow) = curve
+            .iter()
+            .filter(|(f, _)| *f > 0.33)
+            .copied()
+            .fold((0.0, f64::MAX), |a, b| if b.1 < a.1 { b } else { a });
+        // Michell: hump 2.14e-3 at Fn 0.299, hollow 1.235e-3 at 0.346.
+        assert!((hump_fn - 0.299).abs() < 0.0015, "hump at {hump_fn}");
+        assert!((hollow_fn - 0.346).abs() < 0.0015, "hollow at {hollow_fn}");
+
+        // What thin-ship theory gets right and wrong on this hull, as bands round
+        // the measured spread widened by the reading uncertainty. Not tuned: the
+        // hump is 0.014-0.023 early and 18-54 % high; the hollow is in place, and
+        // in the fixed condition, which Michell models, within 5 % in size.
+        for (model, h_fn, h_cw, l_fn, l_cw) in fixed.iter().chain(free.iter()) {
+            let early = h_fn - hump_fn;
+            assert!(
+                (0.009..=0.028).contains(&early),
+                "{model}: hump {early:.3} early"
+            );
+            assert!(
+                (l_fn - hollow_fn).abs() <= 0.009,
+                "{model}: hollow at {l_fn} vs {hollow_fn}"
+            );
+            let high = hump / h_cw;
+            assert!(
+                (1.14..=1.60).contains(&high),
+                "{model}: hump ratio {high:.3}"
+            );
+            let low = hollow / l_cw;
+            assert!(
+                (0.73..=1.07).contains(&low),
+                "{model}: hollow ratio {low:.3}"
+            );
+        }
+        for (model, _, _, _, l_cw) in fixed {
+            let r = hollow / l_cw;
+            assert!(
+                (0.91..=1.07).contains(&r),
+                "{model}: fixed hollow ratio {r:.3}"
+            );
+        }
+    }
+
+    #[test]
+    fn wigley_michell_matches_siren_independent_computation() {
+        // Peri, D. (2026), "SIREN: A nonlinear Rankine-source boundary element solver for the
+        // stationary motion of a marine vehicle in calm water", arXiv:2610.14027, Table 3,
+        // column "Michell": Michell's integral for the same Wigley hull from an independent
+        // Python script (λ = cosh t, Simpson quadrature), Cw on the true wetted surface. An
+        // independent computation of the same theory, not experiment.
+        let siren = [
+            (0.250, 1.064),
+            (0.267, 0.976),
+            (0.289, 1.987),
+            (0.316, 1.831),
+            (0.354, 1.284),
+            (0.408, 3.030),
+            (0.450, 4.154),
+        ];
+        for (fn_, cw) in siren {
+            let ours = wigley_cw(fn_, 129, 49, 512) * 1e3;
+            let diff = (ours / cw - 1.0).abs();
+            assert!(
+                diff < 0.002,
+                "Fn {fn_}: {ours:.4} vs SIREN {cw} ({:.3} %)",
+                diff * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn transom_ratio_is_the_aft_section_over_the_largest_one() {
+        // Every Wigley station has the same z-shape, so a section's area is
+        // proportional to 1 - (2x/L)^2 whatever the z-quadrature: 0 at the closed
+        // stern, and 1 - 0.6^2 = 0.64 on a Wigley cut off at x = -0.3 L.
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let closed = wigley_grid(l, b, t, 81, 25);
+        assert_eq!(closed.transom_area_ratio(), 0.0);
+
+        let mut cut = closed.clone();
+        let first = cut.xs.iter().position(|&x| x >= -0.3 * l - 1e-9).unwrap();
+        assert!(
+            (cut.xs[first] + 3.0).abs() < 1e-9,
+            "x = -3 m is a grid station"
+        );
+        cut.xs.drain(..first);
+        cut.half_breadths.drain(..first);
+        assert!(
+            (cut.transom_area_ratio() - 0.64).abs() < 1e-12,
+            "{}",
+            cut.transom_area_ratio()
+        );
+
+        let rows = |g: &MichellGrid| {
+            michell_resistance_curve(
+                g,
+                1.0,
+                1.19e-6,
+                1000.0,
+                9.80665,
+                &[6.0],
+                &MichellOptions::default(),
+            )
+        };
+        let flagged = |g: &MichellGrid| {
+            michell_warnings(g, &rows(g))
+                .iter()
+                .any(|w| w.contains("wetted transom"))
+        };
+        assert!(!flagged(&closed));
+        assert!(flagged(&cut));
+    }
+
+    #[test]
+    fn transom_warning_fires_on_the_demo_hull_and_not_on_the_wigley_example() {
+        let subdiv = SubdivisionOptions {
+            level: 3,
+            mode: crate::subdiv::SubdivisionMode::Loop,
+        };
+        let ratio = |s: &Surface| {
+            let draft = HydroOptions::from_surface(s, subdiv).draft;
+            michell_grid_from_surface(s, draft, 65, 25, subdiv)
+                .expect("grid")
+                .transom_area_ratio()
+        };
+        // The demo hull's transom is immersed at its 0.62 m design draft.
+        let demo = ratio(&crate::demo::demo_hull(true));
+        assert!(demo > MICHELL_TRANSOM_AREA_LIMIT, "demo {demo}");
+        // The Wigley example closes at the stern: what remains is the grid's
+        // end station, cut 0.05 % of L inside the hull.
+        let (wigley, _) = crate::examples::build(crate::examples::Example::Wigley).unwrap();
+        let w = ratio(&wigley);
+        assert!(w < 0.01, "wigley {w}");
     }
 
     #[test]

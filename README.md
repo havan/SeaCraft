@@ -223,6 +223,9 @@ catamarans, the demihull interference factor `2 * (1 + cos(k0 * s * sec(theta) *
 superimposes the twin wave patterns at centreline separation `s`, which converges
 to `2 * R_W(monohull)` as separation grows. Total resistance pairs Michell wave
 resistance with the ITTC-57 friction line and form factor `1+k` (`seacraft resistance --method michell`).
+The integral assumes the hull closes at the stern, so a wetted transom larger than 5 % of the largest section
+(the project's own threshold) is flagged, as are L/B below 6 and Fn outside 0.2–1.0. On the Wigley hull it has been
+compared with towing tests (`docs/oracles.md` §39): see *Status and limitations*.
 
 `dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
 bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending
@@ -805,6 +808,11 @@ and startup recovery in scripted runs.
 published values, and the demo hull numbers only freeze earlier output to catch changes. Results have
 not been systematically compared with tank tests, sea trials, full-scale measurements or approved
 software. Comparing them with published data is the most useful contribution anyone could make.
+
+One comparison with published experiment exists so far: Michell wave resistance on the Wigley hull against the
+Kajitani et al. (1983) towing tests, Fn 0.28–0.37 ([`docs/oracles.md`](docs/oracles.md) §39). Michell finds the
+hollow near Fn 0.35 at the measured speed (within 5 % in size for the fixed model), but puts the hump near
+Fn 0.32 about 0.02 early and 18–54 % too high. That says nothing about other hulls.
 
 * The kernel, `.fef` round-trip, hydrostatics, stability, linesplan and mesh
   exports are implemented and tested.
