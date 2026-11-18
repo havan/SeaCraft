@@ -54,6 +54,7 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Resu
 /// followed, a dangling one too: once another output creates its target, [`write_atomic`] writes
 /// through it. The directory is made canonical; the file need not exist. A loop of links has no
 /// landing and is an error: the first write would replace one of its links and the next land there.
+/// So is a directory that is missing or cannot be resolved.
 pub fn landing(path: &Path) -> io::Result<PathBuf> {
     let mut p = std::path::absolute(path)?;
     let mut hops = 0;
@@ -71,10 +72,18 @@ pub fn landing(path: &Path) -> io::Result<PathBuf> {
             None => target,
         };
     }
-    Ok(match (p.parent(), p.file_name()) {
-        (Some(dir), Some(name)) => fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or(p),
-        _ => p,
-    })
+    let (Some(dir), Some(name)) = (p.parent(), p.file_name()) else {
+        return Ok(p);
+    };
+    // A folder that is missing or cannot be resolved (a loop of links, no permission) would fail
+    // only its own write, after the outputs before it were written: refuse it before any.
+    match fs::canonicalize(dir) {
+        Ok(dir) => Ok(dir.join(name)),
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("{}: cannot resolve its folder: {e}", path.display()),
+        )),
+    }
 }
 
 /// The first pair of `outputs`, as `(earlier, later)` indices, that would land in one file (see
@@ -241,8 +250,8 @@ mod tests {
             Some((1, 2))
         );
         assert!(
-            shared_output(&[&a, &shout]).is_ok(),
-            "a missing folder is not an error"
+            shared_output(&[&a, &shout]).is_err(),
+            "a missing folder has no landing"
         );
         let _ = fs::remove_dir_all(&dir);
     }

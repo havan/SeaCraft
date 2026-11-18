@@ -163,6 +163,29 @@ fn waves_refuses_a_loop_of_links() {
     }
 }
 
+/// A folder that cannot be resolved (missing, or a link to itself) is refused before any output is
+/// written, not after the first one.
+#[cfg(unix)]
+#[test]
+fn waves_refuses_an_unresolvable_folder_before_writing() {
+    let d = Dir::new("loopdir");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    std::os::unix::fs::symlink("loop", d.path("loop")).unwrap();
+    for folder in ["loop", "missing"] {
+        let second = format!("{folder}/q.svg");
+        let out = d.run(&[
+            "waves", "w.fef", "--fn", "0.3", "-o", "p.png", "-o", &second,
+        ]);
+        assert!(!out.status.success(), "{second} was accepted");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains(&second), "{err}");
+        assert!(
+            !d.path("p.png").exists(),
+            "p.png was written before refusing {second}"
+        );
+    }
+}
+
 /// On a case-blind file system (Windows, macOS by default) p.png and P.PNG are one file, so names
 /// that differ only in case are refused everywhere.
 #[test]
