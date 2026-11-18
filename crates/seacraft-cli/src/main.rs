@@ -2979,7 +2979,8 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         None => None,
     };
 
-    let mut files = Vec::new();
+    // Every output is made first and written together, so one that cannot be written leaves none.
+    let mut writes: Vec<(&Path, Vec<u8>)> = Vec::new();
     for (path, format) in a.output.iter().zip(formats) {
         let bytes = match format {
             WaveFormat::Png => {
@@ -2988,19 +2989,20 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
             WaveFormat::Svg => wave_pattern::wave_svg(&field, a.clip).into_bytes(),
             WaveFormat::Vti => wave_pattern::wave_vti(&field).into_bytes(),
         };
-        seacraft_core::io::write_atomic(path, bytes)
-            .with_context(|| format!("cannot write {}", path.display()))?;
-        files.push(path.display().to_string());
+        writes.push((path, bytes));
     }
     if let (Some(cut), Some(path)) = (&cut, &a.cut_csv) {
         let mut text = String::from("x_m,zeta_m\n");
         for (x, z) in cut.s.iter().zip(&cut.zeta) {
             text.push_str(&format!("{x:.4},{z:.6e}\n"));
         }
-        seacraft_core::io::write_atomic(path, text)
-            .with_context(|| format!("cannot write {}", path.display()))?;
-        files.push(path.display().to_string());
+        writes.push((path, text.into_bytes()));
     }
+    seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
+    let files: Vec<String> = writes
+        .iter()
+        .map(|(p, _)| p.display().to_string())
+        .collect();
 
     for w in &field.warnings {
         eprintln!("warning: {w}");
@@ -3682,19 +3684,18 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         );
     }
 
+    // Every output is made first and written together, so one that cannot be written leaves none.
     let written = panels::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
-    seacraft_core::io::write_atomic(&a.output, &written.bytes)
-        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
     if let Some(path) = &a.offsets_csv {
-        seacraft_core::io::write_atomic(path, panels::offsets_csv(&set.offsets).as_bytes())
-            .with_context(|| format!("cannot write {}", path.display()))?;
+        writes.push((path, panels::offsets_csv(&set.offsets).into_bytes()));
     }
     if let Some(path) = &a.offsets_pdf {
         let doc = panels::offsets_pdf(&set.offsets, &set.title, a.imperial)
             .map_err(anyhow::Error::msg)?;
-        seacraft_core::io::write_atomic(path, &doc.bytes)
-            .with_context(|| format!("cannot write {}", path.display()))?;
+        writes.push((path, doc.bytes));
     }
+    seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
 
     let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
     if a.json {

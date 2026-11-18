@@ -186,6 +186,31 @@ fn waves_refuses_an_unresolvable_folder_before_writing() {
     }
 }
 
+/// An output that cannot be written (no file name, a directory in its place, a file where its folder
+/// should be) fails the run before any output is written.
+#[test]
+fn waves_writes_nothing_when_one_output_cannot_be_written() {
+    let d = Dir::new("unwritable");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    std::fs::create_dir(d.path("q.svg")).unwrap();
+    std::fs::write(d.path("blocker"), "a file").unwrap();
+    for args in [
+        &["--cut-y", "2", "--cut-csv", ".."][..],
+        &["-o", "q.svg"][..],
+        &["-o", "blocker/q.svg"][..],
+    ] {
+        let mut all = vec!["waves", "w.fef", "--fn", "0.3", "-o", "p.png"];
+        all.extend_from_slice(args);
+        let out = d.run(&all);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} was accepted");
+        assert!(
+            !d.path("p.png").exists(),
+            "{args:?}: p.png was written; {err}"
+        );
+    }
+}
+
 /// On a case-blind file system (Windows, macOS by default) p.png and P.PNG are one file, so names
 /// that differ only in case are refused everywhere.
 #[test]

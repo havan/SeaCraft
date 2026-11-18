@@ -3,7 +3,9 @@
 //! [`write_atomic`] writes through a temporary sibling and a rename, so an
 //! interrupted or failed write leaves either the old file or the new one on
 //! disk, never half of either. Every user-facing file the library, the CLI,
-//! the GUI and the control channels write goes through it.
+//! the GUI and the control channels write goes through it, or through
+//! [`write_all_atomic`] when one command writes several files: that stages them
+//! all before replacing any, so a bad path among them leaves every file as it was.
 
 use std::fs;
 use std::io::{self, Write};
@@ -23,13 +25,76 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// link at `path` is followed, so the file it points to is replaced and the
 /// link stays.
 pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
-    let target = resolve(path.as_ref());
-    let name = target.file_name().ok_or_else(|| {
-        io::Error::new(
+    stage(path.as_ref(), bytes.as_ref())?.commit()
+}
+
+/// Write several files as one: each is staged in its temporary sibling (written, flushed, synced)
+/// as [`write_atomic`] does, and only when every one is staged are they renamed over their targets,
+/// in order. So a path that cannot be written (a missing folder, a file where a folder should be, a
+/// directory where the file should be, no file name) fails before any target is touched, and the
+/// error names it. A rename can still fail after earlier ones, but staging has shown every folder
+/// writable, so that takes a change on disk between the two steps.
+pub fn write_all_atomic<P: AsRef<Path>, B: AsRef<[u8]>>(files: &[(P, B)]) -> io::Result<()> {
+    let mut staged = Vec::with_capacity(files.len());
+    for (path, bytes) in files {
+        let path = path.as_ref();
+        match stage(path, bytes.as_ref()) {
+            Ok(s) => staged.push(s),
+            Err(e) => {
+                for s in &staged {
+                    let _ = fs::remove_file(&s.tmp);
+                }
+                return Err(io::Error::new(e.kind(), format!("{}: {e}", path.display())));
+            }
+        }
+    }
+    let mut staged = staged.into_iter();
+    while let Some(s) = staged.next() {
+        if let Err(e) = s.commit() {
+            for rest in staged {
+                let _ = fs::remove_file(&rest.tmp);
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// A file written in full to its temporary sibling, waiting to be renamed over its target.
+struct Staged {
+    tmp: PathBuf,
+    target: PathBuf,
+    dir: PathBuf,
+}
+
+impl Staged {
+    /// Rename over the target; on failure the temporary file is removed.
+    fn commit(self) -> io::Result<()> {
+        match fs::rename(&self.tmp, &self.target) {
+            Ok(()) => {
+                sync_dir(&self.dir);
+                Ok(())
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&self.tmp);
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Write `bytes` to a temporary sibling of `path`'s target; on failure nothing is left behind.
+fn stage(path: &Path, bytes: &[u8]) -> io::Result<Staged> {
+    let target = resolve(path);
+    let name = target
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file path"))?;
+    if fs::metadata(&target).is_ok_and(|m| m.is_dir()) {
+        return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{} is not a file path", target.display()),
-        )
-    })?;
+            "a folder, not a file",
+        ));
+    }
     let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
         _ => PathBuf::from("."),
@@ -40,14 +105,13 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Resu
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-
-    let result = write_then_rename(&tmp, &target, bytes.as_ref());
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    } else {
-        sync_dir(&dir);
+    match write_temp(&tmp, &target, bytes) {
+        Ok(()) => Ok(Staged { tmp, target, dir }),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            Err(e)
+        }
     }
-    result
 }
 
 /// Where a write to `path` lands, to tell whether two outputs name one file. Symbolic links are
@@ -122,7 +186,7 @@ fn resolve(path: &Path) -> PathBuf {
     }
 }
 
-fn write_then_rename(tmp: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
+fn write_temp(tmp: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -135,9 +199,7 @@ fn write_then_rename(tmp: &Path, target: &Path, bytes: &[u8]) -> io::Result<()> 
             let _ = file.set_permissions(meta.permissions());
         }
     }
-    file.sync_all()?;
-    drop(file);
-    fs::rename(tmp, target)
+    file.sync_all()
 }
 
 /// Make the rename itself durable (best effort; a no-op off Unix).
@@ -188,8 +250,8 @@ mod tests {
     #[test]
     fn a_failing_rename_keeps_the_original_and_cleans_up() {
         let dir = scratch("fail");
-        // The target is a directory: the temporary file is written, but the
-        // rename over a directory fails.
+        // The target is a directory: refused before a temporary file is
+        // written.
         let target = dir.join("model.fef");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("inside.txt"), "kept").unwrap();
@@ -286,6 +348,46 @@ mod tests {
         write_atomic(dir.join("a.png"), "png").unwrap();
         write_atomic(dir.join("dangling.svg"), "svg").unwrap();
         assert_eq!(fs::read_to_string(dir.join("a.png")).unwrap(), "svg");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_all_atomic_writes_every_file() {
+        let dir = scratch("all");
+        fs::write(dir.join("b.txt"), "old").unwrap();
+        let files = [(dir.join("a.txt"), "one"), (dir.join("b.txt"), "two")];
+        write_all_atomic(&files).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "one");
+        assert_eq!(fs::read_to_string(dir.join("b.txt")).unwrap(), "two");
+        assert!(temps(&dir).is_empty(), "{:?}", temps(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// One unwritable file among several leaves every target as it was, and no temporary file.
+    #[test]
+    fn write_all_atomic_touches_nothing_when_one_file_cannot_be_written() {
+        let dir = scratch("all-fail");
+        fs::write(dir.join("kept.txt"), "old").unwrap();
+        fs::create_dir(dir.join("folder.txt")).unwrap();
+        fs::write(dir.join("blocker"), "a file").unwrap();
+        for bad in ["missing/x.txt", "folder.txt", "blocker/x.txt", ".."] {
+            let files = [
+                (dir.join("kept.txt"), "new"),
+                (dir.join("fresh.txt"), "new"),
+                (dir.join(bad), "new"),
+            ];
+            let Err(err) = write_all_atomic(&files) else {
+                panic!("{bad} was written");
+            };
+            assert!(err.to_string().contains(bad), "{bad}: {err}");
+            assert_eq!(
+                fs::read_to_string(dir.join("kept.txt")).unwrap(),
+                "old",
+                "{bad}"
+            );
+            assert!(!dir.join("fresh.txt").exists(), "{bad}");
+            assert!(temps(&dir).is_empty(), "{bad}: {:?}", temps(&dir));
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

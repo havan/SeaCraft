@@ -1255,17 +1255,21 @@ pub fn wave_tool(
         ..WavePatternOptions::at_speed(speed)
     };
     let field = wave_field(&grid, &opts)?;
-    let mut files = Vec::new();
+    // Every output is made first and written together, so one that cannot be written leaves none.
+    let mut writes = Vec::with_capacity(outputs.len());
     for (key, path) in outputs {
         let bytes = match key {
             "png_path" => wave_png(&field, clip).ok_or("the wave field is empty")?,
             "svg_path" => wave_svg(&field, clip).into_bytes(),
             _ => wave_vti(&field).into_bytes(),
         };
-        crate::io::write_atomic(&path, bytes)
-            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        files.push(path.display().to_string());
+        writes.push((path, bytes));
     }
+    crate::io::write_all_atomic(&writes).map_err(|e| format!("cannot write the outputs: {e}"))?;
+    let files: Vec<String> = writes
+        .iter()
+        .map(|(p, _)| p.display().to_string())
+        .collect();
     let mut reply = summary_json(&field);
     if let Some(map) = reply.as_object_mut() {
         map.insert("draft".into(), serde_json::json!(grid.draft));
