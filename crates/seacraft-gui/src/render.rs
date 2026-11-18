@@ -1159,7 +1159,7 @@ pub fn wave_shapes(
         }
     }
     if let (seacraft_core::wave_pattern::CutLine::Longitudinal { y }, Some(&s0), Some(&s1)) =
-        (w.cut.line, w.cut.s.first(), w.cut.s.last())
+        (w.wash_cut.line, w.wash_cut.s.first(), w.wash_cut.s.last())
     {
         if let (Some(a), Some(b)) = (at(s0, y), at(s1, y)) {
             shapes.extend(egui::Shape::dashed_line(
@@ -2336,16 +2336,29 @@ mod tests {
             field,
             clip_m: 1.0,
             contours: Vec::new(),
-            cut: WaveCut {
+            wash_cut: WaveCut {
                 line: CutLine::Longitudinal { y: 1.0 },
                 s: vec![0.0, 10.0],
                 zeta: vec![0.0, 0.0],
                 theta_cut_deg: 80.0,
                 notes: Vec::new(),
             },
+            wash: None,
+            wash_distance_m: 1.0,
+            regime: seacraft_core::wave_pattern::Regime::Low,
+            drag_here: seacraft_core::michell::MichellResult {
+                rw_n: 0.0,
+                cw: 0.0,
+                fn_: 0.3,
+                converged_note: String::new(),
+            },
+            interference: None,
+            spacing_scan: Vec::new(),
             length_wl: 10.0,
+            beam_wl: 1.0,
             draft: 0.5,
             cat_spacing_m: None,
+            warnings: Vec::new(),
         }
     }
 

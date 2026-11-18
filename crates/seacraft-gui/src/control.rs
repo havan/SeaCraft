@@ -3033,10 +3033,10 @@ mod tests {
     #[test]
     fn ui_set_waves_shows_the_pattern() {
         let (mut app, ctx) = demo();
-        assert!(!app.wave_settings().show);
+        assert!(!app.wave_settings().plan_contours);
         let r = call(&mut app, &ctx, "ui.set", json!({ "waves": true }));
         assert_eq!(r["ok"], true, "{r}");
-        assert!(app.wave_settings().show);
+        assert!(app.wave_settings().plan_contours);
         let r = call(&mut app, &ctx, "ui.set", json!({ "waves": 1 }));
         assert_eq!(r["ok"], false, "{r}");
         assert!(
@@ -3046,10 +3046,13 @@ mod tests {
                 .contains("`waves` must be true or false"),
             "{r}"
         );
-        assert!(app.wave_settings().show, "a bad value changes nothing");
+        assert!(
+            app.wave_settings().plan_contours,
+            "a bad value changes nothing"
+        );
         let r = call(&mut app, &ctx, "ui.set", json!({ "waves": false }));
         assert_eq!(r["ok"], true, "{r}");
-        assert!(!app.wave_settings().show);
+        assert!(!app.wave_settings().plan_contours);
     }
 
     #[test]

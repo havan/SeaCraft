@@ -4355,7 +4355,7 @@ impl App {
 
     /// Plan view's note while the pattern is shown but not drawn.
     fn waves_status(&self) -> Option<&'static str> {
-        if !self.perf_state.waves.show || self.wave_overlay().is_some() {
+        if !self.perf_state.waves.plan_contours || self.wave_overlay().is_some() {
             None
         } else if self.wave_failure().is_some() {
             Some("Wave pattern failed: see the Performance tab")
@@ -4866,7 +4866,7 @@ impl App {
     /// Show the wave pattern on Plan view (and compute it), or hide it.
     pub fn set_waves_shown(&mut self, show: bool) {
         let settings = crate::waves::WaveSettings {
-            show,
+            plan_contours: show,
             ..self.perf_state.waves.clone()
         };
         self.set_wave_settings(settings);
@@ -4875,7 +4875,7 @@ impl App {
     /// The wave pattern to draw, save or report: `Some` only while it is shown and computed for
     /// the current model, floating condition and settings. Every view goes through this gate.
     pub fn wave_overlay(&self) -> Option<&crate::waves::WaveResult> {
-        if !self.perf_state.waves.show || !self.waves_track.is_current(self.waves_key()) {
+        if !self.perf_state.waves.plan_contours || !self.waves_track.is_current(self.waves_key()) {
             return None;
         }
         self.perf_state.wave_result.as_ref()
@@ -4903,6 +4903,7 @@ impl App {
             surface,
             subdivision,
             self.hydro.options.draft,
+            self.hydro.options.water_density,
             &self.perf_state.waves,
         ) {
             Ok(w) => {
@@ -4926,10 +4927,11 @@ impl App {
             mode: self.mode,
         };
         let draft = self.hydro.options.draft;
+        let rho = self.hydro.options.water_density;
         let settings = self.perf_state.waves.clone();
         let key = self.waves_key();
         self.waves_track.start(key, move || {
-            crate::waves::compute_waves(&surface, subdivision, draft, &settings)
+            crate::waves::compute_waves(&surface, subdivision, draft, rho, &settings)
         });
     }
 
@@ -4989,7 +4991,8 @@ impl App {
             let loading_due = !self.project.loading_conditions.is_empty()
                 && self.loading_track.due(self.loading_key());
             let resistance_due = self.resistance_track.due(self.resistance_key());
-            let waves_due = self.perf_state.waves.show && self.waves_track.due(self.waves_key());
+            let waves_due =
+                self.perf_state.waves.plan_contours && self.waves_track.due(self.waves_key());
             if loading_due || resistance_due || waves_due {
                 if !quiet {
                     waiting = true;
@@ -5190,7 +5193,7 @@ impl App {
             self.start_resistance_compute();
         }
         let key = self.waves_key();
-        if self.perf_state.waves.show
+        if self.perf_state.waves.plan_contours
             && wanted(
                 self.waves_track.is_current(key),
                 self.waves_track.running_for(),
@@ -5261,7 +5264,7 @@ impl App {
 
     /// A wave pattern is kept but no longer matches the inputs (recomputed automatically while shown).
     fn waves_stale(&self) -> bool {
-        self.perf_state.waves.show
+        self.perf_state.waves.plan_contours
             && self.perf_state.wave_result.is_some()
             && !self.waves_track.is_current(self.waves_key())
     }
@@ -5435,22 +5438,40 @@ impl App {
         opts.mode = self.mode;
         // The wave pattern goes in while it is shown, with the dock's settings, at the report's draft.
         let w = &self.perf_state.waves;
-        opts.waves = w.show.then(|| {
+        // The domain and wash line in metres need the waterline: the computed pattern's, else the
+        // hydrostatics', else the project's main particulars. With none, the section still goes in,
+        // on the default domain in waterline lengths and without a wash line.
+        let lengths = self
+            .perf_state
+            .wave_result
+            .as_ref()
+            .map(|r| (r.length_wl, r.beam_wl))
+            .or_else(|| self.hydro.result.as_ref().map(|h| (h.lwl, h.bwl)))
+            .or(Some((surface.settings.length, surface.settings.beam)))
+            .filter(|(l, b)| *l > 0.0 && *b >= 0.0);
+        opts.waves = w.plan_contours.then(|| {
             let (speed_m_s, froude) = match w.speed {
                 crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
                 crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
             };
+            let (wash, (ahead_l, behind_l, half_width_l)) = match lengths {
+                Some((l, b)) => {
+                    let wash = crate::waves::wash_distance(w, l, b);
+                    (Some(wash), crate::waves::domain_l(w, l, wash))
+                }
+                None => (None, (0.5, 3.0, 1.5)),
+            };
             seacraft_core::report::WaveReport {
                 options: seacraft_core::wave_pattern::WavePatternOptions {
-                    ahead_l: w.ahead_l,
-                    behind_l: w.behind_l,
-                    half_width_l: w.half_width_l,
+                    ahead_l,
+                    behind_l,
+                    half_width_l,
                     catamaran_spacing: w.cat_spacing_m,
                     ..seacraft_core::wave_pattern::WavePatternOptions::at_speed(speed_m_s)
                 },
                 froude,
                 clip_m: w.clip_m,
-                wash_distance_m: None,
+                wash_distance_m: wash,
             }
         });
         Some(opts)

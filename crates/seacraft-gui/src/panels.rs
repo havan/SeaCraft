@@ -2286,7 +2286,9 @@ pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
         }
     });
     ui.add_space(2.0);
-    changed |= ui.checkbox(&mut s.show, "Show on Plan view").changed();
+    changed |= ui
+        .checkbox(&mut s.plan_contours, "Show on Plan view")
+        .changed();
 
     ui.horizontal(|ui| {
         ui.label("Speed");
@@ -2326,15 +2328,38 @@ pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
     });
 
     ui.horizontal(|ui| {
-        ui.label("Domain (L)");
-        for (v, range, prefix) in [
-            (&mut s.ahead_l, 0.0..=3.0, "ahead "),
-            (&mut s.behind_l, 0.25..=10.0, "behind "),
-            (&mut s.half_width_l, 0.25..=5.0, "± "),
-        ] {
-            changed |= ui
-                .add(theme::num(v).speed(0.05).range(range).prefix(prefix))
-                .changed();
+        ui.label("Domain");
+        let mut auto = s.domain == crate::waves::WaveDomain::Auto;
+        if ui.checkbox(&mut auto, "Auto").changed() {
+            let l = panel.length_wl.filter(|l| *l > 0.0).unwrap_or(10.0);
+            s.domain = if auto {
+                crate::waves::WaveDomain::Auto
+            } else {
+                crate::waves::WaveDomain::Manual {
+                    ahead_m: 0.5 * l,
+                    behind_m: 3.0 * l,
+                    side_m: 1.5 * l,
+                }
+            };
+            changed = true;
+        }
+        if let crate::waves::WaveDomain::Manual {
+            ahead_m,
+            behind_m,
+            side_m,
+        } = &mut s.domain
+        {
+            for (v, prefix) in [(ahead_m, "ahead "), (behind_m, "behind "), (side_m, "± ")] {
+                changed |= ui
+                    .add(
+                        theme::num(v)
+                            .speed(0.1)
+                            .range(0.0..=1000.0)
+                            .prefix(prefix)
+                            .suffix(" m"),
+                    )
+                    .changed();
+            }
         }
     });
 
@@ -2390,15 +2415,20 @@ pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
                     .prefix("Contours each side: "),
             )
             .changed();
-        changed |= ui
+        let mut wash = panel.result.map_or(10.0, |r| r.wash_distance_m);
+        if ui
             .add(
-                theme::num(&mut s.cut_y_l)
-                    .speed(0.01)
-                    .range(0.0..=5.0)
-                    .prefix("Cut at y = ")
-                    .suffix(" L"),
+                theme::num(&mut wash)
+                    .speed(0.1)
+                    .range(0.1..=1000.0)
+                    .prefix("Wash line at ")
+                    .suffix(" m"),
             )
-            .changed();
+            .changed()
+        {
+            s.wash_distance_m = Some(wash);
+            changed = true;
+        }
     });
 
     let can_save = panel.current && !panel.stale && panel.result.is_some();
@@ -2410,7 +2440,7 @@ pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
         save = true;
     }
 
-    if s.show && panel.heeled_or_trimmed {
+    if s.plan_contours && panel.heeled_or_trimmed {
         ui.colored_label(
             theme::WARN,
             "computed upright at the draft; heel and trim are ignored",
@@ -2420,10 +2450,10 @@ pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
         ui.colored_label(theme::FAIL, format!("Wave pattern failed: {failure}"));
     }
     match panel.result {
-        Some(w) if s.show => {
+        Some(w) if s.plan_contours => {
             stale_section(ui, panel.stale, |ui| wave_results(ui, w));
         }
-        _ if !s.show => {
+        _ if !s.plan_contours => {
             ui.label(
                 egui::RichText::new("Switch on \"Show on Plan view\" to compute the pattern.")
                     .color(theme::TEXT_MUTED),
@@ -2454,16 +2484,16 @@ fn wave_results(ui: &mut egui::Ui, w: &crate::waves::WaveResult) {
         f.max_abs_zeta_m
     ));
     wave_legend(ui, w.clip_m);
-    let y = match w.cut.line {
+    let y = match w.wash_cut.line {
         seacraft_core::wave_pattern::CutLine::Longitudinal { y } => y,
         seacraft_core::wave_pattern::CutLine::Transverse { x } => x,
     };
     let points = w
-        .cut
+        .wash_cut
         .s
         .iter()
         .copied()
-        .zip(w.cut.zeta.iter().copied())
+        .zip(w.wash_cut.zeta.iter().copied())
         .collect();
     plot_xy(
         ui,

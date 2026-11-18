@@ -180,7 +180,7 @@ fn hidden_pattern_computes_nothing() {
         assert!(!app.waves_busy());
     }
     assert!(app.wave_overlay().is_none());
-    assert!(!app.wave_settings().show);
+    assert!(!app.wave_settings().plan_contours);
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn demo_parts(
     };
     let mesh = seacraft_core::export::render_mesh(&surface, 2, Default::default());
     let draft = surface.settings.draft;
-    let w = compute_waves(&surface, subdiv, draft, settings).unwrap();
+    let w = compute_waves(&surface, subdiv, draft, 1025.0, settings).unwrap();
     (surface, mesh, w)
 }
 
@@ -544,7 +544,7 @@ fn refuses_an_unknown_extension() {
 fn refuses_a_stale_pattern() {
     let (mut app, _ctx) = demo_with_waves();
     app.set_wave_settings(WaveSettings {
-        cut_y_l: 0.5,
+        wash_distance_m: Some(4.0),
         ..app.wave_settings().clone()
     });
     let png = scratch("stale.png");
@@ -610,7 +610,7 @@ fn shown_pattern_goes_into_the_report() {
         .unwrap()
         .contains("id=\"waves\""));
     app.set_wave_settings(WaveSettings {
-        show: true,
+        plan_contours: true,
         speed: WaveSpeed::Knots(6.0),
         ..app.wave_settings().clone()
     });
