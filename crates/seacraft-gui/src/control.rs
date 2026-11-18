@@ -720,6 +720,7 @@ fn handle_inner(
             let mut maximised: Option<bool> = None;
             let mut messages: Option<bool> = None;
             let mut templates: Option<bool> = None;
+            let mut waves: Option<bool> = None;
             let mut connected_on: Option<bool> = None;
             let mut connected_preset: Option<String> = None;
             let mut connected_reach: Option<Option<f64>> = None;
@@ -814,6 +815,9 @@ fn handle_inner(
                     "templates" => {
                         templates =
                             Some(value.as_bool().ok_or("`templates` must be true or false")?)
+                    }
+                    "waves" => {
+                        waves = Some(value.as_bool().ok_or("`waves` must be true or false")?)
                     }
                     "analysis" => {
                         let name = value.as_str().ok_or("`analysis` must be a string")?;
@@ -933,6 +937,9 @@ fn handle_inner(
             *app.display_mut() = display;
             if let Some(show) = messages {
                 app.set_show_messages(show);
+            }
+            if let Some(show) = waves {
+                app.set_waves_shown(show);
             }
             if let Some(show) = templates {
                 app.set_show_templates(show);
@@ -3021,6 +3028,28 @@ mod tests {
             assert!(err.contains(key), "{params}: {err}");
         }
         assert!(!std::path::Path::new(path.as_ref()).exists());
+    }
+
+    #[test]
+    fn ui_set_waves_shows_the_pattern() {
+        let (mut app, ctx) = demo();
+        assert!(!app.wave_settings().show);
+        let r = call(&mut app, &ctx, "ui.set", json!({ "waves": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.wave_settings().show);
+        let r = call(&mut app, &ctx, "ui.set", json!({ "waves": 1 }));
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            r["error"]
+                .as_str()
+                .unwrap()
+                .contains("`waves` must be true or false"),
+            "{r}"
+        );
+        assert!(app.wave_settings().show, "a bad value changes nothing");
+        let r = call(&mut app, &ctx, "ui.set", json!({ "waves": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(!app.wave_settings().show);
     }
 
     #[test]

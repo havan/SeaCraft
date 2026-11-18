@@ -57,7 +57,9 @@ MCP. See `docs/architecture.md`.
   points move: nothing about the result is checked or made fair by it. `points.select` takes `{points: [..]}` (empty clears) and replaces the selection with
   the last entry active; `points.select_line` takes `{kind: "station" | "lengthwise"}` and adds the active point's
   line(s) while keeping it active. `ui.set` toggles viewport display switches (`shaded`, `wireframe`, `control_net`,
-  `points`, `waterplane`, `volumes`, `windage`, `grid`, `orientation`, `station_focus`, `curves`, `combs`), sets
+  `points`, `waterplane`, `volumes`, `windage`, `grid`, `orientation`, `station_focus`, `curves`, `combs`), shows
+  the far-field wave pattern on Plan view with `waves` (computed in the background with the Performance tab's
+  settings; `waves.compute` returns the numbers), sets
   `hidden_net` (`"dimmed"`, `"hidden"`, `"same"`) and the window's own connected editing (`connected`,
   `connected_preset`, `connected_reach_m`), which changes what a person's drag does and nothing about an agent's
   moves.
