@@ -6887,10 +6887,12 @@ mod tests {
                 json!({"fn": 0.3, "png_path": png.to_string_lossy(), "svg_path": link.to_string_lossy()}),
             );
             let written = png.exists();
+            let kept = std::fs::read_link(&link).ok();
             let _ = std::fs::remove_file(&link);
             let _ = std::fs::remove_file(&png);
             assert!(msg.contains("same file"), "{msg}");
             assert!(!written, "a refused call wrote a file");
+            assert_eq!(kept, Some(png.clone()), "a refused call replaced the link");
         }
         // A wrong type is refused by the schema check, before the tool runs.
         for (k, (args, word)) in [

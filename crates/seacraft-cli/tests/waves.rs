@@ -153,11 +153,14 @@ fn waves_refuses_a_loop_of_links() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "a loop of links was accepted");
     assert!(err.contains("a.png") && err.contains("links"), "{err}");
-    let link = std::fs::symlink_metadata(d.path("a.png")).unwrap();
-    assert!(
-        link.file_type().is_symlink(),
-        "a refused run replaced a link"
-    );
+    for (link, target) in [("a.png", "b.svg"), ("b.svg", "c.vti"), ("c.vti", "a.png")] {
+        let now = std::fs::read_link(d.path(link)).ok();
+        assert_eq!(
+            now,
+            Some(PathBuf::from(target)),
+            "a refused run changed {link}"
+        );
+    }
 }
 
 /// On a case-blind file system (Windows, macOS by default) p.png and P.PNG are one file, so names
@@ -181,7 +184,9 @@ fn waves_refuses_outputs_that_differ_only_in_case() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "p.png and P.PNG were accepted");
     assert!(err.contains("same file"), "{err}");
-    assert!(!d.path("p.png").exists(), "a refused run wrote a file");
+    for name in ["p.png", "P.PNG"] {
+        assert!(!d.path(name).exists(), "a refused run wrote {name}");
+    }
 }
 
 #[test]
