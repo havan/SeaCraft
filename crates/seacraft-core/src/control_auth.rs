@@ -175,9 +175,7 @@ pub fn check_write_path(path: &Path, roots: &[PathBuf]) -> std::result::Result<P
     ))
 }
 
-/// Where a write to `path` lands: its canonical form, or, for a file not there yet, its canonical
-/// parent joined with the missing parts.
-pub(crate) fn canonicalize_write_target(path: &Path) -> Result<PathBuf> {
+fn canonicalize_write_target(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return path.canonicalize();
     }

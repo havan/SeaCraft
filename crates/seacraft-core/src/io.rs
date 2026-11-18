@@ -50,6 +50,28 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Resu
     result
 }
 
+/// Where a write to `path` lands, to tell whether two outputs name one file. Symbolic links are
+/// followed, a dangling one too: once another output creates its target, [`write_atomic`] writes
+/// through it. The directory is made canonical; the file need not exist.
+pub fn landing(path: &Path) -> PathBuf {
+    let mut p = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // A loop of links stops here; writing to it fails later anyway.
+    for _ in 0..40 {
+        let Ok(target) = fs::read_link(&p) else {
+            break;
+        };
+        // A relative target is read from the link's directory; `join` keeps an absolute one.
+        p = match p.parent() {
+            Some(dir) => dir.join(target),
+            None => target,
+        };
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(dir), Some(name)) => fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or(p),
+        _ => p,
+    }
+}
+
 /// Follow a symbolic link at `path` to the file it names; anything else
 /// (including a dangling link) is written at `path` itself.
 fn resolve(path: &Path) -> PathBuf {
@@ -172,6 +194,44 @@ mod tests {
             .is_symlink());
         assert_eq!(fs::read_to_string(&path).unwrap(), "through the link");
         assert!(temps(&dir).is_empty(), "{:?}", temps(&dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn landing_names_where_a_write_goes() {
+        let dir = scratch("landing");
+        fs::create_dir(dir.join("sub")).unwrap();
+        let here = fs::canonicalize(&dir).unwrap();
+        assert_eq!(landing(&dir.join("a.png")), here.join("a.png"));
+        assert_eq!(landing(&dir.join("sub/../a.png")), here.join("a.png"));
+        assert_ne!(landing(&dir.join("a.png")), landing(&dir.join("a.svg")));
+        fs::write(dir.join("b.png"), "x").unwrap();
+        assert_eq!(landing(&dir.join("b.png")), here.join("b.png"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A dangling link lands where it points: after its target is written, writes go through it.
+    #[cfg(unix)]
+    #[test]
+    fn landing_follows_links_even_dangling() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch("landing-link");
+        fs::create_dir(dir.join("sub")).unwrap();
+        let here = fs::canonicalize(&dir).unwrap();
+        symlink("a.png", dir.join("dangling.svg")).unwrap();
+        symlink("../a.png", dir.join("sub/up.svg")).unwrap();
+        symlink(dir.join("dangling.svg"), dir.join("chain.svg")).unwrap();
+        for link in ["dangling.svg", "sub/up.svg", "chain.svg"] {
+            assert_eq!(landing(&dir.join(link)), here.join("a.png"), "{link}");
+        }
+        // And the write goes there once the target exists.
+        write_atomic(dir.join("a.png"), "png").unwrap();
+        write_atomic(dir.join("dangling.svg"), "svg").unwrap();
+        assert_eq!(fs::read_to_string(dir.join("a.png")).unwrap(), "svg");
+        // A loop of links ends.
+        symlink("loop2", dir.join("loop1")).unwrap();
+        symlink("loop1", dir.join("loop2")).unwrap();
+        let _ = landing(&dir.join("loop1"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

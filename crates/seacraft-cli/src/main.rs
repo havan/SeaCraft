@@ -2934,7 +2934,10 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         .map(|p| ("-o", p.as_path()))
         .chain(a.cut_csv.as_deref().map(|p| ("--cut-csv", p)))
         .collect();
-    let landed: Vec<PathBuf> = outputs.iter().map(|(_, p)| landing(p)).collect();
+    let landed: Vec<PathBuf> = outputs
+        .iter()
+        .map(|(_, p)| seacraft_core::io::landing(p))
+        .collect();
     for (i, (flag, path)) in outputs.iter().enumerate() {
         if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
             bail!(
@@ -3516,21 +3519,6 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
     Ok(())
 }
 
-/// Where a path the user typed lands, for telling whether two outputs are one file: absolute,
-/// with `.`, `..` and symbolic links resolved as far as the file or its folder exists.
-fn landing(path: &Path) -> PathBuf {
-    if let Ok(p) = std::fs::canonicalize(path) {
-        return p;
-    }
-    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    match (abs.parent(), abs.file_name()) {
-        (Some(dir), Some(name)) => std::fs::canonicalize(dir)
-            .map(|d| d.join(name))
-            .unwrap_or(abs),
-        _ => abs,
-    }
-}
-
 fn cmd_panels(a: PanelsArgs) -> Result<()> {
     use seacraft_core::panels::{self, Limits, PanelOptions, Stock};
     use seacraft_core::sheet::{PageSetup, Paper};
@@ -3578,7 +3566,10 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     .into_iter()
     .filter_map(|(flag, path)| path.map(|p| (flag, p)))
     .collect();
-    let landed: Vec<PathBuf> = outputs.iter().map(|(_, p)| landing(p)).collect();
+    let landed: Vec<PathBuf> = outputs
+        .iter()
+        .map(|(_, p)| seacraft_core::io::landing(p))
+        .collect();
     for (i, (flag, path)) in outputs.iter().enumerate() {
         if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
             bail!(

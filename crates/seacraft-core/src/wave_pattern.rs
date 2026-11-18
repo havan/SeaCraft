@@ -1225,12 +1225,8 @@ pub fn wave_tool(
         }
     }
     // Two outputs written to one file would leave only the last, while both are reported.
-    let landed: Vec<std::path::PathBuf> = outputs
-        .iter()
-        .map(|(_, p)| {
-            crate::control_auth::canonicalize_write_target(p).unwrap_or_else(|_| p.clone())
-        })
-        .collect();
+    let landed: Vec<std::path::PathBuf> =
+        outputs.iter().map(|(_, p)| crate::io::landing(p)).collect();
     for (i, (key, path)) in outputs.iter().enumerate() {
         if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
             return Err(format!(

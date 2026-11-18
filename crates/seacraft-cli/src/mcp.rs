@@ -6875,6 +6875,21 @@ mod tests {
         );
         assert!(msg.contains("same file"), "{msg}");
         assert!(!png.exists(), "a refused call wrote a file");
+        // So would a dangling link to the PNG, once the PNG is written.
+        #[cfg(unix)]
+        {
+            let link = temp_path("svg");
+            std::os::unix::fs::symlink(&png, &link).unwrap();
+            let msg = fails(
+                &mut s,
+                21,
+                "wave_pattern",
+                json!({"fn": 0.3, "png_path": png.to_string_lossy(), "svg_path": link.to_string_lossy()}),
+            );
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::remove_file(&png);
+            assert!(msg.contains("same file"), "{msg}");
+        }
         // A wrong type is refused by the schema check, before the tool runs.
         for (k, (args, word)) in [
             (json!({"fn": "fast"}), "fn"),

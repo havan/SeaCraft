@@ -122,6 +122,22 @@ fn waves_refuses_two_outputs_on_one_file() {
     assert!(exists(&d.path("p.png")) && exists(&d.path("p.csv")));
 }
 
+/// A dangling link to another output lands on that output once it is written.
+#[cfg(unix)]
+#[test]
+fn waves_refuses_an_output_linked_to_another() {
+    let d = Dir::new("link");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    std::os::unix::fs::symlink("p.png", d.path("q.svg")).unwrap();
+    let out = d.run(&[
+        "waves", "w.fef", "--fn", "0.3", "-o", "p.png", "-o", "q.svg",
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "the linked output was accepted");
+    assert!(err.contains("same file"), "{err}");
+    assert!(!d.path("p.png").exists(), "a refused run wrote a file");
+}
+
 #[test]
 fn waves_needs_exactly_one_of_speed_and_fn() {
     let d = Dir::new("speed");
