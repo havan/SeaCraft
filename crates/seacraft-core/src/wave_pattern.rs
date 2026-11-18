@@ -482,6 +482,9 @@ impl WaveSpectrum {
 /// The most grid points [`wave_field`] computes; a finer request is coarsened to fit.
 pub const MAX_FIELD_POINTS: usize = 1_000_000;
 
+/// The most grid points [`wave_field`] computes at its default spacing (`spacing_m` `None`).
+pub const DEFAULT_FIELD_POINTS: usize = 250_000;
+
 /// The wave elevation on a plan-view grid behind (and beside) a hull.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WaveField {
@@ -528,8 +531,8 @@ struct FieldLayout {
     reach_x: f64,
     reach_y: f64,
     nyquist: f64,
-    /// Set when the spacing was coarsened to stay within [`MAX_FIELD_POINTS`].
-    coarsened: Option<(f64, f64)>,
+    /// Set when the spacing was coarsened to stay within the cap: (wanted, used, cap).
+    coarsened: Option<(f64, f64, usize)>,
 }
 
 fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLayout, String> {
@@ -539,9 +542,15 @@ fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLa
     let (stern, bow) = (grid.xs[0], grid.xs[grid.xs.len() - 1]);
     let (x0, x1) = (stern - opts.behind_l * l, bow + opts.ahead_l * l);
     let half_width = opts.half_width_l * l;
-    let wanted = opts
-        .spacing_m
-        .unwrap_or(2.0 * PI * opts.speed_m_s * opts.speed_m_s / opts.g / 20.0);
+    // The default: a twentieth of the transverse wavelength, but never coarser than L_WL / 60, so
+    // the hull is not drawn on metre-sized cells at speed; capped lower than an explicit spacing.
+    let (wanted, cap) = match opts.spacing_m {
+        Some(h) => (h, MAX_FIELD_POINTS),
+        None => (
+            (2.0 * PI * opts.speed_m_s * opts.speed_m_s / opts.g / 20.0).min(l / 60.0),
+            DEFAULT_FIELD_POINTS,
+        ),
+    };
     if !(wanted.is_finite() && wanted > 0.0) {
         return Err(format!(
             "speed {} m/s is too low for a wave grid: its waves are shorter than a float can space",
@@ -558,8 +567,8 @@ fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLa
     };
     let mut h = wanted;
     let (mut nx, mut half_rows) = counts(h);
-    while nx.saturating_mul(2 * half_rows + 1) > MAX_FIELD_POINTS {
-        h *= ((nx * (2 * half_rows + 1)) as f64 / MAX_FIELD_POINTS as f64).sqrt() * 1.001;
+    while nx.saturating_mul(2 * half_rows + 1) > cap {
+        h *= ((nx * (2 * half_rows + 1)) as f64 / cap as f64).sqrt() * 1.001;
         (nx, half_rows) = counts(h);
     }
     let dx = (x1 - x0) / (nx - 1) as f64;
@@ -578,7 +587,7 @@ fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLa
         reach_x: (x1 - stern).max(bow - x0),
         reach_y: half_width,
         nyquist: dx.max(dy),
-        coarsened: (h != wanted).then_some((wanted, dx.max(dy))),
+        coarsened: (h != wanted).then_some((wanted, dx.max(dy), cap)),
     })
 }
 
@@ -699,9 +708,14 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
                 .to_string(),
         );
     }
-    if let Some((from, to)) = lay.coarsened {
+    if let Some((from, to, cap)) = lay.coarsened {
+        let cap = if cap == DEFAULT_FIELD_POINTS {
+            "250 000"
+        } else {
+            "1 000 000"
+        };
         notes.push(format!(
-            "spacing coarsened from {from:.4} m to {to:.4} m to stay within 1 000 000 points"
+            "spacing coarsened from {from:.4} m to {to:.4} m to stay within {cap} points"
         ));
     }
     let froude = opts.speed_m_s / (opts.g * grid.length_wl).sqrt();
@@ -752,6 +766,118 @@ pub struct WaveCut {
     pub theta_cut_deg: f64,
     /// What the cut is and what was left out; the first is [`FAR_FIELD_NOTE`].
     pub notes: Vec<String>,
+}
+
+/// The Froude number on the waterline length called hull speed in the views: a rule of thumb, where
+/// the transverse wave is about as long as the waterline.
+pub const HULL_SPEED_FN: f64 = 0.40;
+
+/// The half-angle of the Kelvin wedge in deep water (degrees): `asin(1/3)` from the dispersion
+/// relation, the same at any speed (docs/oracles.md §41).
+pub const KELVIN_HALF_ANGLE_DEG: f64 = 19.471_220_634_490_69;
+
+/// How a hull behaves at a speed, in SeaCraft's own wording bands on the Froude number of the
+/// waterline length: below 0.30, below 0.40, up to 0.50, and above. The bands are a project choice
+/// for wording (docs/oracles.md §41), not published thresholds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Regime {
+    Low,
+    Rising,
+    HullSpeed,
+    PastHullSpeed,
+}
+
+impl Regime {
+    /// A stable name for JSON replies.
+    pub fn key(self) -> &'static str {
+        match self {
+            Regime::Low => "low",
+            Regime::Rising => "rising",
+            Regime::HullSpeed => "hull_speed",
+            Regime::PastHullSpeed => "past_hull_speed",
+        }
+    }
+
+    /// One plain sentence for the views, the CLI and the report.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Regime::Low => "Several waves along the hull; wave drag is small.",
+            Regime::Rising => "Wave drag rising: the waves lengthen towards the hull's length.",
+            Regime::HullSpeed => {
+                "Around hull speed: about one wave along the hull, the stern settling into its \
+                 trough. Wave drag climbs steeply."
+            }
+            Regime::PastHullSpeed => {
+                "Past hull speed: the hull climbs its own bow wave. Thin-ship theory loses accuracy \
+                 here; consider a planing analysis."
+            }
+        }
+    }
+}
+
+/// The regime at a Froude number on the waterline length.
+pub fn regime(froude: f64) -> Regime {
+    if froude < 0.30 {
+        Regime::Low
+    } else if froude < HULL_SPEED_FN {
+        Regime::Rising
+    } else if froude <= 0.50 {
+        Regime::HullSpeed
+    } else {
+        Regime::PastHullSpeed
+    }
+}
+
+/// The largest wave along a longitudinal cut, as a wash figure.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WashHeight {
+    /// Crest-to-trough height (m) between neighbouring extrema.
+    pub height_m: f64,
+    /// Midway between that crest and trough (m, model x).
+    pub x_m: f64,
+    /// The cut's lateral distance from the centreplane (m).
+    pub distance_m: f64,
+}
+
+/// The largest crest-to-trough height between neighbouring extrema of a longitudinal cut. `None` for a
+/// transverse cut, or when the cut has fewer than two extrema (calm water). A thin-ship estimate in
+/// deep water, not a wash assessment.
+pub fn wash_height(cut: &WaveCut) -> Option<WashHeight> {
+    let CutLine::Longitudinal { y } = cut.line else {
+        return None;
+    };
+    // Extrema: where the sign of the first difference changes, flat runs skipped.
+    let mut extrema: Vec<usize> = Vec::new();
+    let mut last_sign = 0.0f64;
+    let mut last_turn = 0usize;
+    for i in 1..cut.zeta.len().min(cut.s.len()) {
+        let d = cut.zeta[i] - cut.zeta[i - 1];
+        if d == 0.0 {
+            continue;
+        }
+        let sign = d.signum();
+        if last_sign != 0.0 && sign != last_sign {
+            extrema.push(last_turn);
+        }
+        last_sign = sign;
+        last_turn = i;
+    }
+    extrema
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            (
+                (cut.zeta[a] - cut.zeta[b]).abs(),
+                0.5 * (cut.s[a] + cut.s[b]),
+            )
+        })
+        .filter(|(h, _)| *h > 0.0)
+        .max_by(|p, q| p.0.total_cmp(&q.0))
+        .map(|(height_m, x_m)| WashHeight {
+            height_m,
+            x_m,
+            distance_m: y.abs(),
+        })
 }
 
 /// The waves along `line` from `from` to `to` (m, `from < to`), at `samples` evenly spaced points.
@@ -1131,6 +1257,12 @@ pub fn summary_json(field: &WaveField) -> serde_json::Value {
         notes: &'a [String],
         warnings: &'a [String],
         grid_points: [usize; 2],
+        regime: RegimeJson,
+    }
+    #[derive(Serialize)]
+    struct RegimeJson {
+        key: &'static str,
+        sentence: &'static str,
     }
     // Every field is named, so a new one fails to compile here until the summary takes it or leaves
     // it out on purpose.
@@ -1163,6 +1295,13 @@ pub fn summary_json(field: &WaveField) -> serde_json::Value {
         notes,
         warnings,
         grid_points: [xs.len(), ys.len()],
+        regime: {
+            let r = regime(*froude);
+            RegimeJson {
+                key: r.key(),
+                sentence: r.sentence(),
+            }
+        },
     })
     .unwrap_or_default()
 }
@@ -1910,7 +2049,7 @@ mod tests {
         assert!(summary_json(&f).get("waterlines").is_none());
     }
 
-    /// The summary is the whole field less its grid and outlines, plus `grid_points`: the same reply
+    /// The summary is the whole field less its grid and outlines, plus `grid_points` and `regime`: the same reply
     /// as serializing the field and dropping those keys, without building the grid's JSON.
     #[test]
     fn summary_json_is_the_field_without_its_grid() {
@@ -1931,6 +2070,11 @@ mod tests {
         map.insert(
             "grid_points".into(),
             serde_json::json!([f.xs.len(), f.ys.len()]),
+        );
+        let r = regime(f.froude);
+        map.insert(
+            "regime".into(),
+            serde_json::json!({"key": r.key(), "sentence": r.sentence()}),
         );
         assert_eq!(summary_json(&f), want);
     }
@@ -1966,5 +2110,104 @@ mod tests {
             panic!("a 400 MB spectrum was built");
         };
         assert!(err.contains("smaller"), "{err}");
+    }
+
+    /// The regime bands are SeaCraft's own wording bands (docs/oracles.md §41), not published thresholds.
+    #[test]
+    fn regime_bands_are_the_projects() {
+        assert_eq!(regime(0.10), Regime::Low);
+        assert_eq!(regime(0.2999), Regime::Low);
+        assert_eq!(regime(0.30), Regime::Rising);
+        assert_eq!(regime(0.40), Regime::HullSpeed);
+        assert_eq!(regime(0.50), Regime::HullSpeed);
+        assert_eq!(regime(0.5001), Regime::PastHullSpeed);
+        assert_eq!(regime(0.73).key(), "past_hull_speed");
+    }
+
+    /// Deep-water dispersion gives the Kelvin half-angle asin(1/3) at any speed (oracles §41).
+    #[test]
+    fn kelvin_half_angle_is_asin_one_third() {
+        assert!((KELVIN_HALF_ANGLE_DEG - (1.0f64 / 3.0).asin().to_degrees()).abs() < 1e-12);
+    }
+
+    /// Calculus (oracles §41): a sine of amplitude a has crest-to-trough height 2a.
+    #[test]
+    fn wash_height_of_a_sine_is_twice_its_amplitude() {
+        // ζ = 0.2 sin(2πx/5) over x 0..50 m, 2001 samples: crest-to-trough 0.4 m.
+        let s: Vec<f64> = (0..2001).map(|i| i as f64 * 0.025).collect();
+        let zeta = s.iter().map(|x| 0.2 * (2.0 * PI * x / 5.0).sin()).collect();
+        let cut = WaveCut {
+            line: CutLine::Longitudinal { y: -7.5 },
+            s,
+            zeta,
+            theta_cut_deg: 80.0,
+            notes: vec![],
+        };
+        let w = wash_height(&cut).unwrap();
+        assert!((w.height_m - 0.4).abs() < 1e-4, "{w:?}");
+        assert_eq!(w.distance_m, 7.5);
+    }
+
+    /// Hand-worked: the extrema are 0.1, -0.05, 0.3, -0.25, 0.02; the largest neighbouring pair is
+    /// 0.3 and -0.25 at x 3 and 4.
+    #[test]
+    fn wash_height_picks_the_largest_neighbouring_pair() {
+        let cut = WaveCut {
+            line: CutLine::Longitudinal { y: 3.0 },
+            s: vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            zeta: vec![0.0, 0.1, -0.05, 0.3, -0.25, 0.02, 0.0],
+            theta_cut_deg: 80.0,
+            notes: vec![],
+        };
+        let w = wash_height(&cut).unwrap();
+        assert!((w.height_m - 0.55).abs() < 1e-12);
+        assert!((w.x_m - 3.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn wash_height_is_none_for_calm_or_transverse() {
+        let calm = WaveCut {
+            line: CutLine::Longitudinal { y: 1.0 },
+            s: vec![0.0, 1.0, 2.0],
+            zeta: vec![0.0; 3],
+            theta_cut_deg: 80.0,
+            notes: vec![],
+        };
+        assert!(wash_height(&calm).is_none());
+        let t = WaveCut {
+            line: CutLine::Transverse { x: 0.0 },
+            ..calm
+        };
+        assert!(wash_height(&t).is_none());
+    }
+
+    #[test]
+    fn default_grid_is_finer_than_a_twentieth_wavelength_at_speed() {
+        // Wigley 10 m at Fn 0.73: λ_T/20 = 1.67 m, L/60 = 0.167 m.
+        let f = wave_field(&wigley(), &opts_at_fn(0.73)).unwrap();
+        let dx = f.xs[1] - f.xs[0];
+        assert!(dx <= 10.0 / 60.0 + 1e-9, "dx {dx}");
+    }
+
+    /// Review focus 5: a typed Fn 0.05 stays under the default cap.
+    #[test]
+    fn default_grid_stays_under_its_cap_at_low_speed() {
+        let f = wave_field(&wigley(), &opts_at_fn(0.05)).unwrap();
+        assert!(f.xs.len() * f.ys.len() <= DEFAULT_FIELD_POINTS);
+        assert!(
+            f.notes.iter().any(|n| n.contains("250 000 points")),
+            "{:?}",
+            f.notes
+        );
+    }
+
+    #[test]
+    fn summary_names_the_regime() {
+        let f = wave_field(&wigley(), &opts_at_fn(0.45)).unwrap();
+        assert_eq!(summary_json(&f)["regime"]["key"], "hull_speed");
+        assert_eq!(
+            summary_json(&f)["regime"]["sentence"],
+            Regime::HullSpeed.sentence()
+        );
     }
 }
