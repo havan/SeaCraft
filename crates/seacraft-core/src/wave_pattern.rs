@@ -178,6 +178,7 @@ pub struct WaveSpectrum {
     /// Suffix sums of `Z_i X_i` per sample, `columns + 1` per row (the last is 0).
     suffix: Vec<(f64, f64)>,
     theta_cut: f64,
+    theta_nyquist: f64,
 }
 
 /// Build the spectrum of `grid` at `opts` for field points whose `|x - x_station|` is at most
@@ -189,75 +190,23 @@ pub fn wave_spectrum(
     reach_y_m: f64,
     nyquist_spacing_m: f64,
 ) -> Result<WaveSpectrum, String> {
-    grid.validate()?;
-    opts.validate()?;
-    for (name, v) in [("reach in x (m)", reach_x_m), ("reach in y (m)", reach_y_m)] {
-        if !(v.is_finite() && v >= 0.0) {
-            return Err(format!(
-                "{name} must be a finite number of 0 or more, got {v}"
-            ));
-        }
-    }
-    if !(nyquist_spacing_m.is_finite() && nyquist_spacing_m > 0.0) {
-        return Err(format!(
-            "grid spacing must be a finite number above 0 m, got {nyquist_spacing_m}"
-        ));
-    }
-    if let Some(s) = opts.catamaran_spacing.filter(|&s| s < grid.beam_wl) {
-        return Err(format!(
-            "catamaran spacing {s} m is less than the demihull beam {} m: the demihulls would overlap",
-            grid.beam_wl
-        ));
-    }
-    let k0 = opts.g / (opts.speed_m_s * opts.speed_m_s);
-    let sec2_nyquist = PI / (nyquist_spacing_m * k0);
-    if sec2_nyquist <= 1.0 + 1e-9 {
-        let lambda = 2.0 * PI / k0;
-        return Err(format!(
-            "grid spacing {nyquist_spacing_m} m is too coarse for transverse waves {lambda:.3} m long: \
-             use less than {:.3} m",
-            lambda / 2.0
-        ));
-    }
-    let u_nyquist = sec2_nyquist.sqrt().acosh();
-    let u_c = spectral_cut(grid, k0, u_nyquist, opts.spectrum_floor);
-
-    let reach_y = reach_y_m + opts.catamaran_spacing.unwrap_or(0.0) / 2.0;
-    let phase_rate = k0 * (reach_x_m * u_c.sinh() + reach_y * (2.0 * u_c).cosh());
-    let intervals = ((phase_rate * u_c / opts.phase_step).ceil() as usize).max(64);
-    if intervals >= MAX_THETA_SAMPLES {
-        return Err(format!(
-            "the domain needs {intervals} wave-angle samples (more than {MAX_THETA_SAMPLES}): \
-             make it smaller or the grid spacing larger"
-        ));
-    }
-    let du = u_c / intervals as f64;
+    let quad = Quadrature::new(grid, opts, reach_x_m, reach_y_m, nyquist_spacing_m)?;
     let columns = grid.xs.len() - 1;
-    let catamaran = opts.catamaran_spacing;
-
-    let rows = par_map(&(0..=intervals).collect::<Vec<_>>(), |&m| {
-        let u = m as f64 * du;
-        let (ch, sh) = (u.cosh(), u.sinh());
-        let kx = k0 * ch;
-        let beta = k0 * ch * sh;
-        let end = if m == 0 || m == intervals { 0.5 } else { 1.0 };
-        let mut weight = end * du * ch * ch;
-        if let Some(s) = catamaran {
-            weight *= 2.0 * (beta * s / 2.0).cos();
-        }
+    let rows = par_map(&(0..quad.len()).collect::<Vec<_>>(), |&m| {
+        let smp = quad.sample(m);
         let mut z = Vec::with_capacity(columns);
-        column_z_integrals(grid, k0 * ch * ch, &mut z);
+        column_z_integrals(grid, smp.kz, &mut z);
         let mut suffix = vec![(0.0, 0.0); columns + 1];
         for i in (0..columns).rev() {
-            let (re, im) = x_integral(grid.xs[i], grid.xs[i + 1], kx);
+            let (re, im) = x_integral(grid.xs[i], grid.xs[i + 1], smp.kx);
             suffix[i] = (suffix[i + 1].0 + z[i] * re, suffix[i + 1].1 + z[i] * im);
         }
-        (u, weight, kx, beta, z, suffix)
+        (smp, z, suffix)
     });
 
     let n = rows.len();
     let mut sp = WaveSpectrum {
-        k0,
+        k0: quad.k0,
         grid: grid.clone(),
         u: Vec::with_capacity(n),
         weight: Vec::with_capacity(n),
@@ -265,17 +214,148 @@ pub fn wave_spectrum(
         beta: Vec::with_capacity(n),
         z: Vec::with_capacity(n * columns),
         suffix: Vec::with_capacity(n * (columns + 1)),
-        theta_cut: u_c.sinh().atan(),
+        theta_cut: quad.theta_cut(),
+        theta_nyquist: quad.theta_nyquist,
     };
-    for (u, weight, kx, beta, z, suffix) in rows {
-        sp.u.push(u);
-        sp.weight.push(weight);
-        sp.kx.push(kx);
-        sp.beta.push(beta);
+    for (smp, z, suffix) in rows {
+        sp.u.push(smp.u);
+        sp.weight.push(smp.weight);
+        sp.kx.push(smp.kx);
+        sp.beta.push(smp.beta);
         sp.z.extend(z);
         sp.suffix.extend(suffix);
     }
     Ok(sp)
+}
+
+/// The wave-angle quadrature for field points within a reach, keeping waves no shorter than two
+/// spacings: trapezoid samples of `u` on `[0, u_c]` (`sec θ = cosh u`).
+#[derive(Debug, Clone, Copy)]
+struct Quadrature {
+    k0: f64,
+    du: f64,
+    intervals: usize,
+    theta_nyquist: f64,
+    catamaran: Option<f64>,
+}
+
+/// One sample of the quadrature.
+#[derive(Debug, Clone, Copy)]
+struct Sample {
+    u: f64,
+    /// Trapezoid weight times `cosh²u`, times the catamaran factor.
+    weight: f64,
+    /// `k0 sec θ`.
+    kx: f64,
+    /// `k0 sec²θ`: the decay rate with depth.
+    kz: f64,
+    /// `k0 sec θ tan θ`.
+    beta: f64,
+}
+
+impl Quadrature {
+    fn new(
+        grid: &MichellGrid,
+        opts: &WavePatternOptions,
+        reach_x_m: f64,
+        reach_y_m: f64,
+        nyquist_spacing_m: f64,
+    ) -> Result<Self, String> {
+        grid.validate()?;
+        opts.validate()?;
+        for (name, v) in [("reach in x (m)", reach_x_m), ("reach in y (m)", reach_y_m)] {
+            if !(v.is_finite() && v >= 0.0) {
+                return Err(format!(
+                    "{name} must be a finite number of 0 or more, got {v}"
+                ));
+            }
+        }
+        if !(nyquist_spacing_m.is_finite() && nyquist_spacing_m > 0.0) {
+            return Err(format!(
+                "grid spacing must be a finite number above 0 m, got {nyquist_spacing_m}"
+            ));
+        }
+        if let Some(s) = opts.catamaran_spacing.filter(|&s| s < grid.beam_wl) {
+            return Err(format!(
+                "catamaran spacing {s} m is less than the demihull beam {} m: the demihulls would overlap",
+                grid.beam_wl
+            ));
+        }
+        let k0 = opts.g / (opts.speed_m_s * opts.speed_m_s);
+        let sec2_nyquist = PI / (nyquist_spacing_m * k0);
+        if sec2_nyquist <= 1.0 + 1e-9 {
+            let lambda = 2.0 * PI / k0;
+            return Err(format!(
+                "grid spacing {nyquist_spacing_m} m is too coarse for transverse waves {lambda:.3} m long: \
+                 use less than {:.3} m",
+                lambda / 2.0
+            ));
+        }
+        let u_nyquist = sec2_nyquist.sqrt().acosh();
+        let u_c = spectral_cut(grid, k0, u_nyquist, opts.spectrum_floor);
+
+        let reach_y = reach_y_m + opts.catamaran_spacing.unwrap_or(0.0) / 2.0;
+        let phase_rate = k0 * (reach_x_m * u_c.sinh() + reach_y * (2.0 * u_c).cosh());
+        let intervals = ((phase_rate * u_c / opts.phase_step).ceil() as usize).max(64);
+        if intervals >= MAX_THETA_SAMPLES {
+            return Err(format!(
+                "the domain needs {intervals} wave-angle samples (more than {MAX_THETA_SAMPLES}): \
+                 make it smaller or the grid spacing larger"
+            ));
+        }
+        Ok(Self {
+            k0,
+            du: u_c / intervals as f64,
+            intervals,
+            theta_nyquist: u_nyquist.sinh().atan(),
+            catamaran: opts.catamaran_spacing,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.intervals + 1
+    }
+
+    fn theta_cut(&self) -> f64 {
+        (self.du * self.intervals as f64).sinh().atan()
+    }
+
+    fn sample(&self, m: usize) -> Sample {
+        let u = m as f64 * self.du;
+        let (ch, sh) = (u.cosh(), u.sinh());
+        let beta = self.k0 * ch * sh;
+        let end = if m == 0 || m == self.intervals {
+            0.5
+        } else {
+            1.0
+        };
+        let mut weight = end * self.du * ch * ch;
+        if let Some(s) = self.catamaran {
+            weight *= 2.0 * (beta * s / 2.0).cos();
+        }
+        Sample {
+            u,
+            weight,
+            kx: self.k0 * ch,
+            kz: self.k0 * ch * ch,
+            beta,
+        }
+    }
+}
+
+/// Add `c cos(beta y)` at `y = y0 + j dy` to `acc[j]`, stepping the phase by a rotation.
+fn accumulate_along_y(acc: &mut [f64], c: f64, beta: f64, y0: f64, dy: f64) {
+    let (sin_b, cos_b) = (beta * dy).sin_cos();
+    let (mut im, mut re) = (beta * y0).sin_cos();
+    for a in acc.iter_mut() {
+        *a += c * re;
+        (re, im) = (re * cos_b - im * sin_b, re * sin_b + im * cos_b);
+    }
+}
+
+/// The column of `xs` holding `x` when `x` is alongside the hull (`None` behind the stern).
+fn partial_column(xs: &[f64], x: f64) -> Option<usize> {
+    (x > xs[0]).then(|| xs.partition_point(|&s| s <= x) - 1)
 }
 
 /// The `u` above which the envelope `sec³θ Σ_i Δx_i ∫|f_x,i| e^{k z} dz` stays below `floor` of its
@@ -310,8 +390,7 @@ impl WaveSpectrum {
         if x >= xs[columns] {
             return 0.0;
         }
-        // The column holding x, when x is alongside the hull.
-        let partial = (x > xs[0]).then(|| xs.partition_point(|&s| s <= x) - 1);
+        let partial = partial_column(xs, x);
         let mut sum = 0.0;
         for m in 0..self.u.len() {
             let kx = self.kx[m];
@@ -330,17 +409,12 @@ impl WaveSpectrum {
         if x >= xs[xs.len() - 1] {
             return acc;
         }
-        let partial = (x > xs[0]).then(|| xs.partition_point(|&s| s <= x) - 1);
+        let partial = partial_column(xs, x);
         for m in 0..self.u.len() {
             let (p, q) = self.cumulative(m, x, partial);
             let (sin_a, cos_a) = (self.kx[m] * x).sin_cos();
             let c = self.weight[m] * (p * cos_a + q * sin_a);
-            let (sin_b, cos_b) = (self.beta[m] * dy).sin_cos();
-            let (mut re, mut im) = (1.0, 0.0);
-            for a in acc.iter_mut() {
-                *a += c * re;
-                (re, im) = (re * cos_b - im * sin_b, re * sin_b + im * cos_b);
-            }
+            accumulate_along_y(&mut acc, c, self.beta[m], 0.0, dy);
         }
         let scale = -(4.0 * self.k0 / PI);
         acc.iter_mut().for_each(|a| *a *= scale);
@@ -494,6 +568,39 @@ fn waterline_half_breadth(grid: &MichellGrid, x: f64) -> f64 {
     grid.half_breadths[i][top] * (1.0 - t) + grid.half_breadths[i + 1][top] * t
 }
 
+/// The shortest wave kept when wave angles above `theta_cut` are left out (m).
+fn shortest_wavelength(k0: f64, theta_cut: f64) -> f64 {
+    2.0 * PI * theta_cut.cos().powi(2) / k0
+}
+
+/// What the wave-angle cut of `sp` left out, and why.
+fn cut_off_note(sp: &WaveSpectrum, floor: f64) -> String {
+    cut_off_note_for(sp.k0, sp.theta_cut, sp.theta_nyquist, floor)
+}
+
+fn cut_off_note_for(k0: f64, theta: f64, theta_nyquist: f64, floor: f64) -> String {
+    let shortest = shortest_wavelength(k0, theta);
+    if theta < theta_nyquist - 1e-9 {
+        format!(
+            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the hull makes almost none \
+             (below {floor:e} of its spectrum's peak)",
+            theta.to_degrees()
+        )
+    } else {
+        format!(
+            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the grid cannot show them",
+            theta.to_degrees()
+        )
+    }
+}
+
+/// Whether `y` is inside a waterline of the given half-breadth: one hull on the centreline, or
+/// two demihulls at `±s/2`.
+fn inside_waterline(half_breadth: f64, catamaran: Option<f64>, y: f64) -> bool {
+    let off = catamaran.map_or(y.abs(), |s| (y.abs() - s / 2.0).abs());
+    off < half_breadth
+}
+
 /// The wave elevation of `grid` at `opts` on a plan-view grid: `behind_l` waterline lengths
 /// behind the stern to `ahead_l` ahead of the bow, `half_width_l` each side.
 pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveField, String> {
@@ -520,10 +627,7 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
         let half_breadth = waterline_half_breadth(grid, x);
         for (iy, &y) in ys.iter().enumerate() {
             let k = iy * nx + ix;
-            let off = opts
-                .catamaran_spacing
-                .map_or(y.abs(), |s| (y.abs() - s / 2.0).abs());
-            if off < half_breadth {
+            if inside_waterline(half_breadth, opts.catamaran_spacing, y) {
                 wet[k] = false;
             } else {
                 zeta[k] = columns[ix][iy.abs_diff(rows)];
@@ -534,22 +638,11 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
 
     let k0 = sp.k0();
     let theta_cut = sp.theta_cut();
-    let shortest = 2.0 * PI * theta_cut.cos().powi(2) / k0;
-    let theta_nyquist = (PI / (lay.nyquist * k0)).sqrt().recip().acos();
-    let mut notes = vec![FAR_FIELD_NOTE.to_string()];
-    notes.push(if theta_cut < theta_nyquist - 1e-9 {
-        format!(
-            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the hull makes almost none \
-             (below {:e} of its spectrum's peak)",
-            theta_cut.to_degrees(),
-            opts.spectrum_floor
-        )
-    } else {
-        format!(
-            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the grid cannot show them",
-            theta_cut.to_degrees()
-        )
-    });
+    let shortest = shortest_wavelength(k0, theta_cut);
+    let mut notes = vec![
+        FAR_FIELD_NOTE.to_string(),
+        cut_off_note(&sp, opts.spectrum_floor),
+    ];
     if opts.catamaran_spacing.is_some() {
         notes.push(
             "catamaran: each demihull is taken as symmetric about its own centreplane, as in \
@@ -586,6 +679,164 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
         notes,
         warnings,
     })
+}
+
+/// A straight line in plan view along which to sample the waves.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum CutLine {
+    /// Along x at a fixed y (m).
+    Longitudinal { y: f64 },
+    /// Along y at a fixed x (m).
+    Transverse { x: f64 },
+}
+
+/// The wave elevation along a cut, sampled from the spectrum (not read off a field grid).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaveCut {
+    pub line: CutLine,
+    /// The coordinate along the line (m): x for a longitudinal cut, y for a transverse one.
+    pub s: Vec<f64>,
+    /// Elevation (m); 0 inside a waterline.
+    pub zeta: Vec<f64>,
+    /// Largest wave angle kept (degrees).
+    pub theta_cut_deg: f64,
+    /// What the cut is and what was left out; the first is [`FAR_FIELD_NOTE`].
+    pub notes: Vec<String>,
+}
+
+/// The waves along `line` from `from` to `to` (m, `from < to`), at `samples` evenly spaced points.
+/// The spectrum is built for this cut alone: its reach from the cut's end points, its short-wave cut
+/// from the sample spacing.
+pub fn wave_cut(
+    grid: &MichellGrid,
+    opts: &WavePatternOptions,
+    line: CutLine,
+    from: f64,
+    to: f64,
+    samples: usize,
+) -> Result<WaveCut, String> {
+    grid.validate()?;
+    if !(from.is_finite() && to.is_finite() && from < to) {
+        return Err(format!(
+            "a cut runs from a smaller to a larger finite coordinate, got {from} to {to}"
+        ));
+    }
+    if samples < 2 {
+        return Err(format!("a cut needs at least 2 samples, got {samples}"));
+    }
+    let ds = (to - from) / (samples - 1) as f64;
+    let s: Vec<f64> = (0..samples)
+        .map(|k| {
+            if k + 1 == samples {
+                to
+            } else {
+                from + k as f64 * ds
+            }
+        })
+        .collect();
+    let (stern, bow) = (grid.xs[0], grid.xs[grid.xs.len() - 1]);
+    let reach_from = |x: f64| (x - stern).abs().max((x - bow).abs());
+    let (zeta, theta_cut, note) = match line {
+        CutLine::Longitudinal { y } => {
+            if !y.is_finite() {
+                return Err(format!("the cut's y must be a finite number, got {y}"));
+            }
+            let reach_x = reach_from(from).max(reach_from(to));
+            let sp = wave_spectrum(grid, opts, reach_x, y.abs(), ds)?;
+            let zeta = par_map(&s, |&x| {
+                let dry =
+                    inside_waterline(waterline_half_breadth(grid, x), opts.catamaran_spacing, y);
+                if dry {
+                    0.0
+                } else {
+                    sp.elevation(x, y)
+                }
+            });
+            (zeta, sp.theta_cut, cut_off_note(&sp, opts.spectrum_floor))
+        }
+        CutLine::Transverse { x } => {
+            if !x.is_finite() {
+                return Err(format!("the cut's x must be a finite number, got {x}"));
+            }
+            let quad = Quadrature::new(grid, opts, reach_from(x), from.abs().max(to.abs()), ds)?;
+            let mut zeta = transverse_values(grid, &quad, x, from, ds, samples);
+            let half_breadth = waterline_half_breadth(grid, x);
+            for (z, &y) in zeta.iter_mut().zip(&s) {
+                if inside_waterline(half_breadth, opts.catamaran_spacing, y) {
+                    *z = 0.0;
+                }
+            }
+            let theta_cut = quad.theta_cut();
+            let note =
+                cut_off_note_for(quad.k0, theta_cut, quad.theta_nyquist, opts.spectrum_floor);
+            (zeta, theta_cut, note)
+        }
+    };
+    Ok(WaveCut {
+        line,
+        s,
+        zeta,
+        theta_cut_deg: theta_cut.to_degrees(),
+        notes: vec![FAR_FIELD_NOTE.to_string(), note],
+    })
+}
+
+/// `ζ(x, y0 + j dy)` for `j` in `0..count`, summed sample by sample without storing the spectrum:
+/// a transverse cut sees one partial column, and a fine cut needs many wave-angle samples.
+fn transverse_values(
+    grid: &MichellGrid,
+    quad: &Quadrature,
+    x: f64,
+    y0: f64,
+    dy: f64,
+    count: usize,
+) -> Vec<f64> {
+    let xs = &grid.xs;
+    let columns = xs.len() - 1;
+    if x >= xs[columns] {
+        return vec![0.0; count];
+    }
+    let partial = partial_column(xs, x);
+    let first = partial.map_or(0, |j| j + 1);
+    let n = quad.len();
+    let chunk = n.div_ceil(256).max(1);
+    let starts: Vec<usize> = (0..n).step_by(chunk).collect();
+    let parts = par_map(&starts, |&a| {
+        let mut acc = vec![0.0; count];
+        let mut z = Vec::with_capacity(columns);
+        for m in a..(a + chunk).min(n) {
+            let smp = quad.sample(m);
+            column_z_integrals(grid, smp.kz, &mut z);
+            // Bow to stern, the order of WaveSpectrum's suffix sums.
+            let (mut p, mut q) = (0.0, 0.0);
+            for i in (first..columns).rev() {
+                let (re, im) = x_integral(xs[i], xs[i + 1], smp.kx);
+                (p, q) = (p + z[i] * re, q + z[i] * im);
+            }
+            if let Some(j) = partial {
+                let (re, im) = x_integral(x, xs[j + 1], smp.kx);
+                (p, q) = (p + z[j] * re, q + z[j] * im);
+            }
+            let (sin_a, cos_a) = (smp.kx * x).sin_cos();
+            accumulate_along_y(
+                &mut acc,
+                smp.weight * (p * cos_a + q * sin_a),
+                smp.beta,
+                y0,
+                dy,
+            );
+        }
+        acc
+    });
+    let scale = -(4.0 * quad.k0 / PI);
+    let mut out = vec![0.0; count];
+    for part in parts {
+        for (o, v) in out.iter_mut().zip(part) {
+            *o += v;
+        }
+    }
+    out.iter_mut().for_each(|o| *o *= scale);
+    out
 }
 
 #[cfg(test)]
@@ -973,5 +1224,88 @@ mod tests {
             panic!("overlapping demihulls were accepted");
         };
         assert!(err.contains("spacing"), "{err}");
+    }
+
+    /// Oracle §40: Wu et al. (2019) eqs. 15a and 18 put the cusp of the Kelvin wedge on the ray
+    /// tan ψ_K = 1/√8 (19.47°). Across a transverse cut 40 L behind the bow, the envelope of |ζ| peaks
+    /// inside the wedge, close to ψ_K: the Airy-function peak of a cusp lies inside the caustic, at an
+    /// offset that shrinks as h^(-2/3), hence the band ψ_K - 2° to ψ_K + 0.5°. Outside the wedge no wave
+    /// angle is stationary, so beyond ψ_K + 3° the envelope stays below 10 % of the peak.
+    #[test]
+    fn kelvin_wedge_cusp() {
+        let o = opts_at_fn(0.3);
+        let bow = 5.0;
+        let x = bow - 400.0;
+        let cut = wave_cut(&wigley(), &o, CutLine::Transverse { x }, 0.0, 250.0, 4000).unwrap();
+        let window = 0.25 * 2.0 * PI * o.speed_m_s * o.speed_m_s / o.g;
+        let psi_k = (1.0 / 8.0_f64.sqrt()).atan().to_degrees();
+        let mut env: Vec<(f64, f64)> = Vec::new(); // (ψ of the window centre in degrees, max |ζ|)
+        let mut start = 0;
+        while start < cut.s.len() {
+            let end = cut.s[start] + window;
+            let stop = cut.s.partition_point(|&s| s < end).max(start + 1);
+            let peak = cut.zeta[start..stop]
+                .iter()
+                .map(|z| z.abs())
+                .fold(0.0, f64::max);
+            let mid = 0.5 * (cut.s[start] + cut.s[stop - 1]);
+            env.push(((mid / (bow - x)).atan().to_degrees(), peak));
+            start = stop;
+        }
+        let &(psi_peak, peak) = env.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+        let beyond = env
+            .iter()
+            .filter(|e| e.0 > psi_k + 3.0)
+            .map(|e| e.1)
+            .fold(0.0, f64::max);
+        eprintln!(
+            "cusp: envelope peak at ψ {psi_peak:.2}° (ψ_K {psi_k:.2}°), beyond ψ_K + 3°: {:.2} % of peak",
+            100.0 * beyond / peak
+        );
+        assert!(
+            (psi_k - 2.0..=psi_k + 0.5).contains(&psi_peak),
+            "peak at {psi_peak}°"
+        );
+        assert!(
+            beyond < 0.1 * peak,
+            "{beyond} beyond the wedge vs peak {peak}"
+        );
+    }
+
+    #[test]
+    fn cuts_match_point_evaluation() {
+        let (g, o) = (wigley(), opts_at_fn(0.3));
+        let t = wave_cut(&g, &o, CutLine::Transverse { x: -20.0 }, 0.0, 10.0, 101).unwrap();
+        let sp = wave_spectrum(&g, &o, 25.0, 10.0, 0.1).unwrap();
+        let max = t.zeta.iter().map(|z| z.abs()).fold(0.0, f64::max);
+        assert!(max > 0.0);
+        for (y, z) in t.s.iter().zip(&t.zeta) {
+            assert!(
+                (z - sp.elevation(-20.0, *y)).abs() <= 1e-10 * max,
+                "transverse at y {y}"
+            );
+        }
+        let l = wave_cut(&g, &o, CutLine::Longitudinal { y: 3.0 }, -30.0, 10.0, 201).unwrap();
+        let sp = wave_spectrum(&g, &o, 35.0, 3.0, 0.2).unwrap();
+        let max = l.zeta.iter().map(|z| z.abs()).fold(0.0, f64::max);
+        for (x, z) in l.s.iter().zip(&l.zeta) {
+            assert!(
+                (z - sp.elevation(*x, 3.0)).abs() <= 1e-10 * max,
+                "longitudinal at x {x}"
+            );
+        }
+        assert_eq!(l.notes[0], FAR_FIELD_NOTE);
+    }
+
+    #[test]
+    fn bad_cuts_are_refused() {
+        let (g, o) = (wigley(), opts_at_fn(0.3));
+        let line = CutLine::Longitudinal { y: 2.0 };
+        for (from, to, n) in [(5.0, -5.0, 100), (-5.0, 5.0, 1), (f64::NAN, 5.0, 100)] {
+            let Err(err) = wave_cut(&g, &o, line, from, to, n) else {
+                panic!("cut {from}..{to} with {n} samples was accepted");
+            };
+            assert!(err.contains("cut"), "{err}");
+        }
     }
 }
