@@ -289,3 +289,25 @@ fn waves_writes_a_longitudinal_cut() {
     assert_eq!(lines.next(), Some("x_m,zeta_m"));
     assert_eq!(lines.count(), 2000);
 }
+
+#[test]
+fn waves_reports_wash_height_and_regime() {
+    let d = Dir::new("wash");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    let (out, _) = d.ok(&[
+        "waves",
+        "w.fef",
+        "--fn",
+        "0.45",
+        "--wash-distance",
+        "9",
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("JSON");
+    assert_eq!(v["wash"]["distance_m"], 9.0, "{v}");
+    assert!(v["wash"]["height_m"].as_f64().unwrap() > 0.0, "{v}");
+    assert_eq!(v["regime"]["key"], "hull_speed", "{v}");
+    let (text, _) = d.ok(&["waves", "w.fef", "--fn", "0.45", "--wash-distance", "9"]);
+    assert!(text.contains("Around hull speed"), "{text}");
+    assert!(text.contains("wash height at 9.00 m: "), "{text}");
+}

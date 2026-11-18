@@ -34,3 +34,34 @@ fn a_csv_only_michell_run_still_gives_its_warnings() {
     assert!(!csv.contains("warning"), "{csv}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A catamaran Michell run gives the interference of the two demihulls at each speed.
+#[test]
+fn a_catamaran_michell_run_gives_interference() {
+    let dir = std::env::temp_dir().join(format!("seacraft-resistance-cat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("make the test directory");
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_seacraft"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .expect("run seacraft");
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "{args:?}: {err}");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    run(&["example", "wigley", "-o", "w.fef"]);
+    let out = run(&[
+        "resistance",
+        "w.fef",
+        "--method",
+        "michell",
+        "--cat-spacing",
+        "4",
+    ]);
+    assert!(out.contains("interf."), "{out}");
+    let mono = run(&["resistance", "w.fef", "--method", "michell"]);
+    assert!(!mono.contains("interf."), "{mono}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1027,9 +1027,14 @@ struct WavesArgs {
     /// Domain half-width each side of the centreline, in waterline lengths
     #[arg(long, default_value_t = 1.5, allow_negative_numbers = true)]
     half_width: f64,
-    /// Grid spacing in metres (default: a twentieth of the transverse wavelength)
+    /// Grid spacing in metres (default: the smaller of a twentieth of the transverse wavelength and
+    /// L_WL/60)
     #[arg(long, allow_negative_numbers = true)]
     spacing: Option<f64>,
+    /// Lateral distance in metres of a wash line: prints the wash height there (a thin-ship estimate
+    /// in deep water)
+    #[arg(long, allow_negative_numbers = true)]
+    wash_distance: Option<f64>,
     /// Write the pattern here: .png, .svg or .vti (repeat for several)
     #[arg(short, long)]
     output: Vec<PathBuf>,
@@ -2565,6 +2570,22 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         );
 
         let warnings = michell::michell_warnings(&grid, &rows);
+        // Catamaran interference at each speed: R_w of the pair over twice one demihull.
+        let interference: Vec<Option<f64>> = match a.cat_spacing {
+            Some(sp) => rows
+                .iter()
+                .map(|r| {
+                    michell::interference(
+                        &grid,
+                        r.speed_m_s,
+                        opts.water_density,
+                        resistance::GRAVITY,
+                        sp,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
 
         if let Some(path) = &a.csv {
             let mut text = String::from(
@@ -2593,6 +2614,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
                 "form_factor": form_factor,
                 "warnings": warnings,
                 "speeds": rows,
+                "interference": a.cat_spacing.map(|_| &interference),
             });
             println!("{}", serde_json::to_string_pretty(&body)?);
             return Ok(());
@@ -2627,20 +2649,43 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             println!("  warning: {w}");
         }
         println!();
+        let cat = a.cat_spacing.is_some();
         println!(
-            "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}",
-            "kn", "Fn", "1+k1", "RT [kN]", "PE [kW]", "RF [kN]", "RW [kN]"
+            "  {:>6}  {:>6}  {:>6}  {:>10}  {:>10}  {:>9}  {:>9}{}",
+            "kn",
+            "Fn",
+            "1+k1",
+            "RT [kN]",
+            "PE [kW]",
+            "RF [kN]",
+            "RW [kN]",
+            if cat {
+                format!("  {:>7}", "interf.")
+            } else {
+                String::new()
+            }
         );
-        for r in &rows {
+        for (i, r) in rows.iter().enumerate() {
+            let interf = match interference.get(i) {
+                Some(Some(x)) => format!("  {x:>7.3}"),
+                Some(None) => format!("  {:>7}", "-"),
+                None => String::new(),
+            };
             println!(
-                "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}",
+                "  {:>6.2}  {:>6.3}  {:>6.3}  {:>10.2}  {:>10.2}  {:>9.2}  {:>9.2}{}",
                 r.speed_kn,
                 r.fn_,
                 r.form_factor,
                 r.rt_n / 1000.0,
                 r.pe_w / 1000.0,
                 r.rf_n / 1000.0,
-                r.rw_n / 1000.0
+                r.rw_n / 1000.0,
+                interf
+            );
+        }
+        if cat {
+            println!(
+                "  interf.: the pair's wave resistance over twice one demihull's (below 1: favourable)"
             );
         }
         return Ok(());
@@ -2978,6 +3023,14 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         }
         None => None,
     };
+    let wash = match a.wash_distance {
+        Some(d) => {
+            wave_pattern::wash_cut(&grid, &opts, &field, d, wave_pattern::WASH_SAMPLES)
+                .map_err(|e| anyhow::anyhow!("--wash-distance: {e}"))?
+                .1
+        }
+        None => None,
+    };
 
     // Every output is made first and written together, so one that cannot be written leaves none.
     let mut writes: Vec<(&Path, Vec<u8>)> = Vec::new();
@@ -3013,6 +3066,9 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
             map.insert("draft".into(), serde_json::json!(grid.draft));
             map.insert("cat_spacing".into(), serde_json::json!(a.cat_spacing));
             map.insert("files".into(), serde_json::json!(files));
+            if a.wash_distance.is_some() {
+                map.insert("wash".into(), serde_json::json!(wash));
+            }
         }
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
@@ -3033,6 +3089,7 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         field.k0,
         field.transverse_wavelength_m
     );
+    println!("  {}", wave_pattern::regime(field.froude).sentence());
     println!(
         "  wave angles to {:.1}° (shortest wave {:.3} m), {} samples; grid {} x {} points",
         field.theta_cut_deg,
@@ -3042,6 +3099,15 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         field.ys.len()
     );
     println!("  max |elevation| {:.4} m", field.max_abs_zeta_m);
+    if let Some(d) = a.wash_distance {
+        match wash {
+            Some(w) => println!(
+                "  wash height at {d:.2} m: {:.3} m (x {:.2} m), a thin-ship estimate in deep water",
+                w.height_m, w.x_m
+            ),
+            None => println!("  wash height at {d:.2} m: calm"),
+        }
+    }
     for n in &field.notes {
         println!("  note: {n}");
     }

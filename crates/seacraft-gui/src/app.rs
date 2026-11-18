@@ -5450,6 +5450,7 @@ impl App {
                 },
                 froude,
                 clip_m: w.clip_m,
+                wash_distance_m: None,
             }
         });
         Some(opts)

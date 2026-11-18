@@ -881,6 +881,37 @@ pub fn wash_height(cut: &WaveCut) -> Option<WashHeight> {
         })
 }
 
+/// Samples on the wash line of [`wash_cut`] in the CLI, MCP and report.
+pub const WASH_SAMPLES: usize = 2000;
+
+/// The waves along the wash line, a longitudinal cut at `y = -distance_m` (port, as drawn under the
+/// hull in Plan view) over the field's x range, and the wash height on it. `distance_m` must be above
+/// 0. The cut comes from the spectrum, so it does not need to lie on the field's grid.
+pub fn wash_cut(
+    grid: &MichellGrid,
+    opts: &WavePatternOptions,
+    field: &WaveField,
+    distance_m: f64,
+    samples: usize,
+) -> Result<(WaveCut, Option<WashHeight>), String> {
+    if !(distance_m.is_finite() && distance_m > 0.0) {
+        return Err(format!(
+            "the wash distance must be a number above 0 m, got {distance_m}"
+        ));
+    }
+    let (x0, x1) = (field.xs[0], field.xs[field.xs.len() - 1]);
+    let cut = wave_cut(
+        grid,
+        opts,
+        CutLine::Longitudinal { y: -distance_m },
+        x0,
+        x1,
+        samples,
+    )?;
+    let wash = wash_height(&cut);
+    Ok((cut, wash))
+}
+
 /// The waves along `line` from `from` to `to` (m, `from < to`), at `samples` evenly spaced points.
 /// The spectrum is built for this cut alone: its reach from the cut's end points, its short-wave cut
 /// from the sample spacing.
@@ -1309,10 +1340,11 @@ pub fn summary_json(field: &WaveField) -> serde_json::Value {
 
 /// The wave pattern as the MCP tool `wave_pattern` and the window's `waves.compute` take it:
 /// `speed` (knots) or `fn` (exactly one), `draft`, `cat_spacing`, `ahead`, `behind`, `half_width`
-/// (waterline lengths), `spacing`, `clip` (metres), `png_path`, `svg_path`, `vti_path`. Every
-/// argument and path is checked before any work, and each path passes `check_path` (the window's
-/// write roots) before anything is written. Returns [`summary_json`] with `draft`, `cat_spacing` and
-/// `files`; errors name the argument.
+/// (waterline lengths), `spacing`, `clip`, `wash_distance` (metres), `png_path`, `svg_path`,
+/// `vti_path`. Every argument and path is checked before any work, and each path passes `check_path`
+/// (the window's write roots) before anything is written. Returns [`summary_json`] with `draft`,
+/// `cat_spacing`, `files` and, when `wash_distance` is given, `wash` (a [`WashHeight`], or null in calm
+/// water); errors name the argument.
 pub fn wave_tool(
     surface: &crate::mesh::Surface,
     subdiv: crate::subdiv::SubdivisionOptions,
@@ -1353,6 +1385,7 @@ pub fn wave_tool(
     let spacing = positive("spacing")?;
     let cat_spacing = positive("cat_spacing")?;
     let clip = positive("clip")?;
+    let wash_distance = positive("wash_distance")?;
     let mut outputs = Vec::new();
     for key in ["png_path", "svg_path", "vti_path"] {
         match args.get(key) {
@@ -1395,6 +1428,10 @@ pub fn wave_tool(
         ..WavePatternOptions::at_speed(speed)
     };
     let field = wave_field(&grid, &opts)?;
+    let wash = match wash_distance {
+        Some(d) => wash_cut(&grid, &opts, &field, d, WASH_SAMPLES)?.1,
+        None => None,
+    };
     // Every output is made first and written together, so one that cannot be written leaves none.
     let mut writes = Vec::with_capacity(outputs.len());
     for (key, path) in outputs {
@@ -1415,6 +1452,9 @@ pub fn wave_tool(
         map.insert("draft".into(), serde_json::json!(grid.draft));
         map.insert("cat_spacing".into(), serde_json::json!(cat_spacing));
         map.insert("files".into(), serde_json::json!(files));
+        if wash_distance.is_some() {
+            map.insert("wash".into(), serde_json::json!(wash));
+        }
     }
     Ok(reply)
 }
@@ -2228,5 +2268,31 @@ mod tests {
             .filter_map(|t| t.split_once('.'))
             .any(|(_, frac)| frac.len() > 2);
         assert!(!long, "{err}");
+    }
+
+    fn demo_tool(args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let surface = crate::demo::demo_hull(false);
+        let subdiv = crate::subdiv::SubdivisionOptions::default();
+        let draft = crate::hydro::HydroOptions::from_surface(&surface, subdiv).draft;
+        let args = args.as_object().unwrap().clone();
+        wave_tool(&surface, subdiv, draft, &args, &|p| Ok(p.to_path_buf()))
+    }
+
+    #[test]
+    fn wave_tool_reports_wash_when_asked() {
+        let reply = demo_tool(serde_json::json!({"fn": 0.45, "wash_distance": 9.0})).unwrap();
+        assert_eq!(reply["wash"]["distance_m"], 9.0, "{reply}");
+        assert!(reply["wash"]["height_m"].as_f64().unwrap() > 0.0, "{reply}");
+        assert_eq!(reply["regime"]["key"], "hull_speed");
+        let none = demo_tool(serde_json::json!({"fn": 0.45})).unwrap();
+        assert!(none.get("wash").is_none(), "{none}");
+    }
+
+    #[test]
+    fn wave_tool_refuses_a_bad_wash_distance() {
+        for bad in [serde_json::json!(-1.0), serde_json::json!("x")] {
+            let err = demo_tool(serde_json::json!({"fn": 0.45, "wash_distance": bad})).unwrap_err();
+            assert!(err.contains("wash_distance"), "{err}");
+        }
     }
 }

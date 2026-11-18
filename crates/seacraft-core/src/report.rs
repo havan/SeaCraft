@@ -59,6 +59,8 @@ pub struct WaveReport {
     pub froude: Option<f64>,
     /// Colour clip (m); `None` takes the field's largest |ζ|.
     pub clip_m: Option<f64>,
+    /// Lateral distance (m) of the wash line whose wash height the section gives; `None` for none.
+    pub wash_distance_m: Option<f64>,
 }
 
 impl ReportOptions {
@@ -180,7 +182,13 @@ fn wave_section_field(
     subdiv: SubdivisionOptions,
     draft: f64,
     waves: &WaveReport,
-) -> Result<crate::wave_pattern::WaveField, String> {
+) -> Result<
+    (
+        crate::wave_pattern::WaveField,
+        Option<crate::wave_pattern::WashHeight>,
+    ),
+    String,
+> {
     let grid = crate::michell::michell_grid_from_surface(surface, draft, 65, 25, subdiv).ok_or(
         "cannot extract Michell offsets grid from the hull (positive draft and waterline needed)",
     )?;
@@ -188,7 +196,21 @@ fn wave_section_field(
     if let Some(froude) = waves.froude {
         options.speed_m_s = froude * (resistance::GRAVITY * grid.length_wl).sqrt();
     }
-    crate::wave_pattern::wave_field(&grid, &options)
+    let field = crate::wave_pattern::wave_field(&grid, &options)?;
+    let wash = match waves.wash_distance_m {
+        Some(d) => {
+            crate::wave_pattern::wash_cut(
+                &grid,
+                &options,
+                &field,
+                d,
+                crate::wave_pattern::WASH_SAMPLES,
+            )?
+            .1
+        }
+        None => None,
+    };
+    Ok((field, wash))
 }
 
 /// Produce a standalone self-contained HTML5 design report of the hull and project sidecar data.
@@ -1570,7 +1592,9 @@ pub fn design_report_with_project(
                     html_escape(&e)
                 );
             }
-            Ok(field) => {
+            Ok((field, wash)) => {
+                let regime = crate::wave_pattern::regime(field.froude);
+                let _ = writeln!(out, "  <p>{}</p>", html_escape(regime.sentence()));
                 if !field.warnings.is_empty() {
                     out.push_str("  <div class=\"warn-box\">\n    <ul>\n");
                     for w in &field.warnings {
@@ -1590,6 +1614,17 @@ pub fn design_report_with_project(
                     fmt_num(field.shortest_wavelength_m, 3),
                     fmt_num(field.max_abs_zeta_m, 3),
                 );
+                if let Some(d) = waves.wash_distance_m {
+                    let height = wash.map_or("calm".to_string(), |w| {
+                        format!("{} m", fmt_num(w.height_m, 3))
+                    });
+                    let _ = writeln!(
+                        out,
+                        "  <p>Wash height at {} m: {} (thin-ship estimate, deep water)</p>",
+                        fmt_num(d, 2),
+                        height
+                    );
+                }
                 let svg = crate::wave_pattern::wave_svg(&field, waves.clip_m);
                 let svg = match svg.strip_prefix("<?xml") {
                     Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body),
@@ -2226,6 +2261,7 @@ mod tests {
             options: crate::wave_pattern::WavePatternOptions::at_speed(1.0),
             froude: Some(froude),
             clip_m: None,
+            wash_distance_m: None,
         }
     }
 
@@ -2249,6 +2285,23 @@ mod tests {
         assert!(waves.contains("0.300"), "the Froude number in the table");
         assert!(!html.contains("<?xml"));
         assert!(!waves.to_lowercase().contains("validated"));
+    }
+
+    #[test]
+    fn report_wave_section_names_regime_and_wash() {
+        let surface = demo::demo_hull(false);
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+        opts.waves = Some(WaveReport {
+            wash_distance_m: Some(9.0),
+            ..waves_at_fn(0.45)
+        });
+        let html = design_report(&surface, &opts).expect("report");
+        let waves = section(&html, "waves");
+        let sentence = html_escape(crate::wave_pattern::Regime::HullSpeed.sentence());
+        assert!(waves.contains(&sentence), "{waves}");
+        assert!(waves.contains("Wash height at 9.00 m"), "{waves}");
+        assert!(waves.contains("thin-ship estimate, deep water"), "{waves}");
     }
 
     #[test]
