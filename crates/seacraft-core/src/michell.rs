@@ -312,6 +312,7 @@ pub fn michell_wave_resistance_from_grid(
     // Wave angle integration: midpoint rule over theta in [0, pi / 2)
     let dtheta = (PI * 0.5) / (ntheta as f64);
     let mut integral = 0.0;
+    let mut z_sums = Vec::with_capacity(nx.saturating_sub(1));
 
     for k in 0..ntheta {
         let theta = (k as f64 + 0.5) * dtheta;
@@ -324,56 +325,12 @@ pub fn michell_wave_resistance_from_grid(
         let kx = k0 * sec_th;
         let kz = k0 * sec2_th;
 
-        // Panel-wise integration over (x, z):
-        // Over each panel [x_i, x_{i+1}] x [z_j, z_{j+1}],
-        // f(x, z) is bilinear, so f_x is constant in x and linear in z.
-        // The x-integral has closed form:
-        //   \int_{x_i}^{x_{i+1}} exp(i kx x) dx = dx_i * sinc(kx * dx_i / 2) * exp(i kx * x_mid)
-        // The z-integral has closed form:
-        //   \int_{z_j}^{z_{j+1}} (f_{x0} * (1 - w) + f_{x1} * w) exp(kz z) dz
+        // P + iQ = sum_i Z_i(theta) X(x_i, x_{i+1}; kx): see `column_z_integrals` and `x_integral`.
+        column_z_integrals(grid, kz, &mut z_sums);
         let mut p_val = 0.0;
         let mut q_val = 0.0;
-
-        for i in 0..nx - 1 {
-            let dx = grid.xs[i + 1] - grid.xs[i];
-            let x_mid = 0.5 * (grid.xs[i] + grid.xs[i + 1]);
-            let half_arg = 0.5 * kx * dx;
-            let sinc = if half_arg.abs() < 1e-4 {
-                1.0 - half_arg * half_arg / 6.0
-            } else {
-                half_arg.sin() / half_arg
-            };
-            let ix_mag = dx * sinc;
-            let ix_cos = ix_mag * (kx * x_mid).cos();
-            let ix_sin = ix_mag * (kx * x_mid).sin();
-
-            // Sum over z panels for this station
-            let mut z_sum = 0.0;
-            for j in 0..nz - 1 {
-                let dz = grid.zs[j + 1] - grid.zs[j];
-                let z_j = grid.zs[j];
-                let z_j1 = grid.zs[j + 1];
-
-                let fx0 = (grid.half_breadths[i + 1][j] - grid.half_breadths[i][j]) / dx;
-                let fx1 = (grid.half_breadths[i + 1][j + 1] - grid.half_breadths[i][j + 1]) / dx;
-
-                let alpha = kz * dz;
-                let (j0, j1) = if alpha < 1e-4 {
-                    let j0 = 0.5 + alpha / 6.0 + alpha * alpha / 24.0;
-                    let j1 = 0.5 + alpha / 3.0 + alpha * alpha / 8.0;
-                    let exp_mid = (kz * z_j).exp();
-                    (dz * exp_mid * j0, dz * exp_mid * j1)
-                } else {
-                    let exp_0 = (kz * z_j).exp();
-                    let exp_1 = (kz * z_j1).exp();
-                    let j0 = (exp_1 - (1.0 + alpha) * exp_0) / (kz * kz * dz);
-                    let j1 = ((alpha - 1.0) * exp_1 + exp_0) / (kz * kz * dz);
-                    (j0, j1)
-                };
-
-                z_sum += fx0 * j0 + fx1 * j1;
-            }
-
+        for (i, z_sum) in z_sums.iter().enumerate() {
+            let (ix_cos, ix_sin) = x_integral(grid.xs[i], grid.xs[i + 1], kx);
             p_val += z_sum * ix_cos;
             q_val += z_sum * ix_sin;
         }
@@ -416,6 +373,71 @@ pub fn michell_wave_resistance_from_grid(
         cw,
         fn_,
         converged_note,
+    }
+}
+
+/// X(a, b; k) = \int_a^b exp(i k x) dx as (re, im), in the form
+/// `(b - a) sinc(k (b - a) / 2) exp(i k m)` with `m = (a + b) / 2`. The small-argument branch keeps
+/// the sinc accurate as `k (b - a) -> 0`.
+pub(crate) fn x_integral(a: f64, b: f64, kx: f64) -> (f64, f64) {
+    let dx = b - a;
+    let x_mid = 0.5 * (a + b);
+    let half_arg = 0.5 * kx * dx;
+    let sinc = if half_arg.abs() < 1e-4 {
+        1.0 - half_arg * half_arg / 6.0
+    } else {
+        half_arg.sin() / half_arg
+    };
+    let ix_mag = dx * sinc;
+    (ix_mag * (kx * x_mid).cos(), ix_mag * (kx * x_mid).sin())
+}
+
+/// Per-column depth integrals `Z_i = \int_{-T}^0 f_x,i(z) exp(kz z) dz` for the station intervals
+/// `[x_i, x_{i+1}]` (one per interval, `nx - 1` in all), written to `out`. Over a panel
+/// `[x_i, x_{i+1}] x [z_j, z_{j+1}]` the half-breadth is bilinear, so `f_x` is constant in `x` and
+/// linear in `z`, and the `z` integral has a closed form.
+pub(crate) fn column_z_integrals(grid: &MichellGrid, kz: f64, out: &mut Vec<f64>) {
+    column_z_terms(grid, kz, out, |v| v);
+}
+
+/// [`column_z_integrals`] with `|f_x|` in place of `f_x`: an upper bound on `|Z_i|`, used to find
+/// where a hull's spectrum has decayed.
+pub(crate) fn column_z_envelope(grid: &MichellGrid, kz: f64, out: &mut Vec<f64>) {
+    column_z_terms(grid, kz, out, f64::abs);
+}
+
+fn column_z_terms(grid: &MichellGrid, kz: f64, out: &mut Vec<f64>, slope: impl Fn(f64) -> f64) {
+    let nx = grid.xs.len();
+    let nz = grid.zs.len();
+    out.clear();
+    for i in 0..nx - 1 {
+        let dx = grid.xs[i + 1] - grid.xs[i];
+        let mut z_sum = 0.0;
+        for j in 0..nz - 1 {
+            let dz = grid.zs[j + 1] - grid.zs[j];
+            let z_j = grid.zs[j];
+            let z_j1 = grid.zs[j + 1];
+
+            let fx0 = slope((grid.half_breadths[i + 1][j] - grid.half_breadths[i][j]) / dx);
+            let fx1 = slope((grid.half_breadths[i + 1][j + 1] - grid.half_breadths[i][j + 1]) / dx);
+
+            let alpha = kz * dz;
+            let (j0, j1) = if alpha < 1e-4 {
+                let j0 = 0.5 + alpha / 6.0 + alpha * alpha / 24.0;
+                let j1 = 0.5 + alpha / 3.0 + alpha * alpha / 8.0;
+                let exp_mid = (kz * z_j).exp();
+                (dz * exp_mid * j0, dz * exp_mid * j1)
+            } else {
+                let exp_0 = (kz * z_j).exp();
+                let exp_1 = (kz * z_j1).exp();
+                let j0 = (exp_1 - (1.0 + alpha) * exp_0) / (kz * kz * dz);
+                let j1 = ((alpha - 1.0) * exp_1 + exp_0) / (kz * kz * dz);
+                (j0, j1)
+            };
+
+            z_sum += fx0 * j0 + fx1 * j1;
+        }
+        out.push(z_sum);
     }
 }
 
@@ -589,6 +611,89 @@ pub fn michell_warnings(grid: &MichellGrid, rows: &[Resistance]) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Michell R_w of the 10 m Wigley grid (65 x 25, default options) at Fn 0.20, 0.30, 0.35,
+    /// 0.45 and as a catamaran (s = 3 m) at Fn 0.30, for [`michell_column_refactor_keeps_every_number`].
+    fn frozen_case_values() -> Vec<f64> {
+        let grid = wigley_grid(10.0, 1.0, 0.625, 65, 25);
+        let g = 9.81;
+        let speed = |fn_: f64| fn_ * (g * grid.length_wl).sqrt();
+        let mono = MichellOptions::default();
+        let cat = MichellOptions {
+            catamaran_spacing: Some(3.0),
+            ..MichellOptions::default()
+        };
+        let mut out: Vec<f64> = [0.20, 0.30, 0.35, 0.45]
+            .iter()
+            .map(|&f| michell_wave_resistance_from_grid(&grid, speed(f), 1000.0, g, &mono).rw_n)
+            .collect();
+        out.push(michell_wave_resistance_from_grid(&grid, speed(0.30), 1000.0, g, &cat).rw_n);
+        out
+    }
+
+    /// X(a, b; k) = \int_a^b e^{i k x} dx against its antiderivative (sin kb - sin ka)/k +
+    /// i (cos ka - cos kb)/k, and b - a at k = 0: calculus, no source needed.
+    #[test]
+    fn x_integral_matches_closed_form() {
+        for (a, b, k) in [(-5.0_f64, 5.0, 0.0), (-5.0, -4.9, 3.0), (0.3, 2.1, 12.5)] {
+            let (re, im) = x_integral(a, b, k);
+            let (want_re, want_im) = if k == 0.0 {
+                (b - a, 0.0)
+            } else {
+                (
+                    ((k * b).sin() - (k * a).sin()) / k,
+                    ((k * a).cos() - (k * b).cos()) / k,
+                )
+            };
+            assert!(
+                (re - want_re).abs() <= 1e-12,
+                "re {re} vs {want_re} at {a}..{b}, k {k}"
+            );
+            assert!(
+                (im - want_im).abs() <= 1e-12,
+                "im {im} vs {want_im} at {a}..{b}, k {k}"
+            );
+        }
+    }
+
+    /// The envelope uses |f_x|, so it bounds |Z_i| and equals it where f_x keeps one sign in a
+    /// column (every column of the Wigley hull: f_x > 0 aft of midships, < 0 forward).
+    #[test]
+    fn column_z_envelope_bounds_the_integrals() {
+        let grid = wigley_grid(10.0, 1.0, 0.625, 65, 25);
+        let (mut z, mut e) = (Vec::new(), Vec::new());
+        for kz in [0.0, 0.5, 3.0, 40.0] {
+            column_z_integrals(&grid, kz, &mut z);
+            column_z_envelope(&grid, kz, &mut e);
+            assert_eq!(z.len(), grid.xs.len() - 1);
+            assert_eq!(e.len(), z.len());
+            for (zi, ei) in z.iter().zip(&e) {
+                assert!(
+                    (zi.abs() - ei).abs() <= 1e-12 * ei.max(1e-300),
+                    "|{zi}| vs {ei}"
+                );
+            }
+        }
+    }
+
+    /// Frozen output of SeaCraft at 6c22607: catches a change, proves nothing about being right.
+    #[test]
+    fn michell_column_refactor_keeps_every_number() {
+        const FROZEN: [f64; 5] = [
+            2.5908746260076065e1,
+            1.405_210_669_902_722e2,
+            1.114_581_008_866_662e2,
+            6.132_800_554_934_012e2,
+            3.2773244253248106e2,
+        ];
+        let got_all = frozen_case_values();
+        for (got, want) in got_all.iter().zip(FROZEN) {
+            assert!(
+                ((got - want) / want).abs() <= 1e-12,
+                "R_w {got:e} moved from the frozen {want:e}"
+            );
+        }
+    }
 
     /// Analytical solution of Michell's integral for the parabolic Wigley hull:
     /// y = (B/2) * (1 - (2x/L)^2) * (1 - (z/T)^2), -L/2 <= x <= L/2, -T <= z <= 0.

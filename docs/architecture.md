@@ -57,6 +57,7 @@ crates/seacraft-core/
   src/export.rs             OBJ (y- or z-up), binary STL, 3MF, PLY, IGES, HTML viewer
   src/resistance.rs         still-water resistance and effective power (Holtrop & Mennen 1984)
   src/michell.rs            Michell thin-ship wave resistance (Michlet-style) for slender monohulls and catamarans
+  src/wave_pattern.rs       far-field thin-ship wave pattern (Kelvin wedge) from Michell's spectrum, cuts, PNG/SVG/VTI
   src/demo.rs               parametric 12 m demo hull, full and half model
   src/examples/             example-hull library: Example enum, build() -> (Surface, Project),
                             net primitives (mod.rs), shared acceptance checks (checks.rs),

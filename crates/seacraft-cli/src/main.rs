@@ -70,6 +70,8 @@ enum Command {
     Optimize(OptimizeArgs),
     /// Still-water resistance and effective power (Holtrop-Mennen 1984)
     Resistance(ResistanceArgs),
+    /// Far-field thin-ship (Michell) wave pattern behind the hull: PNG, SVG contours, VTK
+    Waves(WavesArgs),
     /// Developable plate expansion: flatten a strake or buttock band
     Unfold(UnfoldArgs),
     /// Edit the control net: split faces, insert edges, toggle creases
@@ -996,6 +998,82 @@ struct ResistanceArgs {
 }
 
 #[derive(Args, Debug)]
+struct WavesArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Ship speed in knots
+    #[arg(
+        long,
+        allow_negative_numbers = true,
+        required_unless_present = "fn_",
+        conflicts_with = "fn_"
+    )]
+    speed: Option<f64>,
+    /// Froude number on the waterline length, instead of --speed
+    #[arg(long = "fn", allow_negative_numbers = true)]
+    fn_: Option<f64>,
+    /// Draft to measure at (default: the model's design draft)
+    #[arg(long)]
+    draft: Option<f64>,
+    /// Catamaran demihull centreline spacing in metres (the model is one demihull)
+    #[arg(long, allow_negative_numbers = true)]
+    cat_spacing: Option<f64>,
+    /// Domain ahead of the bow, in waterline lengths
+    #[arg(long, default_value_t = 1.0, allow_negative_numbers = true)]
+    ahead: f64,
+    /// Domain behind the stern, in waterline lengths
+    #[arg(long, default_value_t = 3.0, allow_negative_numbers = true)]
+    behind: f64,
+    /// Domain half-width each side of the centreline, in waterline lengths
+    #[arg(long, default_value_t = 1.5, allow_negative_numbers = true)]
+    half_width: f64,
+    /// Grid spacing in metres (default: a twentieth of the transverse wavelength)
+    #[arg(long, allow_negative_numbers = true)]
+    spacing: Option<f64>,
+    /// Write the pattern here: .png, .svg or .vti (repeat for several)
+    #[arg(short, long)]
+    output: Vec<PathBuf>,
+    /// Colour and contour clip in metres (default: the largest |elevation|)
+    #[arg(long, allow_negative_numbers = true)]
+    clip: Option<f64>,
+    /// y in metres of a longitudinal cut over the field's length, written with --cut-csv
+    #[arg(long, allow_negative_numbers = true, requires = "cut_csv")]
+    cut_y: Option<f64>,
+    /// Write the longitudinal cut (2000 samples, x_m,zeta_m) to this CSV
+    #[arg(long, requires = "cut_y")]
+    cut_csv: Option<PathBuf>,
+    /// Emit a JSON summary instead of text
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+}
+
+/// What `seacraft waves -o` can write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaveFormat {
+    Png,
+    Svg,
+    Vti,
+}
+
+fn wave_format(path: &Path) -> Result<WaveFormat> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("png") => Ok(WaveFormat::Png),
+        Some("svg") => Ok(WaveFormat::Svg),
+        Some("vti") => Ok(WaveFormat::Vti),
+        _ => bail!(
+            "{}: unknown output format, use .png, .svg or .vti",
+            path.display()
+        ),
+    }
+}
+
+#[derive(Args, Debug)]
 struct UnfoldArgs {
     /// Input .fef file
     file: PathBuf,
@@ -1471,6 +1549,7 @@ fn run() -> Result<()> {
         Command::Trim(a) => cmd_trim(a),
         Command::Optimize(a) => cmd_optimize(a),
         Command::Resistance(a) => cmd_resistance(a),
+        Command::Waves(a) => cmd_waves(a),
         Command::Unfold(a) => cmd_unfold(a),
         Command::Edit(a) => cmd_edit(a),
         Command::Planing(a) => cmd_planing(a),
@@ -2840,6 +2919,137 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
     Ok(())
 }
 
+fn cmd_waves(a: WavesArgs) -> Result<()> {
+    use seacraft_core::wave_pattern::{self, CutLine, WavePatternOptions};
+    // Refuse a bad output before any work, so that nothing is half written.
+    let formats = a
+        .output
+        .iter()
+        .map(|p| wave_format(p))
+        .collect::<Result<Vec<_>>>()?;
+    // Two outputs written to one file would leave only the last, while both are reported.
+    let outputs: Vec<(&str, &Path)> = a
+        .output
+        .iter()
+        .map(|p| ("-o", p.as_path()))
+        .chain(a.cut_csv.as_deref().map(|p| ("--cut-csv", p)))
+        .collect();
+    let paths: Vec<&Path> = outputs.iter().map(|(_, p)| *p).collect();
+    if let Some((j, i)) = seacraft_core::io::shared_output(&paths)? {
+        bail!(
+            "{} and {} name the same file, `{}`: each output needs a file of its own",
+            outputs[i].0,
+            outputs[j].0,
+            outputs[i].1.display()
+        );
+    }
+    let s = load(&a.file)?;
+    let subdiv = SubdivisionOptions {
+        level: a.subdiv.level,
+        mode: a.subdiv.mode.into(),
+    };
+    let draft = a
+        .draft
+        .unwrap_or_else(|| HydroOptions::from_surface(&s, subdiv).draft);
+    let grid = michell::michell_grid_from_surface(&s, draft, 65, 25, subdiv)
+        .context("cannot extract Michell offsets grid: positive draft and waterline needed")?;
+    let speed = match (a.speed, a.fn_) {
+        (Some(kn), _) => kn * resistance::KNOT,
+        (None, Some(f)) => f * (resistance::GRAVITY * grid.length_wl).sqrt(),
+        (None, None) => bail!("give --speed or --fn"),
+    };
+    let opts = WavePatternOptions {
+        ahead_l: a.ahead,
+        behind_l: a.behind,
+        half_width_l: a.half_width,
+        spacing_m: a.spacing,
+        catamaran_spacing: a.cat_spacing,
+        ..WavePatternOptions::at_speed(speed)
+    };
+    let field = wave_pattern::wave_field(&grid, &opts).map_err(anyhow::Error::msg)?;
+    let cut = match a.cut_y {
+        Some(y) => {
+            let (x0, x1) = (field.xs[0], field.xs[field.xs.len() - 1]);
+            let line = CutLine::Longitudinal { y };
+            Some(
+                wave_pattern::wave_cut(&grid, &opts, line, x0, x1, 2000)
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
+        None => None,
+    };
+
+    // Every output is made first and written together, so one that cannot be written leaves none.
+    let mut writes: Vec<(&Path, Vec<u8>)> = Vec::new();
+    for (path, format) in a.output.iter().zip(formats) {
+        let bytes = match format {
+            WaveFormat::Png => {
+                wave_pattern::wave_png(&field, a.clip).context("empty wave field")?
+            }
+            WaveFormat::Svg => wave_pattern::wave_svg(&field, a.clip).into_bytes(),
+            WaveFormat::Vti => wave_pattern::wave_vti(&field).into_bytes(),
+        };
+        writes.push((path, bytes));
+    }
+    if let (Some(cut), Some(path)) = (&cut, &a.cut_csv) {
+        let mut text = String::from("x_m,zeta_m\n");
+        for (x, z) in cut.s.iter().zip(&cut.zeta) {
+            text.push_str(&format!("{x:.4},{z:.6e}\n"));
+        }
+        writes.push((path, text.into_bytes()));
+    }
+    seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
+    let files: Vec<String> = writes
+        .iter()
+        .map(|(p, _)| p.display().to_string())
+        .collect();
+
+    for w in &field.warnings {
+        eprintln!("warning: {w}");
+    }
+    if a.json {
+        let mut body = wave_pattern::summary_json(&field);
+        if let Some(map) = body.as_object_mut() {
+            map.insert("draft".into(), serde_json::json!(grid.draft));
+            map.insert("cat_spacing".into(), serde_json::json!(a.cat_spacing));
+            map.insert("files".into(), serde_json::json!(files));
+        }
+        println!("{}", serde_json::to_string_pretty(&body)?);
+        return Ok(());
+    }
+    println!(
+        "{}  -  far-field wave pattern (thin-ship, Michell), T {:.3} m{}",
+        s.settings.name,
+        grid.draft,
+        a.cat_spacing
+            .map(|sp| format!("  [catamaran spacing {sp:.2} m]"))
+            .unwrap_or_default()
+    );
+    println!(
+        "  U {:.3} m/s ({:.2} kn)  Fn {:.3}  k0 {:.4} 1/m  transverse wavelength {:.3} m",
+        field.speed_m_s,
+        field.speed_m_s / resistance::KNOT,
+        field.froude,
+        field.k0,
+        field.transverse_wavelength_m
+    );
+    println!(
+        "  wave angles to {:.1}° (shortest wave {:.3} m), {} samples; grid {} x {} points",
+        field.theta_cut_deg,
+        field.shortest_wavelength_m,
+        field.theta_samples,
+        field.xs.len(),
+        field.ys.len()
+    );
+    println!("  max |elevation| {:.4} m", field.max_abs_zeta_m);
+    for n in &field.notes {
+        println!("  note: {n}");
+    }
+    for f in &files {
+        println!("wrote {f}");
+    }
+    Ok(())
+}
 fn parse_pair(text: &str, key: &str) -> Result<(usize, usize)> {
     let parts: Vec<&str> = text.split(',').map(|t| t.trim()).collect();
     if parts.len() != 2 {
@@ -3307,21 +3517,6 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
     Ok(())
 }
 
-/// Where a path the user typed lands, for telling whether two outputs are one file: absolute,
-/// with `.`, `..` and symbolic links resolved as far as the file or its folder exists.
-fn landing(path: &Path) -> PathBuf {
-    if let Ok(p) = std::fs::canonicalize(path) {
-        return p;
-    }
-    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    match (abs.parent(), abs.file_name()) {
-        (Some(dir), Some(name)) => std::fs::canonicalize(dir)
-            .map(|d| d.join(name))
-            .unwrap_or(abs),
-        _ => abs,
-    }
-}
-
 fn cmd_panels(a: PanelsArgs) -> Result<()> {
     use seacraft_core::panels::{self, Limits, PanelOptions, Stock};
     use seacraft_core::sheet::{PageSetup, Paper};
@@ -3369,15 +3564,14 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     .into_iter()
     .filter_map(|(flag, path)| path.map(|p| (flag, p)))
     .collect();
-    let landed: Vec<PathBuf> = outputs.iter().map(|(_, p)| landing(p)).collect();
-    for (i, (flag, path)) in outputs.iter().enumerate() {
-        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
-            bail!(
-                "{flag} and {} name the same file, `{}`: each output needs a file of its own",
-                outputs[j].0,
-                path.display()
-            );
-        }
+    let paths: Vec<&Path> = outputs.iter().map(|(_, p)| *p).collect();
+    if let Some((j, i)) = seacraft_core::io::shared_output(&paths)? {
+        bail!(
+            "{} and {} name the same file, `{}`: each output needs a file of its own",
+            outputs[i].0,
+            outputs[j].0,
+            outputs[i].1.display()
+        );
     }
     let positive = |v: f64| v.is_finite() && v > 0.0;
     if !positive(a.max_seam_drift_mm) {
@@ -3490,19 +3684,18 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         );
     }
 
+    // Every output is made first and written together, so one that cannot be written leaves none.
     let written = panels::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
-    seacraft_core::io::write_atomic(&a.output, &written.bytes)
-        .with_context(|| format!("cannot write {}", a.output.display()))?;
+    let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
     if let Some(path) = &a.offsets_csv {
-        seacraft_core::io::write_atomic(path, panels::offsets_csv(&set.offsets).as_bytes())
-            .with_context(|| format!("cannot write {}", path.display()))?;
+        writes.push((path, panels::offsets_csv(&set.offsets).into_bytes()));
     }
     if let Some(path) = &a.offsets_pdf {
         let doc = panels::offsets_pdf(&set.offsets, &set.title, a.imperial)
             .map_err(anyhow::Error::msg)?;
-        seacraft_core::io::write_atomic(path, &doc.bytes)
-            .with_context(|| format!("cannot write {}", path.display()))?;
+        writes.push((path, doc.bytes));
     }
+    seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
 
     let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
     if a.json {

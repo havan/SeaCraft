@@ -192,7 +192,7 @@ with $k_x = k_0 \sec\theta$, $k_z = k_0 \sec^2\theta$, $k_0 = g / U^2$.
 Independent numerical quadrature using variable substitution $\lambda = \sec\theta = \cosh u$ ($u \in [0, 6]$) over an $801 \times 201$ offset grid using the trapezoidal rule, computed specifically for this regression check. As documented in the module comments, these are not published experimental or tabulated values.
 
 The comparison with published experiment (Kajitani et al., 1983) and with a published independent computation
-(Peri, 2026) is §39.
+(Peri, 2026) is §39. The far-field wave pattern built on the same $P + iQ$ is checked in §40.
 
 ---
 
@@ -1221,3 +1221,99 @@ oracle here.
 
 What this covers: Michell's $R_w$ for the Wigley hull ($L/B = 10$, $B/T = 1.6$) at Fn 0.28–0.37, in the bands
 above. It says nothing about other hulls, about transom sterns (flagged, §38), or about catamaran interference.
+The wave pattern from the same spectrum is §40; no measured Wigley wave cut was found to compare it with.
+
+## 40. Far-field Wave Pattern: Kelvin's Far Field and the Wedge
+
+### Sources
+- Wu, H., Wu, J., He, J., Zhu, R., Yang, C.-J. & Noblesse, F. (2019). "Wave profile along a ship hull, short
+  far-field waves, and broad inner Kelvin wake sans divergent waves." *Physics of Fluids* 31, 047102. Read
+  2026-11-18: elementary waves eqs. (9b), (10a); amplitude function eq. (12a) with its Hogner (thin-ship) limit
+  $A_\pm = n_x$ (eq. 12d without the potential terms) and eqs. (12b), (12d); far-field elevation eq. (14a);
+  stationary-phase far field eqs. (13a), (13b), (15a)–(15d); the cusp ray eq. (18).
+- Michell's $P + iQ$ and its grid as in §7.
+
+### Formula
+On a hull $y = f(x, z)$, $n_x\,da = -f_x\,dx\,dz$, and the thin-ship limit puts the amplitude integral on the
+centreplane, where it is Michell's $P + iQ$. With $1/F^2 = k_0 L$, $A = -(2k_0/L)(P - iQ)$, and eq. (14a) in metres
+is
+$$\zeta(x, y) = -\frac{2k_0}{\pi} \int_0^{\theta_c} \sec^3\theta\,
+\mathrm{Re}\!\left[\overline{S(x;\theta)}\left(e^{i\psi_+} + e^{i\psi_-}\right)\right] d\theta,\qquad
+\psi_\pm = k_0 \sec^2\theta\,(x\cos\theta \pm y\sin\theta),$$
+$k_0 = g/U^2$, model axes ($x$ forward). $S(x;\theta)$ is $P + iQ$ of the part of the hull forward of $x$: the whole
+hull behind the stern (Wu's eq. 14a as written), none ahead of the bow, and the forward part of the hull alongside
+it (SeaCraft's extension, not Wu's). A catamaran at $y = \pm s/2$ multiplies the integrand by
+$2\cos(k_0\sec^2\theta\sin\theta\,s/2)$, whose square is Michell's interference factor. $\theta_c$ leaves out waves
+shorter than two grid spacings.
+
+Kelvin's far field (eqs. 13a, 13b, 15a–15d), the check of the evaluation: with $h = k_0\sqrt{X^2 + Y^2}$,
+$\tan\psi = Y/(-X)$, $q_T = 2\tan\psi/(1 + \sqrt{1 - 8\tan^2\psi})$, $q_D = 1/(2q_T)$, and for $q \in \{q_T, q_D\}$:
+$q^* = \sqrt{1 + q^2}$, $\varphi = -(1 + q^2)/\sqrt{1 + 4q^2}$,
+$\varphi'' = (2q^2 - 1)/((1 + q^2)\sqrt{1 + 4q^2})$, $A/F^2 = -2k_0^2 (P - iQ)(\theta = \arctan q)$,
+$$\zeta \approx \frac{1}{k_0}\,\mathrm{Re}\!\left[a_T e^{i(h\varphi_T - \pi/4)} + a_D e^{i(h\varphi_D + \pi/4)}\right],\qquad
+a = \sqrt{2/\pi}\;\frac{q^* A/F^2}{\sqrt{|\varphi''|}\sqrt{h}}.$$
+On the track $q_T = 0$ and the divergent term drops. The cusp ray is $\tan\psi_K = 1/\sqrt 8$ (19.47°), eq. (18); the
+transverse wavelength on the track is $2\pi U^2/g$, eq. (10a) at $q = 0$. A stationary-phase evaluation of the
+integral above gives the same $q_T$, $q_D$, $\varphi$, $\varphi''$ and amplitude: a second check on their
+transcription from the paper.
+
+A remark, not a source: with $\mathcal A(\theta) = -(2k_0/\pi)\sec^3\theta\,(P - iQ)$ over $\theta \in (-\pi/2,
+\pi/2)$, Havelock's $R_w = (\pi\rho U^2/2)\int|\mathcal A|^2\cos^3\theta\,d\theta$ equals Michell's §7 integral term
+by term. Havelock's formula is quoted for that remark only; the scale of the field rests on Wu's equations above.
+
+### Test Location
+- `crates/seacraft-core/src/wave_pattern.rs::kelvin_far_field_on_the_track`
+- `crates/seacraft-core/src/wave_pattern.rs::kelvin_far_field_off_the_track`
+- `crates/seacraft-core/src/wave_pattern.rs::transverse_wavelength_on_the_track`
+- `crates/seacraft-core/src/wave_pattern.rs::kelvin_wedge_cusp`
+- Structure: `nothing_ahead_of_the_bow`, `field_is_symmetric_port_and_starboard`,
+  `behind_the_stern_every_row_sees_the_whole_hull`, `field_matches_point_evaluation`,
+  `field_is_converged_in_theta`, `catamaran_is_two_shifted_demihulls`, `cuts_match_point_evaluation`, in the
+  same file; `michell.rs::michell_column_refactor_keeps_every_number` freezes Michell's $R_w$ across the refactor
+  that made its column terms reusable (frozen output, not a reference).
+
+### Numbers Used
+Wigley hull of §7 ($L = 10$ m, $B = 1$ m, $T = 0.625$ m, 65 × 25 grid) at Fn 0.30, $g = 9.80665$ m/s², phase step
+π/6 between wave-angle samples.
+
+- On the track, 200 points from 40 L to 20 L behind the origin (Nyquist spacing 0.25 m): $|\zeta - \zeta_K| \le
+  0.03\,|a_T|/k_0$ at every point; worst found 2.21 %.
+- Along the ray ψ = 15°, $h$ from 250 to 450, both wave systems: $|\zeta - \zeta_K| \le 0.03\,(|a_T| + |a_D|)/k_0$;
+  worst found 2.84 %.
+- The 3 % bound is the asymptote's own error, not quadrature: the worst error falls with distance (on the track
+  4.0, 2.1, 1.5, 0.94 % at $h \approx$ 125, 275, 425, 925; at 15° 6.0, 2.8, 1.8, 0.89 %), and is unchanged when the
+  phase step is cut to π/24. Its size is that of the hull's length against the distance ($k_0 L / h$), which the
+  asymptote treats as a point.
+- Transverse wavelength: mean spacing of the up-crossings on the track over 40 L to 20 L behind, 5.65547 m against
+  $2\pi U^2/g = 5.65487$ m (0.011 %); the test allows 0.5 %.
+- Cusp: a transverse cut 40 L behind the bow, $y$ from 0 to 25 L, 4000 samples; the envelope (largest $|\zeta|$ in
+  each 0.25 $\lambda_T$ window) peaks at ψ = 18.76° against ψ_K = 19.47°, and beyond ψ_K + 3° stays below 0.02 % of
+  the peak. The test allows a peak from ψ_K − 2° to ψ_K + 0.5° (the Airy peak of a cusp lies inside the caustic,
+  closer as $h^{-2/3}$) and 10 % beyond ψ_K + 3° (no stationary wave angle outside the wedge).
+- Structure: the grid equals point evaluation to $10^{-10}$ of the largest $|\zeta|$; halving the phase step moves
+  the default field by 0.0013 % of its largest $|\zeta|$ (the test allows 1 %); the catamaran equals two shifted
+  demihulls to $10^{-10}$.
+- Bite checks run while writing the tests: dropping the $1/\pi$, or reversing the sign of the $x$ phase, fails
+  both Kelvin tests; scaling the $y$ wavenumber by 1.2 moves the cusp peak to 15.75° and fails the cusp test.
+
+### Provenance
+The equations were read from the paper (2026-11-18) and checked against a stationary-phase evaluation of the field
+integral; the measured errors above are from the tests' output on 2026-11-18.
+
+**No measured wave pattern.** No measured off-hull wave cut of the ITTC Wigley hull was found to compare with.
+Kajitani et al. (1983, §39) report wave-pattern resistance $C_{wp}$ from longitudinal cuts but no cut traces (read
+2026-11-18, all 31 pages; the contour plot on p. 16 is wake head loss, not wave elevation). A literature search by
+the maintainer found none either. Leads for later: Inui, T., Kajitani, H., Narita, H. & Mori, K. (1969), *J. Soc.
+Naval Architects Japan* 126, pp. 35–48 (measured cuts on other mathematical hulls); Insel, M. (1990), PhD thesis,
+University of Southampton (Wigley III catamaran cuts, not checked); McCarthy, J. H. (ed., 1985), DTNSRDC-85/011.
+Measured off-hull cuts exist for KCS, Series 60 and DTMB 5415, which are outside thin-ship scope or not yet
+modelled here.
+
+Not used: the transverse wave cut of Peri, D. (2026), SIREN, arXiv:2610.14027, §5.5, eq. (22). Its author reports
+the cut low by a roughly constant factor (cut/pressure 0.38–0.58, Table 7 and the text after it) from a
+normalisation constant that was not located, so it cannot supply an independent constant.
+
+What this covers: that the evaluation of the far-field integral agrees with its own published far-field
+asymptotics and with Kelvin's geometry (wedge angle, transverse wavelength) for the Wigley hull at Fn 0.30. It is a
+check of the method, not a comparison with measurement, and says nothing about the elevation near the hull (free
+waves only, no local disturbance), about transom sterns (computed and flagged, §38) or about real catamarans.

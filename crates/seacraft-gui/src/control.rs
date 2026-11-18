@@ -2348,6 +2348,28 @@ fn handle_inner(
                 "propulsion": propulsion,
             }))
         }
+        "waves.compute" => {
+            // Read-only: measures, and writes files only where asked and allowed.
+            let mut opts = app.hydro_options().clone();
+            if let Some(level) = level_arg(p)? {
+                opts.subdivision.level = level;
+            }
+            let args = p
+                .as_object()
+                .ok_or("waves.compute: parameters must be an object")?;
+            let surface = app
+                .surface()
+                .ok_or_else(|| "waves.compute: no model is loaded".to_string())?;
+            let result = seacraft_core::wave_pattern::wave_tool(
+                surface,
+                opts.subdivision,
+                opts.draft,
+                args,
+                &|path| app.check_control_write_path(path),
+            )
+            .map_err(|e| format!("waves.compute: {e}"))?;
+            reply_app(result)
+        }
         "planing.compute" => {
             let mut opts = app.hydro_options().clone();
             if let Some(d) = number_in(p, "draft", 0.01..=1.0e4)? {
@@ -5687,5 +5709,63 @@ mod tests {
             )["ok"],
             false
         );
+    }
+
+    /// Review focus 3: an agent attached to the window gets the wave pattern too, and its files go
+    /// only where the window lets agents write.
+    #[test]
+    fn waves_compute_answers_for_the_window() {
+        let (mut app, ctx) = demo();
+        let (dirty, undo) = (app.is_dirty(), app.undo_len());
+        let r = call(
+            &mut app,
+            &ctx,
+            "waves.compute",
+            json!({ "fn": 0.3, "spacing": 0.5 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["backend"], "app", "{r}");
+        assert!(
+            (r["result"]["froude"].as_f64().unwrap() - 0.3).abs() < 1e-9,
+            "{r}"
+        );
+        let warnings = r["result"]["warnings"].to_string();
+        assert!(warnings.contains("wetted transom"), "{r}");
+        assert_eq!((app.is_dirty(), app.undo_len()), (dirty, undo), "read-only");
+
+        let dir = std::env::temp_dir().join(format!("seacraft-waves-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        let inside = dir.join("w.svg");
+        let r = call(
+            &mut app,
+            &ctx,
+            "waves.compute",
+            json!({ "fn": 0.3, "spacing": 0.5, "svg_path": inside.to_string_lossy() }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(inside.exists());
+        let outside =
+            std::env::temp_dir().join(format!("seacraft-waves-out-{}.svg", std::process::id()));
+        let r = call(
+            &mut app,
+            &ctx,
+            "waves.compute",
+            json!({ "fn": 0.3, "svg_path": outside.to_string_lossy() }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(!outside.exists());
+        let r = call(
+            &mut app,
+            &ctx,
+            "waves.compute",
+            json!({ "fn": 0.3, "speed": 8.0 }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -847,6 +847,7 @@ impl McpServer {
             "table_of_offsets" => self.table_of_offsets(a),
             "resistance_curve" => self.resistance_curve(a),
             "planing_curve" => self.planing_curve(a),
+            "wave_pattern" => self.wave_pattern(a),
             "transform_hull" => self.transform_hull(a),
             "unfold_plate" => self.unfold_plate(a),
             "hydro_table" => self.hydro_table(a),
@@ -2037,6 +2038,27 @@ impl McpServer {
         }))
     }
 
+    fn wave_pattern(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let mut subdiv = self.opts.subdivision;
+        subdiv.level = level;
+        let mut reply = seacraft_core::wave_pattern::wave_tool(
+            &self.surface,
+            subdiv,
+            self.opts.draft,
+            a,
+            &|p| Ok(p.to_path_buf()),
+        )
+        .map_err(|e| format!("wave_pattern: {e}"))?;
+        if let Some(map) = reply.as_object_mut() {
+            map.insert("backend".into(), json!("headless"));
+        }
+        Ok(reply)
+    }
+
     fn unfold_plate(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let level = match a.get("level") {
             None | Some(Value::Null) => self.opts.subdivision.level,
@@ -2697,8 +2719,8 @@ fn obj(props: Value, required: &[&str]) -> Value {
 /// What a tool does to the world, which fixes its MCP annotation hints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Measures or reports; changes nothing (`unfold_plate` writes a file only
-    /// when asked, as a side product of the answer).
+    /// Measures or reports; changes nothing (`unfold_plate` and `wave_pattern`
+    /// write files only when given a path, as a side product of the answer).
     ReadOnly,
     /// Changes the loaded model in place, additively or by small moves.
     Edits,
@@ -3188,6 +3210,38 @@ pub fn tool_definitions() -> Vec<Value> {
                     "beam": number("Planing beam in metres (default: the waterline beam)"),
                     "lcg_x": number("Centre of gravity in model x (default: the LCB)"),
                     "deadrise": number("Deadrise at the transom in degrees (default: measured)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
+            "wave_pattern",
+            "Wave pattern",
+            "Far-field thin-ship (Michell) wave pattern behind the hull, the Kelvin wedge of transverse and \
+             divergent waves: free waves only, without the local disturbance, so it is not the wave profile on \
+             the hull. Give exactly one of `speed` (knots) and `fn`. The domain runs `behind` waterline lengths \
+             behind the stern to `ahead` ahead of the bow, `half_width` each side; waves shorter than two grid \
+             spacings are left out and the cut-off is reported. `cat_spacing` gives two demihulls (the model is \
+             one). Returns U, Fn, k0, the transverse wavelength, the wave-angle cut and shortest wave kept, the \
+             grid size, max |elevation|, notes and Michell's warnings (L/B, Fn, wetted transom). Give \
+             `png_path`, `svg_path` or `vti_path` to also write the pattern (PNG colour map, SVG contours, VTK \
+             image data).",
+            obj(
+                json!({
+                    "speed": number("Ship speed in knots (or give `fn`)"),
+                    "fn": number("Froude number on the waterline length (or give `speed`)"),
+                    "draft": number("Draft to measure at (default: the model's)"),
+                    "cat_spacing": number("Catamaran demihull centreline spacing in metres"),
+                    "ahead": number("Domain ahead of the bow in waterline lengths (default 1)"),
+                    "behind": number("Domain behind the stern in waterline lengths (default 3)"),
+                    "half_width": number("Domain half-width in waterline lengths (default 1.5)"),
+                    "spacing": number("Grid spacing in metres (default: transverse wavelength / 20)"),
+                    "clip": number("Colour and contour clip in metres (default: the largest |elevation|)"),
+                    "png_path": string("Write the colour map PNG here"),
+                    "svg_path": string("Write the SVG contour map here"),
+                    "vti_path": string("Write VTK image data (.vti) here"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
                 }),
                 &[],
@@ -3884,6 +3938,7 @@ impl Remote {
             "table_of_offsets" => self.request("curves.offsets", Value::Object(a.clone())),
             "resistance_curve" => self.request("resistance.compute", Value::Object(a.clone())),
             "planing_curve" => self.request("planing.compute", Value::Object(a.clone())),
+            "wave_pattern" => self.request("waves.compute", Value::Object(a.clone())),
             "transform_hull" => self.request("model.transform", Value::Object(a.clone())),
             "unfold_plate" => self.request("curves.unfold", Value::Object(a.clone())),
             "hydro_table" => self.request("hydro.table", Value::Object(a.clone())),
@@ -4312,6 +4367,7 @@ mod tests {
                 "table_of_offsets",
                 "resistance_curve",
                 "planing_curve",
+                "wave_pattern",
                 "transform_hull",
                 "unfold_plate",
                 "hydro_table",
@@ -6756,5 +6812,104 @@ mod tests {
         );
         assert_eq!(rem2["moved"], r2["moved"]);
         handle.join().expect("server thread finished");
+    }
+
+    #[test]
+    fn wave_pattern_writes_a_png_and_reports_numbers() {
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "wigley"}));
+        let png = temp_path("png");
+        let r = ok(
+            &mut s,
+            2,
+            "wave_pattern",
+            json!({"fn": 0.3, "png_path": png.to_string_lossy(), "spacing": 0.5}),
+        );
+        assert_eq!(r["backend"], "headless", "{r}");
+        assert!((r["froude"].as_f64().unwrap() - 0.3).abs() < 1e-9, "{r}");
+        assert!(r["max_abs_zeta_m"].as_f64().unwrap() > 0.0, "{r}");
+        assert_eq!(r["files"][0], json!(png.to_string_lossy()), "{r}");
+        assert!(r.get("zeta").is_none(), "the grid stays out of the reply");
+        assert!(r["notes"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("Far-field thin-ship"));
+        let bytes = std::fs::read(&png).expect("the PNG is written");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let _ = std::fs::remove_file(&png);
+        let tools = tool_definitions();
+        let def = tools.iter().find(|t| t["name"] == "wave_pattern").unwrap();
+        assert_eq!(Effect::of(def), Effect::ReadOnly);
+    }
+
+    /// Review focus 4: bad numbers are a tool error naming the argument, never a panic.
+    #[test]
+    fn wave_pattern_refuses_bad_arguments() {
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "wigley"}));
+        let png = temp_path("png");
+        let cases = [
+            (json!({"fn": 0.3, "speed": 8.0}), "speed"),
+            (json!({}), "speed"),
+            (json!({"speed": -1.0}), "speed"),
+            (json!({"fn": 0.3, "spacing": 0.0}), "spacing"),
+            (json!({"fn": 0.3, "behind": -1.0}), "behind"),
+            (json!({"fn": 0.3, "cat_spacing": 0.5}), "spacing"),
+        ];
+        for (k, (args, word)) in cases.into_iter().enumerate() {
+            let mut args = args;
+            args["png_path"] = args
+                .get("png_path")
+                .cloned()
+                .unwrap_or(json!(png.to_string_lossy()));
+            let msg = fails(&mut s, 10 + k as u64, "wave_pattern", args.clone());
+            assert!(msg.contains(word), "{args}: {msg}");
+            assert!(!png.exists(), "{args} wrote a file");
+        }
+        // Two outputs on one file would leave only the last while both are reported.
+        let msg = fails(
+            &mut s,
+            20,
+            "wave_pattern",
+            json!({"fn": 0.3, "png_path": png.to_string_lossy(), "svg_path": png.to_string_lossy()}),
+        );
+        assert!(msg.contains("same file"), "{msg}");
+        assert!(!png.exists(), "a refused call wrote a file");
+        // So would a dangling link to the PNG, once the PNG is written.
+        #[cfg(unix)]
+        {
+            let link = temp_path("svg");
+            std::os::unix::fs::symlink(&png, &link).unwrap();
+            let msg = fails(
+                &mut s,
+                21,
+                "wave_pattern",
+                json!({"fn": 0.3, "png_path": png.to_string_lossy(), "svg_path": link.to_string_lossy()}),
+            );
+            let written = png.exists();
+            let kept = std::fs::read_link(&link).ok();
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::remove_file(&png);
+            assert!(msg.contains("same file"), "{msg}");
+            assert!(!written, "a refused call wrote a file");
+            assert_eq!(kept, Some(png.clone()), "a refused call replaced the link");
+        }
+        // A wrong type is refused by the schema check, before the tool runs.
+        for (k, (args, word)) in [
+            (json!({"fn": "fast"}), "fn"),
+            (json!({"fn": 0.3, "png_path": 7}), "png_path"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let r = request(
+                &mut s,
+                30 + k as u64,
+                "tools/call",
+                json!({"name": "wave_pattern", "arguments": args}),
+            );
+            let msg = r["error"]["message"].as_str().unwrap_or_default();
+            assert!(msg.contains(word), "{r}");
+        }
     }
 }

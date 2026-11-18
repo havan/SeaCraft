@@ -29,6 +29,8 @@ pub const NOT_VALIDATED_NOTE: &str =
 pub mod analysis;
 /// Connected editing: presets and the weights of the points that follow a move.
 pub mod connected;
+/// Contour lines of a gridded scalar (marching squares).
+pub mod contour;
 pub mod control_auth;
 pub mod curves;
 pub mod damage;
@@ -89,6 +91,8 @@ pub mod trimopt;
 pub mod ttf;
 /// Lengths as text: metric first, imperial beside it when asked.
 pub mod units;
+/// Far-field thin-ship wave pattern behind a hull: Michell's spectrum, the Kelvin wedge.
+pub mod wave_pattern;
 pub mod weather;
 
 pub use analysis::AnalysisMode;
