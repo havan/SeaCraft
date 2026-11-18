@@ -251,13 +251,14 @@ mod tests {
         let up = dir.join("sub/../a.png");
         assert_eq!(shared_output(&[&a, &b]).unwrap(), None);
         assert_eq!(shared_output(&[&a, &b, &up]).unwrap(), Some((0, 2)));
-        let shout = dir.join("SUB/../A.PNG");
         assert_eq!(
             shared_output(&[&b, &a, &dir.join("A.PNG")]).unwrap(),
             Some((1, 2))
         );
+        // A folder no file system can find under any case or spelling (not `SUB/..`, which a
+        // case-blind disk resolves to `sub` and Windows drops before looking).
         assert!(
-            shared_output(&[&a, &shout]).is_err(),
+            shared_output(&[&a, &dir.join("missing/a.png")]).is_err(),
             "a missing folder has no landing"
         );
         let _ = fs::remove_dir_all(&dir);
