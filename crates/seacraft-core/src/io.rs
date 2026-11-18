@@ -90,11 +90,18 @@ pub fn landing(path: &Path) -> io::Result<PathBuf> {
 /// [`landing`]): written in turn, the later would replace the earlier while both are reported.
 /// Landings are compared without regard to case, on every platform: on a case-blind file system
 /// (Windows, macOS by default) `p.png` and `P.PNG` are one file, and telling which a folder is
-/// costs more than refusing two names a user would hardly mean as two files.
+/// costs more than refusing two names a user would hardly mean as two files. A path that is not
+/// UTF-8 is compared as it is: it cannot equal a UTF-8 one, and folding it would merge names.
 pub fn shared_output(outputs: &[&Path]) -> io::Result<Option<(usize, usize)>> {
     let landed = outputs
         .iter()
-        .map(|p| Ok(landing(p)?.to_string_lossy().to_lowercase()))
+        .map(|p| {
+            let land = landing(p)?;
+            Ok(match land.to_str() {
+                Some(text) => PathBuf::from(text.to_lowercase()),
+                None => land,
+            })
+        })
         .collect::<io::Result<Vec<_>>>()?;
     Ok((0..landed.len()).find_map(|i| {
         landed[..i]
@@ -278,6 +285,21 @@ mod tests {
         write_atomic(dir.join("a.png"), "png").unwrap();
         write_atomic(dir.join("dangling.svg"), "svg").unwrap();
         assert_eq!(fs::read_to_string(dir.join("a.png")).unwrap(), "svg");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Names that are not UTF-8 are compared byte for byte: two such names are not one file because
+    /// both would print with the same replacement character.
+    #[cfg(unix)]
+    #[test]
+    fn names_that_are_not_utf8_stay_distinct() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = scratch("bytes");
+        let a = dir.join(OsStr::from_bytes(b"a\x80.png"));
+        let b = dir.join(OsStr::from_bytes(b"a\x81.png"));
+        assert_eq!(shared_output(&[&a, &b]).unwrap(), None);
+        assert_eq!(shared_output(&[&a, &b, &a]).unwrap(), Some((0, 2)));
         let _ = fs::remove_dir_all(&dir);
     }
 
