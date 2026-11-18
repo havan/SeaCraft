@@ -872,6 +872,10 @@ pub struct PerformanceState {
     pub sea_input: SeaStateInput,
     /// Irregular-sea responses from the same run as `raos` (None unless a sea state was set).
     pub sea_result: Option<IrregularReport>,
+    /// The far-field wave pattern's settings, and its last result (drawn only while current:
+    /// [`App::wave_overlay`]).
+    pub waves: crate::waves::WaveSettings,
+    pub wave_result: Option<crate::waves::WaveResult>,
 }
 
 impl Default for PerformanceState {
@@ -887,6 +891,8 @@ impl Default for PerformanceState {
             raos: None,
             sea_input: SeaStateInput::default(),
             sea_result: None,
+            waves: crate::waves::WaveSettings::default(),
+            wave_result: None,
         }
     }
 }
@@ -1049,6 +1055,7 @@ pub struct App {
     damage_track: Track<DamageResult>,
     perf_state: PerformanceState,
     resistance_track: Track<ResistanceResult>,
+    waves_track: Track<crate::waves::WaveResult>,
     raos_track: Track<RaoResult>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
@@ -1299,6 +1306,7 @@ impl App {
             damage_track: Track::default(),
             perf_state: PerformanceState::default(),
             resistance_track: Track::default(),
+            waves_track: Track::default(),
             raos_track: Track::default(),
             analysis: Default::default(),
             hydro_rev: 0,
@@ -1564,6 +1572,8 @@ impl App {
         self.perf_state.raos = None;
         self.perf_state.sea_result = None;
         self.raos_track.reset();
+        self.perf_state.wave_result = None;
+        self.waves_track.reset();
         self.analysis.clear_results();
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
@@ -1884,6 +1894,10 @@ impl App {
             }
             DockAction::Performance(panels::PerformanceAction::Compute) => {
                 self.start_performance_compute()
+            }
+            DockAction::Performance(panels::PerformanceAction::WavesChanged) => {
+                // The wave settings are their own key: resistance is not recomputed.
+                self.last_change = Some(std::time::Instant::now());
             }
             DockAction::Performance(panels::PerformanceAction::None) => {}
         }
@@ -4635,6 +4649,96 @@ impl App {
         revision_key(&[self.revision, self.hydro_rev, self.perf_rev])
     }
 
+    /// The wave pattern's inputs: the geometry and level, the floating condition (its draft) and
+    /// every wave setting but `show`.
+    fn waves_key(&self) -> u64 {
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            crate::waves::settings_key(&self.perf_state.waves),
+        ])
+    }
+
+    pub fn wave_settings(&self) -> &crate::waves::WaveSettings {
+        &self.perf_state.waves
+    }
+
+    /// Replace the wave settings; a changed result is recomputed after the usual quiet period.
+    pub fn set_wave_settings(&mut self, settings: crate::waves::WaveSettings) {
+        self.perf_state.waves = settings;
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// Show the wave pattern on Plan view (and compute it), or hide it.
+    pub fn set_waves_shown(&mut self, show: bool) {
+        let settings = crate::waves::WaveSettings {
+            show,
+            ..self.perf_state.waves.clone()
+        };
+        self.set_wave_settings(settings);
+    }
+
+    /// The wave pattern to draw, save or report: `Some` only while it is shown and computed for
+    /// the current model, floating condition and settings. Every view goes through this gate.
+    pub fn wave_overlay(&self) -> Option<&crate::waves::WaveResult> {
+        if !self.perf_state.waves.show || !self.waves_track.is_current(self.waves_key()) {
+            return None;
+        }
+        self.perf_state.wave_result.as_ref()
+    }
+
+    /// Why the wave pattern failed for the current inputs, if it did.
+    pub fn wave_failure(&self) -> Option<&str> {
+        self.waves_track.failure(self.waves_key())
+    }
+
+    /// Whether a wave-pattern job is running (test hook).
+    pub fn waves_busy(&self) -> bool {
+        self.waves_track.busy()
+    }
+
+    /// Compute the wave pattern on this thread (tests and scripts).
+    pub fn compute_waves_blocking(&mut self) -> Result<(), String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let key = self.waves_key();
+        match crate::waves::compute_waves(
+            surface,
+            subdivision,
+            self.hydro.options.draft,
+            &self.perf_state.waves,
+        ) {
+            Ok(w) => {
+                self.perf_state.wave_result = Some(w);
+                self.waves_track.stamp(key);
+                Ok(())
+            }
+            Err(e) => {
+                self.waves_track.fail(key, e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn start_waves_compute(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            return;
+        };
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let draft = self.hydro.options.draft;
+        let settings = self.perf_state.waves.clone();
+        let key = self.waves_key();
+        self.waves_track.start(key, move || {
+            crate::waves::compute_waves(&surface, subdivision, draft, &settings)
+        });
+    }
+
     fn raos_key(&self) -> u64 {
         // The KG may come from the loading condition.
         revision_key(&[
@@ -4691,7 +4795,8 @@ impl App {
             let loading_due = !self.project.loading_conditions.is_empty()
                 && self.loading_track.due(self.loading_key());
             let resistance_due = self.resistance_track.due(self.resistance_key());
-            if loading_due || resistance_due {
+            let waves_due = self.perf_state.waves.show && self.waves_track.due(self.waves_key());
+            if loading_due || resistance_due || waves_due {
                 if !quiet {
                     waiting = true;
                 } else {
@@ -4701,6 +4806,9 @@ impl App {
                     if resistance_due {
                         self.start_resistance_compute();
                     }
+                    if waves_due {
+                        self.start_waves_compute();
+                    }
                 }
             }
         }
@@ -4709,6 +4817,7 @@ impl App {
             || self.loading_track.busy()
             || self.damage_track.busy()
             || self.resistance_track.busy()
+            || self.waves_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy();
         if busy || waiting {
@@ -4743,6 +4852,11 @@ impl App {
         match self.resistance_track.poll(self.resistance_key()) {
             Some(Ok(r)) => self.perf_state.resistance = Some(r),
             Some(Err(e)) => self.log(Level::Error, format!("Resistance compute failed: {e}")),
+            None => {}
+        }
+        match self.waves_track.poll(self.waves_key()) {
+            Some(Ok(w)) => self.perf_state.wave_result = Some(w),
+            Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
             None => {}
         }
         match self.raos_track.poll(self.raos_key()) {
@@ -4881,6 +4995,16 @@ impl App {
         ) {
             self.start_resistance_compute();
         }
+        let key = self.waves_key();
+        if self.perf_state.waves.show
+            && wanted(
+                self.waves_track.is_current(key),
+                self.waves_track.running_for(),
+                key,
+            )
+        {
+            self.start_waves_compute();
+        }
         // The drawer's view and the dock's tab are each on screen on their
         // own: the drawer stays when the dock is hidden, and does not cover
         // the tab when both are shown.
@@ -4941,6 +5065,13 @@ impl App {
             && !self.resistance_track.is_current(self.resistance_key())
     }
 
+    /// A wave pattern is kept but no longer matches the inputs (recomputed automatically while shown).
+    fn waves_stale(&self) -> bool {
+        self.perf_state.waves.show
+            && self.perf_state.wave_result.is_some()
+            && !self.waves_track.is_current(self.waves_key())
+    }
+
     fn raos_stale(&self) -> bool {
         (self.perf_state.raos.is_some() || self.perf_state.sea_result.is_some())
             && !self.raos_track.is_current(self.raos_key())
@@ -4955,6 +5086,7 @@ impl App {
             (self.damage_stale(), "damage"),
             (self.resistance_stale(), "resistance"),
             (self.raos_stale(), "RAOs"),
+            (self.waves_stale(), "wave pattern"),
             (self.open_view_stale(), "analysis view"),
         ]
         .into_iter()
@@ -4980,7 +5112,9 @@ impl App {
                         .as_ref()
                         .is_some_and(|r| r.weather.is_some())
             }
-            DesignDock::Performance => self.resistance_stale() || self.raos_stale(),
+            DesignDock::Performance => {
+                self.resistance_stale() || self.raos_stale() || self.waves_stale()
+            }
         }
     }
 
@@ -5009,6 +5143,7 @@ impl App {
                     "Seakeeping compute",
                     self.raos_track.failure(self.raos_key()),
                 ),
+                ("Wave pattern", self.waves_track.failure(self.waves_key())),
             ],
         };
         failures
@@ -5038,6 +5173,7 @@ impl App {
             || self.loading_track.busy()
             || self.damage_track.busy()
             || self.resistance_track.busy()
+            || self.waves_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy()
     }

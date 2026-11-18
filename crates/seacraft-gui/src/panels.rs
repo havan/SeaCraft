@@ -2037,6 +2037,8 @@ pub enum PerformanceAction {
     None,
     Changed,
     Compute,
+    /// The wave-pattern settings changed (they key their own job, not resistance).
+    WavesChanged,
 }
 
 pub struct PerformancePanel<'a> {

@@ -71,6 +71,7 @@ impl Default for WaveSettings {
 }
 
 /// A computed pattern and everything the window draws from it.
+#[derive(Debug, Clone)]
 pub struct WaveResult {
     pub field: WaveField,
     pub image: egui::ColorImage,
@@ -351,8 +352,7 @@ mod tests {
     fn no_waterline_is_an_error() {
         let (surface, subdiv, _) = demo();
         let err = compute_waves(&surface, subdiv, 0.0, &WaveSettings::default())
-            .err()
-            .expect("no waterline at draft 0");
+            .expect_err("no waterline at draft 0");
         assert!(err.contains("Michell"), "{err}");
     }
 
