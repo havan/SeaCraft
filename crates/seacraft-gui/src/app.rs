@@ -1747,6 +1747,7 @@ impl App {
             .as_ref()
             .map(|w| w.length_wl)
             .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl));
+        let waves_beam_wl = self.hydro.result.as_ref().map(|h| h.bwl);
         let default_kg = self.effective_performance_kg_default();
         let kg_source = self.performance_kg_source();
         let kg_estimate = self.kg_is_estimate();
@@ -1876,6 +1877,7 @@ impl App {
                             waves_failure: waves_failure.clone(),
                             heeled_or_trimmed,
                             waves_length_wl,
+                            waves_beam_wl,
                         },
                     ));
                 }

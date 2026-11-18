@@ -86,6 +86,17 @@ impl Default for WaveSettings {
     }
 }
 
+/// The demihull spacing offered when "Catamaran" is ticked: the usual 0.3 L, but never less than
+/// twice the waterline beam, so the demihulls do not overlap; 3 m before the hull is measured.
+pub fn catamaran_guess(length_wl: Option<f64>, beam_wl: Option<f64>) -> f64 {
+    let l = length_wl.filter(|l| *l > 0.0).map(|l| 0.3 * l);
+    let b = beam_wl.filter(|b| *b > 0.0).map(|b| 2.0 * b);
+    match (l, b) {
+        (None, None) => 3.0,
+        (l, b) => l.unwrap_or(0.0).max(b.unwrap_or(0.0)).max(0.1),
+    }
+}
+
 /// A computed pattern and everything the window draws from it.
 #[derive(Debug, Clone)]
 pub struct WaveResult {
@@ -373,6 +384,16 @@ mod tests {
         let err = compute_waves(&surface, subdiv, 0.0, &WaveSettings::default())
             .expect_err("no waterline at draft 0");
         assert!(err.contains("Michell"), "{err}");
+    }
+
+    #[test]
+    fn catamaran_guess_clears_the_demihull() {
+        // The demo hull: L_wl about 10.7 m, B_wl 3.54 m; 0.3 L alone would overlap.
+        let s = catamaran_guess(Some(10.7), Some(3.54));
+        assert!(s >= 2.0 * 3.54, "{s}");
+        // A slender hull keeps the usual 0.3 L.
+        assert!((catamaran_guess(Some(20.0), Some(1.0)) - 6.0).abs() < 1e-12);
+        assert_eq!(catamaran_guess(None, None), 3.0);
     }
 
     #[test]

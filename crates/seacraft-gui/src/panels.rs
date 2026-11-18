@@ -2066,6 +2066,8 @@ pub struct PerformancePanel<'a> {
     pub heeled_or_trimmed: bool,
     /// The waterline length the speed's units convert by: the pattern's, else the hull's.
     pub waves_length_wl: Option<f64>,
+    /// The hull's waterline beam, so the catamaran spacing offered clears the demihulls.
+    pub waves_beam_wl: Option<f64>,
 }
 
 pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
@@ -2160,6 +2162,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
             failure: panel.waves_failure.as_deref(),
             heeled_or_trimmed: panel.heeled_or_trimmed,
             length_wl: panel.waves_length_wl,
+            beam_wl: panel.waves_beam_wl,
         },
     );
     match waves {
@@ -2265,6 +2268,7 @@ pub struct WavesPanel<'a> {
     pub failure: Option<&'a str>,
     pub heeled_or_trimmed: bool,
     pub length_wl: Option<f64>,
+    pub beam_wl: Option<f64>,
 }
 
 /// The far-field wave pattern: its settings (speed first), "Save image…", and the result's summary,
@@ -2337,8 +2341,7 @@ pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
     ui.horizontal(|ui| {
         let mut cat = s.cat_spacing_m.is_some();
         if ui.checkbox(&mut cat, "Catamaran").changed() {
-            // A typical demihull spacing, 0.3 L, until the user sets one.
-            let guess = panel.length_wl.map_or(3.0, |l| (0.3 * l).max(0.1));
+            let guess = crate::waves::catamaran_guess(panel.length_wl, panel.beam_wl);
             s.cat_spacing_m = cat.then_some(guess);
             changed = true;
         }
