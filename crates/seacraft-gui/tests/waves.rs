@@ -489,3 +489,114 @@ fn speed_is_an_input() {
         "{texts:?}"
     );
 }
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("seacraft-gui-waves-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
+#[test]
+fn saves_png_svg_vti() {
+    let (mut app, _ctx) = demo_with_waves();
+    let (nx, ny) = {
+        let f = &app.wave_overlay().unwrap().field;
+        (f.xs.len() as u32, f.ys.len() as u32)
+    };
+    let png = scratch("waves.png");
+    let svg = scratch("waves.SVG");
+    let vti = scratch("waves.vti");
+    for p in [&png, &svg, &vti] {
+        let _ = std::fs::remove_file(p);
+        app.write_wave_image(p)
+            .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        app.wait_wave_image()
+            .expect("a write job")
+            .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+    }
+    let bytes = std::fs::read(&png).unwrap();
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    let be = |i: usize| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
+    assert_eq!(&bytes[12..16], b"IHDR");
+    assert_eq!((be(16), be(20)), (nx, ny), "one pixel per grid point");
+    let svg = std::fs::read_to_string(&svg).unwrap();
+    assert!(svg.contains(seacraft_core::wave_pattern::FAR_FIELD_NOTE));
+    let vti = std::fs::read_to_string(&vti).unwrap();
+    assert!(vti.contains("<ImageData"));
+    assert!(app
+        .messages()
+        .entries()
+        .any(|m| m.text.starts_with("Saved wave pattern to ")));
+}
+
+#[test]
+fn refuses_an_unknown_extension() {
+    let (mut app, _ctx) = demo_with_waves();
+    let jpg = scratch("waves.jpg");
+    let _ = std::fs::remove_file(&jpg);
+    let err = app.write_wave_image(&jpg).unwrap_err();
+    assert_eq!(err, "save the wave pattern as .png, .svg or .vti");
+    assert!(app.wait_wave_image().is_none(), "nothing is written");
+    assert!(!jpg.exists());
+}
+
+#[test]
+fn refuses_a_stale_pattern() {
+    let (mut app, _ctx) = demo_with_waves();
+    app.set_wave_settings(WaveSettings {
+        cut_y_l: 0.5,
+        ..app.wave_settings().clone()
+    });
+    let png = scratch("stale.png");
+    let _ = std::fs::remove_file(&png);
+    let err = app.write_wave_image(&png).unwrap_err();
+    assert_eq!(
+        err,
+        "the wave pattern is out of date or not computed; wait for it to finish"
+    );
+    assert!(app.wait_wave_image().is_none(), "nothing is written");
+    assert!(!png.exists());
+}
+
+fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+fn text_rect(out: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
+    fn walk(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().find_map(|s| walk(s, label)),
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+            }
+            _ => None,
+        }
+    }
+    out.shapes.iter().find_map(|c| walk(&c.shape, label))
+}
+
+#[test]
+fn save_button_opens_the_dialog() {
+    let (mut app, ctx) = demo_with_waves();
+    app.set_dock_tab(seacraft_gui::app::DesignDock::Performance);
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+    let at = text_rect(&out, "Save image…").expect("the button").center();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    frame(&ctx, &mut app, vec![button(at, true)]);
+    frame(&ctx, &mut app, vec![button(at, false)]);
+    assert!(app.dialog_open());
+    let texts = texts(&frame(&ctx, &mut app, Vec::new()));
+    assert!(texts.iter().any(|t| t == "Wave pattern image"), "{texts:?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.ends_with("demo-hull-waves-fn0.30.png")),
+        "{texts:?}"
+    );
+}

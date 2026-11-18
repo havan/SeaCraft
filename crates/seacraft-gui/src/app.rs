@@ -558,6 +558,8 @@ enum DialogKind {
     Report,
     /// The builder templates, in the format the path's extension names.
     Templates,
+    /// The current wave pattern, as PNG, SVG or VTI by the path's extension.
+    WaveImage,
 }
 
 /// An action that may need to discard unsaved work first.
@@ -1037,6 +1039,8 @@ pub struct App {
     start_rects: Option<crate::new_design::StartRects>,
     /// A design report being written on a worker thread, and its path.
     report_job: Option<(PathBuf, Job<()>)>,
+    /// A wave-pattern image being encoded and written.
+    wave_image_job: Option<(PathBuf, Job<()>)>,
     /// The File > Builder templates window is open.
     show_templates: bool,
     templates_params: crate::commands::TemplatesParams,
@@ -1296,6 +1300,7 @@ impl App {
             project_settings: None,
             start_rects: None,
             report_job: None,
+            wave_image_job: None,
             show_templates: false,
             templates_params: crate::commands::TemplatesParams::default(),
             templates_rev: 0,
@@ -1923,7 +1928,9 @@ impl App {
                 // The wave settings are their own key: resistance is not recomputed.
                 self.last_change = Some(std::time::Instant::now());
             }
-            DockAction::Performance(panels::PerformanceAction::SaveWaveImage) => {}
+            DockAction::Performance(panels::PerformanceAction::SaveWaveImage) => {
+                self.open_dialog(DialogKind::WaveImage);
+            }
             DockAction::Performance(panels::PerformanceAction::None) => {}
         }
         self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);
@@ -2109,6 +2116,7 @@ impl App {
         self.finish_project_edit_frame(ui.ctx());
         self.messages_window(ui);
         self.poll_report(ui.ctx());
+        self.poll_wave_image(ui.ctx());
         self.intercept_close(ui.ctx());
         self.pending_window(ui);
         self.recovery_window(ui.ctx());
@@ -3069,6 +3077,12 @@ impl App {
                 .join(format!("{clean}-moulds.pdf"))
                 .to_string_lossy()
                 .to_string(),
+            DialogKind::WaveImage => {
+                let froude = self.wave_overlay().map_or(0.0, |w| w.field.froude);
+                dir.join(format!("{clean}-waves-fn{froude:.2}.png"))
+                    .to_string_lossy()
+                    .to_string()
+            }
         }
     }
 
@@ -3156,6 +3170,87 @@ impl App {
     }
 
     /// Write one of the export formats; a failure is logged and returned.
+    /// Save the current wave pattern as PNG, SVG or VTI, by `path`'s extension (any case), through
+    /// `write_atomic`. Only a current pattern is saved: an out-of-date one writes nothing. The
+    /// checks answer at once; the encoding (a quarter of a second for SVG or VTI at a million
+    /// points) and the write run in a job, which logs "Saved wave pattern to …" when done.
+    pub fn write_wave_image(&mut self, path: &std::path::Path) -> Result<(), String> {
+        use seacraft_core::wave_pattern::{wave_png, wave_svg, wave_vti};
+        #[derive(Clone, Copy)]
+        enum Format {
+            Png,
+            Svg,
+            Vti,
+        }
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        let format = match extension.as_deref() {
+            Some("png") => Format::Png,
+            Some("svg") => Format::Svg,
+            Some("vti") => Format::Vti,
+            _ => return Err("save the wave pattern as .png, .svg or .vti".to_owned()),
+        };
+        let field = self
+            .wave_overlay()
+            .ok_or("the wave pattern is out of date or not computed; wait for it to finish")?
+            .field
+            .clone();
+        if self.wave_image_job.is_some() {
+            return Err("a wave pattern image is still being written".to_owned());
+        }
+        let clip = self.perf_state.waves.clip_m;
+        let target = path.to_path_buf();
+        let job = Job::spawn(self.revision, move || {
+            let bytes = match format {
+                Format::Png => wave_png(&field, clip).ok_or("the wave field is empty")?,
+                Format::Svg => wave_svg(&field, clip).into_bytes(),
+                Format::Vti => wave_vti(&field).into_bytes(),
+            };
+            seacraft_core::io::write_atomic(&target, bytes)
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))
+        });
+        self.set_status(format!("writing wave pattern {}…", path.display()));
+        self.wave_image_job = Some((path.to_path_buf(), job));
+        Ok(())
+    }
+
+    /// Collect a finished wave-image job, if any.
+    fn poll_wave_image(&mut self, ctx: &egui::Context) {
+        let Some((_, job)) = &self.wave_image_job else {
+            return;
+        };
+        let out = match job.poll() {
+            crate::jobs::Poll::Running => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                return;
+            }
+            crate::jobs::Poll::Done(()) => Ok(()),
+            crate::jobs::Poll::Failed(e) => Err(e),
+        };
+        if let Some((path, _)) = self.wave_image_job.take() {
+            self.finish_wave_image(&path, out);
+        }
+    }
+
+    /// Wait for the wave-image job and log its outcome; `None` when none runs (tests, scripts).
+    pub fn wait_wave_image(&mut self) -> Option<Result<(), String>> {
+        let (path, job) = self.wave_image_job.take()?;
+        let out = job.wait();
+        self.finish_wave_image(&path, out.clone());
+        Some(out)
+    }
+
+    fn finish_wave_image(&mut self, path: &std::path::Path, out: Result<(), String>) {
+        match out {
+            Ok(()) => self.log(
+                Level::Info,
+                format!("Saved wave pattern to {}", path.display()),
+            ),
+            Err(e) => self.log(Level::Error, format!("Wave pattern image failed: {e}")),
+        }
+    }
+
     pub fn write_export(&mut self, kind: ExportKind, path: &std::path::Path) -> Result<(), String> {
         self.write_export_with(kind, path, None)
     }
@@ -3289,6 +3384,7 @@ impl App {
             DialogKind::Export(k) => k.label(),
             DialogKind::Report => "Design report",
             DialogKind::Templates => "Builder templates",
+            DialogKind::WaveImage => "Wave pattern image",
         };
         let mut accept = false;
         let mut cancel = false;
@@ -3311,6 +3407,7 @@ impl App {
                     DialogKind::Export(k) => format!(".{}", k.extension()),
                     DialogKind::Report => ".html".to_owned(),
                     DialogKind::Templates => ".pdf".to_owned(),
+                    DialogKind::WaveImage => ".png".to_owned(),
                 };
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
@@ -3348,6 +3445,7 @@ impl App {
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
             DialogKind::Templates => self.start_templates_export(&path),
+            DialogKind::WaveImage => self.write_wave_image(&path),
         };
         match result {
             Err(err) => {
