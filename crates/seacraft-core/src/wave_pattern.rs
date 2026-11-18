@@ -317,6 +317,30 @@ impl WaveSpectrum {
         -(4.0 * self.k0 / PI) * sum
     }
 
+    /// `ζ(x, j dy)` for `j` in `0..count`, stepping the y-phase by a rotation per wave angle.
+    fn elevations_along_y(&self, x: f64, dy: f64, count: usize) -> Vec<f64> {
+        let xs = &self.grid.xs;
+        let mut acc = vec![0.0; count];
+        if x >= xs[xs.len() - 1] {
+            return acc;
+        }
+        let partial = (x > xs[0]).then(|| xs.partition_point(|&s| s <= x) - 1);
+        for m in 0..self.u.len() {
+            let (p, q) = self.cumulative(m, x, partial);
+            let (sin_a, cos_a) = (self.kx[m] * x).sin_cos();
+            let c = self.weight[m] * (p * cos_a + q * sin_a);
+            let (sin_b, cos_b) = (self.beta[m] * dy).sin_cos();
+            let (mut re, mut im) = (1.0, 0.0);
+            for a in acc.iter_mut() {
+                *a += c * re;
+                (re, im) = (re * cos_b - im * sin_b, re * sin_b + im * cos_b);
+            }
+        }
+        let scale = -(4.0 * self.k0 / PI);
+        acc.iter_mut().for_each(|a| *a *= scale);
+        acc
+    }
+
     /// `S(x; θ_m)` for sample `m`: the columns forward of `x`, and the forward part of `partial`.
     fn cumulative(&self, m: usize, x: f64, partial: Option<usize>) -> (f64, f64) {
         let columns = self.grid.xs.len() - 1;
@@ -359,6 +383,193 @@ impl WaveSpectrum {
             })
             .fold((0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
     }
+}
+
+/// The most grid points [`wave_field`] computes; a finer request is coarsened to fit.
+pub const MAX_FIELD_POINTS: usize = 1_000_000;
+
+/// The wave elevation on a plan-view grid behind (and beside) a hull.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaveField {
+    /// Grid x (m, model axes, ascending).
+    pub xs: Vec<f64>,
+    /// Grid y (m, ascending, symmetric about 0).
+    pub ys: Vec<f64>,
+    /// Elevation (m), row-major: `zeta[iy * xs.len() + ix]`; 0 where not wet.
+    pub zeta: Vec<f64>,
+    /// False inside a waterline.
+    pub wet: Vec<bool>,
+    /// Ship speed U (m/s).
+    pub speed_m_s: f64,
+    /// Froude number on the waterline length.
+    pub froude: f64,
+    /// `k0 = g / U²` (1/m).
+    pub k0: f64,
+    /// Transverse wavelength `2π U² / g` (m).
+    pub transverse_wavelength_m: f64,
+    /// Largest wave angle kept (degrees).
+    pub theta_cut_deg: f64,
+    /// Shortest wave kept (m).
+    pub shortest_wavelength_m: f64,
+    /// Wave-angle samples in the quadrature.
+    pub theta_samples: usize,
+    /// Largest |ζ| over wet points (m).
+    pub max_abs_zeta_m: f64,
+    /// What the field is and what was left out; the first is [`FAR_FIELD_NOTE`].
+    pub notes: Vec<String>,
+    /// Where the hull or speed is outside thin-ship theory.
+    pub warnings: Vec<String>,
+}
+
+/// Where a field is computed: its axes, and the reach and spacing its spectrum is built for.
+#[derive(Debug, Clone)]
+struct FieldLayout {
+    xs: Vec<f64>,
+    /// `y >= 0` rows: `j * dy` for `j` in `0..=half_rows`.
+    dy: f64,
+    half_rows: usize,
+    reach_x: f64,
+    reach_y: f64,
+    nyquist: f64,
+    /// Set when the spacing was coarsened to stay within [`MAX_FIELD_POINTS`].
+    coarsened: Option<(f64, f64)>,
+}
+
+fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLayout, String> {
+    grid.validate()?;
+    opts.validate()?;
+    let l = grid.length_wl;
+    let (stern, bow) = (grid.xs[0], grid.xs[grid.xs.len() - 1]);
+    let (x0, x1) = (stern - opts.behind_l * l, bow + opts.ahead_l * l);
+    let half_width = opts.half_width_l * l;
+    let wanted = opts
+        .spacing_m
+        .unwrap_or(2.0 * PI * opts.speed_m_s * opts.speed_m_s / opts.g / 20.0);
+    let counts = |h: f64| {
+        let nx = ((x1 - x0) / h).round().max(1.0) as usize + 1;
+        let half_rows = (half_width / h).round() as usize;
+        (nx, half_rows)
+    };
+    let mut h = wanted;
+    let (mut nx, mut half_rows) = counts(h);
+    while nx.saturating_mul(2 * half_rows + 1) > MAX_FIELD_POINTS {
+        h *= ((nx * (2 * half_rows + 1)) as f64 / MAX_FIELD_POINTS as f64).sqrt() * 1.001;
+        (nx, half_rows) = counts(h);
+    }
+    let dx = (x1 - x0) / (nx - 1) as f64;
+    let dy = if half_rows > 0 {
+        half_width / half_rows as f64
+    } else {
+        0.0
+    };
+    let xs = (0..nx)
+        .map(|i| if i + 1 == nx { x1 } else { x0 + i as f64 * dx })
+        .collect();
+    Ok(FieldLayout {
+        xs,
+        dy,
+        half_rows,
+        reach_x: (x1 - stern).max(bow - x0),
+        reach_y: half_width,
+        nyquist: dx.max(dy),
+        coarsened: (h != wanted).then_some((wanted, dx.max(dy))),
+    })
+}
+
+/// The half-breadth of the calm waterline (`z = 0`) at `x`, 0 beyond the ends.
+fn waterline_half_breadth(grid: &MichellGrid, x: f64) -> f64 {
+    let xs = &grid.xs;
+    if x < xs[0] || x > xs[xs.len() - 1] {
+        return 0.0;
+    }
+    let top = grid.zs.len() - 1;
+    let i = xs.partition_point(|&s| s <= x).clamp(1, xs.len() - 1) - 1;
+    let t = (x - xs[i]) / (xs[i + 1] - xs[i]);
+    grid.half_breadths[i][top] * (1.0 - t) + grid.half_breadths[i + 1][top] * t
+}
+
+/// The wave elevation of `grid` at `opts` on a plan-view grid: `behind_l` waterline lengths
+/// behind the stern to `ahead_l` ahead of the bow, `half_width_l` each side.
+pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveField, String> {
+    let lay = field_layout(grid, opts)?;
+    let sp = wave_spectrum(grid, opts, lay.reach_x, lay.reach_y, lay.nyquist)?;
+    let nx = lay.xs.len();
+    let rows = lay.half_rows;
+    let columns = par_map(&lay.xs, |&x| sp.elevations_along_y(x, lay.dy, rows + 1));
+    let ys: Vec<f64> = (0..=2 * rows)
+        .map(|k| {
+            let j = k.abs_diff(rows) as f64 * lay.dy;
+            if k < rows {
+                -j
+            } else {
+                j
+            }
+        })
+        .collect();
+    let ny = ys.len();
+    let mut zeta = vec![0.0; nx * ny];
+    let mut wet = vec![true; nx * ny];
+    let mut max_abs = 0.0_f64;
+    for (ix, &x) in lay.xs.iter().enumerate() {
+        let half_breadth = waterline_half_breadth(grid, x);
+        for (iy, &y) in ys.iter().enumerate() {
+            let k = iy * nx + ix;
+            if y.abs() < half_breadth {
+                wet[k] = false;
+            } else {
+                zeta[k] = columns[ix][iy.abs_diff(rows)];
+                max_abs = max_abs.max(zeta[k].abs());
+            }
+        }
+    }
+
+    let k0 = sp.k0();
+    let theta_cut = sp.theta_cut();
+    let shortest = 2.0 * PI * theta_cut.cos().powi(2) / k0;
+    let theta_nyquist = (PI / (lay.nyquist * k0)).sqrt().recip().acos();
+    let mut notes = vec![FAR_FIELD_NOTE.to_string()];
+    notes.push(if theta_cut < theta_nyquist - 1e-9 {
+        format!(
+            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the hull makes almost none \
+             (below {:e} of its spectrum's peak)",
+            theta_cut.to_degrees(),
+            opts.spectrum_floor
+        )
+    } else {
+        format!(
+            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the grid cannot show them",
+            theta_cut.to_degrees()
+        )
+    });
+    if let Some((from, to)) = lay.coarsened {
+        notes.push(format!(
+            "spacing coarsened from {from:.4} m to {to:.4} m to stay within 1 000 000 points"
+        ));
+    }
+    let froude = opts.speed_m_s / (opts.g * grid.length_wl).sqrt();
+    let mut warnings = crate::michell::michell_warnings(grid, &[]);
+    if !(0.20..=1.0).contains(&froude) {
+        warnings.push(format!(
+            "Fn {froude:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
+            opts.speed_m_s / crate::resistance::KNOT
+        ));
+    }
+    Ok(WaveField {
+        xs: lay.xs,
+        ys,
+        zeta,
+        wet,
+        speed_m_s: opts.speed_m_s,
+        froude,
+        k0,
+        transverse_wavelength_m: 2.0 * PI / k0,
+        theta_cut_deg: theta_cut.to_degrees(),
+        shortest_wavelength_m: shortest,
+        theta_samples: sp.samples(),
+        max_abs_zeta_m: max_abs,
+        notes,
+        warnings,
+    })
 }
 
 #[cfg(test)]
@@ -569,5 +780,124 @@ mod tests {
             .unwrap_err()
             .contains("spacing"));
         assert!(wave_spectrum(&g, &o, -1.0, 1.0, 0.5).is_err());
+    }
+
+    /// Index of the axis value nearest `v`.
+    fn nearest(axis: &[f64], v: f64) -> usize {
+        (0..axis.len())
+            .min_by(|&a, &b| (axis[a] - v).abs().total_cmp(&(axis[b] - v).abs()))
+            .unwrap()
+    }
+
+    #[test]
+    fn field_axes_and_mask() {
+        let f = wave_field(&wigley(), &opts_at_fn(0.3)).unwrap();
+        let (nx, ny) = (f.xs.len(), f.ys.len());
+        assert!((f.xs[0] + 35.0).abs() < 1e-9 && (f.xs[nx - 1] - 15.0).abs() < 1e-9);
+        assert!((f.ys[0] + 15.0).abs() < 1e-9 && (f.ys[ny - 1] - 15.0).abs() < 1e-9);
+        for k in 0..ny {
+            assert_eq!(f.ys[k], -f.ys[ny - 1 - k], "ys not symmetric at {k}");
+        }
+        assert_eq!(f.zeta.len(), nx * ny);
+        assert_eq!(f.wet.len(), nx * ny);
+        let (i0, j0, j1) = (
+            nearest(&f.xs, 0.0),
+            nearest(&f.ys, 0.0),
+            nearest(&f.ys, 1.0),
+        );
+        assert!(!f.wet[j0 * nx + i0], "(0, 0) is inside the waterline");
+        assert!(f.wet[j1 * nx + i0], "(0, 1) is outside the waterline");
+        for (k, z) in f.zeta.iter().enumerate() {
+            if f.xs[k % nx] > 5.0 {
+                assert_eq!(*z, 0.0, "ζ ahead of the bow at x {}", f.xs[k % nx]);
+            }
+        }
+        assert!(f.notes[0] == FAR_FIELD_NOTE);
+        assert!((f.froude - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn field_matches_point_evaluation() {
+        let g = wigley();
+        let o = opts_at_fn(0.3);
+        let f = wave_field(&g, &o).unwrap();
+        let lay = field_layout(&g, &o).unwrap();
+        let sp = wave_spectrum(&g, &o, lay.reach_x, lay.reach_y, lay.nyquist).unwrap();
+        assert_eq!(sp.samples(), f.theta_samples);
+        let (nx, ny) = (f.xs.len(), f.ys.len());
+        let mut seed: u64 = 12345;
+        let mut checked = 0;
+        while checked < 10 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let k = (seed >> 33) as usize % (nx * ny);
+            if !f.wet[k] {
+                continue;
+            }
+            let want = sp.elevation(f.xs[k % nx], f.ys[k / nx]);
+            assert!(
+                (f.zeta[k] - want).abs() <= 1e-10 * f.max_abs_zeta_m,
+                "grid {} vs point {want}",
+                f.zeta[k]
+            );
+            checked += 1;
+        }
+    }
+
+    #[test]
+    fn field_is_converged_in_theta() {
+        let g = wigley();
+        let o = opts_at_fn(0.3);
+        let a = wave_field(&g, &o).unwrap();
+        let fine = WavePatternOptions {
+            phase_step: o.phase_step / 2.0,
+            ..o
+        };
+        let b = wave_field(&g, &fine).unwrap();
+        assert!(b.theta_samples > a.theta_samples);
+        let worst = a
+            .zeta
+            .iter()
+            .zip(&b.zeta)
+            .map(|(p, q)| (p - q).abs())
+            .fold(0.0, f64::max);
+        eprintln!(
+            "halving the phase step moves ζ by {:.4} % of max",
+            100.0 * worst / a.max_abs_zeta_m
+        );
+        assert!(worst <= 0.01 * a.max_abs_zeta_m);
+    }
+
+    /// Review focus 1: at Fn 0.10 the default spacing (λ_T / 20) would need about 1.5 million points.
+    #[test]
+    fn low_froude_field_is_capped() {
+        let f = wave_field(&wigley(), &opts_at_fn(0.10)).unwrap();
+        assert!(f.xs.len() * f.ys.len() <= MAX_FIELD_POINTS);
+        assert!(
+            f.notes.iter().any(|n| n.contains("coarsened")),
+            "{:?}",
+            f.notes
+        );
+        assert!(
+            f.warnings.iter().any(|w| w.contains("Fn 0.100")),
+            "{:?}",
+            f.warnings
+        );
+    }
+
+    /// Review focus 4.
+    #[test]
+    fn bad_inputs_are_refused() {
+        let g = wigley();
+        let with = |edit: &dyn Fn(&mut WavePatternOptions)| {
+            let mut o = opts_at_fn(0.3);
+            edit(&mut o);
+            wave_field(&g, &o).unwrap_err()
+        };
+        assert!(with(&|o| o.speed_m_s = 0.0).contains("speed"));
+        assert!(with(&|o| o.speed_m_s = f64::NAN).contains("speed"));
+        assert!(with(&|o| o.behind_l = -1.0).contains("behind"));
+        assert!(with(&|o| o.spacing_m = Some(0.0)).contains("spacing"));
     }
 }
