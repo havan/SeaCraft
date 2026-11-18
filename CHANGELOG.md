@@ -10,6 +10,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   SVG contour map, VTK image data (`.vti`) and a longitudinal cut as CSV, with the wave-angle cut-off and Michell's
   warnings. Free waves only, so near the hull it is not the hull wave profile. Checked against Kelvin's far-field
   asymptotics and wedge geometry (Wu et al. 2019, `docs/oracles.md` §40), not against a measured wave pattern.
+- `seacraft waves`, `seacraft panels` and the `wave_pattern` tool write their files all or none: every file is
+  staged before any is replaced, so one that cannot be written leaves the others as they were. Two outputs that
+  name one file are refused before any work, also through a symbolic link or by letter case alone; so is an output
+  whose folder is missing or cannot be resolved.
 - Michell resistance (CLI, MCP, the Performance tab and the control channel) now warns when the hull has a wetted
   transom larger than 5 % of its largest section, since Michell's integral assumes the hull closes at the stern.
   The demo hull and the runabout example are flagged at their design drafts. The four front ends now share one
