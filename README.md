@@ -828,6 +828,11 @@ Kajitani et al. (1983) towing tests, Fn 0.28–0.37 ([`docs/oracles.md`](docs/or
 hollow near Fn 0.35 at the measured speed (within 5 % in size for the fixed model), but puts the hump near
 Fn 0.32 about 0.02 early and 18–54 % too high. That says nothing about other hulls.
 
+The wave pattern (`seacraft waves`) has not been compared with a measured wave pattern; no measured Wigley wave
+cut was found. It is checked against Kelvin's far-field asymptotics and wedge geometry
+([`docs/oracles.md`](docs/oracles.md) §40): a check of the method, not of agreement with a tank. It is wrong near
+the hull, where the local disturbance it leaves out matters, and transom sterns are flagged.
+
 * The kernel, `.fef` round-trip, hydrostatics, stability, linesplan and mesh
   exports are implemented and tested.
 * The desktop modeller (four viewports, control-point dragging with undo, layer

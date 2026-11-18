@@ -4,6 +4,12 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- `seacraft waves` and the MCP tool `wave_pattern` (also through the window's control channel, as
+  `waves.compute`) draw the far-field thin-ship wave pattern behind a hull or a catamaran: the Kelvin wedge of
+  transverse and divergent waves from Michell's spectrum, calm ahead of the bow. Outputs are a PNG colour map, an
+  SVG contour map, VTK image data (`.vti`) and a longitudinal cut as CSV, with the wave-angle cut-off and Michell's
+  warnings. Free waves only, so near the hull it is not the hull wave profile. Checked against Kelvin's far-field
+  asymptotics and wedge geometry (Wu et al. 2019, `docs/oracles.md` §40), not against a measured wave pattern.
 - Michell resistance (CLI, MCP, the Performance tab and the control channel) now warns when the hull has a wetted
   transom larger than 5 % of its largest section, since Michell's integral assumes the hull closes at the stern.
   The demo hull and the runabout example are flagged at their design drafts. The four front ends now share one
