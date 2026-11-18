@@ -839,6 +839,220 @@ fn transverse_values(
     out
 }
 
+/// The diverging colour map: trough, calm, crest. The GUI builds its theme tokens from these, so
+/// the command line's images and the window match.
+pub const DIVERGING_STOPS: [[u8; 3]; 3] = [[33, 102, 172], [247, 247, 247], [178, 24, 43]];
+
+/// Inside a waterline.
+pub const HULL_RGB: [u8; 3] = [90, 90, 90];
+
+/// Contour levels each side of calm in [`wave_svg`].
+const SVG_LEVELS: usize = 6;
+
+/// The colour of `t` in `[-1, 1]` (clamped; NaN is calm), linear between [`DIVERGING_STOPS`].
+pub fn diverging_rgb(t: f64) -> [u8; 3] {
+    if t.is_nan() {
+        return DIVERGING_STOPS[1];
+    }
+    let t = t.clamp(-1.0, 1.0);
+    let (from, to, w) = if t < 0.0 {
+        (DIVERGING_STOPS[1], DIVERGING_STOPS[0], -t)
+    } else {
+        (DIVERGING_STOPS[1], DIVERGING_STOPS[2], t)
+    };
+    std::array::from_fn(|i| (from[i] as f64 + (to[i] as f64 - from[i] as f64) * w).round() as u8)
+}
+
+/// `count` levels each side of calm: `±k clip / count` for `k` in `1..=count`, ascending, no 0.
+pub fn contour_levels(clip_m: f64, count: usize) -> Vec<f64> {
+    let step = clip_m / count as f64;
+    let mut levels: Vec<f64> = (1..=count).rev().map(|k| -(k as f64) * step).collect();
+    levels.extend((1..=count).map(|k| k as f64 * step));
+    levels
+}
+
+/// The colour clip: `clip_m` when given and positive, else the field's largest |ζ|.
+fn clip_of(field: &WaveField, clip_m: Option<f64>) -> f64 {
+    clip_m
+        .filter(|c| c.is_finite() && *c > 0.0)
+        .unwrap_or(field.max_abs_zeta_m)
+}
+
+/// The field as RGBA, one pixel per grid point, row 0 at the largest y (starboard up, bow right).
+pub fn wave_rgba(field: &WaveField, clip_m: Option<f64>) -> Vec<u8> {
+    let (nx, ny) = (field.xs.len(), field.ys.len());
+    let clip = clip_of(field, clip_m);
+    let mut rgba = Vec::with_capacity(nx * ny * 4);
+    for row in 0..ny {
+        let iy = ny - 1 - row;
+        for ix in 0..nx {
+            let k = iy * nx + ix;
+            let rgb = if !field.wet[k] {
+                HULL_RGB
+            } else if clip > 0.0 {
+                diverging_rgb(field.zeta[k] / clip)
+            } else {
+                DIVERGING_STOPS[1]
+            };
+            rgba.extend_from_slice(&rgb);
+            rgba.push(255);
+        }
+    }
+    rgba
+}
+
+/// The field as a PNG, one pixel per grid point; `None` for an empty field.
+pub fn wave_png(field: &WaveField, clip_m: Option<f64>) -> Option<Vec<u8>> {
+    crate::raster::png(field.xs.len(), field.ys.len(), &wave_rgba(field, clip_m))
+}
+
+/// The field as an SVG contour map in metres (bow to the right, starboard up): crests solid,
+/// troughs dashed, the hull filled, with the speed, Froude number, clip and notes.
+pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
+    use std::fmt::Write;
+    let (nx, ny) = (field.xs.len(), field.ys.len());
+    let mut out = String::new();
+    if nx == 0 || ny == 0 {
+        return out;
+    }
+    let clip = clip_of(field, clip_m);
+    let (x0, x1) = (field.xs[0], field.xs[nx - 1]);
+    let (y0, y1) = (field.ys[0], field.ys[ny - 1]);
+    let (w, h) = (x1 - x0, y1 - y0);
+    let font = 0.025 * w.max(h);
+    let caption = font * 1.5 * (field.notes.len() + field.warnings.len()) as f64 + font;
+    let rgb = |c: [u8; 3]| format!("rgb({},{},{})", c[0], c[1], c[2]);
+    let title = format!(
+        "Wave pattern at {:.3} m/s ({:.2} kn), Fn {:.3}, colour clip ±{:.4} m",
+        field.speed_m_s,
+        field.speed_m_s / crate::resistance::KNOT,
+        field.froude,
+        clip
+    );
+    let notes: Vec<&String> = field.notes.iter().chain(&field.warnings).collect();
+    let _ = writeln!(
+        out,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" \
+         viewBox=\"{x0:.3} {:.3} {w:.3} {:.3}\">",
+        -y1,
+        h + caption
+    );
+    let _ = writeln!(out, "<title>{}</title>", crate::sheet::xml(&title));
+    let desc: Vec<String> = notes.iter().map(|n| crate::sheet::xml(n)).collect();
+    let _ = writeln!(out, "<desc>{}</desc>", desc.join("\n"));
+    let _ = writeln!(
+        out,
+        "<rect x=\"{x0:.3}\" y=\"{:.3}\" width=\"{w:.3}\" height=\"{h:.3}\" fill=\"{}\"/>",
+        -y1,
+        rgb(DIVERGING_STOPS[1])
+    );
+    // SVG's y runs down: a model point (x, y) is drawn at (x, -y).
+    for level in contour_levels(clip, SVG_LEVELS) {
+        let segs = crate::contour::segments(&field.xs, &field.ys, &field.zeta, &field.wet, level);
+        if segs.is_empty() {
+            continue;
+        }
+        let mut d = String::new();
+        for [a, b] in segs {
+            let _ = write!(d, "M{:.3} {:.3}L{:.3} {:.3}", a.0, -a.1, b.0, -b.1);
+        }
+        let style = if level > 0.0 {
+            format!("stroke=\"{}\"", rgb(DIVERGING_STOPS[2]))
+        } else {
+            format!(
+                "stroke=\"{}\" stroke-dasharray=\"4 3\"",
+                rgb(DIVERGING_STOPS[0])
+            )
+        };
+        let _ = writeln!(
+            out,
+            "<path d=\"{d}\" fill=\"none\" {style} stroke-width=\"1\" \
+             vector-effect=\"non-scaling-stroke\"><title>ζ = {level:.4} m</title></path>"
+        );
+    }
+    // The hull: each column's run of dry points as a strip one spacing wide.
+    let dx = if nx > 1 { w / (nx - 1) as f64 } else { 0.0 };
+    let dy = if ny > 1 { h / (ny - 1) as f64 } else { 0.0 };
+    let mut hull = String::new();
+    for ix in 0..nx {
+        let mut iy = 0;
+        while iy < ny {
+            if field.wet[iy * nx + ix] {
+                iy += 1;
+                continue;
+            }
+            let start = iy;
+            while iy < ny && !field.wet[iy * nx + ix] {
+                iy += 1;
+            }
+            let (lo, hi) = (field.ys[start] - dy / 2.0, field.ys[iy - 1] + dy / 2.0);
+            let _ = write!(
+                hull,
+                "M{:.3} {:.3}h{dx:.3}v{:.3}h{:.3}z",
+                field.xs[ix] - dx / 2.0,
+                -hi,
+                hi - lo,
+                -dx
+            );
+        }
+    }
+    if !hull.is_empty() {
+        let _ = writeln!(out, "<path d=\"{hull}\" fill=\"{}\"/>", rgb(HULL_RGB));
+    }
+    let _ = writeln!(
+        out,
+        "<g font-family=\"DejaVu Sans, Verdana, sans-serif\" font-size=\"{font:.3}\" fill=\"black\">"
+    );
+    let mut y = -y0 + 1.5 * font;
+    for line in std::iter::once(&title).chain(notes) {
+        let _ = writeln!(
+            out,
+            "<text x=\"{x0:.3}\" y=\"{y:.3}\">{}</text>",
+            crate::sheet::xml(line)
+        );
+        y += 1.5 * font;
+    }
+    out.push_str("</g>\n</svg>\n");
+    out
+}
+
+/// The field as VTK XML image data (`.vti`): point data `zeta` (m) and `wet` (1 or 0), x fastest.
+pub fn wave_vti(field: &WaveField) -> String {
+    use std::fmt::Write;
+    let (nx, ny) = (field.xs.len(), field.ys.len());
+    let step = |a: &[f64]| {
+        if a.len() > 1 {
+            (a[a.len() - 1] - a[0]) / (a.len() - 1) as f64
+        } else {
+            1.0
+        }
+    };
+    let extent = format!("0 {} 0 {} 0 0", nx.saturating_sub(1), ny.saturating_sub(1));
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "<?xml version=\"1.0\"?>\n<VTKFile type=\"ImageData\" version=\"0.1\" byte_order=\"LittleEndian\">\n\
+         <ImageData WholeExtent=\"{extent}\" Origin=\"{} {} 0\" Spacing=\"{} {} 1\">\n\
+         <Piece Extent=\"{extent}\">\n<PointData Scalars=\"zeta\">\n\
+         <DataArray type=\"Float64\" Name=\"zeta\" format=\"ascii\">",
+        field.xs.first().copied().unwrap_or(0.0),
+        field.ys.first().copied().unwrap_or(0.0),
+        step(&field.xs),
+        step(&field.ys)
+    );
+    for row in field.zeta.chunks(nx.max(1)) {
+        let line: Vec<String> = row.iter().map(|z| format!("{z:e}")).collect();
+        let _ = writeln!(out, "{}", line.join(" "));
+    }
+    out.push_str("</DataArray>\n<DataArray type=\"UInt8\" Name=\"wet\" format=\"ascii\">\n");
+    for row in field.wet.chunks(nx.max(1)) {
+        let line: Vec<&str> = row.iter().map(|&w| if w { "1" } else { "0" }).collect();
+        let _ = writeln!(out, "{}", line.join(" "));
+    }
+    out.push_str("</DataArray>\n</PointData>\n</Piece>\n</ImageData>\n</VTKFile>\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1307,5 +1521,89 @@ mod tests {
             };
             assert!(err.contains("cut"), "{err}");
         }
+    }
+
+    /// A coarse Wigley field (1 m spacing, 51 x 31) for the exports.
+    fn small_field() -> WaveField {
+        let o = WavePatternOptions {
+            spacing_m: Some(1.0),
+            ..opts_at_fn(0.3)
+        };
+        wave_field(&wigley(), &o).unwrap()
+    }
+
+    #[test]
+    fn diverging_rgb_ends_and_middle() {
+        assert_eq!(diverging_rgb(-1.0), DIVERGING_STOPS[0]);
+        assert_eq!(diverging_rgb(0.0), DIVERGING_STOPS[1]);
+        assert_eq!(diverging_rgb(1.0), DIVERGING_STOPS[2]);
+        assert_eq!(diverging_rgb(-7.0), DIVERGING_STOPS[0]);
+        assert_eq!(diverging_rgb(f64::NAN), DIVERGING_STOPS[1]);
+    }
+
+    #[test]
+    fn png_has_the_grid_size_and_hull_pixels() {
+        let f = small_field();
+        let (nx, ny) = (f.xs.len(), f.ys.len());
+        let png = wave_png(&f, None).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let be = |b: &[u8]| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
+        assert_eq!((be(&png[16..20]), be(&png[20..24])), (nx, ny));
+        let rgba = wave_rgba(&f, None);
+        let (ix, iy) = (nearest(&f.xs, 0.0), nearest(&f.ys, 0.0));
+        let px = ((ny - 1 - iy) * nx + ix) * 4; // row 0 is the largest y
+        assert_eq!(rgba[px..px + 3], HULL_RGB);
+        // The crest colour appears at the largest ζ and nowhere does a wet pixel take the hull colour.
+        let top = (0..f.zeta.len())
+            .max_by(|&a, &b| f.zeta[a].total_cmp(&f.zeta[b]))
+            .unwrap();
+        let px = ((ny - 1 - top / nx) * nx + top % nx) * 4;
+        assert_eq!(rgba[px..px + 3], DIVERGING_STOPS[2]);
+    }
+
+    #[test]
+    fn svg_has_crests_troughs_and_the_note() {
+        let svg = wave_svg(&small_field(), None);
+        let [r, g, b] = DIVERGING_STOPS[2];
+        assert!(
+            svg.contains(&format!("stroke=\"rgb({r},{g},{b})\"")),
+            "no crest contours"
+        );
+        let [r, g, b] = DIVERGING_STOPS[0];
+        assert!(svg.contains(&format!("stroke=\"rgb({r},{g},{b})\" stroke-dasharray")));
+        let [r, g, b] = HULL_RGB;
+        assert!(
+            svg.contains(&format!("fill=\"rgb({r},{g},{b})\"")),
+            "no hull"
+        );
+        assert!(svg.contains(&format!("<desc>{FAR_FIELD_NOTE}")));
+        assert!(svg.contains("Fn 0.300"));
+        assert!(svg.trim_end().ends_with("</svg>"));
+    }
+
+    #[test]
+    fn vti_extent_and_value_count_match_the_grid() {
+        let f = small_field();
+        let (nx, ny) = (f.xs.len(), f.ys.len());
+        let vti = wave_vti(&f);
+        assert!(vti.contains(&format!("WholeExtent=\"0 {} 0 {} 0 0\"", nx - 1, ny - 1)));
+        let array = |name: &str| -> usize {
+            let start = vti.find(&format!("Name=\"{name}\"")).unwrap();
+            let body = &vti[start..];
+            let open = body.find('>').unwrap() + 1;
+            let close = body.find("</DataArray>").unwrap();
+            body[open..close].split_whitespace().count()
+        };
+        assert_eq!(array("zeta"), nx * ny);
+        assert_eq!(array("wet"), nx * ny);
+    }
+
+    #[test]
+    fn contour_levels_are_symmetric_without_zero() {
+        let levels = contour_levels(5.0, 5);
+        assert_eq!(
+            levels,
+            vec![-5.0, -4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+        );
     }
 }

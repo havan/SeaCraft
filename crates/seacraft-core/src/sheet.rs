@@ -521,7 +521,7 @@ fn row(sheets: &[Sheet], scale: f64) -> (Vec<Placed<'_>>, f64, f64, usize) {
 }
 
 /// Text as XML character data.
-fn xml(text: &str) -> String {
+pub(crate) fn xml(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
         match c {

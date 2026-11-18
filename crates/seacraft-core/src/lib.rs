@@ -29,6 +29,8 @@ pub const NOT_VALIDATED_NOTE: &str =
 pub mod analysis;
 /// Connected editing: presets and the weights of the points that follow a move.
 pub mod connected;
+/// Contour lines of a gridded scalar (marching squares).
+pub mod contour;
 pub mod control_auth;
 pub mod curves;
 pub mod damage;
