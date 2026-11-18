@@ -83,6 +83,8 @@ pub struct WaveResult {
     pub cut: WaveCut,
     pub length_wl: f64,
     pub draft: f64,
+    /// The catamaran spacing it was computed for (m).
+    pub cat_spacing_m: Option<f64>,
 }
 
 /// Samples along the longitudinal cut.
@@ -144,6 +146,7 @@ pub fn compute_waves(
         cut,
         length_wl,
         draft: grid.draft,
+        cat_spacing_m: settings.cat_spacing_m,
     })
 }
 

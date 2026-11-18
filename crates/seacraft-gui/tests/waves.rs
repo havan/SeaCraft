@@ -6,7 +6,12 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use seacraft_gui::waves::{WaveSettings, WaveSpeed};
+use std::sync::Arc;
+
+use seacraft_gui::camera::{Camera, ViewKind};
+use seacraft_gui::render::{self, Scene, SceneWaves};
+use seacraft_gui::theme;
+use seacraft_gui::waves::{compute_waves, WaveResult, WaveSettings, WaveSpeed};
 use seacraft_gui::App;
 
 const PATIENCE: Duration = Duration::from_secs(120);
@@ -27,7 +32,6 @@ fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) -> egui::
     out
 }
 
-#[allow(dead_code)] // used by the drawing tests
 fn texts(out: &egui::FullOutput) -> Vec<String> {
     fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
         match shape {
@@ -185,4 +189,228 @@ fn blocking_compute_makes_the_pattern_current() {
     app.set_waves_shown(true);
     app.compute_waves_blocking().expect("the pattern");
     assert!(app.wave_overlay().is_some());
+}
+
+/// Every shape, flattened.
+fn flat(shapes: impl IntoIterator<Item = egui::Shape>) -> Vec<egui::Shape> {
+    fn walk(shape: egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(v) => v.into_iter().for_each(|s| walk(s, out)),
+            other => out.push(other),
+        }
+    }
+    let mut out = Vec::new();
+    for s in shapes {
+        walk(s, &mut out);
+    }
+    out
+}
+
+fn stroke_colour(shape: &egui::Shape) -> Option<egui::Color32> {
+    match shape {
+        egui::Shape::LineSegment { stroke, .. } => Some(stroke.color),
+        egui::Shape::Path(p) => match p.stroke.color {
+            egui::epaint::ColorMode::Solid(c) => Some(c),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_wave_mesh(shape: &egui::Shape, texture: egui::TextureId) -> bool {
+    matches!(shape, egui::Shape::Mesh(m) if m.texture_id == texture)
+}
+
+const WAVE_TEXTURE: egui::TextureId = egui::TextureId::User(4242);
+
+/// The demo hull at level 2, and its pattern with `settings`.
+fn demo_parts(
+    settings: &WaveSettings,
+) -> (
+    seacraft_core::mesh::Surface,
+    seacraft_core::export::RenderMesh,
+    WaveResult,
+) {
+    let text = std::fs::read_to_string(path("demo-hull.fef")).unwrap();
+    let surface = seacraft_core::fef::parse(&text).unwrap();
+    let subdiv = seacraft_core::subdiv::SubdivisionOptions {
+        level: 2,
+        ..Default::default()
+    };
+    let mesh = seacraft_core::export::render_mesh(&surface, 2, Default::default());
+    let draft = surface.settings.draft;
+    let w = compute_waves(&surface, subdiv, draft, settings).unwrap();
+    (surface, mesh, w)
+}
+
+fn scene<'a>(
+    surface: &'a seacraft_core::mesh::Surface,
+    mesh: &'a seacraft_core::export::RenderMesh,
+    w: &'a WaveResult,
+) -> Scene<'a> {
+    let (min, max) = render::display_extents(surface);
+    Scene {
+        surface,
+        mesh,
+        curves: None,
+        volumes: &[],
+        windage: &[],
+        min,
+        max,
+        draft: w.draft,
+        trim: 0.0,
+        heel_deg: 0.0,
+        waterline: None,
+        waves: Some(SceneWaves {
+            result: w,
+            texture: WAVE_TEXTURE,
+            contours: None,
+        }),
+        waves_status: None,
+    }
+}
+
+/// The shapes one viewport draws.
+fn draw_view(
+    scene: &Scene,
+    kind: ViewKind,
+    texture: Option<&egui::TextureHandle>,
+    gpu_hull: Option<egui::PaintCallback>,
+) -> Vec<egui::Shape> {
+    let ctx = egui::Context::default();
+    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(900.0, 600.0));
+    let camera = Camera::new(kind, (scene.min + scene.max) * 0.5, scene.max - scene.min);
+    let input = egui::RawInput {
+        screen_rect: Some(rect),
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| {
+        render::viewport_with_texture(
+            ui,
+            rect,
+            &camera,
+            Some(scene),
+            &render::DisplayOptions::default(),
+            true,
+            &Default::default(),
+            None,
+            None,
+            None,
+            &[],
+            None,
+            texture,
+            None,
+            gpu_hull.clone(),
+            None,
+        )
+    });
+    out.textures_delta.clear();
+    flat(out.shapes.into_iter().map(|c| c.shape))
+}
+
+/// The wave texture's meshes and the contour strokes, as text.
+fn wave_marks(shapes: &[egui::Shape]) -> Vec<String> {
+    shapes
+        .iter()
+        .filter(|s| {
+            is_wave_mesh(s, WAVE_TEXTURE)
+                || stroke_colour(s).is_some_and(|c| {
+                    c == theme::WAVE_CONTOUR_CREST || c == theme::WAVE_CONTOUR_TROUGH
+                })
+        })
+        .map(|s| format!("{s:?}"))
+        .collect()
+}
+
+#[test]
+fn both_hull_paths_draw_the_same_waves() {
+    let (surface, mesh, w) = demo_parts(&WaveSettings::default());
+    let scene = scene(&surface, &mesh, &w);
+    let painted = wave_marks(&draw_view(&scene, ViewKind::Plan, None, None));
+    let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(900.0, 600.0));
+    let callback = egui::PaintCallback {
+        rect,
+        callback: Arc::new(0u8),
+    };
+    let gpu = wave_marks(&draw_view(&scene, ViewKind::Plan, None, Some(callback)));
+    let ctx = egui::Context::default();
+    let analysis = ctx.load_texture(
+        "analysis",
+        egui::ColorImage::filled([2, 2], egui::Color32::GRAY),
+        egui::TextureOptions::LINEAR,
+    );
+    let rastered = wave_marks(&draw_view(&scene, ViewKind::Plan, Some(&analysis), None));
+    assert!(
+        painted.iter().any(|s| s.starts_with("Mesh")),
+        "the wave quad is drawn"
+    );
+    assert!(painted.len() > 10, "contours are drawn: {}", painted.len());
+    assert_eq!(painted, gpu, "the GPU hull path draws the same waves");
+    assert_eq!(painted, rastered, "the analysis path draws the same waves");
+}
+
+#[test]
+fn waves_only_in_plan_view() {
+    let (surface, mesh, w) = demo_parts(&WaveSettings::default());
+    let scene = scene(&surface, &mesh, &w);
+    for kind in [ViewKind::Profile, ViewKind::Perspective, ViewKind::Body] {
+        let shapes = draw_view(&scene, kind, None, None);
+        assert!(wave_marks(&shapes).is_empty(), "{kind:?} draws no waves");
+    }
+}
+
+#[test]
+fn catamaran_pattern_lies_over_the_model() {
+    let settings = WaveSettings {
+        cat_spacing_m: Some(8.0),
+        ..WaveSettings::default()
+    };
+    let (surface, mesh, w) = demo_parts(&settings);
+    let scene = scene(&surface, &mesh, &w);
+    let shapes = draw_view(&scene, ViewKind::Plan, None, None);
+    let wave_at = shapes
+        .iter()
+        .position(|s| is_wave_mesh(s, WAVE_TEXTURE))
+        .expect("the wave quad");
+    let hull_at = shapes
+        .iter()
+        .position(|s| matches!(s, egui::Shape::Mesh(m) if m.texture_id != WAVE_TEXTURE))
+        .expect("the hull");
+    assert!(hull_at < wave_at, "the pattern is drawn over the hull");
+    let outlines = shapes
+        .iter()
+        .filter(|s| stroke_colour(s) == Some(theme::WAVE_WATERLINE))
+        .count();
+    assert_eq!(outlines, 2, "one waterline outline per demihull");
+    let caption = render::wave_caption(&w);
+    assert!(caption.contains("catamaran s = 8.00 m"), "{caption}");
+}
+
+#[test]
+fn stale_pattern_is_not_drawn() {
+    let (mut app, ctx) = demo_with_waves();
+    let textured = |out: &egui::FullOutput| {
+        flat(out.shapes.iter().map(|c| c.shape.clone())).iter().any(
+            |s| matches!(s, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default()),
+        )
+    };
+    let out = frame(&ctx, &mut app, Vec::new());
+    assert!(textured(&out), "the current pattern is drawn");
+    assert!(texts(&out)
+        .iter()
+        .any(|t| t.starts_with("Waves · Fn 0.300")));
+    app.set_wave_settings(WaveSettings {
+        speed: WaveSpeed::Froude(0.45),
+        ..app.wave_settings().clone()
+    });
+    let out = frame(&ctx, &mut app, Vec::new());
+    assert!(
+        !textured(&out),
+        "the Fn 0.3 pattern is not drawn as current"
+    );
+    assert!(
+        texts(&out).iter().any(|t| t == "Wave pattern: computing…"),
+        "{:?}",
+        texts(&out)
+    );
 }

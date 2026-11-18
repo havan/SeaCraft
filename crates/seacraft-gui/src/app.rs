@@ -1101,6 +1101,10 @@ pub struct App {
     /// Each viewport's waterline, tessellated once, and the [`render::waterline_key`] it was built
     /// for: orbiting one view rebuilds its own, and the other three draw theirs again.
     waterline_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
+    /// The current wave pattern's image, under its `waves_key`.
+    wave_texture: Option<(u64, egui::TextureHandle)>,
+    /// Each view's wave contours, waterlines and cut as one mesh, kept like the waterline.
+    wave_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
     /// Each viewport's control-net visibility and the revision key it was computed for.
     net_visibilities: [Option<(u64, crate::visibility::NetVisibility)>; 4],
     /// The hull drawn on the GPU.
@@ -1327,6 +1331,8 @@ impl App {
             waterline_cuts: 0,
             shaded_hulls: Default::default(),
             waterline_meshes: Default::default(),
+            wave_texture: None,
+            wave_meshes: Default::default(),
             net_visibilities: Default::default(),
             gpu_hull: GpuHullState::default(),
             control: None,
@@ -3687,6 +3693,8 @@ impl App {
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
         let mut fresh_hulls: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
         let mut fresh_waterlines: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
+        let mut fresh_wave_meshes: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
+        self.load_wave_texture(ui.ctx());
         let overlays = self.volume_overlays();
         let mut volume_overlays: Vec<render::VolumeOverlay> =
             overlays.iter().map(|(_, o)| o.clone()).collect();
@@ -3974,7 +3982,7 @@ impl App {
 
         for &(cell, index) in &cells {
             self.sync_net_visibility(index, cell);
-            if let Some(scene) = self.scene(&volume_overlays, &windage_overlays) {
+            if let Some(mut scene) = self.scene(&volume_overlays, &windage_overlays) {
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
                 // until the model, camera, size or mode changes.
@@ -4064,6 +4072,32 @@ impl App {
                                 }
                             }
                         });
+                // The pattern's lines as one mesh, kept while the pattern and the view stay.
+                if let Some(result) = scene.waves.as_ref().map(|w| w.result) {
+                    let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
+                    let camera = &self.cameras[index];
+                    let key = revision_key(&[
+                        self.waves_key(),
+                        render::hull_key(stamp, camera, cell, &scene, &self.display),
+                        ui.ctx().pixels_per_point().to_bits() as u64,
+                    ]);
+                    let mesh = match &self.wave_meshes[index] {
+                        Some((k, mesh)) if *k == key => mesh.clone(),
+                        _ => {
+                            let mesh = Arc::new(render::wave_mesh(
+                                ui.ctx(),
+                                &camera.transform(),
+                                cell,
+                                result,
+                            ));
+                            fresh_wave_meshes.push((index, key, mesh.clone()));
+                            mesh
+                        }
+                    };
+                    if let Some(waves) = scene.waves.as_mut() {
+                        waves.contours = Some(mesh);
+                    }
+                }
                 let no_hull;
                 let (display, gpu_hull) = match route {
                     HullRoute::Painted => (&self.display, None),
@@ -4157,6 +4191,9 @@ impl App {
         for (index, key, mesh) in fresh_waterlines {
             self.waterline_meshes[index] = Some((key, mesh));
         }
+        for (index, key, mesh) in fresh_wave_meshes {
+            self.wave_meshes[index] = Some((key, mesh));
+        }
         if toggle_maximise {
             self.toggle_maximised();
         }
@@ -4181,7 +4218,45 @@ impl App {
             trim: self.hydro.options.trim,
             heel_deg: self.hydro.options.heel_deg,
             waterline: self.waterline(),
+            waves: self.scene_waves(),
+            waves_status: self.waves_status(),
         })
+    }
+
+    /// The wave pattern for the views: only a current one, with its texture loaded.
+    fn scene_waves(&self) -> Option<render::SceneWaves<'_>> {
+        let result = self.wave_overlay()?;
+        let (key, texture) = self.wave_texture.as_ref()?;
+        (*key == self.waves_key()).then(|| render::SceneWaves {
+            result,
+            texture: texture.id(),
+            contours: None,
+        })
+    }
+
+    /// Plan view's note while the pattern is shown but not drawn.
+    fn waves_status(&self) -> Option<&'static str> {
+        if !self.perf_state.waves.show || self.wave_overlay().is_some() {
+            None
+        } else if self.wave_failure().is_some() {
+            Some("Wave pattern failed: see the Performance tab")
+        } else {
+            Some("Wave pattern: computing…")
+        }
+    }
+
+    /// Upload the current pattern's image once per result; drop it when there is none.
+    fn load_wave_texture(&mut self, ctx: &egui::Context) {
+        let key = self.waves_key();
+        let Some(image) = self.wave_overlay().map(|w| w.image.clone()) else {
+            self.wave_texture = None;
+            return;
+        };
+        if self.wave_texture.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        let texture = ctx.load_texture("wave-pattern", image, egui::TextureOptions::LINEAR);
+        self.wave_texture = Some((key, texture));
     }
 
     /// View `index`'s analysis frame key and view key for `cell`.
