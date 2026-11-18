@@ -73,6 +73,9 @@ pub const FAR_FIELD_NOTE: &str =
 /// Wave-angle samples beyond which [`wave_spectrum`] refuses rather than run for minutes.
 pub const MAX_THETA_SAMPLES: usize = 1_000_000;
 
+/// The most memory a stored [`WaveSpectrum`] may take; a larger reach or a finer spacing is refused.
+pub const MAX_SPECTRUM_BYTES: usize = 256 << 20;
+
 /// Samples of the envelope when finding the spectral cut.
 const ENVELOPE_SAMPLES: usize = 512;
 
@@ -192,6 +195,17 @@ pub fn wave_spectrum(
 ) -> Result<WaveSpectrum, String> {
     let quad = Quadrature::new(grid, opts, reach_x_m, reach_y_m, nyquist_spacing_m)?;
     let columns = grid.xs.len() - 1;
+    // Per sample: Z_i (8 bytes a column) and the suffix sums (16 bytes, one more than columns).
+    let bytes = quad.len().saturating_mul(columns * 8 + (columns + 1) * 16);
+    if bytes > MAX_SPECTRUM_BYTES {
+        return Err(format!(
+            "the spectrum needs {} wave-angle samples ({} MB, more than {} MB): make the domain or the \
+             cut smaller, or its spacing coarser",
+            quad.len(),
+            bytes >> 20,
+            MAX_SPECTRUM_BYTES >> 20
+        ));
+    }
     let rows = par_map(&(0..quad.len()).collect::<Vec<_>>(), |&m| {
         let smp = quad.sample(m);
         let mut z = Vec::with_capacity(columns);
@@ -528,9 +542,18 @@ fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLa
     let wanted = opts
         .spacing_m
         .unwrap_or(2.0 * PI * opts.speed_m_s * opts.speed_m_s / opts.g / 20.0);
+    if !(wanted.is_finite() && wanted > 0.0) {
+        return Err(format!(
+            "speed {} m/s is too low for a wave grid: its waves are shorter than a float can space",
+            opts.speed_m_s
+        ));
+    }
+    // Counts are clamped before the cast so that a tiny spacing cannot overflow; the loop below
+    // then coarsens it to the point cap.
+    const MAX_COUNT: f64 = 1e9;
     let counts = |h: f64| {
-        let nx = ((x1 - x0) / h).round().max(1.0) as usize + 1;
-        let half_rows = (half_width / h).round() as usize;
+        let nx = ((x1 - x0) / h).round().clamp(1.0, MAX_COUNT) as usize + 1;
+        let half_rows = (half_width / h).round().clamp(0.0, MAX_COUNT) as usize;
         (nx, half_rows)
     };
     let mut h = wanted;
@@ -1833,5 +1856,38 @@ mod tests {
             assert!((mean - centre).abs() < 1e-9, "{mean} vs {centre}");
         }
         assert!(summary_json(&f).get("waterlines").is_none());
+    }
+
+    /// A speed so low that the default spacing underflows to 0 m must be refused, not loop forever.
+    #[test]
+    fn a_vanishing_speed_is_refused() {
+        let o = WavePatternOptions::at_speed(1e-170);
+        let Err(err) = wave_field(&wigley(), &o) else {
+            panic!("a speed of 1e-170 m/s was accepted");
+        };
+        assert!(err.contains("speed"), "{err}");
+    }
+
+    /// A positive but tiny spacing is coarsened to the point cap, not overflowed.
+    #[test]
+    fn a_tiny_spacing_is_coarsened() {
+        let o = WavePatternOptions {
+            spacing_m: Some(1e-300),
+            ..opts_at_fn(0.3)
+        };
+        // The layout is where the count overflowed; the field itself is low_froude_field_is_capped.
+        let lay = field_layout(&wigley(), &o).unwrap();
+        assert!(lay.xs.len() * (2 * lay.half_rows + 1) <= MAX_FIELD_POINTS);
+        assert!(lay.coarsened.is_some());
+    }
+
+    /// About 250 000 wave-angle samples (a reach of 170 m sideways at 0.025 m) would take about
+    /// 400 MB of stored spectrum: refused with a way out, not allocated.
+    #[test]
+    fn spectrum_memory_is_bounded() {
+        let Err(err) = wave_spectrum(&wigley(), &opts_at_fn(0.3), 405.0, 170.0, 0.025) else {
+            panic!("a 400 MB spectrum was built");
+        };
+        assert!(err.contains("smaller"), "{err}");
     }
 }
