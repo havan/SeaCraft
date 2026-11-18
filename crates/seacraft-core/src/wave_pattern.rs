@@ -479,6 +479,9 @@ pub struct WaveField {
     pub zeta: Vec<f64>,
     /// False inside a waterline.
     pub wet: Vec<bool>,
+    /// The calm waterline of each hull (one, or two demihulls) as a closed outline of `[x, y]` points
+    /// (m): starboard side from stern to bow, then port side back.
+    pub waterlines: Vec<Vec<[f64; 2]>>,
     /// Ship speed U (m/s).
     pub speed_m_s: f64,
     /// Froude number on the waterline length.
@@ -554,6 +557,29 @@ fn field_layout(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<FieldLa
         nyquist: dx.max(dy),
         coarsened: (h != wanted).then_some((wanted, dx.max(dy))),
     })
+}
+
+/// The calm waterline (`z = 0`) of the hull, or of both demihulls at `±s/2`, as closed outlines.
+fn waterline_outlines(grid: &MichellGrid, catamaran: Option<f64>) -> Vec<Vec<[f64; 2]>> {
+    let top = grid.zs.len() - 1;
+    let side: Vec<(f64, f64)> = grid
+        .xs
+        .iter()
+        .zip(&grid.half_breadths)
+        .map(|(&x, col)| (x, col[top]))
+        .collect();
+    let centres = match catamaran {
+        Some(s) => vec![s / 2.0, -s / 2.0],
+        None => vec![0.0],
+    };
+    centres
+        .into_iter()
+        .map(|c| {
+            let starboard = side.iter().map(|&(x, h)| [x, c + h]);
+            let port = side.iter().rev().map(|&(x, h)| [x, c - h]);
+            starboard.chain(port).collect()
+        })
+        .collect()
 }
 
 /// The half-breadth of the calm waterline (`z = 0`) at `x`, 0 beyond the ends.
@@ -668,6 +694,7 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
         ys,
         zeta,
         wet,
+        waterlines: waterline_outlines(grid, opts.catamaran_spacing),
         speed_m_s: opts.speed_m_s,
         froude,
         k0,
@@ -919,8 +946,9 @@ pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
     let (x0, x1) = (field.xs[0], field.xs[nx - 1]);
     let (y0, y1) = (field.ys[0], field.ys[ny - 1]);
     let (w, h) = (x1 - x0, y1 - y0);
-    let font = 0.025 * w.max(h);
-    let caption = font * 1.5 * (field.notes.len() + field.warnings.len()) as f64 + font;
+    // The drawing is in metres: strokes, dashes and text are sized from the domain.
+    let stroke = 0.0015 * w.max(h);
+    let font = 0.018 * w;
     let rgb = |c: [u8; 3]| format!("rgb({},{},{})", c[0], c[1], c[2]);
     let title = format!(
         "Wave pattern at {:.3} m/s ({:.2} kn), Fn {:.3}, colour clip ±{:.4} m",
@@ -930,6 +958,12 @@ pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
         clip
     );
     let notes: Vec<&String> = field.notes.iter().chain(&field.warnings).collect();
+    let max_chars = ((w / (0.6 * font)) as usize).saturating_sub(2).max(20);
+    let lines: Vec<String> = std::iter::once(&title)
+        .chain(notes.iter().copied())
+        .flat_map(|t| wrap(t, max_chars))
+        .collect();
+    let caption = font * 1.5 * (lines.len() + 1) as f64;
     let _ = writeln!(
         out,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\" \
@@ -960,41 +994,25 @@ pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
             format!("stroke=\"{}\"", rgb(DIVERGING_STOPS[2]))
         } else {
             format!(
-                "stroke=\"{}\" stroke-dasharray=\"4 3\"",
-                rgb(DIVERGING_STOPS[0])
+                "stroke=\"{}\" stroke-dasharray=\"{:.4} {:.4}\"",
+                rgb(DIVERGING_STOPS[0]),
+                6.0 * stroke,
+                4.0 * stroke
             )
         };
         let _ = writeln!(
             out,
-            "<path d=\"{d}\" fill=\"none\" {style} stroke-width=\"1\" \
-             vector-effect=\"non-scaling-stroke\"><title>ζ = {level:.4} m</title></path>"
+            "<path d=\"{d}\" fill=\"none\" {style} stroke-width=\"{stroke:.4}\">\
+             <title>ζ = {level:.4} m</title></path>"
         );
     }
-    // The hull: each column's run of dry points as a strip one spacing wide.
-    let dx = if nx > 1 { w / (nx - 1) as f64 } else { 0.0 };
-    let dy = if ny > 1 { h / (ny - 1) as f64 } else { 0.0 };
+    // The hull: each calm waterline as a filled outline.
     let mut hull = String::new();
-    for ix in 0..nx {
-        let mut iy = 0;
-        while iy < ny {
-            if field.wet[iy * nx + ix] {
-                iy += 1;
-                continue;
-            }
-            let start = iy;
-            while iy < ny && !field.wet[iy * nx + ix] {
-                iy += 1;
-            }
-            let (lo, hi) = (field.ys[start] - dy / 2.0, field.ys[iy - 1] + dy / 2.0);
-            let _ = write!(
-                hull,
-                "M{:.3} {:.3}h{dx:.3}v{:.3}h{:.3}z",
-                field.xs[ix] - dx / 2.0,
-                -hi,
-                hi - lo,
-                -dx
-            );
+    for outline in &field.waterlines {
+        for (k, [x, y]) in outline.iter().enumerate() {
+            let _ = write!(hull, "{}{x:.3} {:.3}", if k == 0 { "M" } else { "L" }, -y);
         }
+        hull.push('Z');
     }
     if !hull.is_empty() {
         let _ = writeln!(out, "<path d=\"{hull}\" fill=\"{}\"/>", rgb(HULL_RGB));
@@ -1004,7 +1022,7 @@ pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
         "<g font-family=\"DejaVu Sans, Verdana, sans-serif\" font-size=\"{font:.3}\" fill=\"black\">"
     );
     let mut y = -y0 + 1.5 * font;
-    for line in std::iter::once(&title).chain(notes) {
+    for line in &lines {
         let _ = writeln!(
             out,
             "<text x=\"{x0:.3}\" y=\"{y:.3}\">{}</text>",
@@ -1014,6 +1032,25 @@ pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
     }
     out.push_str("</g>\n</svg>\n");
     out
+}
+
+/// `text` broken at spaces into lines of at most `max` characters (a longer word stays whole).
+fn wrap(text: &str, max: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > max {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// The field as VTK XML image data (`.vti`): point data `zeta` (m) and `wet` (1 or 0), x fastest.
@@ -1058,7 +1095,7 @@ pub fn wave_vti(field: &WaveField) -> String {
 pub fn summary_json(field: &WaveField) -> serde_json::Value {
     let mut v = serde_json::to_value(field).unwrap_or_default();
     if let Some(map) = v.as_object_mut() {
-        for key in ["xs", "ys", "zeta", "wet"] {
+        for key in ["xs", "ys", "zeta", "wet", "waterlines"] {
             map.remove(key);
         }
         map.insert(
@@ -1719,5 +1756,82 @@ mod tests {
             levels,
             vec![-5.0, -4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0, 5.0]
         );
+    }
+
+    /// Attribute values of `name` in `svg`, as numbers (each whitespace-separated part).
+    fn attr_values(svg: &str, name: &str) -> Vec<f64> {
+        let key = format!(" {name}=\"");
+        svg.match_indices(&key)
+            .flat_map(|(i, _)| {
+                let rest = &svg[i + key.len()..];
+                rest[..rest.find('"').unwrap()]
+                    .split_whitespace()
+                    .map(|v| v.parse::<f64>().unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// The SVG is in metres: a line 1 unit wide would be 1 m wide, and `vector-effect` is not
+    /// honoured by every renderer, so strokes and dashes are set as a small part of the domain.
+    #[test]
+    fn svg_strokes_are_thin_in_metres() {
+        let f = small_field();
+        let width = f.xs[f.xs.len() - 1] - f.xs[0];
+        let svg = wave_svg(&f, None);
+        assert!(!svg.contains("vector-effect"));
+        let strokes = attr_values(&svg, "stroke-width");
+        assert!(!strokes.is_empty());
+        assert!(strokes.iter().all(|&w| w <= 0.005 * width), "{strokes:?}");
+        let dashes = attr_values(&svg, "stroke-dasharray");
+        assert!(
+            !dashes.is_empty() && dashes.iter().all(|&d| d <= 0.02 * width),
+            "{dashes:?}"
+        );
+    }
+
+    #[test]
+    fn svg_caption_fits_the_width() {
+        let f = small_field();
+        let width = f.xs[f.xs.len() - 1] - f.xs[0];
+        let svg = wave_svg(&f, None);
+        let font = attr_values(&svg, "font-size")[0];
+        let lines: Vec<&str> = svg
+            .split("<text ")
+            .skip(1)
+            .map(|t| &t[t.find('>').unwrap() + 1..t.find("</text>").unwrap()])
+            .collect();
+        assert!(lines.len() > f.notes.len() + f.warnings.len(), "{lines:?}");
+        for line in lines {
+            assert!(
+                line.chars().count() as f64 * 0.6 * font <= width,
+                "too long: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn field_carries_the_waterline_outlines() {
+        let f = small_field();
+        assert_eq!(f.waterlines.len(), 1);
+        let widest = f.waterlines[0]
+            .iter()
+            .map(|p| p[1])
+            .fold(f64::MIN, f64::max);
+        assert!((widest - 0.5).abs() < 1e-9, "half-breadth {widest}");
+        let cat = wave_field(
+            &wigley(),
+            &WavePatternOptions {
+                spacing_m: Some(1.0),
+                ..cat_opts(0.3, 3.0)
+            },
+        )
+        .unwrap();
+        assert_eq!(cat.waterlines.len(), 2);
+        for (outline, centre) in cat.waterlines.iter().zip([1.5, -1.5]) {
+            let mean = outline.iter().map(|p| p[1]).sum::<f64>() / outline.len() as f64;
+            assert!((mean - centre).abs() < 1e-9, "{mean} vs {centre}");
+        }
+        assert!(summary_json(&f).get("waterlines").is_none());
     }
 }
