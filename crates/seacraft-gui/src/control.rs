@@ -939,7 +939,7 @@ fn handle_inner(
                 app.set_show_messages(show);
             }
             if let Some(show) = waves {
-                app.set_waves_shown(show);
+                app.set_wave_view_open(show);
             }
             if let Some(show) = templates {
                 app.set_show_templates(show);
@@ -3031,12 +3031,14 @@ mod tests {
     }
 
     #[test]
-    fn ui_set_waves_shows_the_pattern() {
+    fn ui_set_waves_opens_the_view() {
+        use crate::analysis_views::AnalysisView;
         let (mut app, ctx) = demo();
-        assert!(!app.wave_settings().plan_contours);
+        assert_eq!(app.analysis_view(), None);
         let r = call(&mut app, &ctx, "ui.set", json!({ "waves": true }));
         assert_eq!(r["ok"], true, "{r}");
-        assert!(app.wave_settings().plan_contours);
+        assert_eq!(app.analysis_view(), Some(AnalysisView::Waves));
+        assert!(!app.wave_settings().plan_contours);
         let r = call(&mut app, &ctx, "ui.set", json!({ "waves": 1 }));
         assert_eq!(r["ok"], false, "{r}");
         assert!(
@@ -3046,13 +3048,18 @@ mod tests {
                 .contains("`waves` must be true or false"),
             "{r}"
         );
-        assert!(
-            app.wave_settings().plan_contours,
+        assert_eq!(
+            app.analysis_view(),
+            Some(AnalysisView::Waves),
             "a bad value changes nothing"
         );
         let r = call(&mut app, &ctx, "ui.set", json!({ "waves": false }));
         assert_eq!(r["ok"], true, "{r}");
-        assert!(!app.wave_settings().plan_contours);
+        assert_eq!(app.analysis_view(), None);
+        // `false` closes only the wave view, not another one.
+        app.open_analysis_view(AnalysisView::Offsets);
+        call(&mut app, &ctx, "ui.set", json!({ "waves": false }));
+        assert_eq!(app.analysis_view(), Some(AnalysisView::Offsets));
     }
 
     #[test]

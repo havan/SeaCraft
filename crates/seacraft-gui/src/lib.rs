@@ -33,6 +33,7 @@ pub mod render;
 pub mod selection;
 pub mod theme;
 pub mod visibility;
+pub mod wave_view;
 pub mod waves;
 
 pub use app::App;

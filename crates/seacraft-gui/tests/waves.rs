@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use std::sync::Arc;
 
+use seacraft_gui::analysis_views::AnalysisView;
 use seacraft_gui::camera::{Camera, ViewKind};
 use seacraft_gui::render::{self, Scene, SceneWaves};
 use seacraft_gui::theme;
@@ -80,21 +81,78 @@ fn frames_until(
 }
 
 /// The demo hull with its pattern shown and computed.
+/// The demo hull with the Wave pattern view open and its pattern computed.
 fn demo_with_waves() -> (App, egui::Context) {
     let (mut app, ctx) = demo();
-    app.set_waves_shown(true);
+    app.open_analysis_view(AnalysisView::Waves);
     frames_until(&ctx, &mut app, "the wave pattern", |a| {
-        a.wave_overlay().is_some()
+        a.wave_current().is_some()
+    });
+    (app, ctx)
+}
+
+/// The demo hull with the Plan view contours on (the view closed) and the pattern computed.
+fn demo_with_plan_waves() -> (App, egui::Context) {
+    let (mut app, ctx) = demo();
+    app.set_wave_settings(WaveSettings {
+        plan_contours: true,
+        ..app.wave_settings().clone()
+    });
+    frames_until(&ctx, &mut app, "the wave pattern", |a| {
+        a.wave_current().is_some()
     });
     (app, ctx)
 }
 
 #[test]
-fn shown_pattern_computes_by_itself() {
-    let (app, _ctx) = demo_with_waves();
-    let w = app.wave_overlay().expect("the pattern");
+fn open_view_computes_by_itself() {
+    let (mut app, ctx) = demo();
+    app.open_analysis_view(AnalysisView::Waves);
+    assert_eq!(app.analysis_view(), Some(AnalysisView::Waves));
+    frames_until(&ctx, &mut app, "the pattern and its drag curve", |a| {
+        a.wave_current().is_some() && a.wave_drag().is_some()
+    });
+    let w = app.wave_current().expect("the pattern");
     assert!((w.field.froude - 0.3).abs() < 1e-12);
-    assert!(!app.waves_busy());
+    assert!(!app.wave_settings().plan_contours, "Plan contours stay off");
+}
+
+#[test]
+fn plan_contours_alone_compute_the_pattern() {
+    let (app, _ctx) = demo_with_plan_waves();
+    assert_eq!(app.analysis_view(), None);
+    assert!(app.wave_current().is_some());
+}
+
+/// Review focus 1: ten speeds one frame apart; the view settles on the last, and never shows an
+/// older speed's field as current.
+#[test]
+fn scrubbing_settles_on_the_last_speed() {
+    let (mut app, ctx) = demo_with_waves();
+    for k in 0..10 {
+        let fn_ = 0.30 + 0.02 * k as f64;
+        app.set_wave_settings(WaveSettings {
+            speed: WaveSpeed::Froude(fn_),
+            ..app.wave_settings().clone()
+        });
+        // The demo starts at Fn 0.30, so the first step does not move the key.
+        if k > 0 {
+            assert!(app.wave_current().is_none(), "Fn {fn_}: the key moved");
+        }
+        frame(&ctx, &mut app, Vec::new());
+        if let Some(w) = app.wave_current() {
+            assert!(
+                (w.field.froude - fn_).abs() < 1e-9,
+                "{} at Fn {fn_}",
+                w.field.froude
+            );
+        }
+    }
+    frames_until(&ctx, &mut app, "the last speed", |a| {
+        a.wave_current().is_some()
+    });
+    let froude = app.wave_current().unwrap().field.froude;
+    assert!((froude - 0.48).abs() < 1e-9, "Fn {froude}");
 }
 
 #[test]
@@ -105,13 +163,13 @@ fn a_settings_change_hides_the_old_pattern_at_once() {
         ..app.wave_settings().clone()
     });
     assert!(
-        app.wave_overlay().is_none(),
+        app.wave_current().is_none(),
         "the Fn 0.3 pattern is out of date"
     );
     frames_until(&ctx, &mut app, "the Fn 0.4 pattern", |a| {
-        a.wave_overlay().is_some()
+        a.wave_current().is_some()
     });
-    let froude = app.wave_overlay().unwrap().field.froude;
+    let froude = app.wave_current().unwrap().field.froude;
     assert!((froude - 0.4).abs() < 1e-12, "Fn {froude}");
 }
 
@@ -120,7 +178,7 @@ fn a_model_edit_or_new_level_hides_the_old_pattern() {
     let (mut app, ctx) = demo_with_waves();
     app.set_subdivision_level(1);
     assert!(
-        app.wave_overlay().is_none(),
+        app.wave_current().is_none(),
         "a new level hides the pattern"
     );
     // Another model opened while the level-1 job may still run: the demo's result never returns.
@@ -129,18 +187,18 @@ fn a_model_edit_or_new_level_hides_the_old_pattern() {
     frame(&ctx, &mut app, Vec::new());
     let demo_l = {
         let (a, _) = demo_with_waves();
-        a.wave_overlay().unwrap().length_wl
+        a.wave_current().unwrap().length_wl
     };
     app.open_model(std::path::Path::new(&path("wigley.fef")))
         .expect("open wigley.fef");
     assert!(
-        app.wave_overlay().is_none(),
+        app.wave_current().is_none(),
         "a new model hides the pattern"
     );
     frames_until(&ctx, &mut app, "the Wigley pattern", |a| {
-        a.wave_overlay().is_some()
+        a.wave_current().is_some()
     });
-    let l = app.wave_overlay().unwrap().length_wl;
+    let l = app.wave_current().unwrap().length_wl;
     assert!(
         (l - demo_l).abs() > 1e-6,
         "the Wigley's L {l}, not the demo's"
@@ -150,7 +208,7 @@ fn a_model_edit_or_new_level_hides_the_old_pattern() {
 #[test]
 fn a_failing_pattern_is_reported_once() {
     let (mut app, ctx) = demo();
-    app.set_waves_shown(true);
+    app.set_wave_view_open(true);
     app.hydro_options_mut().draft = 0.0;
     frames_until(&ctx, &mut app, "the failure", |a| {
         a.wave_failure().is_some()
@@ -168,27 +226,46 @@ fn a_failing_pattern_is_reported_once() {
     let failure = app.wave_failure().unwrap();
     assert!(failure.contains("Michell"), "{failure}");
     assert!(!app.waves_busy(), "a failed pattern is not retried");
-    assert!(app.wave_overlay().is_none());
+    assert!(app.wave_current().is_none());
+}
+
+/// Review focus 2: no waterline at draft 0 shows the failure once in the view, with no panic.
+#[test]
+fn draft_zero_shows_the_failure_in_the_view() {
+    let (mut app, ctx) = demo();
+    app.open_analysis_view(AnalysisView::Waves);
+    app.hydro_options_mut().draft = 0.0;
+    frames_until(&ctx, &mut app, "the failure", |a| {
+        a.wave_failure().is_some()
+    });
+    frame(&ctx, &mut app, Vec::new());
+    let texts = texts(&frame(&ctx, &mut app, Vec::new()));
+    let shown = texts
+        .iter()
+        .filter(|t| t.starts_with("Wave pattern failed"))
+        .count();
+    assert_eq!(shown, 1, "{texts:?}");
+    assert!(app.wave_drag().is_none());
 }
 
 #[test]
-fn hidden_pattern_computes_nothing() {
+fn closed_view_computes_nothing() {
     let (mut app, ctx) = demo();
     for _ in 0..20 {
         frame(&ctx, &mut app, Vec::new());
         std::thread::sleep(Duration::from_millis(20));
         assert!(!app.waves_busy());
     }
-    assert!(app.wave_overlay().is_none());
+    assert!(app.wave_current().is_none());
     assert!(!app.wave_settings().plan_contours);
 }
 
 #[test]
 fn blocking_compute_makes_the_pattern_current() {
     let (mut app, _ctx) = demo();
-    app.set_waves_shown(true);
+    app.set_wave_view_open(true);
     app.compute_waves_blocking().expect("the pattern");
-    assert!(app.wave_overlay().is_some());
+    assert!(app.wave_current().is_some());
 }
 
 /// Every shape, flattened.
@@ -388,7 +465,7 @@ fn catamaran_pattern_lies_over_the_model() {
 
 #[test]
 fn stale_pattern_is_not_drawn() {
-    let (mut app, ctx) = demo_with_waves();
+    let (mut app, ctx) = demo_with_plan_waves();
     let textured = |out: &egui::FullOutput| {
         flat(out.shapes.iter().map(|c| c.shape.clone())).iter().any(
             |s| matches!(s, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default()),
@@ -423,48 +500,53 @@ fn performance_texts(ctx: &egui::Context, app: &mut App) -> Vec<String> {
 }
 
 #[test]
-fn waves_section_shows_its_results() {
-    let (mut app, ctx) = demo_with_waves();
-    let texts = performance_texts(&ctx, &mut app);
-    assert!(texts.iter().any(|t| t == "Wave pattern"), "{texts:?}");
-    let note = seacraft_core::wave_pattern::FAR_FIELD_NOTE;
-    assert!(
-        texts.iter().any(|t| t == note),
-        "the far-field note, verbatim"
-    );
-    assert!(
-        texts.iter().any(|t| t == "Wave cut: ζ (m) vs x (m)"),
-        "{texts:?}"
-    );
-    assert!(!texts
+fn menu_lists_wave_pattern_after_trim_scan() {
+    let all = AnalysisView::ALL;
+    let trim = all
         .iter()
-        .any(|t| t.contains("heel and trim are ignored")));
+        .position(|v| *v == AnalysisView::TrimScan)
+        .unwrap();
+    assert_eq!(all[trim + 1], AnalysisView::Waves);
+    assert_eq!(AnalysisView::Waves.label(), "Wave pattern");
+    assert_eq!(AnalysisView::from_key("waves"), Some(AnalysisView::Waves));
+    assert!(!AnalysisView::Waves.uses_slot());
 }
 
 #[test]
-fn heel_is_named_as_ignored() {
-    let (mut app, ctx) = demo_with_waves();
-    app.hydro_options_mut().heel_deg = 5.0;
+fn performance_tab_offers_the_view() {
+    let (mut app, ctx) = demo();
     let texts = performance_texts(&ctx, &mut app);
-    assert!(
-        texts
-            .iter()
-            .any(|t| t.contains("computed upright at the draft; heel and trim are ignored")),
-        "{texts:?}"
-    );
+    assert!(texts.iter().any(|t| t == "Open wave pattern"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("Domain")), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "Show on Plan view"), "{texts:?}");
+    let out = frame(&ctx, &mut app, Vec::new());
+    let at = text_rect(&out, "Open wave pattern")
+        .expect("the button")
+        .center();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    frame(&ctx, &mut app, vec![button(at, true)]);
+    frame(&ctx, &mut app, vec![button(at, false)]);
+    assert_eq!(app.analysis_view(), Some(AnalysisView::Waves));
+    frames_until(&ctx, &mut app, "the pattern", |a| {
+        a.wave_current().is_some()
+    });
+    let texts = performance_texts(&ctx, &mut app);
+    let sentence = app.wave_current().unwrap().regime.sentence();
+    assert!(texts.iter().any(|t| t == sentence), "{texts:?}");
 }
 
 #[test]
-fn waves_section_marks_a_stale_result() {
+fn view_marks_a_stale_result() {
     let (mut app, ctx) = demo_with_waves();
     let chips = |t: &[String]| t.iter().filter(|t| *t == "out of date — F5").count();
-    let before = chips(&performance_texts(&ctx, &mut app));
+    frame(&ctx, &mut app, Vec::new());
+    let before = chips(&texts(&frame(&ctx, &mut app, Vec::new())));
     app.set_wave_settings(WaveSettings {
         contours: 3,
         ..app.wave_settings().clone()
     });
     let after = chips(&texts(&frame(&ctx, &mut app, Vec::new())));
-    assert_eq!(after, before + 1, "the wave results carry the stale chip");
+    assert_eq!(after, before + 1, "the kept result carries the stale chip");
 }
 
 #[test]
@@ -475,18 +557,12 @@ fn speed_is_an_input() {
         ..app.wave_settings().clone()
     });
     frames_until(&ctx, &mut app, "the 8 kn pattern", |a| {
-        a.wave_overlay().is_some()
+        a.wave_current().is_some()
     });
-    let u = app.wave_overlay().unwrap().field.speed_m_s;
+    let u = app.wave_current().unwrap().field.speed_m_s;
     assert!(
         (u - 8.0 * seacraft_core::resistance::KNOT).abs() < 1e-12,
         "U {u}"
-    );
-    let texts = performance_texts(&ctx, &mut app);
-    // The section's summary line, not the Plan view caption.
-    assert!(
-        texts.iter().any(|t| t.starts_with("U 8.00 kn · Fn ")),
-        "{texts:?}"
     );
 }
 
@@ -500,7 +576,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 fn saves_png_svg_vti() {
     let (mut app, _ctx) = demo_with_waves();
     let (nx, ny) = {
-        let f = &app.wave_overlay().unwrap().field;
+        let f = &app.wave_current().unwrap().field;
         (f.xs.len() as u32, f.ys.len() as u32)
     };
     let png = scratch("waves.png");
@@ -583,7 +659,6 @@ fn text_rect(out: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
 #[test]
 fn save_button_opens_the_dialog() {
     let (mut app, ctx) = demo_with_waves();
-    app.set_dock_tab(seacraft_gui::app::DesignDock::Performance);
     frame(&ctx, &mut app, Vec::new());
     let out = frame(&ctx, &mut app, Vec::new());
     let at = text_rect(&out, "Save image…").expect("the button").center();
@@ -609,8 +684,8 @@ fn shown_pattern_goes_into_the_report() {
     assert!(!std::fs::read_to_string(&html)
         .unwrap()
         .contains("id=\"waves\""));
+    app.set_wave_view_open(true);
     app.set_wave_settings(WaveSettings {
-        plan_contours: true,
         speed: WaveSpeed::Knots(6.0),
         ..app.wave_settings().clone()
     });
@@ -625,7 +700,7 @@ fn shown_pattern_goes_into_the_report() {
 #[test]
 fn drag_curve_ignores_speed() {
     let (mut app, _ctx) = demo();
-    app.set_waves_shown(true);
+    app.set_wave_view_open(true);
     app.compute_wave_drag_blocking().unwrap();
     assert!(app.wave_drag().is_some());
     app.set_wave_settings(WaveSettings {
@@ -646,7 +721,7 @@ fn drag_curve_ignores_speed() {
 #[test]
 fn shown_pattern_computes_its_drag_curve() {
     let (mut app, ctx) = demo();
-    app.set_waves_shown(true);
+    app.set_wave_view_open(true);
     frames_until(&ctx, &mut app, "the wave drag curve", |a| {
         a.wave_drag().is_some()
     });

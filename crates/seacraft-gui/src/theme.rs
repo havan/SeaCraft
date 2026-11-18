@@ -691,7 +691,7 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 26] = [
+    const SOURCES: [(&str, &str); 27] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
@@ -717,6 +717,7 @@ mod tests {
         ("render.rs", include_str!("render.rs")),
         ("selection.rs", include_str!("selection.rs")),
         ("visibility.rs", include_str!("visibility.rs")),
+        ("wave_view.rs", include_str!("wave_view.rs")),
         ("waves.rs", include_str!("waves.rs")),
     ];
 
