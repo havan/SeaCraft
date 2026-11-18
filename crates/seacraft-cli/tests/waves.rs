@@ -160,6 +160,30 @@ fn waves_refuses_a_loop_of_links() {
     );
 }
 
+/// On a case-blind file system (Windows, macOS by default) p.png and P.PNG are one file, so names
+/// that differ only in case are refused everywhere.
+#[test]
+fn waves_refuses_outputs_that_differ_only_in_case() {
+    let d = Dir::new("case");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    let out = d.run(&[
+        "waves",
+        "w.fef",
+        "--fn",
+        "0.3",
+        "-o",
+        "p.png",
+        "--cut-y",
+        "2",
+        "--cut-csv",
+        "P.PNG",
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "p.png and P.PNG were accepted");
+    assert!(err.contains("same file"), "{err}");
+    assert!(!d.path("p.png").exists(), "a refused run wrote a file");
+}
+
 #[test]
 fn waves_needs_exactly_one_of_speed_and_fn() {
     let d = Dir::new("speed");

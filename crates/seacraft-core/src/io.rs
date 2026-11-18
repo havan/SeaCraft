@@ -79,10 +79,13 @@ pub fn landing(path: &Path) -> io::Result<PathBuf> {
 
 /// The first pair of `outputs`, as `(earlier, later)` indices, that would land in one file (see
 /// [`landing`]): written in turn, the later would replace the earlier while both are reported.
+/// Landings are compared without regard to case, on every platform: on a case-blind file system
+/// (Windows, macOS by default) `p.png` and `P.PNG` are one file, and telling which a folder is
+/// costs more than refusing two names a user would hardly mean as two files.
 pub fn shared_output(outputs: &[&Path]) -> io::Result<Option<(usize, usize)>> {
     let landed = outputs
         .iter()
-        .map(|p| landing(p))
+        .map(|p| Ok(landing(p)?.to_string_lossy().to_lowercase()))
         .collect::<io::Result<Vec<_>>>()?;
     Ok((0..landed.len()).find_map(|i| {
         landed[..i]
@@ -232,6 +235,15 @@ mod tests {
         let up = dir.join("sub/../a.png");
         assert_eq!(shared_output(&[&a, &b]).unwrap(), None);
         assert_eq!(shared_output(&[&a, &b, &up]).unwrap(), Some((0, 2)));
+        let shout = dir.join("SUB/../A.PNG");
+        assert_eq!(
+            shared_output(&[&b, &a, &dir.join("A.PNG")]).unwrap(),
+            Some((1, 2))
+        );
+        assert!(
+            shared_output(&[&a, &shout]).is_ok(),
+            "a missing folder is not an error"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
