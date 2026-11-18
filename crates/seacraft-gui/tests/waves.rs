@@ -600,3 +600,23 @@ fn save_button_opens_the_dialog() {
         "{texts:?}"
     );
 }
+
+#[test]
+fn shown_pattern_goes_into_the_report() {
+    let (mut app, _ctx) = demo();
+    let html = scratch("report-hidden.html");
+    app.write_report_blocking(&html).unwrap();
+    assert!(!std::fs::read_to_string(&html)
+        .unwrap()
+        .contains("id=\"waves\""));
+    app.set_wave_settings(WaveSettings {
+        show: true,
+        speed: WaveSpeed::Knots(6.0),
+        ..app.wave_settings().clone()
+    });
+    let html = scratch("report-shown.html");
+    app.write_report_blocking(&html).unwrap();
+    let text = std::fs::read_to_string(&html).unwrap();
+    assert!(text.contains("id=\"waves\""), "the section is in");
+    assert!(text.contains("<td>6.00</td>"), "at the dock's speed");
+}

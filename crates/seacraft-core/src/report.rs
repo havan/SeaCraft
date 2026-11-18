@@ -46,6 +46,19 @@ pub struct ReportOptions {
     pub include_resistance: bool,
     /// Whether to include Savitsky planing hull analysis. Defaults to false.
     pub include_planing: bool,
+    /// The far-field wave pattern section, when set. Defaults to `None`.
+    pub waves: Option<WaveReport>,
+}
+
+/// What the report's wave-pattern section computes: the pattern upright at the report's draft,
+/// on Michell's 65 × 25 offsets grid, as the window and `seacraft waves` compute it.
+#[derive(Debug, Clone)]
+pub struct WaveReport {
+    pub options: crate::wave_pattern::WavePatternOptions,
+    /// A Froude number on the hull's waterline length; when set it replaces `options.speed_m_s`.
+    pub froude: Option<f64>,
+    /// Colour clip (m); `None` takes the field's largest |ζ|.
+    pub clip_m: Option<f64>,
 }
 
 impl ReportOptions {
@@ -82,6 +95,7 @@ impl ReportOptions {
             mode: SubdivisionMode::Loop,
             include_resistance: true,
             include_planing: false,
+            waves: None,
         }
     }
 }
@@ -99,6 +113,7 @@ impl Default for ReportOptions {
             mode: SubdivisionMode::Loop,
             include_resistance: true,
             include_planing: false,
+            waves: None,
         }
     }
 }
@@ -138,6 +153,9 @@ pub fn report_sections_with_project(opts: &ReportOptions, project: &Project) -> 
     if project.report.seakeeping.is_some() {
         sections.push("seakeeping");
     }
+    if opts.waves.is_some() {
+        sections.push("waves");
+    }
     sections
 }
 
@@ -154,6 +172,23 @@ pub fn report_sections_with_project(opts: &ReportOptions, project: &Project) -> 
 /// - `planing` (when `opts.include_planing` is true)
 pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, String> {
     design_report_with_project(surface, opts, &Project::default())
+}
+
+/// The wave field a report section shows: upright at `draft`, at the speed or Froude number asked.
+fn wave_section_field(
+    surface: &Surface,
+    subdiv: SubdivisionOptions,
+    draft: f64,
+    waves: &WaveReport,
+) -> Result<crate::wave_pattern::WaveField, String> {
+    let grid = crate::michell::michell_grid_from_surface(surface, draft, 65, 25, subdiv).ok_or(
+        "cannot extract Michell offsets grid from the hull (positive draft and waterline needed)",
+    )?;
+    let mut options = waves.options.clone();
+    if let Some(froude) = waves.froude {
+        options.speed_m_s = froude * (resistance::GRAVITY * grid.length_wl).sqrt();
+    }
+    crate::wave_pattern::wave_field(&grid, &options)
 }
 
 /// Produce a standalone self-contained HTML5 design report of the hull and project sidecar data.
@@ -1523,6 +1558,56 @@ pub fn design_report_with_project(
         out.push_str("</section>\n\n");
     }
 
+    // ------------------------------------------------------------- 11. Far-field wave pattern
+    if let Some(waves) = &opts.waves {
+        out.push_str("<section id=\"waves\">\n");
+        out.push_str("  <h2>Far-Field Wave Pattern (Michell thin-ship)</h2>\n");
+        match wave_section_field(surface, subdiv, opts.draft, waves) {
+            Err(e) => {
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"note-box\">Wave pattern unavailable: {}</div>",
+                    html_escape(&e)
+                );
+            }
+            Ok(field) => {
+                if !field.warnings.is_empty() {
+                    out.push_str("  <div class=\"warn-box\">\n    <ul>\n");
+                    for w in &field.warnings {
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                    }
+                    out.push_str("    </ul>\n  </div>\n");
+                }
+                let knots = field.speed_m_s / resistance::KNOT;
+                let _ = writeln!(
+                    out,
+                    "  <table>\n    <thead>\n      <tr><th>Speed [kn]</th><th>Fn</th><th>Draft [m]</th><th>&lambda;<sub>T</sub> [m]</th><th>&theta;<sub>c</sub> [&deg;]</th><th>Shortest wave [m]</th><th>max |&zeta;| [m]</th></tr>\n    </thead>\n    <tbody>\n      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n    </tbody>\n  </table>",
+                    fmt_num(knots, 2),
+                    fmt_num(field.froude, 3),
+                    fmt_num(opts.draft, 3),
+                    fmt_num(field.transverse_wavelength_m, 2),
+                    fmt_num(field.theta_cut_deg, 1),
+                    fmt_num(field.shortest_wavelength_m, 3),
+                    fmt_num(field.max_abs_zeta_m, 3),
+                );
+                let svg = crate::wave_pattern::wave_svg(&field, waves.clip_m);
+                let svg = match svg.strip_prefix("<?xml") {
+                    Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body),
+                    None => svg.as_str(),
+                };
+                out.push_str("  <div class=\"svg-frame\">\n");
+                out.push_str(svg);
+                out.push_str("  </div>\n");
+                out.push_str("  <div class=\"note-box\">\n");
+                for note in &field.notes {
+                    let _ = writeln!(out, "    <p>{}</p>", html_escape(note));
+                }
+                out.push_str("  </div>\n");
+            }
+        }
+        out.push_str("</section>\n\n");
+    }
+
     // ------------------------------------------------------------- Footer
     let version = crate::VERSION;
     out.push_str("<footer>\n");
@@ -2126,6 +2211,60 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
 mod tests {
     use super::*;
     use crate::demo;
+
+    /// The text of the report's `<section id="{id}">`.
+    fn section<'a>(html: &'a str, id: &str) -> &'a str {
+        let open = html
+            .find(&format!("<section id=\"{id}\">"))
+            .unwrap_or_else(|| panic!("no {id} section"));
+        let close = html[open..].find("</section>").expect("closed") + open;
+        &html[open..close]
+    }
+
+    fn waves_at_fn(froude: f64) -> WaveReport {
+        WaveReport {
+            options: crate::wave_pattern::WavePatternOptions::at_speed(1.0),
+            froude: Some(froude),
+            clip_m: None,
+        }
+    }
+
+    #[test]
+    fn waves_section_only_when_asked() {
+        let surface = demo::demo_hull(false);
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+        assert!(opts.waves.is_none());
+        assert!(!report_sections(&opts).contains(&"waves"));
+        let html = design_report(&surface, &opts).expect("report");
+        assert!(!html.contains("id=\"waves\""));
+
+        opts.waves = Some(waves_at_fn(0.3));
+        assert_eq!(report_sections(&opts).last(), Some(&"waves"));
+        let html = design_report(&surface, &opts).expect("report");
+        assert_eq!(html.matches("id=\"waves\"").count(), 1);
+        let waves = section(&html, "waves");
+        assert_eq!(waves.matches("<svg").count(), 1, "the contour map, inlined");
+        assert!(waves.contains(crate::wave_pattern::FAR_FIELD_NOTE));
+        assert!(waves.contains("0.300"), "the Froude number in the table");
+        assert!(!html.contains("<?xml"));
+        assert!(!waves.to_lowercase().contains("validated"));
+    }
+
+    #[test]
+    fn waves_section_reports_a_failure() {
+        let surface = demo::demo_hull(false);
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+        let mut waves = waves_at_fn(0.3);
+        // Demihulls closer than their beam: the field refuses them.
+        waves.options.catamaran_spacing = Some(0.5);
+        opts.waves = Some(waves);
+        let html = design_report(&surface, &opts).expect("the report is still written");
+        let waves = section(&html, "waves");
+        assert!(waves.contains("overlap"), "{waves}");
+        assert!(!waves.contains("<svg"));
+    }
 
     #[test]
     fn report_shows_not_validated_note() {

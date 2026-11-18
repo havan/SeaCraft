@@ -5433,6 +5433,25 @@ impl App {
             .apply(seacraft_core::report::ReportOptions::from_surface(surface));
         opts.level = self.level;
         opts.mode = self.mode;
+        // The wave pattern goes in while it is shown, with the dock's settings, at the report's draft.
+        let w = &self.perf_state.waves;
+        opts.waves = w.show.then(|| {
+            let (speed_m_s, froude) = match w.speed {
+                crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
+                crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
+            };
+            seacraft_core::report::WaveReport {
+                options: seacraft_core::wave_pattern::WavePatternOptions {
+                    ahead_l: w.ahead_l,
+                    behind_l: w.behind_l,
+                    half_width_l: w.half_width_l,
+                    catamaran_spacing: w.cat_spacing_m,
+                    ..seacraft_core::wave_pattern::WavePatternOptions::at_speed(speed_m_s)
+                },
+                froude,
+                clip_m: w.clip_m,
+            }
+        });
         Some(opts)
     }
 
