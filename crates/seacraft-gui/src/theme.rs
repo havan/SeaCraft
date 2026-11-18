@@ -142,6 +142,24 @@ pub const AXIS_Z: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 /// Waterplane quad fill (premultiplied) and its border.
 pub const WATERPLANE_FILL: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
 pub const WATERPLANE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x5c, 0xa8, 0xf0, 0x80);
+/// The far-field wave pattern's colour map, trough, calm and crest: the core's
+/// `wave_pattern::DIVERGING_STOPS`, so the window and the command line's images match.
+pub const WAVE_TROUGH: Color32 = wave_stop(0);
+pub const WAVE_CALM: Color32 = wave_stop(1);
+pub const WAVE_CREST: Color32 = wave_stop(2);
+const fn wave_stop(i: usize) -> Color32 {
+    let c = seacraft_core::wave_pattern::DIVERGING_STOPS[i];
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+/// Wave contours over the colour map: dark, semi-opaque, crests solid and troughs dashed.
+pub const WAVE_CONTOUR_CREST: Color32 =
+    Color32::from_rgba_unmultiplied_const(0x4a, 0x0a, 0x12, 0xb0);
+pub const WAVE_CONTOUR_TROUGH: Color32 =
+    Color32::from_rgba_unmultiplied_const(0x0a, 0x22, 0x4a, 0xb0);
+/// The calm waterline of each hull the wave field was computed for.
+pub const WAVE_WATERLINE: Color32 = Color32::from_rgb(0x20, 0x26, 0x2e);
+/// The longitudinal wave cut drawn on the pattern.
+pub const WAVE_CUT: Color32 = Color32::from_rgb(0xe8, 0xa2, 0x30);
 /// The design waterline traced on the hull.
 pub const DWL: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 /// Stations, buttocks and waterlines, and their curvature combs.
@@ -672,7 +690,7 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 25] = [
+    const SOURCES: [(&str, &str); 26] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
@@ -698,6 +716,7 @@ mod tests {
         ("render.rs", include_str!("render.rs")),
         ("selection.rs", include_str!("selection.rs")),
         ("visibility.rs", include_str!("visibility.rs")),
+        ("waves.rs", include_str!("waves.rs")),
     ];
 
     #[test]
