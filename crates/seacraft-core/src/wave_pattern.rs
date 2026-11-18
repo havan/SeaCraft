@@ -203,6 +203,12 @@ pub fn wave_spectrum(
             "grid spacing must be a finite number above 0 m, got {nyquist_spacing_m}"
         ));
     }
+    if let Some(s) = opts.catamaran_spacing.filter(|&s| s < grid.beam_wl) {
+        return Err(format!(
+            "catamaran spacing {s} m is less than the demihull beam {} m: the demihulls would overlap",
+            grid.beam_wl
+        ));
+    }
     let k0 = opts.g / (opts.speed_m_s * opts.speed_m_s);
     let sec2_nyquist = PI / (nyquist_spacing_m * k0);
     if sec2_nyquist <= 1.0 + 1e-9 {
@@ -514,7 +520,10 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
         let half_breadth = waterline_half_breadth(grid, x);
         for (iy, &y) in ys.iter().enumerate() {
             let k = iy * nx + ix;
-            if y.abs() < half_breadth {
+            let off = opts
+                .catamaran_spacing
+                .map_or(y.abs(), |s| (y.abs() - s / 2.0).abs());
+            if off < half_breadth {
                 wet[k] = false;
             } else {
                 zeta[k] = columns[ix][iy.abs_diff(rows)];
@@ -541,6 +550,13 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
             theta_cut.to_degrees()
         )
     });
+    if opts.catamaran_spacing.is_some() {
+        notes.push(
+            "catamaran: each demihull is taken as symmetric about its own centreplane, as in \
+             Michell's resistance"
+                .to_string(),
+        );
+    }
     if let Some((from, to)) = lay.coarsened {
         notes.push(format!(
             "spacing coarsened from {from:.4} m to {to:.4} m to stay within 1 000 000 points"
@@ -893,11 +909,69 @@ mod tests {
         let with = |edit: &dyn Fn(&mut WavePatternOptions)| {
             let mut o = opts_at_fn(0.3);
             edit(&mut o);
-            wave_field(&g, &o).unwrap_err()
+            let Err(err) = wave_field(&g, &o) else {
+                panic!("{o:?} was accepted");
+            };
+            err
         };
         assert!(with(&|o| o.speed_m_s = 0.0).contains("speed"));
         assert!(with(&|o| o.speed_m_s = f64::NAN).contains("speed"));
         assert!(with(&|o| o.behind_l = -1.0).contains("behind"));
         assert!(with(&|o| o.spacing_m = Some(0.0)).contains("spacing"));
+    }
+
+    fn cat_opts(fn_: f64, s: f64) -> WavePatternOptions {
+        WavePatternOptions {
+            catamaran_spacing: Some(s),
+            ..opts_at_fn(fn_)
+        }
+    }
+
+    #[test]
+    fn catamaran_is_two_shifted_demihulls() {
+        let (g, s) = (wigley(), 3.0);
+        let cat = wave_spectrum(&g, &cat_opts(0.3, s), 30.0, 10.0, 0.5).unwrap();
+        let mono = wave_spectrum(&g, &opts_at_fn(0.3), 30.0, 10.0 + s / 2.0, 0.5).unwrap();
+        assert_eq!(cat.samples(), mono.samples());
+        let pts: Vec<(f64, f64)> = (0..20)
+            .map(|k| (-5.5 - 1.1 * k as f64, -4.0 + 0.45 * k as f64))
+            .collect();
+        let max = pts
+            .iter()
+            .map(|&(x, y)| cat.elevation(x, y).abs())
+            .fold(0.0, f64::max);
+        assert!(max > 0.0);
+        for (x, y) in pts {
+            let two = mono.elevation(x, y - s / 2.0) + mono.elevation(x, y + s / 2.0);
+            let d = (cat.elevation(x, y) - two).abs();
+            assert!(
+                d <= 1e-10 * max,
+                "({x}, {y}): catamaran vs two demihulls differ by {d:e}"
+            );
+        }
+    }
+
+    #[test]
+    fn catamaran_masks_both_demihulls() {
+        let f = wave_field(&wigley(), &cat_opts(0.3, 3.0)).unwrap();
+        let nx = f.xs.len();
+        let i0 = nearest(&f.xs, 0.0);
+        for (y, wet) in [(-1.5, false), (1.5, false), (0.0, true)] {
+            assert_eq!(f.wet[nearest(&f.ys, y) * nx + i0], wet, "wet at (0, {y})");
+        }
+        assert!(
+            f.notes.iter().any(|n| n.starts_with("catamaran:")),
+            "{:?}",
+            f.notes
+        );
+    }
+
+    /// Review focus 5: demihulls 0.8 m apart with a 1 m beam overlap.
+    #[test]
+    fn overlapping_demihulls_are_refused() {
+        let Err(err) = wave_field(&wigley(), &cat_opts(0.3, 0.8)) else {
+            panic!("overlapping demihulls were accepted");
+        };
+        assert!(err.contains("spacing"), "{err}");
     }
 }
