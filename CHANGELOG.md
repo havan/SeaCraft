@@ -4,6 +4,16 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- The far-field wave pattern in the window. "Show on Plan view" in the Performance tab lays it on the water in
+  Plan view, with contours (crests solid, troughs dashed), each hull's waterline and the longitudinal cut. The
+  window uses the command line's colour map. The tab sets the speed (knots or Froude number), the domain, a
+  catamaran spacing, the colour range, the contours and the cut. It shows the summary, a colour legend, the cut
+  as ζ against x, and the notes and warnings verbatim. The pattern is computed in the background. A pattern that
+  no longer matches the model, the draft or the settings is never drawn or saved as current. "Save image…"
+  writes it as PNG, SVG or VTI. While it is shown, the design report gains a wave-pattern section. The pattern
+  is computed upright at the draft; heel and trim are ignored, and the tab says so. For agents,
+  `ui.set {"waves": true}` shows it. As on the command line, it is checked against Kelvin's far-field
+  asymptotics and wedge geometry (`docs/oracles.md` §40), not against a measured wave pattern.
 - `seacraft waves` and the MCP tool `wave_pattern` (also through the window's control channel, as
   `waves.compute`) draw the far-field thin-ship wave pattern behind a hull or a catamaran: the Kelvin wedge of
   transverse and divergent waves from Michell's spectrum, calm ahead of the bow. Outputs are a PNG colour map, an

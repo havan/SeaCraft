@@ -238,6 +238,12 @@ for the grid are left out rather than drawn aliased, and the cut-off is printed.
 wetted transom) apply. The evaluation is checked against Kelvin's far-field asymptotics and the wedge geometry
 (`docs/oracles.md` §40), not against a measured wave pattern.
 
+In the window, "Show on Plan view" in the Performance tab draws the same pattern on the water in Plan view,
+computed in the background with the tab's speed (knots or Froude number), domain, catamaran spacing, colour range,
+contours and cut. The tab also plots the cut, lists the notes and warnings, and saves the pattern as PNG, SVG or
+VTI. While it is shown, the design report gains a wave-pattern section. The pattern is upright at the draft:
+heel and trim are ignored, and the tab says so.
+
 `dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
 bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending
 Keuning & Sonnenberg, 1998) for sailing yacht hulls (`Fn` 0.15–0.75). The
