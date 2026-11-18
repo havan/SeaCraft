@@ -2719,8 +2719,8 @@ fn obj(props: Value, required: &[&str]) -> Value {
 /// What a tool does to the world, which fixes its MCP annotation hints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
-    /// Measures or reports; changes nothing (`unfold_plate` writes a file only
-    /// when asked, as a side product of the answer).
+    /// Measures or reports; changes nothing (`unfold_plate` and `wave_pattern`
+    /// write files only when given a path, as a side product of the answer).
     ReadOnly,
     /// Changes the loaded model in place, additively or by small moves.
     Edits,
