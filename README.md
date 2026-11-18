@@ -144,6 +144,7 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | IMO 2008 IS Code weather criterion | `weather.rs` |
 | Holtrop & Mennen still-water resistance | `resistance.rs` |
 | Michell thin-ship wave resistance | `michell.rs` |
+| Far-field thin-ship wave pattern (Kelvin wedge) | `wave_pattern.rs` |
 | Savitsky planing hull resistance | `planing.rs` |
 | Strip-theory heave and pitch motions | `seakeeping.rs` |
 | Irregular head seas, significant motions, MSI | `seastate.rs` |
@@ -226,6 +227,16 @@ resistance with the ITTC-57 friction line and form factor `1+k` (`seacraft resis
 The integral assumes the hull closes at the stern, so a wetted transom larger than 5 % of the largest section
 (the project's own threshold) is flagged, as are L/B below 6 and Fn outside 0.2–1.0. On the Wigley hull it has been
 compared with towing tests (`docs/oracles.md` §39): see *Status and limitations*.
+
+`seacraft waves` draws the far-field wave pattern behind the same Michell grid: the elevation of the free waves
+from Michell's spectrum (the Fourier–Kochin form of Wu et al. 2019, *Phys. Fluids* 31, 047102, in its thin-ship
+limit), with each point seeing only the part of the hull forward of it, so the water ahead of the bow is calm. It
+writes a PNG (one pixel per grid point, crests red, troughs blue, the hull grey), an SVG contour map and VTK image
+data (`.vti`), and a longitudinal cut as CSV; `--cat-spacing` gives the pattern of two demihulls. Free waves only:
+the local disturbance is left out, so near the hull the elevation is not the hull wave profile. Waves too short
+for the grid are left out rather than drawn aliased, and the cut-off is printed. Michell's warnings (L/B, Fn,
+wetted transom) apply. The evaluation is checked against Kelvin's far-field asymptotics and the wedge geometry
+(`docs/oracles.md` §40), not against a measured wave pattern.
 
 `dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
 bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending
@@ -632,6 +643,9 @@ seacraft resistance hull.fef [--method holtrop|michell|dsyhs] [--cat-spacing S]
                               [--speeds 6,8,10,12] [--draft T] [--cstern X]
                               [--propeller-diameter D] [--expanded-area 0.7] [--eta-o 0.6]
                               [--shaft-efficiency 0.98] [--appendage-area m2] [--csv out.csv] [--json]
+seacraft waves     hull.fef --speed KN | --fn FN [-o pattern.png|.svg|.vti]... [--draft T]
+                              [--cat-spacing S] [--ahead 1] [--behind 3] [--half-width 1.5] [--spacing M]
+                              [--clip M] [--cut-y M --cut-csv cut.csv] [--json]
 seacraft unfold    hull.fef [--axis x|y|z] [--from a] [--to b] [--x-from a] [--x-to b]
                               [--both-sides] [-o plate.svg] [--json]
 seacraft edit      hull.fef -o edited.fef [--split-face N]... [--insert-edge F,A,B]...

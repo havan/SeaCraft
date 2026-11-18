@@ -1,0 +1,142 @@
+//! `seacraft waves`, run as a user runs it, in a fresh directory per test.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+/// A fresh directory for one test, removed when dropped.
+struct Dir(PathBuf);
+
+impl Dir {
+    fn new(name: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-waves-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("make the test directory");
+        Dir(dir)
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_seacraft"))
+            .current_dir(&self.0)
+            .args(args)
+            .output()
+            .expect("run seacraft")
+    }
+
+    /// Run and require success; (stdout, stderr).
+    fn ok(&self, args: &[&str]) -> (String, String) {
+        let out = self.run(args);
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "{args:?}: {err}");
+        (String::from_utf8_lossy(&out.stdout).into_owned(), err)
+    }
+
+    fn path(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn exists(p: &Path) -> bool {
+    std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+}
+
+#[test]
+fn waves_writes_all_three_formats() {
+    let d = Dir::new("formats");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    let (out, _) = d.ok(&[
+        "waves", "w.fef", "--fn", "0.3", "-o", "p.png", "-o", "p.svg", "-o", "p.vti",
+    ]);
+    for name in ["p.png", "p.svg", "p.vti"] {
+        assert!(exists(&d.path(name)), "{name} not written; stdout: {out}");
+    }
+    let png = std::fs::read(d.path("p.png")).unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert!(out.contains("Far-field thin-ship"), "{out}");
+    assert!(out.contains("Fn 0.300"), "{out}");
+}
+
+/// Review focus 2: a transom hull still gets a pattern, with Michell's transom warning.
+#[test]
+fn waves_flags_the_demo_transom() {
+    let d = Dir::new("transom");
+    d.ok(&["demo", "-o", "demo.fef"]);
+    let (_, err) = d.ok(&["waves", "demo.fef", "--speed", "8", "-o", "d.png"]);
+    assert!(err.contains("warning: wetted transom"), "stderr: {err}");
+    assert!(exists(&d.path("d.png")));
+}
+
+#[test]
+fn waves_refuses_an_unknown_extension() {
+    let d = Dir::new("extension");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    let out = d.run(&[
+        "waves", "w.fef", "--fn", "0.3", "-o", "p.png", "-o", "p.jpg",
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(err.contains("p.jpg"), "stderr: {err}");
+    assert!(
+        !d.path("p.png").exists(),
+        "nothing is written when one output is refused"
+    );
+}
+
+#[test]
+fn waves_needs_exactly_one_of_speed_and_fn() {
+    let d = Dir::new("speed");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    assert!(!d.run(&["waves", "w.fef"]).status.success());
+    assert!(!d
+        .run(&["waves", "w.fef", "--fn", "0.3", "--speed", "8"])
+        .status
+        .success());
+    let out = d.run(&["waves", "w.fef", "--fn", "-0.3"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("speed"));
+}
+
+#[test]
+fn waves_json_summary() {
+    let d = Dir::new("json");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    let (out, _) = d.ok(&["waves", "w.fef", "--fn", "0.3", "-o", "p.svg", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).expect("JSON on stdout");
+    assert!((v["froude"].as_f64().unwrap() - 0.3).abs() < 1e-9, "{v}");
+    assert!(v["theta_cut_deg"].as_f64().unwrap() > 0.0);
+    assert_eq!(v["files"][0], "p.svg");
+    assert!(
+        v.get("zeta").is_none() && v.get("xs").is_none(),
+        "the grid stays out of the summary"
+    );
+    assert!(v["notes"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("Far-field thin-ship"));
+}
+
+#[test]
+fn waves_writes_a_longitudinal_cut() {
+    let d = Dir::new("cut");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    d.ok(&[
+        "waves",
+        "w.fef",
+        "--fn",
+        "0.3",
+        "--cut-y",
+        "2",
+        "--cut-csv",
+        "c.csv",
+    ]);
+    let csv = std::fs::read_to_string(d.path("c.csv")).expect("the cut is written");
+    let mut lines = csv.lines();
+    assert_eq!(lines.next(), Some("x_m,zeta_m"));
+    assert_eq!(lines.count(), 2000);
+}
