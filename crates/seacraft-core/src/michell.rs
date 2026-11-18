@@ -402,7 +402,6 @@ pub(crate) fn column_z_integrals(grid: &MichellGrid, kz: f64, out: &mut Vec<f64>
 
 /// [`column_z_integrals`] with `|f_x|` in place of `f_x`: an upper bound on `|Z_i|`, used to find
 /// where a hull's spectrum has decayed.
-#[allow(dead_code)] // first used by the wave pattern; the allow goes with it
 pub(crate) fn column_z_envelope(grid: &MichellGrid, kz: f64, out: &mut Vec<f64>) {
     column_z_terms(grid, kz, out, f64::abs);
 }

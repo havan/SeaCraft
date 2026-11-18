@@ -89,6 +89,8 @@ pub mod trimopt;
 pub mod ttf;
 /// Lengths as text: metric first, imperial beside it when asked.
 pub mod units;
+/// Far-field thin-ship wave pattern behind a hull: Michell's spectrum, the Kelvin wedge.
+pub mod wave_pattern;
 pub mod weather;
 
 pub use analysis::AnalysisMode;
