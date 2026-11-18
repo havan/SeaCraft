@@ -2039,6 +2039,8 @@ pub enum PerformanceAction {
     Compute,
     /// The wave-pattern settings changed (they key their own job, not resistance).
     WavesChanged,
+    /// "Save image…" in the wave-pattern section.
+    SaveWaveImage,
 }
 
 pub struct PerformancePanel<'a> {
@@ -2053,6 +2055,17 @@ pub struct PerformancePanel<'a> {
     pub stale_resistance: bool,
     /// The RAOs and sea-state responses predate the last change (F5).
     pub stale_raos: bool,
+    /// The wave pattern kept predates the last change (recomputed automatically while shown).
+    pub waves_stale: bool,
+    pub waves_busy: bool,
+    /// The pattern is current: it may be saved.
+    pub waves_current: bool,
+    /// Why the pattern failed for the current inputs.
+    pub waves_failure: Option<String>,
+    /// The floating condition is heeled or trimmed, which the pattern ignores.
+    pub heeled_or_trimmed: bool,
+    /// The waterline length the speed's units convert by: the pattern's, else the hull's.
+    pub waves_length_wl: Option<f64>,
 }
 
 pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
@@ -2136,6 +2149,27 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     ui.add_space(4.0);
     ui.separator();
+    let waves = waves_section(
+        ui,
+        WavesPanel {
+            settings: &mut panel.state.waves,
+            result: panel.state.wave_result.as_ref(),
+            stale: panel.waves_stale,
+            busy: panel.waves_busy,
+            current: panel.waves_current,
+            failure: panel.waves_failure.as_deref(),
+            heeled_or_trimmed: panel.heeled_or_trimmed,
+            length_wl: panel.waves_length_wl,
+        },
+    );
+    match waves {
+        WavesAction::None => {}
+        WavesAction::Changed => action = PerformanceAction::WavesChanged,
+        WavesAction::SaveImage => action = PerformanceAction::SaveWaveImage,
+    }
+
+    ui.add_space(4.0);
+    ui.separator();
     ui.strong("Seakeeping (head-sea RAOs)");
     ui.add_space(2.0);
 
@@ -2211,6 +2245,267 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 }
 
 /// The resistance curve and its table.
+/// What the wave-pattern section asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WavesAction {
+    None,
+    /// A setting changed: the pattern is recomputed after the quiet period.
+    Changed,
+    /// "Save image…".
+    SaveImage,
+}
+
+pub struct WavesPanel<'a> {
+    pub settings: &'a mut crate::waves::WaveSettings,
+    /// The last pattern computed, current or not (`stale`).
+    pub result: Option<&'a crate::waves::WaveResult>,
+    pub stale: bool,
+    pub busy: bool,
+    pub current: bool,
+    pub failure: Option<&'a str>,
+    pub heeled_or_trimmed: bool,
+    pub length_wl: Option<f64>,
+}
+
+/// The far-field wave pattern: its settings (speed first), "Save image…", and the result's summary,
+/// colour legend, longitudinal cut, notes and warnings.
+pub fn waves_section(ui: &mut egui::Ui, panel: WavesPanel<'_>) -> WavesAction {
+    use crate::waves::WaveSpeed;
+    let mut changed = false;
+    let mut save = false;
+    let s = panel.settings;
+    ui.horizontal(|ui| {
+        ui.strong("Wave pattern");
+        if panel.busy {
+            ui.spinner();
+            ui.label("Computing the wave pattern…");
+        }
+    });
+    ui.add_space(2.0);
+    changed |= ui.checkbox(&mut s.show, "Show on Plan view").changed();
+
+    ui.horizontal(|ui| {
+        ui.label("Speed");
+        let knots = s.speed.is_knots();
+        let (mut value, range) = match s.speed {
+            WaveSpeed::Knots(v) => (v, 0.1..=100.0),
+            WaveSpeed::Froude(v) => (v, 0.05..=2.0),
+        };
+        let r = ui.add(
+            theme::num(&mut value)
+                .speed(if knots { 0.1 } else { 0.005 })
+                .range(range)
+                .max_decimals(3),
+        );
+        if r.changed() {
+            s.speed = if knots {
+                WaveSpeed::Knots(value)
+            } else {
+                WaveSpeed::Froude(value)
+            };
+            changed = true;
+        }
+        let mut to_knots = knots;
+        theme::segmented(ui, |ui| {
+            ui.selectable_value(&mut to_knots, true, "kn");
+            ui.selectable_value(&mut to_knots, false, "Fn");
+        });
+        if to_knots != knots {
+            // The speed itself does not jump: the value converts by the waterline length.
+            s.speed = match panel.length_wl.filter(|l| *l > 0.0) {
+                Some(l) => s.speed.in_unit(to_knots, l),
+                None if to_knots => WaveSpeed::Knots(value),
+                None => WaveSpeed::Froude(value),
+            };
+            changed = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Domain (L)");
+        for (v, range, prefix) in [
+            (&mut s.ahead_l, 0.0..=3.0, "ahead "),
+            (&mut s.behind_l, 0.25..=10.0, "behind "),
+            (&mut s.half_width_l, 0.25..=5.0, "± "),
+        ] {
+            changed |= ui
+                .add(theme::num(v).speed(0.05).range(range).prefix(prefix))
+                .changed();
+        }
+    });
+
+    ui.horizontal(|ui| {
+        let mut cat = s.cat_spacing_m.is_some();
+        if ui.checkbox(&mut cat, "Catamaran").changed() {
+            // A typical demihull spacing, 0.3 L, until the user sets one.
+            let guess = panel.length_wl.map_or(3.0, |l| (0.3 * l).max(0.1));
+            s.cat_spacing_m = cat.then_some(guess);
+            changed = true;
+        }
+        if let Some(spacing) = s.cat_spacing_m.as_mut() {
+            changed |= ui
+                .add(
+                    theme::num(spacing)
+                        .speed(0.05)
+                        .range(0.1..=100.0)
+                        .prefix("s = ")
+                        .suffix(" m"),
+                )
+                .changed();
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Colour range");
+        let mut auto = s.clip_m.is_none();
+        if ui.checkbox(&mut auto, "Auto").changed() {
+            s.clip_m = if auto {
+                None
+            } else {
+                Some(panel.result.map_or(0.1, |r| r.clip_m).max(0.001))
+            };
+            changed = true;
+        }
+        if let Some(clip) = s.clip_m.as_mut() {
+            changed |= ui
+                .add(
+                    theme::num(clip)
+                        .speed(0.002)
+                        .range(0.001..=10.0)
+                        .prefix("± ")
+                        .suffix(" m"),
+                )
+                .changed();
+        }
+    });
+
+    ui.horizontal(|ui| {
+        changed |= ui
+            .add(
+                theme::num(&mut s.contours)
+                    .range(0..=12)
+                    .prefix("Contours each side: "),
+            )
+            .changed();
+        changed |= ui
+            .add(
+                theme::num(&mut s.cut_y_l)
+                    .speed(0.01)
+                    .range(0.0..=5.0)
+                    .prefix("Cut at y = ")
+                    .suffix(" L"),
+            )
+            .changed();
+    });
+
+    let can_save = panel.current && !panel.stale && panel.result.is_some();
+    if ui
+        .add_enabled(can_save, egui::Button::new("Save image…"))
+        .on_hover_text("PNG, SVG or VTI, by the file's extension")
+        .clicked()
+    {
+        save = true;
+    }
+
+    if s.show && panel.heeled_or_trimmed {
+        ui.colored_label(
+            theme::WARN,
+            "computed upright at the draft; heel and trim are ignored",
+        );
+    }
+    if let Some(failure) = panel.failure {
+        ui.colored_label(theme::FAIL, format!("Wave pattern failed: {failure}"));
+    }
+    match panel.result {
+        Some(w) if s.show => {
+            stale_section(ui, panel.stale, |ui| wave_results(ui, w));
+        }
+        _ if !s.show => {
+            ui.label(
+                egui::RichText::new("Switch on \"Show on Plan view\" to compute the pattern.")
+                    .color(theme::TEXT_MUTED),
+            );
+        }
+        _ => {}
+    }
+
+    if save {
+        WavesAction::SaveImage
+    } else if changed {
+        WavesAction::Changed
+    } else {
+        WavesAction::None
+    }
+}
+
+/// A computed pattern: the summary, the colour legend, the cut, the notes and warnings.
+fn wave_results(ui: &mut egui::Ui, w: &crate::waves::WaveResult) {
+    let f = &w.field;
+    ui.label(format!(
+        "U {:.2} kn · Fn {:.3} · λ_T {:.2} m · θ_c {:.1}° · shortest {:.2} m · max |ζ| {:.3} m",
+        f.speed_m_s / seacraft_core::resistance::KNOT,
+        f.froude,
+        f.transverse_wavelength_m,
+        f.theta_cut_deg,
+        f.shortest_wavelength_m,
+        f.max_abs_zeta_m
+    ));
+    wave_legend(ui, w.clip_m);
+    let y = match w.cut.line {
+        seacraft_core::wave_pattern::CutLine::Longitudinal { y } => y,
+        seacraft_core::wave_pattern::CutLine::Transverse { x } => x,
+    };
+    let points = w
+        .cut
+        .s
+        .iter()
+        .copied()
+        .zip(w.cut.zeta.iter().copied())
+        .collect();
+    plot_xy(
+        ui,
+        "Wave cut",
+        "x (m)",
+        "ζ (m)",
+        &[(format!("y = {y:.2} m"), points)],
+    );
+    for warning in &f.warnings {
+        ui.colored_label(theme::WARN, format!("⚠ {warning}"));
+    }
+    for note in &f.notes {
+        ui.label(egui::RichText::new(note).color(theme::TEXT_MUTED));
+    }
+}
+
+/// The colour map as a bar from trough to crest, labelled −clip, 0 and +clip.
+fn wave_legend(ui: &mut egui::Ui, clip_m: f64) {
+    let width = ui.available_width().clamp(120.0, 320.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
+    let mut mesh = egui::Mesh::default();
+    let stops = [theme::WAVE_TROUGH, theme::WAVE_CALM, theme::WAVE_CREST];
+    for (i, colour) in stops.into_iter().enumerate() {
+        let x = rect.left() + rect.width() * i as f32 / 2.0;
+        mesh.colored_vertex(egui::pos2(x, rect.top()), colour);
+        mesh.colored_vertex(egui::pos2(x, rect.bottom()), colour);
+    }
+    for i in 0..2u32 {
+        let k = 2 * i;
+        mesh.add_triangle(k, k + 1, k + 2);
+        mesh.add_triangle(k + 1, k + 3, k + 2);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    ui.horizontal(|ui| {
+        ui.set_width(width);
+        let small = |t: String| egui::RichText::new(t).size(theme::SMALL_SIZE);
+        ui.label(small(format!("−{clip_m:.3} m")));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(small(format!("+{clip_m:.3} m")));
+            ui.add_space((width / 2.0 - 60.0).max(0.0));
+            ui.label(small("0".to_owned()));
+        });
+    });
+}
+
 fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult) {
     for w in &res.warnings {
         ui.colored_label(theme::WARN, format!("⚠ {w}"));

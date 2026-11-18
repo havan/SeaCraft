@@ -1730,6 +1730,18 @@ impl App {
         let raos_stale = self.raos_stale();
         let busy_resistance = self.resistance_track.busy();
         let busy_raos = self.raos_track.busy();
+        let waves_stale = self.waves_stale();
+        let waves_busy = self.waves_track.busy();
+        let waves_current = self.wave_overlay().is_some();
+        let waves_failure = self.wave_failure().map(str::to_owned);
+        let heeled_or_trimmed =
+            self.hydro.options.heel_deg != 0.0 || self.hydro.options.trim != 0.0;
+        let waves_length_wl = self
+            .perf_state
+            .wave_result
+            .as_ref()
+            .map(|w| w.length_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl));
         let default_kg = self.effective_performance_kg_default();
         let kg_source = self.performance_kg_source();
         let kg_estimate = self.kg_is_estimate();
@@ -1853,6 +1865,12 @@ impl App {
                             busy_raos,
                             stale_resistance: resistance_stale,
                             stale_raos: raos_stale,
+                            waves_stale,
+                            waves_busy,
+                            waves_current,
+                            waves_failure: waves_failure.clone(),
+                            heeled_or_trimmed,
+                            waves_length_wl,
                         },
                     ));
                 }
@@ -1905,6 +1923,7 @@ impl App {
                 // The wave settings are their own key: resistance is not recomputed.
                 self.last_change = Some(std::time::Instant::now());
             }
+            DockAction::Performance(panels::PerformanceAction::SaveWaveImage) => {}
             DockAction::Performance(panels::PerformanceAction::None) => {}
         }
         self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);

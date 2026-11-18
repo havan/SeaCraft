@@ -31,6 +31,22 @@ impl WaveSpeed {
             WaveSpeed::Froude(f) => f * (GRAVITY * length_wl).sqrt(),
         }
     }
+
+    pub fn is_knots(self) -> bool {
+        matches!(self, WaveSpeed::Knots(_))
+    }
+
+    /// The same speed in knots (`knots`) or as a Froude number, on a hull of waterline length
+    /// `length_wl` (m).
+    pub fn in_unit(self, knots: bool, length_wl: f64) -> WaveSpeed {
+        match (self, knots) {
+            (WaveSpeed::Froude(_), true) => WaveSpeed::Knots(self.m_s(length_wl) / KNOT),
+            (WaveSpeed::Knots(_), false) => {
+                WaveSpeed::Froude(self.m_s(length_wl) / (GRAVITY * length_wl).sqrt())
+            }
+            _ => self,
+        }
+    }
 }
 
 /// What the Performance tab asks of the wave pattern.
@@ -357,6 +373,21 @@ mod tests {
         let err = compute_waves(&surface, subdiv, 0.0, &WaveSettings::default())
             .expect_err("no waterline at draft 0");
         assert!(err.contains("Michell"), "{err}");
+    }
+
+    #[test]
+    fn switching_the_unit_keeps_the_speed() {
+        let l = 9.7;
+        let kn = WaveSpeed::Froude(0.3).in_unit(true, l);
+        let WaveSpeed::Knots(v) = kn else {
+            panic!("{kn:?}")
+        };
+        assert!((v * KNOT - 0.3 * (GRAVITY * l).sqrt()).abs() < 1e-12);
+        let WaveSpeed::Froude(f) = kn.in_unit(false, l) else {
+            panic!("back to Fn")
+        };
+        assert!((f - 0.3).abs() < 1e-12, "{f}");
+        assert_eq!(kn.in_unit(true, l), kn, "already in knots");
     }
 
     #[test]

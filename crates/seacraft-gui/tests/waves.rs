@@ -414,3 +414,78 @@ fn stale_pattern_is_not_drawn() {
         texts(&out)
     );
 }
+
+/// The Performance tab's texts, two frames after opening it.
+fn performance_texts(ctx: &egui::Context, app: &mut App) -> Vec<String> {
+    app.set_dock_tab(seacraft_gui::app::DesignDock::Performance);
+    frame(ctx, app, Vec::new());
+    texts(&frame(ctx, app, Vec::new()))
+}
+
+#[test]
+fn waves_section_shows_its_results() {
+    let (mut app, ctx) = demo_with_waves();
+    let texts = performance_texts(&ctx, &mut app);
+    assert!(texts.iter().any(|t| t == "Wave pattern"), "{texts:?}");
+    let note = seacraft_core::wave_pattern::FAR_FIELD_NOTE;
+    assert!(
+        texts.iter().any(|t| t == note),
+        "the far-field note, verbatim"
+    );
+    assert!(
+        texts.iter().any(|t| t == "Wave cut: ζ (m) vs x (m)"),
+        "{texts:?}"
+    );
+    assert!(!texts
+        .iter()
+        .any(|t| t.contains("heel and trim are ignored")));
+}
+
+#[test]
+fn heel_is_named_as_ignored() {
+    let (mut app, ctx) = demo_with_waves();
+    app.hydro_options_mut().heel_deg = 5.0;
+    let texts = performance_texts(&ctx, &mut app);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("computed upright at the draft; heel and trim are ignored")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn waves_section_marks_a_stale_result() {
+    let (mut app, ctx) = demo_with_waves();
+    let chips = |t: &[String]| t.iter().filter(|t| *t == "out of date — F5").count();
+    let before = chips(&performance_texts(&ctx, &mut app));
+    app.set_wave_settings(WaveSettings {
+        contours: 3,
+        ..app.wave_settings().clone()
+    });
+    let after = chips(&texts(&frame(&ctx, &mut app, Vec::new())));
+    assert_eq!(after, before + 1, "the wave results carry the stale chip");
+}
+
+#[test]
+fn speed_is_an_input() {
+    let (mut app, ctx) = demo_with_waves();
+    app.set_wave_settings(WaveSettings {
+        speed: WaveSpeed::Knots(8.0),
+        ..app.wave_settings().clone()
+    });
+    frames_until(&ctx, &mut app, "the 8 kn pattern", |a| {
+        a.wave_overlay().is_some()
+    });
+    let u = app.wave_overlay().unwrap().field.speed_m_s;
+    assert!(
+        (u - 8.0 * seacraft_core::resistance::KNOT).abs() < 1e-12,
+        "U {u}"
+    );
+    let texts = performance_texts(&ctx, &mut app);
+    // The section's summary line, not the Plan view caption.
+    assert!(
+        texts.iter().any(|t| t.starts_with("U 8.00 kn · Fn ")),
+        "{texts:?}"
+    );
+}
