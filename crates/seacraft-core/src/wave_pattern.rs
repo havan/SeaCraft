@@ -1186,6 +1186,22 @@ pub fn wave_tool(
             Some(_) => return Err(format!("`{key}` must be a file path")),
         }
     }
+    // Two outputs written to one file would leave only the last, while both are reported.
+    let landed: Vec<std::path::PathBuf> = outputs
+        .iter()
+        .map(|(_, p)| {
+            crate::control_auth::canonicalize_write_target(p).unwrap_or_else(|_| p.clone())
+        })
+        .collect();
+    for (i, (key, path)) in outputs.iter().enumerate() {
+        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
+            return Err(format!(
+                "`{}` and `{key}` name the same file, `{}`: each output needs a file of its own",
+                outputs[j].0,
+                path.display()
+            ));
+        }
+    }
     if speed_kn.is_some() == froude.is_some() {
         return Err("give exactly one of `speed` (knots) and `fn`".into());
     }

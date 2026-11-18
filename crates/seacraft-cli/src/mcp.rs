@@ -6866,6 +6866,15 @@ mod tests {
             assert!(msg.contains(word), "{args}: {msg}");
             assert!(!png.exists(), "{args} wrote a file");
         }
+        // Two outputs on one file would leave only the last while both are reported.
+        let msg = fails(
+            &mut s,
+            20,
+            "wave_pattern",
+            json!({"fn": 0.3, "png_path": png.to_string_lossy(), "svg_path": png.to_string_lossy()}),
+        );
+        assert!(msg.contains("same file"), "{msg}");
+        assert!(!png.exists(), "a refused call wrote a file");
         // A wrong type is refused by the schema check, before the tool runs.
         for (k, (args, word)) in [
             (json!({"fn": "fast"}), "fn"),
