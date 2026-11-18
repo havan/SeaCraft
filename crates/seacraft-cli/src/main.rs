@@ -2927,6 +2927,23 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         .iter()
         .map(|p| wave_format(p))
         .collect::<Result<Vec<_>>>()?;
+    // Two outputs written to one file would leave only the last, while both are reported.
+    let outputs: Vec<(&str, &Path)> = a
+        .output
+        .iter()
+        .map(|p| ("-o", p.as_path()))
+        .chain(a.cut_csv.as_deref().map(|p| ("--cut-csv", p)))
+        .collect();
+    let landed: Vec<PathBuf> = outputs.iter().map(|(_, p)| landing(p)).collect();
+    for (i, (flag, path)) in outputs.iter().enumerate() {
+        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
+            bail!(
+                "{flag} and {} name the same file, `{}`: each output needs a file of its own",
+                outputs[j].0,
+                path.display()
+            );
+        }
+    }
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.subdiv.level,

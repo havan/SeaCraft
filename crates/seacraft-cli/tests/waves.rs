@@ -88,6 +88,40 @@ fn waves_refuses_an_unknown_extension() {
     );
 }
 
+/// Two outputs on one file would leave only the last while both are reported.
+#[test]
+fn waves_refuses_two_outputs_on_one_file() {
+    let d = Dir::new("collide");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    std::fs::create_dir(d.path("sub")).unwrap();
+    for args in [
+        &["-o", "p.png", "--cut-y", "2", "--cut-csv", "p.png"][..],
+        &["-o", "p.png", "-o", "sub/../p.png"][..],
+    ] {
+        let mut all = vec!["waves", "w.fef", "--fn", "0.3"];
+        all.extend_from_slice(args);
+        let out = d.run(&all);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} was accepted");
+        assert!(err.contains("same file"), "{args:?}: {err}");
+        assert!(!d.path("p.png").exists(), "{args:?} wrote a file");
+    }
+    // Distinct files are still written.
+    d.ok(&[
+        "waves",
+        "w.fef",
+        "--fn",
+        "0.3",
+        "-o",
+        "p.png",
+        "--cut-y",
+        "2",
+        "--cut-csv",
+        "p.csv",
+    ]);
+    assert!(exists(&d.path("p.png")) && exists(&d.path("p.csv")));
+}
+
 #[test]
 fn waves_needs_exactly_one_of_speed_and_fn() {
     let d = Dir::new("speed");
