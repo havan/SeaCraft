@@ -1053,6 +1053,120 @@ pub fn wave_vti(field: &WaveField) -> String {
     out
 }
 
+/// A field's numbers without its grid, for a JSON reply: every field of [`WaveField`] except `xs`,
+/// `ys`, `zeta` and `wet`, plus `grid_points` `[nx, ny]`.
+pub fn summary_json(field: &WaveField) -> serde_json::Value {
+    let mut v = serde_json::to_value(field).unwrap_or_default();
+    if let Some(map) = v.as_object_mut() {
+        for key in ["xs", "ys", "zeta", "wet"] {
+            map.remove(key);
+        }
+        map.insert(
+            "grid_points".into(),
+            serde_json::json!([field.xs.len(), field.ys.len()]),
+        );
+    }
+    v
+}
+
+/// The wave pattern as the MCP tool `wave_pattern` and the window's `waves.compute` take it:
+/// `speed` (knots) or `fn` (exactly one), `draft`, `cat_spacing`, `ahead`, `behind`, `half_width`
+/// (waterline lengths), `spacing`, `clip` (metres), `png_path`, `svg_path`, `vti_path`. Every
+/// argument and path is checked before any work, and each path passes `check_path` (the window's
+/// write roots) before anything is written. Returns [`summary_json`] with `draft`, `cat_spacing` and
+/// `files`; errors name the argument.
+pub fn wave_tool(
+    surface: &crate::mesh::Surface,
+    subdiv: crate::subdiv::SubdivisionOptions,
+    design_draft: f64,
+    args: &serde_json::Map<String, serde_json::Value>,
+    check_path: &dyn Fn(&std::path::Path) -> Result<std::path::PathBuf, String>,
+) -> Result<serde_json::Value, String> {
+    use serde_json::Value;
+    let number = |key: &str| -> Result<Option<f64>, String> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_f64()
+                .filter(|x| x.is_finite())
+                .map(Some)
+                .ok_or_else(|| format!("`{key}` must be a number")),
+        }
+    };
+    let positive = |key: &str| -> Result<Option<f64>, String> {
+        match number(key)? {
+            Some(x) if x <= 0.0 => Err(format!("`{key}` must be above 0, got {x}")),
+            other => Ok(other),
+        }
+    };
+    let not_negative = |key: &str, default: f64| -> Result<f64, String> {
+        match number(key)? {
+            Some(x) if x < 0.0 => Err(format!("`{key}` must be 0 or more, got {x}")),
+            other => Ok(other.unwrap_or(default)),
+        }
+    };
+    let speed_kn = positive("speed")?;
+    let froude = positive("fn")?;
+    let draft = positive("draft")?.unwrap_or(design_draft);
+    let defaults = WavePatternOptions::at_speed(1.0);
+    let ahead = not_negative("ahead", defaults.ahead_l)?;
+    let behind = not_negative("behind", defaults.behind_l)?;
+    let half_width = not_negative("half_width", defaults.half_width_l)?;
+    let spacing = positive("spacing")?;
+    let cat_spacing = positive("cat_spacing")?;
+    let clip = positive("clip")?;
+    let mut outputs = Vec::new();
+    for key in ["png_path", "svg_path", "vti_path"] {
+        match args.get(key) {
+            None | Some(Value::Null) => {}
+            Some(Value::String(p)) if !p.trim().is_empty() => {
+                let path = check_path(std::path::Path::new(p.trim()))?;
+                outputs.push((key, path));
+            }
+            Some(_) => return Err(format!("`{key}` must be a file path")),
+        }
+    }
+    if speed_kn.is_some() == froude.is_some() {
+        return Err("give exactly one of `speed` (knots) and `fn`".into());
+    }
+
+    let grid = crate::michell::michell_grid_from_surface(surface, draft, 65, 25, subdiv).ok_or(
+        "cannot extract Michell offsets grid from the hull (positive draft and waterline needed)",
+    )?;
+    let speed = match (speed_kn, froude) {
+        (Some(kn), _) => kn * crate::resistance::KNOT,
+        (None, Some(f)) => f * (crate::resistance::GRAVITY * grid.length_wl).sqrt(),
+        (None, None) => unreachable!("checked above"),
+    };
+    let opts = WavePatternOptions {
+        ahead_l: ahead,
+        behind_l: behind,
+        half_width_l: half_width,
+        spacing_m: spacing,
+        catamaran_spacing: cat_spacing,
+        ..WavePatternOptions::at_speed(speed)
+    };
+    let field = wave_field(&grid, &opts)?;
+    let mut files = Vec::new();
+    for (key, path) in outputs {
+        let bytes = match key {
+            "png_path" => wave_png(&field, clip).ok_or("the wave field is empty")?,
+            "svg_path" => wave_svg(&field, clip).into_bytes(),
+            _ => wave_vti(&field).into_bytes(),
+        };
+        crate::io::write_atomic(&path, bytes)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        files.push(path.display().to_string());
+    }
+    let mut reply = summary_json(&field);
+    if let Some(map) = reply.as_object_mut() {
+        map.insert("draft".into(), serde_json::json!(grid.draft));
+        map.insert("cat_spacing".into(), serde_json::json!(cat_spacing));
+        map.insert("files".into(), serde_json::json!(files));
+    }
+    Ok(reply)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

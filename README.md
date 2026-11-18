@@ -858,7 +858,7 @@ Fn 0.32 about 0.02 early and 18–54 % too high. That says nothing about other h
   `save_hull`, `move_point`, `move_points`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
-  `planing_curve`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,
+  `planing_curve`, `wave_pattern`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,
   `export_offsets_pdf` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install

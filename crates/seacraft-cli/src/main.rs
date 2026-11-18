@@ -2990,15 +2990,8 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         eprintln!("warning: {w}");
     }
     if a.json {
-        let mut body = serde_json::to_value(&field)?;
+        let mut body = wave_pattern::summary_json(&field);
         if let Some(map) = body.as_object_mut() {
-            for key in ["xs", "ys", "zeta", "wet"] {
-                map.remove(key);
-            }
-            map.insert(
-                "grid_points".into(),
-                serde_json::json!([field.xs.len(), field.ys.len()]),
-            );
             map.insert("draft".into(), serde_json::json!(grid.draft));
             map.insert("cat_spacing".into(), serde_json::json!(a.cat_spacing));
             map.insert("files".into(), serde_json::json!(files));
