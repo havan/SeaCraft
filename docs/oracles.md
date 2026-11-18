@@ -1351,6 +1351,20 @@ waves only, no local disturbance), about transom sterns (computed and flagged, �
   misses the exact peak by at most $a(1 - \cos(\pi \cdot 0.025/5 \cdot 2))$).
 - Hand-worked cut: $\zeta$ = 0, 0.1, −0.05, 0.3, −0.25, 0.02, 0 at $x$ = 0…6 m; 0.55 m at $x$ = 3.5 m.
 
+- **Catamaran interference** $r = R_w(\text{two demihulls at } s) / (2\,R_w(\text{one}))$ from Michell's integral
+  (§7). Analytic limit: Michell's factor $2(1 + \cos(k_0 s \sec^2\theta \sin\theta))$ averages to 2 as $s$ grows,
+  so $r \to 1$; at Fn 0.40 and $s = 500$ m on the Wigley hull $|r - 1| < 0.05$. At $s$ = 2–5 m some $|r - 1| > 0.05$
+  (a property, not a reference). No published catamaran Michell result was read, so the sign of $r$ at a given
+  spacing is not checked against one.
+- **Wigley $C_w$ curve** over 60 Froude numbers from 0.10 to 1.00 (65 × 25 grid, 128 angles): maxima at Fn 0.176,
+  0.207, 0.237, 0.298 and 0.497. The one at 0.298 is §39's hump (0.299 on the finer grid); the one at 0.497 is a
+  frozen output of SeaCraft (2026-11-19), pinned to 0.45–0.55, since §39's references stop at Fn 0.45.
+  `local_extrema` reports a flat top once and ignores a shelf on a slope.
+
+Tests: `crates/seacraft-core/src/michell.rs::cw_curve_matches_single_calls`, `interference_tends_to_one_far_apart`,
+`interference_moves_with_spacing`, `local_extrema_find_humps_and_hollows`,
+`wigley_cw_curve_has_a_hump_near_fn_0_5`.
+
 ### Provenance
 Calculus and project choices, written 2026-11-19. The wash height is a thin-ship estimate of the free waves in deep
 water: not a wash assessment against any rule, and not checked against measurement.

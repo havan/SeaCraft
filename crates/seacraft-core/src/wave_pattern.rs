@@ -291,7 +291,8 @@ impl Quadrature {
         }
         if let Some(s) = opts.catamaran_spacing.filter(|&s| s < grid.beam_wl) {
             return Err(format!(
-                "catamaran spacing {s} m is less than the demihull beam {} m: the demihulls would overlap",
+                "catamaran spacing {s:.2} m is less than the demihull beam {:.2} m: the demihulls \
+                 would overlap",
                 grid.beam_wl
             ));
         }
@@ -2209,5 +2210,23 @@ mod tests {
             summary_json(&f)["regime"]["sentence"],
             Regime::HullSpeed.sentence()
         );
+    }
+
+    /// Review focus 3: the overlap error prints metres to at most 2 decimals.
+    #[test]
+    fn overlap_error_rounds_metres() {
+        let o = WavePatternOptions {
+            catamaran_spacing: Some(0.123456),
+            ..opts_at_fn(0.3)
+        };
+        let Err(err) = wave_field(&wigley(), &o) else {
+            panic!("overlapping demihulls were accepted");
+        };
+        assert!(err.contains("overlap"), "{err}");
+        let long = err
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter_map(|t| t.split_once('.'))
+            .any(|(_, frac)| frac.len() > 2);
+        assert!(!long, "{err}");
     }
 }
