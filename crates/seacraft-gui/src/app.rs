@@ -878,6 +878,8 @@ pub struct PerformanceState {
     /// [`App::wave_overlay`]).
     pub waves: crate::waves::WaveSettings,
     pub wave_result: Option<crate::waves::WaveResult>,
+    /// The wave-drag curve over speed (drawn only while current: [`App::wave_drag`]).
+    pub wave_drag: Option<crate::waves::WaveDrag>,
 }
 
 impl Default for PerformanceState {
@@ -895,6 +897,7 @@ impl Default for PerformanceState {
             sea_result: None,
             waves: crate::waves::WaveSettings::default(),
             wave_result: None,
+            wave_drag: None,
         }
     }
 }
@@ -1060,6 +1063,7 @@ pub struct App {
     perf_state: PerformanceState,
     resistance_track: Track<ResistanceResult>,
     waves_track: Track<crate::waves::WaveResult>,
+    wave_drag_track: Track<crate::waves::WaveDrag>,
     raos_track: Track<RaoResult>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
@@ -1316,6 +1320,7 @@ impl App {
             perf_state: PerformanceState::default(),
             resistance_track: Track::default(),
             waves_track: Track::default(),
+            wave_drag_track: Track::default(),
             raos_track: Track::default(),
             analysis: Default::default(),
             hydro_rev: 0,
@@ -1585,6 +1590,8 @@ impl App {
         self.raos_track.reset();
         self.perf_state.wave_result = None;
         self.waves_track.reset();
+        self.perf_state.wave_drag = None;
+        self.wave_drag_track.reset();
         self.analysis.clear_results();
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
@@ -4853,6 +4860,79 @@ impl App {
         ])
     }
 
+    /// The wave-drag curve's inputs: the geometry and level, the floating condition and the
+    /// catamaran spacing, but not the speed.
+    fn wave_drag_key(&self) -> u64 {
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            crate::waves::drag_key(self.perf_state.waves.cat_spacing_m),
+        ])
+    }
+
+    /// Whether the wave pattern and its drag curve are computed: while they are drawn.
+    pub fn waves_needed(&self) -> bool {
+        self.perf_state.waves.plan_contours
+    }
+
+    /// The wave-drag curve, `Some` only while needed and computed for the current model, floating
+    /// condition and catamaran spacing.
+    pub fn wave_drag(&self) -> Option<&crate::waves::WaveDrag> {
+        if !self.waves_needed() || !self.wave_drag_track.is_current(self.wave_drag_key()) {
+            return None;
+        }
+        self.perf_state.wave_drag.as_ref()
+    }
+
+    /// Why the wave-drag curve failed for the current inputs, if it did.
+    pub fn wave_drag_failure(&self) -> Option<&str> {
+        self.wave_drag_track.failure(self.wave_drag_key())
+    }
+
+    /// Compute the wave-drag curve on this thread (tests and scripts).
+    pub fn compute_wave_drag_blocking(&mut self) -> Result<(), String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let key = self.wave_drag_key();
+        match crate::waves::compute_wave_drag(
+            surface,
+            subdivision,
+            self.hydro.options.draft,
+            self.hydro.options.water_density,
+            self.perf_state.waves.cat_spacing_m,
+        ) {
+            Ok(d) => {
+                self.perf_state.wave_drag = Some(d);
+                self.wave_drag_track.stamp(key);
+                Ok(())
+            }
+            Err(e) => {
+                self.wave_drag_track.fail(key, e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn start_wave_drag_compute(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            return;
+        };
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let draft = self.hydro.options.draft;
+        let rho = self.hydro.options.water_density;
+        let spacing = self.perf_state.waves.cat_spacing_m;
+        let key = self.wave_drag_key();
+        self.wave_drag_track.start(key, move || {
+            crate::waves::compute_wave_drag(&surface, subdivision, draft, rho, spacing)
+        });
+    }
+
     pub fn wave_settings(&self) -> &crate::waves::WaveSettings {
         &self.perf_state.waves
     }
@@ -4988,6 +5068,15 @@ impl App {
                     waiting = true;
                 }
             }
+            // The wave-drag curve takes the hydrostatics' quiet: it is quick, and a drag on the
+            // view's speed does not re-key it.
+            if self.waves_needed() && self.wave_drag_track.due(self.wave_drag_key()) {
+                if hydro_quiet {
+                    self.start_wave_drag_compute();
+                } else {
+                    waiting = true;
+                }
+            }
             let loading_due = !self.project.loading_conditions.is_empty()
                 && self.loading_track.due(self.loading_key());
             let resistance_due = self.resistance_track.due(self.resistance_key());
@@ -5015,6 +5104,7 @@ impl App {
             || self.damage_track.busy()
             || self.resistance_track.busy()
             || self.waves_track.busy()
+            || self.wave_drag_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy();
         if busy || waiting {
@@ -5054,6 +5144,11 @@ impl App {
         match self.waves_track.poll(self.waves_key()) {
             Some(Ok(w)) => self.perf_state.wave_result = Some(w),
             Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
+            None => {}
+        }
+        match self.wave_drag_track.poll(self.wave_drag_key()) {
+            Some(Ok(d)) => self.perf_state.wave_drag = Some(d),
+            Some(Err(e)) => self.log(Level::Error, format!("Wave drag curve failed: {e}")),
             None => {}
         }
         match self.raos_track.poll(self.raos_key()) {
@@ -5341,6 +5436,10 @@ impl App {
                     self.raos_track.failure(self.raos_key()),
                 ),
                 ("Wave pattern", self.waves_track.failure(self.waves_key())),
+                (
+                    "Wave drag curve",
+                    self.wave_drag_track.failure(self.wave_drag_key()),
+                ),
             ],
         };
         failures
@@ -5371,6 +5470,7 @@ impl App {
             || self.damage_track.busy()
             || self.resistance_track.busy()
             || self.waves_track.busy()
+            || self.wave_drag_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy()
     }

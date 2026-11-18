@@ -307,6 +307,60 @@ pub fn compute_waves(
     })
 }
 
+/// Froude numbers of the wave-drag curve: 60, evenly from 0.10 to 1.00.
+pub const DRAG_CURVE_POINTS: usize = 60;
+
+/// Michell's wave drag over speed, for the view's wave-drag plot. Not keyed on the speed, so
+/// scrubbing the speed does not recompute it.
+#[derive(Debug, Clone)]
+pub struct WaveDrag {
+    /// One demihull (or the monohull) at each Froude number.
+    pub mono: Vec<MichellResult>,
+    /// The pair at the catamaran spacing, when one is set.
+    pub cat: Option<Vec<MichellResult>>,
+    /// The catamaran spacing it was computed for (m).
+    pub cat_spacing_m: Option<f64>,
+    pub length_wl: f64,
+    /// Michell's warnings for the hull (L/B, wetted transom).
+    pub warnings: Vec<String>,
+}
+
+/// The wave-drag curve at `draft`, upright, in water of density `rho` (kg/m³).
+pub fn compute_wave_drag(
+    surface: &Surface,
+    subdivision: SubdivisionOptions,
+    draft: f64,
+    rho: f64,
+    cat_spacing_m: Option<f64>,
+) -> Result<WaveDrag, String> {
+    let grid = michell_grid(surface, subdivision, draft)?;
+    let n = DRAG_CURVE_POINTS;
+    let froudes: Vec<f64> = (0..n)
+        .map(|i| 0.10 + 0.90 * i as f64 / (n - 1) as f64)
+        .collect();
+    let curve = |spacing: Option<f64>| {
+        let o = MichellOptions {
+            catamaran_spacing: spacing,
+            ..MichellOptions::default()
+        };
+        seacraft_core::michell::michell_cw_curve(&grid, &froudes, rho, GRAVITY, &o)
+    };
+    Ok(WaveDrag {
+        mono: curve(None),
+        cat: cat_spacing_m.map(|s| curve(Some(s))),
+        cat_spacing_m,
+        length_wl: grid.length_wl,
+        warnings: seacraft_core::michell::michell_warnings(&grid, &[]),
+    })
+}
+
+/// A key over the settings the wave-drag curve depends on: the catamaran spacing only.
+pub fn drag_key(cat_spacing_m: Option<f64>) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cat_spacing_m.map(f64::to_bits).hash(&mut h);
+    h.finish()
+}
+
 /// A key over every setting that changes the result: all but `kelvin_wedge` and `plan_contours`.
 pub fn settings_key(settings: &WaveSettings) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -720,5 +774,33 @@ mod tests {
         let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
         assert!(w.wash.is_some());
         assert_eq!(w.wash_distance_m, 9.0);
+    }
+
+    #[test]
+    fn drag_curve_has_sixty_points_and_a_cat_curve_when_set() {
+        let (surface, subdiv, draft) = demo();
+        let mono = compute_wave_drag(&surface, subdiv, draft, RHO, None).unwrap();
+        assert_eq!(mono.mono.len(), 60);
+        assert!((mono.mono[0].fn_ - 0.10).abs() < 1e-9);
+        assert!((mono.mono[59].fn_ - 1.00).abs() < 1e-9);
+        assert!(mono.cat.is_none());
+        assert!(mono.length_wl > 0.0);
+        assert!(
+            mono.warnings.iter().any(|w| w.contains("transom")),
+            "{:?}",
+            mono.warnings
+        );
+        let cat = compute_wave_drag(&surface, subdiv, draft, RHO, Some(8.0)).unwrap();
+        assert_eq!(cat.cat.as_ref().map(Vec::len), Some(60));
+        assert_eq!(cat.cat_spacing_m, Some(8.0));
+        assert_ne!(drag_key(None), drag_key(Some(8.0)));
+    }
+
+    /// Review focus 2: no waterline fails the curve as it fails the pattern.
+    #[test]
+    fn no_waterline_fails_the_drag_curve_too() {
+        let (surface, subdiv, _) = demo();
+        let err = compute_wave_drag(&surface, subdiv, 0.0, RHO, None).expect_err("draft 0");
+        assert!(err.contains("Michell"), "{err}");
     }
 }

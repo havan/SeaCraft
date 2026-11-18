@@ -620,3 +620,35 @@ fn shown_pattern_goes_into_the_report() {
     assert!(text.contains("id=\"waves\""), "the section is in");
     assert!(text.contains("<td>6.00</td>"), "at the dock's speed");
 }
+
+/// A speed change re-keys only the field: the wave-drag curve stays current.
+#[test]
+fn drag_curve_ignores_speed() {
+    let (mut app, _ctx) = demo();
+    app.set_waves_shown(true);
+    app.compute_wave_drag_blocking().unwrap();
+    assert!(app.wave_drag().is_some());
+    app.set_wave_settings(WaveSettings {
+        speed: WaveSpeed::Froude(0.42),
+        ..app.wave_settings().clone()
+    });
+    assert!(app.wave_drag().is_some(), "the curve is still current");
+    app.set_wave_settings(WaveSettings {
+        cat_spacing_m: Some(8.0),
+        ..app.wave_settings().clone()
+    });
+    assert!(
+        app.wave_drag().is_none(),
+        "a catamaran spacing re-keys the curve"
+    );
+}
+
+#[test]
+fn shown_pattern_computes_its_drag_curve() {
+    let (mut app, ctx) = demo();
+    app.set_waves_shown(true);
+    frames_until(&ctx, &mut app, "the wave drag curve", |a| {
+        a.wave_drag().is_some()
+    });
+    assert_eq!(app.wave_drag().unwrap().mono.len(), 60);
+}
