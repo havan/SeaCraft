@@ -1225,16 +1225,14 @@ pub fn wave_tool(
         }
     }
     // Two outputs written to one file would leave only the last, while both are reported.
-    let landed: Vec<std::path::PathBuf> =
-        outputs.iter().map(|(_, p)| crate::io::landing(p)).collect();
-    for (i, (key, path)) in outputs.iter().enumerate() {
-        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
-            return Err(format!(
-                "`{}` and `{key}` name the same file, `{}`: each output needs a file of its own",
-                outputs[j].0,
-                path.display()
-            ));
-        }
+    let paths: Vec<&std::path::Path> = outputs.iter().map(|(_, p)| p.as_path()).collect();
+    if let Some((j, i)) = crate::io::shared_output(&paths).map_err(|e| e.to_string())? {
+        return Err(format!(
+            "`{}` and `{}` name the same file, `{}`: each output needs a file of its own",
+            outputs[j].0,
+            outputs[i].0,
+            outputs[i].1.display()
+        ));
     }
     if speed_kn.is_some() == froude.is_some() {
         return Err("give exactly one of `speed` (knots) and `fn`".into());

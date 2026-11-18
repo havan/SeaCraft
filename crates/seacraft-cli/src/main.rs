@@ -2934,18 +2934,14 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         .map(|p| ("-o", p.as_path()))
         .chain(a.cut_csv.as_deref().map(|p| ("--cut-csv", p)))
         .collect();
-    let landed: Vec<PathBuf> = outputs
-        .iter()
-        .map(|(_, p)| seacraft_core::io::landing(p))
-        .collect();
-    for (i, (flag, path)) in outputs.iter().enumerate() {
-        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
-            bail!(
-                "{flag} and {} name the same file, `{}`: each output needs a file of its own",
-                outputs[j].0,
-                path.display()
-            );
-        }
+    let paths: Vec<&Path> = outputs.iter().map(|(_, p)| *p).collect();
+    if let Some((j, i)) = seacraft_core::io::shared_output(&paths)? {
+        bail!(
+            "{} and {} name the same file, `{}`: each output needs a file of its own",
+            outputs[i].0,
+            outputs[j].0,
+            outputs[i].1.display()
+        );
     }
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
@@ -3566,18 +3562,14 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     .into_iter()
     .filter_map(|(flag, path)| path.map(|p| (flag, p)))
     .collect();
-    let landed: Vec<PathBuf> = outputs
-        .iter()
-        .map(|(_, p)| seacraft_core::io::landing(p))
-        .collect();
-    for (i, (flag, path)) in outputs.iter().enumerate() {
-        if let Some(j) = landed[..i].iter().position(|q| *q == landed[i]) {
-            bail!(
-                "{flag} and {} name the same file, `{}`: each output needs a file of its own",
-                outputs[j].0,
-                path.display()
-            );
-        }
+    let paths: Vec<&Path> = outputs.iter().map(|(_, p)| *p).collect();
+    if let Some((j, i)) = seacraft_core::io::shared_output(&paths)? {
+        bail!(
+            "{} and {} name the same file, `{}`: each output needs a file of its own",
+            outputs[i].0,
+            outputs[j].0,
+            outputs[i].1.display()
+        );
     }
     let positive = |v: f64| v.is_finite() && v > 0.0;
     if !positive(a.max_seam_drift_mm) {

@@ -52,24 +52,44 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Resu
 
 /// Where a write to `path` lands, to tell whether two outputs name one file. Symbolic links are
 /// followed, a dangling one too: once another output creates its target, [`write_atomic`] writes
-/// through it. The directory is made canonical; the file need not exist.
-pub fn landing(path: &Path) -> PathBuf {
-    let mut p = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    // A loop of links stops here; writing to it fails later anyway.
-    for _ in 0..40 {
-        let Ok(target) = fs::read_link(&p) else {
-            break;
-        };
+/// through it. The directory is made canonical; the file need not exist. A loop of links has no
+/// landing and is an error: the first write would replace one of its links and the next land there.
+pub fn landing(path: &Path) -> io::Result<PathBuf> {
+    let mut p = std::path::absolute(path)?;
+    let mut hops = 0;
+    while let Ok(target) = fs::read_link(&p) {
+        hops += 1;
+        if hops > 40 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{}: too many symbolic links (a loop?)", path.display()),
+            ));
+        }
         // A relative target is read from the link's directory; `join` keeps an absolute one.
         p = match p.parent() {
             Some(dir) => dir.join(target),
             None => target,
         };
     }
-    match (p.parent(), p.file_name()) {
+    Ok(match (p.parent(), p.file_name()) {
         (Some(dir), Some(name)) => fs::canonicalize(dir).map(|d| d.join(name)).unwrap_or(p),
         _ => p,
-    }
+    })
+}
+
+/// The first pair of `outputs`, as `(earlier, later)` indices, that would land in one file (see
+/// [`landing`]): written in turn, the later would replace the earlier while both are reported.
+pub fn shared_output(outputs: &[&Path]) -> io::Result<Option<(usize, usize)>> {
+    let landed = outputs
+        .iter()
+        .map(|p| landing(p))
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok((0..landed.len()).find_map(|i| {
+        landed[..i]
+            .iter()
+            .position(|q| *q == landed[i])
+            .map(|j| (j, i))
+    }))
 }
 
 /// Follow a symbolic link at `path` to the file it names; anything else
@@ -202,11 +222,16 @@ mod tests {
         let dir = scratch("landing");
         fs::create_dir(dir.join("sub")).unwrap();
         let here = fs::canonicalize(&dir).unwrap();
-        assert_eq!(landing(&dir.join("a.png")), here.join("a.png"));
-        assert_eq!(landing(&dir.join("sub/../a.png")), here.join("a.png"));
-        assert_ne!(landing(&dir.join("a.png")), landing(&dir.join("a.svg")));
+        let land = |name: &str| landing(&dir.join(name)).unwrap();
+        assert_eq!(land("a.png"), here.join("a.png"));
+        assert_eq!(land("sub/../a.png"), here.join("a.png"));
+        assert_ne!(land("a.png"), land("a.svg"));
         fs::write(dir.join("b.png"), "x").unwrap();
-        assert_eq!(landing(&dir.join("b.png")), here.join("b.png"));
+        assert_eq!(land("b.png"), here.join("b.png"));
+        let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+        let up = dir.join("sub/../a.png");
+        assert_eq!(shared_output(&[&a, &b]).unwrap(), None);
+        assert_eq!(shared_output(&[&a, &b, &up]).unwrap(), Some((0, 2)));
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -222,16 +247,33 @@ mod tests {
         symlink("../a.png", dir.join("sub/up.svg")).unwrap();
         symlink(dir.join("dangling.svg"), dir.join("chain.svg")).unwrap();
         for link in ["dangling.svg", "sub/up.svg", "chain.svg"] {
-            assert_eq!(landing(&dir.join(link)), here.join("a.png"), "{link}");
+            assert_eq!(
+                landing(&dir.join(link)).unwrap(),
+                here.join("a.png"),
+                "{link}"
+            );
         }
         // And the write goes there once the target exists.
         write_atomic(dir.join("a.png"), "png").unwrap();
         write_atomic(dir.join("dangling.svg"), "svg").unwrap();
         assert_eq!(fs::read_to_string(dir.join("a.png")).unwrap(), "svg");
-        // A loop of links ends.
-        symlink("loop2", dir.join("loop1")).unwrap();
-        symlink("loop1", dir.join("loop2")).unwrap();
-        let _ = landing(&dir.join("loop1"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A loop of links has no landing: writing its first link replaces it, and the rest then lead
+    /// to that file.
+    #[cfg(unix)]
+    #[test]
+    fn a_loop_of_links_has_no_landing() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch("landing-loop");
+        for (link, target) in [("a.png", "b.svg"), ("b.svg", "c.vti"), ("c.vti", "a.png")] {
+            symlink(target, dir.join(link)).unwrap();
+        }
+        let (a, b) = (dir.join("a.png"), dir.join("b.svg"));
+        let err = landing(&a).unwrap_err();
+        assert!(err.to_string().contains("a.png"), "{err}");
+        assert!(shared_output(&[&a, &b]).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 }

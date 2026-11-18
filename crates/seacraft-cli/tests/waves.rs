@@ -138,6 +138,28 @@ fn waves_refuses_an_output_linked_to_another() {
     assert!(!d.path("p.png").exists(), "a refused run wrote a file");
 }
 
+/// A loop of links has no landing: the first write replaces one link and the next lands on it.
+#[cfg(unix)]
+#[test]
+fn waves_refuses_a_loop_of_links() {
+    let d = Dir::new("loop");
+    d.ok(&["example", "wigley", "-o", "w.fef"]);
+    for (link, target) in [("a.png", "b.svg"), ("b.svg", "c.vti"), ("c.vti", "a.png")] {
+        std::os::unix::fs::symlink(target, d.path(link)).unwrap();
+    }
+    let out = d.run(&[
+        "waves", "w.fef", "--fn", "0.3", "-o", "a.png", "-o", "b.svg",
+    ]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a loop of links was accepted");
+    assert!(err.contains("a.png") && err.contains("links"), "{err}");
+    let link = std::fs::symlink_metadata(d.path("a.png")).unwrap();
+    assert!(
+        link.file_type().is_symlink(),
+        "a refused run replaced a link"
+    );
+}
+
 #[test]
 fn waves_needs_exactly_one_of_speed_and_fn() {
     let d = Dir::new("speed");
