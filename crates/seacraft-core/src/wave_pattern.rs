@@ -1116,17 +1116,55 @@ pub fn wave_vti(field: &WaveField) -> String {
 /// A field's numbers without its grid, for a JSON reply: every field of [`WaveField`] except `xs`,
 /// `ys`, `zeta` and `wet`, plus `grid_points` `[nx, ny]`.
 pub fn summary_json(field: &WaveField) -> serde_json::Value {
-    let mut v = serde_json::to_value(field).unwrap_or_default();
-    if let Some(map) = v.as_object_mut() {
-        for key in ["xs", "ys", "zeta", "wet", "waterlines"] {
-            map.remove(key);
-        }
-        map.insert(
-            "grid_points".into(),
-            serde_json::json!([field.xs.len(), field.ys.len()]),
-        );
+    /// The field less its grid: serializing the grid only to drop it would build two million JSON
+    /// values at the point cap.
+    #[derive(Serialize)]
+    struct Summary<'a> {
+        speed_m_s: f64,
+        froude: f64,
+        k0: f64,
+        transverse_wavelength_m: f64,
+        theta_cut_deg: f64,
+        shortest_wavelength_m: f64,
+        theta_samples: usize,
+        max_abs_zeta_m: f64,
+        notes: &'a [String],
+        warnings: &'a [String],
+        grid_points: [usize; 2],
     }
-    v
+    // Every field is named, so a new one fails to compile here until the summary takes it or leaves
+    // it out on purpose.
+    let WaveField {
+        xs,
+        ys,
+        zeta: _,
+        wet: _,
+        waterlines: _,
+        speed_m_s,
+        froude,
+        k0,
+        transverse_wavelength_m,
+        theta_cut_deg,
+        shortest_wavelength_m,
+        theta_samples,
+        max_abs_zeta_m,
+        notes,
+        warnings,
+    } = field;
+    serde_json::to_value(Summary {
+        speed_m_s: *speed_m_s,
+        froude: *froude,
+        k0: *k0,
+        transverse_wavelength_m: *transverse_wavelength_m,
+        theta_cut_deg: *theta_cut_deg,
+        shortest_wavelength_m: *shortest_wavelength_m,
+        theta_samples: *theta_samples,
+        max_abs_zeta_m: *max_abs_zeta_m,
+        notes,
+        warnings,
+        grid_points: [xs.len(), ys.len()],
+    })
+    .unwrap_or_default()
 }
 
 /// The wave pattern as the MCP tool `wave_pattern` and the window's `waves.compute` take it:
@@ -1872,6 +1910,31 @@ mod tests {
             assert!((mean - centre).abs() < 1e-9, "{mean} vs {centre}");
         }
         assert!(summary_json(&f).get("waterlines").is_none());
+    }
+
+    /// The summary is the whole field less its grid and outlines, plus `grid_points`: the same reply
+    /// as serializing the field and dropping those keys, without building the grid's JSON.
+    #[test]
+    fn summary_json_is_the_field_without_its_grid() {
+        let mut f = wave_field(
+            &wigley(),
+            &WavePatternOptions {
+                spacing_m: Some(1.0),
+                ..opts_at_fn(0.3)
+            },
+        )
+        .unwrap();
+        f.warnings.push("a warning".into());
+        let mut want = serde_json::to_value(&f).unwrap();
+        let map = want.as_object_mut().unwrap();
+        for key in ["xs", "ys", "zeta", "wet", "waterlines"] {
+            assert!(map.remove(key).is_some(), "{key}");
+        }
+        map.insert(
+            "grid_points".into(),
+            serde_json::json!([f.xs.len(), f.ys.len()]),
+        );
+        assert_eq!(summary_json(&f), want);
     }
 
     /// A speed so low that the default spacing underflows to 0 m must be refused, not loop forever.
