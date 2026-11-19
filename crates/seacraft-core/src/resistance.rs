@@ -1,8 +1,14 @@
-//! Still-water resistance and effective power: Holtrop & Mennen (1984).
+//! Still-water resistance and effective power: Holtrop & Mennen (1982) with
+//! the revisions of Holtrop (1984).
 //!
-//! `An approximate power prediction method`, International Shipbuilding
-//! Progress 29(335), for a displacement monohull with the usual
-//! `RT = RF(1+k1) + RAPP + RW + RB + RTR + RA` structure. Effective power is
+//! Holtrop & Mennen (1982), "An approximate power prediction method",
+//! International Shipbuilding Progress 29(335), 166-170, with the revisions of
+//! Holtrop (1984), "A statistical re-analysis of resistance and propulsion
+//! data", ISP 31(363), 272-276: the form factor `1+k1`, the hump coefficient
+//! `m4` in both wave fits, and the high-speed fit `c17`/`m3` above Fn 0.55.
+//! Friction, appendages, bulb, transom and the correlation allowance are from
+//! 1982, which 1984 kept. The usual structure is
+//! `RT = RF(1+k1) + RAPP + RW + RB + RTR + RA`. Effective power is
 //! `PE = RT · V` — no propeller, no wake fraction, no thrust deduction, so this
 //! is the power the hull needs, not the power the engine delivers.
 //!
@@ -16,15 +22,21 @@
 //! `Fn ≤ 0.55`. [`HoltropInput::warnings`] reports the ones a given hull
 //! violates instead of silently extrapolating.
 //!
-//! Coefficients are transcribed from the paper's equations (1)–(39) and checked
-//! against the worked example the paper itself prints for a 205 m ship: `CF`,
-//! `RF`, `CA`, `RA`, `RAPP`, `c1`, `c2`, `c5`, `c7`, `λ`, `m1`, `m2` and `RW`
-//! reproduce to better than 1 %, and the transom term is zero at `FnT` 5.4 as
-//! the paper prints. The one number that does not reproduce is `1+k1` (1.156
-//! there, 1.188 from equation (9) as printed), so the total comes out 1.4 %
-//! high; see the test's comment. The other tests pin what can be checked
-//! exactly — the ITTC-57 line, the piecewise coefficient switches, Froude
-//! scaling of the wave term, linearity in density.
+//! Both papers print a worked example, and both are tests here. The 1984
+//! example (50 m at 25-35 kn, all on the high-speed fit) reproduces `1+k1`,
+//! `LR`, `c17`, `m3`, `c5` and `λ` within 0.1 %, the `m4` and `m3` terms
+//! within 0.001, `RW` within 1 kN, and the total within 1 kN once the
+//! correlation allowance is also taken on the appendage area as that paper
+//! does (this crate takes it on `S`, following 1982). `ηR` reproduces the
+//! 1982 example and one in Molland et al. (2011); the wake fraction and
+//! thrust deduction are checked against a hand calculation only. The 1982 example (205 m at 25 kn) reproduces every term
+//! the re-analysis kept — `CF`, `RF`, `CA`, `RA`, `RAPP`, `c1`, `c2`, `c5`,
+//! `c7`, `λ`, `m1`, `RB` and the zero transom term — and differs where the
+//! formulas changed: `1+k1` and, by under 1 %, `RW`. The other tests pin what
+//! can be checked exactly — the ITTC-57 line, the piecewise coefficient
+//! switches, Froude scaling of the wave term, linearity in density. All of
+//! this checks the transcription, not how well the method predicts a real
+//! vessel.
 
 use crate::hydro::{self, Hull, HydroOptions};
 use crate::subdiv::SubdivisionOptions;
@@ -164,6 +176,13 @@ impl HoltropInput {
         if !(2.1..=4.0).contains(&bt) {
             out.push(format!("B/T {bt:.2} is outside 2.1-4.0"));
         }
+        if self.bulb_area_m2 > 0.0 && self.bulb_centre_z > 0.6 * self.draft {
+            out.push(format!(
+                "bulb centre {:.2} m is above 0.6 T ({:.2} m); the method uses 0.6 T",
+                self.bulb_centre_z,
+                0.6 * self.draft
+            ));
+        }
         out
     }
 }
@@ -255,10 +274,14 @@ pub struct Propulsion {
 impl HoltropInput {
     /// Wake fraction, thrust deduction and the propulsive coefficient.
     ///
-    /// Equations (42)–(53) of Holtrop & Mennen: single-screw, twin-screw
-    /// neglected, and the propeller's own open-water efficiency has to come
-    /// from outside — the method predicts the hull's side of the bargain, not
-    /// the propeller's.
+    /// Single screw only, with the propeller's own open-water efficiency
+    /// supplied from outside — the method predicts the hull's side of the
+    /// bargain, not the propeller's. The wake fraction and thrust deduction are
+    /// the single-screw formulas of Holtrop (1984), pp. 273-274 (the wake as
+    /// Molland et al. (2011) eq. 8.17 also state it), and `ηR` the 1982 formula
+    /// that 1984 kept. `ηR` is checked against two printed examples; the wake
+    /// and thrust deduction against a hand calculation from the formulas, since
+    /// no printed example uses them.
     pub fn propulsion(&self, propeller: &Propeller) -> Propulsion {
         let d = propeller.diameter_m.max(1e-3);
         let (b, ta) = (self.beam_wl, self.draft);
@@ -286,10 +309,10 @@ impl HoltropInput {
         } else {
             0.0833333 * tadover.powi(3) + 1.33333
         };
-        let c19 = if bta < 5.0 {
-            0.12997 / (bta - 0.95) - 0.11056 / (bta - 0.95).powi(2)
+        let c19 = if cp <= 0.7 {
+            0.12997 / (0.95 - self.cb).max(1e-6) - 0.11056 / (0.95 - cp).max(1e-6)
         } else {
-            0.18567 / (1.3571 - self.cm) - 0.71276 + 0.38648 * cp
+            0.18567 / (1.3571 - self.cm).max(1e-6) - 0.71276 + 0.38648 * cp
         };
         let c20 = 1.0 + 0.015 * self.c_stern;
         // `1 − Cp1` divides, so it is floored: a hull with a large |lcb| or a
@@ -297,8 +320,9 @@ impl HoltropInput {
         // wake fractions (the demo hull, lcb −9.9 %, returned w = 525).
         let cp1 = (1.45 * cp - 0.315 - 0.0225 * lcb).clamp(-1.0, 0.95);
         let wake = (c9
+            * c20
             * cv
-            * (cv * self.length_wl / ta).sqrt()
+            * (self.length_wl / ta)
             * (0.050776 + 0.93405 * c11 * cv / (1.0 - cp1)).max(0.0)
             + 0.27915 * c20 * (b / (self.length_wl * (1.0 - cp1)).max(1e-6)).sqrt()
             + c19 * c20)
@@ -357,7 +381,8 @@ pub struct Resistance {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
-    /// Holtrop & Mennen (1984) approximate power prediction method for displacement ships.
+    /// Holtrop & Mennen (1982) approximate power prediction method for displacement ships,
+    /// with Holtrop's 1984 revisions.
     #[default]
     Holtrop,
     /// Michell thin-ship wave resistance theory (1898) for slender hulls and catamarans.
@@ -392,7 +417,8 @@ pub struct WaveCoefficients {
     pub c7: f64,
     pub lambda: f64,
     pub m1: f64,
-    pub m2: f64,
+    /// Hump coefficient `m4` of Holtrop (1984), used by both fits.
+    pub m4: f64,
     pub c16: f64,
     /// High-speed fit coefficient (`Fn >= 0.55`).
     pub c17: f64,
@@ -419,19 +445,28 @@ fn c16_of(cp: f64) -> f64 {
     }
 }
 
+/// `c15`, switched on `L³/∇` at 512 and 1726.91 as Holtrop (1984), p. 273,
+/// prints them (1727 in 1982). The middle branch reaches zero at 1726.91, so
+/// `c15` is never positive.
 fn c15_of(l_over_vol13: f64) -> f64 {
-    if l_over_vol13 < 8.0 {
-        // L³/∇ < 512
+    let l3_over_vol = l_over_vol13.powi(3);
+    if l3_over_vol < 512.0 {
         -1.69385
-    } else if l_over_vol13 <= 12.0 {
-        // 512 ≤ L³/∇ ≤ 1727
+    } else if l3_over_vol <= 1726.91 {
         -1.69385 + (l_over_vol13 - 8.0) / 2.36
     } else {
         0.0
     }
 }
 
-/// `λ` from equation (13).
+/// The bulb centre height `hB` the method uses: Holtrop (1984), p. 273, says
+/// it "should not exceed the upper limit of 0.6 TF" in `c3` and in the bulb
+/// resistance, so a higher bulb counts as one at 0.6 T.
+fn bulb_height(input: &HoltropInput) -> f64 {
+    input.bulb_centre_z.min(0.6 * input.draft)
+}
+
+/// `λ`, Holtrop & Mennen (1982) as Holtrop (1984) kept it.
 fn lambda_of(cp: f64, l_over_b: f64) -> f64 {
     if l_over_b < 12.0 {
         1.446 * cp - 0.03 * l_over_b
@@ -459,7 +494,7 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
     let c3 = if input.bulb_area_m2 > 0.0 {
         0.56 * input.bulb_area_m2.powf(1.5)
             / (b * t
-                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z).max(1e-6))
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - bulb_height(input)).max(1e-6))
     } else {
         0.0
     };
@@ -470,13 +505,12 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
         1.0
     };
     let m1 = 0.0140407 * l / t - 1.75254 * vol.cbrt() / l - 4.79323 * b / l - c16;
-    // The hump amplitude. This is the *published* `m2` of the 1982 paper and of
-    // every textbook reproduction: `c15·Cp²·exp(−0.1/Fn²)`. The paper's own
-    // worked example prints m2 = −0.17087 for a 205 m hull at Fn 0.2868, and
-    // this expression gives −0.17093 there; the `0.4·c15·exp(−0.034·Fn^−3.29)`
-    // form that circulates in some implementations gives −0.085 and is the
-    // *high-speed* branch below, not this one.
-    let m2 = c15 * input.cp * input.cp * (-0.1 / (fn_ * fn_)).exp();
+    // The hump amplitude m4 of Holtrop (1984), p. 273, used in both the
+    // low-speed (R_W-A) and the high-speed (R_W-B) fit. The 1984 paper replaced
+    // the 1982 `m2 = c15·Cp²·exp(−0.1/Fn²)` with it in both, and its worked
+    // example (50 m at 25-35 kn) reproduces to the kN only with m4: with m2,
+    // R_W is off by −6 % to +5 %. As Fn → 0, `Fn^−3.29` → ∞ and m4 → 0.
+    let m4 = 0.4 * c15 * (-0.034 * fn_.powf(-3.29)).exp();
     // High-speed fit (1984 re-analysis): c17 and m3 replace c1 and m1 above
     // Fn 0.55, where the low-speed fit was never valid.
     let c17 = 6919.3
@@ -498,11 +532,22 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
         c7,
         lambda,
         m1,
-        m2,
+        m4,
         c16,
         c17,
         m3,
         branch,
+    }
+}
+
+/// The hump term `m4·cos(λ/Fn²)` of both fits. Zero when `m4` is: at very small
+/// Fn the cosine's argument overflows and `cos(∞)` is NaN, which `0 · NaN`
+/// would carry into R_W.
+fn hump(w: &WaveCoefficients, fn_: f64) -> f64 {
+    if w.m4 == 0.0 {
+        0.0
+    } else {
+        w.m4 * (w.lambda / (fn_ * fn_)).cos()
     }
 }
 
@@ -514,7 +559,7 @@ fn wave_low(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
         * input.volume_m3
         * input.water_density
         * GRAVITY
-        * (w.m1 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
+        * (w.m1 * fn_.powf(d) + hump(w, fn_)).exp()
 }
 
 /// The high-speed wave resistance at a Froude number, `c17`/`m3` fit.
@@ -526,7 +571,7 @@ fn wave_high(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
         * input.volume_m3
         * input.water_density
         * GRAVITY
-        * (w.m3 * fn_.powf(d) + w.m2 * (w.lambda / (fn_ * fn_)).cos()).exp()
+        * (w.m3 * fn_.powf(d) + hump(w, fn_)).exp()
 }
 
 /// Wave resistance in newtons at Froude number `fn_`.
@@ -534,7 +579,7 @@ fn wave_high(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
 /// Three branches, exactly as published: the `c1` fit up to 0.40, the `c17`
 /// high-speed fit from 0.55, and between them the paper's own straight-line
 /// interpolation. The anchors are evaluated **at 0.40 and 0.55**, not at the
-/// ship's Froude number — every Fn-dependent term (`Fn^d`, `m2`, the cosine)
+/// ship's Froude number — every Fn-dependent term (`Fn^d`, `m4`, the cosine)
 /// belongs to the anchor. Computing the anchors at the ship's Fn and
 /// interpolating scalars is the usual way to get a plausible but wrong hump.
 pub fn wave_resistance(input: &HoltropInput, fn_: f64) -> f64 {
@@ -556,6 +601,13 @@ pub fn wave_resistance(input: &HoltropInput, fn_: f64) -> f64 {
     }
 }
 
+/// The length of the run `LR`, Holtrop & Mennen (1982):
+/// `L (1 − Cp + 0.06 Cp lcb / (4 Cp − 1))`, with lcb as a percentage of L.
+fn run_length(input: &HoltropInput) -> f64 {
+    let cp = input.cp;
+    input.length_wl * (1.0 - cp + 0.06 * cp * input.lcb_pct / (4.0 * cp - 1.0))
+}
+
 /// Total still-water resistance and its breakdown at `speed_m_s`.
 pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     let v = speed_m_s.max(0.0);
@@ -569,13 +621,14 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     let fn_ = v / (GRAVITY * l).sqrt();
     let q = 0.5 * input.water_density * v * v;
 
-    // Form factor, equation (9) with LR from (10) and c14 from (11).
+    // Form factor 1+k1 of Holtrop (1984), with LR (1982) and c14 = 1 + 0.011 c_stern.
+    // Neither paper numbers its equations.
     //
     // The paper defines lcb as a percentage of L, so `lcb_pct` enters (10) as a
     // percentage. Some published implementations divide it by 100 as well,
     // which moves LR by up to 15 % and `1+k1` by about 0.3 % — small, but it is
     // the reason two tools rarely agree to the fourth digit on the form factor.
-    let lr = l * (1.0 - input.cp + 0.06 * input.cp * input.lcb_pct / (4.0 * input.cp - 1.0));
+    let lr = run_length(input);
     let c14 = 1.0 + 0.011 * input.c_stern;
     let form_factor = 0.93
         + 0.487118
@@ -594,16 +647,15 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     };
     let rw = wave_resistance(input, fn_);
 
-    // Bulb, equation (31)/(32): zero without a bulb.
-    let rb = if input.bulb_area_m2 > 0.0 && input.draft > input.bulb_centre_z {
+    // Bulb resistance RB (1982): zero without a bulb.
+    let hb = bulb_height(input);
+    let rb = if input.bulb_area_m2 > 0.0 && input.draft > hb {
         // The paper's own example prints RB = 0.049 kN, and only this form
         // reproduces it: ABT^1.5 (not ABT), and the 0.15 V² term *inside* the
         // square root of Fni. With either one different the bulb term is out by
         // orders of magnitude.
-        let pb =
-            0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * input.bulb_centre_z).max(1e-6);
-        let inside = GRAVITY
-            * (input.draft - input.bulb_centre_z - 0.25 * input.bulb_area_m2.sqrt()).max(1e-6)
+        let pb = 0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * hb).max(1e-6);
+        let inside = GRAVITY * (input.draft - hb - 0.25 * input.bulb_area_m2.sqrt()).max(1e-6)
             + 0.15 * v * v;
         let fni = v / inside.sqrt();
         0.11 * (-3.0 / (pb * pb)).exp()
@@ -616,7 +668,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         0.0
     };
 
-    // Immersed transom, equation (33)/(34) with c6 from (35).
+    // Immersed transom RTR with FnT and c6 (1982).
     //
     // FnT uses the **waterplane** coefficient in its denominator. With CF there
     // instead, the published example hull (AT 16 m2, CWP 0.75, B 32 m) reports
@@ -638,7 +690,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         0.0
     };
 
-    // Correlation allowance, equations (37)-(39).
+    // Correlation allowance CA and RA (1982), with c4 and c2.
     let c4 = (input.draft / l).min(0.04);
     // c2 is the same bulb-swell factor as in the wave term; with no bulb the
     // coefficient of the second term is zero anyway (c4 saturates at 0.04 for
@@ -647,7 +699,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         0.56 * input.bulb_area_m2.powf(1.5)
             / (input.beam_wl
                 * input.draft
-                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z).max(1e-6))
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - bulb_height(input)).max(1e-6))
     } else {
         0.0
     };
@@ -1267,10 +1319,18 @@ mod tests {
         // λ switches at L/B = 12.
         assert!((lambda_of(0.8, 11.9) - (1.446 * 0.8 - 0.03 * 11.9)).abs() < 1e-12);
         assert!((lambda_of(0.8, 12.5) - (1.446 * 0.8 - 0.36)).abs() < 1e-12);
-        // c15 has three branches on L/∇^(1/3).
+        // c15 has three branches on L³/∇: 512 and 1726.91 (Holtrop 1984,
+        // p. 273; 1727 in 1982). The middle one reaches zero at 1726.91, so c15
+        // is never positive: at L/∇^(1/3) = 12 (L³/∇ = 1728) it is 0, not the
+        // middle formula's +0.001065.
         assert_eq!(c15_of(7.0), -1.69385);
-        assert!((c15_of(12.0) - (-1.69385 + 4.0 / 2.36)).abs() < 1e-12);
+        assert!((c15_of(11.99) - (-1.69385 + 3.99 / 2.36)).abs() < 1e-12);
+        assert_eq!(c15_of(12.0), 0.0);
         assert_eq!(c15_of(13.0), 0.0);
+        for k in 0..=200 {
+            let x = 11.9 + 0.001 * f64::from(k);
+            assert!(c15_of(x) <= 0.0, "c15({x}) = {}", c15_of(x));
+        }
     }
 
     #[test]
@@ -1320,21 +1380,25 @@ mod tests {
         );
     }
 
-    /// The worked example printed in Holtrop & Mennen (1982), p. 170.
+    /// The worked example printed in Holtrop & Mennen (1982), ISP 29(335), p. 170.
     ///
     /// A 205 m ship, 32 m beam, 10 m draft, 37 500 m³, Cp 0.5833, Cm 0.98,
-    /// Cwp 0.75, lcb 2.02 % aft of ½L, iE 12.08°, AT 16 m², ABT 20 m²,
-    /// hB 4.0 m, S 7381.45 m², SAPP 50 m², c_stern 10, at 25 knots. The paper
-    /// prints every coefficient of the method for it, which makes it the one
-    /// case where the implementation can be checked against the source rather
-    /// than against itself.
+    /// Cwp 0.75, lcb 0.75 % of L aft of ½L (the paper prints LR 81.385 m),
+    /// iE 12.08°, AT 16 m², ABT 20 m², hB 4.0 m, S 7381.45 m², SAPP 50 m²,
+    /// c_stern 10, at 25 knots. The paper prints every coefficient of the 1982
+    /// method for it.
     ///
-    /// Every component reproduces to better than 1 %. Two printed numbers do
-    /// not: `1+k1` is 1.156 there against 1.188 from equation (9) as printed,
-    /// and the total follows it (1793.26 kN against 1819 kN, 1.4 %). The
-    /// friction, correlation, wave and appendage terms — everything this crate
-    /// could have got wrong by a sign or a factor — agree, so the difference is
-    /// in the form factor the paper's example used, not in the transcription.
+    /// This crate is Holtrop 1984 throughout, so two printed numbers differ by
+    /// the stated formula choice, not by a transcription error:
+    /// - `1+k1`: the 1984 formula gives 1.1851; the 1982 formula
+    ///   `c13{0.93 + c12 (B/LR)^0.92497 (0.95−Cp)^−0.521448 (1−Cp+0.0225 lcb)^0.6906}`
+    ///   gives 1.1564 here, against 1.156 printed.
+    /// - R_W: the 1984 hump coefficient m4 replaces the 1982 m2, which moves
+    ///   R_W from 556.93 kN (with m2) to 554.02 kN, against 557.11 printed.
+    ///
+    /// Every term the 1984 re-analysis kept from 1982 (CF, RF, c1, c2, c5, c7,
+    /// λ, m1, RAPP, RB, RTR, CA, RA) reproduces to the tolerances below. The
+    /// total follows the form factor: 1814.06 kN against 1793.26 (+1.16 %).
     #[test]
     fn published_example_reproduces_the_paper() {
         let i = HoltropInput {
@@ -1346,7 +1410,7 @@ mod tests {
             cp: 0.5833,
             cm: 0.98,
             cwp: 0.75,
-            lcb_pct: -2.02,
+            lcb_pct: -0.75,
             wetted_surface_m2: 7381.45,
             half_entrance_deg: 12.08,
             transom_area_m2: 16.0,
@@ -1367,6 +1431,8 @@ mod tests {
                 "{what}: {got:.6} vs published {want:.6}"
             );
         };
+        near(run_length(&i), 81.385, 1e-4, "LR");
+        near(r.form_factor, 1.1851, 1e-3, "1+k1 (1984 formula)");
         near(r.fn_, 0.2868, 1e-3, "Fn");
         near(r.cf, 0.001390, 1e-3, "CF");
         near(r.rf_n / 1e3, 869.63, 1e-3, "RF [kN]");
@@ -1376,20 +1442,195 @@ mod tests {
         near(w.c5, 0.9592, 1e-3, "c5");
         near(w.lambda, 0.6513, 1e-3, "lambda");
         near(w.m1, -2.1274, 1e-3, "m1");
-        near(w.m2, -0.17087, 1e-3, "m2");
-        near(r.rw_n / 1e3, 557.11, 1e-3, "RW [kN]");
+        // m4 (1984) against the paper's m2 (1982): 554.02 against 556.93 kN.
+        // Against the print, 1 %; against the Python expectation with m4
+        // (m4 −0.085549 at Fn 0.286841, R_W 554.02 kN, 2026-11-19), tight.
+        near(r.rw_n / 1e3, 557.11, 1e-2, "RW [kN]");
+        near(w.m4, -0.085549, 1e-4, "m4 (Python)");
+        near(r.rw_n / 1e3, 554.02, 1e-4, "RW [kN] (Python, m4)");
         near(r.rapp_n / 1e3, 8.83, 1e-2, "RAPP [kN]");
         near(r.ra_n / 1e3, 221.98, 1e-2, "RA [kN]");
         // FnT > 5, so the paper's transom term is zero; with CF instead of Cwp
         // in the denominator it came out 4.11 and added 48 kN of phantom drag.
         near(r.rtr_n / 1e3, 0.0, 1.0, "RTR [kN]");
         assert!(r.rtr_n < 1e-9, "RTR must vanish above FnT 5: {}", r.rtr_n);
-        // The total lands at 1819.3 kN against the paper's 1793.26 kN (+1.4 %),
-        // which is the form-factor gap above and nothing else: every additive
-        // term reproduces to better than 1 %.
-        near(r.rt_n / 1e3, 1793.26, 2e-2, "RT [kN]");
+        // The total follows the 1984 form factor: 1814.06 kN, +1.16 %.
+        near(r.rt_n / 1e3, 1793.26, 1.5e-2, "RT [kN]");
         // Bulb resistance is a rounding error on this hull, as printed.
         assert!(r.rb_n < 100.0, "RB {} N", r.rb_n);
+    }
+
+    /// m4 = 0.4·c15·exp(−0.034·Fn^−3.29) vanishes fast as Fn → 0: on this hull
+    /// (c15 −1.69385) it is about −1e−29 at Fn 0.1 and underflows to zero below
+    /// that, where the 1982 m2 = c15·Cp²·exp(−0.1/Fn²) is still −4.9e−5 at 0.1.
+    /// At absurdly small Fn the cosine's argument λ/Fn² overflows and `cos(∞)`
+    /// is NaN; a zero hump coefficient must keep that NaN out of R_W.
+    #[test]
+    fn wave_resistance_vanishes_smoothly_at_low_froude_numbers() {
+        let i = sample();
+        for fn_ in [0.02, 0.05, 0.1] {
+            let w = wave_coefficients(&i, fn_);
+            assert!(w.m4.abs() < 1e-12, "Fn {fn_}: m4 {}", w.m4);
+            let rw = wave_resistance(&i, fn_);
+            assert!(rw.is_finite() && rw >= 0.0, "Fn {fn_}: R_W {rw}");
+        }
+        for fn_ in [1e-160, f64::MIN_POSITIVE] {
+            let rw = wave_resistance(&i, fn_);
+            assert!(rw.is_finite() && rw >= 0.0, "Fn {fn_:e}: R_W {rw}");
+        }
+    }
+
+    /// Holtrop (1984), p. 273: the bulb centre height hB "should not exceed
+    /// the upper limit of 0.6 TF", in c3 and in the bulb resistance. A higher
+    /// bulb counts as one at 0.6 T, and the input warns.
+    #[test]
+    fn a_bulb_centre_above_six_tenths_of_the_draft_counts_as_six_tenths() {
+        let base = HoltropInput {
+            bulb_area_m2: 20.0,
+            draft: 10.0,
+            ..sample()
+        };
+        let at_limit = HoltropInput {
+            bulb_centre_z: 6.0,
+            ..base.clone()
+        };
+        let above = HoltropInput {
+            bulb_centre_z: 7.0,
+            ..base.clone()
+        };
+        let v = 25.0 * KNOT;
+        let (a, b) = (holtrop(&at_limit, v), holtrop(&above, v));
+        assert!(a.rb_n > 0.0, "a bulb at the limit has drag: {}", a.rb_n);
+        assert!(
+            (a.rb_n - b.rb_n).abs() < 1e-9,
+            "RB {} vs {}",
+            a.rb_n,
+            b.rb_n
+        );
+        assert!(
+            (a.rw_n - b.rw_n).abs() < 1e-9,
+            "RW {} vs {}",
+            a.rw_n,
+            b.rw_n
+        );
+        assert!(
+            (a.ra_n - b.ra_n).abs() < 1e-9,
+            "RA {} vs {}",
+            a.ra_n,
+            b.ra_n
+        );
+        assert!(above.warnings().iter().any(|w| w.contains("0.6 T")));
+        assert!(!at_limit.warnings().iter().any(|w| w.contains("0.6 T")));
+    }
+
+    /// The worked example printed in Holtrop (1984), "A statistical re-analysis
+    /// of resistance and propulsion data", ISP 31(363), p. 275.
+    ///
+    /// A 50 m twin-screw ship, B 12 m, TF 3.1 / TA 3.3 m (mean 3.2 m), 900 m³,
+    /// CM 0.78, CWP 0.80, lcb 4.5 % of L aft of ½L, iE 25°, AT 10 m², no bulb,
+    /// C_stern 0, S 584.9 m², S_APP 50 m² with 1+k2 3, at 25-35 knots
+    /// (Fn 0.58-0.81, all on the high-speed fit). It checks the 1984 form
+    /// factor, c17, m3 and the hump coefficient m4, which no other printed
+    /// example exercises.
+    ///
+    /// The printed table lost its minus signs: m3·Fn^d is negative at every
+    /// speed, and m4·cos(λ/Fn²) is negative from 31 kn (c15 is −1.69385, also
+    /// printed without its sign). The values asserted below carry the signs.
+    ///
+    /// Expected values, computed in Python with this crate's constants
+    /// (g 9.80665, knot 0.514444; the paper uses 9.81 and 0.5144): R_W 474.98,
+    /// 512.33, 539.18, 563.75, 589.73, 618.42 kN; R + q·S_APP·CA 661.74,
+    /// 715.19, 756.09, 807.43, 864.15, 925.32 kN.
+    #[test]
+    fn published_1984_example_reproduces_the_paper() {
+        let cb = 900.0 / (50.0 * 12.0 * 3.2);
+        let i = HoltropInput {
+            length_wl: 50.0,
+            beam_wl: 12.0,
+            draft: 3.2,
+            volume_m3: 900.0,
+            cb,
+            cp: cb / 0.78,
+            cm: 0.78,
+            cwp: 0.80,
+            lcb_pct: -4.5,
+            wetted_surface_m2: 584.9,
+            half_entrance_deg: 25.0,
+            transom_area_m2: 10.0,
+            bulb_area_m2: 0.0,
+            bulb_centre_z: 0.0,
+            c_stern: 0.0,
+            appendage_area_m2: 50.0,
+            appendage_factor: 3.0,
+            water_density: 1025.0,
+            viscosity: VISCOSITY_SEA_WATER,
+            viscous_coefficient: 0.0,
+        };
+        let rel = |got: f64, want: f64, tol: f64, what: &str| {
+            assert!(
+                (got - want).abs() / want.abs() < tol,
+                "{what}: {got:.6} vs published {want:.6}"
+            );
+        };
+        // (knots, m4·cos(λ/Fn²), m3·Fn^d, R_W, R_APP, R_TR, R) as printed, with
+        // the lost minus signs restored; forces in kN.
+        let rows = [
+            (25.0, 0.3279, -3.3100, 475.0, 21.0, 25.0, 662.0),
+            (27.0, 0.1820, -3.0883, 512.0, 24.0, 16.0, 715.0),
+            (29.0, 0.0409, -2.8962, 539.0, 28.0, 2.0, 756.0),
+            (31.0, -0.0834, -2.7274, 564.0, 31.0, 0.0, 807.0),
+            (33.0, -0.1876, -2.5780, 590.0, 35.0, 0.0, 864.0),
+            (35.0, -0.2730, -2.4453, 618.0, 39.0, 0.0, 925.0),
+        ];
+        for (kn, m4_cos, m3_fnd, rw, rapp, rtr, total) in rows {
+            let r = holtrop(&i, kn * KNOT);
+            let w = wave_coefficients(&i, r.fn_);
+            assert_eq!(w.branch, WaveBranch::High, "{kn} kn: Fn {}", r.fn_);
+            // Printed to four decimals; 1e-3 absorbs the paper's g and knot.
+            let got = w.m4 * (w.lambda / (r.fn_ * r.fn_)).cos();
+            assert!(
+                (got - m4_cos).abs() < 1e-3,
+                "{kn} kn: m4 cos {got:.4} vs {m4_cos}"
+            );
+            let got = w.m3 * r.fn_.powf(-0.9);
+            assert!(
+                (got - m3_fnd).abs() < 1e-3,
+                "{kn} kn: m3 Fn^d {got:.4} vs {m3_fnd}"
+            );
+            if kn == 25.0 {
+                rel(run_length(&i), 14.1728, 1e-4, "LR");
+                rel(r.form_factor, 1.297, 1e-3, "1+k1");
+                rel(w.c17, 1.4133, 1e-3, "c17");
+                rel(w.m3, -2.0298, 1e-3, "m3");
+                rel(w.c5, 0.7329, 1e-3, "c5");
+                rel(w.lambda, 0.7440, 1e-3, "lambda");
+            }
+            // Printed to the kN, so half a kN is the rounding; R_W is allowed a
+            // full kN for the paper's g and knot.
+            let rw_kn = r.rw_n / 1e3;
+            assert!((rw_kn - rw).abs() < 1.0, "{kn} kn: R_W {rw_kn:.2} vs {rw}");
+            let rapp_kn = r.rapp_n / 1e3;
+            assert!(
+                (rapp_kn - rapp).abs() < 0.6,
+                "{kn} kn: R_APP {rapp_kn:.2} vs {rapp}"
+            );
+            let rtr_kn = r.rtr_n / 1e3;
+            assert!(
+                (rtr_kn - rtr).abs() < 0.6,
+                "{kn} kn: R_TR {rtr_kn:.2} vs {rtr}"
+            );
+            // The paper's total takes the correlation allowance on S + S_APP
+            // (634.9 m²). This crate follows the 1982 formula and takes it on S
+            // alone, which matches the 1982 example; here that leaves the total
+            // 3-5 kN low, so the test adds the appendages' share back.
+            let q = 0.5 * i.water_density * r.speed_m_s * r.speed_m_s;
+            let ca = r.ra_n / (q * i.wetted_surface_m2);
+            let r_kn = (r.rt_n + q * i.appendage_area_m2 * ca) / 1e3;
+            assert!(
+                (r_kn - total).abs() < 1.0,
+                "{kn} kn: R {r_kn:.2} vs {total}"
+            );
+        }
     }
 
     #[test]
@@ -1468,11 +1709,14 @@ mod tests {
         assert!(wave_resistance(&i, 0.60).is_finite());
     }
 
+    /// ηR = 0.9922 − 0.05908·AE/A0 + 0.07424·(Cp − 0.0225·lcb), the 1982
+    /// formula that Holtrop (1984) kept, against two printed examples:
+    /// - Holtrop & Mennen (1982), p. 170: Cp 0.5833, lcb −0.75 % (Cp1 0.5477 as
+    ///   printed), AE/A0 0.7393 as printed → ηR 0.9931 printed (0.99308).
+    /// - Molland, Turnock & Hudson (2011), §17.2.6.2: BAR 0.700, Cp 0.663,
+    ///   LCB −1.5 % of L → ηR 1.003 printed (1.00257).
     #[test]
-    fn relative_rotative_efficiency_matches_the_paper() {
-        // The paper's example prints ηR = 0.9931 for a 4-blade propeller; its
-        // expanded area ratio is not printed, but inverting the formula gives
-        // AE/A0 = 0.775, and that value reproduces the printed number exactly.
+    fn relative_rotative_efficiency_matches_two_printed_examples() {
         let mut i = sample();
         i.length_wl = 205.0;
         i.beam_wl = 32.0;
@@ -1480,16 +1724,16 @@ mod tests {
         i.volume_m3 = 37500.0;
         i.cp = 0.5833;
         i.cm = 0.98;
-        i.lcb_pct = -2.02;
+        i.lcb_pct = -0.75;
         let prop = Propeller {
             diameter_m: 8.0,
-            expanded_area_ratio: 0.775,
+            expanded_area_ratio: 0.7393,
             open_water_efficiency: 0.60,
         };
         let p = i.propulsion(&prop);
         assert!(
-            (p.relative_rotative - 0.9931).abs() < 5e-4,
-            "etaR {:.4} against the paper's 0.9931",
+            (p.relative_rotative - 0.9931).abs() < 1e-4,
+            "etaR {:.5} against Holtrop & Mennen's 0.9931",
             p.relative_rotative
         );
         // And the chain closes: ηD = ηH · ηR · ηO with ηH = (1−t)/(1−w).
@@ -1500,6 +1744,90 @@ mod tests {
         assert!(
             (p.propulsive_coefficient - p.hull_efficiency * p.relative_rotative * 0.60).abs()
                 < 1e-12
+        );
+
+        i.cp = 0.663;
+        i.lcb_pct = -1.5;
+        let molland = Propeller {
+            expanded_area_ratio: 0.700,
+            ..prop
+        };
+        let p = i.propulsion(&molland);
+        assert!(
+            (p.relative_rotative - 1.003).abs() < 1e-3,
+            "etaR {:.5} against Molland's 1.003",
+            p.relative_rotative
+        );
+    }
+
+    /// The single-screw wake fraction and thrust deduction of Holtrop (1984),
+    /// pp. 273-274, as Molland, Turnock & Hudson (2011) also state the wake
+    /// (eq. 8.17):
+    /// `w = c9·c20·CV·(L/TA)·(0.050776 + 0.93405·c11·CV/(1 − Cp1))
+    ///      + 0.27915·c20·√(B/(L(1 − Cp1))) + c19·c20`,
+    /// with `c19` switching on Cp at 0.7. No printed worked example uses these
+    /// formulas (the 1982 example prints w from the 1982 formula, the 1984
+    /// example is twin-screw), so the expected values are a hand calculation in
+    /// Python from the formulas as printed (2026-11-20), not published numbers:
+    /// - the 1982 example ship (CV 0.001963 as printed there, D 8 m):
+    ///   c8 14.4028, c19 0.042015, c20 1.15, Cp1 0.5477 → w 0.274120,
+    ///   t 0.198376;
+    /// - a full hull on the Cp > 0.7 branch (L 150, B 25, T 9, S 5500 m², D 6.5,
+    ///   Cp 0.80, CM 0.99, CB 0.792, lcb +2 %, CV 0.0021) → c19 0.102199,
+    ///   w 0.392322.
+    #[test]
+    fn wake_fraction_follows_holtrop_1984_single_screw() {
+        let mut i = sample();
+        i.length_wl = 205.0;
+        i.beam_wl = 32.0;
+        i.draft = 10.0;
+        i.volume_m3 = 37500.0;
+        i.wetted_surface_m2 = 7381.45;
+        i.cb = 37500.0 / (205.0 * 32.0 * 10.0);
+        i.cp = 0.5833;
+        i.cm = 0.98;
+        i.lcb_pct = -0.75;
+        i.c_stern = 10.0;
+        i.viscous_coefficient = 0.001963;
+        let prop = Propeller {
+            diameter_m: 8.0,
+            expanded_area_ratio: 0.7393,
+            open_water_efficiency: 0.60,
+        };
+        let p = i.propulsion(&prop);
+        assert!(
+            (p.wake_fraction - 0.274120).abs() < 1e-5,
+            "w {:.6}",
+            p.wake_fraction
+        );
+        assert!(
+            (p.thrust_deduction - 0.198376).abs() < 1e-5,
+            "t {:.6}",
+            p.thrust_deduction
+        );
+
+        let full = HoltropInput {
+            length_wl: 150.0,
+            beam_wl: 25.0,
+            draft: 9.0,
+            volume_m3: 0.792 * 150.0 * 25.0 * 9.0,
+            cb: 0.792,
+            cp: 0.80,
+            cm: 0.99,
+            lcb_pct: 2.0,
+            wetted_surface_m2: 5500.0,
+            c_stern: 0.0,
+            viscous_coefficient: 0.0021,
+            ..sample()
+        };
+        let p = full.propulsion(&Propeller {
+            diameter_m: 6.5,
+            ..prop
+        });
+        assert!(
+            (p.wake_fraction - 0.392322).abs() < 1e-5,
+            "w {:.6}",
+            p.wake_fraction
         );
     }
 

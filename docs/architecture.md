@@ -55,7 +55,7 @@ crates/seacraft-core/
   src/raster.rs             CPU z-buffer rasterizer, 2x SSAA, waterplane depth, PNG
   src/report.rs             design dossier: self-contained HTML5 report (particulars, lines, hydro, SAC, stability, resistance)
   src/export.rs             OBJ (y- or z-up), binary STL, 3MF, PLY, IGES, HTML viewer
-  src/resistance.rs         still-water resistance and effective power (Holtrop & Mennen 1984)
+  src/resistance.rs         still-water resistance and effective power (Holtrop & Mennen 1982, Holtrop 1984)
   src/michell.rs            Michell thin-ship wave resistance (Michlet-style) for slender monohulls and catamarans
   src/wave_pattern.rs       far-field thin-ship wave pattern (Kelvin wedge) from Michell's spectrum, cuts, PNG/SVG/VTI
   src/demo.rs               parametric 12 m demo hull, full and half model

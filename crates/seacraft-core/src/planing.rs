@@ -15,7 +15,8 @@
 //!   for the mean wetted length-to-beam ratio `λ` at a given trim `τ`;
 //! * `LCP/b = λ (0.75 − 1/(5.21 CV²/λ² + 2.39))` — centre of pressure;
 //! * `R = Δ tan τ + ½ ρ V² (λ B²/cos β)(CF + ΔCF)` — drag, with `CF` from
-//!   ITTC-57 on the wetted length and `ΔCF` Savitsky's roughness allowance.
+//!   ITTC-57 on the mean wetted length `λb` and `ΔCF` Savitsky's roughness
+//!   allowance.
 //!
 //! The trim equilibrium is solved as `LCP/b = LCG/b`: the centre of pressure
 //! sits under the centre of gravity. That neglects the moment of the drag force
@@ -24,9 +25,16 @@
 //! visible rather than implied.
 //!
 //! Nothing here is fitted to this project's own hulls: the coefficients are the
-//! published ones, and the tests in this module check the physics the method has
-//! to satisfy (lift equilibrium to 1e-9, λ falling as trim rises, drag rising
-//! with speed) rather than a golden number that would only pin one hull.
+//! published ones. The equations as used here are the ones Molland, Turnock &
+//! Hudson (2011), *Ship Resistance and Propulsion*, §10.3.3.2 (eqs. 10.43-10.48)
+//! state, and their worked example (70 t at 45 kn, Table 10.6) is a test: λ at
+//! each trim, the equilibrium trim, λb, the wetted area, Re, CF, and the
+//! friction drag and total without the roughness allowance (Molland takes
+//! none) reproduce within 0.5 %, with two stated model differences (moment
+//! balance, drag resolution; see the test). The other tests check the physics the method has to
+//! satisfy (lift equilibrium to 1e-9, λ falling as trim rises, drag rising with
+//! speed). This checks the transcription, not how well Savitsky's method
+//! predicts a real craft.
 
 use serde::Serialize;
 
@@ -70,8 +78,12 @@ pub struct PlaningPoint {
     pub trim_deg: f64,
     /// Mean wetted length over beam.
     pub lambda: f64,
-    /// Wetted length along the keel, metres.
+    /// Mean wetted length `λb`, metres: the mean of the keel and chine wetted
+    /// lengths. The Reynolds number uses it.
     pub wetted_length_m: f64,
+    /// Wetted bottom area `λb²/cos β`, m²: the mean wetted length times the
+    /// girth of the vee bottom, `b/cos β`. The friction drag acts on it.
+    pub wetted_area_m2: f64,
     /// Centre of pressure over beam, from the transom.
     pub lcp_over_b: f64,
     pub reynolds: f64,
@@ -289,7 +301,10 @@ pub fn planing_point(hull: &PlaningHull, speed_m_s: f64) -> Option<PlaningPoint>
 
     let (trim_deg, lambda, residual) = solution?;
     let cos_beta = beta.to_radians().cos().max(1e-3);
-    let wetted_length = lambda * hull.beam_m / cos_beta;
+    let wetted_length = lambda * hull.beam_m;
+    let wetted_area = wetted_length * hull.beam_m / cos_beta;
+    // ITTC-57 on the mean wetted length λb, as Molland et al. (2011) work the
+    // Savitsky example (their eq. 4.15 with lm = λb); λb/cos β gave CF 0.8 % low.
     let re = v * wetted_length / hull.viscosity;
     let cf = if re > 1.0 {
         0.075 / (re.log10() - 2.0).powi(2)
@@ -297,8 +312,7 @@ pub fn planing_point(hull: &PlaningHull, speed_m_s: f64) -> Option<PlaningPoint>
         0.0
     };
     let trim_rad = trim_deg.to_radians();
-    let friction = 0.5 * hull.water_density * v * v * lambda * hull.beam_m * hull.beam_m / cos_beta
-        * (cf + ROUGHNESS_CF);
+    let friction = 0.5 * hull.water_density * v * v * wetted_area * (cf + ROUGHNESS_CF);
     let resistance = hull.displacement_n * trim_rad.tan() + friction;
     Some(PlaningPoint {
         speed_kn: v / 0.514444,
@@ -309,6 +323,7 @@ pub fn planing_point(hull: &PlaningHull, speed_m_s: f64) -> Option<PlaningPoint>
         trim_deg,
         lambda,
         wetted_length_m: wetted_length,
+        wetted_area_m2: wetted_area,
         lcp_over_b: lcp_over_b(cv, lambda),
         reynolds: re,
         cf,
@@ -539,5 +554,69 @@ mod tests {
         let beta = deadrise_from_section(&pts).expect("a deadrise");
         assert!((beta - 20.0).abs() < 1e-6, "beta {beta}");
         assert!(deadrise_from_section(&[(0.0, 0.0)]).is_none());
+    }
+
+    /// The worked example of Molland, Turnock & Hudson (2011), *Ship Resistance
+    /// and Propulsion*, Cambridge University Press, §10.3.3.2, eqs. 10.43-10.48
+    /// and Table 10.6. Molland states Savitsky's equations; Savitsky (1964) is
+    /// his source and was not read here.
+    ///
+    /// A 70 t craft, chine beam 6.5 m, deadrise 20°, LCG 10.0 m forward of the
+    /// transom, at 45 kn (23.15 m/s), ρ 1025, ν 1.19e-6, no roughness allowance,
+    /// friction and thrust through the CG. Molland prints τ 3.31°, λb 15.378 m,
+    /// CF 1.7884e-3, D_F 52.24 kN and R_T 91.74 kN.
+    ///
+    /// Two model differences are stated, not hidden: SeaCraft solves LCP = LCG,
+    /// Molland N·lp = Δ·LCG with N = Δ cos τ, which moves the trim to about
+    /// 3.317°; and SeaCraft resolves R = Δ tan τ + D_F, Molland
+    /// R_T = (Δ sin τ + D_F) cos τ, 0.2 % apart here. The test takes this
+    /// module's g (9.80665, against Molland's 9.81) and subtracts the roughness
+    /// allowance that production drag carries.
+    #[test]
+    fn molland_savitsky_example_reproduces_table_10_6() {
+        let h = PlaningHull {
+            displacement_n: 686_700.0, // 70 t × 9.81
+            beam_m: 6.5,
+            lcg_from_transom_m: 10.0,
+            deadrise_deg: 20.0,
+            water_density: 1025.0,
+            viscosity: 1.19e-6,
+        };
+        let v = 23.15;
+        let rel = |got: f64, want: f64, tol: f64, what: &str| {
+            assert!(
+                (got - want).abs() / want.abs() < tol,
+                "{what}: {got:.6} vs Molland {want:.6}"
+            );
+        };
+        // Table 10.6, the λ column at each trim tried.
+        let cv = v / (G * h.beam_m).sqrt();
+        let cl0 =
+            flat_plate_lift(2.0 * h.load_coefficient() / (cv * cv), h.deadrise_deg).expect("CL0");
+        rel(cl0, 0.0898, 2e-3, "CL0");
+        for (trim, lambda) in [
+            (2.0, 3.8083),
+            (3.0, 2.6310),
+            (4.0, 1.8701),
+            (3.5, 2.2138),
+            (3.31, 2.3658),
+        ] {
+            let got = lambda_for_trim(&h, cv, cl0, trim).expect("λ");
+            rel(got, lambda, 2e-3, &format!("λ at {trim}°"));
+        }
+
+        let p = planing_point(&h, v).expect("planes at 45 kn");
+        assert!((p.trim_deg - 3.31).abs() < 0.02, "trim {:.4}", p.trim_deg);
+        rel(p.wetted_length_m, 15.378, 5e-3, "λb [m]");
+        rel(p.wetted_area_m2, 106.37, 5e-3, "S [m²]");
+        // Re = V·λb/ν from Molland's printed λb: 23.15 · 15.378 / 1.19e-6.
+        rel(p.reynolds, 2.9916e8, 5e-3, "Re");
+        rel(p.cf, 1.7884e-3, 5e-3, "CF");
+        let q = 0.5 * h.water_density * v * v;
+        let area = p.wetted_area_m2;
+        let pressure = h.displacement_n * p.trim_deg.to_radians().tan();
+        let friction = p.resistance_n - pressure - q * area * ROUGHNESS_CF;
+        rel(friction / 1e3, 52.24, 5e-3, "D_F [kN]");
+        rel((pressure + friction) / 1e3, 91.74, 5e-3, "R_T [kN]");
     }
 }

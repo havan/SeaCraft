@@ -226,8 +226,10 @@ mod tests {
             direct.rt_n
         );
         assert!((level.volume_m3 - scan.target_volume_m3).abs() < 1e-6);
-        // And with the CLI's own numbers for this hull (35.79 kW at 10 kn).
-        assert!((level.pe_kw - 35.79).abs() < 0.1, "{:.2} kW", level.pe_kw);
+        // And with the CLI's own numbers for this hull (33.93 kW at 10 kn,
+        // Fn 0.502; frozen output of Holtrop 1984 with m4, 2026-11-19; it was
+        // 35.79 kW with the 1982 m2).
+        assert!((level.pe_kw - 33.93).abs() < 0.1, "{:.2} kW", level.pe_kw);
     }
 
     #[test]
@@ -270,20 +272,24 @@ mod tests {
             .map(|p| p.rt_n)
             .fold(f64::INFINITY, f64::min);
         assert!((best.rt_n - min).abs() < 1e-9);
-        // On this hull the cheapest trim is the aft end of the range: trimming
-        // bow-down lengthens the waterline (10.70 m even keel, 11.27 m at
-        // -0.30 m), which cuts the Froude number more than it costs in wave
-        // resistance. The flag must say so rather than dress it up as an
-        // interior optimum.
-        assert!(scan.at_boundary, "{best:?}");
+        // On this hull the cheapest trim is even keel, inside the range (frozen
+        // output, 2026-11-19: PE 34.49, 34.50, 34.31, 33.93, 49.82, 49.02,
+        // 48.14 kW from -0.30 to +0.30 m). Bow-up costs about 45 %, in one step
+        // between 0 and +0.10 m (as it did with m2); bow-down lengthens the waterline (10.70 m even keel,
+        // 11.27 m at -0.30 m) but costs 1-2 %. With the 1982 m2 the bow-down end
+        // won by 0.03 %, so this pins the shape, not a margin. The edge flag has
+        // its own test below.
+        assert!(!scan.at_boundary, "{best:?}");
         let zero = scan
             .points
             .iter()
             .find(|p| p.trim_m.abs() < 1e-12)
             .expect("even keel");
+        assert!(best.trim_m.abs() < 1e-12, "{best:?}");
         let bow_up = scan.points.last().expect("a point");
         assert!(bow_up.lwl_m < zero.lwl_m, "bow-up shortens the waterline");
-        assert!(best.lwl_m > zero.lwl_m, "bow-down lengthens it");
+        let bow_down = scan.points.first().expect("a point");
+        assert!(bow_down.lwl_m > zero.lwl_m, "bow-down lengthens it");
     }
 
     #[test]
