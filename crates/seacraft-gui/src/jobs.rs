@@ -219,6 +219,12 @@ impl<T> Track<T> {
     pub fn ready(&self, current: u64) -> bool {
         self.due(current) && !self.busy()
     }
+
+    /// As [`Track::ready`], but a failure for `current` is tried again: for an explicit
+    /// recompute.
+    pub fn ready_to_retry(&self, current: u64) -> bool {
+        !self.is_current(current) && !self.busy()
+    }
 }
 
 /// One revision key from the counters a result depends on.
@@ -326,6 +332,26 @@ mod tests {
         assert!(track.ready(2));
         track.stamp(2);
         assert!(!track.ready(2), "nothing to do");
+    }
+
+    #[test]
+    fn a_retry_waits_for_the_job_in_flight_too() {
+        // PR #10 review: a manual recompute (F5) started a wave job while an older one ran.
+        let mut track: Track<u32> = Track::default();
+        track.fail(2, "too coarse".into());
+        assert!(!track.ready(2), "a failure is not retried by itself");
+        assert!(track.ready_to_retry(2), "but is when asked");
+        let (release, gate) = mpsc::channel::<()>();
+        track.start(1, move || {
+            let _ = gate.recv();
+            Ok(1)
+        });
+        assert!(!track.ready_to_retry(2), "not while revision 1 runs");
+        let _ = release.send(());
+        assert_eq!(track.wait(2), None);
+        assert!(track.ready_to_retry(2));
+        track.stamp(2);
+        assert!(!track.ready_to_retry(2), "nothing to do");
     }
 
     #[test]

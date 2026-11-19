@@ -5306,14 +5306,9 @@ impl App {
         ) {
             self.start_resistance_compute();
         }
-        let key = self.waves_key();
-        if self.waves_needed()
-            && wanted(
-                self.waves_track.is_current(key),
-                self.waves_track.running_for(),
-                key,
-            )
-        {
+        // One wave job at a time, as in `run_jobs`: with an older one in flight, the newest key
+        // starts when it ends.
+        if self.waves_needed() && self.waves_track.ready_to_retry(self.waves_key()) {
             self.start_waves_compute();
         }
         // The drawer's view and the dock's tab are each on screen on their
