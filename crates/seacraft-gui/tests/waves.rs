@@ -959,3 +959,73 @@ fn dragging_the_wash_line_sets_the_distance() {
         .expect("a wash distance");
     assert!((got - (d - 3.0)).abs() < 0.5, "{got} vs {}", d - 3.0);
 }
+
+#[test]
+fn drag_plot_marks_hull_speed_and_humps() {
+    let (mut app, ctx) = demo_with_waves();
+    let texts = texts(&settled_view(&ctx, &mut app));
+    for want in [
+        "Wave drag coefficient C_w × 10³ vs Fn",
+        "hull speed",
+        "hump",
+        "Wash at",
+    ] {
+        assert!(texts.iter().any(|t| t.contains(want)), "{want}: {texts:?}");
+    }
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Wash at ") && t.contains(": elevation (m) vs x (m)")),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn spacing_mode_only_for_catamarans() {
+    let (mut app, ctx) = demo_with_waves();
+    let mono = texts(&settled_view(&ctx, &mut app));
+    assert!(!mono.iter().any(|t| t == "vs spacing"), "{mono:?}");
+    app.set_wave_settings(WaveSettings {
+        cat_spacing_m: Some(8.0),
+        ..app.wave_settings().clone()
+    });
+    let out = settled_view(&ctx, &mut app);
+    let cat = texts(&out);
+    assert!(cat.iter().any(|t| t == "vs spacing"), "{cat:?}");
+    assert!(cat.iter().any(|t| t.contains("2 × one hull")), "{cat:?}");
+    // The spacing plot: interference against spacing, with the neutral line.
+    let at = text_rect(&out, "vs spacing").unwrap().center();
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    frame(&ctx, &mut app, vec![button(at, true)]);
+    frame(&ctx, &mut app, vec![button(at, false)]);
+    let spacing = texts(&frame(&ctx, &mut app, Vec::new()));
+    assert!(
+        spacing
+            .iter()
+            .any(|t| t.starts_with("Interference vs spacing")),
+        "{spacing:?}"
+    );
+    assert!(
+        spacing.iter().any(|t| t.contains("no interference")),
+        "{spacing:?}"
+    );
+}
+
+#[test]
+fn dragging_the_drag_marker_sets_the_speed() {
+    let (mut app, ctx) = demo_with_waves();
+    let out = settled_view(&ctx, &mut app);
+    let caption = text_rect(&out, "Wave drag coefficient C_w × 10³ vs Fn").expect("the plot");
+    // Well inside the plot, to the right of Fn 0.30.
+    let at = egui::pos2(
+        caption.left() + 0.8 * caption.width().max(200.0),
+        caption.bottom() + 60.0,
+    );
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+    frame(&ctx, &mut app, vec![button(at, true)]);
+    frame(&ctx, &mut app, vec![button(at, false)]);
+    let WaveSpeed::Froude(f) = app.wave_settings().speed else {
+        panic!("{:?}", app.wave_settings().speed)
+    };
+    assert!(f > 0.30 && f <= 1.0, "Fn {f}");
+}

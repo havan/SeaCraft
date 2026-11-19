@@ -44,6 +44,8 @@ pub struct MapState {
     pub fitted: bool,
     /// The pointer went down on a wash line: the drag moves the line, not the map.
     pub dragging_wash: bool,
+    /// The catamaran's drag plot shows interference against spacing, not drag against speed.
+    pub spacing_plot: bool,
 }
 
 /// The wave view's inputs.
@@ -161,7 +163,7 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
         ui.set_min_size(body);
         match result {
             Some(r) => {
-                let wash = ui
+                let asked = ui
                     .scope(|ui| {
                         if stale {
                             ui.multiply_opacity(theme::STALE_OPACITY);
@@ -169,8 +171,8 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
                         body_columns(ui, r, drag, settings, texture, map, body)
                     })
                     .inner;
-                if let Some(d) = wash {
-                    action = WaveViewAction::SetWashDistance(d);
+                if asked != WaveViewAction::None {
+                    action = asked;
                 }
             }
             None if busy => {
@@ -297,7 +299,7 @@ pub fn interference_words(ratio: f64) -> String {
 }
 
 /// Readouts, map and plots; the plots go under the map when the drawer is narrow.
-/// Returns a wash distance while the wash line is dragged on the map.
+/// Returns what the map (a dragged wash line) or the plots (a clicked speed or spacing) asked for.
 fn body_columns(
     ui: &mut egui::Ui,
     r: &WaveResult,
@@ -306,8 +308,8 @@ fn body_columns(
     texture: Option<egui::TextureId>,
     map: &mut MapState,
     size: egui::Vec2,
-) -> Option<f64> {
-    let mut wash = None;
+) -> WaveViewAction {
+    let mut action = WaveViewAction::None;
     let wide = size.x >= WIDE;
     let gap = ui.spacing().item_spacing.x;
     let plots_w = if wide { (0.34 * size.x).round() } else { 0.0 };
@@ -325,18 +327,26 @@ fn body_columns(
             } else {
                 (0.55 * size.y).round()
             };
-            wash = wave_map(ui, r, settings, texture, map, egui::vec2(map_w, map_h));
+            if let Some(d) = wave_map(ui, r, settings, texture, map, egui::vec2(map_w, map_h)) {
+                action = WaveViewAction::SetWashDistance(d);
+            }
             if !wide {
-                plots_placeholder(ui, r, drag);
+                let asked = plots(ui, r, drag, settings, map);
+                if asked != WaveViewAction::None {
+                    action = asked;
+                }
             }
         });
         if wide {
             ui.allocate_ui_with_layout(egui::vec2(plots_w, size.y), top_down, |ui| {
-                plots_placeholder(ui, r, drag);
+                let asked = plots(ui, r, drag, settings, map);
+                if asked != WaveViewAction::None {
+                    action = asked;
+                }
             });
         }
     });
-    wash
+    action
 }
 
 /// The left column: the regime sentence, then one row per question, each with a definition on
@@ -499,6 +509,7 @@ fn wave_map(
             pan: egui::Vec2::ZERO,
             fitted: true,
             dragging_wash: false,
+            spacing_plot: map.spacing_plot,
         };
     }
     let fit = ((rect.width() - 16.0) as f64 / (x1 - x0).max(1e-9))
@@ -732,9 +743,161 @@ fn colour_bar(ui: &mut egui::Ui, clip_m: f64, width: f32) {
     );
 }
 
-/// The plots' place until they are drawn (Task 9 of the plan).
-fn plots_placeholder(ui: &mut egui::Ui, _r: &WaveResult, _drag: Option<&WaveDrag>) {
-    ui.label(egui::RichText::new("Wave drag").color(theme::TEXT_SECONDARY));
+/// Humps and hollows are marked from this Froude number up: below it C_w ripples with many small
+/// extrema whose labels would crowd the plot, and wave drag is small there anyway.
+const MARK_FROM_FN: f64 = 0.25;
+
+/// The right column: wave drag against speed (or, for a catamaran, interference against spacing)
+/// and the waves along the wash line. A click on the drag plot sets the speed; on the spacing plot,
+/// the spacing.
+fn plots(
+    ui: &mut egui::Ui,
+    r: &WaveResult,
+    drag: Option<&WaveDrag>,
+    settings: &WaveSettings,
+    map: &mut MapState,
+) -> WaveViewAction {
+    use crate::panels::{plot_interactive, PlotMark, PlotSeries};
+    let mut action = WaveViewAction::None;
+    egui::ScrollArea::vertical()
+        .id_salt("wave_plots")
+        .show(ui, |ui| {
+            let cat = r.cat_spacing_m.is_some();
+            if cat {
+                theme::segmented(ui, |ui| {
+                    ui.selectable_value(&mut map.spacing_plot, false, "vs speed");
+                    ui.selectable_value(&mut map.spacing_plot, true, "vs spacing");
+                });
+            }
+            if cat && map.spacing_plot && r.spacing_scan.len() > 1 {
+                let (s0, s1) = (
+                    r.spacing_scan[0].0,
+                    r.spacing_scan[r.spacing_scan.len() - 1].0,
+                );
+                let series = [
+                    PlotSeries {
+                        label: "pair over 2 × one hull".into(),
+                        points: r.spacing_scan.clone(),
+                        dashed: false,
+                    },
+                    PlotSeries {
+                        label: "no interference".into(),
+                        points: vec![(s0, 1.0), (s1, 1.0)],
+                        dashed: true,
+                    },
+                ];
+                let caption = format!("Interference vs spacing (m) at Fn {:.2}", r.field.froude);
+                if let Some(s) =
+                    plot_interactive(ui, &caption, &series, r.cat_spacing_m, &[], Some((s0, s1)))
+                {
+                    action = WaveViewAction::SetSpacing((s * 20.0).round() / 20.0);
+                }
+            } else if let Some(d) = drag {
+                let curve = |rows: &[seacraft_core::michell::MichellResult]| -> Vec<(f64, f64)> {
+                    rows.iter().map(|m| (m.fn_, m.cw * 1000.0)).collect()
+                };
+                let mono = curve(&d.mono);
+                let (series, primary) = match &d.cat {
+                    Some(c) => {
+                        let pair = curve(c);
+                        (
+                            vec![
+                                PlotSeries {
+                                    label: "catamaran".into(),
+                                    points: pair.clone(),
+                                    dashed: false,
+                                },
+                                PlotSeries {
+                                    label: "2 × one hull (no interference)".into(),
+                                    points: mono,
+                                    dashed: true,
+                                },
+                            ],
+                            pair,
+                        )
+                    }
+                    None => (
+                        vec![PlotSeries {
+                            label: String::new(),
+                            points: mono.clone(),
+                            dashed: false,
+                        }],
+                        mono,
+                    ),
+                };
+                let ys: Vec<f64> = primary.iter().map(|p| p.1).collect();
+                let (humps, hollows) = seacraft_core::michell::local_extrema(&ys);
+                let mut marks = vec![PlotMark {
+                    x: HULL_SPEED_FN,
+                    label: "hull speed",
+                }];
+                for (indices, label) in [(&humps, "hump"), (&hollows, "hollow")] {
+                    marks.extend(
+                        indices
+                            .iter()
+                            .map(|&i| primary[i].0)
+                            .filter(|f| *f >= MARK_FROM_FN)
+                            .map(|x| PlotMark { x, label }),
+                    );
+                }
+                let fn_now = r.field.froude;
+                if let Some(f) = plot_interactive(
+                    ui,
+                    "Wave drag coefficient C_w × 10³ vs Fn",
+                    &series,
+                    Some(fn_now),
+                    &marks,
+                    Some(SLIDER_FN),
+                ) {
+                    let knots = settings.speed.is_knots();
+                    action = WaveViewAction::SetSpeed(
+                        WaveSpeed::Froude((f * 1000.0).round() / 1000.0)
+                            .in_unit(knots, d.length_wl),
+                    );
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "marker: Fn {fn_now:.2} = {:.1} kn; click or drag to set the speed",
+                        r.field.speed_m_s / KNOT
+                    ))
+                    .small()
+                    .color(theme::TEXT_MUTED),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("Computing the wave drag curve…").color(theme::TEXT_MUTED),
+                );
+            }
+            ui.add_space(6.0);
+            let wash_marks: Vec<PlotMark> = r
+                .wash
+                .iter()
+                .map(|w| PlotMark {
+                    x: w.x_m,
+                    label: "largest wave",
+                })
+                .collect();
+            let series = [PlotSeries {
+                label: String::new(),
+                points: r
+                    .wash_cut
+                    .s
+                    .iter()
+                    .copied()
+                    .zip(r.wash_cut.zeta.iter().copied())
+                    .collect(),
+                dashed: false,
+            }];
+            let caption = format!("Wash at {:.1} m: elevation (m) vs x (m)", r.wash_distance_m);
+            let range = r
+                .wash_cut
+                .s
+                .first()
+                .zip(r.wash_cut.s.last())
+                .map(|(a, b)| (*a, *b));
+            plot_interactive(ui, &caption, &series, None, &wash_marks, range);
+        });
+    action
 }
 
 /// Catamaran and spacing, the wash line, the Map and Colours menus, the Plan view contours and
