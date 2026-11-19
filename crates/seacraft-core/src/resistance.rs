@@ -24,10 +24,12 @@
 //!
 //! Both papers print a worked example, and both are tests here. The 1984
 //! example (50 m at 25-35 kn, all on the high-speed fit) reproduces `1+k1`,
-//! `LR`, `c17`, `m3`, `c5`, `λ`, the `m4` and `m3` terms and `RW` to the
-//! printed digit, and the total to 1 kN once the correlation allowance is also
-//! taken on the appendage area as that paper does (this crate takes it on `S`,
-//! following 1982). The 1982 example (205 m at 25 kn) reproduces every term
+//! `LR`, `c17`, `m3`, `c5` and `λ` within 0.1 %, the `m4` and `m3` terms
+//! within 0.001, `RW` within 1 kN, and the total within 1 kN once the
+//! correlation allowance is also taken on the appendage area as that paper
+//! does (this crate takes it on `S`, following 1982). `ηR` reproduces the
+//! 1982 example and one in Molland et al. (2011); the wake fraction and
+//! thrust deduction are checked against a hand calculation only. The 1982 example (205 m at 25 kn) reproduces every term
 //! the re-analysis kept — `CF`, `RF`, `CA`, `RA`, `RAPP`, `c1`, `c2`, `c5`,
 //! `c7`, `λ`, `m1`, `RB` and the zero transom term — and differs where the
 //! formulas changed: `1+k1` and, by under 1 %, `RW`. The other tests pin what
@@ -267,13 +269,12 @@ impl HoltropInput {
     ///
     /// Single screw only, with the propeller's own open-water efficiency
     /// supplied from outside — the method predicts the hull's side of the
-    /// bargain, not the propeller's. The thrust deduction is the single-screw
-    /// formula of Holtrop (1984), and `ηR` the 1982 formula that 1984 kept.
-    /// The wake fraction follows the structure of the 1984 single-screw
-    /// formula, but two parts differ from that paper as printed (p. 273-274):
-    /// its first term is `c9·c20·CV·(L/TA)·(…)` there and `c9·CV·√(CV·L/TA)·(…)`
-    /// here, and `c19` switches on `Cp` at 0.7 there (with `CB` in its first
-    /// form) and on `B/TA` here. No worked example checks these factors yet.
+    /// bargain, not the propeller's. The wake fraction and thrust deduction are
+    /// the single-screw formulas of Holtrop (1984), pp. 273-274 (the wake as
+    /// Molland et al. (2011) eq. 8.17 also state it), and `ηR` the 1982 formula
+    /// that 1984 kept. `ηR` is checked against two printed examples; the wake
+    /// and thrust deduction against a hand calculation from the formulas, since
+    /// no printed example uses them.
     pub fn propulsion(&self, propeller: &Propeller) -> Propulsion {
         let d = propeller.diameter_m.max(1e-3);
         let (b, ta) = (self.beam_wl, self.draft);
@@ -301,10 +302,10 @@ impl HoltropInput {
         } else {
             0.0833333 * tadover.powi(3) + 1.33333
         };
-        let c19 = if bta < 5.0 {
-            0.12997 / (bta - 0.95) - 0.11056 / (bta - 0.95).powi(2)
+        let c19 = if cp <= 0.7 {
+            0.12997 / (0.95 - self.cb).max(1e-6) - 0.11056 / (0.95 - cp).max(1e-6)
         } else {
-            0.18567 / (1.3571 - self.cm) - 0.71276 + 0.38648 * cp
+            0.18567 / (1.3571 - self.cm).max(1e-6) - 0.71276 + 0.38648 * cp
         };
         let c20 = 1.0 + 0.015 * self.c_stern;
         // `1 − Cp1` divides, so it is floored: a hull with a large |lcb| or a
@@ -312,8 +313,9 @@ impl HoltropInput {
         // wake fractions (the demo hull, lcb −9.9 %, returned w = 525).
         let cp1 = (1.45 * cp - 0.315 - 0.0225 * lcb).clamp(-1.0, 0.95);
         let wake = (c9
+            * c20
             * cv
-            * (cv * self.length_wl / ta).sqrt()
+            * (self.length_wl / ta)
             * (0.050776 + 0.93405 * c11 * cv / (1.0 - cp1)).max(0.0)
             + 0.27915 * c20 * (b / (self.length_wl * (1.0 - cp1)).max(1e-6)).sqrt()
             + c19 * c20)
@@ -1619,11 +1621,14 @@ mod tests {
         assert!(wave_resistance(&i, 0.60).is_finite());
     }
 
+    /// ηR = 0.9922 − 0.05908·AE/A0 + 0.07424·(Cp − 0.0225·lcb), the 1982
+    /// formula that Holtrop (1984) kept, against two printed examples:
+    /// - Holtrop & Mennen (1982), p. 170: Cp 0.5833, lcb −0.75 % (Cp1 0.5477 as
+    ///   printed), AE/A0 0.7393 as printed → ηR 0.9931 printed (0.99308).
+    /// - Molland, Turnock & Hudson (2011), §17.2.6.2: BAR 0.700, Cp 0.663,
+    ///   LCB −1.5 % of L → ηR 1.003 printed (1.00257).
     #[test]
-    fn relative_rotative_efficiency_matches_the_paper() {
-        // The paper's example prints ηR = 0.9931 for a 4-blade propeller; its
-        // expanded area ratio is not printed, but inverting the formula gives
-        // AE/A0 = 0.775, and that value reproduces the printed number exactly.
+    fn relative_rotative_efficiency_matches_two_printed_examples() {
         let mut i = sample();
         i.length_wl = 205.0;
         i.beam_wl = 32.0;
@@ -1631,16 +1636,16 @@ mod tests {
         i.volume_m3 = 37500.0;
         i.cp = 0.5833;
         i.cm = 0.98;
-        i.lcb_pct = -2.02;
+        i.lcb_pct = -0.75;
         let prop = Propeller {
             diameter_m: 8.0,
-            expanded_area_ratio: 0.775,
+            expanded_area_ratio: 0.7393,
             open_water_efficiency: 0.60,
         };
         let p = i.propulsion(&prop);
         assert!(
-            (p.relative_rotative - 0.9931).abs() < 5e-4,
-            "etaR {:.4} against the paper's 0.9931",
+            (p.relative_rotative - 0.9931).abs() < 1e-4,
+            "etaR {:.5} against Holtrop & Mennen's 0.9931",
             p.relative_rotative
         );
         // And the chain closes: ηD = ηH · ηR · ηO with ηH = (1−t)/(1−w).
@@ -1651,6 +1656,90 @@ mod tests {
         assert!(
             (p.propulsive_coefficient - p.hull_efficiency * p.relative_rotative * 0.60).abs()
                 < 1e-12
+        );
+
+        i.cp = 0.663;
+        i.lcb_pct = -1.5;
+        let molland = Propeller {
+            expanded_area_ratio: 0.700,
+            ..prop
+        };
+        let p = i.propulsion(&molland);
+        assert!(
+            (p.relative_rotative - 1.003).abs() < 1e-3,
+            "etaR {:.5} against Molland's 1.003",
+            p.relative_rotative
+        );
+    }
+
+    /// The single-screw wake fraction and thrust deduction of Holtrop (1984),
+    /// pp. 273-274, as Molland, Turnock & Hudson (2011) also state the wake
+    /// (eq. 8.17):
+    /// `w = c9·c20·CV·(L/TA)·(0.050776 + 0.93405·c11·CV/(1 − Cp1))
+    ///      + 0.27915·c20·√(B/(L(1 − Cp1))) + c19·c20`,
+    /// with `c19` switching on Cp at 0.7. No printed worked example uses these
+    /// formulas (the 1982 example prints w from the 1982 formula, the 1984
+    /// example is twin-screw), so the expected values are a hand calculation in
+    /// Python from the formulas as printed (2026-11-20), not published numbers:
+    /// - the 1982 example ship (CV 0.001963 as printed there, D 8 m):
+    ///   c8 14.4028, c19 0.042015, c20 1.15, Cp1 0.5477 → w 0.274120,
+    ///   t 0.198376;
+    /// - a full hull on the Cp > 0.7 branch (L 150, B 25, T 9, S 5500 m², D 6.5,
+    ///   Cp 0.80, CM 0.99, CB 0.792, lcb +2 %, CV 0.0021) → c19 0.102199,
+    ///   w 0.392322.
+    #[test]
+    fn wake_fraction_follows_holtrop_1984_single_screw() {
+        let mut i = sample();
+        i.length_wl = 205.0;
+        i.beam_wl = 32.0;
+        i.draft = 10.0;
+        i.volume_m3 = 37500.0;
+        i.wetted_surface_m2 = 7381.45;
+        i.cb = 37500.0 / (205.0 * 32.0 * 10.0);
+        i.cp = 0.5833;
+        i.cm = 0.98;
+        i.lcb_pct = -0.75;
+        i.c_stern = 10.0;
+        i.viscous_coefficient = 0.001963;
+        let prop = Propeller {
+            diameter_m: 8.0,
+            expanded_area_ratio: 0.7393,
+            open_water_efficiency: 0.60,
+        };
+        let p = i.propulsion(&prop);
+        assert!(
+            (p.wake_fraction - 0.274120).abs() < 1e-5,
+            "w {:.6}",
+            p.wake_fraction
+        );
+        assert!(
+            (p.thrust_deduction - 0.198376).abs() < 1e-5,
+            "t {:.6}",
+            p.thrust_deduction
+        );
+
+        let full = HoltropInput {
+            length_wl: 150.0,
+            beam_wl: 25.0,
+            draft: 9.0,
+            volume_m3: 0.792 * 150.0 * 25.0 * 9.0,
+            cb: 0.792,
+            cp: 0.80,
+            cm: 0.99,
+            lcb_pct: 2.0,
+            wetted_surface_m2: 5500.0,
+            c_stern: 0.0,
+            viscous_coefficient: 0.0021,
+            ..sample()
+        };
+        let p = full.propulsion(&Propeller {
+            diameter_m: 6.5,
+            ..prop
+        });
+        assert!(
+            (p.wake_fraction - 0.392322).abs() < 1e-5,
+            "w {:.6}",
+            p.wake_fraction
         );
     }
 
