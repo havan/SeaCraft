@@ -4,6 +4,16 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- Holtrop-Mennen and Savitsky are now checked against published worked examples (`docs/oracles.md` §42, §43), and
+  two fixes came out of it. Holtrop wave resistance uses the 1984 hump coefficient `m4` in both wave fits, as
+  Holtrop (1984) does, instead of the 1982 `m2`: the 1984 paper's example now reproduces to the kN. The wave
+  term changes at every speed, by the factor `exp((m4 − m2)·cos(λ/Fn²))`: on the 1984 example by −6 % to +5 %
+  (Fn 0.58–0.81); below Fn 0.40 by up to about ±7 % on ships with Cp near 0.6, and by up to about ±25 % at some
+  speeds on full hulls (Cp 0.8) — the hump and hollow pattern shifts, so recompute any saved curve. The demo hull
+  at 10 kn (Fn 0.50) goes from 35.79 to 33.93 kW effective power, and its cheapest trim in the trim scan moves
+  from the bow-down end to even keel. Savitsky friction takes the Reynolds number on the mean wetted length λb, as Molland et al.
+  (2011) do: the friction coefficient rises about 0.8 % and planing resistance about 0.4 %.
+
 - The far-field wave pattern in the window, as the **Wave pattern** view in the Analysis drawer (Analysis menu,
   after Trim scan, or "Open wave pattern" in the Performance tab). Its header names the theory, thin-ship
   (Michell), and every input and readout says what it means on hover. One speed drives the view: a number in knots

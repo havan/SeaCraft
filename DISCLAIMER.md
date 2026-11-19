@@ -21,6 +21,14 @@ overpredicts the resistance hump near Fn 0.32 by 18–54 % and places it about 0
 near Fn 0.35 is at the measured speed. The test holds the program to those bands, read from the published
 figures ([`docs/oracles.md`](docs/oracles.md) §39). It covers that hull and speed range only.
 
+The Holtrop-Mennen resistance equations reproduce the worked examples printed in Holtrop & Mennen (1982) and
+Holtrop (1984), and the Savitsky planing equations reproduce the worked example in Molland, Turnock & Hudson
+(2011) ([`docs/oracles.md`](docs/oracles.md) §42, §43). That checks that the equations were transcribed
+correctly, not that either method predicts a real vessel's resistance. Stated differences remain: SeaCraft takes
+Holtrop's correlation allowance on the hull's wetted surface only, and solves Savitsky's trim with the centre of
+pressure under the centre of gravity. Holtrop's propulsion factors (wake fraction, thrust deduction, relative
+rotative efficiency) are not covered by these examples.
+
 The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`, the Wave pattern view and Plan view contours in the
 window, the design report) is far-field thin-ship theory: free waves only, without the local disturbance, so near the hull
 it is not the hull wave profile. It is computed upright at the draft; heel and trim are ignored. It has been
