@@ -727,3 +727,104 @@ fn shown_pattern_computes_its_drag_curve() {
     });
     assert_eq!(app.wave_drag().unwrap().mono.len(), 60);
 }
+
+/// The view's texts, once its pattern for the current settings is computed.
+fn view_texts(ctx: &egui::Context, app: &mut App) -> Vec<String> {
+    frames_until(ctx, app, "the current pattern", |a| {
+        a.wave_current().is_some() && a.wave_drag().is_some()
+    });
+    frame(ctx, app, Vec::new());
+    texts(&frame(ctx, app, Vec::new()))
+}
+
+#[test]
+fn view_shows_plain_readouts() {
+    let (mut app, ctx) = demo_with_waves();
+    app.set_wave_settings(WaveSettings {
+        speed: WaveSpeed::Froude(0.45),
+        ..app.wave_settings().clone()
+    });
+    let texts = view_texts(&ctx, &mut app);
+    for want in [
+        "Around hull speed",
+        "× waterline",
+        "Hull speed",
+        "Wash at",
+        "Wave drag here",
+        "Highest crest",
+    ] {
+        assert!(texts.iter().any(|t| t.contains(want)), "{want}: {texts:?}");
+    }
+    for symbol in ["λ_T", "θ_c", "|ζ|"] {
+        assert!(
+            !texts.iter().any(|t| t.contains(symbol)),
+            "{symbol}: {texts:?}"
+        );
+    }
+}
+
+#[test]
+fn banner_names_why_the_theory_does_not_fit() {
+    let (mut app, ctx) = demo_with_waves();
+    let texts = view_texts(&ctx, &mut app);
+    let banner = texts
+        .iter()
+        .find(|t| t.starts_with("Thin-ship theory does not fit this hull (L/B"))
+        .unwrap_or_else(|| panic!("{texts:?}"));
+    assert!(banner.contains("wide transom"), "{banner}");
+    assert!(
+        banner.ends_with("read the pattern as a sketch, not a prediction."),
+        "{banner}"
+    );
+    assert!(!texts
+        .iter()
+        .any(|t| t.contains("heel and trim are ignored")));
+}
+
+#[test]
+fn heel_is_named_in_the_banner() {
+    let (mut app, ctx) = demo_with_waves();
+    app.hydro_options_mut().heel_deg = 5.0;
+    let texts = view_texts(&ctx, &mut app);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "Computed upright at the draft; heel and trim are ignored."),
+        "{texts:?}"
+    );
+}
+
+#[test]
+fn catamaran_shows_interference() {
+    let (mut app, ctx) = demo_with_waves();
+    app.set_wave_settings(WaveSettings {
+        cat_spacing_m: Some(8.0),
+        ..app.wave_settings().clone()
+    });
+    let texts = view_texts(&ctx, &mut app);
+    assert!(texts.iter().any(|t| t == "Interference"), "{texts:?}");
+    assert!(
+        texts.iter().any(|t| t.starts_with("favourable (")
+            || t.starts_with("unfavourable (")
+            || t.starts_with("neutral (")),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|t| t.starts_with("8.0 m (")), "{texts:?}");
+}
+
+/// Review focus 5: a typed Fn 0.05 is kept (the slider starts at 0.10) and flagged.
+#[test]
+fn typed_low_speed_is_kept_and_flagged() {
+    let (mut app, ctx) = demo_with_waves();
+    app.set_wave_settings(WaveSettings {
+        speed: WaveSpeed::Froude(0.05),
+        ..app.wave_settings().clone()
+    });
+    let texts = view_texts(&ctx, &mut app);
+    assert_eq!(app.wave_settings().speed, WaveSpeed::Froude(0.05));
+    let banner = texts
+        .iter()
+        .find(|t| t.starts_with("Thin-ship theory does not fit this hull"))
+        .unwrap_or_else(|| panic!("{texts:?}"));
+    assert!(banner.contains("Fn 0.05 outside 0.20–1.00"), "{banner}");
+}
