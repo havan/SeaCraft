@@ -553,6 +553,11 @@ fn wave_map(
             t.centre_screen = rect.center() + map.pan;
         }
     }
+    // A release the map never saw (the view closed mid-drag) still ends the drag.
+    if map.dragging_wash && !ui.input(|i| i.pointer.any_down()) {
+        map.dragging_wash = false;
+        map.wash_frame = None;
+    }
     if let Some(frame) = map.wash_frame {
         t = frame;
     }

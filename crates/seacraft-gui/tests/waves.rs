@@ -1205,3 +1205,58 @@ fn a_held_wash_drag_stays_where_the_pointer_is() {
     f(&mut app, vec![button(to, false)]);
     assert!((got - 65.0).abs() < 0.5, "{got} vs 65");
 }
+
+#[test]
+fn a_wash_drag_cut_short_by_closing_the_view_leaves_the_map_free() {
+    // PR #10 review: a release while the view was closed never reached the map, so its frame
+    // stayed pinned from the drag and zooming did nothing after the view reopened.
+    let (mut app, ctx) = demo_with_waves();
+    let out = settled_view(&ctx, &mut app);
+    let shapes = frame_shapes(&out);
+    let rows = dashed_rows(&shapes, theme::WAVE_CUT);
+    let [top, _] = rows[..] else {
+        panic!("{rows:?}")
+    };
+    let x = shapes
+        .iter()
+        .find_map(|s| match s {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == theme::WAVE_CUT && points[0].y.round() == top =>
+            {
+                Some(0.5 * (points[0].x + points[1].x))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let from = egui::pos2(x, top);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![button(from, true)]);
+    for k in 1..=3 {
+        let p = from + egui::vec2(0.0, -4.0 * k as f32);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    }
+    app.set_wave_view_open(false);
+    frame(&ctx, &mut app, vec![button(from, false)]);
+    app.set_wave_view_open(true);
+    let out = settled_view(&ctx, &mut app);
+    let before = dashed_rows(&frame_shapes(&out), theme::WAVE_CUT);
+    let centre = egui::pos2(x, 0.5 * (before[0] + before[1]));
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(centre)]);
+    frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, 200.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    let mut out = frame(&ctx, &mut app, Vec::new());
+    for _ in 0..30 {
+        out = frame(&ctx, &mut app, Vec::new());
+    }
+    let after = dashed_rows(&frame_shapes(&out), theme::WAVE_CUT);
+    assert_ne!(before, after, "scrolling zooms the map");
+}
