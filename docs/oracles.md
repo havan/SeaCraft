@@ -557,7 +557,8 @@ the irregular frequencies in the theory of oscillating bodies in a free surface"
 
 ### Provenance
 Derived for these fixes (2026-10-24); hand and Python checks, not published values. Savitsky,
-"Hydrodynamic design of planing hulls", Marine Technology 1(1), 1964.
+"Hydrodynamic design of planing hulls", Marine Technology 1(1), 1964 (not read; §43 checks the Savitsky equations
+against the worked example of Molland et al. 2011, which states them).
 
 ---
 
@@ -1440,3 +1441,60 @@ wrong, and it is the 1984 against the 1982 form factor.
 What this covers: the transcription of the resistance equations, checked against the examples their authors
 printed. It does not show that the method predicts any real vessel's resistance, and it does not cover the
 propulsion factors (wake fraction, thrust deduction, ηR), which no worked example checks yet.
+
+## 43. Savitsky Against Molland et al. (2011), Table 10.6
+
+### Sources
+- Molland, A. F., Turnock, S. R. & Hudson, D. A. (2011), *Ship Resistance and Propulsion*, Cambridge University
+  Press, §10.3.3.2, pp. 216–219: the Savitsky equations (eqs. 10.43–10.48) and a worked example (Table 10.6). Read
+  2026-11-19.
+- Savitsky (1964), Molland's source, was not read. The oracle rests on Molland.
+
+### Formula
+As in `planing.rs`: $C_{L\beta} = 2C_\Delta/C_V^2$, $C_{L\beta} = C_{L0} - 0.0065\,\beta\,C_{L0}^{0.6}$,
+$C_{L0} = \tau^{1.1}(0.0120\lambda^{0.5} + 0.0055\lambda^{2.5}/C_V^2)$,
+$l_p/b = \lambda(0.75 - 1/(5.21 C_V^2/\lambda^2 + 2.39))$, $D_F = \tfrac12\rho V^2 (\lambda b^2/\cos\beta)\,C_F$,
+$R = \Delta\tan\tau + D_F$ (plus the roughness allowance $\Delta C_F$ 0.0004 in production).
+
+Change on 2026-11-19: $C_F$ (ITTC-57) now takes the Reynolds number on the mean wetted length $\lambda b$, as
+Molland does. It was taken on $\lambda b/\cos\beta$, which gave $C_F$ 0.8 % low in this example. The reported
+`wetted_length_m` stays $\lambda b/\cos\beta$, the mean wetted length along the bottom.
+
+Two model differences remain, stated rather than removed:
+- **Moment balance.** SeaCraft solves LCP = LCG. Molland solves $N l_p = \Delta\,LCG$ with $N = \Delta\cos\tau$.
+  Here that moves the trim from 3.31° to 3.318°, and λb by −0.4 %.
+- **Drag resolution.** SeaCraft has $R = \Delta\tan\tau + D_F$; Molland resolves
+  $R_T = (\Delta\sin\tau + D_F)\cos\tau$. The two differ by 0.2 % here.
+
+### Test Location
+- `crates/seacraft-core/src/planing.rs::molland_savitsky_example_reproduces_table_10_6`
+
+### Numbers Used
+70 t craft (Δ = 686 700 N, 70 t × 9.81), chine beam 6.5 m, deadrise 20°, LCG 10.0 m forward of the transom, 45 kn
+(V 23.15 m/s), ρ 1025 kg/m³, ν 1.19e-6 m²/s. SeaCraft's g is 9.80665 (Molland 9.81). Molland takes no roughness
+allowance, so the test subtracts SeaCraft's from the drag.
+
+| Quantity | Molland | SeaCraft | Tolerance |
+|---|---|---|---|
+| $C_{L0}$ | 0.0898 | 0.08979 | 0.2 % |
+| λ at τ 2.0° | 3.8083 | 3.8053 | 0.2 % |
+| λ at τ 3.0° | 2.6310 | 2.6315 | 0.2 % |
+| λ at τ 4.0° | 1.8701 | 1.8703 | 0.2 % |
+| λ at τ 3.5° | 2.2138 | 2.2146 | 0.2 % |
+| λ at τ 3.31° | 2.3658 | 2.3634 | 0.2 % |
+| equilibrium τ | 3.31° | 3.3177° | 0.02° |
+| λb | 15.378 m | 15.322 m | 0.5 % |
+| $C_F$ | 1.7884e-3 | 1.7893e-3 | 0.5 % |
+| $D_F$ | 52.24 kN | 52.08 kN | 0.5 % |
+| $R_T$ | 91.74 kN | 91.89 kN | 0.5 % |
+
+Bite check (2026-11-19): with the Reynolds number on λb/cos β, as before the change, the test fails on $C_F$
+(1.774e-3 against 1.7884e-3).
+
+### Provenance
+Molland read 2026-11-19; Python recomputation the same day reproduced the λ rows to 0.11 %; the SeaCraft column is
+the test's output on 2026-11-19.
+
+What this covers: the transcription of the Savitsky equations as Molland states them, for one craft at one speed.
+It does not show that the method predicts any real craft's resistance, and it does not cover spray or whisker
+drag, appendages, or Savitsky's mean bottom velocity (Molland uses V in the Reynolds number, and so does SeaCraft).
