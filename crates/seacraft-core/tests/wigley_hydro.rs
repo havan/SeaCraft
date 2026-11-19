@@ -14,6 +14,7 @@
 use seacraft_core::fef;
 use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
 use seacraft_core::math::Vec3;
+use seacraft_core::stability::{self, CrossCurvePoint, StabilityCondition};
 use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 
 const L: f64 = 10.0;
@@ -292,4 +293,144 @@ fn example_wetted_surface_matches_kajitani() {
         100.0 * (s / want - 1.0)
     );
     assert!(rel(s, want) < 2e-3, "{s} vs {want}");
+}
+
+/// KN (m) of the Wigley hull at ∇ = 4/9·LBT against heel (°), from
+/// `docs/oracles/wigley_gz.py` (run 2026-11-20): an independent integration
+/// of the published equation, not a published table. Its own resolution moves
+/// no entry by more than 1e-7 m. The midship deck edge goes under at 37.7°
+/// (the script's bisection), so the rows from 40° on cross deck immersion.
+const GZ_TABLE: [(f64, f64); 10] = [
+    (0.0, 0.0),
+    (5.0, 0.04602),
+    (10.0, 0.09182),
+    (20.0, 0.18201),
+    (30.0, 0.26937),
+    (40.0, 0.35368),
+    (50.0, 0.42846),
+    (60.0, 0.48813),
+    (70.0, 0.53297),
+    (80.0, 0.56450),
+];
+
+const KG: f64 = 0.35;
+
+/// The design displacement in tonnes, ∇(T)·ρ.
+fn design_displacement() -> f64 {
+    closed_form(T).volume * RHO / 1000.0
+}
+
+/// KN at each heel of [`GZ_TABLE`] (or `heels`), at the design displacement.
+fn kn_curve(hull: &Hull, heels: &[f64], cond: &StabilityCondition) -> Vec<CrossCurvePoint> {
+    stability::cross_curves(
+        hull,
+        heels,
+        &[design_displacement()],
+        cond,
+        &base_options(T),
+    )
+    .into_iter()
+    .map(|c| c.points[0].clone())
+    .collect()
+}
+
+fn table_heels() -> Vec<f64> {
+    GZ_TABLE.iter().map(|r| r.0).collect()
+}
+
+#[test]
+fn exact_mesh_gz_matches_the_independent_script() {
+    // Both sides are exact up to their facets: the script bounds its own at
+    // 1e-7 m, the exact mesh's hydrostatics are within 0.01 % (above), and
+    // the table is rounded to 5e-6 m. Measured on 2026-11-20: at most
+    // 4.7e-6 m, so 5e-5 m leaves ten times that.
+    let points = kn_curve(
+        &exact_hull(400, 120),
+        &table_heels(),
+        &StabilityCondition::fixed(KG, 0.0),
+    );
+    for (p, (heel, want)) in points.iter().zip(GZ_TABLE) {
+        let kn = p.kn.expect("a waterline at every heel");
+        println!(
+            "{heel:4} KN {kn:.5} script {want:.5} gap {:+.2e}",
+            kn - want
+        );
+        assert!((kn - want).abs() < 5e-5, "KN at {heel}: {kn} vs {want}");
+    }
+}
+
+#[test]
+fn example_gz_follows_the_independent_script() {
+    // The example's KN runs above the script's by a share of KN, as its BM_T
+    // runs +0.56 % at T (above). Measured on 2026-11-20, as % of KN:
+    // 5° +0.59, 10° +0.63, 20° +0.69, 30° +0.71, 40° +0.70, 50° +0.62,
+    // 60° +0.55, 70° +0.46, 80° +0.33 (2.7 mm at most, at 50-60°).
+    // The band is the largest rounded up to the next 0.1 % plus 0.1 %.
+    const BAND: f64 = 0.009;
+    let points = kn_curve(
+        &example_hull(),
+        &table_heels(),
+        &StabilityCondition::fixed(KG, 0.0),
+    );
+    for (p, (heel, want)) in points.iter().zip(GZ_TABLE) {
+        let kn = p.kn.expect("a waterline at every heel");
+        let gap = kn - want;
+        println!("{heel:4} KN {kn:.5} script {want:.5} gap {gap:+.5}");
+        assert!(
+            gap.abs() <= BAND * want.abs() + 1e-6,
+            "KN at {heel}: {kn} vs {want}"
+        );
+    }
+}
+
+#[test]
+fn example_free_trim_stays_level_and_gz_is_odd() {
+    let hull = example_hull();
+    let heels = table_heels();
+    let fixed = kn_curve(&hull, &heels, &StabilityCondition::fixed(KG, 0.0));
+    // Fore-aft symmetric, so free to trim about LCG at L/2 it stays level.
+    let free = kn_curve(
+        &hull,
+        &heels,
+        &StabilityCondition::free_to_trim(KG, L / 2.0),
+    );
+    for ((f, x), heel) in free.iter().zip(&fixed).zip(&heels) {
+        let trim = f.trim_m.expect("a floating condition");
+        assert!(trim.abs() < 1e-3, "trim at {heel}: {trim}");
+        let (kn_free, kn_fixed) = (f.kn.unwrap(), x.kn.unwrap());
+        assert!(
+            (kn_free - kn_fixed).abs() < 1e-4,
+            "KN at {heel}: free {kn_free} vs fixed {kn_fixed}"
+        );
+    }
+    // The mirrored half model heels the same to either side.
+    let port = kn_curve(
+        &hull,
+        &[-10.0, -30.0, -50.0],
+        &StabilityCondition::fixed(KG, 0.0),
+    );
+    let stbd = kn_curve(
+        &hull,
+        &[10.0, 30.0, 50.0],
+        &StabilityCondition::fixed(KG, 0.0),
+    );
+    for (p, s) in port.iter().zip(&stbd) {
+        let (gp, gs) = (p.gz.unwrap(), s.gz.unwrap());
+        assert!((gp + gs).abs() < 1e-6, "GZ to port {gp}, to starboard {gs}");
+    }
+}
+
+#[test]
+fn small_angle_gz_is_gm_sin_phi() {
+    // GM from the closed forms at T: KM = 5T/8 + 9B²/(105T).
+    let gm = closed_form(T).kb + closed_form(T).i_t / closed_form(T).volume - KG;
+    let p = &kn_curve(
+        &exact_hull(400, 120),
+        &[5.0],
+        &StabilityCondition::fixed(KG, 0.0),
+    )[0];
+    let gz = p.gz.unwrap();
+    let want = gm * 5f64.to_radians().sin();
+    println!("GZ(5) {gz:.5} vs GM sin 5 {want:.5}");
+    assert!(rel(gz, want) < 0.01, "{gz} vs {want}");
 }
