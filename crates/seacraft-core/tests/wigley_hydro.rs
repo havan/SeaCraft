@@ -7,7 +7,7 @@
 //!
 //! - an exact faceted mesh of the equation (no subdivision) checks the
 //!   measurement code against closed forms we integrated from the equation
-//!   ourselves (not published), with a tolerance set by the facet size;
+//!   ourselves (not published), within twice the facets' measured error;
 //! - the `examples/wigley.fef` control net, refined as the app measures it,
 //!   checks the example's fit away from the design draft it was tuned at.
 
@@ -169,6 +169,10 @@ fn the_closed_forms_reduce_to_the_design_draft_values() {
 
 #[test]
 fn exact_mesh_matches_the_closed_forms_over_drafts() {
+    // The facets' chord error is the only difference. Measured on 2026-11-20:
+    // at most 0.0051 % (Am at 0.25T, where the keel's facets are coarsest
+    // against the section), volume 0.0017 %, KB 0.0012 %. 0.01 % is twice
+    // the worst, so a 0.02 % slip in any quantity fails.
     let hull = exact_hull(400, 120);
     let mut worst = 0.0f64;
     println!("draft  quantity      got          want         gap %");
@@ -179,7 +183,7 @@ fn exact_mesh_matches_the_closed_forms_over_drafts() {
             let gap = rel(got, want);
             worst = worst.max(gap);
             println!("{t:.4} {name:8} {got:12.6} {want:12.6} {:8.4}", 100.0 * gap);
-            assert!(gap < 1e-3, "{name} at {t}: {got} vs {want}");
+            assert!(gap < 1e-4, "{name} at {t}: {got} vs {want}");
         }
         assert!(
             (h.lcb.x - c.lcb_x).abs() < 1e-6 * L,
@@ -197,8 +201,9 @@ fn exact_mesh_matches_the_closed_forms_over_drafts() {
 
 #[test]
 fn exact_mesh_wetted_surface_matches_kajitani() {
-    // Kajitani et al. (1983), p. 6: S = 0.661 L (2T + B), printed to three
-    // figures, so it carries about 0.05 % of its own rounding (§39).
+    // Kajitani et al. (1983), p. 6: S = 0.661 L (2T + B). The coefficient is
+    // printed to three figures, so half a unit in its last place is ±0.076 %;
+    // 0.1 % covers that and the facets (measured +0.044 % on 2026-11-20).
     let hull = exact_hull(400, 120);
     let s = hull.hydrostatics(&base_options(T)).wetted_surface_m2;
     let want = 0.661 * L * (2.0 * T + B);
@@ -282,8 +287,8 @@ fn example_hull_follows_the_closed_forms_off_design() {
 
 #[test]
 fn example_wetted_surface_matches_kajitani() {
-    // Kajitani et al. (1983), p. 6; measured +0.04 % on 2026-11-20, so 0.2 %
-    // leaves the formula's own rounding (about 0.05 %) and the fit's room.
+    // Kajitani et al. (1983), p. 6; measured +0.041 % on 2026-11-20. 0.2 %
+    // covers the coefficient's printed rounding (±0.076 %) and the fit's room.
     let s = example_hull()
         .hydrostatics(&base_options(T))
         .wetted_surface_m2;
@@ -388,18 +393,32 @@ fn example_free_trim_stays_level_and_gz_is_odd() {
     let hull = example_hull();
     let heels = table_heels();
     let fixed = kn_curve(&hull, &heels, &StabilityCondition::fixed(KG, 0.0));
-    // Fore-aft symmetric, so free to trim about LCG at L/2 it stays level.
+    // Fore-aft symmetric, so free to trim about LCG at L/2 it settles level.
+    // The solve starts 0.05 m out of trim: started level it would stop at its
+    // first sample (LCB already on LCG) and never iterate.
     let free = kn_curve(
         &hull,
         &heels,
-        &StabilityCondition::free_to_trim(KG, L / 2.0),
+        &StabilityCondition {
+            kg: KG,
+            trim: 0.05,
+            lcg_x: Some(L / 2.0),
+        },
     );
     for ((f, x), heel) in free.iter().zip(&fixed).zip(&heels) {
         let trim = f.trim_m.expect("a floating condition");
-        assert!(trim.abs() < 1e-3, "trim at {heel}: {trim}");
         let (kn_free, kn_fixed) = (f.kn.unwrap(), x.kn.unwrap());
+        println!(
+            "{heel:4} trim {trim:+.2e} KN free - fixed {:+.2e}",
+            kn_free - kn_fixed
+        );
+        // The trim solve stops at |LCB − LCG| < 1e-6 m, about 1e-6 m of trim
+        // (a metre of trim moves LCB by about BM_L/L = 1.2 m on this hull);
+        // 1e-5 m is ten times that. Measured on 2026-11-20: trim at most
+        // 6e-12 m, KN within 1e-11 m of the fixed-trim KN.
+        assert!(trim.abs() < 1e-5, "trim at {heel}: {trim}");
         assert!(
-            (kn_free - kn_fixed).abs() < 1e-4,
+            (kn_free - kn_fixed).abs() < 1e-6,
             "KN at {heel}: free {kn_free} vs fixed {kn_fixed}"
         );
     }
@@ -416,13 +435,18 @@ fn example_free_trim_stays_level_and_gz_is_odd() {
     );
     for (p, s) in port.iter().zip(&stbd) {
         let (gp, gs) = (p.gz.unwrap(), s.gz.unwrap());
+        // The mirror is exact, so only round-off separates the two (measured
+        // about 1e-15 m on 2026-11-20); 1e-6 m is the waterline solve's scale.
         assert!((gp + gs).abs() < 1e-6, "GZ to port {gp}, to starboard {gs}");
     }
 }
 
 #[test]
 fn small_angle_gz_is_gm_sin_phi() {
-    // GM from the closed forms at T: KM = 5T/8 + 9B²/(105T).
+    // GM from the closed forms at T: KM = 5T/8 + 9B²/(105T). GM sin φ drops
+    // the next term, which for a wall-sided hull is BM/(2 GM)·tan²φ = 0.29 %
+    // of GZ at 5°; the Wigley sides flare at the waterline, and the measured
+    // gap on 2026-11-20 is +0.19 %. 0.5 % covers the term.
     let gm = closed_form(T).kb + closed_form(T).i_t / closed_form(T).volume - KG;
     let p = &kn_curve(
         &exact_hull(400, 120),
@@ -432,5 +456,5 @@ fn small_angle_gz_is_gm_sin_phi() {
     let gz = p.gz.unwrap();
     let want = gm * 5f64.to_radians().sin();
     println!("GZ(5) {gz:.5} vs GM sin 5 {want:.5}");
-    assert!(rel(gz, want) < 0.01, "{gz} vs {want}");
+    assert!(rel(gz, want) < 0.005, "{gz} vs {want}");
 }
