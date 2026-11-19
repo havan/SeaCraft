@@ -31,16 +31,19 @@ pub enum AnalysisView {
     Bonjean,
     Offsets,
     TrimScan,
+    /// The far-field wave pattern: drawn by `wave_view`, computed live on the app's wave job.
+    Waves,
     Plates,
 }
 
 impl AnalysisView {
     /// Every view, in menu order.
-    pub const ALL: [AnalysisView; 5] = [
+    pub const ALL: [AnalysisView; 6] = [
         AnalysisView::HydroTable,
         AnalysisView::Bonjean,
         AnalysisView::Offsets,
         AnalysisView::TrimScan,
+        AnalysisView::Waves,
         AnalysisView::Plates,
     ];
 
@@ -51,6 +54,7 @@ impl AnalysisView {
             AnalysisView::Bonjean => "Bonjean curves",
             AnalysisView::Offsets => "Offsets",
             AnalysisView::TrimScan => "Trim scan",
+            AnalysisView::Waves => "Wave pattern",
             AnalysisView::Plates => "Plate development",
         }
     }
@@ -62,6 +66,7 @@ impl AnalysisView {
             AnalysisView::Bonjean => "bonjean",
             AnalysisView::Offsets => "offsets",
             AnalysisView::TrimScan => "trim_scan",
+            AnalysisView::Waves => "waves",
             AnalysisView::Plates => "plates",
         }
     }
@@ -79,6 +84,12 @@ impl AnalysisView {
     /// water density) as well as on the geometry and the view's inputs.
     pub fn uses_floating_condition(self) -> bool {
         matches!(self, AnalysisView::HydroTable | AnalysisView::TrimScan)
+    }
+
+    /// The view is computed on its slot's job by [`compute`], on *Compute* or F5. The wave pattern
+    /// is not: it recomputes live on the app's own wave jobs.
+    pub fn uses_slot(self) -> bool {
+        !matches!(self, AnalysisView::Waves)
     }
 }
 
@@ -169,7 +180,7 @@ pub struct AnalysisViews {
     /// The view shown in the dock instead of the tab body.
     pub open: Option<AnalysisView>,
     pub inputs: ViewInputs,
-    slots: [Slot; 5],
+    slots: [Slot; AnalysisView::ALL.len()],
     /// The plate row whose flat pattern is drawn.
     pub outline: usize,
 }
@@ -214,6 +225,9 @@ pub fn compute(
         AnalysisView::Offsets => ViewResult::Offsets(commands::offsets_in(m, &inputs.offsets)?),
         AnalysisView::TrimScan => ViewResult::TrimScan(commands::trim_scan_in(m, &inputs.trim)?),
         AnalysisView::Plates => ViewResult::Plates(plates(model, &inputs.plates)?),
+        AnalysisView::Waves => {
+            return Err("the wave pattern is computed by the window's wave job".into())
+        }
     })
 }
 
@@ -806,6 +820,8 @@ fn inputs(
                 .checkbox(&mut p.hold_volume, "hold displacement")
                 .changed();
         }
+        // The wave view draws its own inputs (`wave_view`).
+        AnalysisView::Waves => {}
         AnalysisView::Plates => {
             let p = &mut inputs.plates;
             let name = |l: PlateLayers| match l {

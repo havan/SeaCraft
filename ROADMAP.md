@@ -12,7 +12,9 @@ see [`DISCLAIMER.md`](DISCLAIMER.md).
 - Hydrostatics, cross curves, GZ with free trim, IMO A.749 and IS Code weather criteria.
 - Loading conditions with tanks and free-surface correction; deterministic lost-buoyancy damage stability.
 - Resistance by Holtrop-Mennen, Michell thin-ship theory and Savitsky; a hull optimiser.
-- The far-field thin-ship wave pattern behind a hull or catamaran (PNG, SVG contours, VTK), command line and MCP.
+- The far-field thin-ship wave pattern behind a hull or catamaran (PNG, SVG contours, VTK), with the speed
+  regime, wash height and catamaran interference: command line, MCP, the window's Wave pattern view, and the
+  design report.
 - Strip-theory heave and pitch motions, irregular head seas, MSI.
 - Lines plans (SVG, DXF, IGES), mesh exports (OBJ, STL, 3MF, PLY, HTML), an HTML design report.
 - Full-size building patterns: station moulds with the skin deducted, profile and raked transom, as a PDF
@@ -83,6 +85,12 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 
 - [ ] Floodable length curves.
 - [ ] VRML import, and edge extrusion in the GUI.
+- [ ] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
+- [ ] Grey out or cut the Holtrop curve where the method does not apply (on the demo hull R_T falls past
+  7.25 kn).
+- [ ] A 3D wave surface in Perspective view.
+- [ ] A wave pattern method for planing hulls; the Wave pattern view's title, "Thin-ship theory (Michell)",
+  then becomes a drop-down that picks the method.
 
 ### M5: Binaries
 
@@ -124,7 +132,7 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 | Intact stability | Free-trim GZ, IMO A.749, IS Code weather criterion | Other criteria sets, stability booklet output |
 | Damage | Deterministic lost buoyancy | Probabilistic SOLAS, floodable length |
 | Resistance | Holtrop-Mennen, Michell, Savitsky, within each method's range | Appendage detail, sailing yacht performance |
-| Wave pattern | Far-field thin-ship (Michell) waves, checked against Kelvin's asymptotics | A measured wave cut to compare with, the wave profile on the hull, the pattern in the window |
+| Wave pattern | Far-field thin-ship (Michell) waves, checked against Kelvin's asymptotics | A measured wave cut to compare with, the wave profile on the hull, heel and trim |
 | Small craft | None | ISO 12217-2 STIX (the formula is in a paid standard) |
 | Seakeeping | Strip theory, heave and pitch in head seas | 3D panel method, oblique seas, roll |
 | Modelling | Point edits alone, in groups or with followers; split face, insert edge, crease, layers | Edge picking, edge extrusion |

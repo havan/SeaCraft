@@ -1317,3 +1317,54 @@ What this covers: that the evaluation of the far-field integral agrees with its 
 asymptotics and with Kelvin's geometry (wedge angle, transverse wavelength) for the Wigley hull at Fn 0.30. It is a
 check of the method, not a comparison with measurement, and says nothing about the elevation near the hull (free
 waves only, no local disturbance), about transom sterns (computed and flagged, §38) or about real catamarans.
+
+## 41. Wave Pattern Readouts: Wash Height, Regime Bands, Kelvin Half-angle
+
+### Sources
+- Calculus, no published source: the wash height of a sine, and the Kelvin half-angle from the deep-water
+  dispersion relation.
+- SeaCraft's own wording bands for the speed regime: a project choice, not published thresholds.
+
+### Formula
+- **Wash height** on a longitudinal cut $y = y_c$: the extrema are where the sign of the first difference of the
+  samples changes (flat runs skipped); the wash height is the largest $|\zeta_a - \zeta_b|$ over neighbouring
+  extrema, at $x = (x_a + x_b)/2$ and distance $|y_c|$. For $\zeta = a\sin(2\pi x/\lambda)$ it is $2a$.
+- **Regime** from the Froude number on the waterline length: below 0.30 "low", below 0.40 "rising", up to 0.50
+  "around hull speed", above that "past hull speed". Hull speed is shown as Fn 0.40 and labelled a rule of thumb.
+  The bands only choose a sentence; no number is computed from them.
+- **Kelvin half-angle** in deep water at any speed: $\arcsin(1/3) = 19.4712°$. It is the same ray as §40's cusp,
+  $\tan\psi_K = 1/\sqrt 8$.
+- **Default grid spacing** of the field: $\min(\lambda_T/20,\ L_{WL}/60)$, coarsened to stay within 250 000 points
+  (an explicit spacing keeps the 1 000 000 cap). A resolution choice, not a reference number.
+
+### Test Location
+- `crates/seacraft-core/src/wave_pattern.rs::wash_height_of_a_sine_is_twice_its_amplitude`
+- `crates/seacraft-core/src/wave_pattern.rs::wash_height_picks_the_largest_neighbouring_pair` (hand-worked)
+- `crates/seacraft-core/src/wave_pattern.rs::wash_height_is_none_for_calm_or_transverse`
+- `crates/seacraft-core/src/wave_pattern.rs::regime_bands_are_the_projects`
+- `crates/seacraft-core/src/wave_pattern.rs::kelvin_half_angle_is_asin_one_third`
+- `crates/seacraft-core/src/wave_pattern.rs::default_grid_is_finer_than_a_twentieth_wavelength_at_speed`,
+  `default_grid_stays_under_its_cap_at_low_speed`
+
+### Numbers Used
+- Sine: $a = 0.2$ m, $\lambda = 5$ m, 2001 samples over 50 m; wash height 0.4 m within $10^{-4}$ m (the sampling
+  misses the exact peak by at most $a(1 - \cos(\pi \cdot 0.025/5 \cdot 2))$).
+- Hand-worked cut: $\zeta$ = 0, 0.1, −0.05, 0.3, −0.25, 0.02, 0 at $x$ = 0…6 m; 0.55 m at $x$ = 3.5 m.
+
+- **Catamaran interference** $r = R_w(\text{two demihulls at } s) / (2\,R_w(\text{one}))$ from Michell's integral
+  (§7). Analytic limit: Michell's factor $2(1 + \cos(k_0 s \sec^2\theta \sin\theta))$ averages to 2 as $s$ grows,
+  so $r \to 1$; at Fn 0.40 and $s = 500$ m on the Wigley hull $|r - 1| < 0.05$. At $s$ = 2–5 m some $|r - 1| > 0.05$
+  (a property, not a reference). No published catamaran Michell result was read, so the sign of $r$ at a given
+  spacing is not checked against one.
+- **Wigley $C_w$ curve** over 60 Froude numbers from 0.10 to 1.00 (65 × 25 grid, 128 angles): maxima at Fn 0.176,
+  0.207, 0.237, 0.298 and 0.497. The one at 0.298 is §39's hump (0.299 on the finer grid); the one at 0.497 is a
+  frozen output of SeaCraft (2026-11-19), pinned to 0.45–0.55, since §39's references stop at Fn 0.45.
+  `local_extrema` reports a flat top once and ignores a shelf on a slope.
+
+Tests: `crates/seacraft-core/src/michell.rs::cw_curve_matches_single_calls`, `interference_tends_to_one_far_apart`,
+`interference_moves_with_spacing`, `local_extrema_find_humps_and_hollows`,
+`wigley_cw_curve_has_a_hump_near_fn_0_5`.
+
+### Provenance
+Calculus and project choices, written 2026-11-19. The wash height is a thin-ship estimate of the free waves in deep
+water: not a wash assessment against any rule, and not checked against measurement.

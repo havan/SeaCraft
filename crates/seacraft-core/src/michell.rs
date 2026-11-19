@@ -450,6 +450,69 @@ fn hull_count(opts: &MichellOptions) -> f64 {
     }
 }
 
+/// Michell's wave resistance at each Froude number on the waterline length, in order: the wave
+/// drag coefficient curve `C_w(Fn)`.
+pub fn michell_cw_curve(
+    grid: &MichellGrid,
+    froudes: &[f64],
+    rho: f64,
+    g: f64,
+    opts: &MichellOptions,
+) -> Vec<MichellResult> {
+    let root = (g * grid.length_wl).sqrt();
+    crate::par::par_map(froudes, |&f| {
+        michell_wave_resistance_from_grid(grid, f * root, rho, g, opts)
+    })
+}
+
+/// Catamaran interference at a speed: Michell's R_w of two demihulls at centreline spacing
+/// `spacing_m`, over twice that of one demihull alone. Below 1 the wave systems partly cancel
+/// (favourable). `None` when one demihull makes no wave drag (R_w at most 1e-9 N).
+pub fn interference(
+    grid: &MichellGrid,
+    speed_m_s: f64,
+    rho: f64,
+    g: f64,
+    spacing_m: f64,
+) -> Option<f64> {
+    let mono =
+        michell_wave_resistance_from_grid(grid, speed_m_s, rho, g, &MichellOptions::default());
+    if mono.rw_n <= 1e-9 {
+        return None;
+    }
+    let cat_opts = MichellOptions {
+        catamaran_spacing: Some(spacing_m),
+        ..MichellOptions::default()
+    };
+    let cat = michell_wave_resistance_from_grid(grid, speed_m_s, rho, g, &cat_opts);
+    Some(cat.rw_n / (2.0 * mono.rw_n))
+}
+
+/// The interior local maxima and minima of a curve, as indices `(maxima, minima)`. A flat top or
+/// bottom is reported once, at its first point, and a flat shelf on a slope is not an extremum.
+pub fn local_extrema(ys: &[f64]) -> (Vec<usize>, Vec<usize>) {
+    let (mut max, mut min) = (Vec::new(), Vec::new());
+    let mut i = 1;
+    while i + 1 < ys.len() {
+        // The plateau ys[i..=j] of equal values.
+        let mut j = i;
+        while j + 1 < ys.len() && ys[j + 1] == ys[i] {
+            j += 1;
+        }
+        if j + 1 >= ys.len() {
+            break;
+        }
+        let (before, after) = (ys[i - 1], ys[j + 1]);
+        if ys[i] > before && ys[i] > after {
+            max.push(i);
+        } else if ys[i] < before && ys[i] < after {
+            min.push(i);
+        }
+        i = j + 1;
+    }
+    (max, min)
+}
+
 /// Compute a full still-water resistance curve across speeds (knots) combining
 /// Michell wave resistance with ITTC-57 frictional resistance.
 pub fn michell_resistance_curve(
@@ -1189,5 +1252,69 @@ mod tests {
                 ratio
             );
         }
+    }
+
+    /// The curve is the single-speed result at each Froude number, in order.
+    #[test]
+    fn cw_curve_matches_single_calls() {
+        let grid = wigley_grid(10.0, 1.0, 0.625, 65, 25);
+        let fr = [0.2, 0.35, 0.5];
+        let curve = michell_cw_curve(&grid, &fr, 1000.0, 9.81, &MichellOptions::default());
+        assert_eq!(curve.len(), fr.len());
+        for (r, f) in curve.iter().zip(fr) {
+            let v = f * (9.81 * grid.length_wl).sqrt();
+            let one = michell_wave_resistance_from_grid(
+                &grid,
+                v,
+                1000.0,
+                9.81,
+                &MichellOptions::default(),
+            );
+            assert_eq!(r.rw_n, one.rw_n);
+        }
+    }
+
+    /// Analytic limit: Michell's factor 2(1 + cos(k0 s sec²θ sinθ)) averages to 2 as s grows (module
+    /// docs of wave_pattern.rs), so the catamaran tends to twice one demihull.
+    #[test]
+    fn interference_tends_to_one_far_apart() {
+        let grid = wigley_grid(10.0, 1.0, 0.625, 65, 25);
+        let v = 0.4 * (9.81 * 10.0f64).sqrt();
+        let r = interference(&grid, v, 1000.0, 9.81, 500.0).unwrap();
+        assert!((r - 1.0).abs() < 0.05, "{r}");
+    }
+
+    /// Property: at close spacings the interference is not neutral.
+    #[test]
+    fn interference_moves_with_spacing() {
+        let grid = wigley_grid(10.0, 1.0, 0.625, 65, 25);
+        let v = 0.4 * (9.81 * 10.0f64).sqrt();
+        let rs: Vec<f64> = [2.0, 3.0, 4.0, 5.0]
+            .iter()
+            .map(|&s| interference(&grid, v, 1000.0, 9.81, s).unwrap())
+            .collect();
+        assert!(rs.iter().any(|r| (r - 1.0).abs() > 0.05), "{rs:?}");
+    }
+
+    #[test]
+    fn local_extrema_find_humps_and_hollows() {
+        let (max, min) = local_extrema(&[0.0, 1.0, 0.5, 0.7, 0.7, 0.2, 0.9]);
+        assert_eq!(max, vec![1, 3]);
+        assert_eq!(min, vec![2, 5]);
+    }
+
+    /// Property of this implementation, frozen 2026-11-19 (oracles §41): over 60 Froude numbers from
+    /// 0.10 to 1.00, the Wigley C_w curve has a maximum ("hump") in 0.45..=0.55. §39's references
+    /// stop at Fn 0.45, so this is not a published value.
+    #[test]
+    fn wigley_cw_curve_has_a_hump_near_fn_0_5() {
+        let grid = wigley_grid(10.0, 1.0, 0.625, 65, 25);
+        let fr: Vec<f64> = (0..60).map(|i| 0.10 + 0.90 * i as f64 / 59.0).collect();
+        let curve = michell_cw_curve(&grid, &fr, 1000.0, 9.81, &MichellOptions::default());
+        let cw: Vec<f64> = curve.iter().map(|r| r.cw).collect();
+        let (max, _) = local_extrema(&cw);
+        let humps: Vec<f64> = max.iter().map(|&i| fr[i]).collect();
+        eprintln!("humps at Fn {humps:?}");
+        assert!(humps.iter().any(|f| (0.45..=0.55).contains(f)), "{humps:?}");
     }
 }

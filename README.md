@@ -238,6 +238,21 @@ for the grid are left out rather than drawn aliased, and the cut-off is printed.
 wetted transom) apply. The evaluation is checked against Kelvin's far-field asymptotics and the wedge geometry
 (`docs/oracles.md` §40), not against a measured wave pattern.
 
+`--wash-distance` gives the wash height on a line that far to the side (the largest crest-to-trough height between
+neighbouring extrema), and the summary names the speed regime in a sentence. The regime bands (Fn 0.30, 0.40,
+0.50) are SeaCraft's own wording, not published thresholds. With `--cat-spacing`, `seacraft resistance --method
+michell` adds the interference: the pair's wave resistance over twice one demihull's.
+
+In the window, Analysis → *Wave pattern* opens the pattern in the drawer under the viewports. One speed, typed or
+scrubbed, drives the regime sentence, the wavelength against the waterline, hull speed, the highest crest, the wave
+drag here, the wash height and, for a catamaran, the interference, each in plain words with units. A banner says
+first when thin-ship theory does not fit the hull. The map shows dark calm water, the hull footprint, the Kelvin
+wedge and the wash lines (drag one to move them); the plots give C_w against Fn with hull speed, humps and hollows
+marked, interference against spacing for a catamaran, and the waves along the wash line. "Save image…" writes PNG,
+SVG or VTI, in the command line's light colours. Plan view can show faint contours only ("Contours on Plan view",
+off by default). While the view is open, the design report gains a wave-pattern section. The pattern is upright at
+the draft: heel and trim are ignored, and the view says so.
+
 `dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
 bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending
 Keuning & Sonnenberg, 1998) for sailing yacht hulls (`Fn` 0.15–0.75). The

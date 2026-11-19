@@ -82,7 +82,10 @@ crates/seacraft-gui/
                             topology-tool targets (Shift+click pair, picked face), axis lock
   src/control.rs            loopback TCP JSON-lines control channel
   src/camera.rs             ViewKind, Camera, ViewTransform, Ray
-  src/render.rs             viewport painter: grid, shading, control net
+  src/render.rs             viewport painter: grid, shading, control net, optional wave contours in Plan view
+  src/waves.rs              wave-pattern settings, the off-thread computations (field and readouts at one
+                            speed; the C_w curve over speed), the window's dark colour map
+  src/wave_view.rs          the Wave pattern Analysis view: speed, fit banner, readouts, map, plots
   src/gpu_hull/             the viewport hull on the GPU: vertex data, view uniforms, offscreen pipelines
   src/theme.rs              colour tokens (the only colour literals), type scale, spacing
   src/picking.rs            screen-space picking (visible points first), marquee, drag plane

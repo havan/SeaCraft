@@ -2037,6 +2037,8 @@ pub enum PerformanceAction {
     None,
     Changed,
     Compute,
+    /// "Open wave pattern": show the Wave pattern view in the Analysis drawer.
+    OpenWaveView,
 }
 
 pub struct PerformancePanel<'a> {
@@ -2051,6 +2053,8 @@ pub struct PerformancePanel<'a> {
     pub stale_resistance: bool,
     /// The RAOs and sea-state responses predate the last change (F5).
     pub stale_raos: bool,
+    /// The current wave pattern's speed regime, one sentence (`None` when there is none).
+    pub wave_regime: Option<&'static str>,
 }
 
 pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
@@ -2130,6 +2134,24 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     if let Some(res) = &panel.state.resistance {
         stale_section(ui, panel.stale_resistance, |ui| resistance_results(ui, res));
+    }
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.strong("Wave pattern");
+    ui.add_space(2.0);
+    if ui
+        .button("Open wave pattern")
+        .on_hover_text(
+            "The far-field (thin-ship) wave pattern, wave drag over speed and wash, in the \
+             Analysis drawer",
+        )
+        .clicked()
+    {
+        action = PerformanceAction::OpenWaveView;
+    }
+    if let Some(sentence) = panel.wave_regime {
+        ui.label(egui::RichText::new(sentence).color(theme::TEXT_SECONDARY));
     }
 
     ui.add_space(4.0);
@@ -3798,6 +3820,35 @@ fn draw_plot(
     gz: bool,
     height: f32,
 ) -> egui::Rect {
+    let style = PlotStyle {
+        dashed: &[],
+        x_range: None,
+        sense: egui::Sense::hover(),
+    };
+    plot_core(ui, caption, legend_title, series, gz, height, style)
+        .0
+        .rect
+}
+
+/// How [`plot_core`] draws beyond [`draw_plot`]'s defaults.
+struct PlotStyle<'a> {
+    /// Series `i` is dashed when `dashed[i]` (missing: solid).
+    dashed: &'a [bool],
+    /// Fix the x axis to this range instead of fitting it (with zero) to the data.
+    x_range: Option<(f64, f64)>,
+    sense: egui::Sense,
+}
+
+/// The plot [`draw_plot`] draws, returning its response (legend included) and its axes.
+fn plot_core(
+    ui: &mut egui::Ui,
+    caption: &str,
+    legend_title: &str,
+    series: &[(String, Vec<(f64, f64)>)],
+    gz: bool,
+    height: f32,
+    style: PlotStyle<'_>,
+) -> (egui::Response, PlotAxes) {
     let width = ui.available_width();
     let font = theme::caption_font();
     // The legend's entries, laid out before the space is allocated so the
@@ -3835,20 +3886,26 @@ fn draw_plot(
         legend_height + 4.0
     };
 
-    let (response, painter) = ui.allocate_painter(
-        egui::vec2(width, height + legend_height),
-        egui::Sense::hover(),
-    );
+    let (response, painter) =
+        ui.allocate_painter(egui::vec2(width, height + legend_height), style.sense);
     let plot = egui::Rect::from_min_size(response.rect.min, egui::vec2(width, height));
-    let axes = PlotAxes::fit(plot, series, gz);
+    let mut axes = PlotAxes::fit(plot, series, gz);
+    if let Some((lo, hi)) = style.x_range.filter(|(lo, hi)| hi > lo) {
+        axes.x_bounds = (lo, hi);
+        axes.x_ticks = nice_ticks_inside(lo, hi);
+    }
     axes.paint_frame(&painter);
     for (i, (_, pts)) in series.iter().enumerate() {
         let colour = theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()];
+        let stroke = egui::Stroke::new(1.4, colour);
+        let dashed = style.dashed.get(i).copied().unwrap_or(false);
         for run in axes.polylines(pts) {
             if run.len() == 1 {
                 painter.circle_filled(run[0], 1.8, colour);
+            } else if dashed {
+                painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
             } else {
-                painter.add(egui::Shape::line(run, egui::Stroke::new(1.4, colour)));
+                painter.add(egui::Shape::line(run, stroke));
             }
         }
     }
@@ -3857,7 +3914,101 @@ fn draw_plot(
     for ((galley, colour), r) in galleys.into_iter().zip(&legend) {
         painter.galley(origin + r.min.to_vec2(), galley, colour);
     }
-    response.rect
+    (response, axes)
+}
+
+/// A labelled vertical mark on an interactive plot ("hull speed", "hump").
+#[derive(Debug, Clone, Copy)]
+pub struct PlotMark<'a> {
+    pub x: f64,
+    pub label: &'a str,
+}
+
+/// One curve of an interactive plot.
+#[derive(Debug, Clone)]
+pub struct PlotSeries {
+    pub label: String,
+    pub points: Vec<(f64, f64)>,
+    pub dashed: bool,
+}
+
+/// The plot as [`plot_xy`] draws it (same theme, axes and legend), plus dashed vertical `marks`,
+/// a marker line at `marker_x`, and the x the user clicked or dragged to, clamped to the x range.
+/// `x_range` fixes the x axis.
+pub fn plot_interactive(
+    ui: &mut egui::Ui,
+    caption: &str,
+    series: &[PlotSeries],
+    marker_x: Option<f64>,
+    marks: &[PlotMark],
+    x_range: Option<(f64, f64)>,
+) -> Option<f64> {
+    plot_interactive_with_rect(ui, caption, series, marker_x, marks, x_range).1
+}
+
+/// [`plot_interactive`], also returning the rectangle drawn (tests).
+pub fn plot_interactive_with_rect(
+    ui: &mut egui::Ui,
+    caption: &str,
+    series: &[PlotSeries],
+    marker_x: Option<f64>,
+    marks: &[PlotMark],
+    x_range: Option<(f64, f64)>,
+) -> (egui::Rect, Option<f64>) {
+    let plain: Vec<(String, Vec<(f64, f64)>)> = series
+        .iter()
+        .map(|s| (s.label.clone(), s.points.clone()))
+        .collect();
+    let dashed: Vec<bool> = series.iter().map(|s| s.dashed).collect();
+    let style = PlotStyle {
+        dashed: &dashed,
+        x_range,
+        sense: egui::Sense::click_and_drag(),
+    };
+    let (response, axes) = plot_core(ui, caption, "", &plain, false, PLOT_HEIGHT, style);
+    let painter = ui.painter_at(response.rect);
+    let area = axes.area;
+    let font = egui::FontId::proportional(theme::SMALL_SIZE);
+    let (x0, x1) = axes.x_bounds;
+    let inside = |x: f64| x >= x0.min(x1) && x <= x0.max(x1);
+    // Labels in x order on three staggered rows, so marks close together stay readable.
+    let mut shown: Vec<&PlotMark> = marks.iter().filter(|m| inside(m.x)).collect();
+    shown.sort_by(|a, b| a.x.total_cmp(&b.x));
+    for (k, mark) in shown.into_iter().enumerate() {
+        let px = axes.to_screen(mark.x, axes.y_bounds.0).x;
+        painter.extend(egui::Shape::dashed_line(
+            &[egui::pos2(px, area.top()), egui::pos2(px, area.bottom())],
+            egui::Stroke::new(1.0, theme::PLOT_THRESHOLD),
+            4.0,
+            3.0,
+        ));
+        painter.text(
+            egui::pos2(px + 3.0, area.top() + 2.0 + 12.0 * (k % 3) as f32),
+            egui::Align2::LEFT_TOP,
+            mark.label,
+            font.clone(),
+            theme::PLOT_THRESHOLD,
+        );
+    }
+    if let Some(x) = marker_x.filter(|x| inside(*x)) {
+        let px = axes.to_screen(x, axes.y_bounds.0).x;
+        painter.line_segment(
+            [egui::pos2(px, area.top()), egui::pos2(px, area.bottom())],
+            egui::Stroke::new(2.0, theme::ACCENT),
+        );
+    }
+    let picked = (response.clicked() || response.dragged())
+        .then(|| response.interact_pointer_pos())
+        .flatten()
+        .map(|p| {
+            let t = ((p.x - area.left()) / area.width().max(1.0)) as f64;
+            let (lo, hi) = x_range.unwrap_or(axes.x_bounds);
+            (x0 + t * (x1 - x0)).clamp(lo.min(hi), lo.max(hi))
+        });
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    (response.rect, picked)
 }
 
 /// The cross curves as plot series: one per displacement, heel across and
@@ -6357,6 +6508,65 @@ mod tests {
                 t.0
             );
         }
+    }
+
+    /// A click on an interactive plot returns the x under it, within the x range.
+    #[test]
+    fn plot_interactive_returns_the_clicked_x() {
+        let series = [PlotSeries {
+            label: String::new(),
+            points: vec![(0.1, 1.0), (1.0, 3.0)],
+            dashed: false,
+        }];
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut rect = egui::Rect::NOTHING;
+        let mut got = None;
+        let run = |events: Vec<egui::Event>, rect: &mut egui::Rect, got: &mut Option<f64>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(400.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let (r, x) = plot_interactive_with_rect(
+                    ui,
+                    "C_w vs Fn",
+                    &series,
+                    Some(0.3),
+                    &[PlotMark {
+                        x: 0.4,
+                        label: "hull speed",
+                    }],
+                    Some((0.1, 1.0)),
+                );
+                *rect = r;
+                if x.is_some() {
+                    *got = x;
+                }
+            });
+            out.textures_delta.clear();
+        };
+        run(Vec::new(), &mut rect, &mut got);
+        run(Vec::new(), &mut rect, &mut got);
+        assert!(got.is_none(), "nothing returned without a click");
+        // Three quarters of the way across the plotting area, at mid height.
+        let area = PlotAxes::fit(rect, &[(String::new(), series[0].points.clone())], false).area;
+        let at = egui::pos2(area.left() + 0.75 * area.width(), area.center().y);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        run(vec![egui::Event::PointerMoved(at)], &mut rect, &mut got);
+        run(vec![press(true)], &mut rect, &mut got);
+        run(vec![press(false)], &mut rect, &mut got);
+        let x = got.expect("the clicked x");
+        assert!((x - (0.1 + 0.75 * 0.9)).abs() < 0.02, "{x}");
     }
 
     #[test]

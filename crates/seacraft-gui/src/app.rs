@@ -558,6 +558,8 @@ enum DialogKind {
     Report,
     /// The builder templates, in the format the path's extension names.
     Templates,
+    /// The current wave pattern, as PNG, SVG or VTI by the path's extension.
+    WaveImage,
 }
 
 /// An action that may need to discard unsaved work first.
@@ -872,6 +874,12 @@ pub struct PerformanceState {
     pub sea_input: SeaStateInput,
     /// Irregular-sea responses from the same run as `raos` (None unless a sea state was set).
     pub sea_result: Option<IrregularReport>,
+    /// The far-field wave pattern's settings, and its last result (drawn only while current:
+    /// [`App::wave_current`]).
+    pub waves: crate::waves::WaveSettings,
+    pub wave_result: Option<crate::waves::WaveResult>,
+    /// The wave-drag curve over speed (drawn only while current: [`App::wave_drag`]).
+    pub wave_drag: Option<crate::waves::WaveDrag>,
 }
 
 impl Default for PerformanceState {
@@ -887,6 +895,9 @@ impl Default for PerformanceState {
             raos: None,
             sea_input: SeaStateInput::default(),
             sea_result: None,
+            waves: crate::waves::WaveSettings::default(),
+            wave_result: None,
+            wave_drag: None,
         }
     }
 }
@@ -923,6 +934,62 @@ impl std::error::Error for OpenError {}
 impl From<OpenError> for String {
     fn from(err: OpenError) -> Self {
         err.to_string()
+    }
+}
+
+/// What the design report's wave section takes from the window: the view's settings, and the
+/// waterline length and beam at the report's draft when a current result knows them.
+struct ReportWaves {
+    settings: crate::waves::WaveSettings,
+    lengths: Option<(f64, f64)>,
+}
+
+impl ReportWaves {
+    /// The section's inputs. Lengths not known are measured on `surface` at the report's draft
+    /// (slow: call it off the window thread), else taken from the main particulars; with none,
+    /// the section goes in on the default domain in waterline lengths and without a wash line.
+    fn into_report(
+        self,
+        surface: &Surface,
+        opts: &seacraft_core::report::ReportOptions,
+    ) -> seacraft_core::report::WaveReport {
+        let w = &self.settings;
+        let subdivision = seacraft_core::SubdivisionOptions {
+            level: opts.level,
+            mode: opts.mode,
+        };
+        let lengths = self
+            .lengths
+            .or_else(|| {
+                crate::waves::michell_grid(surface, subdivision, opts.draft)
+                    .ok()
+                    .map(|g| (g.length_wl, g.beam_wl))
+            })
+            .or(Some((surface.settings.length, surface.settings.beam)))
+            .filter(|(l, b)| *l > 0.0 && *b >= 0.0);
+        let (speed_m_s, froude) = match w.speed {
+            crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
+            crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
+        };
+        let (wash, (ahead_l, behind_l, half_width_l)) = match lengths {
+            Some((l, b)) => {
+                let wash = crate::waves::wash_distance(w, l, b);
+                (Some(wash), crate::waves::domain_l(w, l, wash))
+            }
+            None => (None, (0.5, 3.0, 1.5)),
+        };
+        seacraft_core::report::WaveReport {
+            options: seacraft_core::wave_pattern::WavePatternOptions {
+                ahead_l,
+                behind_l,
+                half_width_l,
+                catamaran_spacing: w.cat_spacing_m,
+                ..seacraft_core::wave_pattern::WavePatternOptions::at_speed(speed_m_s)
+            },
+            froude,
+            clip_m: w.clip_m,
+            wash_distance_m: wash,
+        }
     }
 }
 
@@ -1031,6 +1098,8 @@ pub struct App {
     start_rects: Option<crate::new_design::StartRects>,
     /// A design report being written on a worker thread, and its path.
     report_job: Option<(PathBuf, Job<()>)>,
+    /// A wave-pattern image being encoded and written.
+    wave_image_job: Option<(PathBuf, Job<()>)>,
     /// The File > Builder templates window is open.
     show_templates: bool,
     templates_params: crate::commands::TemplatesParams,
@@ -1049,6 +1118,12 @@ pub struct App {
     damage_track: Track<DamageResult>,
     perf_state: PerformanceState,
     resistance_track: Track<ResistanceResult>,
+    waves_track: Track<crate::waves::WaveResult>,
+    wave_drag_track: Track<crate::waves::WaveDrag>,
+    /// The Wave pattern view's map pan and zoom.
+    wave_map: crate::wave_view::MapState,
+    /// Bumped each time a wave result is installed: the texture's key.
+    wave_result_rev: u64,
     raos_track: Track<RaoResult>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
@@ -1094,6 +1169,10 @@ pub struct App {
     /// Each viewport's waterline, tessellated once, and the [`render::waterline_key`] it was built
     /// for: orbiting one view rebuilds its own, and the other three draw theirs again.
     waterline_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
+    /// The current wave pattern's image, under its `waves_key`.
+    wave_texture: Option<(u64, egui::TextureHandle)>,
+    /// Each view's wave contours, waterlines and cut as one mesh, kept like the waterline.
+    wave_meshes: [Option<(u64, Arc<egui::Mesh>)>; 4],
     /// Each viewport's control-net visibility and the revision key it was computed for.
     net_visibilities: [Option<(u64, crate::visibility::NetVisibility)>; 4],
     /// The hull drawn on the GPU.
@@ -1285,6 +1364,7 @@ impl App {
             project_settings: None,
             start_rects: None,
             report_job: None,
+            wave_image_job: None,
             show_templates: false,
             templates_params: crate::commands::TemplatesParams::default(),
             templates_rev: 0,
@@ -1299,6 +1379,10 @@ impl App {
             damage_track: Track::default(),
             perf_state: PerformanceState::default(),
             resistance_track: Track::default(),
+            waves_track: Track::default(),
+            wave_drag_track: Track::default(),
+            wave_map: Default::default(),
+            wave_result_rev: 0,
             raos_track: Track::default(),
             analysis: Default::default(),
             hydro_rev: 0,
@@ -1319,6 +1403,8 @@ impl App {
             waterline_cuts: 0,
             shaded_hulls: Default::default(),
             waterline_meshes: Default::default(),
+            wave_texture: None,
+            wave_meshes: Default::default(),
             net_visibilities: Default::default(),
             gpu_hull: GpuHullState::default(),
             control: None,
@@ -1564,6 +1650,10 @@ impl App {
         self.perf_state.raos = None;
         self.perf_state.sea_result = None;
         self.raos_track.reset();
+        self.perf_state.wave_result = None;
+        self.waves_track.reset();
+        self.perf_state.wave_drag = None;
+        self.wave_drag_track.reset();
         self.analysis.clear_results();
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
@@ -1714,6 +1804,7 @@ impl App {
         let raos_stale = self.raos_stale();
         let busy_resistance = self.resistance_track.busy();
         let busy_raos = self.raos_track.busy();
+        let wave_regime = self.wave_current().map(|w| w.regime.sentence());
         let default_kg = self.effective_performance_kg_default();
         let kg_source = self.performance_kg_source();
         let kg_estimate = self.kg_is_estimate();
@@ -1837,6 +1928,7 @@ impl App {
                             busy_raos,
                             stale_resistance: resistance_stale,
                             stale_raos: raos_stale,
+                            wave_regime,
                         },
                     ));
                 }
@@ -1884,6 +1976,9 @@ impl App {
             }
             DockAction::Performance(panels::PerformanceAction::Compute) => {
                 self.start_performance_compute()
+            }
+            DockAction::Performance(panels::PerformanceAction::OpenWaveView) => {
+                self.set_wave_view_open(true);
             }
             DockAction::Performance(panels::PerformanceAction::None) => {}
         }
@@ -2070,6 +2165,7 @@ impl App {
         self.finish_project_edit_frame(ui.ctx());
         self.messages_window(ui);
         self.poll_report(ui.ctx());
+        self.poll_wave_image(ui.ctx());
         self.intercept_close(ui.ctx());
         self.pending_window(ui);
         self.recovery_window(ui.ctx());
@@ -3030,6 +3126,12 @@ impl App {
                 .join(format!("{clean}-moulds.pdf"))
                 .to_string_lossy()
                 .to_string(),
+            DialogKind::WaveImage => {
+                let froude = self.wave_current().map_or(0.0, |w| w.field.froude);
+                dir.join(format!("{clean}-waves-fn{froude:.2}.png"))
+                    .to_string_lossy()
+                    .to_string()
+            }
         }
     }
 
@@ -3117,6 +3219,87 @@ impl App {
     }
 
     /// Write one of the export formats; a failure is logged and returned.
+    /// Save the current wave pattern as PNG, SVG or VTI, by `path`'s extension (any case), through
+    /// `write_atomic`. Only a current pattern is saved: an out-of-date one writes nothing. The
+    /// checks answer at once; the encoding (a quarter of a second for SVG or VTI at a million
+    /// points) and the write run in a job, which logs "Saved wave pattern to …" when done.
+    pub fn write_wave_image(&mut self, path: &std::path::Path) -> Result<(), String> {
+        use seacraft_core::wave_pattern::{wave_png, wave_svg, wave_vti};
+        #[derive(Clone, Copy)]
+        enum Format {
+            Png,
+            Svg,
+            Vti,
+        }
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase());
+        let format = match extension.as_deref() {
+            Some("png") => Format::Png,
+            Some("svg") => Format::Svg,
+            Some("vti") => Format::Vti,
+            _ => return Err("save the wave pattern as .png, .svg or .vti".to_owned()),
+        };
+        let field = self
+            .wave_current()
+            .ok_or("the wave pattern is out of date or not computed; wait for it to finish")?
+            .field
+            .clone();
+        if self.wave_image_job.is_some() {
+            return Err("a wave pattern image is still being written".to_owned());
+        }
+        let clip = self.perf_state.waves.clip_m;
+        let target = path.to_path_buf();
+        let job = Job::spawn(self.revision, move || {
+            let bytes = match format {
+                Format::Png => wave_png(&field, clip).ok_or("the wave field is empty")?,
+                Format::Svg => wave_svg(&field, clip).into_bytes(),
+                Format::Vti => wave_vti(&field).into_bytes(),
+            };
+            seacraft_core::io::write_atomic(&target, bytes)
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))
+        });
+        self.set_status(format!("writing wave pattern {}…", path.display()));
+        self.wave_image_job = Some((path.to_path_buf(), job));
+        Ok(())
+    }
+
+    /// Collect a finished wave-image job, if any.
+    fn poll_wave_image(&mut self, ctx: &egui::Context) {
+        let Some((_, job)) = &self.wave_image_job else {
+            return;
+        };
+        let out = match job.poll() {
+            crate::jobs::Poll::Running => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                return;
+            }
+            crate::jobs::Poll::Done(()) => Ok(()),
+            crate::jobs::Poll::Failed(e) => Err(e),
+        };
+        if let Some((path, _)) = self.wave_image_job.take() {
+            self.finish_wave_image(&path, out);
+        }
+    }
+
+    /// Wait for the wave-image job and log its outcome; `None` when none runs (tests, scripts).
+    pub fn wait_wave_image(&mut self) -> Option<Result<(), String>> {
+        let (path, job) = self.wave_image_job.take()?;
+        let out = job.wait();
+        self.finish_wave_image(&path, out.clone());
+        Some(out)
+    }
+
+    fn finish_wave_image(&mut self, path: &std::path::Path, out: Result<(), String>) {
+        match out {
+            Ok(()) => self.log(
+                Level::Info,
+                format!("Saved wave pattern to {}", path.display()),
+            ),
+            Err(e) => self.log(Level::Error, format!("Wave pattern image failed: {e}")),
+        }
+    }
+
     pub fn write_export(&mut self, kind: ExportKind, path: &std::path::Path) -> Result<(), String> {
         self.write_export_with(kind, path, None)
     }
@@ -3250,6 +3433,7 @@ impl App {
             DialogKind::Export(k) => k.label(),
             DialogKind::Report => "Design report",
             DialogKind::Templates => "Builder templates",
+            DialogKind::WaveImage => "Wave pattern image",
         };
         let mut accept = false;
         let mut cancel = false;
@@ -3272,6 +3456,7 @@ impl App {
                     DialogKind::Export(k) => format!(".{}", k.extension()),
                     DialogKind::Report => ".html".to_owned(),
                     DialogKind::Templates => ".pdf".to_owned(),
+                    DialogKind::WaveImage => ".png".to_owned(),
                 };
                 egui::ScrollArea::vertical()
                     .max_height(220.0)
@@ -3309,6 +3494,7 @@ impl App {
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
             DialogKind::Templates => self.start_templates_export(&path),
+            DialogKind::WaveImage => self.write_wave_image(&path),
         };
         match result {
             Err(err) => {
@@ -3673,6 +3859,8 @@ impl App {
         let mut fresh: Vec<(usize, AnalysisFrame)> = Vec::new();
         let mut fresh_hulls: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
         let mut fresh_waterlines: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
+        let mut fresh_wave_meshes: Vec<(usize, u64, Arc<egui::Mesh>)> = Vec::new();
+        self.load_wave_texture(ui.ctx());
         let overlays = self.volume_overlays();
         let mut volume_overlays: Vec<render::VolumeOverlay> =
             overlays.iter().map(|(_, o)| o.clone()).collect();
@@ -3960,7 +4148,7 @@ impl App {
 
         for &(cell, index) in &cells {
             self.sync_net_visibility(index, cell);
-            if let Some(scene) = self.scene(&volume_overlays, &windage_overlays) {
+            if let Some(mut scene) = self.scene(&volume_overlays, &windage_overlays) {
                 // An analysis mode needs per-pixel shading, which only the
                 // rasterizer provides: render it into a texture and reuse it
                 // until the model, camera, size or mode changes.
@@ -4050,6 +4238,39 @@ impl App {
                                 }
                             }
                         });
+                // The pattern's lines as one mesh, kept while the pattern and the view stay. Only
+                // Plan view draws them, so no other view builds them (orbiting Perspective view
+                // would otherwise re-tessellate every contour each frame).
+                if let Some(result) = scene
+                    .waves
+                    .as_ref()
+                    .map(|w| w.result)
+                    .filter(|_| self.cameras[index].kind == ViewKind::Plan)
+                {
+                    let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
+                    let camera = &self.cameras[index];
+                    let key = revision_key(&[
+                        self.waves_key(),
+                        render::hull_key(stamp, camera, cell, &scene, &self.display),
+                        ui.ctx().pixels_per_point().to_bits() as u64,
+                    ]);
+                    let mesh = match &self.wave_meshes[index] {
+                        Some((k, mesh)) if *k == key => mesh.clone(),
+                        _ => {
+                            let mesh = Arc::new(render::wave_mesh(
+                                ui.ctx(),
+                                &camera.transform(),
+                                cell,
+                                result,
+                            ));
+                            fresh_wave_meshes.push((index, key, mesh.clone()));
+                            mesh
+                        }
+                    };
+                    if let Some(waves) = scene.waves.as_mut() {
+                        waves.contours = Some(mesh);
+                    }
+                }
                 let no_hull;
                 let (display, gpu_hull) = match route {
                     HullRoute::Painted => (&self.display, None),
@@ -4143,6 +4364,9 @@ impl App {
         for (index, key, mesh) in fresh_waterlines {
             self.waterline_meshes[index] = Some((key, mesh));
         }
+        for (index, key, mesh) in fresh_wave_meshes {
+            self.wave_meshes[index] = Some((key, mesh));
+        }
         if toggle_maximise {
             self.toggle_maximised();
         }
@@ -4167,7 +4391,52 @@ impl App {
             trim: self.hydro.options.trim,
             heel_deg: self.hydro.options.heel_deg,
             waterline: self.waterline(),
+            waves: self.scene_waves(),
+            waves_status: self.waves_status(),
         })
+    }
+
+    /// Plan view's wave contours: only with "Contours on Plan view" on, and only a current pattern.
+    fn scene_waves(&self) -> Option<render::SceneWaves<'_>> {
+        if !self.perf_state.waves.plan_contours {
+            return None;
+        }
+        let result = self.wave_current()?;
+        Some(render::SceneWaves {
+            result,
+            contours: None,
+        })
+    }
+
+    /// Plan view's note while the pattern is shown but not drawn.
+    fn waves_status(&self) -> Option<&'static str> {
+        if !self.perf_state.waves.plan_contours || self.wave_current().is_some() {
+            None
+        } else if self.wave_failure().is_some() {
+            Some("Wave contours failed: see the Wave pattern view")
+        } else {
+            Some("Wave contours: computing…")
+        }
+    }
+
+    /// Load the kept pattern's image as a texture, once per result (the image is copied only to
+    /// upload it); drop it when there is none. The view draws a stale one dimmed.
+    fn load_wave_texture(&mut self, ctx: &egui::Context) {
+        let key = self.wave_result_rev;
+        let Some(result) = self
+            .waves_needed()
+            .then_some(self.perf_state.wave_result.as_ref())
+            .flatten()
+        else {
+            self.wave_texture = None;
+            return;
+        };
+        if self.wave_texture.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        let image = result.image.clone();
+        let texture = ctx.load_texture("wave-pattern", image, egui::TextureOptions::LINEAR);
+        self.wave_texture = Some((key, texture));
     }
 
     /// View `index`'s analysis frame key and view key for `cell`.
@@ -4635,6 +4904,187 @@ impl App {
         revision_key(&[self.revision, self.hydro_rev, self.perf_rev])
     }
 
+    /// The wave pattern's inputs: the geometry and level, the floating condition (its draft) and
+    /// every wave setting but `show`.
+    fn waves_key(&self) -> u64 {
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            crate::waves::settings_key(&self.perf_state.waves),
+        ])
+    }
+
+    /// The wave-drag curve's inputs: the geometry and level, the floating condition and the
+    /// catamaran spacing, but not the speed.
+    fn wave_drag_key(&self) -> u64 {
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            crate::waves::drag_key(self.perf_state.waves.cat_spacing_m),
+        ])
+    }
+
+    /// Whether the wave pattern and its drag curve are computed: while the Wave pattern view is
+    /// open or the Plan view contours are on.
+    pub fn waves_needed(&self) -> bool {
+        self.analysis.open == Some(crate::analysis_views::AnalysisView::Waves)
+            || self.perf_state.waves.plan_contours
+    }
+
+    /// The wave-drag curve, `Some` only while needed and computed for the current model, floating
+    /// condition and catamaran spacing.
+    pub fn wave_drag(&self) -> Option<&crate::waves::WaveDrag> {
+        if !self.waves_needed() || !self.wave_drag_track.is_current(self.wave_drag_key()) {
+            return None;
+        }
+        self.perf_state.wave_drag.as_ref()
+    }
+
+    /// Why the wave-drag curve failed for the current inputs, if it did.
+    pub fn wave_drag_failure(&self) -> Option<&str> {
+        self.wave_drag_track.failure(self.wave_drag_key())
+    }
+
+    /// Compute the wave-drag curve on this thread (tests and scripts).
+    pub fn compute_wave_drag_blocking(&mut self) -> Result<(), String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let key = self.wave_drag_key();
+        match crate::waves::compute_wave_drag(
+            surface,
+            subdivision,
+            self.hydro.options.draft,
+            self.hydro.options.water_density,
+            self.perf_state.waves.cat_spacing_m,
+        ) {
+            Ok(d) => {
+                self.perf_state.wave_drag = Some(d);
+                self.wave_drag_track.stamp(key);
+                Ok(())
+            }
+            Err(e) => {
+                self.wave_drag_track.fail(key, e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn start_wave_drag_compute(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            return;
+        };
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let draft = self.hydro.options.draft;
+        let rho = self.hydro.options.water_density;
+        let spacing = self.perf_state.waves.cat_spacing_m;
+        let key = self.wave_drag_key();
+        self.wave_drag_track.start(key, move || {
+            crate::waves::compute_wave_drag(&surface, subdivision, draft, rho, spacing)
+        });
+    }
+
+    pub fn wave_settings(&self) -> &crate::waves::WaveSettings {
+        &self.perf_state.waves
+    }
+
+    /// Replace the wave settings; a changed result is recomputed after the usual quiet period.
+    pub fn set_wave_settings(&mut self, settings: crate::waves::WaveSettings) {
+        self.perf_state.waves = settings;
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// Open the Wave pattern view in the drawer (it computes while open), or close it if it is the
+    /// view shown.
+    pub fn set_wave_view_open(&mut self, open: bool) {
+        use crate::analysis_views::AnalysisView;
+        if open {
+            self.open_analysis_view(AnalysisView::Waves);
+        } else if self.analysis.open == Some(AnalysisView::Waves) {
+            self.close_analysis_view();
+        }
+    }
+
+    /// The wave pattern to draw, save or report: `Some` only while it is needed
+    /// ([`App::waves_needed`]) and computed for the current model, floating condition and settings.
+    /// Every view goes through this gate.
+    pub fn wave_current(&self) -> Option<&crate::waves::WaveResult> {
+        if !self.waves_needed() || !self.waves_track.is_current(self.waves_key()) {
+            return None;
+        }
+        self.perf_state.wave_result.as_ref()
+    }
+
+    /// Why the wave pattern failed for the current inputs, if it did.
+    pub fn wave_failure(&self) -> Option<&str> {
+        self.waves_track.failure(self.waves_key())
+    }
+
+    /// The wave map's texture, when one is loaded for the kept pattern (test hook).
+    pub fn wave_texture_id(&self) -> Option<egui::TextureId> {
+        self.wave_texture.as_ref().map(|(_, t)| t.id())
+    }
+
+    /// Whether a wave-pattern job is running (test hook).
+    pub fn waves_busy(&self) -> bool {
+        self.waves_track.busy()
+    }
+
+    /// A wave job is in flight for the current settings, not an older key (test hook).
+    pub fn waves_running_current(&self) -> bool {
+        self.waves_track.running_for() == Some(self.waves_key())
+    }
+
+    /// Compute the wave pattern on this thread (tests and scripts).
+    pub fn compute_waves_blocking(&mut self) -> Result<(), String> {
+        let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let key = self.waves_key();
+        match crate::waves::compute_waves(
+            surface,
+            subdivision,
+            self.hydro.options.draft,
+            self.hydro.options.water_density,
+            &self.perf_state.waves,
+        ) {
+            Ok(w) => {
+                self.perf_state.wave_result = Some(w);
+                self.wave_result_rev += 1;
+                self.waves_track.stamp(key);
+                Ok(())
+            }
+            Err(e) => {
+                self.waves_track.fail(key, e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn start_waves_compute(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            return;
+        };
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let draft = self.hydro.options.draft;
+        let rho = self.hydro.options.water_density;
+        let settings = self.perf_state.waves.clone();
+        let key = self.waves_key();
+        self.waves_track.start(key, move || {
+            crate::waves::compute_waves(&surface, subdivision, draft, rho, &settings)
+        });
+    }
+
     fn raos_key(&self) -> u64 {
         // The KG may come from the loading condition.
         revision_key(&[
@@ -4688,9 +5138,30 @@ impl App {
                     waiting = true;
                 }
             }
+            // The wave-drag curve takes the hydrostatics' quiet: it is quick, and a drag on the
+            // view's speed does not re-key it.
+            if self.waves_needed() && self.wave_drag_track.due(self.wave_drag_key()) {
+                if hydro_quiet {
+                    self.start_wave_drag_compute();
+                } else {
+                    waiting = true;
+                }
+            }
             let loading_due = !self.project.loading_conditions.is_empty()
                 && self.loading_track.due(self.loading_key());
             let resistance_due = self.resistance_track.due(self.resistance_key());
+            // The wave pattern recomputes live while the speed is scrubbed: the hydrostatics'
+            // quiet. One job at a time: a job in flight for an older key runs to its end (a
+            // thread cannot be stopped) and its result is discarded, then the newest key starts.
+            // Meanwhile the view shows the last stored result dimmed.
+            let waves_key = self.waves_key();
+            if self.waves_needed() && self.waves_track.due(waves_key) {
+                if hydro_quiet && self.waves_track.ready(waves_key) {
+                    self.start_waves_compute();
+                } else {
+                    waiting = true;
+                }
+            }
             if loading_due || resistance_due {
                 if !quiet {
                     waiting = true;
@@ -4709,6 +5180,8 @@ impl App {
             || self.loading_track.busy()
             || self.damage_track.busy()
             || self.resistance_track.busy()
+            || self.waves_track.busy()
+            || self.wave_drag_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy();
         if busy || waiting {
@@ -4743,6 +5216,19 @@ impl App {
         match self.resistance_track.poll(self.resistance_key()) {
             Some(Ok(r)) => self.perf_state.resistance = Some(r),
             Some(Err(e)) => self.log(Level::Error, format!("Resistance compute failed: {e}")),
+            None => {}
+        }
+        match self.waves_track.poll(self.waves_key()) {
+            Some(Ok(w)) => {
+                self.perf_state.wave_result = Some(w);
+                self.wave_result_rev += 1;
+            }
+            Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
+            None => {}
+        }
+        match self.wave_drag_track.poll(self.wave_drag_key()) {
+            Some(Ok(d)) => self.perf_state.wave_drag = Some(d),
+            Some(Err(e)) => self.log(Level::Error, format!("Wave drag curve failed: {e}")),
             None => {}
         }
         match self.raos_track.poll(self.raos_key()) {
@@ -4881,10 +5367,19 @@ impl App {
         ) {
             self.start_resistance_compute();
         }
+        // One wave job at a time, as in `run_jobs`. A failed key is tried again: now, or, with
+        // an older job in flight, by `run_jobs` when that ends.
+        if self.waves_needed() {
+            let key = self.waves_key();
+            self.waves_track.retry(key);
+            if self.waves_track.ready(key) {
+                self.start_waves_compute();
+            }
+        }
         // The drawer's view and the dock's tab are each on screen on their
         // own: the drawer stays when the dock is hidden, and does not cover
         // the tab when both are shown.
-        if let Some(view) = self.analysis.open {
+        if let Some(view) = self.analysis.open.filter(|v| v.uses_slot()) {
             // Stale or empty.
             if self.analysis.slot(view).track.due(self.analysis_key(view)) {
                 self.start_analysis_view(view);
@@ -4941,6 +5436,14 @@ impl App {
             && !self.resistance_track.is_current(self.resistance_key())
     }
 
+    /// A wave pattern is kept but no longer matches the inputs (recomputed automatically while
+    /// needed).
+    fn waves_stale(&self) -> bool {
+        self.waves_needed()
+            && self.perf_state.wave_result.is_some()
+            && !self.waves_track.is_current(self.waves_key())
+    }
+
     fn raos_stale(&self) -> bool {
         (self.perf_state.raos.is_some() || self.perf_state.sea_result.is_some())
             && !self.raos_track.is_current(self.raos_key())
@@ -4955,6 +5458,7 @@ impl App {
             (self.damage_stale(), "damage"),
             (self.resistance_stale(), "resistance"),
             (self.raos_stale(), "RAOs"),
+            (self.waves_stale(), "wave pattern"),
             (self.open_view_stale(), "analysis view"),
         ]
         .into_iter()
@@ -4980,7 +5484,9 @@ impl App {
                         .as_ref()
                         .is_some_and(|r| r.weather.is_some())
             }
-            DesignDock::Performance => self.resistance_stale() || self.raos_stale(),
+            DesignDock::Performance => {
+                self.resistance_stale() || self.raos_stale() || self.waves_stale()
+            }
         }
     }
 
@@ -5008,6 +5514,11 @@ impl App {
                 (
                     "Seakeeping compute",
                     self.raos_track.failure(self.raos_key()),
+                ),
+                ("Wave pattern", self.waves_track.failure(self.waves_key())),
+                (
+                    "Wave drag curve",
+                    self.wave_drag_track.failure(self.wave_drag_key()),
                 ),
             ],
         };
@@ -5038,6 +5549,8 @@ impl App {
             || self.loading_track.busy()
             || self.damage_track.busy()
             || self.resistance_track.busy()
+            || self.waves_track.busy()
+            || self.wave_drag_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy()
     }
@@ -5095,7 +5608,9 @@ impl App {
     /// Show or hide the loading panel; showing it shows only it in the design dock.
     /// Report options for the current model: defaults from the surface, the
     /// project's saved settings, then the viewports' subdivision.
-    fn report_options(&self) -> Option<seacraft_core::report::ReportOptions> {
+    fn report_options(
+        &self,
+    ) -> Option<(seacraft_core::report::ReportOptions, Option<ReportWaves>)> {
         let surface = self.surface.as_ref()?;
         let mut opts = self
             .project
@@ -5103,13 +5618,41 @@ impl App {
             .apply(seacraft_core::report::ReportOptions::from_surface(surface));
         opts.level = self.level;
         opts.mode = self.mode;
-        Some(opts)
+        // The wave pattern goes in while it is shown, with the view's settings, at the report's
+        // draft. Its domain and wash line in metres need the waterline at that draft: a current
+        // pattern's or hydrostatics' when either is at that draft (a stale one may be of another
+        // hull), else measured in the report job.
+        let at_draft = |d: f64| (d - opts.draft).abs() <= 1e-9;
+        let lengths = self
+            .wave_current()
+            .filter(|r| at_draft(r.draft))
+            .map(|r| (r.length_wl, r.beam_wl))
+            .or_else(|| {
+                self.hydro
+                    .result
+                    .as_ref()
+                    // Upright only (as measured, so a free trim counts): heeled or trimmed, the
+                    // waterline lies on the tilted plane, while the report's pattern is upright.
+                    .filter(|h| {
+                        self.hydro.track.is_current(self.hydro_key())
+                            && at_draft(h.draft)
+                            && h.heel_deg == 0.0
+                            && h.trim_m == 0.0
+                    })
+                    .map(|h| (h.lwl, h.bwl))
+            });
+        let waves = self.waves_needed().then(|| ReportWaves {
+            settings: self.perf_state.waves.clone(),
+            lengths,
+        });
+        Some((opts, waves))
     }
 
     /// Write the design report on this thread (tests and scripts).
     pub fn write_report_blocking(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let opts = self.report_options().ok_or("no model loaded")?;
+        let (mut opts, waves) = self.report_options().ok_or("no model loaded")?;
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        opts.waves = waves.map(|w| w.into_report(surface, &opts));
         let html =
             seacraft_core::report::design_report_with_project(surface, &opts, &self.project)?;
         seacraft_core::io::write_atomic(path, html)
@@ -5122,7 +5665,9 @@ impl App {
     /// reports when it is done (a failure is logged). Fails when nothing
     /// could be started.
     fn start_report(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let (Some(opts), Some(surface)) = (self.report_options(), self.surface.clone()) else {
+        let (Some((mut opts, waves)), Some(surface)) =
+            (self.report_options(), self.surface.clone())
+        else {
             let msg = "No model loaded.".to_owned();
             self.log(Level::Error, msg.clone());
             return Err(msg);
@@ -5132,6 +5677,8 @@ impl App {
         self.set_status(format!("writing report {}…", path.display()));
         let target = path.clone();
         let job = Job::spawn(self.revision, move || {
+            // Measuring the waterline, when it comes to that, is slow: here, off the window.
+            opts.waves = waves.map(|w| w.into_report(&surface, &opts));
             seacraft_core::report::design_report_with_project(&surface, &opts, &project).and_then(
                 |html| {
                     seacraft_core::io::write_atomic(&target, html)
@@ -8158,6 +8705,10 @@ impl App {
         if self.surface.is_none() {
             return;
         }
+        if view == crate::analysis_views::AnalysisView::Waves {
+            self.wave_view_drawer(ui);
+            return;
+        }
         let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
         let window = ui.ctx().content_rect().height();
         let mut action = crate::analysis_views::ViewAction::None;
@@ -8185,10 +8736,86 @@ impl App {
         self.apply_view_action(action, ui.ctx());
     }
 
+    /// The Wave pattern view in the drawer: its panel edits a copy of the wave settings and returns
+    /// what else the user asked for, applied here after the panel.
+    fn wave_view_drawer(&mut self, ui: &mut egui::Ui) {
+        use crate::wave_view::{WaveViewAction, WaveViewPanel};
+        self.load_wave_texture(ui.ctx());
+        let texture = self
+            .wave_texture
+            .as_ref()
+            .filter(|(k, _)| *k == self.wave_result_rev)
+            .map(|(_, t)| t.id());
+        let window = ui.ctx().content_rect().height();
+        let current = self.wave_current().is_some();
+        let stale = self.waves_stale();
+        let busy = self.waves_track.busy() || self.wave_drag_track.busy();
+        let failure = self
+            .wave_failure()
+            .or_else(|| self.wave_drag_failure())
+            .map(str::to_owned);
+        let heeled_or_trimmed =
+            self.hydro.options.heel_deg != 0.0 || self.hydro.options.trim != 0.0;
+        let measured = self.perf_state.wave_result.as_ref();
+        let length_wl = measured
+            .map(|w| w.length_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl));
+        let beam_wl = measured
+            .map(|w| w.beam_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.bwl));
+        let drag = self.wave_drag();
+        let before = self.perf_state.waves.clone();
+        let mut settings = before.clone();
+        let mut map = self.wave_map;
+        let mut action = WaveViewAction::None;
+        egui::Panel::bottom("analysis_drawer")
+            .resizable(true)
+            .default_size((window * 0.42).round())
+            .size_range(160.0..=(window * 0.8).round())
+            .show(ui, |ui| {
+                // Keep the drawer's height while there is little to show.
+                ui.set_min_height(ui.available_height());
+                action = crate::wave_view::panel(
+                    ui,
+                    WaveViewPanel {
+                        settings: &mut settings,
+                        result: measured,
+                        drag,
+                        stale,
+                        busy,
+                        current,
+                        failure: failure.as_deref(),
+                        heeled_or_trimmed,
+                        length_wl,
+                        beam_wl,
+                        texture,
+                        map: &mut map,
+                    },
+                );
+            });
+        self.wave_map = map;
+        match action {
+            WaveViewAction::None | WaveViewAction::Changed => {}
+            WaveViewAction::SaveImage => self.open_dialog(DialogKind::WaveImage),
+            WaveViewAction::Close => self.close_analysis_view(),
+            WaveViewAction::Open(other) => self.open_analysis_view(other),
+            WaveViewAction::SetSpeed(speed) => settings.speed = speed,
+            WaveViewAction::SetSpacing(spacing) => settings.cat_spacing_m = Some(spacing),
+            WaveViewAction::SetWashDistance(d) => settings.wash_distance_m = Some(d),
+        }
+        if settings != before {
+            self.set_wave_settings(settings);
+        }
+    }
+
     /// Show `view` in the drawer under the viewports. Opening a view that
     /// has no result yet computes it.
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
         self.analysis.open = Some(view);
+        if !view.uses_slot() {
+            // The wave pattern computes on its own jobs while the view is open.
+            return;
+        }
         let key = self.analysis_key(view);
         let slot = self.analysis.slot(view);
         if slot.result.is_none() && slot.track.due(key) {
@@ -8248,7 +8875,7 @@ impl App {
     /// Compute a view on a job (the shown result stays, dimmed, until the
     /// new one lands).
     pub fn start_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
-        if self.surface.is_none() {
+        if self.surface.is_none() || !view.uses_slot() {
             return;
         }
         let key = self.analysis_key(view);

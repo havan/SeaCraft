@@ -3225,8 +3225,9 @@ pub fn tool_definitions() -> Vec<Value> {
              behind the stern to `ahead` ahead of the bow, `half_width` each side; waves shorter than two grid \
              spacings are left out and the cut-off is reported. `cat_spacing` gives two demihulls (the model is \
              one). Returns U, Fn, k0, the transverse wavelength, the wave-angle cut and shortest wave kept, the \
-             grid size, max |elevation|, notes and Michell's warnings (L/B, Fn, wetted transom). Give \
-             `png_path`, `svg_path` or `vti_path` to also write the pattern (PNG colour map, SVG contours, VTK \
+             grid size, max |elevation|, the speed regime (a sentence), notes and Michell's warnings (L/B, Fn, \
+             wetted transom). `wash_distance` adds `wash`: the largest crest-to-trough height on a line that \
+             far to the side, a thin-ship estimate in deep water. Give `png_path`, `svg_path` or `vti_path` to also write the pattern (PNG colour map, SVG contours, VTK \
              image data).",
             obj(
                 json!({
@@ -3237,7 +3238,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "ahead": number("Domain ahead of the bow in waterline lengths (default 1)"),
                     "behind": number("Domain behind the stern in waterline lengths (default 3)"),
                     "half_width": number("Domain half-width in waterline lengths (default 1.5)"),
-                    "spacing": number("Grid spacing in metres (default: transverse wavelength / 20)"),
+                    "spacing": number("Grid spacing in metres (default: the smaller of transverse wavelength / 20 and L_WL / 60)"),
+                    "wash_distance": number("Lateral distance (m) for the wash height: a thin-ship estimate in deep water"),
                     "clip": number("Colour and contour clip in metres (default: the largest |elevation|)"),
                     "png_path": string("Write the colour map PNG here"),
                     "svg_path": string("Write the SVG contour map here"),
@@ -6840,6 +6842,24 @@ mod tests {
         let tools = tool_definitions();
         let def = tools.iter().find(|t| t["name"] == "wave_pattern").unwrap();
         assert_eq!(Effect::of(def), Effect::ReadOnly);
+    }
+
+    #[test]
+    fn wave_pattern_reports_wash() {
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "wigley"}));
+        let r = ok(
+            &mut s,
+            2,
+            "wave_pattern",
+            json!({"fn": 0.45, "wash_distance": 9.0}),
+        );
+        assert_eq!(r["wash"]["distance_m"], 9.0, "{r}");
+        assert!(r["wash"]["height_m"].as_f64().unwrap() > 0.0, "{r}");
+        assert_eq!(r["regime"]["key"], "hull_speed", "{r}");
+        let tools = tool_definitions();
+        let def = tools.iter().find(|t| t["name"] == "wave_pattern").unwrap();
+        assert!(def.to_string().contains("wash_distance"), "{def}");
     }
 
     /// Review focus 4: bad numbers are a tool error naming the argument, never a panic.

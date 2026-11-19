@@ -21,10 +21,15 @@ overpredicts the resistance hump near Fn 0.32 by 18–54 % and places it about 0
 near Fn 0.35 is at the measured speed. The test holds the program to those bands, read from the published
 figures ([`docs/oracles.md`](docs/oracles.md) §39). It covers that hull and speed range only.
 
-The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`) is far-field thin-ship theory: free waves only,
-without the local disturbance, so near the hull it is not the hull wave profile. It has been checked against its
-own far-field asymptotics and Kelvin's wedge geometry ([`docs/oracles.md`](docs/oracles.md) §40), not against a
-measured wave pattern: none was found for the Wigley hull. Transom sterns are computed and flagged, not refused.
+The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`, the Wave pattern view and Plan view contours in the
+window, the design report) is far-field thin-ship theory: free waves only, without the local disturbance, so near the hull
+it is not the hull wave profile. It is computed upright at the draft; heel and trim are ignored. It has been
+checked against its own far-field asymptotics and Kelvin's wedge geometry ([`docs/oracles.md`](docs/oracles.md)
+§40), not against a measured wave pattern: none was found for the Wigley hull. Transom sterns are computed and
+flagged, not refused. The wash height and the catamaran interference are thin-ship estimates in deep water: the
+wash height is not a wash assessment against any rule or limit, and the interference has not been compared with
+a published catamaran result or a towing test ([`docs/oracles.md`](docs/oracles.md) §41). The speed-regime
+sentences use SeaCraft's own bands, not published thresholds.
 
 Building patterns (station moulds, profile and transom) and the printed table of offsets are geometry the
 program computed from the hull. They have not been compared with a built boat, and no printed set has been

@@ -142,6 +142,25 @@ pub const AXIS_Z: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 /// Waterplane quad fill (premultiplied) and its border.
 pub const WATERPLANE_FILL: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
 pub const WATERPLANE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x5c, 0xa8, 0xf0, 0x80);
+/// The window's wave map, trough, calm and crest: dark calm water with crest and trough tints, by the
+/// maintainer's ruling of 2026-11-19. The PNG/SVG exports and the command line keep the core's light
+/// map (`wave_pattern::DIVERGING_STOPS`), which suits paper; this reverses PR #10's "same colours".
+pub const WAVE_TROUGH: Color32 = Color32::from_rgb(0x4a, 0x9b, 0xe0);
+pub const WAVE_CALM: Color32 = Color32::from_rgb(0x12, 0x20, 0x2c);
+pub const WAVE_CREST: Color32 = Color32::from_rgb(0xe8, 0x66, 0x4a);
+/// Wave contours over the dark map: light, semi-opaque, crests solid and troughs dashed.
+pub const WAVE_CONTOUR_CREST: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xff, 0xc0, 0xb0, 0x90);
+pub const WAVE_CONTOUR_TROUGH: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xb0, 0xd8, 0xff, 0x90);
+/// The Kelvin wedge lines from the bow, faint.
+pub const WAVE_KELVIN: Color32 = Color32::from_rgba_unmultiplied_const(0xc8, 0xd2, 0xdc, 0x50);
+/// The hull footprint on the wave map, opaque so nobody reads waves under the hull.
+pub const WAVE_HULL: Color32 = HULL_DEFAULT;
+/// The calm waterline of each hull the wave field was computed for.
+pub const WAVE_WATERLINE: Color32 = Color32::from_rgb(0x20, 0x26, 0x2e);
+/// The longitudinal wave cut drawn on the pattern.
+pub const WAVE_CUT: Color32 = Color32::from_rgb(0xe8, 0xa2, 0x30);
 /// The design waterline traced on the hull.
 pub const DWL: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 /// Stations, buttocks and waterlines, and their curvature combs.
@@ -672,7 +691,7 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 25] = [
+    const SOURCES: [(&str, &str); 27] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("autosave.rs", include_str!("autosave.rs")),
@@ -698,6 +717,8 @@ mod tests {
         ("render.rs", include_str!("render.rs")),
         ("selection.rs", include_str!("selection.rs")),
         ("visibility.rs", include_str!("visibility.rs")),
+        ("wave_view.rs", include_str!("wave_view.rs")),
+        ("waves.rs", include_str!("waves.rs")),
     ];
 
     #[test]

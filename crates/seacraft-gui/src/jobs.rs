@@ -213,6 +213,20 @@ impl<T> Track<T> {
             && self.running_for() != Some(current)
             && self.failure(current).is_none()
     }
+
+    /// `current` is due and no job is in flight, so starting it leaves one job running: for slow
+    /// work whose superseded jobs would otherwise pile up (they cannot be stopped).
+    pub fn ready(&self, current: u64) -> bool {
+        self.due(current) && !self.busy()
+    }
+
+    /// An explicit retry (F5): a failure for `current` is forgotten, so `current` is due again
+    /// and starts as soon as [`Track::ready`] says, even when a job is in flight now.
+    pub fn retry(&mut self, current: u64) {
+        if self.failure(current).is_some() {
+            self.failure = None;
+        }
+    }
 }
 
 /// One revision key from the counters a result depends on.
@@ -301,6 +315,48 @@ mod tests {
         assert!(track.due(4), "new inputs are tried again");
         track.stamp(4);
         assert!(track.failure(3).is_none() && track.is_current(4));
+    }
+
+    #[test]
+    fn a_new_revision_waits_for_the_job_in_flight() {
+        // PR #10 review: a speed scrub started a full wave pattern for each pause, every one
+        // running to the end while only the newest was wanted.
+        let mut track: Track<u32> = Track::default();
+        let (release, gate) = mpsc::channel::<()>();
+        track.start(1, move || {
+            let _ = gate.recv();
+            Ok(1)
+        });
+        assert!(track.due(2), "revision 2 still needs computing");
+        assert!(!track.ready(2), "but not while revision 1 runs");
+        let _ = release.send(());
+        assert_eq!(track.wait(2), None, "revision 1's result is discarded");
+        assert!(track.ready(2));
+        track.stamp(2);
+        assert!(!track.ready(2), "nothing to do");
+    }
+
+    #[test]
+    fn an_explicit_retry_waits_for_the_job_in_flight_then_runs() {
+        // PR #10 review: a manual recompute (F5) started a wave job while an older one ran, and
+        // once that was fixed, a retry of a failed revision asked for then was lost.
+        let mut track: Track<u32> = Track::default();
+        track.fail(2, "too coarse".into());
+        assert!(!track.due(2), "a failure is not retried by itself");
+        let (release, gate) = mpsc::channel::<()>();
+        track.start(1, move || {
+            let _ = gate.recv();
+            Ok(1)
+        });
+        track.retry(2);
+        assert!(track.failure(2).is_none(), "the retry is pending");
+        assert!(
+            track.due(2) && !track.ready(2),
+            "but waits while revision 1 runs"
+        );
+        let _ = release.send(());
+        assert_eq!(track.wait(2), None);
+        assert!(track.ready(2), "then it starts");
     }
 
     #[test]

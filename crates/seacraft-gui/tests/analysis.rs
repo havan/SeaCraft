@@ -121,6 +121,17 @@ fn each_analysis_menu_item_opens_its_view_in_the_drawer() {
         open_from_menu(&ctx, &mut app, &out, view);
         assert_eq!(app.analysis_view(), Some(view), "{}", view.label());
         assert!(!app.dock_wide(), "a view leaves the dock's width alone");
+        if !view.uses_slot() {
+            // The wave pattern computes live on its own jobs (tests/waves.rs), with no Copy CSV.
+            frame(&ctx, &mut app, Vec::new());
+            out = frame(&ctx, &mut app, Vec::new());
+            assert!(
+                find(&out, view.label()).is_some(),
+                "the {} tab",
+                view.label()
+            );
+            continue;
+        }
         // Opening a view with no result computes it.
         assert!(
             app.analysis_view_busy(view) || app.analysis_view_result(view).is_some(),

@@ -246,6 +246,20 @@ pub struct Scene<'a> {
     /// The waterline already cut from `mesh`, when the caller keeps one:
     /// otherwise each view cuts it again from every face of the mesh.
     pub waterline: Option<&'a [[Vec3; 2]]>,
+    /// The far-field wave pattern's contours on the water in Plan view, when "Contours on Plan
+    /// view" is on. The app sets it only from a current result, so a stale pattern never reaches a
+    /// view.
+    pub waves: Option<SceneWaves<'a>>,
+    /// Plan view's note while the contours are on but not drawn (computing, or failed).
+    pub waves_status: Option<&'static str>,
+}
+
+/// The wave pattern a Plan view draws: its contours, waterlines and both wash lines, either as
+/// `contours`, a [`wave_mesh`] kept for this view, or as strokes when `None`. Plan view has no
+/// colour image: the pattern's picture is the Wave pattern view's.
+pub struct SceneWaves<'a> {
+    pub result: &'a crate::waves::WaveResult,
+    pub contours: Option<Arc<egui::Mesh>>,
 }
 
 impl Scene<'_> {
@@ -413,6 +427,12 @@ pub fn viewport_with_texture(
             }
         }
     }
+    // The contours go over the hull, whichever path drew it.
+    if camera.kind == crate::camera::ViewKind::Plan {
+        if let Some(waves) = &scene.waves {
+            draw_waves(&painter, &view, rect, waves);
+        }
+    }
     if opts.waterplane {
         draw_waterplane(&painter, &view, rect, scene, texture.is_none(), waterline);
     }
@@ -463,6 +483,20 @@ pub fn viewport_with_texture(
         Align2::LEFT_TOP,
         camera.kind.title(),
     );
+    if camera.kind == crate::camera::ViewKind::Plan {
+        let caption = match &scene.waves {
+            Some(waves) => Some(wave_caption(waves.result)),
+            None => scene.waves_status.map(str::to_owned),
+        };
+        if let Some(caption) = caption {
+            hud_caption(
+                &painter,
+                rect.center_bottom() + egui::vec2(0.0, -8.0),
+                Align2::CENTER_BOTTOM,
+                caption,
+            );
+        }
+    }
     if camera.kind == crate::camera::ViewKind::Body {
         if let (Some(lines), Some(point)) = (lines, focus_point) {
             if let Some(caption) = station_caption(scene.surface, lines, point) {
@@ -999,6 +1033,16 @@ pub fn waterline_mesh(
     rect: Rect,
     segments: &[[Vec3; 2]],
 ) -> egui::Mesh {
+    tessellate(ctx, rect, waterline_shapes(view, rect, segments))
+}
+
+/// Line shapes tessellated into one mesh, as egui tessellates them in a frame with `ctx`'s scale
+/// and options, clipped to `rect`: the same triangles, so the same pixels.
+pub fn tessellate(
+    ctx: &egui::Context,
+    rect: Rect,
+    shapes: impl IntoIterator<Item = egui::Shape>,
+) -> egui::Mesh {
     let mut tessellator = egui::epaint::Tessellator::new(
         ctx.pixels_per_point(),
         ctx.tessellation_options(|o| *o),
@@ -1008,10 +1052,101 @@ pub fn waterline_mesh(
     );
     tessellator.set_clip_rect(rect);
     let mut mesh = egui::Mesh::default();
-    for shape in waterline_shapes(view, rect, segments) {
+    for shape in shapes {
         tessellator.tessellate_shape(shape, &mut mesh);
     }
     mesh
+}
+
+fn draw_waves(painter: &egui::Painter, view: &ViewTransform, rect: Rect, waves: &SceneWaves) {
+    match &waves.contours {
+        Some(mesh) => {
+            painter.add(egui::Shape::Mesh(mesh.clone()));
+        }
+        None => painter.extend(wave_shapes(view, rect, waves.result)),
+    }
+}
+
+/// The pattern's lines in a view, at the draft: crest contours solid and trough contours dashed,
+/// each hull's calm waterline, and the wash line each side, dashed.
+pub fn wave_shapes(
+    view: &ViewTransform,
+    rect: Rect,
+    w: &crate::waves::WaveResult,
+) -> Vec<egui::Shape> {
+    let z = w.draft;
+    let at = |x: f64, y: f64| view.project(Vec3::new(x, y, z), rect);
+    let mut shapes = Vec::new();
+    for (level, segments) in &w.contours {
+        let crest = *level > 0.0;
+        let stroke = Stroke::new(
+            1.0,
+            if crest {
+                theme::WAVE_CONTOUR_CREST
+            } else {
+                theme::WAVE_CONTOUR_TROUGH
+            },
+        );
+        for [(ax, ay), (bx, by)] in segments {
+            let (Some(a), Some(b)) = (at(*ax, *ay), at(*bx, *by)) else {
+                continue;
+            };
+            if crest {
+                shapes.push(egui::Shape::line_segment([a, b], stroke));
+            } else {
+                shapes.extend(egui::Shape::dashed_line(&[a, b], stroke, 3.0, 2.0));
+            }
+        }
+    }
+    for outline in &w.field.waterlines {
+        let points: Option<Vec<Pos2>> = outline.iter().map(|p| at(p[0], p[1])).collect();
+        if let Some(points) = points.filter(|p| p.len() > 1) {
+            shapes.push(egui::Shape::closed_line(
+                points,
+                Stroke::new(1.5, theme::WAVE_WATERLINE),
+            ));
+        }
+    }
+    if let (Some(&s0), Some(&s1)) = (w.wash_cut.s.first(), w.wash_cut.s.last()) {
+        let d = w.wash_distance_m;
+        for y in [d, -d] {
+            if let (Some(a), Some(b)) = (at(s0, y), at(s1, y)) {
+                shapes.extend(egui::Shape::dashed_line(
+                    &[a, b],
+                    Stroke::new(1.5, theme::WAVE_CUT),
+                    8.0,
+                    5.0,
+                ));
+            }
+        }
+    }
+    shapes
+}
+
+/// [`wave_shapes`] tessellated once for a view, kept while the pattern, the view and the scale stay
+/// the same.
+pub fn wave_mesh(
+    ctx: &egui::Context,
+    view: &ViewTransform,
+    rect: Rect,
+    w: &crate::waves::WaveResult,
+) -> egui::Mesh {
+    tessellate(ctx, rect, wave_shapes(view, rect, w))
+}
+
+/// Plan view's caption for a drawn pattern: its speed, its colour range and any catamaran spacing.
+pub fn wave_caption(w: &crate::waves::WaveResult) -> String {
+    let f = &w.field;
+    let mut text = format!(
+        "Waves · Fn {:.3} · {:.2} kn · ±{:.3} m",
+        f.froude,
+        f.speed_m_s / seacraft_core::resistance::KNOT,
+        w.clip_m
+    );
+    if let Some(s) = w.cat_spacing_m {
+        text.push_str(&format!(" · catamaran s = {s:.2} m"));
+    }
+    text
 }
 
 /// The key a [`waterline_mesh`] is kept under: the view's [`hull_key`] (camera, cell, mesh and
@@ -2125,6 +2260,71 @@ mod tests {
         }
     }
 
+    /// A 11 × 5 wave field over x 0..10 m, y -2..2 m, all calm.
+    fn flat_waves() -> crate::waves::WaveResult {
+        use seacraft_core::wave_pattern::{CutLine, WaveCut, WaveField};
+        let (nx, ny) = (11, 5);
+        let field = WaveField {
+            xs: (0..nx).map(|i| i as f64).collect(),
+            ys: (0..ny).map(|j| j as f64 - 2.0).collect(),
+            zeta: vec![0.0; nx * ny],
+            wet: vec![true; nx * ny],
+            waterlines: Vec::new(),
+            speed_m_s: 3.0,
+            froude: 0.3,
+            k0: 1.0,
+            transverse_wavelength_m: 5.0,
+            theta_cut_deg: 80.0,
+            shortest_wavelength_m: 0.5,
+            theta_samples: 10,
+            max_abs_zeta_m: 0.0,
+            notes: Vec::new(),
+            warnings: Vec::new(),
+        };
+        crate::waves::WaveResult {
+            image: crate::waves::wave_image(&field, 1.0),
+            field,
+            clip_m: 1.0,
+            contours: Vec::new(),
+            wash_cut: WaveCut {
+                line: CutLine::Longitudinal { y: 1.0 },
+                s: vec![0.0, 10.0],
+                zeta: vec![0.0, 0.0],
+                theta_cut_deg: 80.0,
+                notes: Vec::new(),
+            },
+            wash: None,
+            wash_distance_m: 1.0,
+            regime: seacraft_core::wave_pattern::Regime::Low,
+            drag_here: seacraft_core::michell::MichellResult {
+                rw_n: 0.0,
+                cw: 0.0,
+                fn_: 0.3,
+                converged_note: String::new(),
+            },
+            interference: None,
+            spacing_scan: Vec::new(),
+            length_wl: 10.0,
+            beam_wl: 1.0,
+            draft: 0.5,
+            cat_spacing_m: None,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn wave_caption_names_speed_clip_and_spacing() {
+        let mut w = flat_waves();
+        w.clip_m = 0.13;
+        let kn = 3.0 / seacraft_core::resistance::KNOT;
+        assert_eq!(
+            wave_caption(&w),
+            format!("Waves · Fn 0.300 · {kn:.2} kn · ±0.130 m")
+        );
+        w.cat_spacing_m = Some(8.0);
+        assert!(wave_caption(&w).ends_with(" · catamaran s = 8.00 m"));
+    }
+
     #[test]
     fn a_shaded_hull_is_opaque() {
         let s = seacraft_core::demo::demo_hull(false);
@@ -2142,6 +2342,8 @@ mod tests {
             trim: 0.0,
             heel_deg: 0.0,
             waterline: None,
+            waves: None,
+            waves_status: None,
         };
         let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
         let camera = Camera::new(ViewKind::Profile, (min + max) * 0.5, max - min);
@@ -2376,6 +2578,8 @@ mod tests {
             trim: 0.0,
             heel_deg: 0.0,
             waterline: None,
+            waves: None,
+            waves_status: None,
         };
         let opts = DisplayOptions {
             shaded: false,
@@ -2467,6 +2671,8 @@ mod tests {
             trim: 0.0,
             heel_deg: 0.0,
             waterline: None,
+            waves: None,
+            waves_status: None,
         };
         let zebra = AnalysisMode::Zebra { stripes: 14.0 };
         let alpha = |rgba: &[u8], w: usize, x: usize, y: usize| rgba[(y * w + x) * 4 + 3];
@@ -2620,6 +2826,8 @@ mod tests {
             trim: 0.0,
             heel_deg: 0.0,
             waterline: None,
+            waves: None,
+            waves_status: None,
         };
         let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
         fn walk(shape: &egui::Shape, f: &mut dyn FnMut(&egui::Shape)) {
@@ -2937,6 +3145,8 @@ mod tests {
             trim: 0.0,
             heel_deg: 0.0,
             waterline: None,
+            waves: None,
+            waves_status: None,
         };
         let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(600.0, 400.0));
         let camera = Camera::new(ViewKind::Plan, (min + max) * 0.5, max - min);
