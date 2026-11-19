@@ -245,12 +245,31 @@ fn draft_zero_shows_the_failure_in_the_view() {
         a.wave_failure().is_some()
     });
     frame(&ctx, &mut app, Vec::new());
-    let texts = texts(&frame(&ctx, &mut app, Vec::new()));
-    let shown = texts
-        .iter()
-        .filter(|t| t.starts_with("Wave pattern failed"))
-        .count();
-    assert_eq!(shown, 1, "{texts:?}");
+    let out = frame(&ctx, &mut app, Vec::new());
+    // In the view, between its header and its bottom row; the status bar may echo the last
+    // logged error too, and whether that is this one depends on which job ends last.
+    let top = text_rect(&out, "Thin-ship theory (Michell)")
+        .expect("the view's header")
+        .top();
+    let bottom = text_rect(&out, "Catamaran").expect("the bottom row").top();
+    let mut shown = Vec::new();
+    fn walk(shape: &egui::Shape, (top, bottom): (f32, f32), out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, (top, bottom), out)),
+            egui::Shape::Text(t)
+                if t.pos.y > top
+                    && t.pos.y < bottom
+                    && t.galley.text().starts_with("Wave pattern failed") =>
+            {
+                out.push(t.galley.text().to_string())
+            }
+            _ => {}
+        }
+    }
+    for clipped in &out.shapes {
+        walk(&clipped.shape, (top, bottom), &mut shown);
+    }
+    assert_eq!(shown.len(), 1, "{:?}", texts(&out));
     assert!(app.wave_drag().is_none());
 }
 
