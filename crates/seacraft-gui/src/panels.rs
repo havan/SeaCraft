@@ -3971,7 +3971,10 @@ pub fn plot_interactive_with_rect(
     let font = egui::FontId::proportional(theme::SMALL_SIZE);
     let (x0, x1) = axes.x_bounds;
     let inside = |x: f64| x >= x0.min(x1) && x <= x0.max(x1);
-    for mark in marks.iter().filter(|m| inside(m.x)) {
+    // Labels in x order on three staggered rows, so marks close together stay readable.
+    let mut shown: Vec<&PlotMark> = marks.iter().filter(|m| inside(m.x)).collect();
+    shown.sort_by(|a, b| a.x.total_cmp(&b.x));
+    for (k, mark) in shown.into_iter().enumerate() {
         let px = axes.to_screen(mark.x, axes.y_bounds.0).x;
         painter.extend(egui::Shape::dashed_line(
             &[egui::pos2(px, area.top()), egui::pos2(px, area.bottom())],
@@ -3980,7 +3983,7 @@ pub fn plot_interactive_with_rect(
             3.0,
         ));
         painter.text(
-            egui::pos2(px + 3.0, area.top() + 2.0),
+            egui::pos2(px + 3.0, area.top() + 2.0 + 12.0 * (k % 3) as f32),
             egui::Align2::LEFT_TOP,
             mark.label,
             font.clone(),

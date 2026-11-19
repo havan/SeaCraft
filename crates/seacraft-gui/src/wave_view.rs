@@ -747,6 +747,37 @@ fn colour_bar(ui: &mut egui::Ui, clip_m: f64, width: f32) {
 /// extrema whose labels would crowd the plot, and wave drag is small there anyway.
 const MARK_FROM_FN: f64 = 0.25;
 
+/// The humps and hollows worth a label: `local_extrema`, with ripples dropped. Neighbouring
+/// hump-hollow pairs closer than `frac` of the curve's largest |y| are removed, the closest pair
+/// first (on a tie the later one), until every pair left differs by more.
+fn prominent_extrema(ys: &[f64], frac: f64) -> (Vec<usize>, Vec<usize>) {
+    let (max, min) = seacraft_core::michell::local_extrema(ys);
+    let mut ext: Vec<(usize, bool)> = max
+        .iter()
+        .map(|&i| (i, true))
+        .chain(min.iter().map(|&i| (i, false)))
+        .collect();
+    ext.sort_by_key(|e| e.0);
+    let threshold = frac * ys.iter().fold(0.0f64, |m, y| m.max(y.abs()));
+    loop {
+        let mut closest: Option<(usize, f64)> = None;
+        for k in 0..ext.len().saturating_sub(1) {
+            let diff = (ys[ext[k].0] - ys[ext[k + 1].0]).abs();
+            if closest.is_none_or(|(_, d)| diff <= d) {
+                closest = Some((k, diff));
+            }
+        }
+        match closest {
+            Some((k, d)) if d < threshold => {
+                ext.drain(k..k + 2);
+            }
+            _ => break,
+        }
+    }
+    let pick = |want: bool| ext.iter().filter(|e| e.1 == want).map(|e| e.0).collect();
+    (pick(true), pick(false))
+}
+
 /// The right column: wave drag against speed (or, for a catamaran, interference against spacing)
 /// and the waves along the wash line. A click on the drag plot sets the speed; on the spacing plot,
 /// the spacing.
@@ -826,7 +857,7 @@ fn plots(
                     ),
                 };
                 let ys: Vec<f64> = primary.iter().map(|p| p.1).collect();
-                let (humps, hollows) = seacraft_core::michell::local_extrema(&ys);
+                let (humps, hollows) = prominent_extrema(&ys, 0.05);
                 let mut marks = vec![PlotMark {
                     x: HULL_SPEED_FN,
                     label: "hull speed",
@@ -1055,6 +1086,15 @@ mod tests {
         assert_eq!(interference_words(0.88), "favourable (−12 %)");
         assert_eq!(interference_words(1.30), "unfavourable (+30 %)");
         assert_eq!(interference_words(1.004), "neutral (±1 %)");
+    }
+
+    /// A ripple smaller than 5 % of the peak is not marked; the main hump and hollow are.
+    #[test]
+    fn only_prominent_extrema_are_marked() {
+        let ys = [0.0, 1.0, 10.0, 6.0, 8.0, 7.9, 8.0, 3.0];
+        let (humps, hollows) = prominent_extrema(&ys, 0.05);
+        assert_eq!(humps, vec![2, 4]);
+        assert_eq!(hollows, vec![3]);
     }
 
     #[test]
