@@ -937,6 +937,62 @@ impl From<OpenError> for String {
     }
 }
 
+/// What the design report's wave section takes from the window: the view's settings, and the
+/// waterline length and beam at the report's draft when a current result knows them.
+struct ReportWaves {
+    settings: crate::waves::WaveSettings,
+    lengths: Option<(f64, f64)>,
+}
+
+impl ReportWaves {
+    /// The section's inputs. Lengths not known are measured on `surface` at the report's draft
+    /// (slow: call it off the window thread), else taken from the main particulars; with none,
+    /// the section goes in on the default domain in waterline lengths and without a wash line.
+    fn into_report(
+        self,
+        surface: &Surface,
+        opts: &seacraft_core::report::ReportOptions,
+    ) -> seacraft_core::report::WaveReport {
+        let w = &self.settings;
+        let subdivision = seacraft_core::SubdivisionOptions {
+            level: opts.level,
+            mode: opts.mode,
+        };
+        let lengths = self
+            .lengths
+            .or_else(|| {
+                crate::waves::michell_grid(surface, subdivision, opts.draft)
+                    .ok()
+                    .map(|g| (g.length_wl, g.beam_wl))
+            })
+            .or(Some((surface.settings.length, surface.settings.beam)))
+            .filter(|(l, b)| *l > 0.0 && *b >= 0.0);
+        let (speed_m_s, froude) = match w.speed {
+            crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
+            crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
+        };
+        let (wash, (ahead_l, behind_l, half_width_l)) = match lengths {
+            Some((l, b)) => {
+                let wash = crate::waves::wash_distance(w, l, b);
+                (Some(wash), crate::waves::domain_l(w, l, wash))
+            }
+            None => (None, (0.5, 3.0, 1.5)),
+        };
+        seacraft_core::report::WaveReport {
+            options: seacraft_core::wave_pattern::WavePatternOptions {
+                ahead_l,
+                behind_l,
+                half_width_l,
+                catamaran_spacing: w.cat_spacing_m,
+                ..seacraft_core::wave_pattern::WavePatternOptions::at_speed(speed_m_s)
+            },
+            froude,
+            clip_m: w.clip_m,
+            wash_distance_m: wash,
+        }
+    }
+}
+
 pub struct App {
     surface: Option<Surface>,
     path: Option<PathBuf>,
@@ -5543,7 +5599,9 @@ impl App {
     /// Show or hide the loading panel; showing it shows only it in the design dock.
     /// Report options for the current model: defaults from the surface, the
     /// project's saved settings, then the viewports' subdivision.
-    fn report_options(&self) -> Option<seacraft_core::report::ReportOptions> {
+    fn report_options(
+        &self,
+    ) -> Option<(seacraft_core::report::ReportOptions, Option<ReportWaves>)> {
         let surface = self.surface.as_ref()?;
         let mut opts = self
             .project
@@ -5551,51 +5609,34 @@ impl App {
             .apply(seacraft_core::report::ReportOptions::from_surface(surface));
         opts.level = self.level;
         opts.mode = self.mode;
-        // The wave pattern goes in while it is shown, with the dock's settings, at the report's draft.
-        let w = &self.perf_state.waves;
-        // The domain and wash line in metres need the waterline: the computed pattern's, else the
-        // hydrostatics', else the project's main particulars. With none, the section still goes in,
-        // on the default domain in waterline lengths and without a wash line.
+        // The wave pattern goes in while it is shown, with the view's settings, at the report's
+        // draft. Its domain and wash line in metres need the waterline at that draft: a current
+        // pattern's or hydrostatics' when either is at that draft (a stale one may be of another
+        // hull), else measured in the report job.
+        let at_draft = |d: f64| (d - opts.draft).abs() <= 1e-9;
         let lengths = self
-            .perf_state
-            .wave_result
-            .as_ref()
+            .wave_current()
+            .filter(|r| at_draft(r.draft))
             .map(|r| (r.length_wl, r.beam_wl))
-            .or_else(|| self.hydro.result.as_ref().map(|h| (h.lwl, h.bwl)))
-            .or(Some((surface.settings.length, surface.settings.beam)))
-            .filter(|(l, b)| *l > 0.0 && *b >= 0.0);
-        opts.waves = self.waves_needed().then(|| {
-            let (speed_m_s, froude) = match w.speed {
-                crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
-                crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
-            };
-            let (wash, (ahead_l, behind_l, half_width_l)) = match lengths {
-                Some((l, b)) => {
-                    let wash = crate::waves::wash_distance(w, l, b);
-                    (Some(wash), crate::waves::domain_l(w, l, wash))
-                }
-                None => (None, (0.5, 3.0, 1.5)),
-            };
-            seacraft_core::report::WaveReport {
-                options: seacraft_core::wave_pattern::WavePatternOptions {
-                    ahead_l,
-                    behind_l,
-                    half_width_l,
-                    catamaran_spacing: w.cat_spacing_m,
-                    ..seacraft_core::wave_pattern::WavePatternOptions::at_speed(speed_m_s)
-                },
-                froude,
-                clip_m: w.clip_m,
-                wash_distance_m: wash,
-            }
+            .or_else(|| {
+                self.hydro
+                    .result
+                    .as_ref()
+                    .filter(|h| self.hydro.track.is_current(self.hydro_key()) && at_draft(h.draft))
+                    .map(|h| (h.lwl, h.bwl))
+            });
+        let waves = self.waves_needed().then(|| ReportWaves {
+            settings: self.perf_state.waves.clone(),
+            lengths,
         });
-        Some(opts)
+        Some((opts, waves))
     }
 
     /// Write the design report on this thread (tests and scripts).
     pub fn write_report_blocking(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let opts = self.report_options().ok_or("no model loaded")?;
+        let (mut opts, waves) = self.report_options().ok_or("no model loaded")?;
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
+        opts.waves = waves.map(|w| w.into_report(surface, &opts));
         let html =
             seacraft_core::report::design_report_with_project(surface, &opts, &self.project)?;
         seacraft_core::io::write_atomic(path, html)
@@ -5608,7 +5649,9 @@ impl App {
     /// reports when it is done (a failure is logged). Fails when nothing
     /// could be started.
     fn start_report(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let (Some(opts), Some(surface)) = (self.report_options(), self.surface.clone()) else {
+        let (Some((mut opts, waves)), Some(surface)) =
+            (self.report_options(), self.surface.clone())
+        else {
             let msg = "No model loaded.".to_owned();
             self.log(Level::Error, msg.clone());
             return Err(msg);
@@ -5618,6 +5661,8 @@ impl App {
         self.set_status(format!("writing report {}…", path.display()));
         let target = path.clone();
         let job = Job::spawn(self.revision, move || {
+            // Measuring the waterline, when it comes to that, is slow: here, off the window.
+            opts.waves = waves.map(|w| w.into_report(&surface, &opts));
             seacraft_core::report::design_report_with_project(&surface, &opts, &project).and_then(
                 |html| {
                     seacraft_core::io::write_atomic(&target, html)

@@ -1260,3 +1260,28 @@ fn a_wash_drag_cut_short_by_closing_the_view_leaves_the_map_free() {
     let after = dashed_rows(&frame_shapes(&out), theme::WAVE_CUT);
     assert_ne!(before, after, "scrolling zooms the map");
 }
+
+#[test]
+fn report_takes_no_dimensions_from_a_stale_pattern() {
+    // PR #10 review: the report's wash line and domain in metres came from the kept pattern's
+    // waterline even after the hull changed under it.
+    let (mut app, _ctx) = demo_with_waves();
+    let demo_wash = app.wave_current().unwrap().wash_distance_m;
+    // Stretch the hull: every point forward of midships 5 m further forward.
+    let surface = app.surface().unwrap();
+    let xs: Vec<f64> = surface.points.iter().map(|p| p.p.x).collect();
+    let (lo, hi) = xs
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+    let mid = 0.5 * (lo + hi);
+    let bow: Vec<usize> = (0..xs.len()).filter(|&i| xs[i] > mid).collect();
+    app.move_points(&bow, seacraft_core::math::Vec3::new(5.0, 0.0, 0.0))
+        .unwrap();
+    assert!(app.wave_current().is_none(), "the pattern is stale");
+    let html = scratch("report-after-hull-edit.html");
+    app.write_report_blocking(&html).unwrap();
+    let text = std::fs::read_to_string(&html).unwrap();
+    assert!(text.contains("Wash height at"), "the wash line is in");
+    let stale = format!("Wash height at {demo_wash:.2} m");
+    assert!(!text.contains(&stale), "{stale}");
+}
