@@ -1285,3 +1285,58 @@ fn report_takes_no_dimensions_from_a_stale_pattern() {
     let stale = format!("Wash height at {demo_wash:.2} m");
     assert!(!text.contains(&stale), "{stale}");
 }
+
+#[test]
+fn f5_with_an_older_wave_job_running_starts_no_second_job() {
+    // PR #10 review: F5 started a wave job for the newest settings while an older one ran.
+    let (mut app, ctx) = demo();
+    app.open_analysis_view(AnalysisView::Waves);
+    app.recompute_stale();
+    assert!(app.waves_running_current(), "F5 starts the pattern");
+    app.set_wave_settings(WaveSettings {
+        speed: WaveSpeed::Froude(0.45),
+        ..app.wave_settings().clone()
+    });
+    // No frame in between: the first job is still in flight, whether or not its thread ended.
+    app.recompute_stale();
+    assert!(
+        app.waves_busy() && !app.waves_running_current(),
+        "one job at a time"
+    );
+    frames_until(&ctx, &mut app, "the newest pattern", |a| {
+        a.wave_current().is_some()
+    });
+}
+
+#[test]
+fn f5_on_a_failed_pattern_while_another_runs_retries_it_afterwards() {
+    // PR #10 review: with another job in flight, F5 on a failed pattern did nothing at all.
+    let (mut app, ctx) = demo();
+    app.open_analysis_view(AnalysisView::Waves);
+    // Demihulls 0.5 m apart overlap: that pattern fails, the same way each time.
+    let mono = app.wave_settings().clone();
+    let overlapping = WaveSettings {
+        cat_spacing_m: Some(0.5),
+        ..mono.clone()
+    };
+    app.set_wave_settings(overlapping.clone());
+    frames_until(&ctx, &mut app, "the failure", |a| {
+        a.wave_failure().is_some()
+    });
+    app.set_wave_settings(mono);
+    app.recompute_stale();
+    assert!(app.waves_running_current());
+    app.set_wave_settings(overlapping);
+    assert!(app.wave_failure().is_some(), "the old failure, remembered");
+    app.recompute_stale();
+    assert!(
+        app.wave_failure().is_none(),
+        "F5 forgets it: the retry is pending"
+    );
+    assert!(
+        !app.waves_running_current(),
+        "and waits for the job in flight"
+    );
+    frames_until(&ctx, &mut app, "the retry", |a| a.wave_failure().is_some());
+}
+

@@ -5035,6 +5035,11 @@ impl App {
         self.waves_track.busy()
     }
 
+    /// A wave job is in flight for the current settings, not an older key (test hook).
+    pub fn waves_running_current(&self) -> bool {
+        self.waves_track.running_for() == Some(self.waves_key())
+    }
+
     /// Compute the wave pattern on this thread (tests and scripts).
     pub fn compute_waves_blocking(&mut self) -> Result<(), String> {
         let surface = self.surface.as_ref().ok_or("no model loaded")?;
@@ -5362,10 +5367,14 @@ impl App {
         ) {
             self.start_resistance_compute();
         }
-        // One wave job at a time, as in `run_jobs`: with an older one in flight, the newest key
-        // starts when it ends.
-        if self.waves_needed() && self.waves_track.ready_to_retry(self.waves_key()) {
-            self.start_waves_compute();
+        // One wave job at a time, as in `run_jobs`. A failed key is tried again: now, or, with
+        // an older job in flight, by `run_jobs` when that ends.
+        if self.waves_needed() {
+            let key = self.waves_key();
+            self.waves_track.retry(key);
+            if self.waves_track.ready(key) {
+                self.start_waves_compute();
+            }
         }
         // The drawer's view and the dock's tab are each on screen on their
         // own: the drawer stays when the dock is hidden, and does not cover

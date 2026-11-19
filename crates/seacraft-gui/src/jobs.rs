@@ -220,10 +220,12 @@ impl<T> Track<T> {
         self.due(current) && !self.busy()
     }
 
-    /// As [`Track::ready`], but a failure for `current` is tried again: for an explicit
-    /// recompute.
-    pub fn ready_to_retry(&self, current: u64) -> bool {
-        !self.is_current(current) && !self.busy()
+    /// An explicit retry (F5): a failure for `current` is forgotten, so `current` is due again
+    /// and starts as soon as [`Track::ready`] says, even when a job is in flight now.
+    pub fn retry(&mut self, current: u64) {
+        if self.failure(current).is_some() {
+            self.failure = None;
+        }
     }
 }
 
@@ -335,23 +337,26 @@ mod tests {
     }
 
     #[test]
-    fn a_retry_waits_for_the_job_in_flight_too() {
-        // PR #10 review: a manual recompute (F5) started a wave job while an older one ran.
+    fn an_explicit_retry_waits_for_the_job_in_flight_then_runs() {
+        // PR #10 review: a manual recompute (F5) started a wave job while an older one ran, and
+        // once that was fixed, a retry of a failed revision asked for then was lost.
         let mut track: Track<u32> = Track::default();
         track.fail(2, "too coarse".into());
-        assert!(!track.ready(2), "a failure is not retried by itself");
-        assert!(track.ready_to_retry(2), "but is when asked");
+        assert!(!track.due(2), "a failure is not retried by itself");
         let (release, gate) = mpsc::channel::<()>();
         track.start(1, move || {
             let _ = gate.recv();
             Ok(1)
         });
-        assert!(!track.ready_to_retry(2), "not while revision 1 runs");
+        track.retry(2);
+        assert!(track.failure(2).is_none(), "the retry is pending");
+        assert!(
+            track.due(2) && !track.ready(2),
+            "but waits while revision 1 runs"
+        );
         let _ = release.send(());
         assert_eq!(track.wait(2), None);
-        assert!(track.ready_to_retry(2));
-        track.stamp(2);
-        assert!(!track.ready_to_retry(2), "nothing to do");
+        assert!(track.ready(2), "then it starts");
     }
 
     #[test]
