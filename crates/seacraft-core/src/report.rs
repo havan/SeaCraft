@@ -205,7 +205,7 @@ fn wave_section_field(
                 &options,
                 &field,
                 d,
-                crate::wave_pattern::wash_samples(&field, crate::wave_pattern::WASH_SAMPLES),
+                crate::wave_pattern::wash_samples(&field, crate::wave_pattern::WASH_SAMPLES)?,
             )?
             .1
         }

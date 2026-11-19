@@ -883,16 +883,25 @@ pub fn wash_height(cut: &WaveCut) -> Option<WashHeight> {
 
 /// The fewest samples on the wash line of [`wash_cut`] in the CLI, MCP and report.
 pub const WASH_SAMPLES: usize = 2000;
-/// The most samples on a wash line: a field that would need more fails with the cut's reason.
+/// The most samples on a wash line: [`wash_samples`] refuses a line that needs more.
 pub const MAX_WASH_SAMPLES: usize = 20_001;
 
 /// Samples for a wash line over `field`'s x range: at least `at_least`, and four to a transverse
-/// wave, so a slow speed's short waves are sampled (a cut refuses a spacing over half a
-/// wavelength), up to [`MAX_WASH_SAMPLES`].
-pub fn wash_samples(field: &WaveField, at_least: usize) -> usize {
+/// wave, so a slow speed's short waves are sampled. A line that needs more than
+/// [`MAX_WASH_SAMPLES`] is refused, never sampled more coarsely: its heights would come out low.
+pub fn wash_samples(field: &WaveField, at_least: usize) -> Result<usize, String> {
     let length = field.xs[field.xs.len() - 1] - field.xs[0];
     let quarter = 0.25 * field.transverse_wavelength_m;
-    ((length / quarter).ceil() as usize + 1).clamp(at_least, MAX_WASH_SAMPLES.max(at_least))
+    let needed = (length / quarter).ceil() as usize + 1;
+    if needed > MAX_WASH_SAMPLES {
+        return Err(format!(
+            "the wash line needs {needed} samples (four to each {:.3} m transverse wave over \
+             {length:.1} m), over the limit of {MAX_WASH_SAMPLES}: shorten the domain or raise the \
+             speed",
+            field.transverse_wavelength_m
+        ));
+    }
+    Ok(needed.max(at_least))
 }
 
 /// The waves along the wash line, a longitudinal cut at `y = -distance_m` (port, as drawn under the
@@ -1440,7 +1449,7 @@ pub fn wave_tool(
     };
     let field = wave_field(&grid, &opts)?;
     let wash = match wash_distance {
-        Some(d) => wash_cut(&grid, &opts, &field, d, wash_samples(&field, WASH_SAMPLES))?.1,
+        Some(d) => wash_cut(&grid, &opts, &field, d, wash_samples(&field, WASH_SAMPLES)?)?.1,
         None => None,
     };
     // Every output is made first and written together, so one that cannot be written leaves none.
@@ -2309,6 +2318,18 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(reply["wash"]["distance_m"], 2.0, "{reply}");
+    }
+
+    #[test]
+    fn wave_tool_refuses_a_wash_line_over_the_sample_limit() {
+        // PR #10 review: past the limit the samples were clamped, so the wash line came back at
+        // under four samples to a wave, its heights understated, with no word of it.
+        let err = demo_tool(serde_json::json!({
+            "fn": 0.05, "ahead": 1.0, "behind": 100.0, "half_width": 0.01, "wash_distance": 2.0
+        }))
+        .unwrap_err();
+        assert!(err.contains("wash line needs"), "{err}");
+        assert!(err.contains("20001"), "{err}");
     }
 
     #[test]

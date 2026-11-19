@@ -254,7 +254,7 @@ pub fn compute_waves(
     } else {
         Vec::new()
     };
-    let samples = seacraft_core::wave_pattern::wash_samples(&field, WASH_LINE_SAMPLES);
+    let samples = seacraft_core::wave_pattern::wash_samples(&field, WASH_LINE_SAMPLES)?;
     let (wash_cut, wash) = wash_cut(&grid, &opts, &field, wash_distance_m, samples)?;
     let image = wave_image(&field, clip_m);
 

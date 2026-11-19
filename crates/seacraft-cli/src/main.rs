@@ -3025,15 +3025,10 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
     };
     let wash = match a.wash_distance {
         Some(d) => {
-            wave_pattern::wash_cut(
-                &grid,
-                &opts,
-                &field,
-                d,
-                wave_pattern::wash_samples(&field, wave_pattern::WASH_SAMPLES),
-            )
-            .map_err(|e| anyhow::anyhow!("--wash-distance: {e}"))?
-            .1
+            wave_pattern::wash_samples(&field, wave_pattern::WASH_SAMPLES)
+                .and_then(|samples| wave_pattern::wash_cut(&grid, &opts, &field, d, samples))
+                .map_err(|e| anyhow::anyhow!("--wash-distance: {e}"))?
+                .1
         }
         None => None,
     };
