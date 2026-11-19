@@ -5,7 +5,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 ## Unreleased
 
 - The far-field wave pattern in the window, as the **Wave pattern** view in the Analysis drawer (Analysis menu,
-  after Trim scan, or "Open wave pattern" in the Performance tab). One speed drives the view: a number in knots
+  after Trim scan, or "Open wave pattern" in the Performance tab). Its header names the theory, thin-ship
+  (Michell), and every input and readout says what it means on hover. One speed drives the view: a number in knots
   or as a Froude number, and a slider from Fn 0.10 to 1.00; a value typed outside it is kept and flagged. The view
   recomputes as the speed or a setting changes; a result that no longer matches the model, the draft or the
   settings is shown dimmed and never saved or reported as current. Readouts in plain words with units: the speed

@@ -89,6 +89,8 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 - [ ] Grey out or cut the Holtrop curve where the method does not apply (on the demo hull R_T falls past
   7.25 kn).
 - [ ] A 3D wave surface in Perspective view.
+- [ ] A wave pattern method for planing hulls; the Wave pattern view's title, "Thin-ship theory (Michell)",
+  then becomes a drop-down that picks the method.
 
 ### M5: Binaries
 

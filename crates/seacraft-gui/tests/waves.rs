@@ -1073,3 +1073,67 @@ fn plan_contours_off_by_default() {
         "no Plan view caption while the contours are off"
     );
 }
+
+#[test]
+fn readout_values_sit_under_their_names() {
+    let (mut app, ctx) = demo_with_waves();
+    view_texts(&ctx, &mut app);
+    let out = frame(&ctx, &mut app, Vec::new());
+    let name = text_rect(&out, "Hull speed").expect("the name");
+    let value = texts(&out)
+        .into_iter()
+        .find(|t| t.contains("rule of thumb"))
+        .and_then(|t| text_rect(&out, &t))
+        .expect("the value");
+    assert!(value.top() >= name.bottom() - 0.5, "{name:?} {value:?}");
+    assert!(
+        (value.left() - name.left()).abs() < 1.0,
+        "{name:?} {value:?}"
+    );
+}
+
+#[test]
+fn the_view_names_its_theory() {
+    let (mut app, ctx) = demo_with_waves();
+    let texts = view_texts(&ctx, &mut app);
+    assert!(
+        texts.iter().any(|t| t == "Thin-ship theory (Michell)"),
+        "{texts:?}"
+    );
+}
+
+/// The texts on screen after hovering the text `label`, with tooltips shown at once.
+fn hover_texts(ctx: &egui::Context, app: &mut App, label: &str) -> Vec<String> {
+    ctx.global_style_mut(|s| {
+        s.interaction.tooltip_delay = 0.0;
+        s.interaction.show_tooltips_only_when_still = false;
+    });
+    let out = frame(ctx, app, Vec::new());
+    let at = text_rect(&out, label)
+        .unwrap_or_else(|| panic!("{label}: {:?}", texts(&out)))
+        .center();
+    frame(ctx, app, vec![egui::Event::PointerMoved(at)]);
+    frame(ctx, app, Vec::new());
+    texts(&frame(ctx, app, Vec::new()))
+}
+
+#[test]
+fn inputs_explain_themselves_on_hover() {
+    let (mut app, ctx) = demo_with_waves();
+    view_texts(&ctx, &mut app);
+    for (label, want) in [
+        ("Speed", "through the water"),
+        ("kn", "nautical miles per hour"),
+        ("Fn", "Froude number"),
+        ("Thin-ship theory (Michell)", "slender hull"),
+        ("Catamaran", "side by side"),
+        ("Map ▾", "Kelvin wedge"),
+        ("Colours ▾", "colour scale"),
+    ] {
+        let texts = hover_texts(&ctx, &mut app, label);
+        assert!(
+            texts.iter().any(|t| t.contains(want)),
+            "{label} → {want}: {texts:?}"
+        );
+    }
+}

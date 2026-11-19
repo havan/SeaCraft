@@ -78,6 +78,12 @@ const SLIDER_FN: (f64, f64) = (0.10, 1.00);
 const READOUTS_WIDTH: f32 = 240.0;
 /// Below this drawer width the plots go under the map.
 const WIDE: f32 = 900.0;
+/// The theory behind every number in the view, named in its header.
+const METHOD_TITLE: &str = "Thin-ship theory (Michell)";
+const METHOD_HOVER: &str =
+    "Michell's thin-ship theory: a slender hull at steady speed in deep, calm \
+    water, with small waves and no viscosity, spray or squat. It gives the waves far from the hull \
+    and their drag, not the water at the hull. It does not suit planing hulls.";
 /// Height kept for the bottom row of inputs.
 const BOTTOM_ROW: f32 = 34.0;
 
@@ -115,6 +121,11 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
         });
     });
     ui.horizontal(|ui| {
+        // The method's name. When a second method arrives (planing, say), this becomes the
+        // drop-down that picks it.
+        ui.label(egui::RichText::new(METHOD_TITLE).strong())
+            .on_hover_text(METHOD_HOVER);
+        ui.separator();
         if speed_control(ui, settings, length_wl) {
             action = WaveViewAction::Changed;
         }
@@ -195,7 +206,10 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
 /// True when the speed changed.
 fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>) -> bool {
     let mut changed = false;
-    ui.label("Speed");
+    ui.label("Speed").on_hover_text(
+        "The boat's speed through the water, in knots or as a Froude number. Type it, drag the \
+         number or scrub the slider; the map, readouts and plots all follow it.",
+    );
     let knots = s.speed.is_knots();
     let (mut value, range) = match s.speed {
         WaveSpeed::Knots(v) => (v, 0.1..=100.0),
@@ -208,6 +222,7 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
                 .range(range)
                 .max_decimals(3),
         )
+        .on_hover_text("Drag to change the speed, or click to type it")
         .changed()
     {
         s.speed = if knots {
@@ -219,8 +234,13 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
     }
     let mut to_knots = knots;
     theme::segmented(ui, |ui| {
-        ui.selectable_value(&mut to_knots, true, "kn");
-        ui.selectable_value(&mut to_knots, false, "Fn");
+        ui.selectable_value(&mut to_knots, true, "kn")
+            .on_hover_text("Knots: nautical miles per hour (1 kn = 0.514 m/s)");
+        ui.selectable_value(&mut to_knots, false, "Fn")
+            .on_hover_text(
+                "Froude number: the speed divided by √(g × waterline length). The same Froude \
+             number gives the same shape of wave pattern on a small or a large hull.",
+            );
     });
     if to_knots != knots {
         // The speed itself does not jump: the value converts by the waterline length.
@@ -349,8 +369,8 @@ fn body_columns(
     action
 }
 
-/// The left column: the regime sentence, then one row per question, each with a definition on
-/// hover.
+/// The left column: the regime sentence, then one readout per question (its name over its value),
+/// each with a definition on hover.
 fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
     ui.add(egui::Label::new(r.regime.sentence()).wrap());
     ui.add_space(6.0);
@@ -430,17 +450,14 @@ fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
             ));
         }
     }
-    egui::Grid::new("wave_readouts_grid")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            for (name, value, hover) in rows {
-                ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY))
-                    .on_hover_text(hover);
-                ui.add(egui::Label::new(value).wrap());
-                ui.end_row();
-            }
-        });
+    // Each name over its value: the column is narrow, and a value beside its name wraps into a
+    // tall, cramped block.
+    for (name, value, hover) in rows {
+        ui.label(egui::RichText::new(name).color(theme::TEXT_SECONDARY))
+            .on_hover_text(hover);
+        ui.add(egui::Label::new(value).wrap()).on_hover_text(hover);
+        ui.add_space(6.0);
+    }
 }
 
 /// World (m, model axes) to the map's screen: bow to the right, starboard (+y) up.
@@ -945,7 +962,14 @@ fn bottom_row(
     let mut save = false;
     ui.horizontal_wrapped(|ui| {
         let mut cat = s.cat_spacing_m.is_some();
-        if ui.checkbox(&mut cat, "Catamaran").changed() {
+        if ui
+            .checkbox(&mut cat, "Catamaran")
+            .on_hover_text(
+                "Two copies of this hull side by side; their wave systems add up, and can cancel \
+                 or reinforce each other",
+            )
+            .changed()
+        {
             let guess = crate::waves::catamaran_guess(length_wl, beam_wl);
             s.cat_spacing_m = cat.then_some(guess);
             changed = true;
@@ -985,7 +1009,10 @@ fn bottom_row(
             let mut auto = s.domain == WaveDomain::Auto;
             if ui
                 .checkbox(&mut auto, "Auto domain")
-                .on_hover_text("Ahead 0.5 L, behind 3 L, each side to clear the wash line")
+                .on_hover_text(
+                    "The map reaches half a waterline length ahead of the bow, three behind the \
+                     stern and far enough to each side to show the wash line",
+                )
                 .changed()
             {
                 let l = length_wl.unwrap_or(10.0);
@@ -1007,10 +1034,22 @@ fn bottom_row(
                 side_m,
             } = &mut s.domain
             {
-                for (v, label) in [
-                    (ahead_m, "ahead of the bow "),
-                    (behind_m, "behind the stern "),
-                    (side_m, "each side "),
+                for (v, label, hover) in [
+                    (
+                        ahead_m,
+                        "ahead of the bow ",
+                        "How far the map reaches ahead of the bow",
+                    ),
+                    (
+                        behind_m,
+                        "behind the stern ",
+                        "How far the map reaches behind the stern",
+                    ),
+                    (
+                        side_m,
+                        "each side ",
+                        "How far the map reaches to each side of the centreline",
+                    ),
                 ] {
                     changed |= ui
                         .add(
@@ -1020,14 +1059,27 @@ fn bottom_row(
                                 .prefix(label)
                                 .suffix(" m"),
                         )
+                        .on_hover_text(hover)
                         .changed();
                 }
             }
-            ui.checkbox(&mut s.kelvin_wedge, "Kelvin wedge");
-        });
+            ui.checkbox(&mut s.kelvin_wedge, "Kelvin wedge")
+                .on_hover_text(
+                "The two lines at 19.47° either side of the track that bound a ship's waves in \
+                 deep water, whatever its speed",
+            );
+        })
+        .response
+        .on_hover_text("How much water the map shows, and the Kelvin wedge");
         ui.menu_button("Colours ▾", |ui| {
             let mut auto = s.clip_m.is_none();
-            if ui.checkbox(&mut auto, "Auto range").changed() {
+            if ui
+                .checkbox(&mut auto, "Auto range")
+                .on_hover_text(
+                    "The colour scale reaches the highest crest or deepest trough on the map",
+                )
+                .changed()
+            {
                 s.clip_m = if auto {
                     None
                 } else {
@@ -1044,6 +1096,10 @@ fn bottom_row(
                             .prefix("± ")
                             .suffix(" m"),
                     )
+                    .on_hover_text(
+                        "Water this far above or below calm shows in full colour; higher or lower \
+                         water shows the same",
+                    )
                     .changed();
             }
             changed |= ui
@@ -1052,8 +1108,11 @@ fn bottom_row(
                         .range(0..=12)
                         .prefix("Contours each side: "),
                 )
+                .on_hover_text("Contour lines on the crest side and on the trough side; 0 for none")
                 .changed();
-        });
+        })
+        .response
+        .on_hover_text("The colour scale and the contour lines");
         ui.checkbox(&mut s.plan_contours, "Contours on Plan view")
             .on_hover_text("Faint contours and the wash line over Plan view");
         ui.separator();
