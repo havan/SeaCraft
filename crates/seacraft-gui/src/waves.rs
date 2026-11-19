@@ -189,10 +189,8 @@ pub struct WaveResult {
     pub warnings: Vec<String>,
 }
 
-/// Samples along the wash line.
+/// The fewest samples along the wash line (more at a slow speed: `wash_samples`).
 const WASH_LINE_SAMPLES: usize = 401;
-/// The most samples along the wash line (a speed that would need more fails with the cut's reason).
-const MAX_WASH_SAMPLES: usize = 20_001;
 /// Spacings in the catamaran spacing scan.
 const SPACING_SCAN_POINTS: usize = 40;
 
@@ -256,12 +254,7 @@ pub fn compute_waves(
     } else {
         Vec::new()
     };
-    // At least WASH_LINE_SAMPLES, and four to a transverse wave so a slow speed's short waves are
-    // sampled (the cut refuses a spacing over half a wavelength).
-    let length = field.xs[field.xs.len() - 1] - field.xs[0];
-    let quarter = 0.25 * field.transverse_wavelength_m;
-    let samples =
-        ((length / quarter).ceil() as usize + 1).clamp(WASH_LINE_SAMPLES, MAX_WASH_SAMPLES);
+    let samples = seacraft_core::wave_pattern::wash_samples(&field, WASH_LINE_SAMPLES);
     let (wash_cut, wash) = wash_cut(&grid, &opts, &field, wash_distance_m, samples)?;
     let image = wave_image(&field, clip_m);
 

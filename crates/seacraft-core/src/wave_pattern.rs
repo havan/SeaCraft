@@ -881,8 +881,19 @@ pub fn wash_height(cut: &WaveCut) -> Option<WashHeight> {
         })
 }
 
-/// Samples on the wash line of [`wash_cut`] in the CLI, MCP and report.
+/// The fewest samples on the wash line of [`wash_cut`] in the CLI, MCP and report.
 pub const WASH_SAMPLES: usize = 2000;
+/// The most samples on a wash line: a field that would need more fails with the cut's reason.
+pub const MAX_WASH_SAMPLES: usize = 20_001;
+
+/// Samples for a wash line over `field`'s x range: at least `at_least`, and four to a transverse
+/// wave, so a slow speed's short waves are sampled (a cut refuses a spacing over half a
+/// wavelength), up to [`MAX_WASH_SAMPLES`].
+pub fn wash_samples(field: &WaveField, at_least: usize) -> usize {
+    let length = field.xs[field.xs.len() - 1] - field.xs[0];
+    let quarter = 0.25 * field.transverse_wavelength_m;
+    ((length / quarter).ceil() as usize + 1).clamp(at_least, MAX_WASH_SAMPLES.max(at_least))
+}
 
 /// The waves along the wash line, a longitudinal cut at `y = -distance_m` (port, as drawn under the
 /// hull in Plan view) over the field's x range, and the wash height on it. `distance_m` must be above
@@ -1429,7 +1440,7 @@ pub fn wave_tool(
     };
     let field = wave_field(&grid, &opts)?;
     let wash = match wash_distance {
-        Some(d) => wash_cut(&grid, &opts, &field, d, WASH_SAMPLES)?.1,
+        Some(d) => wash_cut(&grid, &opts, &field, d, wash_samples(&field, WASH_SAMPLES))?.1,
         None => None,
     };
     // Every output is made first and written together, so one that cannot be written leaves none.
@@ -2286,6 +2297,18 @@ mod tests {
         assert_eq!(reply["regime"]["key"], "hull_speed");
         let none = demo_tool(serde_json::json!({"fn": 0.45})).unwrap();
         assert!(none.get("wash").is_none(), "{none}");
+    }
+
+    #[test]
+    fn wave_tool_samples_the_wash_line_by_the_wavelength() {
+        // PR #10 review: a slow speed over a long domain computes its field, but a fixed 2000
+        // samples on the wash line spaced them over half a transverse wave apart, and the cut
+        // refused.
+        let reply = demo_tool(serde_json::json!({
+            "fn": 0.05, "ahead": 1.0, "behind": 20.0, "half_width": 0.1, "wash_distance": 2.0
+        }))
+        .unwrap();
+        assert_eq!(reply["wash"]["distance_m"], 2.0, "{reply}");
     }
 
     #[test]

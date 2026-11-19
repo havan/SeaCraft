@@ -194,7 +194,8 @@ fn wave_section_field(
     )?;
     let mut options = waves.options.clone();
     if let Some(froude) = waves.froude {
-        options.speed_m_s = froude * (resistance::GRAVITY * grid.length_wl).sqrt();
+        // The field's own gravity, so the field is at the Froude number asked for.
+        options.speed_m_s = froude * (options.g * grid.length_wl).sqrt();
     }
     let field = crate::wave_pattern::wave_field(&grid, &options)?;
     let wash = match waves.wash_distance_m {
@@ -204,7 +205,7 @@ fn wave_section_field(
                 &options,
                 &field,
                 d,
-                crate::wave_pattern::WASH_SAMPLES,
+                crate::wave_pattern::wash_samples(&field, crate::wave_pattern::WASH_SAMPLES),
             )?
             .1
         }
@@ -2285,6 +2286,23 @@ mod tests {
         assert!(waves.contains("0.300"), "the Froude number in the table");
         assert!(!html.contains("<?xml"));
         assert!(!waves.to_lowercase().contains("validated"));
+    }
+
+    #[test]
+    fn wave_section_keeps_its_froude_number_under_the_options_gravity() {
+        // PR #10 review: the Froude number became a speed by standard gravity while the field
+        // used the options' own, so with g = 1 a requested Fn 0.3 drew Fn 0.94.
+        let surface = demo::demo_hull(false);
+        let opts = ReportOptions::from_surface(&surface);
+        let mut waves = waves_at_fn(0.3);
+        waves.options.g = 1.0;
+        let subdiv = SubdivisionOptions {
+            level: 2,
+            mode: opts.mode,
+        };
+        let (field, _) =
+            wave_section_field(&surface, subdiv, opts.draft, &waves).expect("the field");
+        assert!((field.froude - 0.3).abs() < 1e-9, "{}", field.froude);
     }
 
     #[test]
