@@ -76,7 +76,7 @@ enum Command {
     Unfold(UnfoldArgs),
     /// Edit the control net: split faces, insert edges, toggle creases
     Edit(EditArgs),
-    /// Savitsky planing resistance: trim, wetted length and drag
+    /// Savitsky planing resistance: trim, mean wetted length, wetted area and drag
     Planing(PlaningArgs),
     /// Cross curves of stability (KN / GZ)
     Stability(StabilityArgs),
@@ -3256,11 +3256,11 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
 
     if let Some(path) = &a.csv {
         let mut text = String::from(
-            "speed_kn,speed_m_s,cv,c_delta,cl_beta,trim_deg,lambda,wetted_length_m,lcp_over_b,cf,resistance_n,pe_w\n",
+            "speed_kn,speed_m_s,cv,c_delta,cl_beta,trim_deg,lambda,wetted_length_m,wetted_area_m2,lcp_over_b,cf,resistance_n,pe_w\n",
         );
         for p in &curve {
             text.push_str(&format!(
-                "{:.2},{:.3},{:.4},{:.5},{:.5},{:.3},{:.4},{:.3},{:.4},{:.6},{:.1},{:.1}\n",
+                "{:.2},{:.3},{:.4},{:.5},{:.5},{:.3},{:.4},{:.3},{:.3},{:.4},{:.6},{:.1},{:.1}\n",
                 p.speed_kn,
                 p.speed_m_s,
                 p.cv,
@@ -3269,6 +3269,7 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
                 p.trim_deg,
                 p.lambda,
                 p.wetted_length_m,
+                p.wetted_area_m2,
                 p.lcp_over_b,
                 p.cf,
                 p.resistance_n,
@@ -3307,17 +3308,18 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
     );
     println!();
     println!(
-        "  {:>6}  {:>6}  {:>7}  {:>7}  {:>10}  {:>7}  {:>10}  {:>10}",
-        "kn", "CV", "trim", "lambda", "wetted [m]", "LCP/b", "RT [kN]", "PE [kW]"
+        "  {:>6}  {:>6}  {:>7}  {:>7}  {:>10}  {:>10}  {:>7}  {:>10}  {:>10}",
+        "kn", "CV", "trim", "lambda", "wetted [m]", "area [m2]", "LCP/b", "RT [kN]", "PE [kW]"
     );
     for p in &curve {
         println!(
-            "  {:>6.1}  {:>6.3}  {:>6.2}d  {:>7.3}  {:>10.3}  {:>7.3}  {:>10.2}  {:>10.2}",
+            "  {:>6.1}  {:>6.3}  {:>6.2}d  {:>7.3}  {:>10.3}  {:>10.2}  {:>7.3}  {:>10.2}  {:>10.2}",
             p.speed_kn,
             p.cv,
             p.trim_deg,
             p.lambda,
             p.wetted_length_m,
+            p.wetted_area_m2,
             p.lcp_over_b,
             p.resistance_n / 1000.0,
             p.pe_w / 1000.0

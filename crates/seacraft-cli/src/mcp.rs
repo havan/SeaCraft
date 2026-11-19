@@ -3199,7 +3199,8 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "planing_curve",
             "Planing curve",
-            "Savitsky planing resistance over a speed sweep: trim, mean wetted length, wetted length in metres, \
+            "Savitsky planing resistance over a speed sweep: trim, λ (mean wetted length over beam), the mean \
+             wetted length λb in metres, the wetted bottom area, \
              centre of pressure over beam, drag and effective power, with the trim solved so the pressure centre \
              sits under the CG. Weight comes from the hydrostatics at `draft`, the CG defaults to the LCB and \
              `deadrise` to the transom section's keel tangent. Speeds where the hull does not plane are omitted.",

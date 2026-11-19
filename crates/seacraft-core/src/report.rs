@@ -985,16 +985,17 @@ pub fn design_report_with_project(
 
                     out.push_str("  <table>\n");
                     out.push_str("    <thead>\n");
-                    out.push_str("      <tr><th>Speed [kn]</th><th>Trim [&deg;]</th><th>Wetted Length [m]</th><th>LCP/b</th><th>Resistance [kN]</th><th>PE [kW]</th></tr>\n");
+                    out.push_str("      <tr><th>Speed [kn]</th><th>Trim [&deg;]</th><th>Mean Wetted Length [m]</th><th>Wetted Area [m&sup2;]</th><th>LCP/b</th><th>Resistance [kN]</th><th>PE [kW]</th></tr>\n");
                     out.push_str("    </thead>\n");
                     out.push_str("    <tbody>\n");
                     for p in &pts {
                         let _ = writeln!(
                             out,
-                            "      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                            "      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                             fmt_num(p.speed_kn, 1),
                             fmt_num(p.trim_deg, 2),
                             fmt_num(p.wetted_length_m, 2),
+                            fmt_num(p.wetted_area_m2, 1),
                             fmt_num(p.lcp_over_b, 3),
                             fmt_num(p.resistance_n / 1000.0, 2),
                             fmt_num(p.pe_w / 1000.0, 2),
