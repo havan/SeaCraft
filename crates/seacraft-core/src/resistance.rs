@@ -524,6 +524,17 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
     }
 }
 
+/// The hump term `m4·cos(λ/Fn²)` of both fits. Zero when `m4` is: at very small
+/// Fn the cosine's argument overflows and `cos(∞)` is NaN, which `0 · NaN`
+/// would carry into R_W.
+fn hump(w: &WaveCoefficients, fn_: f64) -> f64 {
+    if w.m4 == 0.0 {
+        0.0
+    } else {
+        w.m4 * (w.lambda / (fn_ * fn_)).cos()
+    }
+}
+
 /// The low-speed wave resistance at a Froude number, `c1`/`m1` fit.
 fn wave_low(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
     let d = -0.9;
@@ -532,7 +543,7 @@ fn wave_low(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
         * input.volume_m3
         * input.water_density
         * GRAVITY
-        * (w.m1 * fn_.powf(d) + w.m4 * (w.lambda / (fn_ * fn_)).cos()).exp()
+        * (w.m1 * fn_.powf(d) + hump(w, fn_)).exp()
 }
 
 /// The high-speed wave resistance at a Froude number, `c17`/`m3` fit.
@@ -544,7 +555,7 @@ fn wave_high(input: &HoltropInput, w: &WaveCoefficients, fn_: f64) -> f64 {
         * input.volume_m3
         * input.water_density
         * GRAVITY
-        * (w.m3 * fn_.powf(d) + w.m4 * (w.lambda / (fn_ * fn_)).cos()).exp()
+        * (w.m3 * fn_.powf(d) + hump(w, fn_)).exp()
 }
 
 /// Wave resistance in newtons at Froude number `fn_`.
@@ -1408,7 +1419,11 @@ mod tests {
         near(w.lambda, 0.6513, 1e-3, "lambda");
         near(w.m1, -2.1274, 1e-3, "m1");
         // m4 (1984) against the paper's m2 (1982): 554.02 against 556.93 kN.
+        // Against the print, 1 %; against the Python expectation with m4
+        // (m4 −0.085549 at Fn 0.286841, R_W 554.02 kN, 2026-11-19), tight.
         near(r.rw_n / 1e3, 557.11, 1e-2, "RW [kN]");
+        near(w.m4, -0.085549, 1e-4, "m4 (Python)");
+        near(r.rw_n / 1e3, 554.02, 1e-4, "RW [kN] (Python, m4)");
         near(r.rapp_n / 1e3, 8.83, 1e-2, "RAPP [kN]");
         near(r.ra_n / 1e3, 221.98, 1e-2, "RA [kN]");
         // FnT > 5, so the paper's transom term is zero; with CF instead of Cwp
@@ -1421,17 +1436,23 @@ mod tests {
         assert!(r.rb_n < 100.0, "RB {} N", r.rb_n);
     }
 
-    /// m4 = 0.4·c15·exp(−0.034·Fn^−3.29): as Fn → 0 the power overflows to
-    /// infinity and the exponential must take m4 to 0, not to NaN, so the wave
-    /// term stays finite and fades out at low speed.
+    /// m4 = 0.4·c15·exp(−0.034·Fn^−3.29) vanishes fast as Fn → 0: on this hull
+    /// (c15 −1.69385) it is about −1e−29 at Fn 0.1 and underflows to zero below
+    /// that, where the 1982 m2 = c15·Cp²·exp(−0.1/Fn²) is still −4.9e−5 at 0.1.
+    /// At absurdly small Fn the cosine's argument λ/Fn² overflows and `cos(∞)`
+    /// is NaN; a zero hump coefficient must keep that NaN out of R_W.
     #[test]
     fn wave_resistance_vanishes_smoothly_at_low_froude_numbers() {
         let i = sample();
         for fn_ in [0.02, 0.05, 0.1] {
             let w = wave_coefficients(&i, fn_);
-            assert!(w.m4.is_finite(), "Fn {fn_}: m4 {}", w.m4);
+            assert!(w.m4.abs() < 1e-12, "Fn {fn_}: m4 {}", w.m4);
             let rw = wave_resistance(&i, fn_);
             assert!(rw.is_finite() && rw >= 0.0, "Fn {fn_}: R_W {rw}");
+        }
+        for fn_ in [1e-160, f64::MIN_POSITIVE] {
+            let rw = wave_resistance(&i, fn_);
+            assert!(rw.is_finite() && rw >= 0.0, "Fn {fn_:e}: R_W {rw}");
         }
     }
 
