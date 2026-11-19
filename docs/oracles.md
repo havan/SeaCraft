@@ -1388,6 +1388,12 @@ $R_{W-B} = c_{17} c_2 c_5 \nabla\rho g \exp\{m_3 F_n^d + m_4\cos(\lambda F_n^{-2
 straight-line interpolation between them. Until 2026-11-19 SeaCraft used the 1982
 $m_2 = c_{15} C_p^2 \exp(-0.1 F_n^{-2})$ in both fits; with it, $R_W$ in the 1984 example is off by −6 % to +5 %.
 Friction (ITTC-57), appendages, bulb, transom and the correlation allowance are the 1982 formulas, which 1984 kept.
+Two limits as printed (2026-11-20; `piecewise_coefficients_switch_where_the_paper_says`,
+`a_bulb_centre_above_six_tenths_of_the_draft_counts_as_six_tenths`): $c_{15}$ switches on $L^3/\nabla$ at 512 and
+1726.91 (1984, p. 273; 1727 in 1982), where its middle branch reaches zero, so it is never positive (the code
+switched at $L/\nabla^{1/3} = 12$, i.e. 1728, and gave up to +0.001065); and the bulb centre height $h_B$ is capped
+at $0.6\,T$ in $c_3$ and $R_B$, as 1984 p. 273 says it "should not exceed the upper limit of 0.6 $T_F$", with a
+warning when the input is higher.
 
 The correlation allowance is taken on $S$, by the 1982 formula. The 1984 example's totals take it on
 $S + S_{APP}$; the test adds the appendages' share back and says so.

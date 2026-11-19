@@ -23,6 +23,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   0.573 → 0.961, both far outside the fitted range and flagged). The relative rotative efficiency is now checked
   against two printed examples (`docs/oracles.md` §42).
 - Holtrop wave resistance no longer turns NaN at vanishingly small Froude numbers (below about 1e-154).
+- Holtrop's c15 now switches at L³/∇ 1726.91 as printed, so it can no longer turn slightly positive for hulls with
+  L³/∇ between 1726.91 and 1728. A bulb centre above 0.6 T now counts as 0.6 T in the bulb terms, as Holtrop (1984)
+  says it should, and the resistance warnings say so (CLI, MCP, GUI). The bulb resistance of such a bulb drops
+  (by about half for ABT 20 m², T 10 m, hB 7 m).
 
 - The far-field wave pattern in the window, as the **Wave pattern** view in the Analysis drawer (Analysis menu,
   after Trim scan, or "Open wave pattern" in the Performance tab). Its header names the theory, thin-ship

@@ -176,6 +176,13 @@ impl HoltropInput {
         if !(2.1..=4.0).contains(&bt) {
             out.push(format!("B/T {bt:.2} is outside 2.1-4.0"));
         }
+        if self.bulb_area_m2 > 0.0 && self.bulb_centre_z > 0.6 * self.draft {
+            out.push(format!(
+                "bulb centre {:.2} m is above 0.6 T ({:.2} m); the method uses 0.6 T",
+                self.bulb_centre_z,
+                0.6 * self.draft
+            ));
+        }
         out
     }
 }
@@ -438,19 +445,28 @@ fn c16_of(cp: f64) -> f64 {
     }
 }
 
+/// `c15`, switched on `L³/∇` at 512 and 1726.91 as Holtrop (1984), p. 273,
+/// prints them (1727 in 1982). The middle branch reaches zero at 1726.91, so
+/// `c15` is never positive.
 fn c15_of(l_over_vol13: f64) -> f64 {
-    if l_over_vol13 < 8.0 {
-        // L³/∇ < 512
+    let l3_over_vol = l_over_vol13.powi(3);
+    if l3_over_vol < 512.0 {
         -1.69385
-    } else if l_over_vol13 <= 12.0 {
-        // 512 ≤ L³/∇ ≤ 1727
+    } else if l3_over_vol <= 1726.91 {
         -1.69385 + (l_over_vol13 - 8.0) / 2.36
     } else {
         0.0
     }
 }
 
-/// `λ` from equation (13).
+/// The bulb centre height `hB` the method uses: Holtrop (1984), p. 273, says
+/// it "should not exceed the upper limit of 0.6 TF" in `c3` and in the bulb
+/// resistance, so a higher bulb counts as one at 0.6 T.
+fn bulb_height(input: &HoltropInput) -> f64 {
+    input.bulb_centre_z.min(0.6 * input.draft)
+}
+
+/// `λ`, Holtrop & Mennen (1982) as Holtrop (1984) kept it.
 fn lambda_of(cp: f64, l_over_b: f64) -> f64 {
     if l_over_b < 12.0 {
         1.446 * cp - 0.03 * l_over_b
@@ -478,7 +494,7 @@ pub fn wave_coefficients(input: &HoltropInput, fn_: f64) -> WaveCoefficients {
     let c3 = if input.bulb_area_m2 > 0.0 {
         0.56 * input.bulb_area_m2.powf(1.5)
             / (b * t
-                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z).max(1e-6))
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - bulb_height(input)).max(1e-6))
     } else {
         0.0
     };
@@ -585,7 +601,7 @@ pub fn wave_resistance(input: &HoltropInput, fn_: f64) -> f64 {
     }
 }
 
-/// The length of the run `LR`, Holtrop & Mennen (1982) equation (10):
+/// The length of the run `LR`, Holtrop & Mennen (1982):
 /// `L (1 − Cp + 0.06 Cp lcb / (4 Cp − 1))`, with lcb as a percentage of L.
 fn run_length(input: &HoltropInput) -> f64 {
     let cp = input.cp;
@@ -605,7 +621,8 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     let fn_ = v / (GRAVITY * l).sqrt();
     let q = 0.5 * input.water_density * v * v;
 
-    // Form factor, equation (9) with LR from (10) and c14 from (11).
+    // Form factor 1+k1 of Holtrop (1984), with LR (1982) and c14 = 1 + 0.011 c_stern.
+    // Neither paper numbers its equations.
     //
     // The paper defines lcb as a percentage of L, so `lcb_pct` enters (10) as a
     // percentage. Some published implementations divide it by 100 as well,
@@ -630,16 +647,15 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
     };
     let rw = wave_resistance(input, fn_);
 
-    // Bulb, equation (31)/(32): zero without a bulb.
-    let rb = if input.bulb_area_m2 > 0.0 && input.draft > input.bulb_centre_z {
+    // Bulb resistance RB (1982): zero without a bulb.
+    let hb = bulb_height(input);
+    let rb = if input.bulb_area_m2 > 0.0 && input.draft > hb {
         // The paper's own example prints RB = 0.049 kN, and only this form
         // reproduces it: ABT^1.5 (not ABT), and the 0.15 V² term *inside* the
         // square root of Fni. With either one different the bulb term is out by
         // orders of magnitude.
-        let pb =
-            0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * input.bulb_centre_z).max(1e-6);
-        let inside = GRAVITY
-            * (input.draft - input.bulb_centre_z - 0.25 * input.bulb_area_m2.sqrt()).max(1e-6)
+        let pb = 0.56 * input.bulb_area_m2.sqrt() / (input.draft - 1.5 * hb).max(1e-6);
+        let inside = GRAVITY * (input.draft - hb - 0.25 * input.bulb_area_m2.sqrt()).max(1e-6)
             + 0.15 * v * v;
         let fni = v / inside.sqrt();
         0.11 * (-3.0 / (pb * pb)).exp()
@@ -652,7 +668,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         0.0
     };
 
-    // Immersed transom, equation (33)/(34) with c6 from (35).
+    // Immersed transom RTR with FnT and c6 (1982).
     //
     // FnT uses the **waterplane** coefficient in its denominator. With CF there
     // instead, the published example hull (AT 16 m2, CWP 0.75, B 32 m) reports
@@ -674,7 +690,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         0.0
     };
 
-    // Correlation allowance, equations (37)-(39).
+    // Correlation allowance CA and RA (1982), with c4 and c2.
     let c4 = (input.draft / l).min(0.04);
     // c2 is the same bulb-swell factor as in the wave term; with no bulb the
     // coefficient of the second term is zero anyway (c4 saturates at 0.04 for
@@ -683,7 +699,7 @@ pub fn holtrop(input: &HoltropInput, speed_m_s: f64) -> Resistance {
         0.56 * input.bulb_area_m2.powf(1.5)
             / (input.beam_wl
                 * input.draft
-                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - input.bulb_centre_z).max(1e-6))
+                * (0.31 * input.bulb_area_m2.sqrt() + input.draft - bulb_height(input)).max(1e-6))
     } else {
         0.0
     };
@@ -1303,10 +1319,18 @@ mod tests {
         // λ switches at L/B = 12.
         assert!((lambda_of(0.8, 11.9) - (1.446 * 0.8 - 0.03 * 11.9)).abs() < 1e-12);
         assert!((lambda_of(0.8, 12.5) - (1.446 * 0.8 - 0.36)).abs() < 1e-12);
-        // c15 has three branches on L/∇^(1/3).
+        // c15 has three branches on L³/∇: 512 and 1726.91 (Holtrop 1984,
+        // p. 273; 1727 in 1982). The middle one reaches zero at 1726.91, so c15
+        // is never positive: at L/∇^(1/3) = 12 (L³/∇ = 1728) it is 0, not the
+        // middle formula's +0.001065.
         assert_eq!(c15_of(7.0), -1.69385);
-        assert!((c15_of(12.0) - (-1.69385 + 4.0 / 2.36)).abs() < 1e-12);
+        assert!((c15_of(11.99) - (-1.69385 + 3.99 / 2.36)).abs() < 1e-12);
+        assert_eq!(c15_of(12.0), 0.0);
         assert_eq!(c15_of(13.0), 0.0);
+        for k in 0..=200 {
+            let x = 11.9 + 0.001 * f64::from(k);
+            assert!(c15_of(x) <= 0.0, "c15({x}) = {}", c15_of(x));
+        }
     }
 
     #[test]
@@ -1454,6 +1478,49 @@ mod tests {
             let rw = wave_resistance(&i, fn_);
             assert!(rw.is_finite() && rw >= 0.0, "Fn {fn_:e}: R_W {rw}");
         }
+    }
+
+    /// Holtrop (1984), p. 273: the bulb centre height hB "should not exceed
+    /// the upper limit of 0.6 TF", in c3 and in the bulb resistance. A higher
+    /// bulb counts as one at 0.6 T, and the input warns.
+    #[test]
+    fn a_bulb_centre_above_six_tenths_of_the_draft_counts_as_six_tenths() {
+        let base = HoltropInput {
+            bulb_area_m2: 20.0,
+            draft: 10.0,
+            ..sample()
+        };
+        let at_limit = HoltropInput {
+            bulb_centre_z: 6.0,
+            ..base.clone()
+        };
+        let above = HoltropInput {
+            bulb_centre_z: 7.0,
+            ..base.clone()
+        };
+        let v = 25.0 * KNOT;
+        let (a, b) = (holtrop(&at_limit, v), holtrop(&above, v));
+        assert!(a.rb_n > 0.0, "a bulb at the limit has drag: {}", a.rb_n);
+        assert!(
+            (a.rb_n - b.rb_n).abs() < 1e-9,
+            "RB {} vs {}",
+            a.rb_n,
+            b.rb_n
+        );
+        assert!(
+            (a.rw_n - b.rw_n).abs() < 1e-9,
+            "RW {} vs {}",
+            a.rw_n,
+            b.rw_n
+        );
+        assert!(
+            (a.ra_n - b.ra_n).abs() < 1e-9,
+            "RA {} vs {}",
+            a.ra_n,
+            b.ra_n
+        );
+        assert!(above.warnings().iter().any(|w| w.contains("0.6 T")));
+        assert!(!at_limit.warnings().iter().any(|w| w.contains("0.6 T")));
     }
 
     /// The worked example printed in Holtrop (1984), "A statistical re-analysis
