@@ -12,8 +12,9 @@ see [`DISCLAIMER.md`](DISCLAIMER.md).
 - Hydrostatics, cross curves, GZ with free trim, IMO A.749 and IS Code weather criteria.
 - Loading conditions with tanks and free-surface correction; deterministic lost-buoyancy damage stability.
 - Resistance by Holtrop-Mennen, Michell thin-ship theory and Savitsky; a hull optimiser.
-- The far-field thin-ship wave pattern behind a hull or catamaran (PNG, SVG contours, VTK): command line, MCP,
-  the window's Plan view and Performance tab, and the design report.
+- The far-field thin-ship wave pattern behind a hull or catamaran (PNG, SVG contours, VTK), with the speed
+  regime, wash height and catamaran interference: command line, MCP, the window's Wave pattern view, and the
+  design report.
 - Strip-theory heave and pitch motions, irregular head seas, MSI.
 - Lines plans (SVG, DXF, IGES), mesh exports (OBJ, STL, 3MF, PLY, HTML), an HTML design report.
 - Full-size building patterns: station moulds with the skin deducted, profile and raked transom, as a PDF
@@ -84,6 +85,10 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 
 - [ ] Floodable length curves.
 - [ ] VRML import, and edge extrusion in the GUI.
+- [ ] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
+- [ ] Grey out or cut the Holtrop curve where the method does not apply (on the demo hull R_T falls past
+  7.25 kn).
+- [ ] A 3D wave surface in Perspective view.
 
 ### M5: Binaries
 

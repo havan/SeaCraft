@@ -4,16 +4,32 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
-- The far-field wave pattern in the window. "Show on Plan view" in the Performance tab lays it on the water in
-  Plan view, with contours (crests solid, troughs dashed), each hull's waterline and the longitudinal cut. The
-  window uses the command line's colour map. The tab sets the speed (knots or Froude number), the domain, a
-  catamaran spacing, the colour range, the contours and the cut. It shows the summary, a colour legend, the cut
-  as ζ against x, and the notes and warnings verbatim. The pattern is computed in the background. A pattern that
-  no longer matches the model, the draft or the settings is never drawn or saved as current. "Save image…"
-  writes it as PNG, SVG or VTI. While it is shown, the design report gains a wave-pattern section. The pattern
-  is computed upright at the draft; heel and trim are ignored, and the tab says so. For agents,
-  `ui.set {"waves": true}` shows it. As on the command line, it is checked against Kelvin's far-field
-  asymptotics and wedge geometry (`docs/oracles.md` §40), not against a measured wave pattern.
+- The far-field wave pattern in the window, as the **Wave pattern** view in the Analysis drawer (Analysis menu,
+  after Trim scan, or "Open wave pattern" in the Performance tab). One speed drives the view: a number in knots
+  or as a Froude number, and a slider from Fn 0.10 to 1.00; a value typed outside it is kept and flagged. The view
+  recomputes as the speed or a setting changes; a result that no longer matches the model, the draft or the
+  settings is shown dimmed and never saved or reported as current. Readouts in plain words with units: the speed
+  regime as a sentence, the transverse wavelength against the waterline length, hull speed (Fn 0.40, a rule of
+  thumb), the highest crest and deepest trough, Michell's wave drag at this speed, the wash height on a line at a
+  chosen distance, and for a catamaran the spacing and the interference (the pair against twice one demihull).
+  A banner says first when thin-ship theory does not fit the hull (L/B under 6, a wide transom, Fn outside
+  0.20–1.00), and that heel and trim are ignored. The map draws dark calm water with crest and trough tints, the
+  hull footprint opaque, the Kelvin wedge, both wash lines (drag one to move them), a scale bar and a colour bar;
+  scroll zooms, a drag pans, a double-click fits. The plots give C_w against Fn with hull speed, humps and hollows
+  marked and the speed as a marker you can drag; for a catamaran the pair against 2 × one hull, and interference
+  against spacing; and the waves along the wash line. "Save image…" writes PNG, SVG or VTI (exports keep the
+  command line's light colour map). Plan view no longer carries the colour image: "Contours on Plan view" (off by
+  default) draws faint contours and the wash lines over it. While the view is open the design report gains the
+  wave section. For agents, `ui.set {"waves": true}` opens the view and `false` closes it. As on the command line,
+  the pattern is checked against Kelvin's far-field asymptotics and wedge geometry (`docs/oracles.md` §40), not
+  against a measured wave pattern; the wash height and interference are thin-ship estimates in deep water, not a
+  wash assessment against any rule (§41).
+- `seacraft waves --wash-distance` and the `wave_pattern` tool's `wash_distance` give the wash height (the largest
+  crest-to-trough height on a line that far to the side), and every summary names the speed regime in a sentence.
+  The default grid is finer at speed: the smaller of a twentieth of the transverse wavelength and L_WL / 60, capped
+  at 250 000 points. `seacraft resistance --method michell --cat-spacing` adds an `interf.` column. The design
+  report's wave section gives the regime and the wash height. The regime bands (Fn 0.30, 0.40, 0.50) are
+  SeaCraft's own wording, not published thresholds (`docs/oracles.md` §41).
 - `seacraft waves` and the MCP tool `wave_pattern` (also through the window's control channel, as
   `waves.compute`) draw the far-field thin-ship wave pattern behind a hull or a catamaran: the Kelvin wedge of
   transverse and divergent waves from Michell's spectrum, calm ahead of the bow. Outputs are a PNG colour map, an
