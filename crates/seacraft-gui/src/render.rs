@@ -246,18 +246,19 @@ pub struct Scene<'a> {
     /// The waterline already cut from `mesh`, when the caller keeps one:
     /// otherwise each view cuts it again from every face of the mesh.
     pub waterline: Option<&'a [[Vec3; 2]]>,
-    /// The far-field wave pattern, laid on the water in Plan view. The app sets it only from a
-    /// current result, so a stale pattern never reaches a view.
+    /// The far-field wave pattern's contours on the water in Plan view, when "Contours on Plan
+    /// view" is on. The app sets it only from a current result, so a stale pattern never reaches a
+    /// view.
     pub waves: Option<SceneWaves<'a>>,
-    /// Plan view's note while the pattern is shown but not drawn (computing, or failed).
+    /// Plan view's note while the contours are on but not drawn (computing, or failed).
     pub waves_status: Option<&'static str>,
 }
 
-/// The wave pattern a Plan view draws: its image as `texture`, and its contours, waterlines and cut
-/// either as `contours`, a [`wave_mesh`] kept for this view, or as strokes when `None`.
+/// The wave pattern a Plan view draws: its contours, waterlines and both wash lines, either as
+/// `contours`, a [`wave_mesh`] kept for this view, or as strokes when `None`. Plan view has no
+/// colour image: the pattern's picture is the Wave pattern view's.
 pub struct SceneWaves<'a> {
     pub result: &'a crate::waves::WaveResult,
-    pub texture: egui::TextureId,
     pub contours: Option<Arc<egui::Mesh>>,
 }
 
@@ -426,8 +427,7 @@ pub fn viewport_with_texture(
             }
         }
     }
-    // The pattern goes over the hull, whichever path drew it; its dry cells are clear, so the
-    // model shows through them.
+    // The contours go over the hull, whichever path drew it.
     if camera.kind == crate::camera::ViewKind::Plan {
         if let Some(waves) = &scene.waves {
             draw_waves(&painter, &view, rect, waves);
@@ -1059,12 +1059,6 @@ pub fn tessellate(
 }
 
 fn draw_waves(painter: &egui::Painter, view: &ViewTransform, rect: Rect, waves: &SceneWaves) {
-    painter.add(egui::Shape::mesh(wave_quad(
-        view,
-        rect,
-        waves.result,
-        waves.texture,
-    )));
     match &waves.contours {
         Some(mesh) => {
             painter.add(egui::Shape::Mesh(mesh.clone()));
@@ -1073,53 +1067,8 @@ fn draw_waves(painter: &egui::Painter, view: &ViewTransform, rect: Rect, waves: 
     }
 }
 
-/// Half the grid spacing along `v`, or `None` with fewer than two points.
-fn half_cell(v: &[f64]) -> Option<f64> {
-    (v.len() > 1).then(|| 0.5 * (v[v.len() - 1] - v[0]) / (v.len() - 1) as f64)
-}
-
-/// The wave image on the water: a quad at the field's corners padded by half a cell (each pixel is
-/// centred on its grid point), at the draft, with UV (0, 0) at (x min, y max) and (1, 1) at
-/// (x max, y min), the image's row 0 being the largest y. Empty when a corner cannot be projected.
-pub fn wave_quad(
-    view: &ViewTransform,
-    rect: Rect,
-    w: &crate::waves::WaveResult,
-    texture: egui::TextureId,
-) -> egui::Mesh {
-    let mut mesh = egui::Mesh::with_texture(texture);
-    let (xs, ys) = (&w.field.xs, &w.field.ys);
-    let (Some(&x_first), Some(&y_first)) = (xs.first(), ys.first()) else {
-        return mesh;
-    };
-    let (x_last, y_last) = (xs[xs.len() - 1], ys[ys.len() - 1]);
-    // A single row or column takes the other axis's cell.
-    let hx = half_cell(xs).or_else(|| half_cell(ys)).unwrap_or(0.5);
-    let hy = half_cell(ys).unwrap_or(hx);
-    let (x0, x1, y0, y1) = (x_first - hx, x_last + hx, y_first - hy, y_last + hy);
-    let corners = [
-        (x0, y1, egui::pos2(0.0, 0.0)),
-        (x1, y1, egui::pos2(1.0, 0.0)),
-        (x1, y0, egui::pos2(1.0, 1.0)),
-        (x0, y0, egui::pos2(0.0, 1.0)),
-    ];
-    for (x, y, uv) in corners {
-        let Some(pos) = view.project(Vec3::new(x, y, w.draft), rect) else {
-            return egui::Mesh::with_texture(texture);
-        };
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos,
-            uv,
-            color: Color32::WHITE,
-        });
-    }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    mesh
-}
-
 /// The pattern's lines in a view, at the draft: crest contours solid and trough contours dashed,
-/// each hull's calm waterline, and the longitudinal cut, dashed.
+/// each hull's calm waterline, and the wash line each side, dashed.
 pub fn wave_shapes(
     view: &ViewTransform,
     rect: Rect,
@@ -1158,16 +1107,17 @@ pub fn wave_shapes(
             ));
         }
     }
-    if let (seacraft_core::wave_pattern::CutLine::Longitudinal { y }, Some(&s0), Some(&s1)) =
-        (w.wash_cut.line, w.wash_cut.s.first(), w.wash_cut.s.last())
-    {
-        if let (Some(a), Some(b)) = (at(s0, y), at(s1, y)) {
-            shapes.extend(egui::Shape::dashed_line(
-                &[a, b],
-                Stroke::new(1.5, theme::WAVE_CUT),
-                8.0,
-                5.0,
-            ));
+    if let (Some(&s0), Some(&s1)) = (w.wash_cut.s.first(), w.wash_cut.s.last()) {
+        let d = w.wash_distance_m;
+        for y in [d, -d] {
+            if let (Some(a), Some(b)) = (at(s0, y), at(s1, y)) {
+                shapes.extend(egui::Shape::dashed_line(
+                    &[a, b],
+                    Stroke::new(1.5, theme::WAVE_CUT),
+                    8.0,
+                    5.0,
+                ));
+            }
         }
     }
     shapes
@@ -2360,46 +2310,6 @@ mod tests {
             cat_spacing_m: None,
             warnings: Vec::new(),
         }
-    }
-
-    #[test]
-    fn quad_lies_on_the_field_bow_right_starboard_up() {
-        let w = flat_waves();
-        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), egui::vec2(800.0, 600.0));
-        let camera = Camera::new(
-            ViewKind::Plan,
-            Vec3::new(5.0, 0.0, 0.5),
-            Vec3::new(10.0, 10.0, 10.0),
-        );
-        let view = camera.transform();
-        let texture = egui::TextureId::User(7);
-        let quad = wave_quad(&view, rect, &w, texture);
-        assert_eq!(quad.texture_id, texture);
-        assert_eq!(quad.vertices.len(), 4);
-        assert_eq!(quad.indices.len(), 6);
-        let bow_starboard = quad
-            .vertices
-            .iter()
-            .find(|v| v.uv == egui::pos2(1.0, 0.0))
-            .expect("the UV (1, 0) corner");
-        let max_x = quad
-            .vertices
-            .iter()
-            .map(|v| v.pos.x)
-            .fold(f32::MIN, f32::max);
-        let min_y = quad
-            .vertices
-            .iter()
-            .map(|v| v.pos.y)
-            .fold(f32::MAX, f32::min);
-        assert_eq!(bow_starboard.pos.x, max_x, "the bow is on the right");
-        assert_eq!(bow_starboard.pos.y, min_y, "starboard is up");
-        // Half a cell beyond the last grid point: each pixel is centred on its point.
-        let expected = view.project(Vec3::new(10.5, 2.5, 0.5), rect).unwrap();
-        assert!((bow_starboard.pos - expected).length() < 1e-3);
-        let stern_port = quad.vertices.iter().find(|v| v.uv == egui::pos2(0.0, 1.0));
-        let expected = view.project(Vec3::new(-0.5, -2.5, 0.5), rect).unwrap();
-        assert!((stern_port.unwrap().pos - expected).length() < 1e-3);
     }
 
     #[test]

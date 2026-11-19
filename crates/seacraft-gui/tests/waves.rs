@@ -283,6 +283,17 @@ fn flat(shapes: impl IntoIterator<Item = egui::Shape>) -> Vec<egui::Shape> {
     out
 }
 
+/// A crest contour, as a stroke or inside the tessellated contour mesh the app keeps per view.
+fn is_crest_contour(shape: &egui::Shape) -> bool {
+    match shape {
+        egui::Shape::Mesh(m) => m
+            .vertices
+            .iter()
+            .any(|v| v.color == theme::WAVE_CONTOUR_CREST),
+        other => stroke_colour(other) == Some(theme::WAVE_CONTOUR_CREST),
+    }
+}
+
 fn stroke_colour(shape: &egui::Shape) -> Option<egui::Color32> {
     match shape {
         egui::Shape::LineSegment { stroke, .. } => Some(stroke.color),
@@ -293,12 +304,6 @@ fn stroke_colour(shape: &egui::Shape) -> Option<egui::Color32> {
         _ => None,
     }
 }
-
-fn is_wave_mesh(shape: &egui::Shape, texture: egui::TextureId) -> bool {
-    matches!(shape, egui::Shape::Mesh(m) if m.texture_id == texture)
-}
-
-const WAVE_TEXTURE: egui::TextureId = egui::TextureId::User(4242);
 
 /// The demo hull at level 2, and its pattern with `settings`.
 fn demo_parts(
@@ -340,7 +345,6 @@ fn scene<'a>(
         waterline: None,
         waves: Some(SceneWaves {
             result: w,
-            texture: WAVE_TEXTURE,
             contours: None,
         }),
         waves_status: None,
@@ -385,15 +389,16 @@ fn draw_view(
     flat(out.shapes.into_iter().map(|c| c.shape))
 }
 
-/// The wave texture's meshes and the contour strokes, as text.
+/// The contour and wash-line strokes, as text.
 fn wave_marks(shapes: &[egui::Shape]) -> Vec<String> {
     shapes
         .iter()
         .filter(|s| {
-            is_wave_mesh(s, WAVE_TEXTURE)
-                || stroke_colour(s).is_some_and(|c| {
-                    c == theme::WAVE_CONTOUR_CREST || c == theme::WAVE_CONTOUR_TROUGH
-                })
+            stroke_colour(s).is_some_and(|c| {
+                c == theme::WAVE_CONTOUR_CREST
+                    || c == theme::WAVE_CONTOUR_TROUGH
+                    || c == theme::WAVE_CUT
+            })
         })
         .map(|s| format!("{s:?}"))
         .collect()
@@ -417,11 +422,16 @@ fn both_hull_paths_draw_the_same_waves() {
         egui::TextureOptions::LINEAR,
     );
     let rastered = wave_marks(&draw_view(&scene, ViewKind::Plan, Some(&analysis), None));
-    assert!(
-        painted.iter().any(|s| s.starts_with("Mesh")),
-        "the wave quad is drawn"
-    );
     assert!(painted.len() > 10, "contours are drawn: {}", painted.len());
+    assert_eq!(
+        dashed_rows(
+            &draw_view(&scene, ViewKind::Plan, None, None),
+            theme::WAVE_CUT
+        )
+        .len(),
+        2,
+        "a wash line each side"
+    );
     assert_eq!(painted, gpu, "the GPU hull path draws the same waves");
     assert_eq!(painted, rastered, "the analysis path draws the same waves");
 }
@@ -447,13 +457,16 @@ fn catamaran_pattern_lies_over_the_model() {
     let shapes = draw_view(&scene, ViewKind::Plan, None, None);
     let wave_at = shapes
         .iter()
-        .position(|s| is_wave_mesh(s, WAVE_TEXTURE))
-        .expect("the wave quad");
+        .position(|s| {
+            stroke_colour(s)
+                .is_some_and(|c| c == theme::WAVE_CONTOUR_CREST || c == theme::WAVE_CONTOUR_TROUGH)
+        })
+        .expect("the contours");
     let hull_at = shapes
         .iter()
-        .position(|s| matches!(s, egui::Shape::Mesh(m) if m.texture_id != WAVE_TEXTURE))
+        .position(|s| matches!(s, egui::Shape::Mesh(_)))
         .expect("the hull");
-    assert!(hull_at < wave_at, "the pattern is drawn over the hull");
+    assert!(hull_at < wave_at, "the contours are drawn over the hull");
     let outlines = shapes
         .iter()
         .filter(|s| stroke_colour(s) == Some(theme::WAVE_WATERLINE))
@@ -466,13 +479,13 @@ fn catamaran_pattern_lies_over_the_model() {
 #[test]
 fn stale_pattern_is_not_drawn() {
     let (mut app, ctx) = demo_with_plan_waves();
-    let textured = |out: &egui::FullOutput| {
-        flat(out.shapes.iter().map(|c| c.shape.clone())).iter().any(
-            |s| matches!(s, egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default()),
-        )
+    let contoured = |out: &egui::FullOutput| {
+        flat(out.shapes.iter().map(|c| c.shape.clone()))
+            .iter()
+            .any(is_crest_contour)
     };
     let out = frame(&ctx, &mut app, Vec::new());
-    assert!(textured(&out), "the current pattern is drawn");
+    assert!(contoured(&out), "the current pattern is drawn");
     assert!(texts(&out)
         .iter()
         .any(|t| t.starts_with("Waves · Fn 0.300")));
@@ -482,11 +495,11 @@ fn stale_pattern_is_not_drawn() {
     });
     let out = frame(&ctx, &mut app, Vec::new());
     assert!(
-        !textured(&out),
+        !contoured(&out),
         "the Fn 0.3 pattern is not drawn as current"
     );
     assert!(
-        texts(&out).iter().any(|t| t == "Wave pattern: computing…"),
+        texts(&out).iter().any(|t| t == "Wave contours: computing…"),
         "{:?}",
         texts(&out)
     );
@@ -1028,4 +1041,35 @@ fn dragging_the_drag_marker_sets_the_speed() {
         panic!("{:?}", app.wave_settings().speed)
     };
     assert!(f > 0.30 && f <= 1.0, "Fn {f}");
+}
+
+/// Plan view never draws the colour image: only contours and lines, with the view closed.
+#[test]
+fn plan_view_has_no_wave_fill() {
+    let (mut app, ctx) = demo_with_plan_waves();
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+    let texture = app.wave_texture_id();
+    let shapes = frame_shapes(&out);
+    assert!(
+        !shapes
+            .iter()
+            .any(|s| matches!(s, egui::Shape::Mesh(m) if Some(m.texture_id) == texture)),
+        "no wave image on Plan view"
+    );
+    assert!(
+        shapes.iter().any(is_crest_contour),
+        "the contours are drawn"
+    );
+}
+
+#[test]
+fn plan_contours_off_by_default() {
+    assert!(!WaveSettings::default().plan_contours);
+    let (mut app, ctx) = demo_with_waves();
+    let out = settled_view(&ctx, &mut app);
+    assert!(
+        !texts(&out).iter().any(|t| t.starts_with("Waves · Fn")),
+        "no Plan view caption while the contours are off"
+    );
 }

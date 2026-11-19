@@ -4333,16 +4333,14 @@ impl App {
         })
     }
 
-    /// The wave pattern for the views: only a current one, with its texture loaded.
+    /// Plan view's wave contours: only with "Contours on Plan view" on, and only a current pattern.
     fn scene_waves(&self) -> Option<render::SceneWaves<'_>> {
         if !self.perf_state.waves.plan_contours {
             return None;
         }
         let result = self.wave_current()?;
-        let (key, texture) = self.wave_texture.as_ref()?;
-        (*key == self.wave_result_rev).then(|| render::SceneWaves {
+        Some(render::SceneWaves {
             result,
-            texture: texture.id(),
             contours: None,
         })
     }
@@ -4352,9 +4350,9 @@ impl App {
         if !self.perf_state.waves.plan_contours || self.wave_current().is_some() {
             None
         } else if self.wave_failure().is_some() {
-            Some("Wave pattern failed: see the Wave pattern view")
+            Some("Wave contours failed: see the Wave pattern view")
         } else {
-            Some("Wave pattern: computing…")
+            Some("Wave contours: computing…")
         }
     }
 
