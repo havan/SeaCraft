@@ -859,6 +859,12 @@ Kajitani et al. (1983) towing tests, Fn 0.28–0.37 ([`docs/oracles.md`](docs/or
 hollow near Fn 0.35 at the measured speed (within 5 % in size for the fixed model), but puts the hump near
 Fn 0.32 about 0.02 early and 18–54 % too high. That says nothing about other hulls.
 
+Hydrostatics and GZ are compared on the same hull, against closed forms from its published equation at five
+drafts and against an independent integration of its GZ curve to 80° ([`docs/oracles.md`](docs/oracles.md) §44,
+§45). The measurement agrees to 0.01 % on an exact mesh of the equation; the `wigley` example's subdivision fit
+is within 0.6 % at the design draft and runs up to 5.5 % thin below half draft. No real hull, published GZ table
+or trimmed condition has been compared yet.
+
 The wave pattern (`seacraft waves`) has not been compared with a measured wave pattern; no measured Wigley wave
 cut was found. It is checked against Kelvin's far-field asymptotics and wedge geometry
 ([`docs/oracles.md`](docs/oracles.md) §40): a check of the method, not of agreement with a tank. It is wrong near

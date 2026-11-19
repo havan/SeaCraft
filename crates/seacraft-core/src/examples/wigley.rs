@@ -23,6 +23,10 @@
 //! land on the analytic surface. Without them Cb comes out 1.2 % low. The
 //! keel, the stems and the deck centreline lie on the half model's boundary,
 //! which the kernel pins, so L and T need no correction.
+//!
+//! The scales were fitted at `T` only. Off `T` the fit's gaps are measured in
+//! `docs/oracles.md` §44 (volume 5.5 % low at a quarter draft) and its GZ to
+//! 80° in §45, by `tests/wigley_hydro.rs`.
 
 use super::{
     close_half_deck, crease_path, design_condition, item, layer, plating, round, round_to_fef,
