@@ -11,7 +11,8 @@
 //! - the `examples/wigley.fef` control net, refined as the app measures it,
 //!   checks the example's fit away from the design draft it was tuned at.
 
-use seacraft_core::hydro::{Hull, HydroOptions};
+use seacraft_core::fef;
+use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
 use seacraft_core::math::Vec3;
 use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 
@@ -20,6 +21,10 @@ const B: f64 = 1.0;
 const T: f64 = 0.625;
 const D: f64 = 1.0;
 const RHO: f64 = 1025.0;
+
+/// The drafts both levels are measured at: well below `T`, at it, and on the
+/// wall-sided topside above it.
+const DRAFTS: [f64; 5] = [0.25 * T, 0.5 * T, 0.75 * T, T, 0.8];
 
 fn rel(got: f64, want: f64) -> f64 {
     (got - want).abs() / want.abs()
@@ -166,17 +171,10 @@ fn exact_mesh_matches_the_closed_forms_over_drafts() {
     let hull = exact_hull(400, 120);
     let mut worst = 0.0f64;
     println!("draft  quantity      got          want         gap %");
-    for t in [0.25 * T, 0.5 * T, 0.75 * T, T, 0.8] {
+    for t in DRAFTS {
         let h = hull.hydrostatics(&base_options(t));
         let c = closed_form(t);
-        for (name, got, want) in [
-            ("volume", h.volume_m3, c.volume),
-            ("KB", h.kb, c.kb),
-            ("Awp", h.waterplane_area_m2, c.awp),
-            ("BM_T", h.bm_transverse, c.i_t / c.volume),
-            ("BM_L", h.bm_longitudinal, c.i_l / c.volume),
-            ("Am", h.mainframe_area_m2, c.am),
-        ] {
+        for (name, got, want) in compared(&h, &c) {
             let gap = rel(got, want);
             worst = worst.max(gap);
             println!("{t:.4} {name:8} {got:12.6} {want:12.6} {:8.4}", 100.0 * gap);
@@ -205,4 +203,93 @@ fn exact_mesh_wetted_surface_matches_kajitani() {
     let want = 0.661 * L * (2.0 * T + B);
     println!("wetted {s:.5} vs {want:.5}: {:.4} %", 100.0 * rel(s, want));
     assert!(rel(s, want) < 1e-3, "{s} vs {want}");
+}
+
+/// `examples/wigley.fef`, the file the app opens, refined as the CLI measures
+/// it by default.
+fn example_hull() -> Hull {
+    let surface =
+        fef::parse(include_str!("../../../examples/wigley.fef")).expect("wigley.fef parses");
+    Hull::new(&surface, base_options(T).subdivision)
+}
+
+/// The six quantities both levels compare: (name, measured, closed form).
+fn compared(h: &Hydrostatics, c: &Closed) -> [(&'static str, f64, f64); 6] {
+    [
+        ("volume", h.volume_m3, c.volume),
+        ("KB", h.kb, c.kb),
+        ("Awp", h.waterplane_area_m2, c.awp),
+        ("BM_T", h.bm_transverse, c.i_t / c.volume),
+        ("BM_L", h.bm_longitudinal, c.i_l / c.volume),
+        ("Am", h.mainframe_area_m2, c.am),
+    ]
+}
+
+/// Bands (%) for the example against the closed forms, per draft (rows, as
+/// [`DRAFTS`]) and quantity (columns, as [`compared`]): the measured gap
+/// rounded up to the next 0.1 % plus 0.1 %. Measured on 2026-11-20 (%):
+///
+/// | draft | volume |   KB  |  Awp  |  BM_T |  BM_L |   Am  |
+/// |-------|--------|-------|-------|-------|-------|-------|
+/// | 0.25T | −5.55  | +1.03 | −2.11 | −0.39 | +3.35 | −5.40 |
+/// | 0.5T  | −1.86  | +0.92 | −0.01 | +2.16 | +1.59 | −1.71 |
+/// | 0.75T | −0.83  | +0.64 | +0.31 | +2.06 | +0.85 | −0.67 |
+/// | T     | −0.48  | +0.44 | −0.07 | +0.56 | +0.13 | −0.33 |
+/// | 0.8 m | −0.34  | +0.32 | −0.01 | +0.61 | +0.04 | −0.18 |
+///
+/// These record the model's gap, not the measurement's, which the exact mesh
+/// bounds at 0.01 %: the control net's rows were scaled to match the closed
+/// forms at `T` only, and Loop refinement pulls the limit surface in near the
+/// keel, so the example is a design-draft fit that thins below about 0.5T.
+const EXAMPLE_BAND_PCT: [[f64; 6]; 5] = [
+    [5.7, 1.2, 2.3, 0.5, 3.5, 5.6],
+    [2.0, 1.1, 0.2, 2.3, 1.7, 1.9],
+    [1.0, 0.8, 0.5, 2.2, 1.0, 0.8],
+    [0.6, 0.6, 0.2, 0.7, 0.3, 0.5],
+    [0.5, 0.5, 0.2, 0.8, 0.2, 0.3],
+];
+
+#[test]
+fn example_hull_follows_the_closed_forms_off_design() {
+    let hull = example_hull();
+    let mut failures = Vec::new();
+    println!("draft  quantity      got          want         gap %");
+    for (t, bands) in DRAFTS.into_iter().zip(EXAMPLE_BAND_PCT) {
+        let h = hull.hydrostatics(&base_options(t));
+        let c = closed_form(t);
+        for ((name, got, want), band) in compared(&h, &c).into_iter().zip(bands) {
+            let gap = 100.0 * (got - want) / want;
+            println!("{t:.4} {name:8} {got:12.6} {want:12.6} {gap:+8.4}");
+            if gap.abs() > band {
+                failures.push(format!("{name} at {t}: {gap:+.4} % outside {band} %"));
+            }
+        }
+        // Fore-aft symmetric, so centred whatever the fit.
+        assert!(
+            (h.lcb.x - L / 2.0).abs() < 1e-6 * L,
+            "LCB at {t}: {}",
+            h.lcb.x
+        );
+        assert!(
+            (h.lcf.x - L / 2.0).abs() < 1e-6 * L,
+            "LCF at {t}: {}",
+            h.lcf.x
+        );
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn example_wetted_surface_matches_kajitani() {
+    // Kajitani et al. (1983), p. 6; measured +0.04 % on 2026-11-20, so 0.2 %
+    // leaves the formula's own rounding (about 0.05 %) and the fit's room.
+    let s = example_hull()
+        .hydrostatics(&base_options(T))
+        .wetted_surface_m2;
+    let want = 0.661 * L * (2.0 * T + B);
+    println!(
+        "wetted {s:.5} vs {want:.5}: {:+.4} %",
+        100.0 * (s / want - 1.0)
+    );
+    assert!(rel(s, want) < 2e-3, "{s} vs {want}");
 }
