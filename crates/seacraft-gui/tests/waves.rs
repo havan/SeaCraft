@@ -828,3 +828,134 @@ fn typed_low_speed_is_kept_and_flagged() {
         .unwrap_or_else(|| panic!("{texts:?}"));
     assert!(banner.contains("Fn 0.05 outside 0.20–1.00"), "{banner}");
 }
+
+/// Every shape of a frame, flattened.
+fn frame_shapes(out: &egui::FullOutput) -> Vec<egui::Shape> {
+    flat(out.shapes.iter().map(|c| c.shape.clone()))
+}
+
+/// The y of each horizontal dashed line in `colour`, rounded to a pixel, in ascending order.
+fn dashed_rows(shapes: &[egui::Shape], colour: egui::Color32) -> Vec<f32> {
+    let mut rows: Vec<f32> = shapes
+        .iter()
+        .filter_map(|s| match s {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == colour && (points[0].y - points[1].y).abs() < 0.5 =>
+            {
+                Some(points[0].y.round())
+            }
+            _ => None,
+        })
+        .collect();
+    rows.sort_by(f32::total_cmp);
+    rows.dedup();
+    rows
+}
+
+/// The view's frame once its pattern is current and its texture loaded.
+fn settled_view(ctx: &egui::Context, app: &mut App) -> egui::FullOutput {
+    frames_until(ctx, app, "the current pattern", |a| {
+        a.wave_current().is_some() && a.wave_drag().is_some()
+    });
+    frame(ctx, app, Vec::new());
+    frame(ctx, app, Vec::new())
+}
+
+#[test]
+fn map_draws_texture_hull_and_wash_lines() {
+    let (mut app, ctx) = demo_with_waves();
+    let out = settled_view(&ctx, &mut app);
+    let shapes = frame_shapes(&out);
+    let texture = app.wave_texture_id().expect("the wave texture");
+    let quads = shapes
+        .iter()
+        .filter(|s| matches!(s, egui::Shape::Mesh(m) if m.texture_id == texture))
+        .count();
+    assert_eq!(quads, 1, "one wave image on the map");
+    let hull = shapes
+        .iter()
+        .filter(|s| {
+            matches!(s, egui::Shape::Mesh(m)
+                if !m.vertices.is_empty() && m.vertices.iter().all(|v| v.color == theme::WAVE_HULL))
+        })
+        .count();
+    assert!(hull >= 1, "the hull footprint is filled");
+    let rows = dashed_rows(&shapes, theme::WAVE_CUT);
+    assert_eq!(rows.len(), 2, "a wash line each side: {rows:?}");
+    let texts = texts(&out);
+    for want in ["Bow →", "far field only: not the wave profile on the hull"] {
+        assert!(texts.iter().any(|t| t == want), "{want}: {texts:?}");
+    }
+    assert!(texts.iter().any(|t| t.starts_with("wash ")), "{texts:?}");
+    assert!(texts.iter().any(|t| t.contains("· calm ·")), "{texts:?}");
+}
+
+#[test]
+fn kelvin_wedge_toggles() {
+    let (mut app, ctx) = demo_with_waves();
+    let kelvin = |out: &egui::FullOutput| {
+        frame_shapes(out)
+            .iter()
+            .filter(|s| matches!(s, egui::Shape::LineSegment { stroke, .. } if stroke.color == theme::WAVE_KELVIN))
+            .count()
+    };
+    let out = settled_view(&ctx, &mut app);
+    assert_eq!(kelvin(&out), 2, "two wedge lines from the bow");
+    app.set_wave_settings(WaveSettings {
+        kelvin_wedge: false,
+        ..app.wave_settings().clone()
+    });
+    let out = frame(&ctx, &mut app, Vec::new());
+    assert_eq!(kelvin(&out), 0);
+}
+
+/// The 2026-11-19 ruling: the window's map is dark calm water ahead of the bow.
+#[test]
+fn map_colours_are_dark_at_calm() {
+    let (mut app, ctx) = demo_with_waves();
+    settled_view(&ctx, &mut app);
+    let w = app.wave_current().unwrap();
+    let [nx, ny] = w.image.size;
+    // The last column is ahead of the bow, where the far field is calm; the middle row is y = 0.
+    let px = w.image.pixels[(ny / 2) * nx + nx - 1];
+    assert_eq!(px, theme::WAVE_CALM, "{px:?}");
+}
+
+#[test]
+fn dragging_the_wash_line_sets_the_distance() {
+    let (mut app, ctx) = demo_with_waves();
+    let out = settled_view(&ctx, &mut app);
+    let d = app.wave_current().unwrap().wash_distance_m;
+    let shapes = frame_shapes(&out);
+    let rows = dashed_rows(&shapes, theme::WAVE_CUT);
+    let [top, bottom] = rows[..] else {
+        panic!("{rows:?}")
+    };
+    let per_m = (bottom - top) / (2.0 * d as f32);
+    let x = shapes
+        .iter()
+        .find_map(|s| match s {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == theme::WAVE_CUT && points[0].y.round() == top =>
+            {
+                Some(0.5 * (points[0].x + points[1].x))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let from = egui::pos2(x, top);
+    // Three metres closer to the hull.
+    let to = egui::pos2(x, top + 3.0 * per_m);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    frame(&ctx, &mut app, vec![button(from, true)]);
+    for k in 1..=6 {
+        let p = from + (to - from) * (k as f32 / 6.0);
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    }
+    frame(&ctx, &mut app, vec![button(to, false)]);
+    let got = app
+        .wave_settings()
+        .wash_distance_m
+        .expect("a wash distance");
+    assert!((got - (d - 3.0)).abs() < 0.5, "{got} vs {}", d - 3.0);
+}

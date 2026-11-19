@@ -14,7 +14,7 @@ use crate::theme;
 use crate::waves::{WaveDomain, WaveDrag, WaveResult, WaveSettings, WaveSpeed};
 use eframe::egui;
 use seacraft_core::resistance::{GRAVITY, KNOT};
-use seacraft_core::wave_pattern::HULL_SPEED_FN;
+use seacraft_core::wave_pattern::{HULL_SPEED_FN, KELVIN_HALF_ANGLE_DEG};
 
 /// What the wave view asked for, applied by the App after the panel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,6 +42,8 @@ pub struct MapState {
     /// Offset of the field's centre from the map's centre (points).
     pub pan: egui::Vec2,
     pub fitted: bool,
+    /// The pointer went down on a wash line: the drag moves the line, not the map.
+    pub dragging_wash: bool,
 }
 
 /// The wave view's inputs.
@@ -63,6 +65,8 @@ pub struct WaveViewPanel<'a> {
     /// The waterline length and beam the speed's units and the catamaran guess convert by.
     pub length_wl: Option<f64>,
     pub beam_wl: Option<f64>,
+    /// The kept pattern's image, loaded as a texture.
+    pub texture: Option<egui::TextureId>,
     pub map: &'a mut MapState,
 }
 
@@ -89,7 +93,8 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
         heeled_or_trimmed,
         length_wl,
         beam_wl,
-        map: _,
+        texture,
+        map,
     } = p;
     let mut action = WaveViewAction::None;
     let length_wl = length_wl.filter(|l| *l > 0.0);
@@ -119,6 +124,11 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
         }
         if busy {
             ui.spinner();
+        }
+        // The chip sits in the header, so the map does not move when the result goes stale (as
+        // it does mid-drag on the wash line).
+        if stale && result.is_some() {
+            crate::panels::stale_chip(ui);
         }
     });
 
@@ -150,9 +160,19 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
     ui.allocate_ui_with_layout(body, egui::Layout::top_down(egui::Align::Min), |ui| {
         ui.set_min_size(body);
         match result {
-            Some(r) => crate::panels::stale_section(ui, stale, |ui| {
-                body_columns(ui, r, drag, settings, body);
-            }),
+            Some(r) => {
+                let wash = ui
+                    .scope(|ui| {
+                        if stale {
+                            ui.multiply_opacity(theme::STALE_OPACITY);
+                        }
+                        body_columns(ui, r, drag, settings, texture, map, body)
+                    })
+                    .inner;
+                if let Some(d) = wash {
+                    action = WaveViewAction::SetWashDistance(d);
+                }
+            }
             None if busy => {
                 ui.label(
                     egui::RichText::new("Computing the wave pattern…").color(theme::TEXT_MUTED),
@@ -277,13 +297,17 @@ pub fn interference_words(ratio: f64) -> String {
 }
 
 /// Readouts, map and plots; the plots go under the map when the drawer is narrow.
+/// Returns a wash distance while the wash line is dragged on the map.
 fn body_columns(
     ui: &mut egui::Ui,
     r: &WaveResult,
     drag: Option<&WaveDrag>,
     settings: &WaveSettings,
+    texture: Option<egui::TextureId>,
+    map: &mut MapState,
     size: egui::Vec2,
-) {
+) -> Option<f64> {
+    let mut wash = None;
     let wide = size.x >= WIDE;
     let gap = ui.spacing().item_spacing.x;
     let plots_w = if wide { (0.34 * size.x).round() } else { 0.0 };
@@ -301,7 +325,7 @@ fn body_columns(
             } else {
                 (0.55 * size.y).round()
             };
-            map_placeholder(ui, egui::vec2(map_w, map_h));
+            wash = wave_map(ui, r, settings, texture, map, egui::vec2(map_w, map_h));
             if !wide {
                 plots_placeholder(ui, r, drag);
             }
@@ -312,6 +336,7 @@ fn body_columns(
             });
         }
     });
+    wash
 }
 
 /// The left column: the regime sentence, then one row per question, each with a definition on
@@ -408,10 +433,303 @@ fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
         });
 }
 
-/// The map's place until the map is drawn (Task 8 of the plan).
-fn map_placeholder(ui: &mut egui::Ui, size: egui::Vec2) {
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, theme::PLOT_BG);
+/// World (m, model axes) to the map's screen: bow to the right, starboard (+y) up.
+#[derive(Debug, Clone, Copy)]
+struct MapTransform {
+    centre_world: (f64, f64),
+    centre_screen: egui::Pos2,
+    /// Points per metre.
+    scale: f32,
+}
+
+impl MapTransform {
+    fn at(&self, x: f64, y: f64) -> egui::Pos2 {
+        let dx = (x - self.centre_world.0) as f32 * self.scale;
+        let dy = (y - self.centre_world.1) as f32 * self.scale;
+        self.centre_screen + egui::vec2(dx, -dy)
+    }
+
+    fn world(&self, p: egui::Pos2) -> (f64, f64) {
+        let d = (p - self.centre_screen) / self.scale;
+        (
+            self.centre_world.0 + d.x as f64,
+            self.centre_world.1 - d.y as f64,
+        )
+    }
+}
+
+/// A round length for the scale bar near `target` metres: 1, 2 or 5 × 10ⁿ.
+fn round_length(target: f64) -> f64 {
+    let p = 10f64.powf(target.max(1e-6).log10().floor());
+    [5.0, 2.0, 1.0]
+        .into_iter()
+        .map(|m| m * p)
+        .find(|v| *v <= target)
+        .unwrap_or(p)
+}
+
+/// Pixels within which a press picks the wash line instead of panning.
+const WASH_PICK: f32 = 6.0;
+/// Height of the colour bar under the map, with its label.
+const COLOUR_BAR: f32 = 26.0;
+
+/// The wave map: the colour image, contours, the hull footprint drawn opaque, the Kelvin wedge,
+/// both wash lines, a scale bar, "Bow →" and the colour bar. Scroll zooms about the cursor, a drag
+/// pans (or moves the wash line when it starts on one), a double-click fits. Returns the wash
+/// distance while the wash line is dragged.
+fn wave_map(
+    ui: &mut egui::Ui,
+    r: &WaveResult,
+    settings: &WaveSettings,
+    texture: Option<egui::TextureId>,
+    map: &mut MapState,
+    size: egui::Vec2,
+) -> Option<f64> {
+    let size = egui::vec2(size.x, (size.y - COLOUR_BAR).max(60.0));
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let f = &r.field;
+    let (Some(&x0), Some(&x1), Some(&y0), Some(&y1)) =
+        (f.xs.first(), f.xs.last(), f.ys.first(), f.ys.last())
+    else {
+        return None;
+    };
+    if response.double_clicked() || !map.fitted || map.zoom <= 0.0 {
+        *map = MapState {
+            zoom: 1.0,
+            pan: egui::Vec2::ZERO,
+            fitted: true,
+            dragging_wash: false,
+        };
+    }
+    let fit = ((rect.width() - 16.0) as f64 / (x1 - x0).max(1e-9))
+        .min((rect.height() - 16.0) as f64 / (y1 - y0).max(1e-9)) as f32;
+    let mut t = MapTransform {
+        centre_world: (0.5 * (x0 + x1), 0.5 * (y0 + y1)),
+        centre_screen: rect.center() + map.pan,
+        scale: fit * map.zoom,
+    };
+
+    // Zoom about the cursor: the point under it stays put.
+    if let Some(hover) = response.hover_pos() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            let before = t.world(hover);
+            map.zoom = (map.zoom * (scroll * 0.0015).exp()).clamp(0.2, 50.0);
+            t.scale = fit * map.zoom;
+            let after = t.at(before.0, before.1);
+            map.pan += hover - after;
+            t.centre_screen = rect.center() + map.pan;
+        }
+    }
+    let d = r.wash_distance_m;
+    // Picked on the frame's transform before this frame's pan.
+    let pick = t;
+    let near_wash = move |p: egui::Pos2| {
+        [d, -d]
+            .into_iter()
+            .any(|y| (pick.at(x0, y).y - p.y).abs() <= WASH_PICK)
+    };
+    let mut wash = None;
+    if response.drag_started() {
+        // Where the press began: egui starts a drag only after the pointer has moved a little.
+        let origin = ui.input(|i| i.pointer.press_origin());
+        map.dragging_wash = origin.is_some_and(near_wash);
+    }
+    if response.dragged() {
+        if map.dragging_wash {
+            if let Some(p) = response.interact_pointer_pos() {
+                let (_, y) = t.world(p);
+                wash = Some((y.abs() * 10.0).round() / 10.0).filter(|d| *d > 0.0);
+            }
+        } else {
+            map.pan += response.drag_delta();
+            t.centre_screen = rect.center() + map.pan;
+        }
+    }
+    if response.drag_stopped() {
+        map.dragging_wash = false;
+    }
+    if map.dragging_wash || response.hover_pos().is_some_and(near_wash) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, theme::PLOT_BG);
+    // The image's pixels sit on the grid points, so it reaches half a cell past the outer ones.
+    let (hx, hy) = (
+        0.5 * (x1 - x0) / (f.xs.len().max(2) - 1) as f64,
+        0.5 * (y1 - y0) / (f.ys.len().max(2) - 1) as f64,
+    );
+    if let Some(texture) = texture {
+        let quad = egui::Rect::from_two_pos(t.at(x0 - hx, y1 + hy), t.at(x1 + hx, y0 - hy));
+        let mut mesh = egui::Mesh::with_texture(texture);
+        mesh.add_rect_with_uv(
+            quad,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    for (level, segments) in &r.contours {
+        let crest = *level > 0.0;
+        let stroke = egui::Stroke::new(
+            1.0,
+            if crest {
+                theme::WAVE_CONTOUR_CREST
+            } else {
+                theme::WAVE_CONTOUR_TROUGH
+            },
+        );
+        for [(ax, ay), (bx, by)] in segments {
+            let (a, b) = (t.at(*ax, *ay), t.at(*bx, *by));
+            if crest {
+                painter.line_segment([a, b], stroke);
+            } else {
+                painter.extend(egui::Shape::dashed_line(&[a, b], stroke, 3.0, 2.0));
+            }
+        }
+    }
+    // The hull footprint, opaque, so nobody reads waves under the hull: a fan from the
+    // outline's centroid (a waterline is star-shaped about it).
+    let mut bow = f64::NEG_INFINITY;
+    let mut hull_bottom = f32::NEG_INFINITY;
+    for outline in &f.waterlines {
+        if outline.len() < 3 {
+            continue;
+        }
+        let n = outline.len() as f64;
+        let (cx, cy) = outline
+            .iter()
+            .fold((0.0, 0.0), |(sx, sy), p| (sx + p[0] / n, sy + p[1] / n));
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(t.at(cx, cy), theme::WAVE_HULL);
+        let points: Vec<egui::Pos2> = outline.iter().map(|p| t.at(p[0], p[1])).collect();
+        for p in &points {
+            mesh.colored_vertex(*p, theme::WAVE_HULL);
+        }
+        let k = points.len() as u32;
+        for i in 0..k {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % k);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+        painter.add(egui::Shape::closed_line(
+            points.clone(),
+            egui::Stroke::new(1.5, theme::WAVE_WATERLINE),
+        ));
+        bow = outline.iter().map(|p| p[0]).fold(bow, f64::max);
+        hull_bottom = points.iter().map(|p| p.y).fold(hull_bottom, f32::max);
+    }
+    if settings.kelvin_wedge && bow.is_finite() {
+        let reach = (bow - x0).max(0.0);
+        let half = KELVIN_HALF_ANGLE_DEG.to_radians().tan() * reach;
+        let stroke = egui::Stroke::new(1.0, theme::WAVE_KELVIN);
+        for side in [1.0, -1.0] {
+            painter.line_segment([t.at(bow, 0.0), t.at(x0, side * half)], stroke);
+        }
+    }
+    let cut = egui::Stroke::new(1.5, theme::WAVE_CUT);
+    for y in [d, -d] {
+        painter.extend(egui::Shape::dashed_line(
+            &[t.at(x0, y), t.at(x1, y)],
+            cut,
+            8.0,
+            5.0,
+        ));
+    }
+    let small = egui::FontId::proportional(11.0);
+    painter.text(
+        t.at(x1, d) + egui::vec2(-6.0, -3.0),
+        egui::Align2::RIGHT_BOTTOM,
+        format!("wash {d:.1} m"),
+        small.clone(),
+        theme::WAVE_CUT,
+    );
+    if hull_bottom.is_finite() && bow.is_finite() {
+        painter.text(
+            egui::pos2(t.at(bow, 0.0).x, hull_bottom + 4.0),
+            egui::Align2::RIGHT_TOP,
+            "far field only: not the wave profile on the hull",
+            small.clone(),
+            theme::TEXT_MUTED,
+        );
+    }
+    painter.text(
+        rect.right_top() + egui::vec2(-8.0, 6.0),
+        egui::Align2::RIGHT_TOP,
+        "Bow →",
+        small.clone(),
+        theme::TEXT_SECONDARY,
+    );
+    // Scale bar: a round length near a fifth of the map's width.
+    let metres = round_length((0.2 * rect.width() / t.scale) as f64);
+    let start = rect.left_bottom() + egui::vec2(10.0, -10.0);
+    let end = start + egui::vec2(metres as f32 * t.scale, 0.0);
+    let bar = egui::Stroke::new(1.5, theme::TEXT_SECONDARY);
+    painter.line_segment([start, end], bar);
+    for p in [start, end] {
+        painter.line_segment([p, p - egui::vec2(0.0, 4.0)], bar);
+    }
+    painter.text(
+        end + egui::vec2(6.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        format!("{metres} m"),
+        small.clone(),
+        theme::TEXT_SECONDARY,
+    );
+    // What is under the cursor, from the nearest grid point.
+    if let Some(p) = response.hover_pos() {
+        let (x, y) = t.world(p);
+        let nx = f.xs.len();
+        let ix = (((x - x0) / (2.0 * hx)).round().max(0.0) as usize).min(nx - 1);
+        let iy = (((y - y0) / (2.0 * hy)).round().max(0.0) as usize).min(f.ys.len() - 1);
+        let k = iy * nx + ix;
+        let text = if f.wet[k] {
+            format!(
+                "x {x:.1} m · y {} m · elevation {} m",
+                signed(y, 1),
+                signed(f.zeta[k], 2)
+            )
+        } else {
+            "hull".to_string()
+        };
+        painter.text(
+            rect.right_bottom() + egui::vec2(-8.0, -6.0),
+            egui::Align2::RIGHT_BOTTOM,
+            text,
+            small,
+            theme::TEXT_SECONDARY,
+        );
+    }
+    colour_bar(ui, r.clip_m, rect.width());
+    wash
+}
+
+/// The window's colour map as a bar from trough to crest, labelled −clip, calm and +clip.
+fn colour_bar(ui: &mut egui::Ui, clip_m: f64, width: f32) {
+    let w = width.clamp(120.0, 320.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 8.0), egui::Sense::hover());
+    let mut mesh = egui::Mesh::default();
+    let stops = [theme::WAVE_TROUGH, theme::WAVE_CALM, theme::WAVE_CREST];
+    for (i, colour) in stops.into_iter().enumerate() {
+        let x = rect.left() + rect.width() * i as f32 / 2.0;
+        mesh.colored_vertex(egui::pos2(x, rect.top()), colour);
+        mesh.colored_vertex(egui::pos2(x, rect.bottom()), colour);
+    }
+    for i in 0..2u32 {
+        let k = 2 * i;
+        mesh.add_triangle(k, k + 1, k + 2);
+        mesh.add_triangle(k + 1, k + 3, k + 2);
+    }
+    ui.painter().add(egui::Shape::mesh(mesh));
+    ui.label(
+        egui::RichText::new(format!(
+            "{} m · calm · {} m",
+            signed(-clip_m, 2),
+            signed(clip_m, 2)
+        ))
+        .small()
+        .color(theme::TEXT_SECONDARY),
+    );
 }
 
 /// The plots' place until they are drawn (Task 9 of the plan).

@@ -1066,6 +1066,8 @@ pub struct App {
     wave_drag_track: Track<crate::waves::WaveDrag>,
     /// The Wave pattern view's map pan and zoom.
     wave_map: crate::wave_view::MapState,
+    /// Bumped each time a wave result is installed: the texture's key.
+    wave_result_rev: u64,
     raos_track: Track<RaoResult>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
@@ -1324,6 +1326,7 @@ impl App {
             waves_track: Track::default(),
             wave_drag_track: Track::default(),
             wave_map: Default::default(),
+            wave_result_rev: 0,
             raos_track: Track::default(),
             analysis: Default::default(),
             hydro_rev: 0,
@@ -4337,7 +4340,7 @@ impl App {
         }
         let result = self.wave_current()?;
         let (key, texture) = self.wave_texture.as_ref()?;
-        (*key == self.waves_key()).then(|| render::SceneWaves {
+        (*key == self.wave_result_rev).then(|| render::SceneWaves {
             result,
             texture: texture.id(),
             contours: None,
@@ -4356,9 +4359,16 @@ impl App {
     }
 
     /// Upload the current pattern's image once per result; drop it when there is none.
+    /// Load the kept pattern's image as a texture, once per result: the view draws a stale one
+    /// dimmed, Plan view only a current one.
     fn load_wave_texture(&mut self, ctx: &egui::Context) {
-        let key = self.waves_key();
-        let Some(image) = self.wave_current().map(|w| w.image.clone()) else {
+        let key = self.wave_result_rev;
+        let image = self
+            .waves_needed()
+            .then_some(self.perf_state.wave_result.as_ref())
+            .flatten()
+            .map(|w| w.image.clone());
+        let Some(image) = image else {
             self.wave_texture = None;
             return;
         };
@@ -4955,6 +4965,11 @@ impl App {
         self.waves_track.failure(self.waves_key())
     }
 
+    /// The wave map's texture, when one is loaded for the kept pattern (test hook).
+    pub fn wave_texture_id(&self) -> Option<egui::TextureId> {
+        self.wave_texture.as_ref().map(|(_, t)| t.id())
+    }
+
     /// Whether a wave-pattern job is running (test hook).
     pub fn waves_busy(&self) -> bool {
         self.waves_track.busy()
@@ -4977,6 +4992,7 @@ impl App {
         ) {
             Ok(w) => {
                 self.perf_state.wave_result = Some(w);
+                self.wave_result_rev += 1;
                 self.waves_track.stamp(key);
                 Ok(())
             }
@@ -5135,7 +5151,10 @@ impl App {
             None => {}
         }
         match self.waves_track.poll(self.waves_key()) {
-            Some(Ok(w)) => self.perf_state.wave_result = Some(w),
+            Some(Ok(w)) => {
+                self.perf_state.wave_result = Some(w);
+                self.wave_result_rev += 1;
+            }
             Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
             None => {}
         }
@@ -8658,6 +8677,12 @@ impl App {
     /// what else the user asked for, applied here after the panel.
     fn wave_view_drawer(&mut self, ui: &mut egui::Ui) {
         use crate::wave_view::{WaveViewAction, WaveViewPanel};
+        self.load_wave_texture(ui.ctx());
+        let texture = self
+            .wave_texture
+            .as_ref()
+            .filter(|(k, _)| *k == self.wave_result_rev)
+            .map(|(_, t)| t.id());
         let window = ui.ctx().content_rect().height();
         let current = self.wave_current().is_some();
         let stale = self.waves_stale();
@@ -8700,6 +8725,7 @@ impl App {
                         heeled_or_trimmed,
                         length_wl,
                         beam_wl,
+                        texture,
                         map: &mut map,
                     },
                 );
