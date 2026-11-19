@@ -46,6 +46,10 @@ pub struct MapState {
     pub dragging_wash: bool,
     /// The catamaran's drag plot shows interference against spacing, not drag against speed.
     pub spacing_plot: bool,
+    /// The map's frame when a wash-line drag began, kept until the release. With the Auto
+    /// domain the map's sides follow the wash line, so a pattern landing mid-drag would refit
+    /// the map, and the pointer, held still, would read a new distance on every refit.
+    wash_frame: Option<MapTransform>,
 }
 
 /// The wave view's inputs.
@@ -461,7 +465,7 @@ fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
 }
 
 /// World (m, model axes) to the map's screen: bow to the right, starboard (+y) up.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct MapTransform {
     centre_world: (f64, f64),
     centre_screen: egui::Pos2,
@@ -525,8 +529,8 @@ fn wave_map(
             zoom: 1.0,
             pan: egui::Vec2::ZERO,
             fitted: true,
-            dragging_wash: false,
             spacing_plot: map.spacing_plot,
+            ..MapState::default()
         };
     }
     let fit = ((rect.width() - 16.0) as f64 / (x1 - x0).max(1e-9))
@@ -549,6 +553,9 @@ fn wave_map(
             t.centre_screen = rect.center() + map.pan;
         }
     }
+    if let Some(frame) = map.wash_frame {
+        t = frame;
+    }
     let d = r.wash_distance_m;
     // Picked on the frame's transform before this frame's pan.
     let pick = t;
@@ -562,6 +569,7 @@ fn wave_map(
         // Where the press began: egui starts a drag only after the pointer has moved a little.
         let origin = ui.input(|i| i.pointer.press_origin());
         map.dragging_wash = origin.is_some_and(near_wash);
+        map.wash_frame = map.dragging_wash.then_some(t);
     }
     if response.dragged() {
         if map.dragging_wash {
@@ -576,6 +584,7 @@ fn wave_map(
     }
     if response.drag_stopped() {
         map.dragging_wash = false;
+        map.wash_frame = None;
     }
     if map.dragging_wash || response.hover_pos().is_some_and(near_wash) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);

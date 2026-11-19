@@ -18,12 +18,18 @@ use seacraft_gui::App;
 const PATIENCE: Duration = Duration::from_secs(120);
 
 fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) -> egui::FullOutput {
+    // Tall, so the Performance tab's sections are on screen.
+    frame_sized(ctx, app, events, egui::vec2(1600.0, 3200.0))
+}
+
+fn frame_sized(
+    ctx: &egui::Context,
+    app: &mut App,
+    events: Vec<egui::Event>,
+    size: egui::Vec2,
+) -> egui::FullOutput {
     let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            // Tall, so the Performance tab's sections are on screen.
-            egui::vec2(1600.0, 3200.0),
-        )),
+        screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), size)),
         events,
         ..Default::default()
     };
@@ -1136,4 +1142,66 @@ fn inputs_explain_themselves_on_hover() {
             "{label} → {want}: {texts:?}"
         );
     }
+}
+
+#[test]
+fn a_held_wash_drag_stays_where_the_pointer_is() {
+    // PR #10 review: with the Auto domain, the map's sides follow the wash line, so each pattern
+    // that lands mid-drag refits the map. The pointer, held still, then read a farther distance
+    // on every refit and the line ran away from it. A short window, so the map's height limits
+    // its scale.
+    let (mut app, ctx) = demo_with_waves();
+    app.set_wave_settings(WaveSettings {
+        wash_distance_m: Some(60.0),
+        ..app.wave_settings().clone()
+    });
+    let short = egui::vec2(1600.0, 1000.0);
+    let f = |app: &mut App, events| frame_sized(&ctx, app, events, short);
+    let t0 = Instant::now();
+    while app.wave_current().is_none() {
+        f(&mut app, Vec::new());
+        assert!(t0.elapsed() < PATIENCE, "timed out");
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    f(&mut app, Vec::new());
+    let out = f(&mut app, Vec::new());
+    let shapes = frame_shapes(&out);
+    let rows = dashed_rows(&shapes, theme::WAVE_CUT);
+    let [top, bottom] = rows[..] else {
+        panic!("{rows:?}")
+    };
+    let per_m = (bottom - top) / 120.0;
+    let x = shapes
+        .iter()
+        .find_map(|s| match s {
+            egui::Shape::LineSegment { points, stroke }
+                if stroke.color == theme::WAVE_CUT && points[0].y.round() == top =>
+            {
+                Some(0.5 * (points[0].x + points[1].x))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let from = egui::pos2(x, top);
+    // Five metres farther out.
+    let to = egui::pos2(x, top - 5.0 * per_m);
+    f(&mut app, vec![egui::Event::PointerMoved(from)]);
+    f(&mut app, vec![button(from, true)]);
+    for k in 1..=6 {
+        let p = from + (to - from) * (k as f32 / 6.0);
+        f(&mut app, vec![egui::Event::PointerMoved(p)]);
+    }
+    // Hold still while patterns land.
+    for _ in 0..3 {
+        let t0 = Instant::now();
+        while app.wave_current().is_none() {
+            f(&mut app, Vec::new());
+            assert!(t0.elapsed() < PATIENCE, "timed out mid-drag");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        f(&mut app, Vec::new());
+    }
+    let got = app.wave_settings().wash_distance_m.unwrap();
+    f(&mut app, vec![button(to, false)]);
+    assert!((got - 65.0).abs() < 0.5, "{got} vs 65");
 }
