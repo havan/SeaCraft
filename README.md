@@ -210,12 +210,14 @@ and relative rotative efficiency, and prints the power chain
 `PD = PE/ηD`, `ηD = ηH·ηR·ηO`, `PS = PD/ηS` — with `ηO` supplied by the user from
 an open-water chart, since the method predicts the hull's side of the bargain,
 not the propeller's. The wake and thrust-deduction regressions are the
-single-screw fits and are flagged when the answer leaves their range; no worked
-example checks them yet. The resistance equations are checked against the worked
+single-screw fits of Holtrop (1984) and are flagged when the answer leaves their
+range. The relative rotative efficiency reproduces two printed examples; the wake
+fraction and thrust deduction are checked only against a hand calculation from
+the printed formulas, since no printed example uses them. The resistance equations are checked against the worked
 examples both papers print (`docs/oracles.md` §42). Holtrop (1984), a 50 m ship at
-25–35 kn: the form factor, the high-speed coefficients and the wave resistance
-reproduce to the printed digit, and the total to 1 kN once the correlation
-allowance is taken on the appendage area too, as that paper does. Holtrop &
+25–35 kn: the form factor and the high-speed coefficients reproduce within
+0.1 %, the wave resistance within 1 kN, and the total within 1 kN once the
+correlation allowance is taken on the appendage area too, as that paper does. Holtrop &
 Mennen (1982), a 205 m ship at 25 kn: every term the 1984 re-analysis kept
 reproduces to better than 1 %; the form factor and, by 0.6 %, the wave
 resistance differ where 1984 changed the formulas. These check that the
@@ -292,14 +294,18 @@ Gaussian curvature from the same discrete operator the curvature shading uses;
 under 0.5 % of the plate diagonal it is called developable. `-o plate.svg` writes
 the flat pattern with its outline.
 
-`planing` is Savitsky's method for a prismatic planing hull
-(`seacraft planing`): lift, mean wetted length, trim and drag at each speed, with
-the trim solved so the centre of pressure sits under the centre of gravity. The
-equations are checked against the worked example of Molland, Turnock & Hudson
-(2011), a 70 t craft at 45 kn: λ, the trim, the wetted length, friction and total
-drag reproduce within 0.5 % (`docs/oracles.md` §43), which checks the
-transcription, not a real craft. Other tests check the physics the method must
-satisfy — lift equilibrium to 1e-6, λ falling as trim rises, the drag hump. Deadrise is
+`planing` is Savitsky's method for a prismatic planing hull (`seacraft
+planing`): lift, mean wetted length λb, wetted bottom area, trim and drag at
+each speed, with the trim solved so the centre of pressure sits under the centre
+of gravity. The equations are checked against the worked example of Molland,
+Turnock & Hudson (2011), a 70 t craft at 45 kn: λ at five trims, the equilibrium
+trim, the mean wetted length, the wetted area, the friction coefficient, and the
+friction and total drag without Savitsky's roughness allowance (Molland takes
+none) reproduce within 0.5 % (`docs/oracles.md` §43). That checks the
+transcription, not a real craft. Two stated model differences remain: SeaCraft
+balances the centre of pressure under the centre of gravity, and resolves drag
+as `Δ tan τ + D_F`. Other tests check the physics the method must satisfy — lift
+equilibrium to 1e-6, λ falling as trim rises, the drag hump. Deadrise is
 measured as the tangent at the keel of the transom section, which is exact for a
 hard-chine V and understates a round-bilge hull; `--deadrise` overrides it.
 

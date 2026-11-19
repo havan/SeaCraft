@@ -13,6 +13,16 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   at 10 kn (Fn 0.50) goes from 35.79 to 33.93 kW effective power, and its cheapest trim in the trim scan moves
   from the bow-down end to even keel. Savitsky friction takes the Reynolds number on the mean wetted length λb, as Molland et al.
   (2011) do: the friction coefficient rises about 0.8 % and planing resistance about 0.4 %.
+- The planing `wetted_length_m` (CLI table and CSV, MCP `planing_curve`, design report) is now the mean wetted length
+  λb. It was λb/cos β, about 6 % longer at 20° deadrise, which is not a length but the wetted area over the beam.
+  The new `wetted_area_m2` (CSV column, table column "area [m2]", report column) is the wetted bottom area the
+  friction acts on.
+- Holtrop's single-screw wake fraction is now the formula Holtrop (1984) prints, as Molland et al. (2011) also
+  state it: its first term had no c20 and used √(CV·L/TA) for L/TA, and c19 switched on B/TA instead of on Cp at
+  0.7. Wake fraction and delivered power change for every hull given a propeller (on the demo hull at 6 kn, w
+  0.573 → 0.961, both far outside the fitted range and flagged). The relative rotative efficiency is now checked
+  against two printed examples (`docs/oracles.md` §42).
+- Holtrop wave resistance no longer turns NaN at vanishingly small Froude numbers (below about 1e-154).
 
 - The far-field wave pattern in the window, as the **Wave pattern** view in the Analysis drawer (Analysis menu,
   after Trim scan, or "Open wave pattern" in the Performance tab). Its header names the theory, thin-ship

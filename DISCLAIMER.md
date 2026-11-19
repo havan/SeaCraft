@@ -24,10 +24,13 @@ figures ([`docs/oracles.md`](docs/oracles.md) §39). It covers that hull and spe
 The Holtrop-Mennen resistance equations reproduce the worked examples printed in Holtrop & Mennen (1982) and
 Holtrop (1984), and the Savitsky planing equations reproduce the worked example in Molland, Turnock & Hudson
 (2011) ([`docs/oracles.md`](docs/oracles.md) §42, §43). That checks that the equations were transcribed
-correctly, not that either method predicts a real vessel's resistance. Stated differences remain: SeaCraft takes
-Holtrop's correlation allowance on the hull's wetted surface only, and solves Savitsky's trim with the centre of
-pressure under the centre of gravity. Holtrop's propulsion factors (wake fraction, thrust deduction, relative
-rotative efficiency) are not covered by these examples.
+correctly, not that either method predicts a real vessel's resistance. Differences remain, each stated in
+[`docs/oracles.md`](docs/oracles.md) with its size: SeaCraft uses Holtrop's 1984 form factor and hump coefficient,
+so the 1982 example's total comes out 1.2 % above the print; it takes the correlation allowance on the hull's
+wetted surface only; it solves Savitsky's trim with the centre of pressure under the centre of gravity, resolves
+the planing drag as Δ tan τ + D_F, and adds Savitsky's roughness allowance, which Molland's example leaves out.
+Of Holtrop's propulsion factors, the relative rotative efficiency reproduces two printed examples; the wake
+fraction and thrust deduction are checked only against a hand calculation from the printed formulas.
 
 The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`, the Wave pattern view and Plan view contours in the
 window, the design report) is far-field thin-ship theory: free waves only, without the local disturbance, so near the hull

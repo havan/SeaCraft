@@ -1396,7 +1396,10 @@ $S + S_{APP}$; the test adds the appendages' share back and says so.
 - `crates/seacraft-core/src/resistance.rs::published_1984_example_reproduces_the_paper`
 - `crates/seacraft-core/src/resistance.rs::published_example_reproduces_the_paper` (the 1982 example)
 - `crates/seacraft-core/src/resistance.rs::wave_resistance_vanishes_smoothly_at_low_froude_numbers` (a guard:
-  $m_4 \to 0$, not NaN, as Fn → 0)
+  $|m_4| < 10^{-12}$ at Fn 0.02–0.1, which the 1982 $m_2$ fails, and no NaN at Fn $10^{-160}$, where $\lambda/F_n^2$
+  overflows)
+- `crates/seacraft-core/src/resistance.rs::relative_rotative_efficiency_matches_two_printed_examples`
+- `crates/seacraft-core/src/resistance.rs::wake_fraction_follows_holtrop_1984_single_screw` (hand calculation)
 
 ### Numbers Used
 SeaCraft's constants throughout (g 9.80665 m/s², knot 0.514444 m/s, ν 1.1883e-6 m²/s); the papers use 9.81 and
@@ -1428,10 +1431,29 @@ as printed. LR 81.385 m (rel 1e-4). Two numbers differ by the formula choice, no
 - 1+k1: 1.1851 from the 1984 formula (asserted, rel 1e-3); the 1982 formula
   $c_{13}\{0.93 + c_{12}(B/L_R)^{0.92497}(0.95 - C_p)^{-0.521448}(1 - C_p + 0.0225\,lcb)^{0.6906}\}$ gives 1.1564
   here against 1.156 printed.
-- $R_W$: 554.02 kN with $m_4$ against 557.11 printed (−0.55 %; the 1982 $m_2$ gives 556.93). The test allows 1 %.
+- $R_W$: 554.02 kN with $m_4$ against 557.11 printed (−0.55 %; the 1982 $m_2$ gives 556.93). The test allows 1 %
+  against the print, and 1e-4 against the Python expectation with $m_4$ ($m_4$ −0.085549 at Fn 0.286841, also
+  asserted).
 - The total follows: 1814.06 kN against 1793.26 printed (+1.16 %); the test allows 1.5 %.
 
 Bite check (2026-11-19): with $m_2$ put back, the 1984 test fails at 25 kn ($m_4\cos$ 0.2697 against 0.3279).
+
+**Propulsion factors** (added 2026-11-20). $\eta_R = 0.9922 - 0.05908\,A_E/A_0 + 0.07424\,(C_p - 0.0225\,lcb)$,
+the 1982 formula that 1984 kept, against two printed values: the 1982 example (Cp 0.5833, lcb −0.75 %, $A_E/A_0$
+0.7393 as printed) gives 0.99308 against 0.9931 printed (test 1e-4); Molland, Turnock & Hudson (2011) §17.2.6.2
+(BAR 0.700, Cp 0.663, LCB −1.5 %) gives 1.00257 against 1.003 printed (test 1e-3). An earlier test back-solved
+$A_E/A_0$ 0.775 from the printed ηR with the wrong lcb −2.02 and checked nothing.
+
+The single-screw wake fraction is Holtrop (1984), pp. 273–274, as Molland et al. (2011) eq. 8.17 also print it:
+$w = c_9 c_{20} C_V (L/T_A)(0.050776 + 0.93405\,c_{11} C_V/(1 - C_{P1})) + 0.27915\,c_{20}\sqrt{B/(L(1 - C_{P1}))}
++ c_{19} c_{20}$, with $c_{19} = 0.12997/(0.95 - C_B) - 0.11056/(0.95 - C_p)$ for $C_p \le 0.7$ and
+$0.18567/(1.3571 - C_M) - 0.71276 + 0.38648\,C_p$ above. Until 2026-11-20 the code had
+$c_9 C_V\sqrt{C_V L/T_A}(\ldots)$ without $c_{20}$, and switched $c_{19}$ on $B/T_A$ with a different first form.
+No printed example uses these formulas (the 1982 example prints $w$ 0.2584 from the 1982 formula; the 1984 example
+is twin-screw), so the test checks a hand calculation in Python from the printed formulas, not a published
+number: the 1982 ship with $C_V$ 0.001963 and D 8 m gives $w$ 0.274120 and $t$ 0.198376; a full hull on the
+$C_p > 0.7$ branch (L 150, B 25, T 9 m, S 5500 m², D 6.5 m, Cp 0.80, CM 0.99, CB 0.792, lcb +2 %, $C_V$ 0.0021)
+gives $w$ 0.392322. Tolerance 1e-5. With the old wake the test fails ($w$ 0.230213).
 
 ### Provenance
 Both papers read 2026-11-19; the expected values recomputed in Python the same day and reproduced by the tests.
@@ -1439,8 +1461,8 @@ Earlier the 1982 test fed lcb 2.02 % aft and called the 1+k1 gap a misprint in t
 wrong, and it is the 1984 against the 1982 form factor.
 
 What this covers: the transcription of the resistance equations, checked against the examples their authors
-printed. It does not show that the method predicts any real vessel's resistance, and it does not cover the
-propulsion factors (wake fraction, thrust deduction, ηR), which no worked example checks yet.
+printed. It does not show that the method predicts any real vessel's resistance. Of the propulsion factors, ηR
+is checked against two printed values; the wake fraction and thrust deduction only against the printed formulas.
 
 ## 43. Savitsky Against Molland et al. (2011), Table 10.6
 
@@ -1457,8 +1479,10 @@ $l_p/b = \lambda(0.75 - 1/(5.21 C_V^2/\lambda^2 + 2.39))$, $D_F = \tfrac12\rho V
 $R = \Delta\tan\tau + D_F$ (plus the roughness allowance $\Delta C_F$ 0.0004 in production).
 
 Change on 2026-11-19: $C_F$ (ITTC-57) now takes the Reynolds number on the mean wetted length $\lambda b$, as
-Molland does. It was taken on $\lambda b/\cos\beta$, which gave $C_F$ 0.8 % low in this example. The reported
-`wetted_length_m` stays $\lambda b/\cos\beta$, the mean wetted length along the bottom.
+Molland does. It was taken on $\lambda b/\cos\beta$, which gave $C_F$ 0.8 % low in this example. Change on
+2026-11-20: `wetted_length_m` reports $\lambda b$ (it reported $\lambda b/\cos\beta$, which is no length: it is
+the wetted area over the beam), and `wetted_area_m2` reports $S = \lambda b^2/\cos\beta$, on which the friction
+acts.
 
 Two model differences remain, stated rather than removed:
 - **Moment balance.** SeaCraft solves LCP = LCG. Molland solves $N l_p = \Delta\,LCG$ with $N = \Delta\cos\tau$.
@@ -1483,7 +1507,9 @@ allowance, so the test subtracts SeaCraft's from the drag.
 | λ at τ 3.5° | 2.2138 | 2.2146 | 0.2 % |
 | λ at τ 3.31° | 2.3658 | 2.3634 | 0.2 % |
 | equilibrium τ | 3.31° | 3.3177° | 0.02° |
-| λb | 15.378 m | 15.322 m | 0.5 % |
+| λb (`wetted_length_m`) | 15.378 m | 15.322 m | 0.5 % |
+| S (`wetted_area_m2`) | 106.37 m² | 105.98 m² | 0.5 % |
+| Re | 2.9916e8 (V λb/ν from the printed λb) | 2.9807e8 | 0.5 % |
 | $C_F$ | 1.7884e-3 | 1.7893e-3 | 0.5 % |
 | $D_F$ | 52.24 kN | 52.08 kN | 0.5 % |
 | $R_T$ | 91.74 kN | 91.89 kN | 0.5 % |
