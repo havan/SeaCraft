@@ -1340,3 +1340,25 @@ fn f5_on_a_failed_pattern_while_another_runs_retries_it_afterwards() {
     frames_until(&ctx, &mut app, "the retry", |a| a.wave_failure().is_some());
 }
 
+#[test]
+fn report_takes_no_waterline_from_heeled_hydrostatics() {
+    // PR #10 review: the report's pattern is upright, but its wash line could take the waterline
+    // breadth of the heeled hydrostatics.
+    let wash_at = |heel: f64| {
+        let (mut app, _ctx) = demo();
+        app.set_wave_view_open(true);
+        app.set_wave_settings(WaveSettings {
+            // Inside the hull: the line goes to the clearance, from the waterline's breadth.
+            wash_distance_m: Some(0.1),
+            ..app.wave_settings().clone()
+        });
+        app.hydro_options_mut().heel_deg = heel;
+        app.recompute_hydrostatics();
+        let html = scratch(&format!("report-heel-{heel}.html"));
+        app.write_report_blocking(&html).unwrap();
+        let text = std::fs::read_to_string(&html).unwrap();
+        let at = text.find("Wash height at").expect("the wash line");
+        text[at..at + 24].to_string()
+    };
+    assert_eq!(wash_at(10.0), wash_at(0.0));
+}

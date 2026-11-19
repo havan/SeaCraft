@@ -5631,7 +5631,14 @@ impl App {
                 self.hydro
                     .result
                     .as_ref()
-                    .filter(|h| self.hydro.track.is_current(self.hydro_key()) && at_draft(h.draft))
+                    // Upright only (as measured, so a free trim counts): heeled or trimmed, the
+                    // waterline lies on the tilted plane, while the report's pattern is upright.
+                    .filter(|h| {
+                        self.hydro.track.is_current(self.hydro_key())
+                            && at_draft(h.draft)
+                            && h.heel_deg == 0.0
+                            && h.trim_m == 0.0
+                    })
                     .map(|h| (h.lwl, h.bwl))
             });
         let waves = self.waves_needed().then(|| ReportWaves {
