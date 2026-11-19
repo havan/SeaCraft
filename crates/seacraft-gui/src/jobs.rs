@@ -213,6 +213,12 @@ impl<T> Track<T> {
             && self.running_for() != Some(current)
             && self.failure(current).is_none()
     }
+
+    /// `current` is due and no job is in flight, so starting it leaves one job running: for slow
+    /// work whose superseded jobs would otherwise pile up (they cannot be stopped).
+    pub fn ready(&self, current: u64) -> bool {
+        self.due(current) && !self.busy()
+    }
 }
 
 /// One revision key from the counters a result depends on.
@@ -301,6 +307,25 @@ mod tests {
         assert!(track.due(4), "new inputs are tried again");
         track.stamp(4);
         assert!(track.failure(3).is_none() && track.is_current(4));
+    }
+
+    #[test]
+    fn a_new_revision_waits_for_the_job_in_flight() {
+        // PR #10 review: a speed scrub started a full wave pattern for each pause, every one
+        // running to the end while only the newest was wanted.
+        let mut track: Track<u32> = Track::default();
+        let (release, gate) = mpsc::channel::<()>();
+        track.start(1, move || {
+            let _ = gate.recv();
+            Ok(1)
+        });
+        assert!(track.due(2), "revision 2 still needs computing");
+        assert!(!track.ready(2), "but not while revision 1 runs");
+        let _ = release.send(());
+        assert_eq!(track.wait(2), None, "revision 1's result is discarded");
+        assert!(track.ready(2));
+        track.stamp(2);
+        assert!(!track.ready(2), "nothing to do");
     }
 
     #[test]

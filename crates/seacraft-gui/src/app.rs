@@ -4182,8 +4182,15 @@ impl App {
                                 }
                             }
                         });
-                // The pattern's lines as one mesh, kept while the pattern and the view stay.
-                if let Some(result) = scene.waves.as_ref().map(|w| w.result) {
+                // The pattern's lines as one mesh, kept while the pattern and the view stay. Only
+                // Plan view draws them, so no other view builds them (orbiting Perspective view
+                // would otherwise re-tessellate every contour each frame).
+                if let Some(result) = scene
+                    .waves
+                    .as_ref()
+                    .map(|w| w.result)
+                    .filter(|_| self.cameras[index].kind == ViewKind::Plan)
+                {
                     let stamp = self.cache.as_ref().map_or(0, RenderCache::stamp);
                     let camera = &self.cameras[index];
                     let key = revision_key(&[
@@ -4356,23 +4363,22 @@ impl App {
         }
     }
 
-    /// Upload the current pattern's image once per result; drop it when there is none.
-    /// Load the kept pattern's image as a texture, once per result: the view draws a stale one
-    /// dimmed, Plan view only a current one.
+    /// Load the kept pattern's image as a texture, once per result (the image is copied only to
+    /// upload it); drop it when there is none. The view draws a stale one dimmed.
     fn load_wave_texture(&mut self, ctx: &egui::Context) {
         let key = self.wave_result_rev;
-        let image = self
+        let Some(result) = self
             .waves_needed()
             .then_some(self.perf_state.wave_result.as_ref())
             .flatten()
-            .map(|w| w.image.clone());
-        let Some(image) = image else {
+        else {
             self.wave_texture = None;
             return;
         };
         if self.wave_texture.as_ref().is_some_and(|(k, _)| *k == key) {
             return;
         }
+        let image = result.image.clone();
         let texture = ctx.load_texture("wave-pattern", image, egui::TextureOptions::LINEAR);
         self.wave_texture = Some((key, texture));
     }
@@ -5084,9 +5090,12 @@ impl App {
                 && self.loading_track.due(self.loading_key());
             let resistance_due = self.resistance_track.due(self.resistance_key());
             // The wave pattern recomputes live while the speed is scrubbed: the hydrostatics'
-            // quiet. The newest key wins: a job in flight finishes and is shown dimmed.
-            if self.waves_needed() && self.waves_track.due(self.waves_key()) {
-                if hydro_quiet {
+            // quiet. One job at a time: a job in flight for an older key runs to its end (a
+            // thread cannot be stopped) and its result is discarded, then the newest key starts.
+            // Meanwhile the view shows the last stored result dimmed.
+            let waves_key = self.waves_key();
+            if self.waves_needed() && self.waves_track.due(waves_key) {
+                if hydro_quiet && self.waves_track.ready(waves_key) {
                     self.start_waves_compute();
                 } else {
                     waiting = true;
