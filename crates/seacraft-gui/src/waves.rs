@@ -167,7 +167,8 @@ pub struct WaveResult {
     pub clip_m: f64,
     /// `(level, segments)` in ascending level, none at calm.
     pub contours: Vec<(f64, Vec<Segment>)>,
-    /// The wash line: a longitudinal cut at `y = -wash_distance_m` over the field's x range.
+    /// The wash line: a longitudinal cut at `y = -wash_distance_m` over the field's x range, 401
+    /// samples or more (four to a transverse wave at low speed).
     pub wash_cut: WaveCut,
     pub wash: Option<WashHeight>,
     /// The wash distance used (m), after clamping clear of the hull.
@@ -190,6 +191,8 @@ pub struct WaveResult {
 
 /// Samples along the wash line.
 const WASH_LINE_SAMPLES: usize = 401;
+/// The most samples along the wash line (a speed that would need more fails with the cut's reason).
+const MAX_WASH_SAMPLES: usize = 20_001;
 /// Spacings in the catamaran spacing scan.
 const SPACING_SCAN_POINTS: usize = 40;
 
@@ -253,7 +256,13 @@ pub fn compute_waves(
     } else {
         Vec::new()
     };
-    let (wash_cut, wash) = wash_cut(&grid, &opts, &field, wash_distance_m, WASH_LINE_SAMPLES)?;
+    // At least WASH_LINE_SAMPLES, and four to a transverse wave so a slow speed's short waves are
+    // sampled (the cut refuses a spacing over half a wavelength).
+    let length = field.xs[field.xs.len() - 1] - field.xs[0];
+    let quarter = 0.25 * field.transverse_wavelength_m;
+    let samples =
+        ((length / quarter).ceil() as usize + 1).clamp(WASH_LINE_SAMPLES, MAX_WASH_SAMPLES);
+    let (wash_cut, wash) = wash_cut(&grid, &opts, &field, wash_distance_m, samples)?;
     let image = wave_image(&field, clip_m);
 
     let michell = |spacing: Option<f64>| {
@@ -802,5 +811,20 @@ mod tests {
         let (surface, subdiv, _) = demo();
         let err = compute_wave_drag(&surface, subdiv, 0.0, RHO, None).expect_err("draft 0");
         assert!(err.contains("Michell"), "{err}");
+    }
+
+    /// Review focus 5: at Fn 0.05 the waves are 0.17 m long; the wash line samples finely enough
+    /// for them, so the pattern still computes.
+    #[test]
+    fn very_low_speed_still_computes_with_its_wash() {
+        let (surface, subdiv, draft) = demo();
+        let settings = WaveSettings {
+            speed: WaveSpeed::Froude(0.05),
+            ..WaveSettings::default()
+        };
+        let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
+        let ds = w.wash_cut.s[1] - w.wash_cut.s[0];
+        assert!(ds < 0.5 * w.field.transverse_wavelength_m, "ds {ds}");
+        assert!(w.field.xs.len() * w.field.ys.len() <= 250_000);
     }
 }
