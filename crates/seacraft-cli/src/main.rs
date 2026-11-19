@@ -68,7 +68,7 @@ enum Command {
     Trim(TrimArgs),
     /// Reshape the hull to cut resistance at a speed, holding displacement and stability
     Optimize(OptimizeArgs),
-    /// Still-water resistance and effective power (Holtrop-Mennen 1984)
+    /// Still-water resistance and effective power (Holtrop-Mennen 1982/1984)
     Resistance(ResistanceArgs),
     /// Far-field thin-ship (Michell) wave pattern behind the hull: PNG, SVG contours, VTK
     Waves(WavesArgs),

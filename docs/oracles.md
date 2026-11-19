@@ -1368,3 +1368,75 @@ Tests: `crates/seacraft-core/src/michell.rs::cw_curve_matches_single_calls`, `in
 ### Provenance
 Calculus and project choices, written 2026-11-19. The wash height is a thin-ship estimate of the free waves in deep
 water: not a wash assessment against any rule, and not checked against measurement.
+
+## 42. Holtrop-Mennen Against Both Papers' Worked Examples
+
+### Sources
+- Holtrop, J. & Mennen, G. G. J. (1982), "An approximate power prediction method", *International Shipbuilding
+  Progress* 29(335), 166–170. Worked example on p. 170: a 205 m single-screw ship at 25 kn. Read 2026-11-19.
+- Holtrop, J. (1984), "A statistical re-analysis of resistance and propulsion data", *International Shipbuilding
+  Progress* 31(363), 272–276. Formulas on pp. 272–274, worked example on p. 275: a 50 m twin-screw ship at
+  25–35 kn. Read 2026-11-19, in a retyped course copy.
+
+### Formula
+SeaCraft is Holtrop 1984 throughout: the 1984 form factor `1+k1`, the high-speed fit `c17`, `m3` above Fn 0.55, and
+the 1984 hump coefficient in **both** wave fits,
+$$m_4 = 0.4\,c_{15}\,\exp(-0.034\,F_n^{-3.29}),$$
+in $R_{W-A} = c_1 c_2 c_5 \nabla\rho g \exp\{m_1 F_n^d + m_4\cos(\lambda F_n^{-2})\}$ (Fn ≤ 0.40) and
+$R_{W-B} = c_{17} c_2 c_5 \nabla\rho g \exp\{m_3 F_n^d + m_4\cos(\lambda F_n^{-2})\}$ (Fn ≥ 0.55), with the paper's
+straight-line interpolation between them. Until 2026-11-19 SeaCraft used the 1982
+$m_2 = c_{15} C_p^2 \exp(-0.1 F_n^{-2})$ in both fits; with it, $R_W$ in the 1984 example is off by −6 % to +5 %.
+Friction (ITTC-57), appendages, bulb, transom and the correlation allowance are the 1982 formulas, which 1984 kept.
+
+The correlation allowance is taken on $S$, by the 1982 formula. The 1984 example's totals take it on
+$S + S_{APP}$; the test adds the appendages' share back and says so.
+
+### Test Location
+- `crates/seacraft-core/src/resistance.rs::published_1984_example_reproduces_the_paper`
+- `crates/seacraft-core/src/resistance.rs::published_example_reproduces_the_paper` (the 1982 example)
+- `crates/seacraft-core/src/resistance.rs::wave_resistance_vanishes_smoothly_at_low_froude_numbers` (a guard:
+  $m_4 \to 0$, not NaN, as Fn → 0)
+
+### Numbers Used
+SeaCraft's constants throughout (g 9.80665 m/s², knot 0.514444 m/s, ν 1.1883e-6 m²/s); the papers use 9.81 and
+0.5144, a difference under 0.1 % that the tolerances absorb. Expected values were computed in Python on 2026-11-19.
+
+**1984 example.** L 50 m, B 12 m, T 3.2 m (mean of TF 3.1, TA 3.3), ∇ 900 m³, CM 0.78, CWP 0.80, lcb 4.5 % of L
+aft of ½L, iE 25°, AT 10 m², no bulb, Cstern 0, S 584.9 m², SAPP 50 m², 1+k2 3. Printed and asserted: LR 14.1728 m
+(rel 1e-4); 1+k1 1.297, c17 1.4133, m3 −2.0298, c5 0.7329, λ 0.7440 (rel 1e-3). The printed table lost its minus
+signs (on c15, on every $m_3 F_n^d$, and on $m_4\cos$ from 31 kn); the test restores them.
+
+| kn | $m_4\cos$ | $m_3 F_n^d$ | $R_W$ printed / expected | $R_{APP}$ | $R_{TR}$ | $R$ printed / expected (+ RA on SAPP) |
+|---|---|---|---|---|---|---|
+| 25 | 0.3279 | −3.3100 | 475 / 474.98 | 21 | 25 | 662 / 661.74 |
+| 27 | 0.1820 | −3.0883 | 512 / 512.33 | 24 | 16 | 715 / 715.19 |
+| 29 | 0.0409 | −2.8962 | 539 / 539.18 | 28 | 2 | 756 / 756.09 |
+| 31 | −0.0834 | −2.7274 | 564 / 563.75 | 31 | 0 | 807 / 807.43 |
+| 33 | −0.1876 | −2.5780 | 590 / 589.73 | 35 | 0 | 864 / 864.15 |
+| 35 | −0.2730 | −2.4453 | 618 / 618.42 | 39 | 0 | 925 / 925.32 |
+
+Forces in kN. Tolerances: the two products 1e-3 absolute; $R_W$ and $R$ 1.0 kN; $R_{APP}$ and $R_{TR}$ 0.6 kN (printed
+to the kN). Every speed is on the high-speed fit (Fn 0.58–0.81), which the test also asserts. Without the RA share on
+SAPP, $R$ comes out 3–5 kN low.
+
+**1982 example.** L 205 m, B 32 m, T 10 m, ∇ 37 500 m³, Cp 0.5833, CM 0.98, CWP 0.75, lcb 0.75 % of L aft of ½L,
+iE 12.08°, AT 16 m², ABT 20 m², hB 4.0 m, Cstern 10, S 7381.45 m², SAPP 50 m² with 1+k2 1.5, 25 kn. Every term the
+re-analysis kept reproduces as before: Fn 0.2868, CF 0.001390, RF 869.63 kN, c7 0.15610, c1 1.398, c2 0.7595,
+c5 0.9592, λ 0.6513, m1 −2.1274 (rel 1e-3 or tighter), RAPP 8.83 kN, RA 221.98 kN (1 %), RTR 0 and RB below 0.1 kN
+as printed. LR 81.385 m (rel 1e-4). Two numbers differ by the formula choice, not by transcription:
+- 1+k1: 1.1851 from the 1984 formula (asserted, rel 1e-3); the 1982 formula
+  $c_{13}\{0.93 + c_{12}(B/L_R)^{0.92497}(0.95 - C_p)^{-0.521448}(1 - C_p + 0.0225\,lcb)^{0.6906}\}$ gives 1.1564
+  here against 1.156 printed.
+- $R_W$: 554.02 kN with $m_4$ against 557.11 printed (−0.55 %; the 1982 $m_2$ gives 556.93). The test allows 1 %.
+- The total follows: 1814.06 kN against 1793.26 printed (+1.16 %); the test allows 1.5 %.
+
+Bite check (2026-11-19): with $m_2$ put back, the 1984 test fails at 25 kn ($m_4\cos$ 0.2697 against 0.3279).
+
+### Provenance
+Both papers read 2026-11-19; the expected values recomputed in Python the same day and reproduced by the tests.
+Earlier the 1982 test fed lcb 2.02 % aft and called the 1+k1 gap a misprint in the paper's equation (9); both were
+wrong, and it is the 1984 against the 1982 form factor.
+
+What this covers: the transcription of the resistance equations, checked against the examples their authors
+printed. It does not show that the method predicts any real vessel's resistance, and it does not cover the
+propulsion factors (wake fraction, thrust deduction, ηR), which no worked example checks yet.
