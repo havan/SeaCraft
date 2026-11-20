@@ -1522,6 +1522,9 @@ struct PanelsArgs {
     /// Write the patterns even when a panel does not lie flat; each such pattern is headed so
     #[arg(long)]
     allow_undevelopable: bool,
+    /// Leave the panel offsets tables out of the pattern PDF
+    #[arg(long)]
+    no_offsets_pages: bool,
     /// Emit JSON instead of a table
     #[arg(long)]
     json: bool,
@@ -3587,7 +3590,8 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
 }
 
 fn cmd_panels(a: PanelsArgs) -> Result<()> {
-    use seacraft_core::panels::{self, Limits, PanelOptions, Stock};
+    use seacraft_core::panel_choices;
+    use seacraft_core::panels::{self, PanelOptions};
     use seacraft_core::sheet::{PageSetup, Paper};
     use seacraft_core::templates::{Format, StationChoice};
     use seacraft_core::units;
@@ -3598,23 +3602,16 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    if matches!(extension.as_str(), "svg" | "dxf") {
-        let given: Vec<&str> = [
-            (a.paper.is_some(), "--paper"),
-            (a.single_page, "--single-page"),
-            (a.margin_mm.is_some(), "--margin-mm"),
-            (a.overlap_mm.is_some(), "--overlap-mm"),
-        ]
-        .into_iter()
-        .filter_map(|(given, name)| given.then_some(name))
-        .collect();
-        if !given.is_empty() {
-            bail!(
-                "{} apply to PDF only: an SVG or a DXF is one drawing at the scale asked for",
-                given.join(", ")
-            );
-        }
-    }
+    let given: Vec<&str> = [
+        (a.paper.is_some(), "--paper"),
+        (a.single_page, "--single-page"),
+        (a.margin_mm.is_some(), "--margin-mm"),
+        (a.overlap_mm.is_some(), "--overlap-mm"),
+    ]
+    .into_iter()
+    .filter_map(|(given, name)| given.then_some(name))
+    .collect();
+    panel_choices::pdf_only(&extension, &given).map_err(anyhow::Error::msg)?;
     let format = Format::from_path(&a.output, a.single_page).map_err(anyhow::Error::msg)?;
     if let Some(p) = &a.offsets_pdf {
         let ext = p
@@ -3642,44 +3639,23 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             outputs[i].1.display()
         );
     }
-    let positive = |v: f64| v.is_finite() && v > 0.0;
-    if !positive(a.max_seam_drift_mm) {
-        bail!(
-            "--max-seam-drift-mm must be more than zero, not {}",
-            a.max_seam_drift_mm
-        );
-    }
-    if !positive(a.max_stretch_pct) {
-        bail!(
-            "--max-stretch-pct: the stretch limit must be more than zero, not {}",
-            a.max_stretch_pct
-        );
-    }
-    if !positive(a.offset_spacing_mm) {
-        bail!(
-            "--offset-spacing-mm must be more than zero, not {}",
-            a.offset_spacing_mm
-        );
-    }
-    let stock = match a.stock_mm.split_once(['x', 'X']) {
-        Some((l, w)) => match (l.trim().parse::<f64>(), w.trim().parse::<f64>()) {
-            (Ok(l), Ok(w)) if positive(l) && positive(w) => (l, w),
-            _ => bail!(
-                "--stock-mm takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `{}`",
-                a.stock_mm
-            ),
-        },
-        None => bail!(
-            "--stock-mm takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `{}`",
-            a.stock_mm
-        ),
-    };
-    if !a.scarf_mm.is_finite() || a.scarf_mm < 0.0 || a.scarf_mm >= stock.0 {
-        bail!(
-            "--scarf-mm must be from 0 to less than the sheet's length, not {}",
-            a.scarf_mm
-        );
-    }
+    let checked = panel_choices::check(&panel_choices::Choices {
+        max_seam_drift_mm: a.max_seam_drift_mm,
+        max_stretch_pct: a.max_stretch_pct,
+        offset_spacing_mm: a.offset_spacing_mm,
+        stock_mm: a.stock_mm.clone(),
+        scarf_mm: a.scarf_mm,
+    })
+    .map_err(|e| {
+        let flag = match e.field {
+            panel_choices::Field::MaxSeamDrift => "--max-seam-drift-mm",
+            panel_choices::Field::MaxStretch => "--max-stretch-pct",
+            panel_choices::Field::OffsetSpacing => "--offset-spacing-mm",
+            panel_choices::Field::Stock => "--stock-mm",
+            panel_choices::Field::Scarf => "--scarf-mm",
+        };
+        anyhow::anyhow!("{flag} {}", e.message)
+    })?;
     let scale = units::parse_scale(&a.scale).map_err(|e| anyhow::anyhow!("--scale: {e}"))?;
     let paper = match &a.paper {
         Some(text) => Paper::parse(text).map_err(|e| anyhow::anyhow!("--paper: {e}"))?,
@@ -3709,54 +3685,26 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         },
         layers: (!a.layers.is_empty()).then(|| a.layers.clone()),
         stations,
-        limits: Limits {
-            seam_drift_m: a.max_seam_drift_mm / 1000.0,
-            rms_stretch: a.max_stretch_pct / 100.0,
-        },
-        offset_spacing_m: a.offset_spacing_mm / 1000.0,
-        stock: Stock {
-            length_m: stock.0 / 1000.0,
-            width_m: stock.1 / 1000.0,
-            scarf_m: a.scarf_mm / 1000.0,
-        },
+        limits: checked.limits,
+        offset_spacing_m: checked.offset_spacing_m,
+        stock: checked.stock,
         imperial: a.imperial,
     };
     let set = panels::panel_set(&s, &opts).map_err(anyhow::Error::msg)?;
 
     // A panel that does not lie flat stops the export unless the user asked for it anyway.
-    let failing: Vec<String> = set
-        .sheets
-        .iter()
-        .zip(&set.rows)
-        .filter(|(_, r)| !r.lies_flat)
-        .map(|(sheet, r)| format!("{}: {}", r.panel, sheet.notes[0]))
-        .chain(
-            set.refused
-                .iter()
-                .map(|r| format!("{} cannot be laid flat: {}", r.panel, r.reason)),
-        )
-        .collect();
-    if !failing.is_empty() && !a.allow_undevelopable {
-        for f in &failing {
+    if let (Some(summary), false) = (set.not_flat_summary(), a.allow_undevelopable) {
+        for f in set.failing() {
             eprintln!("{f}");
         }
-        let what = if set.refused.is_empty() {
-            "do not lie flat within the limits"
-        } else {
-            "do not lie flat within the limits or could not be laid flat"
-        };
-        bail!(
-            "{} of {} panels {what}; nothing written. Pass --allow-undevelopable to write the \
-             others anyway",
-            failing.len(),
-            set.rows.len() + set.refused.len()
-        );
+        bail!("{summary}; nothing written. Pass --allow-undevelopable to write the others anyway");
     }
 
     // Every output is made first and written together, so one that cannot be written leaves none.
-    let written = panels::write(&set, format, &setup, true)
-        .map_err(anyhow::Error::msg)?
-        .written;
+    let panels::PanelsWritten {
+        written,
+        offsets_pages,
+    } = panels::write(&set, format, &setup, !a.no_offsets_pages).map_err(anyhow::Error::msg)?;
     let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
     if let Some(path) = &a.offsets_csv {
         writes.push((path, panels::offsets_csv(&set.offsets).into_bytes()));
@@ -3774,6 +3722,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             "path": a.output.display().to_string(),
             "format": format.name(),
             "pages": written.pages,
+            "offsets_pages": offsets_pages,
             "scale": units::scale_label(scale),
             "panels": set.rows,
             "mismatches": set.mismatches,
@@ -3846,11 +3795,21 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         ),
     }
     let scale_label = units::scale_label(scale);
+    let tables = match offsets_pages {
+        0 => String::new(),
+        1 => " (the last the offsets tables)".to_owned(),
+        n => format!(" (the last {n} the offsets tables)"),
+    };
     match (format, written.pages) {
         (Format::PdfTiled, Some(pages)) => {
-            println!("{pages} pages, {}, scale {scale_label}", paper_name(paper))
+            println!(
+                "{pages} pages{tables}, {}, scale {scale_label}",
+                paper_name(paper)
+            )
         }
-        (_, Some(pages)) => println!("{pages} pages, one a panel, scale {scale_label}"),
+        (_, Some(pages)) => {
+            println!("{pages} pages, one a panel{tables}, scale {scale_label}")
+        }
         (_, None) => println!("one drawing, scale {scale_label}"),
     }
     if !missing.is_empty() {

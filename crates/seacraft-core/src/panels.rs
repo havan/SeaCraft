@@ -1899,6 +1899,41 @@ impl PanelSet {
         self.refused.is_empty() && self.rows.iter().all(|r| r.lies_flat)
     }
 
+    /// One line for each panel that does not lie flat within the limits (its name and its
+    /// sheet's heading) and each panel that could not be laid flat (its name and why).
+    pub fn failing(&self) -> Vec<String> {
+        self.sheets
+            .iter()
+            .zip(&self.rows)
+            .filter(|(_, r)| !r.lies_flat)
+            .map(|(sheet, r)| format!("{}: {}", r.panel, sheet.notes[0]))
+            .chain(
+                self.refused
+                    .iter()
+                    .map(|r| format!("{} cannot be laid flat: {}", r.panel, r.reason)),
+            )
+            .collect()
+    }
+
+    /// How many panels [`Self::failing`] names, out of all, in words; `None` when every panel
+    /// lies flat.
+    pub fn not_flat_summary(&self) -> Option<String> {
+        let failing = self.failing();
+        if failing.is_empty() {
+            return None;
+        }
+        let what = if self.refused.is_empty() {
+            "do not lie flat within the limits"
+        } else {
+            "do not lie flat within the limits or could not be laid flat"
+        };
+        Some(format!(
+            "{} of {} panels {what}",
+            failing.len(),
+            self.rows.len() + self.refused.len()
+        ))
+    }
+
     /// The plywood count in words, naming any panel it leaves out and why: one not laid out on
     /// the stock, or one that could not be laid flat at all.
     pub fn sheet_count_line(&self) -> String {
@@ -3392,6 +3427,20 @@ mod tests {
         let side = set.rows.iter().find(|r| r.panel == "Side").unwrap();
         assert!(!side.lies_flat);
         assert!(set.sheets[1].notes[0].starts_with("Does not lie flat"));
+        let failing = set.failing();
+        assert_eq!(failing.len(), 1, "{failing:?}");
+        assert!(
+            failing[0].starts_with("Side: Does not lie flat"),
+            "{failing:?}"
+        );
+        assert_eq!(
+            set.not_flat_summary().as_deref(),
+            Some("1 of 2 panels do not lie flat within the limits")
+        );
+        let flat = panel_set(&s, &PanelOptions::default()).expect("a set");
+        if flat.all_lie_flat() {
+            assert!(flat.failing().is_empty() && flat.not_flat_summary().is_none());
+        }
     }
 
     #[test]
