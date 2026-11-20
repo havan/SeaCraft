@@ -17,8 +17,11 @@
 //!   ([`sheer_partner`]), so the side's tangent plane does not turn along the rung. Where no
 //!   such point exists (at the transom and at the stem) the rungs fan from one corner, a cone.
 //! - The open sheer and the centreline are boundaries the kernel keeps as their control polygons;
-//!   the chine is a crease, a cubic B-spline, so its control points are placed for the curve to
-//!   pass through the design chine at every station ([`interpolating`]).
+//!   the chine is a crease, a cubic B-spline, so its control half-breadths are placed for the curve
+//!   to pass through the design chine at every station ([`interpolating`]). Its heights are left as
+//!   designed, equal to the centreline's, so the bottom stays flat across; where the rocker is
+//!   straight the two agree exactly; elsewhere every refined face on the centreline is within half
+//!   a degree of its mirror image (measured at authoring, level 3; the panels join at 2°).
 //!
 //! Layers: Bottom, Side, Transom, all developable. Creases: the chine and the transom outline.
 //! Open boat: no deck.
@@ -155,8 +158,9 @@ fn sheer_partner(xc: f64, lo: f64, hi: f64) -> Option<f64> {
     best
 }
 
-/// Control points for a creased row whose refined curve passes through `q`: the cubic B-spline
-/// limit of an interior point is `(P[i-1] + 4 P[i] + P[i+1]) / 6`, the ends are pinned corners.
+/// Control points for a creased row whose refined curve passes through `q` in half-breadth: the
+/// cubic B-spline limit of an interior point is `(P[i-1] + 4 P[i] + P[i+1]) / 6`, the ends are
+/// pinned corners. `x` and `z` are kept as given (see the module notes).
 fn interpolating(q: &[Vec3]) -> Vec<Vec3> {
     let n = q.len();
     let mut p = q.to_vec();
