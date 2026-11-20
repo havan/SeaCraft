@@ -1899,6 +1899,19 @@ impl PanelSet {
         self.refused.is_empty() && self.rows.iter().all(|r| r.lies_flat)
     }
 
+    /// What every front end replies with: `panels` (the rows), `refused`, `mismatches`,
+    /// `total_sheets`, `plywood` (the sheet count in words) and `all_lie_flat`.
+    pub fn summary(&self) -> serde_json::Value {
+        serde_json::json!({
+            "panels": self.rows,
+            "refused": self.refused,
+            "mismatches": self.mismatches,
+            "total_sheets": self.total_sheets,
+            "plywood": self.sheet_count_line(),
+            "all_lie_flat": self.all_lie_flat(),
+        })
+    }
+
     /// One line for each panel that does not lie flat within the limits (its name and its
     /// sheet's heading) and each panel that could not be laid flat (its name and why).
     pub fn failing(&self) -> Vec<String> {
@@ -3469,6 +3482,29 @@ mod tests {
             .bytes;
         let dxf = String::from_utf8(dxf).unwrap();
         assert!(dxf.contains("CUT"));
+    }
+
+    /// The summary every front end replies with, keyed as the CLI's `--json` names them.
+    #[test]
+    fn the_summary_holds_rows_refusals_and_the_plywood() {
+        let s = pram_fixture(0.0, 0.0);
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        let v = set.summary();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        for k in [
+            "panels",
+            "refused",
+            "mismatches",
+            "total_sheets",
+            "plywood",
+            "all_lie_flat",
+        ] {
+            assert!(keys.contains(&k), "{k}: {v}");
+        }
+        assert_eq!(v["panels"].as_array().unwrap().len(), set.rows.len());
+        assert_eq!(v["plywood"], set.sheet_count_line());
+        assert_eq!(v["all_lie_flat"], set.all_lie_flat());
+        assert_eq!(v["total_sheets"], set.total_sheets);
     }
 
     /// The offsets tables follow the patterns in the pattern PDF, A4 landscape, counted in the

@@ -2118,3 +2118,235 @@ pub fn templates_in(
         missing: written.missing,
     })
 }
+
+/// What the Builder panels window, `build.panels` and `export_panels` make panels with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelsParams {
+    /// Subdivision level; `None` is the app's level.
+    pub level: Option<u8>,
+    /// Layer names; `None` takes the layers marked developable.
+    pub layers: Option<Vec<String>>,
+    pub stations: seacraft_core::templates::StationChoice,
+    pub choices: seacraft_core::panel_choices::Choices,
+    pub imperial: bool,
+    /// Write the patterns even when a panel does not lie flat.
+    pub allow_undevelopable: bool,
+    /// The offsets tables after the patterns in a PDF.
+    pub offsets_pages: bool,
+    /// `a4`, `a3`, `letter` or `WxH` in millimetres.
+    pub paper: String,
+    pub single_page: bool,
+    pub margin_mm: f64,
+    pub overlap_mm: f64,
+    /// Paper size over real size: 1 is full size.
+    pub scale: f64,
+}
+
+impl Default for PanelsParams {
+    fn default() -> Self {
+        let t = TemplatesParams::default();
+        Self {
+            level: None,
+            layers: None,
+            stations: seacraft_core::templates::StationChoice::Count(11),
+            choices: seacraft_core::panel_choices::Choices::default(),
+            imperial: false,
+            allow_undevelopable: false,
+            offsets_pages: true,
+            paper: t.paper,
+            single_page: t.single_page,
+            margin_mm: t.margin_mm,
+            overlap_mm: t.overlap_mm,
+            scale: t.scale,
+        }
+    }
+}
+
+impl PanelsParams {
+    /// The format a file at `path` is written in: its extension picks it, and `single_page`
+    /// counts for a PDF only.
+    pub fn format_for(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<seacraft_core::templates::Format, String> {
+        let pdf = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+        seacraft_core::templates::Format::from_path(path, self.single_page && pdf)
+    }
+
+    /// The paper the patterns are laid on, checked.
+    pub fn setup(&self) -> Result<seacraft_core::sheet::PageSetup, String> {
+        let setup = seacraft_core::sheet::PageSetup {
+            paper: seacraft_core::sheet::Paper::parse(&self.paper)?,
+            margin_mm: self.margin_mm,
+            overlap_mm: self.overlap_mm,
+            scale: self.scale,
+            imperial: self.imperial,
+            title: String::new(),
+        };
+        setup.check()?;
+        Ok(setup)
+    }
+}
+
+/// The panels of one model and one set of choices, as the window shows them.
+#[derive(Debug, Clone)]
+pub struct PanelsPreview {
+    pub set: std::sync::Arc<seacraft_core::panels::PanelSet>,
+    /// The model revision they were measured on.
+    pub revision: u64,
+}
+
+/// Find, flatten and measure the panels. Pure: safe to run on a job thread.
+pub fn panels_in(
+    surface: &Surface,
+    level: u8,
+    mode: SubdivisionMode,
+    p: &PanelsParams,
+    revision: u64,
+) -> Result<PanelsPreview, String> {
+    use seacraft_core::panels::{panel_set, PanelOptions};
+    let checked = seacraft_core::panel_choices::check(&p.choices).map_err(|e| e.to_string())?;
+    p.setup()?;
+    let opts = PanelOptions {
+        subdivision: SubdivisionOptions {
+            level: p.level.unwrap_or(level),
+            mode,
+        },
+        layers: p.layers.clone(),
+        stations: p.stations.clone(),
+        limits: checked.limits,
+        offset_spacing_m: checked.offset_spacing_m,
+        stock: checked.stock,
+        imperial: p.imperial,
+    };
+    Ok(PanelsPreview {
+        set: std::sync::Arc::new(panel_set(surface, &opts)?),
+        revision,
+    })
+}
+
+/// A panel pattern file.
+#[derive(Debug, Clone)]
+pub struct PanelsFile {
+    pub bytes: Vec<u8>,
+    pub format: seacraft_core::templates::Format,
+    pub pages: Option<usize>,
+    /// How many of the pages are the offsets tables.
+    pub offsets_pages: usize,
+    pub missing: Vec<char>,
+}
+
+/// Why the patterns of `set` are not written, if they are not: a panel does not lie flat and
+/// `allow_undevelopable` is off.
+pub fn panels_refusal(set: &seacraft_core::panels::PanelSet, p: &PanelsParams) -> Option<String> {
+    if p.allow_undevelopable {
+        return None;
+    }
+    let summary = set.not_flat_summary()?;
+    Some(format!("{summary}: {}", set.failing().join("; ")))
+}
+
+/// The patterns of `set` as `format`. Pure: safe to run on a job thread.
+pub fn panels_file(
+    set: &seacraft_core::panels::PanelSet,
+    p: &PanelsParams,
+    format: seacraft_core::templates::Format,
+) -> Result<PanelsFile, String> {
+    if let Some(reason) = panels_refusal(set, p) {
+        return Err(reason);
+    }
+    let w = seacraft_core::panels::write(set, format, &p.setup()?, p.offsets_pages)?;
+    Ok(PanelsFile {
+        bytes: w.written.bytes,
+        format,
+        pages: w.written.pages,
+        offsets_pages: w.offsets_pages,
+        missing: w.written.missing,
+    })
+}
+
+#[cfg(test)]
+mod panels_tests {
+    use super::*;
+    use seacraft_core::panels::pram_fixture;
+    use seacraft_core::templates::Format;
+
+    fn preview(surface: &Surface, p: &PanelsParams) -> Result<PanelsPreview, String> {
+        panels_in(surface, 2, SubdivisionMode::Loop, p, 7)
+    }
+
+    #[test]
+    fn the_preview_measures_the_panels() {
+        let pram = pram_fixture(0.0, 0.0);
+        let p = PanelsParams::default();
+        let pv = preview(&pram, &p).expect("a preview");
+        assert_eq!(pv.revision, 7);
+        let names: Vec<&str> = pv.set.rows.iter().map(|r| r.panel.as_str()).collect();
+        assert_eq!(names, ["Bottom", "Side"]);
+        assert!(pv.set.all_lie_flat());
+    }
+
+    #[test]
+    fn the_file_carries_the_offsets_unless_asked_not_to() {
+        let pram = pram_fixture(0.0, 0.0);
+        let p = PanelsParams::default();
+        let pv = preview(&pram, &p).unwrap();
+        let with = panels_file(&pv.set, &p, Format::PdfTiled).expect("a file");
+        assert!(with.bytes.starts_with(b"%PDF-"));
+        assert!(with.offsets_pages >= 1);
+        let off = PanelsParams {
+            offsets_pages: false,
+            ..p.clone()
+        };
+        let without = panels_file(&pv.set, &off, Format::PdfTiled).unwrap();
+        assert_eq!(without.offsets_pages, 0);
+        assert_eq!(
+            with.pages.unwrap(),
+            without.pages.unwrap() + with.offsets_pages
+        );
+        assert_eq!(p.format_for(std::path::Path::new("x.svg")), Ok(Format::Svg));
+        let single = PanelsParams {
+            single_page: true,
+            ..p
+        };
+        assert_eq!(
+            single.format_for(std::path::Path::new("x.PDF")),
+            Ok(Format::PdfSingle)
+        );
+    }
+
+    #[test]
+    fn a_panel_that_does_not_lie_flat_is_not_written_unless_allowed() {
+        let bowed = pram_fixture(0.0, 0.08);
+        let mut p = PanelsParams::default();
+        p.choices.max_stretch_pct = 0.0001;
+        let pv = preview(&bowed, &p).unwrap();
+        assert!(!pv.set.all_lie_flat());
+        let e = panels_file(&pv.set, &p, Format::PdfTiled).unwrap_err();
+        assert!(
+            e.starts_with("1 of 2 panels do not lie flat within the limits") && e.contains("Side"),
+            "{e}"
+        );
+        p.allow_undevelopable = true;
+        assert!(panels_file(&pv.set, &p, Format::PdfTiled).is_ok());
+    }
+
+    #[test]
+    fn a_bad_choice_names_its_field() {
+        let pram = pram_fixture(0.0, 0.0);
+        let mut p = PanelsParams::default();
+        p.choices.stock_mm = "2440".into();
+        let e = preview(&pram, &p).unwrap_err();
+        assert_eq!(
+            e,
+            "`stock_mm` takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `2440`"
+        );
+        let p = PanelsParams {
+            paper: "nonsense".into(),
+            ..PanelsParams::default()
+        };
+        assert!(preview(&pram, &p).is_err());
+    }
+}

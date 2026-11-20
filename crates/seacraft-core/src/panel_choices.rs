@@ -16,11 +16,30 @@ pub enum Field {
     Scarf,
 }
 
+impl Field {
+    /// The choice's name in the control channel and MCP, which [`ChoiceError`]'s `Display` uses.
+    pub fn key(self) -> &'static str {
+        match self {
+            Field::MaxSeamDrift => "max_seam_drift_mm",
+            Field::MaxStretch => "max_stretch_pct",
+            Field::OffsetSpacing => "offset_spacing_mm",
+            Field::Stock => "stock_mm",
+            Field::Scarf => "scarf_mm",
+        }
+    }
+}
+
 /// A refused choice: the words follow the front end's name for `field`, after a space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChoiceError {
     pub field: Field,
     pub message: String,
+}
+
+impl std::fmt::Display for ChoiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}` {}", self.field.key(), self.message)
+    }
 }
 
 /// The choices as the user gives them, in the CLI's units.
@@ -183,6 +202,39 @@ mod tests {
         assert_eq!(
             (c.stock.length_m, c.stock.width_m, c.stock.scarf_m),
             (3.0, 1.5, 0.2)
+        );
+    }
+
+    #[test]
+    fn each_field_has_its_control_and_mcp_name() {
+        let keys: Vec<&str> = [
+            Field::MaxSeamDrift,
+            Field::MaxStretch,
+            Field::OffsetSpacing,
+            Field::Stock,
+            Field::Scarf,
+        ]
+        .into_iter()
+        .map(Field::key)
+        .collect();
+        assert_eq!(
+            keys,
+            [
+                "max_seam_drift_mm",
+                "max_stretch_pct",
+                "offset_spacing_mm",
+                "stock_mm",
+                "scarf_mm"
+            ]
+        );
+        let e = check(&Choices {
+            stock_mm: "2440".into(),
+            ..Choices::default()
+        })
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "`stock_mm` takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `2440`"
         );
     }
 
