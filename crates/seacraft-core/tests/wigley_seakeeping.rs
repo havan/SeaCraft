@@ -515,3 +515,130 @@ fn radiation_coefficients_against_forced_oscillation() {
     }
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// Bands on the wave-load gaps per (model, Fn, quantity), over every row and both wave amplitudes:
+/// amplitudes relative (with the group floor), next 0.01 above the measured gap; phases in degrees,
+/// next 2° above, where both the tank's and SeaCraft's amplitudes reach the floor. That leaves out
+/// the short-wave cancellation of the heave force on Wigley III (λ/L 0.75 at every speed, where
+/// SeaCraft's Xw3″ is 0.025 to 0.036 against the tank's 0.06 to 0.12): there the computed phase
+/// swings fast, and at Fn 0.4 it is 104° from the tank's, as Journée's own strip theory is
+/// (maintainer's ruling, 2026-11-20). The rows stay printed, marked `(fl)`.
+const LOAD_BANDS: &[(&str, f64, &str, f64)] = &[
+    // Wigley I, Fn 0.2
+    ("Wigley I", 0.2, "Xw3", 0.24),
+    ("Wigley I", 0.2, "eps3", 30.0),
+    ("Wigley I", 0.2, "Xw5", 0.13),
+    ("Wigley I", 0.2, "eps5", 44.0),
+    // Wigley I, Fn 0.3
+    ("Wigley I", 0.3, "Xw3", 0.52),
+    ("Wigley I", 0.3, "eps3", 46.0),
+    ("Wigley I", 0.3, "Xw5", 0.31),
+    ("Wigley I", 0.3, "eps5", 48.0),
+    // Wigley I, Fn 0.4
+    ("Wigley I", 0.4, "Xw3", 0.69),
+    ("Wigley I", 0.4, "eps3", 24.0),
+    ("Wigley I", 0.4, "Xw5", 0.57),
+    ("Wigley I", 0.4, "eps5", 82.0),
+    // Wigley III, Fn 0.2
+    ("Wigley III", 0.2, "Xw3", 0.59),
+    ("Wigley III", 0.2, "eps3", 22.0),
+    ("Wigley III", 0.2, "Xw5", 0.13),
+    ("Wigley III", 0.2, "eps5", 28.0),
+    // Wigley III, Fn 0.3
+    ("Wigley III", 0.3, "Xw3", 0.73),
+    ("Wigley III", 0.3, "eps3", 30.0),
+    ("Wigley III", 0.3, "Xw5", 0.25),
+    ("Wigley III", 0.3, "eps5", 22.0),
+    // Wigley III, Fn 0.4
+    ("Wigley III", 0.4, "Xw3", 0.71),
+    ("Wigley III", 0.4, "eps3", 22.0),
+    ("Wigley III", 0.4, "Xw5", 0.43),
+    ("Wigley III", 0.4, "eps5", 14.0),
+];
+
+/// Before a band is frozen: amplitudes are measured only, and a phase more than 90° off is a wrong
+/// quadrant, which is a stop-rule case.
+fn load_band(model: &str, froude: f64, what: &str) -> f64 {
+    let b = band(LOAD_BANDS, model, froude, what);
+    if b.is_finite() || !what.starts_with("eps") {
+        b
+    } else {
+        90.0
+    }
+}
+
+#[test]
+fn wave_loads_against_the_restrained_model() {
+    let mut failures = Vec::new();
+    for (m, table) in [(&WIGLEY_I, TABLE_6_I), (&WIGLEY_III, TABLE_6_III)] {
+        for froude in [0.2, 0.3, 0.4] {
+            let rows: Vec<&WaveLoadRow> = table.iter().filter(|r| r.froude == froude).collect();
+            let omegas = rows
+                .iter()
+                .map(|r| omega_for_wavelength(r.lambda_over_l))
+                .collect();
+            let (_, loads) = run(m, froude, omegas, STATIONS, MESH);
+            // SeaCraft's Xw3″, ε3, Xw5″, ε5 in Journée's form (pitch moment bow down).
+            let got: Vec<(f64, f64, f64, f64)> = loads
+                .iter()
+                .map(|l| {
+                    let k = l.omega * l.omega / G;
+                    (
+                        l.heave_force.0 / m.c33,
+                        l.heave_force.1.rem_euclid(360.0),
+                        l.pitch_moment.0 / (k * m.c55),
+                        bow_down_deg(l.pitch_moment.1),
+                    )
+                })
+                .collect();
+            let floor3 = floor_of(rows.iter().filter_map(|r| r.xw3));
+            let floor5 = floor_of(rows.iter().filter_map(|r| r.xw5));
+            println!(
+                "{} Fn {froude} (floors Xw3″ {floor3:.3}, Xw5″ {floor5:.3}):",
+                m.name
+            );
+            println!("  λ/L   ζa cm   Xw3″ tank  SeaCraft  gap    ε3 tank SeaCraft gap    Xw5″ tank  SeaCraft  gap    ε5 tank SeaCraft gap");
+            let mut largest = [0.0f64; 4];
+            for (r, g) in rows.iter().zip(&got) {
+                let mut line = format!("  {:4.2} {:5.2}", r.lambda_over_l, r.zeta_a_cm);
+                let quantities = [
+                    (r.xw3, g.0, r.eps3_deg, g.1, floor3),
+                    (r.xw5, g.2, r.eps5_deg, g.3, floor5),
+                ];
+                for (k, (amp, got_amp, eps, got_eps, floor)) in quantities.into_iter().enumerate() {
+                    match amp {
+                        Some(want) => {
+                            let gap = amp_gap(got_amp, want, floor);
+                            largest[2 * k] = largest[2 * k].max(gap);
+                            line += &format!("  {want:8.3} {got_amp:8.3} {gap:6.3}");
+                        }
+                        None => line += &format!("  {:>8} {got_amp:8.3} {:>6}", "-", "-"),
+                    }
+                    match (eps, amp) {
+                        (Some(want), Some(a)) if a >= floor && got_amp >= floor => {
+                            let gap = phase_gap_deg(got_eps, want);
+                            largest[2 * k + 1] = largest[2 * k + 1].max(gap);
+                            line += &format!("  {want:6.0} {got_eps:7.1} {gap:5.1}");
+                        }
+                        (Some(want), _) => {
+                            line += &format!("  {want:6.0} {got_eps:7.1} {:>5}", "(fl)")
+                        }
+                        (None, _) => line += &format!("  {:>6} {got_eps:7.1} {:>5}", "-", "-"),
+                    }
+                }
+                println!("{line}");
+            }
+            for (what, gap) in ["Xw3", "eps3", "Xw5", "eps5"].iter().zip(largest) {
+                let limit = load_band(m.name, froude, what);
+                println!("  largest {what} gap {gap:.5} (band {limit})");
+                if gap > limit {
+                    failures.push(format!(
+                        "{} Fn {froude} {what}: {gap:.3} > band {limit}",
+                        m.name
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

@@ -10,8 +10,9 @@
 //! **Gap floor.** A relative gap is `|got − want| / max(|want|, floor)`. For each (hull, Fn,
 //! quantity) the floor is 10 % of the largest measured |value| in that group, so a measurement
 //! near zero is compared in units of the group's scale rather than in percent of itself. Phases
-//! are compared only where the measured amplitude is at least its floor: below it the phase is
-//! noise.
+//! are compared only where the measured amplitude is at least its floor, and so is SeaCraft's where
+//! it computes the quantity itself (wave loads, motions): below it the phase is noise, or swings
+//! fast through a cancellation.
 
 use seacraft_core::hydro::{Hull, HydroOptions};
 use seacraft_core::math::Vec3;
