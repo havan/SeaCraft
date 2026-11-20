@@ -1078,7 +1078,8 @@ pub struct WaveLoads {
 
 /// [`head_sea_raos`] on a hull that is already built, such as an exact mesh from
 /// [`Hull::from_panels`], with the hydrostatic options to measure it with. `hydro_opts.draft`
-/// and `water_density` are replaced by `spec.draft` and `spec.rho`. Phases are relative to the
+/// and `water_density` are replaced by `spec.draft` and `spec.rho`, and the hull is solved
+/// upright and level whatever `trim` and `heel_deg` say. Phases are relative to the
 /// wave crest at the LCG, as in [`RaoPoint`]. Also returns the wave loads of every frequency.
 pub fn head_sea_raos_on_hull(
     hull: &Hull,
@@ -1117,6 +1118,9 @@ fn solve_on_hull(
     }
 
     let u_speed = spec.speed_kn * 0.5144444444444445;
+    // The strips below are cut upright and level, so the hydrostatics must be too.
+    hydro_opts.trim = 0.0;
+    hydro_opts.heel_deg = 0.0;
     hydro_opts.draft = spec.draft;
     hydro_opts.water_density = spec.rho;
     let hydro = hull.hydrostatics(&hydro_opts);
@@ -2429,6 +2433,24 @@ mod tests {
         let opts = HydroOptions::from_surface(&surface, subdiv);
         let (by_hull, loads) = head_sea_raos_on_hull(&hull, &opts, &spec).expect("hull path");
         (by_surface, by_hull, loads, spec)
+    }
+
+    /// The strips are cut upright and level, so a trim or heel left in the caller's
+    /// hydrostatic options must not reach the mass, LCG or restoring either.
+    #[test]
+    fn hull_entry_point_solves_upright_and_level() {
+        let (_, level, level_loads, spec) = demo_on_both_paths();
+        let surface = crate::demo::demo_hull(true);
+        let subdiv = SubdivisionOptions::default();
+        let hull = Hull::new(&surface, subdiv);
+        let mut opts = HydroOptions::from_surface(&surface, subdiv);
+        opts.trim = 0.3;
+        opts.heel_deg = 5.0;
+        let (tilted, tilted_loads) = head_sea_raos_on_hull(&hull, &opts, &spec).expect("hull path");
+        assert_eq!(tilted.x_lcg, level.x_lcg);
+        assert_eq!(tilted.coefficients, level.coefficients);
+        assert_eq!(tilted.frequencies, level.frequencies);
+        assert_eq!(tilted_loads, level_loads);
     }
 
     /// Solving on a built hull gives bit for bit what the surface entry point gives,
