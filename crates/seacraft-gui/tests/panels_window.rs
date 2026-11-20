@@ -454,3 +454,36 @@ fn build_panels_answers_from_the_window_when_it_can() {
     let r = rx.recv_timeout(Duration::from_secs(60)).unwrap();
     assert_eq!(r["ok"], true, "{r}");
 }
+
+/// The options are one line apart: no row of the options grid stretches to another's height.
+#[test]
+fn the_options_are_one_line_apart() {
+    let mut w = Window::new(pram("the_options_are_one_line_apart", 0.0));
+    w.app.set_show_panels(true);
+    // A new window is laid out unseen on its first frame.
+    w.frame(vec![]);
+    w.frame(vec![]);
+    let y = |label: &str| {
+        w.widgets
+            .iter()
+            .find(|(_, l, _, _)| l == label)
+            .map(|(_, _, _, r)| r.min.y)
+            .unwrap_or_else(|| panic!("no `{label}`"))
+    };
+    let rows = [
+        "Layers:",
+        "Stations:",
+        "Seam drift limit:",
+        "Stretch limit:",
+        "Offsets every:",
+    ];
+    for pair in rows.windows(2) {
+        let gap = y(pair[1]) - y(pair[0]);
+        assert!(
+            gap > 0.0 && gap < 40.0,
+            "{} to {}: {gap} px",
+            pair[0],
+            pair[1]
+        );
+    }
+}

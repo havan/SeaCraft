@@ -50,28 +50,28 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
             ui.label("Layers:");
-            ui.vertical(|ui| {
-                let mut marked = params.layers.is_none();
-                if ui
-                    .checkbox(&mut marked, "The layers marked developable")
-                    .changed()
-                {
-                    params.layers = if marked { None } else { Some(Vec::new()) };
-                }
-                if let Some(chosen) = &mut params.layers {
-                    for name in layers {
-                        let mut on = chosen.contains(name);
-                        if ui.checkbox(&mut on, name).changed() {
-                            if on {
-                                chosen.push(name.clone());
-                            } else {
-                                chosen.retain(|n| n != name);
-                            }
+            let mut marked = params.layers.is_none();
+            if ui
+                .checkbox(&mut marked, "The layers marked developable")
+                .changed()
+            {
+                params.layers = if marked { None } else { Some(Vec::new()) };
+            }
+            ui.end_row();
+            if let Some(chosen) = &mut params.layers {
+                for name in layers {
+                    ui.label("");
+                    let mut on = chosen.contains(name);
+                    if ui.checkbox(&mut on, name).changed() {
+                        if on {
+                            chosen.push(name.clone());
+                        } else {
+                            chosen.retain(|n| n != name);
                         }
                     }
+                    ui.end_row();
                 }
-            });
-            ui.end_row();
+            }
 
             ui.label("Stations:");
             ui.horizontal(|ui| {
