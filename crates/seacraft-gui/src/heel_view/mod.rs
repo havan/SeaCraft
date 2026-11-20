@@ -8,10 +8,16 @@
 //! returns what the user asked for as a [`HeelViewAction`], which `App::heel_view_drawer` applies.
 //! Trial weights are session state; "Add to this condition" is the only way one reaches the model.
 
+use std::sync::Arc;
+
 use crate::analysis_views::AnalysisView;
 use eframe::egui;
-use seacraft_core::loading::WeightItem;
+use seacraft_core::heel::{self, Equilibrium, HeelState, MassCondition};
+use seacraft_core::hydro::{Hull, HydroOptions};
+use seacraft_core::loading::{LoadingCondition, WeightItem};
 use seacraft_core::math::Vec3;
+use seacraft_core::subdiv::SubdivisionOptions;
+use seacraft_core::Surface;
 
 pub mod geometry;
 
@@ -91,6 +97,154 @@ pub enum HeelViewAction {
     Close,
     /// Show another Analysis view in the drawer.
     Open(AnalysisView),
+}
+
+/// The start as the job needs it.
+#[derive(Debug, Clone)]
+pub enum StartInput {
+    /// The bare hull at the dock draft: KG above the keel (and whether it is the estimate), LCG
+    /// (`None`: the upright LCB).
+    Dock {
+        kg: f64,
+        kg_estimate: bool,
+        lcg: Option<f64>,
+    },
+    /// A loading condition, with the project's windage, still to be evaluated.
+    Condition(Box<LoadingCondition>),
+}
+
+/// Everything a sweep job needs, cloned off the window thread.
+#[derive(Clone)]
+pub struct SweepInput {
+    pub surface: Surface,
+    /// The hull the hydrostatics measured, when it is current; otherwise the job refines one.
+    pub hull: Option<Arc<Hull>>,
+    pub subdivision: SubdivisionOptions,
+    /// The dock's floating condition (draft, density, appendage coefficient).
+    pub opts: HydroOptions,
+    pub start: StartInput,
+    pub weights: Vec<WeightItem>,
+}
+
+/// One computed condition: the sweep the curve and the drag preview use, and the equilibrium.
+#[derive(Clone)]
+pub struct HeelSweepOut {
+    /// The start before the trial weights.
+    pub start: MassCondition,
+    /// The start plus the trial weights.
+    pub mass: MassCondition,
+    /// [`heel::heel_state`] on [`heel::sweep_heels`], in order (`None` where it does not float).
+    pub sweep: Vec<Option<HeelState>>,
+    pub equilibrium: Equilibrium,
+    /// The upright GM of the condition (KM at its upright waterline − KG), when it floats upright.
+    pub upright_gm: Option<f64>,
+    /// Why the start is doubtful (a loading condition not in equilibrium).
+    pub warnings: Vec<String>,
+    /// The hull it was measured on, and its station outlines for the drawings.
+    pub hull: Arc<Hull>,
+    pub outlines: Arc<geometry::HullOutlines>,
+    pub opts: HydroOptions,
+}
+
+impl HeelSweepOut {
+    /// The sweep sample nearest `heel_deg` that floats.
+    pub fn nearest(&self, heel_deg: f64) -> Option<&HeelState> {
+        self.sweep.iter().flatten().min_by(|a, b| {
+            (a.heel_deg - heel_deg)
+                .abs()
+                .total_cmp(&(b.heel_deg - heel_deg).abs())
+        })
+    }
+
+    /// The upright state, when it floats.
+    pub fn upright(&self) -> Option<&HeelState> {
+        self.sweep.iter().flatten().find(|s| s.heel_deg == 0.0)
+    }
+}
+
+/// The number of stations the drawings cut.
+pub const OUTLINE_STATIONS: usize = 25;
+
+/// Compute one condition: the start's mass, the sweep, the equilibrium (the sweep job).
+pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
+    let SweepInput {
+        surface,
+        hull,
+        subdivision,
+        opts,
+        start,
+        weights,
+    } = input;
+    let hull = hull.unwrap_or_else(|| Arc::new(Hull::new(&surface, subdivision)));
+    let mut warnings = Vec::new();
+    let start = match start {
+        StartInput::Dock {
+            kg,
+            kg_estimate,
+            lcg,
+        } => {
+            let mut m = MassCondition::bare(&hull, &opts, kg, lcg).ok_or_else(|| {
+                format!(
+                    "the hull displaces nothing at the dock draft {:.3} m",
+                    opts.draft
+                )
+            })?;
+            m.kg_estimate = kg_estimate;
+            m
+        }
+        StartInput::Condition(cond) => {
+            seacraft_core::loading::validate(&cond)
+                .map_err(|e| format!("loading condition invalid: {e}"))?;
+            let r = seacraft_core::loading::evaluate(&surface, &opts, &cond);
+            if !r.equilibrium_found {
+                warnings.extend(r.warnings.iter().cloned());
+            }
+            MassCondition::from_loading(&r, hull.keel)
+        }
+    };
+    let mass = start.with_weights(&weights);
+    let sweep = heel::heel_sweep(&hull, &mass, &heel::sweep_heels(), &opts);
+    let equilibrium = heel::equilibrium(&hull, &mass, &opts, Some(&sweep));
+    let upright_gm = sweep
+        .iter()
+        .flatten()
+        .find(|s| s.heel_deg == 0.0)
+        .and_then(|s| {
+            let (draft, trim) = (s.draft?, s.trim_m?);
+            let mut o = opts.clone();
+            o.draft = draft;
+            o.trim = trim;
+            o.heel_deg = 0.0;
+            Some(hull.hydrostatics(&o).km_transverse - mass.kg(hull.keel))
+        });
+    let outlines = Arc::new(geometry::HullOutlines::new(&hull, OUTLINE_STATIONS));
+    Ok(HeelSweepOut {
+        start,
+        mass,
+        sweep,
+        equilibrium,
+        upright_gm,
+        warnings,
+        hull,
+        outlines,
+        opts,
+    })
+}
+
+/// The exact state at `heel_deg` for a computed condition (the exact job).
+pub fn compute_exact(out: &HeelSweepOut, heel_deg: f64) -> Result<HeelState, String> {
+    let hint = out.nearest(heel_deg).and_then(|s| s.trim_m).unwrap_or(0.0);
+    heel::heel_state(&out.hull, &out.mass, heel_deg, &out.opts, hint)
+        .ok_or_else(|| format!("the hull does not float at {heel_deg:.1}°"))
+}
+
+/// A key part for the trial weights.
+pub fn weights_key(weights: &[WeightItem]) -> u64 {
+    let bits: Vec<u64> = weights
+        .iter()
+        .flat_map(|w| [w.mass_t, w.x, w.y, w.z].map(f64::to_bits))
+        .collect();
+    crate::jobs::revision_key(&bits)
 }
 
 /// Draw the view's header: the views as tabs and the close button.

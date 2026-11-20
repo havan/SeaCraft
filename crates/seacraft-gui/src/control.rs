@@ -1019,6 +1019,7 @@ fn handle_inner(
             let mut templates: Option<bool> = None;
             let mut panels: Option<bool> = None;
             let mut waves: Option<bool> = None;
+            let mut heel: Option<bool> = None;
             let mut connected_on: Option<bool> = None;
             let mut connected_preset: Option<String> = None;
             let mut connected_reach: Option<Option<f64>> = None;
@@ -1120,6 +1121,7 @@ fn handle_inner(
                     "waves" => {
                         waves = Some(value.as_bool().ok_or("`waves` must be true or false")?)
                     }
+                    "heel" => heel = Some(value.as_bool().ok_or("`heel` must be true or false")?),
                     "analysis" => {
                         let name = value.as_str().ok_or("`analysis` must be a string")?;
                         analysis = Some(analysis_from(name).ok_or_else(|| {
@@ -1241,6 +1243,9 @@ fn handle_inner(
             }
             if let Some(show) = waves {
                 app.set_wave_view_open(show);
+            }
+            if let Some(show) = heel {
+                app.set_heel_view_open(show);
             }
             if let Some(show) = templates {
                 app.set_show_templates(show);
@@ -6406,5 +6411,22 @@ mod tests {
         );
         assert_eq!(r["ok"], false, "{r}");
         assert_eq!(app.is_dirty(), dirty, "read-only");
+    }
+
+    /// `ui.set {"heel": true}` opens the Heel view in the drawer, `false` closes it.
+    #[test]
+    fn ui_set_heel_opens_and_closes_the_view() {
+        use crate::analysis_views::AnalysisView;
+        let (mut app, ctx) = demo();
+        let r = call(&mut app, &ctx, "ui.set", json!({ "heel": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.analysis_view(), Some(AnalysisView::Heel));
+        let r = call(&mut app, &ctx, "ui.set", json!({ "heel": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.analysis_view(), None);
+        assert_eq!(
+            call(&mut app, &ctx, "ui.set", json!({ "heel": 1 }))["ok"],
+            false
+        );
     }
 }
