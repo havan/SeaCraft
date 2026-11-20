@@ -151,9 +151,11 @@ guess, not a published rule: change them with `--max-seam-drift-mm` and `--max-s
 change once a boat has been built from these patterns. A round-bilge hull such as the demo hull does not lie flat
 in plywood; that is the right answer, not a fault.
 
-**Offsets.** `--offsets-csv` and `--offsets-pdf` give each panel as offsets from a straight baseline along its
-lowest edge, every 250 mm (`--offset-spacing-mm`), for marking out with a batten instead of a full-size print. A
-spacing that gives more than 1000 rows across a panel is refused.
+**Offsets.** Each panel is also given as offsets from a straight baseline along its lowest edge, every 250 mm
+(`--offset-spacing-mm`), for marking out with a batten instead of a full-size print. The pattern PDF carries these
+tables after the patterns, A4 landscape, and its first page says where they start; `--no-offsets-pages` leaves
+them out. `--offsets-csv` and `--offsets-pdf` write them to files of their own as well. A spacing that gives more
+than 1000 rows across a panel is refused.
 
 **Plywood.** Each panel is laid along 2440 × 1220 mm sheets end to end (`--stock-mm 2440x1220`), with the sheet
 ends and joints drawn on the pattern; `--scarf-mm` sets the overlap of a scarf joint. The total is an upper bound:
@@ -163,6 +165,18 @@ names it. A panel that cannot be laid flat at all (a crease that stops inside it
 in the table and on every pattern of the set, and is not counted either.
 
 The patterns allow no plywood thickness: they are the modelled surface.
+
+**In the desktop app**, **File ▸ Builder panels…** (or **Export patterns…** in the Plate development view) opens a
+window with the same choices. It lays the panels flat in the background and lists each one: copies, whether it
+lies flat, stretch, seam drift, area and sheets. Below the list is a drawing of the patterns as the PDF prints
+them; a panel that does not lie flat is tinted and named over it with the reason. Click a panel in the list to
+zoom to it; scroll to zoom, drag to move, double-click to see them all. When you change a choice the list is
+marked out of date until the panels are measured again. **Export…** writes PDF, SVG or DXF; it stays disabled,
+and says why when you hover over it, while a panel does not lie flat, unless you tick "Write patterns even when a
+panel does not lie flat".
+
+An AI agent uses `export_panels` over MCP: without a `path` it only measures, so it can check the panels before
+writing anything. The [`seacraft-boatbuilding`](../skills/seacraft-boatbuilding/SKILL.md) skill tells it how.
 
 ## Smoother lines
 
