@@ -130,7 +130,10 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
   sheets end to end (`flatten.rs`, `panels.rs`, `seacraft panels`).
 - [x] Plywood panels in the GUI, the control channel and MCP; the offsets tables inside the pattern PDF
   (File ▸ Builder panels…, `build.panels`, `export_panels`).
-- [ ] Build a skiff from the panel patterns and recalibrate the 2 mm / 0.1 % limits on it.
+- [x] A plywood example whose every panel lies flat: `skiff-4m`, a 4.3 m flat-bottom skiff (bottom, sides,
+  transom).
+- [ ] Build a skiff from the panel patterns and recalibrate the 2 mm / 0.1 % limits on it (`skiff-4m` is the
+  candidate).
 - [ ] Materials and weight: skin area, plywood sheets, glass and resin, and the weight they add.
 - [ ] A build pack: patterns, offsets, panels and a cutting list in one document.
 
@@ -144,6 +147,10 @@ These have no milestone and no date; the roadmap is not worked in order, and the
   source is in hand.
 - The `wigley` example's fit below half draft (5.5 % thin at a quarter draft, `docs/oracles.md` §44), if a use
   for the example at light drafts turns up.
+- More plywood examples beside `skiff-4m`: a two-chine skiff (bottom, a lower and an upper strake each side) and a
+  multi-chine sea kayak, each with every panel lying flat.
+- A command to make one control point a corner by hand (GUI, CLI and MCP); today a point is a corner only where
+  three creases meet, or when a `.fef` says so.
 - Seakeeping on DTMB 5415 (a transom, a real warship) against Irvine, Longo & Stern (2008), *Journal of Ship
   Research* 52(2), heave and pitch in head waves.
 - Seakeeping on Wigley II and IV (L/B 5) from the same Journée (1992) report, with the same test code: II was run

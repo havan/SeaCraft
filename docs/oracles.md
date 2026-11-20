@@ -1877,3 +1877,30 @@ stored number. Bite check, 2026-11-20: the heeling arm scaled by 1.01 moves the 
 What this covers: the equilibrium search and the lever split on a wall-sided box inside the formula's range. It does
 not show that the heel of a real hull under a real weight is right; past the deck-edge or bilge limits only the
 same-code-path checks against the GZ curves apply.
+
+---
+
+## 48. The Plywood Skiff Example: Every Panel Lies Flat
+
+### Formula
+A ruled surface between a chine $c(u)$ and a sheer $s(u)$, with rulings $s(u) - c(u)$, is developable when its
+tangent plane does not turn along a ruling, that is when $c'(u)$, $s'(u)$ and $s(u) - c(u)$ are coplanar:
+$\det[c'(u),\ s'(u),\ s(u) - c(u)] = 0$ (worked by hand, 2026-11-20: the surface normal along the ruling
+$c + v(s - c)$ is $(c' + v(s' - c')) \times (s - c)$, whose direction does not depend on $v$ exactly when the
+determinant vanishes). `examples/skiff.rs` solves it for the sheer point of every chine station
+(`sheer_partner`); where no root exists, at the transom and at the stem, the rungs fan from one corner, a cone.
+The bottom is flat across (both rows of a station at one height), a cylinder, and straight over its last 0.6 m
+so that the narrow forefoot stays flat across through refinement.
+
+### Tests
+`crates/seacraft-core/src/examples/skiff.rs::skiff_panels_all_lie_flat`: at levels 3 and 4, Loop, the panels are
+Bottom (one copy, joined across the centreline), Side (a mirrored pair) and Transom (one copy), none refused, and
+every one lies flat within the default limits of §32 (2 mm seam drift, 0.1 % RMS stretch). Measured at authoring
+(2026-11-20), level 3: Bottom RMS 0.0002 %, drift 0.01 mm; Side RMS 0.0018 %, drift 0.23 mm; Transom 0. The test
+holds the limits, not these numbers.
+
+### Provenance
+The limits are §32's project judgement, not a published rule. The skiff's lines and design targets are
+SeaCraft's own, representative of home-built skiffs of this size; Δ 0.30 t is the design target and the other
+coefficients in `skiff_meets_the_board_targets` were measured on the net and frozen. Lying flat is measured
+against the modelled surface with no plywood thickness: not a bending test of real plywood.

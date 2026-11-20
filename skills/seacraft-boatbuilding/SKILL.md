@@ -25,7 +25,7 @@ Read the hull first: `hull_info {}` for extents and `validation.ok` (a leaking n
 
 ## Plywood panels
 
-For a hard-chine hull built stitch-and-glue, each panel is laid flat and measured. Measure before writing anything:
+For a hard-chine hull built stitch-and-glue, each panel is laid flat and measured. The `skiff-4m` example (a 4.3 m flat-bottom skiff) is a hull whose panels all lie flat at the default limits; use it to show the tools before the builder's own hull. Measure before writing anything:
 
 1. `export_panels {}` measures the panels of the layers marked developable (or name them: `"layers": ["Bottom", "Side"]`). Each row of `panels` has `lies_flat`, `rms_stretch_pct`, `max_stretch_pct`, `max_seam_drift_mm`, `area_m2` and `sheets_each`. `refused` names panels that could not be laid flat at all and why; `mismatches` gives how far two stitched edges differ at the ticks; `plywood` is the sheet count in words, end to end with no nesting, an upper bound.
 2. A panel does not lie flat when its seam drift is over 2 mm or its RMS stretch over 0.1 % (`max_seam_drift_mm`, `max_stretch_pct`). These limits are the project's provisional judgement, not a published rule; tell the builder so. A round-bilge hull does not lie flat in plywood: that is the right answer, not a fault.

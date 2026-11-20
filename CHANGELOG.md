@@ -4,6 +4,11 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- A new example hull, `skiff-4m`: a 4.3 m flat-bottom plywood skiff for oars or a 6 hp outboard, built
+  stitch-and-glue, whose bottom (one piece across the centreline), sides and transom all lie flat in plywood within
+  the default panel limits at subdivision levels 3 and 4. Open it from **File ▸ New design** or with
+  `seacraft example skiff-4m`, then try **File ▸ Builder panels…** or `seacraft panels`. Its sides are placed so each
+  rung of the control net is a ruling of a developable surface (`docs/oracles.md` §48).
 - Heel and righting arm, a new Analysis view: where the hull settles with trial weights added, and why. The body
   plan shows the hull at its heel with B, G, the buoyancy and weight arrows and the righting lever, and the profile
   shows B, G and the weights along the hull; the heel, the lever as GZ minus the heeling arm, draft and trim read out
