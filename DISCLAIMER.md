@@ -15,8 +15,8 @@ own earlier output to catch changes. [`docs/oracles.md`](docs/oracles.md) says w
 from. Passing those tests shows that the code agrees with those cases, not that its results are right
 for a real vessel.
 
-One result has been compared with published tank tests: Michell wave resistance for the Wigley parabolic hull
-(L/B 10, B/T 1.6) at Froude numbers 0.28–0.37, against Kajitani et al. (1983). It is not a match: Michell
+Two results have been compared with published tank tests. One is Michell wave resistance for the Wigley
+parabolic hull (L/B 10, B/T 1.6) at Froude numbers 0.28–0.37, against Kajitani et al. (1983). It is not a match: Michell
 overpredicts the resistance hump near Fn 0.32 by 18–54 % and places it about 0.02 too early, while its hollow
 near Fn 0.35 is at the measured speed. The test holds the program to those bands, read from the published
 figures ([`docs/oracles.md`](docs/oracles.md) §39). It covers that hull and speed range only.
