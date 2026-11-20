@@ -145,6 +145,7 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | Holtrop & Mennen still-water resistance | `resistance.rs` |
 | Michell thin-ship wave resistance | `michell.rs` |
 | Far-field thin-ship wave pattern (Kelvin wedge) | `wave_pattern.rs` |
+| Heel under trial weights: state at a heel, equilibrium | `heel.rs` |
 | Savitsky planing hull resistance | `planing.rs` |
 | Strip-theory heave and pitch motions | `seakeeping.rs` |
 | Irregular head seas, significant motions, MSI | `seastate.rs` |
@@ -261,6 +262,22 @@ marked, interference against spacing for a catamaran, and the waves along the wa
 SVG or VTI, in the command line's light colours. Plan view can show faint contours only ("Contours on Plan view",
 off by default). While the view is open, the design report gains a wave-pattern section. The pattern is upright at
 the draft: heel and trim are ignored, and the view says so.
+
+Analysis → *Heel and righting arm* shows where the hull settles with trial weights added, and why. Start from the
+bare hull at the Hydrostatics dock's draft and KG, or from a loading condition. The body plan shows the hull's
+sections turned through the heel with the water level, B and G, the buoyancy and weight arrows and the righting
+lever between them, green while it rights the hull and orange-red while it heels it further; the profile, seen from
+starboard, shows B, G and the weights along the hull. Beside them: the heel, the righting lever as GZ minus the
+heeling arm, draft, trim, displacement, KG and upright GM, and where the hull settles; the GZ curve is below, and
+clicking it sets the heel. Drag the body plan sideways to heel the hull: let go and it swings back to its equilibrium,
+unless *Hold heel* is ticked; the arrow keys step the heel by 1° (Shift: 5°). Click either drawing to place a trial
+weight and type its mass in tonnes; drag a weight to move it in that drawing's plane, double-click it to change its
+mass, Delete to remove it. *Add to this condition* (or *Add to loading condition…*) adds the weights to a loading
+condition, with undo. It is large-angle and always free to trim, measured by the same solver as the GZ curves; the
+equilibrium heel is checked against the wall-sided box-barge formula derived in `docs/oracles.md` §47. The picture
+is static: the swing back is not a roll simulation, and liquids in tanks do not shift (their free surface is in
+KG). The control channel has `stability.heel` and `ui.set {"heel": true}`; MCP has `heel_equilibrium`; the command
+line has `seacraft heel`.
 
 `dsyhs` implements the Delft Systematic Yacht Hull Series (DSYHS) upright
 bare-hull residuary resistance regression (Keuning & Katgert, 2008, extending
@@ -920,7 +937,7 @@ the hull, where the local disturbance it leaves out matters, and transom sterns 
   `save_hull`, `move_point`, `move_points`, `set_crease`, `split_face`, `insert_edge`,
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
-  `planing_curve`, `wave_pattern`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,
+  `planing_curve`, `wave_pattern`, `trim_scan`, `heel_equilibrium`, `optimize_hull`, `export_linesplan`, `export_templates`,
   `export_panels`, `export_offsets_pdf` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install
