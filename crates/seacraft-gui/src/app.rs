@@ -1020,8 +1020,10 @@ pub struct App {
     recent_failure: Option<String>,
     /// The recent file an Open recent waiting on the unsaved prompt opens.
     pending_recent: Option<PathBuf>,
-    /// Bumped by every edit; keys all derived state.
+    /// Bumped by every edit; keys all derived state. Only through [`App::bump_revision`].
     revision: u64,
+    /// `revision`, readable from a worker thread ([`App::revision_watch`]).
+    revision_watch: std::sync::Arc<std::sync::atomic::AtomicU64>,
     level: u8,
     mode: SubdivisionMode,
     display: DisplayOptions,
@@ -1316,6 +1318,7 @@ impl App {
             recent_failure: None,
             pending_recent: None,
             revision: 0,
+            revision_watch: Default::default(),
             level: 3,
             mode: SubdivisionMode::Loop,
             display: DisplayOptions::default(),
@@ -1618,7 +1621,7 @@ impl App {
     /// Everything derived from the model, reset for a new one (the undo
     /// history is the caller's business).
     fn reset_derived(&mut self) {
-        self.revision += 1;
+        self.bump_revision();
         // Measured on the previous model: left in place, it would trim the
         // new one to a point that means nothing there.
         self.hydro.lcg = None;
@@ -3751,7 +3754,7 @@ impl App {
         }
         self.hydro.options.draft = snap.draft;
         if geometry_changed {
-            self.revision += 1;
+            self.bump_revision();
             self.touch_geometry();
         }
         self.refresh_dirty();
@@ -4024,7 +4027,7 @@ impl App {
                         if moved {
                             // Full refinement and measurement again; the
                             // automatic recomputes count from the release.
-                            self.revision += 1;
+                            self.bump_revision();
                             self.touch_geometry();
                             let count = drag.plan.weights().len();
                             if count > 1 {
@@ -4710,7 +4713,7 @@ impl App {
                 "dragging control point {point} · hold X, Y or Z to lock an axis"
             ));
         }
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         self.sync_cache();
     }
@@ -4729,7 +4732,7 @@ impl App {
         // Against the file, not the flag at the press: a save may have
         // happened since.
         self.refresh_dirty();
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         self.sync_cache();
         self.set_status("drag cancelled".to_owned());
@@ -4788,7 +4791,7 @@ impl App {
         }
         self.dirty = true;
         self.autosave.note_dirty();
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         // Refine now (at the drag level), so the dragged view shows the point
         // under the cursor this frame instead of the next.
@@ -4815,7 +4818,7 @@ impl App {
         ));
         self.dirty = true;
         self.autosave.note_dirty();
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         self.sync_cache();
     }
@@ -6909,10 +6912,27 @@ impl App {
         }
     }
 
+    /// The model revision: bumped by every edit.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The model revision as a worker thread sees it: always equal to [`App::revision`].
+    pub fn revision_watch(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.revision_watch.clone()
+    }
+
+    /// Bumps the model revision; the only place it changes.
+    fn bump_revision(&mut self) {
+        self.revision += 1;
+        self.revision_watch
+            .store(self.revision, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn mark_geometry_changed(&mut self) {
         let n = self.surface.as_ref().map_or(0, |s| s.points.len());
         self.selection.retain_valid(n);
-        self.revision += 1;
+        self.bump_revision();
         self.dirty = true;
         self.autosave.note_dirty();
         if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
@@ -6977,13 +6997,13 @@ impl App {
     /// repeated solves cheap; the UI drives the same field from the menu.
     pub fn set_subdivision_level(&mut self, level: u8) {
         self.level = level.clamp(0, 5);
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
     }
 
     pub fn set_subdivision_mode(&mut self, mode: SubdivisionMode) {
         self.mode = mode;
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
     }
 
@@ -7793,8 +7813,10 @@ impl App {
                     break;
                 }
             };
-            let reply = crate::control::handle(self, ctx, &request);
-            let _ = request.reply.send(reply);
+            // `None`: a worker answers on `request.reply` when it is done.
+            if let Some(reply) = crate::control::handle(self, ctx, &request) {
+                let _ = request.reply.send(reply);
+            }
         }
         // The listener thread holds no `egui::Context`, so it cannot wake the
         // window: poll instead. A request waiting at most 100 ms is the price.

@@ -19,7 +19,9 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
@@ -36,6 +38,50 @@ use crate::App;
 const MAX_LINE: usize = 64 * 1024;
 /// How long a connection waits for the window to answer one request.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a connection waits for a request a worker answers ([`reply_later`]).
+const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a connection waits for the reply to `method`.
+fn reply_timeout(method: &str) -> Duration {
+    match method {
+        "build.templates" | "build.panels" => WORKER_TIMEOUT,
+        _ => REPLY_TIMEOUT,
+    }
+}
+
+/// Answers a request from a worker thread, so slow work never holds the window: `work` runs
+/// there and its result goes to `reply` as [`handle`] would send it, with the model `revision`
+/// it was computed on and whether the window's model has changed since (`watch`, from
+/// [`App::revision_watch`]). A result that is not a JSON object is sent as it is.
+fn reply_later(
+    reply: Sender<Value>,
+    revision: u64,
+    watch: Arc<AtomicU64>,
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("seacraft-control-work".into())
+        .spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let answer = match res {
+                Ok(Ok(mut v)) => {
+                    if let Some(o) = v.as_object_mut() {
+                        o.insert("revision".into(), json!(revision));
+                        let changed = watch.load(Ordering::SeqCst) != revision;
+                        o.insert("model_changed".into(), json!(changed));
+                    }
+                    json!({ "ok": true, "result": v })
+                }
+                Ok(Err(e)) => error(e),
+                Err(payload) => error(format!("internal error: {}", panic_message(&*payload))),
+            };
+            let _ = reply.send(answer);
+        });
+    if let Err(e) = spawned {
+        // The sender went with the closure; the connection's wait ends in its timeout.
+        eprintln!("seacraft-gui: cannot start a worker for a control request: {e}");
+    }
+}
 /// Largest image side `ui.render` accepts, in pixels.
 const MAX_RENDER: usize = 4096;
 /// The default `ui.render` image size.
@@ -292,17 +338,20 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
         }
 
         let (reply_tx, reply_rx) = mpsc::channel();
+        let timeout = reply_timeout(&method);
+        let named = method.clone();
         if tx
             .send(ControlRequest::new(method, params, reply_tx))
             .is_err()
         {
             break; // the window is gone
         }
-        let reply = match reply_rx.recv_timeout(REPLY_TIMEOUT) {
+        let reply = match reply_rx.recv_timeout(timeout) {
             Ok(v) => v,
             Err(mpsc::RecvTimeoutError::Timeout) => error(format!(
-                "the window did not answer within {} s",
-                REPLY_TIMEOUT.as_secs()
+                "`{}`: the window did not answer within {} s",
+                named,
+                timeout.as_secs()
             )),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
@@ -671,7 +720,9 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Answer one request. Every arm validates its input before touching the app,
 /// so a bad request leaves the window exactly as it was.
-pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value {
+/// Answers one request. `None` means a worker answers it later, on `req.reply`
+/// ([`reply_later`]); the caller sends `Some` replies itself.
+pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Option<Value> {
     let empty = Value::Object(serde_json::Map::new());
     let p = if req.params.is_null() {
         &empty
@@ -679,19 +730,121 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value
         &req.params
     };
     if !p.is_object() {
-        return error("`params` must be a JSON object");
+        return Some(error("`params` must be a JSON object"));
     }
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        handle_inner(app, ctx, req, p)
-    }));
+    let res =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match req.method.as_str() {
+            "build.templates" => build_templates(app, p, &req.reply),
+            _ => handle_inner(app, ctx, req, p).map(Some),
+        }));
     match res {
-        Ok(Ok(v)) => json!({ "ok": true, "result": v }),
-        Ok(Err(e)) => error(e),
+        Ok(Ok(Some(v))) => Some(json!({ "ok": true, "result": v })),
+        Ok(Ok(None)) => None,
+        Ok(Err(e)) => Some(error(e)),
         Err(payload) => {
             let msg = panic_message(&*payload);
-            error(format!("internal error: {msg}"))
+            Some(error(format!("internal error: {msg}")))
         }
     }
+}
+
+/// `build.templates`: checked here, drawn and written by a worker ([`reply_later`]).
+fn build_templates(
+    app: &mut App,
+    p: &Value,
+    reply: &Sender<Value>,
+) -> Result<Option<Value>, String> {
+    use seacraft_core::templates::{StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS};
+    let path = text(p, "path")?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("missing `path`")?;
+    let given: Vec<&str> = ["stations", "spacing", "at"]
+        .into_iter()
+        .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
+        .collect();
+    if given.len() > 1 {
+        return Err(format!(
+            "give one of `stations`, `spacing` and `at`, not `{}`",
+            given.join("` and `")
+        ));
+    }
+    let defaults = commands::TemplatesParams::default();
+    let stations = if let Some(n) = number_in(p, "stations", 2.0..=MAX_STATIONS as f64)? {
+        StationChoice::Count(n.round() as usize)
+    } else if let Some(s) = number_in(p, "spacing", 0.001..=1.0e4)? {
+        StationChoice::Spacing(s)
+    } else if let Some(xs) = numbers(p, "at")? {
+        StationChoice::At(xs)
+    } else {
+        defaults.stations.clone()
+    };
+    let transom = match (number(p, "transom_x")?, number(p, "transom_rake_deg")?) {
+        (Some(x), Some(rake_deg)) => Some(Transom { x, rake_deg }),
+        (None, None) => None,
+        _ => {
+            return Err(
+                "`transom_x` and `transom_rake_deg` go together: give both or neither".into(),
+            )
+        }
+    };
+    let paper = match text(p, "paper")? {
+        Some(paper) => {
+            seacraft_core::sheet::Paper::parse(paper).map_err(|e| format!("`paper`: {e}"))?;
+            paper.to_owned()
+        }
+        None => defaults.paper.clone(),
+    };
+    let scale = match text(p, "scale")? {
+        Some(scale) => {
+            seacraft_core::units::parse_scale(scale).map_err(|e| format!("`scale`: {e}"))?
+        }
+        None => defaults.scale,
+    };
+    let params = commands::TemplatesParams {
+        level: level_arg(p)?,
+        stations,
+        skin_mm: number_in(p, "skin_mm", 0.0..=MAX_SKIN_M * 1000.0)?.unwrap_or(defaults.skin_mm),
+        half: boolean(p, "half")?.unwrap_or(defaults.half),
+        strongback_z: number(p, "strongback_z")?,
+        waterlines: numbers(p, "waterlines")?,
+        profile: boolean(p, "profile")?.unwrap_or(defaults.profile),
+        transom,
+        paper,
+        single_page: boolean(p, "single_page")?.unwrap_or(defaults.single_page),
+        margin_mm: number_in(p, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
+        overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
+        scale,
+        imperial: boolean(p, "imperial")?.unwrap_or(defaults.imperial),
+    };
+    let path = std::path::PathBuf::from(path.trim());
+    let validated = app.check_control_write_path(&path)?;
+    let format = params.format_for(&validated)?;
+    let surface = app
+        .surface()
+        .ok_or("build.templates: no model is loaded")?
+        .clone();
+    let (level, mode) = (app.subdivision_level(), app.subdivision_mode());
+    reply_later(
+        reply.clone(),
+        app.revision(),
+        app.revision_watch(),
+        move || {
+            let r = commands::templates_in(&surface, level, mode, &params, format)?;
+            seacraft_core::io::write_atomic(&validated, &r.bytes)
+                .map_err(|e| format!("cannot write {}: {e}", validated.display()))?;
+            let missing: Vec<String> = r.missing.iter().map(char::to_string).collect();
+            Ok(json!({
+                "path": validated.to_string_lossy(),
+                "format": format.name(),
+                "bytes": r.bytes.len(),
+                "pages": r.pages,
+                "sheets": r.rows,
+                "warnings": r.warnings,
+                "missing_characters": missing,
+            }))
+        },
+    );
+    Ok(None)
 }
 
 fn handle_inner(
@@ -2020,96 +2173,6 @@ fn handle_inner(
             };
             reply_app(commands::bonjean(app, &params)?)
         }
-        "build.templates" => {
-            use seacraft_core::templates::{StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS};
-            let path = text(p, "path")?
-                .filter(|s| !s.trim().is_empty())
-                .ok_or("missing `path`")?;
-            let given: Vec<&str> = ["stations", "spacing", "at"]
-                .into_iter()
-                .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
-                .collect();
-            if given.len() > 1 {
-                return Err(format!(
-                    "give one of `stations`, `spacing` and `at`, not `{}`",
-                    given.join("` and `")
-                ));
-            }
-            let defaults = commands::TemplatesParams::default();
-            let stations = if let Some(n) = number_in(p, "stations", 2.0..=MAX_STATIONS as f64)? {
-                StationChoice::Count(n.round() as usize)
-            } else if let Some(s) = number_in(p, "spacing", 0.001..=1.0e4)? {
-                StationChoice::Spacing(s)
-            } else if let Some(xs) = numbers(p, "at")? {
-                StationChoice::At(xs)
-            } else {
-                defaults.stations.clone()
-            };
-            let transom = match (number(p, "transom_x")?, number(p, "transom_rake_deg")?) {
-                (Some(x), Some(rake_deg)) => Some(Transom { x, rake_deg }),
-                (None, None) => None,
-                _ => {
-                    return Err(
-                        "`transom_x` and `transom_rake_deg` go together: give both or neither"
-                            .into(),
-                    )
-                }
-            };
-            let paper = match text(p, "paper")? {
-                Some(paper) => {
-                    seacraft_core::sheet::Paper::parse(paper)
-                        .map_err(|e| format!("`paper`: {e}"))?;
-                    paper.to_owned()
-                }
-                None => defaults.paper.clone(),
-            };
-            let scale = match text(p, "scale")? {
-                Some(scale) => {
-                    seacraft_core::units::parse_scale(scale).map_err(|e| format!("`scale`: {e}"))?
-                }
-                None => defaults.scale,
-            };
-            let params = commands::TemplatesParams {
-                level: level_arg(p)?,
-                stations,
-                skin_mm: number_in(p, "skin_mm", 0.0..=MAX_SKIN_M * 1000.0)?
-                    .unwrap_or(defaults.skin_mm),
-                half: boolean(p, "half")?.unwrap_or(defaults.half),
-                strongback_z: number(p, "strongback_z")?,
-                waterlines: numbers(p, "waterlines")?,
-                profile: boolean(p, "profile")?.unwrap_or(defaults.profile),
-                transom,
-                paper,
-                single_page: boolean(p, "single_page")?.unwrap_or(defaults.single_page),
-                margin_mm: number_in(p, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
-                overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
-                scale,
-                imperial: boolean(p, "imperial")?.unwrap_or(defaults.imperial),
-            };
-            let path = std::path::PathBuf::from(path.trim());
-            let validated = app.check_control_write_path(&path)?;
-            let format = params.format_for(&validated)?;
-            let surface = app.surface().ok_or("build.templates: no model is loaded")?;
-            let r = commands::templates_in(
-                surface,
-                app.subdivision_level(),
-                app.subdivision_mode(),
-                &params,
-                format,
-            )?;
-            seacraft_core::io::write_atomic(&validated, &r.bytes)
-                .map_err(|e| format!("cannot write {}: {e}", validated.display()))?;
-            let missing: Vec<String> = r.missing.iter().map(char::to_string).collect();
-            Ok(json!({
-                "path": validated.to_string_lossy(),
-                "format": format.name(),
-                "bytes": r.bytes.len(),
-                "pages": r.pages,
-                "sheets": r.rows,
-                "warnings": r.warnings,
-                "missing_characters": missing,
-            }))
-        }
         "curves.offsets" => {
             // Read-only, like curves.bonjean: no snapshot, no dirty flag.
             let defaults = commands::OffsetsParams::default();
@@ -2941,9 +3004,108 @@ mod tests {
         (app, egui::Context::default())
     }
 
+    /// One request, answered at once or, for a request a worker answers, when it does.
     fn call(app: &mut App, ctx: &egui::Context, method: &str, params: Value) -> Value {
+        let (tx, rx) = mpsc::channel();
+        handle(app, ctx, &ControlRequest::new(method, params, tx)).unwrap_or_else(|| {
+            rx.recv_timeout(Duration::from_secs(60))
+                .expect("the worker replies")
+        })
+    }
+
+    /// A builder request is answered by a worker: the window answers other requests
+    /// meanwhile, and the reply arrives on the request's own channel.
+    #[test]
+    fn a_builder_request_leaves_the_window_free() {
+        let (mut app, ctx) = demo();
+        let dir = std::env::temp_dir().join(format!("seacraft-later-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        let path = dir.join("m.pdf");
+        let (tx, rx) = mpsc::channel();
+        let req = ControlRequest::new(
+            "build.templates",
+            json!({ "path": path.to_string_lossy() }),
+            tx,
+        );
+        assert!(
+            handle(&mut app, &ctx, &req).is_none(),
+            "answered by a worker"
+        );
+        let inspect = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(inspect["ok"], true, "{inspect}");
+        let r = rx.recv_timeout(Duration::from_secs(60)).expect("a reply");
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["model_changed"], false, "{r}");
+        assert!(r["result"]["revision"].is_u64(), "{r}");
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the window can check, it refuses at once, without a worker.
+    #[test]
+    fn a_builder_request_is_refused_at_once() {
+        let (mut app, ctx) = demo();
         let (tx, _rx) = mpsc::channel();
-        handle(app, ctx, &ControlRequest::new(method, params, tx))
+        let req = ControlRequest::new("build.templates", json!({ "path": "x.png" }), tx);
+        let r = handle(&mut app, &ctx, &req).expect("answered at once");
+        assert_eq!(r["ok"], false, "{r}");
+        let (tx, _rx) = mpsc::channel();
+        let req = ControlRequest::new("build.templates", json!({ "stations": 1 }), tx);
+        assert!(handle(&mut app, &ctx, &req).is_some());
+    }
+
+    /// A reply computed on an older model says so.
+    #[test]
+    fn a_reply_says_when_the_model_changed_while_it_was_computed() {
+        let watch = Arc::new(AtomicU64::new(5));
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let (tx, rx) = mpsc::channel();
+        reply_later(tx, 5, watch.clone(), move || {
+            gate_rx.recv().unwrap();
+            Ok(json!({ "answer": 42 }))
+        });
+        watch.store(6, Ordering::SeqCst);
+        gate_tx.send(()).unwrap();
+        let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["answer"], 42);
+        assert_eq!(r["result"]["revision"], 5);
+        assert_eq!(r["result"]["model_changed"], true);
+
+        let (tx, rx) = mpsc::channel();
+        reply_later(tx, 6, watch.clone(), || Err("no".into()));
+        let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            (r["ok"].clone(), r["error"].clone()),
+            (json!(false), json!("no"))
+        );
+        let (tx, rx) = mpsc::channel();
+        reply_later(tx, 6, watch, || panic!("boom"));
+        let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(r["error"].as_str().unwrap().contains("boom"), "{r}");
+    }
+
+    /// The window's revision watch follows every edit.
+    #[test]
+    fn the_revision_watch_follows_edits() {
+        let (mut app, ctx) = demo();
+        let watch = app.revision_watch();
+        let before = watch.load(Ordering::SeqCst);
+        let r = call(&mut app, &ctx, "model.transform", json!({ "mirror": "x" }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(watch.load(Ordering::SeqCst) > before);
+    }
+
+    #[test]
+    fn builder_requests_wait_longer_for_their_reply() {
+        assert_eq!(reply_timeout("build.templates"), Duration::from_secs(300));
+        assert_eq!(reply_timeout("build.panels"), Duration::from_secs(300));
+        assert_eq!(reply_timeout("ui.inspect"), REPLY_TIMEOUT);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -4444,11 +4606,12 @@ mod tests {
             let request = rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("the request reached the app");
-            let reply = handle(app, &ctx, &request);
-            request
-                .reply
-                .send(reply)
-                .expect("the app is still listening");
+            if let Some(reply) = handle(app, &ctx, &request) {
+                request
+                    .reply
+                    .send(reply)
+                    .expect("the app is still listening");
+            }
             read_reply(reader)
         };
 
@@ -4569,8 +4732,9 @@ mod tests {
         let req = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("receive request");
-        let res = handle(&mut app, &ctx, &req);
-        req.reply.send(res).unwrap();
+        if let Some(res) = handle(&mut app, &ctx, &req) {
+            req.reply.send(res).unwrap();
+        }
 
         line.clear();
         reader.read_line(&mut line).unwrap();
