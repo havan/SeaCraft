@@ -266,7 +266,8 @@ fn example_hull_follows_the_closed_forms_off_design() {
         for ((name, got, want), band) in compared(&h, &c).into_iter().zip(bands) {
             let gap = 100.0 * (got - want) / want;
             println!("{t:.4} {name:8} {got:12.6} {want:12.6} {gap:+8.4}");
-            if gap.abs() > band {
+            // A NaN fails too: on its own, `NaN > band` is false.
+            if !gap.is_finite() || gap.abs() > band {
                 failures.push(format!("{name} at {t}: {gap:+.4} % outside {band} %"));
             }
         }
@@ -361,6 +362,14 @@ fn exact_mesh_gz_matches_the_independent_script() {
             kn - want
         );
         assert!((kn - want).abs() < 5e-5, "KN at {heel}: {kn} vs {want}");
+        // GZ in its own right, so a slip between KN and GZ (KG·φ for
+        // KG·sin φ keeps GZ odd and passes at 5°, but is 0.14 m at 80°) fails.
+        let gz = p.gz.expect("a waterline at every heel");
+        let want_gz = want - KG * heel.to_radians().sin();
+        assert!(
+            (gz - want_gz).abs() < 5e-5,
+            "GZ at {heel}: {gz} vs {want_gz}"
+        );
     }
 }
 
