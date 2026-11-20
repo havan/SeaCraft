@@ -38,6 +38,17 @@ the planing drag as Δ tan τ + D_F, and adds Savitsky's roughness allowance, wh
 Of Holtrop's propulsion factors, the relative rotative efficiency reproduces two printed examples; the wake
 fraction and thrust deduction are checked only against a hand calculation from the printed formulas.
 
+Strip-theory seakeeping (heave and pitch in regular head waves) has been compared with published tank tests for
+two hulls only: Wigley I and III (L/B 10, B/T 1.6) at Fn 0.2 to 0.4, against Journée's (1992) towing-tank
+measurements, with the radiation coefficients, the wave loads on the restrained hull and the motions checked
+separately ([`docs/oracles.md`](docs/oracles.md) §46). It is not a match everywhere. The heave added mass agrees
+within 8–19 %; the pitch damping comes out up to 2.7 times the measured value at mid frequencies and the pitch added
+mass about 30 % low, so the pitch resonance falls at shorter waves than measured, and at Fn 0.4 the resonant pitch
+is overpredicted by up to about two times. Away from resonance at Fn 0.2 and 0.3, heave on both hulls and pitch on
+Wigley III are within 30 % and 30° of the tank. Journée's own strip-theory calculations show the same gaps. The
+tests hold the program to them. Nothing else about seakeeping has been compared with experiments: not other hulls,
+transom sterns, other headings, the irregular-sea statistics or the MSI.
+
 The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`, the Wave pattern view and Plan view contours in the
 window, the design report) is far-field thin-ship theory: free waves only, without the local disturbance, so near the hull
 it is not the hull wave profile. It is computed upright at the draft; heel and trim are ignored. It has been

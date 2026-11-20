@@ -4,6 +4,15 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- Seakeeping is now compared with towing-tank measurements: SeaCraft's strip theory on Wigley I and III in regular
+  head waves at Fn 0.2, 0.3 and 0.4 against Journée (1992), with the radiation coefficients, the wave loads on the
+  restrained hull and the motions each checked on its own and their gaps held as bands (`docs/oracles.md` §46).
+  The heave added mass agrees within 8–19 %; pitch damping, pitch added mass and the pitch resonance show strip
+  theory's known gaps, which Journée's own calculations share. No numbers change.
+- `seakeeping::head_sea_raos_on_hull` solves on an already built `Hull` (such as an exact mesh) and also returns
+  the `WaveLoads` (heave force and pitch moment on the hull held still, per unit wave amplitude) that the motions
+  are solved with. `head_sea_raos` and the CLI, MCP and GUI outputs are unchanged.
+
 - Holtrop-Mennen and Savitsky are now checked against published worked examples (`docs/oracles.md` §42, §43), and
   two fixes came out of it. Holtrop wave resistance uses the 1984 hump coefficient `m4` in both wave fits, as
   Holtrop (1984) does, instead of the 1982 `m2`: the 1984 paper's example now reproduces to the kN. The wave
