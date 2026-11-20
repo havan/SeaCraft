@@ -35,6 +35,41 @@ fn helpers_handle_roots_and_wraps() {
     assert_eq!(s.kyy, Some(0.75));
 }
 
+/// `f64::max` drops a NaN, so a NaN gap would never raise a largest gap and a band would pass on
+/// it; the gap helpers refuse non-finite inputs instead.
+#[test]
+#[should_panic(expected = "not finite")]
+fn amplitude_gap_refuses_nan() {
+    amp_gap(f64::NAN, 1.0, 0.1);
+}
+
+#[test]
+#[should_panic(expected = "not finite")]
+fn phase_gap_refuses_nan() {
+    phase_gap_deg(10.0, f64::NAN);
+}
+
+/// A NaN amplitude also fails `amp >= floor`, which would skip its phase without a word, and a
+/// NaN where the tank cell is blank meets no gap at all: so every value SeaCraft returns is
+/// checked finite before any comparison (`run` calls `assert_finite`).
+#[test]
+fn computed_values_must_be_finite() {
+    let (rep, loads) = run(&WIGLEY_I, 0.3, vec![omega_for_wavelength(1.0)], 21, (40, 8));
+    assert_finite(&rep, &loads);
+    let mut bad = rep.clone();
+    bad.frequencies[0].pitch_phase_deg = f64::NAN;
+    let caught = std::panic::catch_unwind(|| assert_finite(&bad, &loads));
+    assert!(caught.is_err(), "a NaN pitch phase passed");
+    let mut bad = loads.clone();
+    bad[0].heave_force.0 = f64::INFINITY;
+    let caught = std::panic::catch_unwind(|| assert_finite(&rep, &bad));
+    assert!(caught.is_err(), "an infinite heave force passed");
+    let mut bad = rep.clone();
+    bad.coefficients.as_mut().expect("coefficients")[0].b55 = f64::NAN;
+    let caught = std::panic::catch_unwind(|| assert_finite(&bad, &loads));
+    assert!(caught.is_err(), "a NaN B55 passed");
+}
+
 /// The hydrostatics the formula gives, integrated by hand (our own arithmetic, checked in the
 /// planning session against Journée's printed ∇): x = (L/2)ξ, z = d(1 − ζ),
 /// `∫(1 − ξ²)(1 + 0.2ξ²)dξ = 1.386667`, `∫(1 − ξ²)⁴dξ = 256/315`,

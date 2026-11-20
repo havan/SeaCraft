@@ -192,12 +192,22 @@ pub fn omega_for_encounter(omega_e: f64, u: f64, g: f64) -> f64 {
 }
 
 /// `|got − want| / max(|want|, floor)`; see the gap floor in the module documentation.
+/// Panics on a non-finite input (`amplitude_gap_refuses_nan`).
 pub fn amp_gap(got: f64, want: f64, floor: f64) -> f64 {
+    assert!(
+        got.is_finite() && want.is_finite() && floor.is_finite(),
+        "amplitude gap of {got} against {want} (floor {floor}): not finite"
+    );
     (got - want).abs() / want.abs().max(floor)
 }
 
 /// The difference of two phases in degrees, wrapped into [0, 180].
+/// Panics on a non-finite input (`phase_gap_refuses_nan`).
 pub fn phase_gap_deg(got: f64, want: f64) -> f64 {
+    assert!(
+        got.is_finite() && want.is_finite(),
+        "phase gap of {got}° against {want}°: not finite"
+    );
     let d = (got - want).rem_euclid(360.0);
     d.min(360.0 - d)
 }
@@ -222,8 +232,44 @@ pub fn run(
     mesh: (usize, usize),
 ) -> (SeakeepingReport, Vec<WaveLoads>) {
     let hull = exact_hull(m, mesh.0, mesh.1);
-    head_sea_raos_on_hull(&hull, &hydro_options(), &spec(m, froude, omegas, stations))
-        .expect("the exact Wigley hull solves")
+    let (rep, loads) =
+        head_sea_raos_on_hull(&hull, &hydro_options(), &spec(m, froude, omegas, stations))
+            .expect("the exact Wigley hull solves");
+    assert_finite(&rep, &loads);
+    (rep, loads)
+}
+
+/// Panics unless every value SeaCraft returned is finite: each RAO amplitude and phase, each
+/// coefficient and each wave load. `run` calls it before any comparison, because a NaN fails every
+/// floor test and `f64::max` drops it, so a band would otherwise pass on it.
+pub fn assert_finite(rep: &SeakeepingReport, loads: &[WaveLoads]) {
+    let check = |what: &str, at: f64, vs: &[f64]| {
+        for v in vs {
+            assert!(v.is_finite(), "{what} at ω {at}: {v} is not finite");
+        }
+    };
+    for p in &rep.frequencies {
+        let values = [
+            p.heave_amp,
+            p.heave_phase_deg,
+            p.pitch_amp,
+            p.pitch_phase_deg,
+        ];
+        check("RAO", p.omega, &values);
+    }
+    for c in rep.coefficients.iter().flatten() {
+        let values = [c.a33, c.b33, c.a35, c.b35, c.a53, c.b53, c.a55, c.b55];
+        check("coefficients", c.omega, &values);
+    }
+    for l in loads {
+        let values = [
+            l.heave_force.0,
+            l.heave_force.1,
+            l.pitch_moment.0,
+            l.pitch_moment.1,
+        ];
+        check("wave loads", l.omega, &values);
+    }
 }
 
 /// SeaCraft's coefficients in Journée's non-dimensional form and signs: divided by his printed ∇
