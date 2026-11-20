@@ -82,6 +82,8 @@ enum Command {
     Stability(StabilityArgs),
     /// Evaluate a ship loading condition (weights, tanks, FSM/FSC, floating equilibrium and IMO A.749)
     Loadcase(LoadcaseArgs),
+    /// Where the hull settles under trial weights: large-angle heel, trim and draft, free to trim
+    Heel(HeelArgs),
     /// Deterministic damage stability by the lost-buoyancy method
     Damage(DamageArgs),
     /// Strip-theory heave and pitch motion RAOs in regular head seas (Salvesen, Tuck & Faltinsen 1970)
@@ -1229,6 +1231,39 @@ struct LoadcaseArgs {
 }
 
 #[derive(Args, Debug)]
+struct HeelArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// KG above the keel in metres for the bare hull (or give --condition)
+    #[arg(long, conflicts_with_all = ["condition", "case"])]
+    kg: Option<f64>,
+    /// Draft the bare hull floats at before the weights (defaults to the model's)
+    #[arg(long, conflicts_with_all = ["condition", "case"])]
+    draft: Option<f64>,
+    /// LCG of the bare hull in model x (defaults to the upright LCB)
+    #[arg(long, conflicts_with_all = ["condition", "case"])]
+    lcg: Option<f64>,
+    /// Start from this loading condition of the project file
+    #[arg(long)]
+    condition: Option<String>,
+    /// Loading condition JSON or project file (defaults to the model's
+    /// `<model>.seacraft.json` sidecar when --condition is given)
+    #[arg(long)]
+    case: Option<PathBuf>,
+    /// A trial weight, tonnes at model x, y, z in metres (repeatable)
+    #[arg(long = "weight", value_name = "T@X,Y,Z")]
+    weights: Vec<String>,
+    /// Also report the lever at this heel, degrees (+ to starboard)
+    #[arg(long, allow_negative_numbers = true)]
+    heel: Option<f64>,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+    /// Emit JSON instead of text
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
 struct DamageArgs {
     /// Input .fef file
     file: PathBuf,
@@ -1563,6 +1598,7 @@ fn run() -> Result<()> {
         Command::Planing(a) => cmd_planing(a),
         Command::Stability(a) => cmd_stability(a),
         Command::Loadcase(a) => cmd_loadcase(a),
+        Command::Heel(a) => cmd_heel(a),
         Command::Damage(a) => cmd_damage(a),
         Command::Seakeeping(a) => cmd_seakeeping(a),
         Command::Linesplan(a) => cmd_linesplan(a),
@@ -4195,9 +4231,15 @@ fn read_case_or_project(model: &Path, case: Option<&Path>) -> Result<(CaseSource
     }
 }
 
-fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
-    let s = load(&a.file)?;
-    let (cond, from) = match read_case_or_project(&a.file, a.case.as_deref())? {
+/// The loading condition `case` (or the model's sidecar) holds: a bare
+/// condition, or the one called `name` in a project (the first when `None`),
+/// validated.
+fn read_loading_condition(
+    model: &Path,
+    case: Option<&Path>,
+    name: Option<&str>,
+) -> Result<loading::LoadingCondition> {
+    let (cond, from) = match read_case_or_project(model, case)? {
         (CaseSource::Bare(text), path) => (
             serde_json::from_str::<loading::LoadingCondition>(&text)
                 .with_context(|| format!("cannot parse {}", path.display()))?,
@@ -4205,12 +4247,134 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
         ),
         (CaseSource::Project(p), path) => {
             let c = p
-                .loading_condition(a.name.as_deref())
+                .loading_condition(name)
                 .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
             (p.with_windage(c), path)
         }
     };
     loading::validate(&cond).map_err(|e| anyhow::anyhow!("{}: {e}", from.display()))?;
+    Ok(cond)
+}
+
+fn cmd_heel(a: HeelArgs) -> Result<()> {
+    use seacraft_core::heel;
+    let s = load(&a.file)?;
+    let mut opts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+    );
+    let weights = a
+        .weights
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            heel::parse_weight(w).map(|mut w| {
+                w.name = format!("Weight {}", i + 1);
+                w
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| anyhow::anyhow!("--weight: {e}"))?;
+    if let Some(h) = a.heel {
+        if !(h.is_finite() && h.abs() <= 90.0) {
+            bail!("--heel must be within -90..90 degrees");
+        }
+    }
+    let hull = hydro::Hull::new(&s, opts.subdivision);
+    let mut warnings = Vec::new();
+    let start = if a.condition.is_some() || a.case.is_some() {
+        let cond = read_loading_condition(&a.file, a.case.as_deref(), a.condition.as_deref())?;
+        let res = loading::evaluate(&s, &opts, &cond);
+        if !res.equilibrium_found {
+            warnings.extend(res.warnings.iter().cloned());
+        }
+        heel::MassCondition::from_loading(&res, hull.keel)
+    } else {
+        let Some(kg) = a.kg else {
+            bail!("give --kg or --condition (a loading condition in the project file)");
+        };
+        if !(kg.is_finite() && kg >= 0.0) {
+            bail!("--kg must be a non-negative number of metres");
+        }
+        if let Some(d) = a.draft {
+            if !(d.is_finite() && d > 0.0) {
+                bail!("--draft must be positive");
+            }
+            opts.draft = d;
+        }
+        heel::MassCondition::bare(&hull, &opts, kg, a.lcg)
+            .with_context(|| format!("the hull displaces nothing at draft {:.3} m", opts.draft))?
+    };
+    let mut r = heel::report(&hull, &opts, &start, &weights, a.heel);
+    r.warnings = warnings;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+        return Ok(());
+    }
+    println!(
+        "{}  -  heel under trial weights (free to trim)",
+        s.settings.name
+    );
+    for w in &r.warnings {
+        println!("  WARNING: {w}");
+    }
+    let cond = |c: &heel::ConditionSummary| {
+        format!(
+            "displacement {:.3} t, KG {:.3} m, LCG {:.3} m, TCG {:+.3} m",
+            c.displacement_t, c.kg_m, c.lcg_m, c.tcg_m
+        )
+    };
+    let row = |label: &str, value: String| println!("  {label:<14} {value}");
+    row("start", cond(&r.start));
+    for w in &r.weights {
+        row(
+            "weight",
+            format!(
+                "{}: {:.3} t at x {:.3}, y {:+.3}, z {:.3} m",
+                w.name, w.mass_t, w.x, w.y, w.z
+            ),
+        );
+    }
+    if !r.weights.is_empty() {
+        row("with weights", cond(&r.condition));
+    }
+    row("settles", r.summary.clone());
+    if let heel::Equilibrium::Loll { port, starboard } = &r.equilibrium {
+        row(
+            "",
+            format!(
+                "(negative upright GM: {:+.1}° and {:+.1}°)",
+                port.heel_deg, starboard.heel_deg
+            ),
+        );
+    }
+    if let Some(h) = a.heel {
+        match &r.at_heel {
+            Some(st) => row(
+                &format!("at {h:+.1}°"),
+                format!(
+                    "lever {:+.3} m = GZ {:+.3} m - heeling arm {:+.3} m{}",
+                    st.lever_m,
+                    st.gz_m,
+                    st.heeling_arm_m,
+                    match (st.draft, st.trim_m) {
+                        (Some(d), Some(t)) => format!(", draft {d:.3} m, trim {t:+.3} m"),
+                        _ => String::new(),
+                    }
+                ),
+            ),
+            None => row(&format!("at {h:+.1}°"), "does not float".into()),
+        }
+    }
+    Ok(())
+}
+
+fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
+    let s = load(&a.file)?;
+    let cond = read_loading_condition(&a.file, a.case.as_deref(), a.name.as_deref())?;
 
     let opts = HydroOptions::from_surface(
         &s,

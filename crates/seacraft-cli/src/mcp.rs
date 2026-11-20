@@ -839,6 +839,7 @@ impl McpServer {
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
             "loading_condition" => self.loading_condition(a),
+            "heel_equilibrium" => self.heel_equilibrium(a),
             "weather_criterion" => self.weather_criterion(a),
             "damage_stability" => self.damage_stability(a),
             "seakeeping_raos" => self.seakeeping_raos(a),
@@ -1418,6 +1419,66 @@ impl McpServer {
         }
         let res = loading::evaluate(&self.surface, &opts, &cond);
         let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn heel_equilibrium(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        use seacraft_core::heel;
+        let err = |e: String| format!("heel_equilibrium: {e}");
+        let mut opts = self.opts.clone();
+        if a.contains_key("level") {
+            opts.subdivision.level = level_arg(a)?;
+        }
+        let weights = match a.get("weights") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(v) => heel::weights_from_json(v).map_err(err)?,
+        };
+        let at_heel = match a.get("heel") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_f64()
+                    .filter(|h| h.is_finite() && h.abs() <= 90.0)
+                    .ok_or_else(|| err("`heel` must be within -90..90 degrees".into()))?,
+            ),
+        };
+        let hull = hydro::Hull::new(&self.surface, opts.subdivision);
+        let mut warnings = Vec::new();
+        let start = if let Some(name) = str_arg(a, "condition") {
+            let c = self.project.loading_condition(Some(name)).map_err(err)?;
+            let cond = self.project.with_windage(c);
+            loading::validate(&cond).map_err(err)?;
+            let res = loading::evaluate(&self.surface, &opts, &cond);
+            if !res.equilibrium_found {
+                warnings.extend(res.warnings.iter().cloned());
+            }
+            heel::MassCondition::from_loading(&res, hull.keel)
+        } else {
+            let kg = match a.get("kg") {
+                None | Some(Value::Null) => self.kg,
+                Some(v) => v
+                    .as_f64()
+                    .filter(|k| k.is_finite() && *k >= 0.0)
+                    .ok_or_else(|| err("`kg` must be a non-negative number".into()))?,
+            };
+            if let Some(d) = number_arg(a, "draft") {
+                if !(d.is_finite() && d > 0.0) {
+                    return Err(err("`draft` must be positive".into()));
+                }
+                opts.draft = d;
+            }
+            heel::MassCondition::bare(&hull, &opts, kg, number_arg(a, "lcg")).ok_or_else(|| {
+                err(format!(
+                    "the hull displaces nothing at draft {}",
+                    opts.draft
+                ))
+            })?
+        };
+        let mut r = heel::report(&hull, &opts, &start, &weights, at_heel);
+        r.warnings = warnings;
+        let mut v = serde_json::to_value(&r).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
             o.insert("backend".into(), json!("headless"));
         }
@@ -3181,6 +3242,37 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "heel_equilibrium",
+            "Heel equilibrium under trial weights",
+            "Where the hull settles, large-angle and always free to trim, when point weights are added to the bare \
+             hull (`kg`, optional `draft` and `lcg`) or to a loading condition of the project (`condition`): the \
+             equilibrium heel, trim and draft (`equilibrium.kind` `stable`), a loll to either side with a negative \
+             upright GM and no off-centre weight (`loll`, both heels), `capsizes` (no stable equilibrium within \
+             ±90°) or `cannot_float`. `summary` says it in words. With `heel`, `at_heel` gives the state there: \
+             `lever_m = gz_m - heeling_arm_m` (GZ with G on the centreline, the heeling arm from the off-centre \
+             weight). Heel + to starboard; liquids in tanks do not shift (their free surface is in KG).",
+            obj(
+                json!({
+                    "kg": number("KG above the keel for the bare hull (default: the server's)"),
+                    "draft": number("Draft the bare hull floats at before the weights (default: the model's)"),
+                    "lcg": number("LCG of the bare hull in model x (default: the upright LCB)"),
+                    "condition": string("Start from this loading condition of the project instead of the bare hull"),
+                    "weights": {"type": "array", "description": "Trial weights",
+                        "items": {"type": "object", "properties": {
+                            "mass_t": number("Mass in tonnes (positive)"),
+                            "x": number("Model x, metres"),
+                            "y": number("Model y, metres (+ to starboard)"),
+                            "z": number("Model z, metres"),
+                            "name": string("Optional name"),
+                        }, "required": ["mass_t", "x", "y", "z"]}},
+                    "heel": number("Also report the lever at this heel, degrees (-90..90)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "weather_criterion",
             "Weather criterion (IMO IS Code §2.3)",
             "Evaluate the IMO 2008 IS Code Part A §2.3 severe wind and rolling (weather) criterion on the refined \
@@ -4100,6 +4192,7 @@ impl Remote {
                 let p = a.get("project").ok_or("project_set: give `project`")?;
                 self.request("project.set", json!({ "project": p }))
             }
+            "heel_equilibrium" => self.request("stability.heel", Value::Object(a.clone())),
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
             "damage_stability" if a.contains_key("case") || a.contains_key("case_path") => {
                 self.request("stability.damage_stability", Value::Object(a.clone()))
@@ -4590,6 +4683,7 @@ mod tests {
                 "hydro_compute",
                 "stability_cross_curves",
                 "loading_condition",
+                "heel_equilibrium",
                 "weather_criterion",
                 "damage_stability",
                 "seakeeping_raos",
@@ -7322,5 +7416,66 @@ mod tests {
             let msg = r["error"]["message"].as_str().unwrap_or_default();
             assert!(msg.contains(word), "{r}");
         }
+    }
+
+    #[test]
+    fn heel_equilibrium_matches_the_core() {
+        let mut s = McpServer::new();
+        let r = ok(
+            &mut s,
+            1,
+            "heel_equilibrium",
+            json!({"kg": 2.2, "level": 1, "heel": 10.0,
+                   "weights": [{"mass_t": 0.5, "x": 4.0, "y": 0.8, "z": 1.5}]}),
+        );
+        let surface = seacraft_core::demo::demo_hull(false);
+        let mut opts = HydroOptions::from_surface(
+            &surface,
+            seacraft_core::subdiv::SubdivisionOptions {
+                level: 1,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        opts.draft = s.opts.draft;
+        let hull = hydro::Hull::new(&surface, opts.subdivision);
+        let start = seacraft_core::heel::MassCondition::bare(&hull, &opts, 2.2, None).unwrap();
+        let w = seacraft_core::heel::weights_from_json(
+            &json!([{"mass_t": 0.5, "x": 4.0, "y": 0.8, "z": 1.5}]),
+        )
+        .unwrap();
+        let core = seacraft_core::heel::report(&hull, &opts, &start, &w, Some(10.0));
+        let seacraft_core::heel::Equilibrium::Stable { state } = &core.equilibrium else {
+            panic!("{:?}", core.equilibrium);
+        };
+        assert_eq!(r["equilibrium"]["kind"], "stable", "{r}");
+        let got = r["equilibrium"]["state"]["heel_deg"].as_f64().unwrap();
+        assert!(
+            (got - state.heel_deg).abs() < 1e-9,
+            "{got} vs {}",
+            state.heel_deg
+        );
+        let lever = r["at_heel"]["lever_m"].as_f64().unwrap();
+        assert!((lever - core.at_heel.unwrap().lever_m).abs() < 1e-9);
+        assert_eq!(r["summary"], json!(core.summary));
+        assert_eq!(r["weights"][0]["name"], "Weight 1");
+    }
+
+    #[test]
+    fn heel_equilibrium_rejects_a_bad_weight() {
+        let mut s = McpServer::new();
+        let e = fails(
+            &mut s,
+            1,
+            "heel_equilibrium",
+            json!({"kg": 2.2, "level": 1, "weights": [{"mass_t": -2.0, "x": 4.0, "y": 0.8, "z": 1.5}]}),
+        );
+        assert!(e.contains("mass_t"), "{e}");
+        let e = fails(
+            &mut s,
+            2,
+            "heel_equilibrium",
+            json!({"level": 1, "condition": "no such condition"}),
+        );
+        assert!(e.contains("heel_equilibrium"), "{e}");
     }
 }

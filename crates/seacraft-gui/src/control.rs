@@ -1957,6 +1957,76 @@ fn handle_inner(
             let res = app.compute_damage_blocking(name)?;
             serde_json::to_value(res).map_err(|e| e.to_string())
         }
+        "stability.heel" | "heel_equilibrium" => {
+            use seacraft_core::heel;
+            let err = |e: String| format!("stability.heel: {e}");
+            let surface = app
+                .surface()
+                .ok_or_else(|| err("no model is loaded".into()))?;
+            let mut opts = app.hydro_options().clone();
+            let level = match p.get("level") {
+                None | Some(Value::Null) => app.subdivision_level(),
+                Some(_) => number_in(p, "level", 0.0..=6.0)?
+                    .map(|l| l.round() as u8)
+                    .unwrap_or_else(|| app.subdivision_level()),
+            };
+            opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+                level,
+                mode: app.subdivision_mode(),
+            };
+            let weights = match p.get("weights") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(v) => heel::weights_from_json(v).map_err(err)?,
+            };
+            let at_heel = number_in(p, "heel", -90.0..=90.0)?;
+            let hull = seacraft_core::hydro::Hull::new(surface, opts.subdivision);
+            let mut warnings = Vec::new();
+            let start = if let Some(name) = text(p, "condition")? {
+                let project = app.project();
+                let c = project.loading_condition(Some(name)).map_err(err)?;
+                let cond = project.with_windage(c);
+                seacraft_core::loading::validate(&cond).map_err(err)?;
+                let res = seacraft_core::loading::evaluate(surface, &opts, &cond);
+                if !res.equilibrium_found {
+                    warnings.extend(res.warnings.iter().cloned());
+                }
+                heel::MassCondition::from_loading(&res, hull.keel)
+            } else {
+                let (kg, estimate) = match p.get("kg") {
+                    None | Some(Value::Null) => (
+                        app.kg()
+                            .ok_or_else(|| err("set KG first (or pass `kg`)".into()))?,
+                        app.kg_is_estimate(),
+                    ),
+                    Some(_) => (
+                        number_in(p, "kg", 0.0..=1.0e3)?
+                            .ok_or_else(|| err("`kg` must be >= 0".into()))?,
+                        false,
+                    ),
+                };
+                if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
+                    opts.draft = d;
+                }
+                // The dock's LCG when it is free to trim, else the upright LCB.
+                let lcg = number_in(p, "lcg", -1.0e4..=1.0e4)?
+                    .or_else(|| app.free_trim().then(|| app.lcg()).flatten());
+                let mut m = heel::MassCondition::bare(&hull, &opts, kg, lcg).ok_or_else(|| {
+                    err(format!(
+                        "the hull displaces nothing at draft {}",
+                        opts.draft
+                    ))
+                })?;
+                m.kg_estimate = estimate;
+                m
+            };
+            let mut r = heel::report(&hull, &opts, &start, &weights, at_heel);
+            r.warnings = warnings;
+            let mut v = serde_json::to_value(&r).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        }
         "stability.weather" | "weather_criterion" => {
             let mut opts = app.hydro_options().clone();
             if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
@@ -4865,6 +4935,7 @@ mod tests {
             "hydro.compute",
             "stability.cross_curves",
             "stability.weather",
+            "stability.heel",
             "report.design",
             "app.quit",
             "no.such.method",
@@ -6305,5 +6376,35 @@ mod tests {
         );
         assert_eq!(r["ok"], false, "{r}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `stability.heel` measures on the app's own model with the dock KG,
+    /// as the MCP tool `heel_equilibrium` does headless.
+    #[test]
+    fn stability_heel_answers_on_the_app_model() {
+        let (mut app, ctx) = demo();
+        app.set_kg(2.2);
+        let r = call(
+            &mut app,
+            &ctx,
+            "stability.heel",
+            json!({ "weights": [{"mass_t": 0.5, "x": 4.0, "y": 0.8, "z": 1.5}], "heel": 10.0 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let res = &r["result"];
+        assert_eq!(res["backend"], "app", "{res}");
+        assert_eq!(res["equilibrium"]["kind"], "stable", "{res}");
+        assert!(res["equilibrium"]["state"]["heel_deg"].as_f64().unwrap() > 0.0);
+        assert!((res["start"]["kg_m"].as_f64().unwrap() - 2.2).abs() < 1e-12);
+        assert!(res["at_heel"]["lever_m"].is_f64(), "{res}");
+        let dirty = app.is_dirty();
+        let r = call(
+            &mut app,
+            &ctx,
+            "stability.heel",
+            json!({ "weights": [{"mass_t": 0.0, "x": 4.0, "y": 0.8, "z": 1.5}] }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(app.is_dirty(), dirty, "read-only");
     }
 }

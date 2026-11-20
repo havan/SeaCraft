@@ -205,6 +205,172 @@ impl Equilibrium {
     }
 }
 
+impl Equilibrium {
+    /// The outcome in words, as the CLI prints it and the view reads it:
+    /// "heels 12.0° to starboard, trim +0.003 m, draft 1.050 m", "lolls 14.2°
+    /// to either side", "capsizes: …" or "cannot float 1200.0 t" (`displacement_t`
+    /// is only used by the last).
+    pub fn describe(&self, displacement_t: f64) -> String {
+        match self {
+            Self::Stable { state } => {
+                let mut words = heel_words(state.heel_deg);
+                if let Some(t) = state.trim_m {
+                    words.push_str(&format!(", trim {t:+.3} m"));
+                }
+                if let Some(d) = state.draft {
+                    words.push_str(&format!(", draft {d:.3} m"));
+                }
+                words
+            }
+            Self::Loll { starboard, .. } => {
+                format!("lolls {:.1}° to either side", starboard.heel_deg.abs())
+            }
+            Self::Capsizes { .. } => "capsizes: no stable equilibrium within ±90°".to_string(),
+            Self::CannotFloat => format!("cannot float {displacement_t:.1} t"),
+        }
+    }
+}
+
+/// "heels 12.0° to starboard", "heels 3.0° to port" or "floats upright" (to
+/// the printed tenth of a degree).
+pub fn heel_words(heel_deg: f64) -> String {
+    if heel_deg.abs() < 0.05 {
+        "floats upright".to_string()
+    } else {
+        let side = if heel_deg > 0.0 { "starboard" } else { "port" };
+        format!("heels {:.1}° to {side}", heel_deg.abs())
+    }
+}
+
+const WEIGHT_FORM: &str =
+    "a weight is t@x,y,z: tonnes at model x, y, z in metres, e.g. 2.0@5,1,1.6";
+
+/// Read a weight written `t@x,y,z` (tonnes at a model point, metres). The
+/// mass must be positive and every number finite.
+pub fn parse_weight(text: &str) -> Result<WeightItem, String> {
+    let bad = || format!("{WEIGHT_FORM}; got `{text}`");
+    let (mass, at) = text.split_once('@').ok_or_else(bad)?;
+    let mass: f64 = mass.trim().parse().map_err(|_| bad())?;
+    let xyz: Vec<f64> = at
+        .split(',')
+        .map(|n| n.trim().parse::<f64>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| bad())?;
+    let [x, y, z] = xyz[..] else {
+        return Err(bad());
+    };
+    if !(mass.is_finite() && mass > 0.0) || ![x, y, z].iter().all(|n| n.is_finite()) {
+        return Err(bad());
+    }
+    Ok(WeightItem {
+        name: String::new(),
+        mass_t: mass,
+        x,
+        y,
+        z,
+    })
+}
+
+/// Read trial weights from JSON: an array of `{mass_t, x, y, z, name?}`.
+/// Unnamed weights are called "Weight N" (1-based).
+pub fn weights_from_json(v: &serde_json::Value) -> Result<Vec<WeightItem>, String> {
+    let items = v
+        .as_array()
+        .ok_or("weights must be an array of {mass_t, x, y, z, name?}")?;
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let num = |k: &str| -> Result<f64, String> {
+                w.get(k)
+                    .and_then(|n| n.as_f64())
+                    .filter(|n| n.is_finite())
+                    .ok_or_else(|| format!("weights[{i}]: `{k}` must be a finite number"))
+            };
+            let mass_t = num("mass_t")?;
+            if mass_t <= 0.0 {
+                return Err(format!("weights[{i}]: `mass_t` must be positive tonnes"));
+            }
+            let name = match w.get("name").and_then(|n| n.as_str()) {
+                Some(n) if !n.trim().is_empty() => n.to_string(),
+                _ => format!("Weight {}", i + 1),
+            };
+            Ok(WeightItem {
+                name,
+                mass_t,
+                x: num("x")?,
+                y: num("y")?,
+                z: num("z")?,
+            })
+        })
+        .collect()
+}
+
+/// A mass condition as a reader wants it: Δ, KG above the keel, LCG, TCG.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConditionSummary {
+    pub displacement_t: f64,
+    pub kg_m: f64,
+    pub lcg_m: f64,
+    pub tcg_m: f64,
+    /// The KG is the dock's estimate.
+    pub kg_estimate: bool,
+}
+
+impl ConditionSummary {
+    pub fn of(mass: &MassCondition, keel: f64) -> Self {
+        Self {
+            displacement_t: mass.displacement_t,
+            kg_m: mass.kg(keel),
+            lcg_m: mass.g.x,
+            tcg_m: mass.tcg(),
+            kg_estimate: mass.kg_estimate,
+        }
+    }
+}
+
+/// What `seacraft heel`, the MCP tool `heel_equilibrium` and the control
+/// method `stability.heel` answer.
+#[derive(Debug, Clone, Serialize)]
+pub struct HeelReport {
+    /// The condition before the trial weights.
+    pub start: ConditionSummary,
+    pub weights: Vec<WeightItem>,
+    /// The start plus the weights.
+    pub condition: ConditionSummary,
+    /// Always true: the hull trims freely at every heel.
+    pub free_to_trim: bool,
+    pub equilibrium: Equilibrium,
+    /// [`Equilibrium::describe`].
+    pub summary: String,
+    /// The state at the requested heel, when one was asked for and floats.
+    pub at_heel: Option<HeelState>,
+    /// Why the start is doubtful (a loading condition's warnings).
+    pub warnings: Vec<String>,
+}
+
+/// The equilibrium of `start` plus `weights`, and the state at `at_heel`.
+pub fn report(
+    hull: &Hull,
+    base: &HydroOptions,
+    start: &MassCondition,
+    weights: &[WeightItem],
+    at_heel: Option<f64>,
+) -> HeelReport {
+    let mass = start.with_weights(weights);
+    let equilibrium = equilibrium(hull, &mass, base, None);
+    HeelReport {
+        start: ConditionSummary::of(start, hull.keel),
+        weights: weights.to_vec(),
+        condition: ConditionSummary::of(&mass, hull.keel),
+        free_to_trim: true,
+        summary: equilibrium.describe(mass.displacement_t),
+        equilibrium,
+        at_heel: at_heel.and_then(|h| heel_state(hull, &mass, h, base, 0.0)),
+        warnings: Vec::new(),
+    }
+}
+
 /// The heel tolerance the equilibrium is refined to, degrees.
 pub const EQUILIBRIUM_TOL_DEG: f64 = 0.005;
 
@@ -489,5 +655,85 @@ mod tests {
             10.0 * full * base.water_density * base.appendage_coefficient / 1000.0;
         assert!(heel_state(&hull, &mass, 0.0, &base, 0.0).is_none());
         assert!(heel_state(&hull, &mass, 30.0, &base, 0.0).is_none());
+    }
+    #[test]
+    fn a_weight_reads_as_tonnes_at_a_point() {
+        let w = parse_weight("2.0@5,1,-1.6").unwrap();
+        assert_eq!((w.mass_t, w.x, w.y, w.z), (2.0, 5.0, 1.0, -1.6));
+        let w = parse_weight(" 0.5 @ 4 , -0.8 , 1.5 ").unwrap();
+        assert_eq!((w.mass_t, w.x, w.y, w.z), (0.5, 4.0, -0.8, 1.5));
+        for bad in [
+            "2@5,1",
+            "x@1,2,3",
+            "2",
+            "2@1,2,3,4",
+            "0@1,2,3",
+            "-1@1,2,3",
+            "inf@1,2,3",
+            "2@1,nan,3",
+        ] {
+            let e = parse_weight(bad).unwrap_err();
+            assert!(e.contains("t@x,y,z"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn weights_read_from_json() {
+        let v = serde_json::json!([
+            {"mass_t": 2.0, "x": 5.0, "y": 1.0, "z": 1.6},
+            {"mass_t": 0.5, "x": 4.0, "y": 0.0, "z": 3.0, "name": "Mast"},
+        ]);
+        let w = weights_from_json(&v).unwrap();
+        assert_eq!(w.len(), 2);
+        assert_eq!(w[0].name, "Weight 1");
+        assert_eq!(w[1].name, "Mast");
+        assert_eq!((w[1].mass_t, w[1].z), (0.5, 3.0));
+        for bad in [
+            serde_json::json!({"mass_t": 1.0}),
+            serde_json::json!([{"mass_t": 1.0, "x": 0.0, "y": 0.0}]),
+            serde_json::json!([{"mass_t": -1.0, "x": 0.0, "y": 0.0, "z": 0.0}]),
+            serde_json::json!([{"mass_t": "2", "x": 0.0, "y": 0.0, "z": 0.0}]),
+        ] {
+            assert!(weights_from_json(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_outcome_reads_in_words() {
+        let (_, hull, base, kg) = hulls().into_iter().next().unwrap();
+        let mass = MassCondition::bare(&hull, &base, kg, None).unwrap();
+        let mut s = heel_state(&hull, &mass, 12.04, &base, 0.0).unwrap();
+        s.trim_m = Some(0.0031);
+        s.draft = Some(1.05);
+        let words = Equilibrium::Stable { state: s.clone() }.describe(42.0);
+        assert_eq!(
+            words,
+            "heels 12.0° to starboard, trim +0.003 m, draft 1.050 m"
+        );
+        s.heel_deg = -3.0;
+        let words = Equilibrium::Stable { state: s.clone() }.describe(42.0);
+        assert!(words.starts_with("heels 3.0° to port"), "{words}");
+        s.heel_deg = 0.001;
+        let words = Equilibrium::Stable { state: s.clone() }.describe(42.0);
+        assert!(words.starts_with("floats upright"), "{words}");
+        let mut p = s.clone();
+        p.heel_deg = -14.2;
+        s.heel_deg = 14.2;
+        let loll = Equilibrium::Loll {
+            port: p,
+            starboard: s,
+        };
+        assert_eq!(loll.describe(42.0), "lolls 14.2° to either side");
+        assert_eq!(
+            Equilibrium::Capsizes {
+                last_heel_deg: 90.0
+            }
+            .describe(42.0),
+            "capsizes: no stable equilibrium within ±90°"
+        );
+        assert_eq!(
+            Equilibrium::CannotFloat.describe(1200.0),
+            "cannot float 1200.0 t"
+        );
     }
 }
