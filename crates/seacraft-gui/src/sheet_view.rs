@@ -11,9 +11,20 @@ use crate::theme;
 /// Space between two sheets, metres.
 pub const GAP_M: f64 = 0.1;
 /// The closest zoom, pixels per metre.
-pub const MAX_ZOOM: f32 = 2000.0;
-/// A label smaller than this, in pixels, is not drawn.
-const MIN_LABEL_PX: f32 = 6.0;
+pub const MAX_ZOOM: f32 = 20_000.0;
+/// Screen font size for titles and overall dimensions, points.
+pub const PRIMARY_LABEL_PX: f32 = theme::BODY_SIZE;
+/// Screen font size for offsets, seam lengths, stations and notes, points.
+pub const DETAIL_LABEL_PX: f32 = theme::CAPTION_SIZE;
+/// Minimum gap between neighbouring label bounding boxes on screen, points.
+const LABEL_PAD_PX: f32 = 1.5;
+/// Extra hit margin around a label for brightening on hover, points.
+const HOVER_PAD_PX: f32 = 6.0;
+/// Two labels whose anchors lie within this many screen points are treated as a pair (e.g. a
+/// seam name and its length) so the second shifts clear of the first instead of being dropped.
+const PAIR_DIST_PX: f32 = 24.0;
+/// Minimum screen clearance between an outside overall dimension label and the cut outline.
+const OUTSIDE_CLEAR_MARGIN_PX: f32 = 4.0;
 /// Room left round a framed sheet, pixels.
 const FRAME_MARGIN: f32 = 16.0;
 
@@ -172,10 +183,89 @@ impl SheetView {
     }
 }
 
+/// What a sheet's cut outline covers in its own metres, if any.
+fn cut_bounds(sheet: &Sheet) -> Option<[f64; 4]> {
+    sheet
+        .paths
+        .iter()
+        .filter(|p| p.kind == PathKind::Cut)
+        .flat_map(|p| p.points.iter().copied())
+        .filter(|(x, y)| x.is_finite() && y.is_finite())
+        .fold(None, |b, (x, y)| {
+            Some(match b {
+                None => [x, y, x, y],
+                Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+            })
+        })
+}
+
+fn label_px(height_mm: f64) -> f32 {
+    if height_mm >= 4.0 {
+        PRIMARY_LABEL_PX
+    } else {
+        DETAIL_LABEL_PX
+    }
+}
+
+/// Priority when overview labels compete for screen space: titles and overall dimensions first,
+/// then seam lengths / stations / split marks, then offsets and secondary notes.
+fn label_tier(label: &seacraft_core::sheet::Label) -> u8 {
+    if label.height_mm >= 4.0 {
+        return 0;
+    }
+    let t = label.text.as_str();
+    if t.ends_with(" mm")
+        || t.ends_with('"')
+        || t.ends_with(')')
+        || t.starts_with("St ")
+        || (t.len() == 1 && t.chars().all(|c| c.is_ascii_alphabetic()))
+    {
+        1
+    } else {
+        2
+    }
+}
+
+fn label_corners(pos: egui::Pos2, size: egui::Vec2, angle: f32) -> [egui::Pos2; 4] {
+    let rot = egui::emath::Rot2::from_angle(angle);
+    [
+        pos,
+        pos + rot * egui::vec2(size.x, 0.0),
+        pos + rot * size,
+        pos + rot * egui::vec2(0.0, size.y),
+    ]
+}
+
+fn label_aabb(pos: egui::Pos2, size: egui::Vec2, angle: f32) -> egui::Rect {
+    egui::Rect::from_points(&label_corners(pos, size, angle))
+}
+
+fn label_hovered(hover: Option<egui::Pos2>, pos: egui::Pos2, size: egui::Vec2, angle: f32) -> bool {
+    let Some(p) = hover else {
+        return false;
+    };
+    let local = (egui::emath::Rot2::from_angle(-angle) * (p - pos)).to_pos2();
+    egui::Rect::from_min_size(egui::Pos2::ZERO, size)
+        .expand(HOVER_PAD_PX)
+        .contains(local)
+}
+
+struct PlacedLabel {
+    galley: std::sync::Arc<egui::Galley>,
+    pos: egui::Pos2,
+    angle: f32,
+    size: egui::Vec2,
+    aabb: egui::Rect,
+    anchor_screen: egui::Pos2,
+    text: String,
+    px: f32,
+    hovered: bool,
+}
+
 /// Draws `sheets` in the space left in `ui`, tinting those `not_flat` marks and veiling the
-/// whole when `faded` (an out-of-date drawing), and returns the sheet clicked, if any. Scroll
-/// zooms about the pointer, dragging pans, a double-click fits all. Screen readers hear
-/// "Drawing: N sheets".
+/// whole when `faded` (an out-of-date drawing), and returns the sheet clicked, if any. Labels are
+/// drawn at fixed screen sizes, dimmed at rest and highlighted when hovered. Scroll zooms about
+/// the pointer, dragging pans, a double-click fits all. Screen readers hear "Drawing: N sheets".
 pub fn show(
     ui: &mut egui::Ui,
     sheets: &[Sheet],
@@ -207,7 +297,8 @@ pub fn show(
         view.fit_all();
     }
     view.settle(rect, &bounds);
-    if let Some(hover) = response.hover_pos() {
+    let hover_pos = response.hover_pos();
+    if let Some(hover) = hover_pos {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
             view.zoom_by((scroll * 0.0015).exp(), hover, rect, &bounds);
@@ -227,6 +318,7 @@ pub fn show(
         );
         painter.rect_filled(r.expand(4.0), 2.0, theme::PATTERN_NOT_FLAT);
     }
+    let mut placed_labels: Vec<PlacedLabel> = Vec::new();
     for (placed, sheet) in stacked.iter().zip(sheets) {
         let Some(((dx, dy), _)) = placed else {
             continue;
@@ -260,16 +352,25 @@ pub fn show(
                 }
             }
         }
-        for label in &sheet.labels {
-            let px = (label.height_mm / 1000.0) as f32 * view.zoom;
-            if px.is_nan() || px < MIN_LABEL_PX || label.text.trim().is_empty() {
+        let cb = cut_bounds(sheet);
+        let mut order: Vec<usize> = (0..sheet.labels.len()).collect();
+        order.sort_by_key(|&i| label_tier(&sheet.labels[i]));
+        for i in order {
+            let label = &sheet.labels[i];
+            if !label.height_mm.is_finite()
+                || label.height_mm <= 0.0
+                || label.text.trim().is_empty()
+            {
                 continue;
             }
+            let tier = label_tier(label);
+            let px = label_px(label.height_mm);
             let galley = painter.layout_no_wrap(
                 label.text.clone(),
                 egui::FontId::proportional(px),
-                theme::PATTERN_LABEL,
+                theme::PATTERN_LABEL_DIM,
             );
+            let size = galley.size();
             let along = match label.anchor {
                 Anchor::Start => 0.0,
                 Anchor::Middle => 0.5,
@@ -278,10 +379,103 @@ pub fn show(
             // `at` is the text's baseline point; the galley is placed by its top-left corner and
             // turned about it (anticlockwise on paper is clockwise on a y-down screen).
             let angle = -(label.angle_deg.to_radians() as f32);
-            let offset = egui::vec2(-along * galley.size().x, -0.8 * galley.size().y);
-            let pos = at(label.at) + egui::emath::Rot2::from_angle(angle) * offset;
+            let rot = egui::emath::Rot2::from_angle(angle);
+            let anchor_screen = at(label.at);
+            let mut y_off = -0.8 * size.y;
+            if let Some(cb) = cb {
+                let below_cut = label.at.1 < cb[1] && label.angle_deg.abs() < 15.0;
+                let right_of_cut =
+                    label.at.0 > cb[2] && (label.angle_deg.abs() - 90.0).abs() < 15.0;
+                let gap_px = if below_cut {
+                    anchor_screen.y - at((label.at.0, cb[1])).y
+                } else if right_of_cut {
+                    anchor_screen.x - at((cb[2], label.at.1)).x
+                } else {
+                    f32::INFINITY
+                };
+                if gap_px < size.y + OUTSIDE_CLEAR_MARGIN_PX {
+                    y_off = 2.0;
+                }
+            }
+            let pos = anchor_screen + rot * egui::vec2(-along * size.x, y_off);
+            let aabb = label_aabb(pos, size, angle);
+            let mut chosen = Some((pos, aabb));
+            if let Some(hit) = placed_labels
+                .iter()
+                .find(|e| e.aabb.expand(LABEL_PAD_PX).intersects(aabb))
+            {
+                let close_pair = (anchor_screen - hit.anchor_screen).length() <= PAIR_DIST_PX
+                    && (angle - hit.angle).abs() < 0.2;
+                if close_pair {
+                    let delta = anchor_screen - hit.anchor_screen;
+                    let dir = if delta.length_sq() > 1e-6 {
+                        delta.normalized()
+                    } else {
+                        rot * egui::vec2(0.0, 1.0)
+                    };
+                    let shifted = pos + dir * (hit.size.y + 2.0);
+                    let shifted_aabb = label_aabb(shifted, size, angle);
+                    if !placed_labels
+                        .iter()
+                        .any(|e| e.aabb.expand(LABEL_PAD_PX).intersects(shifted_aabb))
+                    {
+                        chosen = Some((shifted, shifted_aabb));
+                    } else if tier > 0 {
+                        chosen = None;
+                    }
+                } else if tier > 0 {
+                    chosen = None;
+                }
+            }
+            let Some((pos, aabb)) = chosen else {
+                continue;
+            };
+            let hovered = label_hovered(hover_pos, pos, size, angle);
+            placed_labels.push(PlacedLabel {
+                galley,
+                pos,
+                angle,
+                size,
+                aabb,
+                anchor_screen,
+                text: label.text.clone(),
+                px,
+                hovered,
+            });
+        }
+    }
+
+    for pl in &placed_labels {
+        if !pl.hovered {
             painter.add(
-                egui::epaint::TextShape::new(pos, galley, theme::PATTERN_LABEL).with_angle(angle),
+                egui::epaint::TextShape::new(pl.pos, pl.galley.clone(), theme::PATTERN_LABEL_DIM)
+                    .with_angle(pl.angle),
+            );
+        }
+    }
+    for pl in placed_labels {
+        if pl.hovered {
+            let rot = egui::emath::Rot2::from_angle(pl.angle);
+            let box_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, pl.size).expand(2.0);
+            let bg_pts = vec![
+                pl.pos + rot * box_rect.left_top().to_vec2(),
+                pl.pos + rot * box_rect.right_top().to_vec2(),
+                pl.pos + rot * box_rect.right_bottom().to_vec2(),
+                pl.pos + rot * box_rect.left_bottom().to_vec2(),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                bg_pts,
+                theme::HUD_BACKING,
+                egui::Stroke::NONE,
+            ));
+            let galley = painter.layout_no_wrap(
+                pl.text,
+                egui::FontId::proportional(pl.px),
+                theme::PATTERN_LABEL_HOVER,
+            );
+            painter.add(
+                egui::epaint::TextShape::new(pl.pos, galley, theme::PATTERN_LABEL_HOVER)
+                    .with_angle(pl.angle),
             );
         }
     }
@@ -466,5 +660,199 @@ mod tests {
             "{colours:?}"
         );
         assert!(last(theme::PATTERN_MARK).unwrap() < cut, "{colours:?}");
+    }
+
+    struct DrawnText {
+        text: String,
+        size_px: f32,
+        colour: egui::Color32,
+        bounds: egui::Rect,
+        centre: egui::Pos2,
+    }
+
+    fn collect_shapes(shape: &egui::Shape, texts: &mut Vec<DrawnText>, has_hud_backing: &mut bool) {
+        match shape {
+            egui::Shape::Vec(v) => v
+                .iter()
+                .for_each(|s| collect_shapes(s, texts, has_hud_backing)),
+            egui::Shape::Rect(r) if r.fill == theme::HUD_BACKING => *has_hud_backing = true,
+            egui::Shape::Path(p) if p.fill == theme::HUD_BACKING => *has_hud_backing = true,
+            egui::Shape::Text(t) => {
+                let section = t.galley.job.sections.first();
+                let size_px = section.map_or(0.0, |s| s.format.font_id.size);
+                let colour = section.map_or(t.fallback_color, |s| s.format.color);
+                let sz = t.galley.size();
+                let rot = egui::emath::Rot2::from_angle(t.angle);
+                let corners = [
+                    t.pos,
+                    t.pos + rot * egui::vec2(sz.x, 0.0),
+                    t.pos + rot * sz,
+                    t.pos + rot * egui::vec2(0.0, sz.y),
+                ];
+                let bounds = egui::Rect::from_points(&corners);
+                texts.push(DrawnText {
+                    text: t.galley.text().to_owned(),
+                    size_px,
+                    colour,
+                    bounds,
+                    centre: t.pos + rot * (0.5 * sz),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn run_sheet_frame(
+        ctx: &egui::Context,
+        sheets: &[Sheet],
+        view: &mut SheetView,
+        events: Vec<egui::Event>,
+    ) -> (Vec<DrawnText>, bool) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let not_flat = vec![false; sheets.len()];
+        let mut out = ctx.run_ui(input, |ui| {
+            show(ui, sheets, &not_flat, false, view);
+        });
+        out.textures_delta.clear();
+        let mut texts = Vec::new();
+        let mut has_hud_backing = false;
+        for clipped in &out.shapes {
+            collect_shapes(&clipped.shape, &mut texts, &mut has_hud_backing);
+        }
+        (texts, has_hud_backing)
+    }
+
+    fn skiff_like_sheet() -> Sheet {
+        let mut s = rect_sheet("Bottom", 4.3, 1.1);
+        s.labels.push(seacraft_core::sheet::Label {
+            at: (2.15, -0.038),
+            height_mm: 5.0,
+            angle_deg: 0.0,
+            anchor: Anchor::Middle,
+            text: "4350 mm".into(),
+        });
+        s.labels.push(seacraft_core::sheet::Label {
+            at: (1.0, 0.002),
+            height_mm: 3.0,
+            angle_deg: 90.0,
+            anchor: Anchor::Start,
+            text: "565".into(),
+        });
+        s
+    }
+
+    #[test]
+    fn dimensions_are_visible_at_fit_all_zoom_and_keep_constant_size() {
+        let ctx = egui::Context::default();
+        let sheets = [skiff_like_sheet()];
+        let mut view = SheetView::default();
+        let _ = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let (texts, _) = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let len = texts.iter().find(|t| t.text == "4350 mm").expect("overall");
+        let off = texts.iter().find(|t| t.text == "565").expect("offset");
+        assert_eq!(len.size_px, PRIMARY_LABEL_PX);
+        assert_eq!(off.size_px, DETAIL_LABEL_PX);
+
+        let bounds = placed_bounds(&sheets);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+        view.zoom_by(10.0, rect.center(), rect, &bounds);
+        let (zoomed, _) = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let len_z = zoomed
+            .iter()
+            .find(|t| t.text == "4350 mm")
+            .expect("overall zoomed");
+        assert_eq!(len_z.size_px, PRIMARY_LABEL_PX);
+        if let Some(off_z) = zoomed.iter().find(|t| t.text == "565") {
+            assert_eq!(off_z.size_px, DETAIL_LABEL_PX);
+        }
+    }
+
+    #[test]
+    fn labels_are_dimmed_at_rest_and_brighten_when_hovered() {
+        let ctx = egui::Context::default();
+        let sheets = [skiff_like_sheet()];
+        let mut view = SheetView::default();
+        let _ = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let (rest, backing) = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        assert!(!backing);
+        let len = rest.iter().find(|t| t.text == "4350 mm").expect("overall");
+        let off = rest.iter().find(|t| t.text == "565").expect("offset");
+        assert_eq!(len.colour, theme::PATTERN_LABEL_DIM);
+        assert_eq!(off.colour, theme::PATTERN_LABEL_DIM);
+
+        let pointer = len.centre;
+        let (hovered, backing) = run_sheet_frame(
+            &ctx,
+            &sheets,
+            &mut view,
+            vec![egui::Event::PointerMoved(pointer)],
+        );
+        assert!(backing, "hovered label gets HUD backing");
+        let len_h = hovered
+            .iter()
+            .find(|t| t.text == "4350 mm")
+            .expect("overall hovered");
+        let off_h = hovered
+            .iter()
+            .find(|t| t.text == "565")
+            .expect("offset still dimmed");
+        assert_eq!(len_h.colour, theme::PATTERN_LABEL_HOVER);
+        assert_eq!(off_h.colour, theme::PATTERN_LABEL_DIM);
+    }
+
+    #[test]
+    fn overlapping_labels_do_not_stack_on_top_of_each_other() {
+        let ctx = egui::Context::default();
+        let mut s = rect_sheet("Bottom", 4.3, 1.1);
+        s.labels.push(seacraft_core::sheet::Label {
+            at: (2.15, 1.088),
+            height_mm: 3.0,
+            angle_deg: 0.0,
+            anchor: Anchor::Middle,
+            text: "Stitch to Side".into(),
+        });
+        s.labels.push(seacraft_core::sheet::Label {
+            at: (2.15, 1.0835),
+            height_mm: 3.0,
+            angle_deg: 0.0,
+            anchor: Anchor::Middle,
+            text: "4398 mm".into(),
+        });
+        let sheets = [s];
+        let mut view = SheetView::default();
+        let _ = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let (texts, _) = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let seam = texts
+            .iter()
+            .find(|t| t.text == "Stitch to Side")
+            .expect("seam label");
+        let len = texts
+            .iter()
+            .find(|t| t.text == "4398 mm")
+            .expect("seam length");
+        assert!(
+            !seam.bounds.intersects(len.bounds),
+            "{:?} overlaps {:?}",
+            seam.bounds,
+            len.bounds
+        );
+    }
+
+    #[test]
+    fn zoom_allows_close_inspection() {
+        let sheets = [rect_sheet("A", 6.0, 1.0)];
+        let bounds = placed_bounds(&sheets);
+        let mut v = SheetView::default();
+        v.fit_all();
+        v.settle(screen(), &bounds);
+        v.zoom_by(1e6, screen().center(), screen(), &bounds);
+        assert!(v.zoom >= 10_000.0, "zoom capped too low: {}", v.zoom);
     }
 }

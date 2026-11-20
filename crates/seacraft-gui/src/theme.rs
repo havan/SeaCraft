@@ -148,6 +148,12 @@ pub const PATTERN_CUT: Color32 = Color32::from_rgb(0xe6, 0xec, 0xf2);
 pub const PATTERN_MARK: Color32 = Color32::from_rgb(0x7d, 0xb4, 0xe6);
 pub const PATTERN_REFERENCE: Color32 = Color32::from_rgb(0x6f, 0x7f, 0x90);
 pub const PATTERN_LABEL: Color32 = TEXT_SECONDARY;
+/// Pattern labels at rest: quiet enough that cut lines and marks read first, brightening to
+/// [`PATTERN_LABEL_HOVER`] when the pointer is over them.
+pub const PATTERN_LABEL_DIM: Color32 =
+    Color32::from_rgba_unmultiplied_const(0x8e, 0x9e, 0xae, 0x98);
+/// Pattern label under the pointer: full primary brightness.
+pub const PATTERN_LABEL_HOVER: Color32 = TEXT_PRIMARY;
 /// Over a pattern drawing that is out of date while the new one is measured.
 pub const PATTERN_STALE_VEIL: Color32 =
     Color32::from_rgba_unmultiplied_const(0x0f, 0x14, 0x1b, 0xa0);
