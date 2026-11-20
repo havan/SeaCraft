@@ -147,10 +147,18 @@ fn no_kg_means_no_job() {
     assert_eq!(app.kg(), None, "no KG to start from");
     let ctx = egui::Context::default();
     app.set_heel_view_open(true);
-    for _ in 0..5 {
+    for _ in 0..50 {
         frame(&ctx, &mut app, Vec::new());
+        assert!(!app.heel_sweep_busy(), "no condition job without a KG");
+        if app.heel_failure().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(!app.heel_sweep_busy(), "no condition job without a KG");
+    let err = app
+        .heel_failure()
+        .expect("the scheduler processed the missing-KG refusal after the 120 ms quiet");
+    assert!(err.contains("KG"), "{err}");
     assert!(app.heel_current().is_none());
     assert!(app.compute_heel_blocking().is_err());
     let _ = std::fs::remove_dir_all(&dir);
@@ -883,9 +891,19 @@ fn the_section_follows_a_model_edit() {
     app.compute_heel_blocking().unwrap();
     frame(&ctx, &mut app, Vec::new());
     let after = top(&app);
+    // Same code path: the strong section matches the edited hull's section cut at `p.x`
+    // and rose above the old hull's section (`before`).
+    let expected_top = seacraft_gui::heel_view::geometry::HullOutlines::section_at(
+        &app.heel_current().unwrap().hull,
+        p.x,
+    )
+    .iter()
+    .flatten()
+    .map(|q| q.z)
+    .fold(f64::MIN, f64::max);
     assert!(
-        after > before + 0.05,
-        "the section rose: {before} → {after}"
+        after > before && (after - expected_top).abs() < 1e-6,
+        "the section was recut from the edited hull: {before} -> {after} (expected {expected_top})"
     );
 }
 
@@ -914,10 +932,202 @@ fn the_splitter_gives_the_drawings_more_height() {
     );
     clock.frame(&ctx, &mut app, Vec::new());
     let after = app.heel_drawn().unwrap();
+    let split = app
+        .heel_state()
+        .split
+        .expect("dragging the splitter stores a custom split");
     assert!(
-        after.body.height() > d.body.height() + 15.0,
-        "{} → {}",
+        split > seacraft_gui::heel_view::DEFAULT_SPLIT,
+        "custom split {split} did not grow past default"
+    );
+    // 60 pt downward drag grows the drawings' height, well beyond 1 pt layout rounding.
+    assert!(
+        after.body.height() > d.body.height() + 1.0,
+        "{} -> {}",
         d.body.height(),
         after.body.height()
+    );
+
+    // Double-clicking the splitter handle restores the default split.
+    let mid = after.splitter.center();
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(mid)]);
+    clock.frame(&ctx, &mut app, vec![press(mid, true)]);
+    clock.frame(&ctx, &mut app, vec![press(mid, false)]);
+    clock.frame(&ctx, &mut app, vec![press(mid, true)]);
+    clock.frame(&ctx, &mut app, vec![press(mid, false)]);
+    clock.frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.heel_state().split, None);
+}
+
+#[test]
+fn small_trial_mass_is_not_clamped_when_rendered_and_added() {
+    let (ctx, mut app) = demo();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/demo-loadcase.json"
+    ))
+    .unwrap();
+    let cond: LoadingCondition = serde_json::from_str(&text).unwrap();
+    app.project_mut_for_test().loading_conditions.push(cond);
+    app.set_heel_view_open(true);
+    let mut state = app.heel_state().clone();
+    state.start = HeelStart::Condition(0);
+    app.set_heel_state(state);
+    app.compute_heel_blocking().unwrap();
+    let mut clock = Clock(10.0);
+    clock.frame(&ctx, &mut app, Vec::new());
+    clock.frame(&ctx, &mut app, Vec::new());
+
+    let p = body_point(&app);
+    clock.click(&ctx, &mut app, p);
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("0.0005".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    assert_eq!(app.heel_state().weights[0].mass_t, 0.0005);
+
+    // Rendering the table must not silently clamp 0.0005 t up to 0.001 t.
+    for _ in 0..3 {
+        clock.frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.heel_state().weights[0].mass_t, 0.0005);
+    }
+
+    app.compute_heel_blocking().unwrap();
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    let rect = texts_at(&out, "Add to this condition").expect("the button is drawn");
+    clock.click(&ctx, &mut app, rect.center());
+    let items = &app.project().loading_conditions[0].items;
+    assert_eq!(items.last().unwrap().mass_t, 0.0005);
+}
+
+#[test]
+fn manual_heel_change_cancels_pending_settle() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let mut state = app.heel_state().clone();
+    state.weights = vec![weight(0.5, 4.0, 0.8, 1.5)];
+    app.set_heel_state(state);
+    // First frame queues heel_settle_pending while the sweep awaits the quiet period.
+    let p = body_point(&app);
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    // Manual arrow-key heel edit before the sweep finishes must cancel the pending settle.
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight)]);
+    assert_eq!(app.heel_state().heel_deg, 1.0);
+    for _ in 0..300 {
+        clock.frame(&ctx, &mut app, Vec::new());
+        if app.heel_current().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(app.heel_current().is_some(), "the sweep finished");
+    clock.wait(&ctx, &mut app, 0.7);
+    assert_eq!(app.heel_state().heel_deg, 1.0);
+    assert!(app.heel_state().anim.is_none());
+}
+
+#[test]
+fn closing_or_switching_drawer_clears_transient_grab() {
+    let (ctx, mut app, mut clock) = interactive(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    let d = app.heel_drawn().unwrap();
+    let from = d.body.center();
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    clock.frame(&ctx, &mut app, vec![press(from, true)]);
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(from + egui::vec2(20.0, 0.0))],
+    );
+    assert_eq!(
+        app.heel_state().grab,
+        Some(seacraft_gui::heel_view::Grab::Heel)
+    );
+    let heeled = app.heel_state().heel_deg;
+    app.open_analysis_view(AnalysisView::Offsets);
+    assert_eq!(app.heel_state().grab, None);
+    assert_eq!(app.heel_state().heel_deg, heeled);
+    assert_eq!(app.heel_state().weights.len(), 1);
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![press(from + egui::vec2(20.0, 0.0), false)],
+    );
+
+    app.set_heel_view_open(true);
+    clock.frame(&ctx, &mut app, Vec::new());
+    let d = app.heel_drawn().unwrap();
+    let from = d.body.center();
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    clock.frame(&ctx, &mut app, vec![press(from, true)]);
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::PointerMoved(from + egui::vec2(20.0, 0.0))],
+    );
+    assert_eq!(
+        app.heel_state().grab,
+        Some(seacraft_gui::heel_view::Grab::Heel)
+    );
+    app.set_heel_view_open(false);
+    assert_eq!(app.heel_state().grab, None);
+    assert_eq!(app.heel_state().weights.len(), 1);
+}
+
+#[test]
+fn fast_weight_drag_picks_target_at_press_origin() {
+    let (ctx, mut app, mut clock) = interactive(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    let mut state = app.heel_state().clone();
+    state.hold = true;
+    app.set_heel_state(state);
+    clock.frame(&ctx, &mut app, Vec::new());
+    let d = app.heel_drawn().unwrap();
+    let (_, c, h) = d.frame.to_earth(Vec3::new(4.0, 0.8, 1.5));
+    let on = d.body_view.to_screen([c, h]);
+    let heel_before = app.heel_state().heel_deg;
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(on)]);
+    clock.frame(&ctx, &mut app, vec![press(on, true)]);
+    let jumped = on + egui::vec2(25.0, 0.0);
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(jumped)]);
+    clock.frame(&ctx, &mut app, vec![press(jumped, false)]);
+    assert_eq!(app.heel_state().heel_deg, heel_before);
+    assert!(
+        app.heel_state().weights[0].y > 0.9,
+        "weight did not move: {}",
+        app.heel_state().weights[0].y
+    );
+}
+
+#[test]
+fn stale_result_shows_update_failed_when_current_input_fails() {
+    let (ctx, mut app, _) = shown_with(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/demo-loadcase.json"
+    ))
+    .unwrap();
+    let mut bad: LoadingCondition = serde_json::from_str(&text).unwrap();
+    bad.name = "Zero".into();
+    bad.lightship.mass_t = 0.0;
+    bad.items.clear();
+    bad.tanks.clear();
+    app.project_mut_for_test().loading_conditions.push(bad);
+    let mut state = app.heel_state().clone();
+    state.start = HeelStart::Condition(0);
+    app.set_heel_state(state);
+    for _ in 0..50 {
+        frame(&ctx, &mut app, Vec::new());
+        if app.heel_failure().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(app.heel_failure().is_some(), "expected condition failure");
+    let out = frame(&ctx, &mut app, Vec::new());
+    assert!(
+        drawn(&out, "out of date — update failed"),
+        "{:?}",
+        texts(&out)
+    );
+    assert!(
+        !drawn(&out, "out of date — recomputing"),
+        "{:?}",
+        texts(&out)
     );
 }

@@ -8,7 +8,10 @@
 //! [`solve_waterline`] — the solver the GZ curves use — and the
 //! righting lever is measured as the cross curves measure
 //! it, along the water surface across the hull, but to the actual `g`. With
-//! `g` on the centreline the lever *is* the cross curves' GZ, bit for bit.
+//! `g` on the centreline the lever uses the same solved waterplane and
+//! [`righting_lever`] helper as the cross curves' GZ (identical bit for bit when
+//! the solved plane and `g.z` match identically, and agreeing numerically in
+//! general).
 //!
 //! The lever with an off-centre `g` splits into the curve-convention pair:
 //! `lever = GZ − heeling arm`, where `GZ` takes `g` on the centreline and the
@@ -106,9 +109,32 @@ pub struct HeelState {
     /// Trim, metres, positive bow-up; `None` with `draft`.
     pub trim_m: Option<f64>,
     pub displacement_t: f64,
+    /// Whether an open hull's artificial deck lid reaches below this waterplane.
+    pub lid_submerged: bool,
     /// The solved waterplane (`side <= 0` submerged).
     #[serde(skip)]
     pub plane: Plane,
+}
+
+/// Warning emitted when a reported heel state relies on an open hull's artificial lid.
+pub const LID_SUBMERGED_WARNING: &str =
+    "the hull is open (no deck faces) and its open edge is below the \
+    waterline; it is measured closed by a lid, as if the deck were watertight";
+
+/// Hull volume required to float `mass` at `base`'s water density and appendage coefficient.
+fn target_volume(mass: &MassCondition, base: &HydroOptions) -> f64 {
+    mass.displacement_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6))
+}
+
+/// Maximum submerged volume of the closed hull (m³).
+fn hull_max_volume(hull: &Hull) -> f64 {
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let (_, full) = hull.extent_along(up);
+    if !full.is_finite() {
+        return 0.0;
+    }
+    hull.buoyancy_in(&crate::hydro::waterplane_at_offset(up, full + 1.0))
+        .0
 }
 
 /// Float `mass` at `heel_deg`, free to trim, and measure the lever.
@@ -123,8 +149,7 @@ pub fn heel_state(
 ) -> Option<HeelState> {
     // The hull's own volume carries Δ / appendage coefficient, as in the
     // cross curves (same expression, so the same volume bit for bit).
-    let volume =
-        mass.displacement_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6));
+    let volume = target_volume(mass, base);
     let mut cond = StabilityCondition::free_to_trim(mass.kg(hull.keel), mass.g.x);
     cond.trim = trim_hint;
     let wl = solve_waterline(hull, volume, heel_deg, &cond)?;
@@ -147,6 +172,7 @@ pub fn heel_state(
         draft: wl.floating.map(|f| f.draft),
         trim_m: wl.floating.map(|f| f.trim),
         displacement_t: mass.displacement_t,
+        lid_submerged: hull.lid_submerged(&wl.plane),
         plane: wl.plane,
     })
 }
@@ -186,12 +212,15 @@ pub enum Equilibrium {
     Capsizes { last_heel_deg: f64 },
     /// The hull cannot float the displacement at all.
     CannotFloat,
+    /// No equilibrium could be determined (for example an unreachable LCG or a
+    /// solver gap across a crossing).
+    Unresolved { reason: String },
 }
 
 impl Equilibrium {
     /// The heel the hull settles at from the side of `side` (`Loll` takes
-    /// the root on `side`'s sign, starboard for `0`); `None` when it capsizes
-    /// or cannot float.
+    /// the root on `side`'s sign, starboard for `0`); `None` when it capsizes,
+    /// cannot float, or is unresolved.
     pub fn heel_for_side(&self, side: f64) -> Option<f64> {
         match self {
             Self::Stable { state } => Some(state.heel_deg),
@@ -200,7 +229,7 @@ impl Equilibrium {
             } else {
                 starboard.heel_deg
             }),
-            Self::Capsizes { .. } | Self::CannotFloat => None,
+            Self::Capsizes { .. } | Self::CannotFloat | Self::Unresolved { .. } => None,
         }
     }
 }
@@ -209,7 +238,7 @@ impl Equilibrium {
     /// The outcome in words, as the CLI prints it and the view reads it:
     /// "heels 12.0° to starboard, trim +0.003 m, draft 1.050 m", "lolls 14.2°
     /// to either side", "capsizes: …" or "cannot float 1200.0 t" (`displacement_t`
-    /// is only used by the last).
+    /// is only used by `CannotFloat`).
     pub fn describe(&self, displacement_t: f64) -> String {
         match self {
             Self::Stable { state } => {
@@ -222,11 +251,18 @@ impl Equilibrium {
                 }
                 words
             }
-            Self::Loll { starboard, .. } => {
-                format!("lolls {:.1}° to either side", starboard.heel_deg.abs())
+            Self::Loll { port, starboard } => {
+                let p = format!("{:.1}", port.heel_deg.abs());
+                let s = format!("{:.1}", starboard.heel_deg.abs());
+                if p == s {
+                    format!("lolls {s}° to either side")
+                } else {
+                    format!("lolls {p}° to port or {s}° to starboard")
+                }
             }
             Self::Capsizes { .. } => "capsizes: no stable equilibrium within ±90°".to_string(),
             Self::CannotFloat => format!("cannot float {displacement_t:.1} t"),
+            Self::Unresolved { reason } => reason.clone(),
         }
     }
 }
@@ -359,6 +395,20 @@ pub fn report(
 ) -> HeelReport {
     let mass = start.with_weights(weights);
     let equilibrium = equilibrium(hull, &mass, base, None);
+    let at_heel = at_heel.and_then(|h| heel_state(hull, &mass, h, base, 0.0));
+    let eq_lid = match &equilibrium {
+        Equilibrium::Stable { state } => state.lid_submerged,
+        Equilibrium::Loll { port, starboard } => port.lid_submerged || starboard.lid_submerged,
+        Equilibrium::Capsizes { .. }
+        | Equilibrium::CannotFloat
+        | Equilibrium::Unresolved { .. } => false,
+    };
+    let at_lid = at_heel.as_ref().is_some_and(|s| s.lid_submerged);
+    let warnings = if eq_lid || at_lid {
+        vec![LID_SUBMERGED_WARNING.to_string()]
+    } else {
+        Vec::new()
+    };
     HeelReport {
         start: ConditionSummary::of(start, hull.keel),
         weights: weights.to_vec(),
@@ -366,21 +416,63 @@ pub fn report(
         free_to_trim: true,
         summary: equilibrium.describe(mass.displacement_t),
         equilibrium,
-        at_heel: at_heel.and_then(|h| heel_state(hull, &mass, h, base, 0.0)),
-        warnings: Vec::new(),
+        at_heel,
+        warnings,
     }
 }
 
 /// The heel tolerance the equilibrium is refined to, degrees.
 pub const EQUILIBRIUM_TOL_DEG: f64 = 0.005;
 
-/// Below this `|TCG|` (metres) the condition is symmetric: the hull is
-/// upright unless its upright GM is negative, when it lolls.
+/// Below this `|TCG|` (metres) the condition is symmetric when upright fails.
 const SYMMETRIC_TCG_M: f64 = 1e-9;
 
-/// The heel probed either side of upright to tell a stable upright hull from
-/// one with a negative GM, degrees.
-const UPRIGHT_PROBE_DEG: f64 = 0.5;
+/// Below this `|lever_m|` (metres) upright is treated as an equilibrium rather than
+/// carrying a nonzero heeling moment.
+const UPRIGHT_LEVER_M: f64 = 1e-9;
+
+enum SideSearch {
+    Found(HeelState),
+    Upright,
+    Unresolved(String),
+    None,
+}
+
+/// Whether `u` at 0° is locally stable (upright GM >= 0 at its solved waterline).
+fn upright_locally_stable(
+    hull: &Hull,
+    mass: &MassCondition,
+    base: &HydroOptions,
+    u: &HeelState,
+) -> bool {
+    if let (Some(draft), Some(trim)) = (u.draft, u.trim_m) {
+        let mut o = base.clone();
+        o.draft = draft;
+        o.trim = trim;
+        o.heel_deg = 0.0;
+        o.appendage_coefficient = 1.0;
+        o.stations = 0;
+        let h = hull.hydrostatics(&o);
+        if h.waterplane_area_m2 > 0.0 && h.km_transverse.is_finite() {
+            return h.km_transverse - mass.kg(hull.keel) >= 0.0;
+        }
+    }
+    let stbd = heel_state(
+        hull,
+        mass,
+        EQUILIBRIUM_TOL_DEG,
+        base,
+        u.trim_m.unwrap_or(0.0),
+    );
+    let port = heel_state(
+        hull,
+        mass,
+        -EQUILIBRIUM_TOL_DEG,
+        base,
+        u.trim_m.unwrap_or(0.0),
+    );
+    stbd.is_some_and(|s| s.lever_m >= 0.0) && port.is_some_and(|p| p.lever_m <= 0.0)
+}
 
 /// The stable equilibrium of `mass`, large-angle: the root of the lever
 /// nearest upright, on the side the off-centre weight pushes, where a little
@@ -403,87 +495,202 @@ pub fn equilibrium(
             &owned
         }
     };
-    let mut samples: Vec<&HeelState> = sweep.iter().flatten().collect();
-    if samples.is_empty() {
-        return Equilibrium::CannotFloat;
+    if sweep.iter().all(Option::is_none) {
+        let tv = target_volume(mass, base);
+        let mv = hull_max_volume(hull);
+        if !tv.is_finite() || tv <= 0.0 || !mv.is_finite() || mv <= 0.0 || tv > mv {
+            return Equilibrium::CannotFloat;
+        }
+        return Equilibrium::Unresolved {
+            reason: "no free-trim solution found".into(),
+        };
     }
-    samples.sort_by(|a, b| a.heel_deg.total_cmp(&b.heel_deg));
 
-    let tcg = mass.tcg();
-    if tcg.abs() <= SYMMETRIC_TCG_M {
-        let probe = heel_state(hull, mass, UPRIGHT_PROBE_DEG, base, 0.0);
-        if probe.is_some_and(|p| p.lever_m > 0.0) {
-            return match heel_state(hull, mass, 0.0, base, 0.0) {
-                Some(state) => Equilibrium::Stable { state },
-                None => Equilibrium::CannotFloat,
+    let zero_idx = sweep
+        .iter()
+        .position(|o| o.as_ref().is_some_and(|s| s.heel_deg == 0.0));
+    let upright = zero_idx
+        .and_then(|i| sweep[i].clone())
+        .or_else(|| heel_state(hull, mass, 0.0, base, 0.0));
+
+    let side_slots = |side: f64| -> Vec<Option<&HeelState>> {
+        if let Some(zi) = zero_idx {
+            if side > 0.0 {
+                sweep[zi + 1..].iter().map(|o| o.as_ref()).collect()
+            } else {
+                sweep[..zi].iter().rev().map(|o| o.as_ref()).collect()
+            }
+        } else if side > 0.0 {
+            let start = sweep
+                .iter()
+                .rposition(|o| o.as_ref().is_some_and(|s| s.heel_deg < 0.0))
+                .map_or(0, |i| i + 1);
+            sweep[start..].iter().map(|o| o.as_ref()).collect()
+        } else {
+            let end = sweep
+                .iter()
+                .position(|o| o.as_ref().is_some_and(|s| s.heel_deg > 0.0))
+                .unwrap_or(sweep.len());
+            sweep[..end].iter().rev().map(|o| o.as_ref()).collect()
+        }
+    };
+
+    let Some(u) = upright else {
+        if mass.tcg().abs() <= SYMMETRIC_TCG_M {
+            return Equilibrium::Unresolved {
+                reason: "no free-trim solution upright".into(),
             };
         }
-        // The upright sample's lever is rounding noise of either sign: each side's walk starts
-        // from that side's probe instead, so a loll inside the first sample step is bracketed on
-        // both sides rather than on whichever side the noise favours.
-        let side_from = |side: f64| -> Option<HeelState> {
-            let mut walk: Vec<&HeelState> = samples
-                .iter()
-                .copied()
-                .filter(|s| s.heel_deg * side >= UPRIGHT_PROBE_DEG)
-                .collect();
-            let inner = heel_state(hull, mass, side * UPRIGHT_PROBE_DEG, base, 0.0)?;
-            walk.push(&inner);
-            walk.sort_by(|a, b| a.heel_deg.total_cmp(&b.heel_deg));
-            root_on_side(hull, mass, base, &walk, side)
+        let side = mass.tcg().signum();
+        let slots = side_slots(side);
+        if let Some(Some(s1)) = slots.first() {
+            if s1.lever_m * side >= 0.0 {
+                return Equilibrium::Unresolved {
+                    reason: "no free-trim waterline near upright".into(),
+                };
+            }
+        }
+        return match walk_side(hull, mass, base, &slots, side, None) {
+            SideSearch::Found(state) => Equilibrium::Stable { state },
+            SideSearch::Unresolved(reason) => Equilibrium::Unresolved { reason },
+            SideSearch::None | SideSearch::Upright => Equilibrium::Capsizes {
+                last_heel_deg: last_heel(sweep, side),
+            },
         };
-        let stbd = side_from(1.0);
-        let port = side_from(-1.0);
-        return match (port, stbd) {
-            (Some(port), Some(starboard)) => Equilibrium::Loll { port, starboard },
-            (Some(state), None) | (None, Some(state)) => Equilibrium::Stable { state },
-            (None, None) => Equilibrium::Capsizes {
-                last_heel_deg: last_heel(&samples, 1.0),
+    };
+
+    if u.lever_m.abs() > UPRIGHT_LEVER_M {
+        // A positive upright lever rotates towards port (−); negative towards starboard (+).
+        let side = -u.lever_m.signum();
+        let slots = side_slots(side);
+        return match walk_side(hull, mass, base, &slots, side, Some(&u)) {
+            SideSearch::Found(state) => Equilibrium::Stable { state },
+            SideSearch::Unresolved(reason) => Equilibrium::Unresolved { reason },
+            SideSearch::None | SideSearch::Upright => Equilibrium::Capsizes {
+                last_heel_deg: last_heel(sweep, side),
             },
         };
     }
-    let side = tcg.signum();
-    match root_on_side(hull, mass, base, &samples, side) {
-        Some(state) => Equilibrium::Stable { state },
-        None => Equilibrium::Capsizes {
-            last_heel_deg: last_heel(&samples, side),
+
+    if upright_locally_stable(hull, mass, base, &u) {
+        return Equilibrium::Stable { state: u };
+    }
+
+    let loll_on_side = |side: f64| -> SideSearch {
+        let slots = side_slots(side);
+        let Some(&first) = slots.first() else {
+            return SideSearch::Unresolved("no free-trim waterline near upright".into());
+        };
+        let Some(s1) = first else {
+            return SideSearch::Unresolved("no free-trim waterline near upright".into());
+        };
+        if s1.lever_m * side < 0.0 {
+            return walk_side(hull, mass, base, &slots[1..], side, Some(s1));
+        }
+        // The loll root lies inside (0°, s1.heel_deg]: step inward from s1 until the
+        // lever turns unstable, then refine that bracket.
+        let mut outer = s1.clone();
+        let mut h = outer.heel_deg * 0.5;
+        while h.abs() >= 1e-4 {
+            let hint = outer.trim_m.unwrap_or(0.0);
+            let Some(s) = heel_state(hull, mass, h, base, hint) else {
+                return SideSearch::Unresolved("no free-trim waterline near upright".into());
+            };
+            if s.lever_m * side < 0.0 {
+                if outer.lever_m == 0.0 {
+                    return SideSearch::Found(outer);
+                }
+                let (lo, hi) = if side > 0.0 {
+                    (&s, &outer)
+                } else {
+                    (&outer, &s)
+                };
+                return match refine(hull, mass, base, lo, hi) {
+                    Some(state) => SideSearch::Found(state),
+                    None => {
+                        SideSearch::Unresolved("no free-trim waterline while refining loll".into())
+                    }
+                };
+            }
+            outer = s;
+            h *= 0.5;
+        }
+        SideSearch::Upright
+    };
+
+    let stbd = loll_on_side(1.0);
+    let port = loll_on_side(-1.0);
+    match (port, stbd) {
+        (SideSearch::Found(port), SideSearch::Found(starboard)) => {
+            Equilibrium::Loll { port, starboard }
+        }
+        (SideSearch::Unresolved(reason), _) | (_, SideSearch::Unresolved(reason)) => {
+            Equilibrium::Unresolved { reason }
+        }
+        (SideSearch::Found(state), _) | (_, SideSearch::Found(state)) => {
+            Equilibrium::Stable { state }
+        }
+        (SideSearch::Upright, SideSearch::Upright) => Equilibrium::Stable { state: u },
+        _ => Equilibrium::Capsizes {
+            last_heel_deg: last_heel(sweep, 1.0),
         },
     }
 }
 
 /// The furthest heel sampled on `side`.
-fn last_heel(samples: &[&HeelState], side: f64) -> f64 {
-    let heels = samples.iter().map(|s| s.heel_deg * side);
-    heels.fold(0.0, f64::max) * side
+fn last_heel(sweep: &[Option<HeelState>], side: f64) -> f64 {
+    sweep
+        .iter()
+        .flatten()
+        .map(|s| s.heel_deg * side)
+        .fold(0.0, f64::max)
+        * side
 }
 
-/// The first stable root from upright on `side` (+1 starboard, −1 port):
-/// walking the samples away from upright, the first neighbouring pair whose
-/// lever goes from below zero to zero or above as the heel *grows*.
-fn root_on_side(
+/// Walk `slots` away from upright on `side` (+1 starboard, −1 port), preserving `None`
+/// gaps so an unsolved span is never bridged into a crossing.
+fn walk_side(
     hull: &Hull,
     mass: &MassCondition,
     base: &HydroOptions,
-    samples: &[&HeelState],
+    slots: &[Option<&HeelState>],
     side: f64,
-) -> Option<HeelState> {
-    let mut walk: Vec<&HeelState> = samples
-        .iter()
-        .copied()
-        .filter(|s| s.heel_deg * side >= 0.0)
-        .collect();
-    if side < 0.0 {
-        walk.reverse();
-    }
-    walk.windows(2).find_map(|w| {
-        // `lo` and `hi` in heel order, whichever way the walk runs.
-        let (lo, hi) = if side > 0.0 {
-            (w[0], w[1])
-        } else {
-            (w[1], w[0])
+    initial: Option<&HeelState>,
+) -> SideSearch {
+    let mut prev = initial;
+    let mut saw_gap = false;
+    for &slot in slots {
+        let Some(cur) = slot else {
+            if prev.is_some() {
+                saw_gap = true;
+            }
+            continue;
         };
-        (lo.lever_m < 0.0 && hi.lever_m >= 0.0).then(|| refine(hull, mass, base, lo, hi))
-    })
+        if let Some(p) = prev {
+            let exact_zero = cur.lever_m == 0.0 && p.lever_m * side < 0.0;
+            let (lo, hi) = if side > 0.0 { (p, cur) } else { (cur, p) };
+            let bracket = lo.lever_m < 0.0 && hi.lever_m >= 0.0;
+            if exact_zero || bracket {
+                if saw_gap {
+                    return SideSearch::Unresolved(
+                        "no free-trim waterline across the equilibrium crossing".into(),
+                    );
+                }
+                if exact_zero {
+                    return SideSearch::Found(cur.clone());
+                }
+                return match refine(hull, mass, base, lo, hi) {
+                    Some(state) => SideSearch::Found(state),
+                    None => SideSearch::Unresolved(
+                        "no free-trim waterline while refining equilibrium".into(),
+                    ),
+                };
+            }
+        }
+        prev = Some(cur);
+        saw_gap = false;
+    }
+    SideSearch::None
 }
 
 /// Bisect the bracket `lo.lever < 0 <= hi.lever` (in heel order) to
@@ -494,17 +701,15 @@ fn refine(
     base: &HydroOptions,
     lo: &HeelState,
     hi: &HeelState,
-) -> HeelState {
+) -> Option<HeelState> {
     let (mut lo, mut hi) = (lo.clone(), hi.clone());
     if hi.lever_m == 0.0 {
-        return hi;
+        return Some(hi);
     }
     while hi.heel_deg - lo.heel_deg > EQUILIBRIUM_TOL_DEG {
         let mid = 0.5 * (lo.heel_deg + hi.heel_deg);
         let hint = lo.trim_m.or(hi.trim_m).unwrap_or(0.0);
-        let Some(m) = heel_state(hull, mass, mid, base, hint) else {
-            break;
-        };
+        let m = heel_state(hull, mass, mid, base, hint)?;
         if m.lever_m < 0.0 {
             lo = m;
         } else {
@@ -520,7 +725,7 @@ fn refine(
         hi.heel_deg
     };
     let hint = lo.trim_m.or(hi.trim_m).unwrap_or(0.0);
-    heel_state(hull, mass, at, base, hint).unwrap_or(if -lo.lever_m < hi.lever_m { lo } else { hi })
+    heel_state(hull, mass, at, base, hint)
 }
 
 #[cfg(test)]
@@ -734,8 +939,8 @@ mod tests {
         p.heel_deg = -14.2;
         s.heel_deg = 14.2;
         let loll = Equilibrium::Loll {
-            port: p,
-            starboard: s,
+            port: p.clone(),
+            starboard: s.clone(),
         };
         assert_eq!(loll.describe(42.0), "lolls 14.2° to either side");
         assert_eq!(
@@ -749,5 +954,161 @@ mod tests {
             Equilibrium::CannotFloat.describe(1200.0),
             "cannot float 1200.0 t"
         );
+        let mut pa = p.clone();
+        pa.heel_deg = -14.2;
+        s.heel_deg = 16.4;
+        let asym = Equilibrium::Loll {
+            port: pa,
+            starboard: s,
+        };
+        assert_eq!(
+            asym.describe(42.0),
+            "lolls 14.2° to port or 16.4° to starboard"
+        );
+        assert_eq!(
+            Equilibrium::Unresolved {
+                reason: "no free-trim solution found".into()
+            }
+            .describe(42.0),
+            "no free-trim solution found"
+        );
+    }
+
+    fn box_hull(deck: bool, y_shift: f64, lcg: Option<f64>) -> (Hull, HydroOptions, MassCondition) {
+        let (l, b, d) = (10.0, 4.0, 3.0);
+        let mut s = crate::Surface::new();
+        s.layers = vec![crate::Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Default::default()
+        }];
+        s.settings = crate::ProjectSettings {
+            name: "box".into(),
+            length: l,
+            beam: b,
+            draft: 1.0,
+            water_density: 1000.0,
+            appendage_coefficient: 1.0,
+            main_particulars_set: true,
+            ..Default::default()
+        };
+        for (x, y, z) in [
+            (0.0, 0.0, 0.0),
+            (l, 0.0, 0.0),
+            (l, b, 0.0),
+            (0.0, b, 0.0),
+            (0.0, 0.0, d),
+            (l, 0.0, d),
+            (l, b, d),
+            (0.0, b, d),
+        ] {
+            s.add_point(Vec3::new(x, y - b * 0.5 + y_shift, z));
+        }
+        for face in [
+            vec![0, 3, 2, 1],
+            vec![4, 5, 6, 7],
+            vec![0, 1, 5, 4],
+            vec![1, 2, 6, 5],
+            vec![2, 3, 7, 6],
+            vec![3, 0, 4, 7],
+        ] {
+            if !deck && face == [4, 5, 6, 7] {
+                continue;
+            }
+            s.add_face(face, 0);
+        }
+        s.initialize_trace();
+        for edge in &mut s.edges {
+            edge.crease = true;
+        }
+        for point in &mut s.points {
+            point.kind = crate::mesh::VertexKind::Corner;
+        }
+        let sub = level1();
+        let base = HydroOptions::from_surface(&s, sub);
+        let hull = Hull::new(&s, sub);
+        let mass = MassCondition::bare(&hull, &base, 1.6, lcg).unwrap();
+        (hull, base, mass)
+    }
+
+    #[test]
+    fn lid_submerged_warns_only_for_open_hull_with_wet_lid() {
+        let (open, base_o, mass_o) = box_hull(false, 0.0, Some(5.0));
+        let upright = heel_state(&open, &mass_o, 0.0, &base_o, 0.0).unwrap();
+        assert!(!upright.lid_submerged);
+        let at90 = heel_state(&open, &mass_o, 90.0, &base_o, 0.0).unwrap();
+        assert!(at90.lid_submerged);
+        let r_open_up = report(&open, &base_o, &mass_o, &[], Some(0.0));
+        assert!(r_open_up.warnings.is_empty(), "{:?}", r_open_up.warnings);
+        let r_open_90 = report(&open, &base_o, &mass_o, &[], Some(90.0));
+        assert!(
+            r_open_90
+                .warnings
+                .iter()
+                .any(|w| w == LID_SUBMERGED_WARNING),
+            "{:?}",
+            r_open_90.warnings
+        );
+
+        let (closed, base_c, mass_c) = box_hull(true, 0.0, Some(5.0));
+        let c90 = heel_state(&closed, &mass_c, 90.0, &base_c, 0.0).unwrap();
+        assert!(!c90.lid_submerged);
+        let r_closed_90 = report(&closed, &base_c, &mass_c, &[], Some(90.0));
+        assert!(
+            r_closed_90.warnings.is_empty(),
+            "{:?}",
+            r_closed_90.warnings
+        );
+    }
+
+    #[test]
+    fn unreachable_lcg_is_unresolved_not_cannot_float() {
+        let (hull, base, mass) = box_hull(true, 0.0, Some(11.0));
+        let eq = equilibrium(&hull, &mass, &base, None);
+        assert!(
+            matches!(&eq, Equilibrium::Unresolved { reason } if reason.contains("free-trim")),
+            "got {eq:?}"
+        );
+        assert_eq!(eq.heel_for_side(1.0), None);
+    }
+
+    #[test]
+    fn shifted_hull_with_centred_cg_seeks_equilibrium_away_from_upright() {
+        // Box shifted 0.2 m to starboard with G on the model centreline (TCG = 0):
+        // upright has lever +0.2 m, so the hull must heel to port to balance B and G.
+        let (hull, base, mass) = box_hull(true, 0.2, Some(5.0));
+        let eq = equilibrium(&hull, &mass, &base, None);
+        let Equilibrium::Stable { state } = eq else {
+            panic!("expected Stable, got {eq:?}");
+        };
+        assert!(
+            state.heel_deg < -1.0,
+            "expected port heel: {}",
+            state.heel_deg
+        );
+        assert!(state.lever_m.abs() < 1e-3, "lever {}", state.lever_m);
+    }
+
+    #[test]
+    fn sweep_gap_across_crossing_and_failed_refine_stay_unresolved() {
+        let (hull, base, mut mass) = box_hull(true, 0.0, Some(5.0));
+        mass.g.y = 0.05;
+        let full = heel_sweep(&hull, &mass, &sweep_heels(), &base);
+        // Drop samples from +2° to +30° so the crossing near 12° spans an unsolved gap.
+        let gapped: Vec<Option<HeelState>> = full
+            .into_iter()
+            .map(|o| o.filter(|s| !(2.0..=30.0).contains(&s.heel_deg)))
+            .collect();
+        let eq = equilibrium(&hull, &mass, &base, Some(&gapped));
+        assert!(matches!(eq, Equilibrium::Unresolved { .. }), "got {eq:?}");
+
+        // Force refine() to fail its midpoint solve by overloading mass on a synthetic bracket.
+        let lo = heel_state(&hull, &mass, 0.0, &base, 0.0).unwrap();
+        let hi = heel_state(&hull, &mass, 20.0, &base, 0.0).unwrap();
+        let mut heavy = mass;
+        heavy.displacement_t = 500.0;
+        assert!(refine(&hull, &heavy, &base, &lo, &hi).is_none());
     }
 }

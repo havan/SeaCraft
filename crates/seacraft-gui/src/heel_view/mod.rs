@@ -122,6 +122,8 @@ pub enum HeelViewAction {
     None,
     /// The state was edited in place (heel, weights, start): the App re-keys the jobs.
     Changed,
+    /// The user explicitly chose a heel via the slider, arrow keys, or GZ plot.
+    ManualHeel,
     /// The hand left the heel: settle to the equilibrium (unless Hold is on).
     SettleNow,
     /// Append the trial weights to this loading condition.
@@ -232,27 +234,39 @@ pub enum LetGo {
     Capsizes,
 }
 
-/// The sweep's (heel, righting lever) pairs that float, in heel order.
+/// The sweep's (heel, righting lever) pairs in heel order, keeping failed samples as `(NaN, NaN)`
+/// breaks so gaps are never bridged.
 pub fn lever_curve(out: &HeelSweepOut) -> Vec<(f64, f64)> {
     out.sweep
         .iter()
-        .flatten()
-        .map(|s| (s.heel_deg, s.lever_m))
+        .map(|o| match o {
+            Some(s) => (s.heel_deg, s.lever_m),
+            None => (f64::NAN, f64::NAN),
+        })
         .collect()
 }
 
-/// Where the hull goes when let go at `from` on `curve` ((heel, lever) in heel order): it turns
-/// the way its lever pushes it (a positive lever to port) until the lever changes sign. Past the
-/// heel where the lever vanishes it turns over rather than coming back.
+fn finite_point(p: (f64, f64)) -> bool {
+    p.0.is_finite() && p.1.is_finite()
+}
+
+/// Where the hull goes when let go at `from` on `curve` ((heel, lever) in heel order, with
+/// non-finite entries marking gaps): it turns the way its lever pushes it (a positive lever to
+/// port) until the lever changes sign. Past the heel where the lever vanishes it turns over
+/// rather than coming back; across an unsolved gap it stops (`Stays`).
 pub fn let_go(curve: &[(f64, f64)], from: f64) -> LetGo {
     let Some(i) = curve
         .windows(2)
-        .position(|w| w[0].0 <= from && from <= w[1].0)
+        .position(|w| finite_point(w[0]) && finite_point(w[1]) && w[0].0 <= from && from <= w[1].0)
     else {
         return LetGo::Stays;
     };
     let (a, b) = (curve[i], curve[i + 1]);
-    let lever = a.1 + (b.1 - a.1) * (from - a.0) / (b.0 - a.0);
+    let lever = if b.0 == a.0 {
+        a.1
+    } else {
+        a.1 + (b.1 - a.1) * (from - a.0) / (b.0 - a.0)
+    };
     if lever.abs() < 1e-12 {
         return LetGo::Stays;
     }
@@ -263,6 +277,9 @@ pub fn let_go(curve: &[(f64, f64)], from: f64) -> LetGo {
     };
     let mut prev = (from, lever);
     for (h, l) in ahead {
+        if !finite_point((h, l)) {
+            return LetGo::Stays;
+        }
         if h == prev.0 {
             continue;
         }
@@ -272,6 +289,41 @@ pub fn let_go(curve: &[(f64, f64)], from: f64) -> LetGo {
         prev = (h, l);
     }
     LetGo::Capsizes
+}
+
+fn splice_root(curve: &mut Vec<(f64, f64)>, root: f64) {
+    if let Some(i) = curve
+        .windows(2)
+        .position(|w| finite_point(w[0]) && finite_point(w[1]) && w[0].0 < root && root < w[1].0)
+    {
+        curve.insert(i + 1, (root, 0.0));
+    }
+}
+
+/// Where the hull goes when let go at `from` for a computed sweep and equilibrium: splices the
+/// solved equilibrium root(s) into the sweep so sub-step loll angles (within ±2°) choose the
+/// right side, while keeping the outer sweep check (including capsizes) intact.
+pub fn settle_target(out: &HeelSweepOut, from: f64) -> LetGo {
+    let mut curve = lever_curve(out);
+    match &out.equilibrium {
+        Equilibrium::Loll { port, starboard } => {
+            if from == 0.0 || (from > 0.0 && from < starboard.heel_deg) {
+                return LetGo::Settles(starboard.heel_deg);
+            }
+            if from < 0.0 && from > port.heel_deg {
+                return LetGo::Settles(port.heel_deg);
+            }
+            splice_root(&mut curve, port.heel_deg);
+            splice_root(&mut curve, starboard.heel_deg);
+        }
+        Equilibrium::Stable { state } => {
+            splice_root(&mut curve, state.heel_deg);
+        }
+        Equilibrium::Capsizes { .. }
+        | Equilibrium::CannotFloat
+        | Equilibrium::Unresolved { .. } => {}
+    }
+    let_go(&curve, from)
 }
 
 /// The number of stations the drawings cut.
@@ -503,12 +555,18 @@ pub fn equilibrium_line(eq: &Equilibrium, displacement_t: f64) -> String {
             }
             words
         }
-        Equilibrium::Loll { starboard, .. } => format!(
-            "Lolls to {:.1}° either side: the upright GM is negative",
-            starboard.heel_deg.abs()
-        ),
+        Equilibrium::Loll { port, starboard } => {
+            let p = format!("{:.1}", port.heel_deg.abs());
+            let s = format!("{:.1}", starboard.heel_deg.abs());
+            if p == s {
+                format!("Lolls to {s}° either side: the upright GM is negative")
+            } else {
+                format!("Lolls to {p}° port or {s}° starboard: the upright GM is negative")
+            }
+        }
         Equilibrium::Capsizes { .. } => "Capsizes: no stable equilibrium within ±90°".to_string(),
         Equilibrium::CannotFloat => format!("The hull cannot float {displacement_t:.2} t"),
+        Equilibrium::Unresolved { reason } => format!("No equilibrium determined: {reason}"),
     }
 }
 
@@ -595,7 +653,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             .custom_formatter(|v, _| format!("{v:.1}"));
         if ui.add(slider).on_hover_text("+ to starboard").changed() {
             state.anim = None;
-            action = HeelViewAction::Changed;
+            action = HeelViewAction::ManualHeel;
         }
         ui.checkbox(&mut state.hold, "Hold heel")
             .on_hover_text("Keep the heel where you leave it instead of settling");
@@ -643,12 +701,15 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
     let Some(out) = sweep else {
         return action;
     };
-    if let Equilibrium::CannotFloat = out.equilibrium {
+    let no_floating = matches!(out.equilibrium, Equilibrium::CannotFloat)
+        || (matches!(out.equilibrium, Equilibrium::Unresolved { .. })
+            && out.sweep.iter().all(Option::is_none));
+    if no_floating {
         // No picture of a hull that does not float, but the weights stay editable: an overweight
         // typo must not be a dead end.
         ui.scope(|ui| {
             if stale {
-                stale_chip(ui);
+                stale_chip(ui, failure.is_some());
                 ui.multiply_opacity(theme::STALE_OPACITY);
             }
             ui.colored_label(
@@ -713,11 +774,17 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 ui.vertical(|ui| {
                     ui.set_width(side);
                     if stale {
-                        stale_chip(ui);
+                        stale_chip(ui, failure.is_some());
                         ui.multiply_opacity(theme::STALE_OPACITY);
                     }
                     for w in &out.warnings {
                         ui.colored_label(theme::WARN, format!("⚠ {w}"));
+                    }
+                    if shown.is_some_and(|s| s.lid_submerged) {
+                        ui.colored_label(
+                            theme::WARN,
+                            format!("⚠ {}", seacraft_core::heel::LID_SUBMERGED_WARNING),
+                        );
                     }
                     if let Some(s) = shown {
                         ui.label(egui::RichText::new(readout(s, out, !shown_exact)).strong());
@@ -725,9 +792,12 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     ui.label(equilibrium_line(&out.equilibrium, out.mass.displacement_t));
                     // When the condition capsizes anyway, the line above has said so.
                     let resting = state.grab.is_none() && state.anim.is_none();
-                    let capsizes = matches!(out.equilibrium, Equilibrium::Capsizes { .. });
+                    let capsizes = matches!(
+                        out.equilibrium,
+                        Equilibrium::Capsizes { .. } | Equilibrium::CannotFloat
+                    );
                     if let (true, false, Some(s)) = (resting, capsizes, shown) {
-                        if let_go(&lever_curve(out), s.heel_deg) == LetGo::Capsizes {
+                        if settle_target(out, s.heel_deg) == LetGo::Capsizes {
                             let at = if s.heel_deg.abs() < 0.05 {
                                 "upright".to_string()
                             } else {
@@ -761,7 +831,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 .interact(
                     bar,
                     egui::Id::unique("heel_view_splitter"),
-                    egui::Sense::drag(),
+                    egui::Sense::click_and_drag(),
                 )
                 .on_hover_cursor(egui::CursorIcon::ResizeVertical)
                 .on_hover_text("Drag to share the height between the drawings and the plot");
@@ -796,17 +866,27 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             if let Some(heel) = gz_plot(ui, out, shown.map(|s| s.heel_deg), plot_height) {
                 state.heel_deg = (heel * 10.0).round() / 10.0;
                 state.anim = None;
-                action = HeelViewAction::Changed;
+                action = HeelViewAction::ManualHeel;
             }
         });
     if let Some(views) = *drawn {
         for a in [mass_field(ui, state, &views), keys(ui, state, &views)] {
-            if a != HeelViewAction::None {
+            if a != HeelViewAction::None
+                && (action != HeelViewAction::ManualHeel || a == HeelViewAction::ManualHeel)
+            {
                 action = a;
             }
         }
     }
     action
+}
+
+/// Minimum accepted trial-weight mass (tonnes), shared by both mass editors.
+const MIN_TRIAL_MASS_T: f64 = 1e-6;
+const TRIAL_MASS_RANGE: std::ops::RangeInclusive<f64> = MIN_TRIAL_MASS_T..=f64::INFINITY;
+
+fn valid_trial_mass(m: f64) -> bool {
+    m.is_finite() && TRIAL_MASS_RANGE.contains(&m)
 }
 
 /// The small field where a weight's mass is typed, at the point picked. Enter places (or edits)
@@ -848,7 +928,7 @@ fn mass_field(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) 
                         close = true;
                     } else if enter && (edit.lost_focus() || edit.has_focus()) {
                         match entry.text.trim().parse::<f64>() {
-                            Ok(m) if m.is_finite() && m > 0.0 => {
+                            Ok(m) if valid_trial_mass(m) => {
                                 place(state, &entry, m);
                                 close = true;
                                 action = HeelViewAction::Changed;
@@ -923,11 +1003,6 @@ fn keys(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) -> Hee
         });
         (delta, delete)
     });
-    if delta != 0.0 {
-        state.heel_deg = (state.heel_deg + delta).clamp(-90.0, 90.0);
-        state.anim = None;
-        action = HeelViewAction::Changed;
-    }
     if delete {
         if let Some(i) = state.selected {
             if i < state.weights.len() {
@@ -936,6 +1011,11 @@ fn keys(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) -> Hee
             }
         }
         state.selected = None;
+    }
+    if delta != 0.0 {
+        state.heel_deg = (state.heel_deg + delta).clamp(-90.0, 90.0);
+        state.anim = None;
+        action = HeelViewAction::ManualHeel;
     }
     action
 }
@@ -983,7 +1063,9 @@ fn weights_table(
                             .add(
                                 egui::DragValue::new(&mut w.mass_t)
                                     .speed(0.05)
-                                    .range(0.001..=1.0e6),
+                                    .max_decimals(6)
+                                    .range(TRIAL_MASS_RANGE)
+                                    .clamp_existing_to_range(false),
                             )
                             .changed();
                         for v in [&mut w.x, &mut w.y, &mut w.z] {
@@ -1102,7 +1184,8 @@ fn pointer(
     let mut action = HeelViewAction::None;
     let at = resp.interact_pointer_pos();
     if resp.drag_started() {
-        let hit = at.and_then(|p| weight_at(state, views, drawing, p));
+        let origin = resp.ctx.input(|i| i.pointer.press_origin()).or(at);
+        let hit = origin.and_then(|p| weight_at(state, views, drawing, p));
         state.grab = match (hit, drawing) {
             (Some(i), _) => {
                 state.selected = Some(i);
@@ -1166,15 +1249,20 @@ fn pointer(
     action
 }
 
-/// The view's out-of-date chip: it recomputes on its own, so no F5.
-fn stale_chip(ui: &mut egui::Ui) {
+/// The view's out-of-date chip: says whether the update failed or is recomputing.
+fn stale_chip(ui: &mut egui::Ui, failed: bool) {
+    let text = if failed {
+        "out of date — update failed"
+    } else {
+        "out of date — recomputing"
+    };
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0, theme::STALE))
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new("out of date — recomputing")
+                egui::RichText::new(text)
                     .size(theme::SMALL_SIZE)
                     .color(theme::STALE),
             )
@@ -1281,6 +1369,7 @@ fn drawings(
         draw::Forces {
             b: [bc, bh],
             g: [gc, gh],
+            heel_deg: s.heel_deg,
             lever_m: s.lever_m,
             displacement_t: s.displacement_t,
         }
@@ -1362,8 +1451,10 @@ fn gz_plot(
     let pts = |f: fn(&HeelState) -> f64| -> Vec<(f64, f64)> {
         out.sweep
             .iter()
-            .flatten()
-            .map(|s| (s.heel_deg, f(s)))
+            .map(|o| match o {
+                Some(s) => (s.heel_deg, f(s)),
+                None => (f64::NAN, f64::NAN),
+            })
             .collect()
     };
     let series = [
@@ -1410,7 +1501,7 @@ fn gz_plot(
 /// Draw the view's header: the views as tabs and the close button.
 pub fn header(ui: &mut egui::Ui) -> HeelViewAction {
     let mut action = HeelViewAction::None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for other in AnalysisView::ALL {
             let shown = other == AnalysisView::Heel;
             if ui.selectable_label(shown, other.tab_label(shown)).clicked() && !shown {
@@ -1548,5 +1639,161 @@ mod tests {
         let c = curve(|h| h * (400.0 - h * h));
         assert_eq!(let_go(&c, 0.0), LetGo::Stays);
         assert_eq!(let_go(&c, 95.0), LetGo::Stays, "outside the sweep");
+    }
+
+    #[test]
+    fn let_go_stops_at_failed_sweep_gaps() {
+        // An unsolved gap at +4° must neither allow release inside [2°, 6°] nor bridge
+        // a sign change from +2° (< 0) to +6° (> 0) across +4°.
+        let mut c = curve(|h| h - 4.0);
+        c[47] = (f64::NAN, f64::NAN); // +4°
+        assert_eq!(let_go(&c, 3.0), LetGo::Stays);
+        assert_eq!(let_go(&c, 5.0), LetGo::Stays);
+        // Released at +1° (lever < 0, walking right towards +4°), it hits the gap before +6° and stops.
+        assert_eq!(let_go(&c, 1.0), LetGo::Stays);
+    }
+
+    #[test]
+    fn settle_target_chooses_own_side_for_sub_step_loll() {
+        use seacraft_core::heel::{equilibrium, heel_sweep, sweep_heels, MassCondition};
+        use seacraft_core::hydro::{Hull, HydroOptions};
+        use seacraft_core::subdiv::SubdivisionOptions;
+        use seacraft_core::{Layer, ProjectSettings, Surface};
+
+        let (l, b, d, t) = (10.0, 4.0, 3.0, 1.0);
+        let mut s = Surface::new();
+        s.layers = vec![Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Layer::default()
+        }];
+        s.settings = ProjectSettings {
+            name: "box".into(),
+            length: l,
+            beam: b,
+            draft: t,
+            water_density: 1000.0,
+            appendage_coefficient: 1.0,
+            main_particulars_set: true,
+            ..ProjectSettings::default()
+        };
+        for (x, y, z) in [
+            (0.0, -2.0, 0.0),
+            (l, -2.0, 0.0),
+            (l, 2.0, 0.0),
+            (0.0, 2.0, 0.0),
+            (0.0, -2.0, d),
+            (l, -2.0, d),
+            (l, 2.0, d),
+            (0.0, 2.0, d),
+        ] {
+            s.add_point(Vec3::new(x, y, z));
+        }
+        for f in [
+            vec![0, 3, 2, 1],
+            vec![4, 5, 6, 7],
+            vec![0, 1, 5, 4],
+            vec![1, 2, 6, 5],
+            vec![2, 3, 7, 6],
+            vec![3, 0, 4, 7],
+        ] {
+            s.add_face(f, 0);
+        }
+        s.initialize_trace();
+        s.edges.iter_mut().for_each(|e| e.crease = true);
+        s.points
+            .iter_mut()
+            .for_each(|p| p.kind = seacraft_core::mesh::VertexKind::Corner);
+        let sub = SubdivisionOptions {
+            level: 1,
+            mode: Default::default(),
+        };
+        let opts = HydroOptions::from_surface(&s, sub);
+        let hull = Arc::new(Hull::new(&s, sub));
+
+        let bm = b * b / (12.0 * t);
+        for loll_deg in [1.2_f64, 0.4_f64] {
+            let tan = loll_deg.to_radians().tan();
+            let kg = t / 2.0 + bm + bm * tan * tan / 2.0;
+            let mass = MassCondition::bare(&hull, &opts, kg, Some(5.0)).unwrap();
+            let sweep = heel_sweep(&hull, &mass, &sweep_heels(), &opts);
+            let eq = equilibrium(&hull, &mass, &opts, Some(&sweep));
+            let out = HeelSweepOut {
+                start: mass.clone(),
+                mass,
+                sweep,
+                equilibrium: eq,
+                upright_gm: None,
+                warnings: Vec::new(),
+                hull: hull.clone(),
+                opts: opts.clone(),
+            };
+            match settle_target(&out, 0.75) {
+                LetGo::Settles(to) => {
+                    assert!((to - loll_deg).abs() < 0.05, "{loll_deg}: +0.75 -> {to}")
+                }
+                other => panic!("{loll_deg}: +0.75 -> {other:?}"),
+            }
+            match settle_target(&out, -0.75) {
+                LetGo::Settles(to) => {
+                    assert!((to + loll_deg).abs() < 0.05, "{loll_deg}: -0.75 -> {to}")
+                }
+                other => panic!("{loll_deg}: -0.75 -> {other:?}"),
+            }
+            match settle_target(&out, 5.0) {
+                LetGo::Settles(to) => {
+                    assert!((to - loll_deg).abs() < 0.05, "{loll_deg}: +5 -> {to}")
+                }
+                other => panic!("{loll_deg}: +5 -> {other:?}"),
+            }
+            assert_eq!(
+                settle_target(&out, 80.0),
+                LetGo::Capsizes,
+                "{loll_deg}: +80"
+            );
+        }
+    }
+
+    #[test]
+    fn asymmetric_loll_line_names_both_sides_when_different() {
+        let mut p = HeelState {
+            heel_deg: -12.3,
+            b: Vec3::ZERO,
+            g: Vec3::ZERO,
+            lever_m: 0.0,
+            gz_m: 0.0,
+            heeling_arm_m: 0.0,
+            draft: Some(1.0),
+            trim_m: Some(0.0),
+            displacement_t: 40.0,
+            lid_submerged: false,
+            plane: Plane::new(Vec3::new(0.0, 0.0, 1.0), -1.0),
+        };
+        let mut s = p.clone();
+        s.heel_deg = 12.3;
+        assert_eq!(
+            equilibrium_line(
+                &Equilibrium::Loll {
+                    port: p.clone(),
+                    starboard: s.clone(),
+                },
+                40.0
+            ),
+            "Lolls to 12.3° either side: the upright GM is negative"
+        );
+        p.heel_deg = -11.4;
+        s.heel_deg = 13.8;
+        assert_eq!(
+            equilibrium_line(
+                &Equilibrium::Loll {
+                    port: p,
+                    starboard: s,
+                },
+                40.0
+            ),
+            "Lolls to 11.4° port or 13.8° starboard: the upright GM is negative"
+        );
     }
 }

@@ -4305,10 +4305,16 @@ fn cmd_heel(a: HeelArgs) -> Result<()> {
             }
             opts.draft = d;
         }
+        if let Some(x) = a.lcg {
+            if !x.is_finite() {
+                bail!("--lcg must be a finite number");
+            }
+        }
         heel::MassCondition::bare(&hull, &opts, kg, a.lcg)
             .with_context(|| format!("the hull displaces nothing at draft {:.3} m", opts.draft))?
     };
     let mut r = heel::report(&hull, &opts, &start, &weights, a.heel);
+    warnings.extend(r.warnings);
     r.warnings = warnings;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&r)?);

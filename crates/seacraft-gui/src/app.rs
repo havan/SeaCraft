@@ -5040,6 +5040,14 @@ impl App {
             HeelStart::Dock => [0, 0, 0],
             HeelStart::Condition(i) => [1, i as u64, self.project_rev],
         };
+        // The dock LCG enters the sweep only when free trim uses it.
+        let (has_lcg, lcg_bits) = match self.heel.start {
+            HeelStart::Dock if self.hydro.free_trim => match self.hydro.lcg {
+                Some(x) => (1, x.to_bits()),
+                None => (0, 0),
+            },
+            _ => (0, 0),
+        };
         revision_key(&[
             self.revision,
             self.hydro_rev,
@@ -5047,6 +5055,8 @@ impl App {
             start[1],
             start[2],
             crate::heel_view::weights_key(&self.heel.weights),
+            has_lcg,
+            lcg_bits,
         ])
     }
 
@@ -5175,14 +5185,14 @@ impl App {
         }
         if self.heel_settle_pending && self.heel.grab.is_none() {
             if let Some(out) = self.heel_current() {
-                use crate::heel_view::{let_go, lever_curve, LetGo};
+                use crate::heel_view::{settle_target, LetGo};
                 let from = self.heel.heel_deg;
                 // It comes back only where its lever turns it back: past the heel where the
                 // lever vanishes it stays where it was let go (and the view says it capsizes).
-                let to = match let_go(&lever_curve(out), from) {
+                let to = match settle_target(out, from) {
                     LetGo::Settles(h) => Some(
                         out.equilibrium
-                            .heel_for_side(h)
+                            .heel_for_side(if h.abs() > 1e-9 { h } else { from })
                             .filter(|e| (e - h).abs() <= seacraft_core::heel::SWEEP_STEP_DEG)
                             .unwrap_or(h),
                     ),
@@ -9767,6 +9777,7 @@ impl App {
             HeelViewAction::Close => self.close_analysis_view(),
             HeelViewAction::Open(other) => self.open_analysis_view(other),
             HeelViewAction::SettleNow => self.heel_settle_pending = true,
+            HeelViewAction::ManualHeel => self.heel_settle_pending = false,
             HeelViewAction::AddToCondition(i) => self.heel_add_to_condition(i),
             HeelViewAction::None | HeelViewAction::Changed => {}
         }
@@ -9778,6 +9789,9 @@ impl App {
     /// Show `view` in the drawer under the viewports. Opening a view that
     /// has no result yet computes it.
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        if view != crate::analysis_views::AnalysisView::Heel {
+            self.heel.grab = None;
+        }
         self.analysis.open = Some(view);
         if !view.uses_slot() {
             // The wave pattern computes on its own jobs while the view is open.
@@ -9793,6 +9807,7 @@ impl App {
     /// Close the drawer. The viewports take its height back.
     pub fn close_analysis_view(&mut self) {
         self.analysis.open = None;
+        self.heel.grab = None;
     }
 
     /// The view shown in the Analysis dock, if any.

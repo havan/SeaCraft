@@ -100,10 +100,11 @@ impl HullOutlines {
         let mut xs = vec![hull.model_min.x + inset];
         xs.extend(station_xs(hull, n));
         xs.push(hull.model_max.x - inset);
-        // The extents of the panels measured, mirrored halves included: the control net of a
-        // hull with symmetric layers covers only starboard (and stands off the surface).
-        let (min, max) = match hull.verts.split_first() {
-            Some((&first, rest)) => rest.iter().fold((first, first), |(lo, hi), v| {
+        // The extents of the hydrostatic panels measured, mirrored halves included: exclude
+        // non-hydrostatic layers (such as rigging/masts) and fall back to model extents if empty.
+        let mut pts = hull.tris.iter().flatten().map(|&i| hull.verts[i]);
+        let (min, max) = match pts.next() {
+            Some(first) => pts.fold((first, first), |(lo, hi), v| {
                 (
                     Vec3::new(lo.x.min(v.x), lo.y.min(v.y), lo.z.min(v.z)),
                     Vec3::new(hi.x.max(v.x), hi.y.max(v.y), hi.z.max(v.z)),
@@ -369,5 +370,33 @@ mod tests {
         assert!(section.iter().all(|l| !l.is_empty()));
         let (top, bottom) = profile_silhouette(&outlines, &f);
         assert_eq!(top.len(), bottom.len());
+    }
+
+    #[test]
+    fn non_hydrostatic_layer_does_not_expand_outline_bounds() {
+        let mut s = box_surface(true);
+        s.layers.push(Layer {
+            name: "Mast".into(),
+            symmetric: false,
+            use_in_hydrostatics: false,
+            visible: true,
+            ..Layer::default()
+        });
+        let base = s.points.len();
+        s.add_point(Vec3::new(5.0, 0.0, 3.0));
+        s.add_point(Vec3::new(5.1, 0.0, 3.0));
+        s.add_point(Vec3::new(5.05, 0.0, 20.0));
+        s.add_face(vec![base, base + 1, base + 2], 1);
+        s.initialize_trace();
+        let hull = Hull::new(
+            &s,
+            SubdivisionOptions {
+                level: 1,
+                mode: Default::default(),
+            },
+        );
+        let o = HullOutlines::new(&hull, 9);
+        assert!((o.max.z - 3.0).abs() < 1e-6, "excluded mast at {:?}", o.max);
+        assert!((o.min.y + 2.0).abs() < 1e-6 && (o.max.y - 2.0).abs() < 1e-6);
     }
 }

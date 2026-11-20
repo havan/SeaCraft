@@ -83,4 +83,9 @@ fn heel_needs_a_kg_or_a_condition_and_a_well_formed_weight() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("t@x,y,z"), "{err}");
+
+    let out = run(&["heel", &hull, "--kg", "2.2", "--lcg", "NaN", "--level", "1"]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--lcg"), "{err}");
 }

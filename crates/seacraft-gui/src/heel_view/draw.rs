@@ -2,9 +2,10 @@
 //! heel) and the profile (from starboard, turned by the trim), water level in both.
 //!
 //! Drawing coordinates are metres in the [`EarthFrame`](super::geometry::EarthFrame): horizontal
-//! (across or along) and height above the water. A [`View2`] maps them to the screen; both
-//! drawings share one scale so a metre is the same length in each. The pure parts (the mapping,
-//! the arrows, the lever's dimension) are tested; the painters only place what they compute.
+//! (across or along) and height above the water. A [`View2`] maps them to the screen; each
+//! drawing fits the hull at its own scale so a long ship's section stays readable. The pure parts
+//! (the mapping, the arrows, the lever's dimension) are tested; the painters only place what they
+//! compute.
 
 use eframe::egui;
 
@@ -41,9 +42,12 @@ pub fn fit_views(
     let (min, max) = (outlines.min, outlines.max);
     let diag = ((max.y - min.y).hypot(max.z - min.z)).max(1e-3) as f32;
     let length = (max.x - min.x).max(1e-3) as f32;
-    let body_ppm = (body.width().min(body.height()) / (1.15 * diag)).max(1e-3);
+    let trimmed_height = diag + (frame.up.x.abs() * (max.x - min.x)) as f32;
+    let body_ppm = (body.width() / (1.15 * diag))
+        .min(body.height() / (1.15 * trimmed_height))
+        .max(1e-3);
     let profile_ppm = (profile.width() / (1.08 * length))
-        .min(profile.height() / (1.15 * diag))
+        .min(profile.height() / (1.15 * trimmed_height))
         .max(1e-3);
     let (a, c, h) = frame.to_earth((min + max) * 0.5);
     let at = |rect: egui::Rect, x: f64, ppm: f32| View2 {
@@ -93,9 +97,16 @@ pub fn lever_height(view: &View2, rect: egui::Rect, b: Point2, g: Point2, len: f
     above.min(highest)
 }
 
-/// The colour of a lever: righting or capsizing.
-pub fn lever_colour(lever_m: f64) -> egui::Color32 {
-    if lever_m >= 0.0 {
+/// The colour of a lever relative to the heel direction: righting or capsizing.
+/// A positive core lever pushes towards smaller signed heel (port), so for nonzero
+/// heel it rights the hull when `heel_deg * lever_m >= 0`.
+pub fn lever_colour(heel_deg: f64, lever_m: f64) -> egui::Color32 {
+    let righting = if heel_deg.abs() > 1e-12 {
+        heel_deg * lever_m >= 0.0
+    } else {
+        lever_m.abs() <= 1e-12
+    };
+    if righting {
         theme::LEVER_RIGHTING
     } else {
         theme::LEVER_CAPSIZING
@@ -184,11 +195,12 @@ pub struct BodyPlanScene<'a> {
     pub weights: &'a [(Point2, String, bool)],
 }
 
-/// The two centres, the lever and the displacement.
+/// The two centres, the heel, the lever and the displacement.
 #[derive(Debug, Clone, Copy)]
 pub struct Forces {
     pub b: Point2,
     pub g: Point2,
+    pub heel_deg: f64,
     pub lever_m: f64,
     pub displacement_t: f64,
 }
@@ -234,7 +246,7 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
             theme::WEIGHT,
         );
         // The lever between the two verticals, above both centres.
-        let colour = lever_colour(f.lever_m);
+        let colour = lever_colour(f.heel_deg, f.lever_m);
         let h = lever_height(view, rect, f.b, f.g, len);
         let (p0, p1) = lever_dimension(view, f.b, f.g, h);
         let thin = egui::Stroke::new(1.0, colour);
@@ -404,5 +416,61 @@ mod tests {
                 s.lever_m
             );
         }
+    }
+
+    #[test]
+    fn trimmed_body_plan_fits_inside_rect() {
+        use crate::heel_view::geometry::HullOutlines;
+        use seacraft_core::hydro::waterplane_for;
+        use seacraft_core::math::{Plane, Vec3};
+        let outlines = HullOutlines {
+            stations: Vec::new(),
+            min: Vec3::new(0.0, -1.0, 0.0),
+            max: Vec3::new(100.0, 1.0, 2.0),
+        };
+        let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 230.0));
+        let profile = egui::Rect::from_min_size(egui::pos2(310.0, 0.0), egui::vec2(600.0, 230.0));
+
+        // Zero trim matches the pure section diagonal scale.
+        let level_frame = EarthFrame::from_plane(&Plane::new(Vec3::new(0.0, 0.0, 1.0), -1.0));
+        let (level_body, _) = fit_views(body, profile, &outlines, &level_frame);
+        let diag = (2.0f32).hypot(2.0);
+        assert!(
+            (level_body.ppm - 230.0 / (1.15 * diag)).abs() < 1e-3,
+            "{}",
+            level_body.ppm
+        );
+
+        // 10 m trim on a 100 x 2 x 2 m box must still fit every corner inside `body`.
+        let trim_frame = EarthFrame::from_plane(&waterplane_for(0.0, 100.0, 1.0, 10.0, 0.0));
+        let (trimmed_body, _) = fit_views(body, profile, &outlines, &trim_frame);
+        for x in [0.0, 100.0] {
+            for y in [-1.0, 1.0] {
+                for z in [0.0, 2.0] {
+                    let (_, c, h) = trim_frame.to_earth(Vec3::new(x, y, z));
+                    let p = trimmed_body.to_screen([c, h]);
+                    assert!(
+                        body.contains(p),
+                        "corner ({x},{y},{z}) -> {p:?} clipped by {body:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lever_colour_accounts_for_heel_direction() {
+        // Righting on either tack: positive lever at starboard heel, negative lever at port heel.
+        assert_eq!(lever_colour(15.0, 0.25), theme::LEVER_RIGHTING);
+        assert_eq!(lever_colour(-15.0, -0.25), theme::LEVER_RIGHTING);
+        // Capsizing on either tack: negative lever at starboard heel, positive lever at port heel.
+        assert_eq!(lever_colour(15.0, -0.25), theme::LEVER_CAPSIZING);
+        assert_eq!(lever_colour(-15.0, 0.25), theme::LEVER_CAPSIZING);
+        // Zero lever on either tack is not capsizing; nonzero lever upright is capsizing.
+        assert_eq!(lever_colour(15.0, 0.0), theme::LEVER_RIGHTING);
+        assert_eq!(lever_colour(-15.0, 0.0), theme::LEVER_RIGHTING);
+        assert_eq!(lever_colour(0.0, 0.0), theme::LEVER_RIGHTING);
+        assert_eq!(lever_colour(0.0, 0.2), theme::LEVER_CAPSIZING);
+        assert_eq!(lever_colour(0.0, -0.2), theme::LEVER_CAPSIZING);
     }
 }

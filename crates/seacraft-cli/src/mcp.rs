@@ -1477,6 +1477,7 @@ impl McpServer {
             })?
         };
         let mut r = heel::report(&hull, &opts, &start, &weights, at_heel);
+        warnings.extend(r.warnings);
         r.warnings = warnings;
         let mut v = serde_json::to_value(&r).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
@@ -3248,7 +3249,7 @@ pub fn tool_definitions() -> Vec<Value> {
              hull (`kg`, optional `draft` and `lcg`) or to a loading condition of the project (`condition`): the \
              equilibrium heel, trim and draft (`equilibrium.kind` `stable`), a loll to either side with a negative \
              upright GM and no off-centre weight (`loll`, both heels), `capsizes` (no stable equilibrium within \
-             ±90°) or `cannot_float`. `summary` says it in words. With `heel`, `at_heel` gives the state there: \
+             ±90°), `cannot_float` or `unresolved`. `summary` says it in words. With `heel`, `at_heel` gives the state there: \
              `lever_m = gz_m - heeling_arm_m` (GZ with G on the centreline, the heeling arm from the off-centre \
              weight). Heel + to starboard; liquids in tanks do not shift (their free surface is in KG).",
             obj(

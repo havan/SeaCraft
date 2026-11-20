@@ -722,7 +722,7 @@ seacraft stability hull.fef [--kg m] [--heels 0,10,20,...] [--displacements t,..
                             [--trim m | --free-trim [--lcg x]] [--weather [--bilge round|sharp|keels:Ak]
                             [--windage name:area:z]... [--downflooding deg]] [--csv out.csv]
 seacraft loadcase  hull.fef [case.json|project.json] [--name NAME] [--json]
-seacraft heel      hull.fef (--kg m [--draft T] [--lcg x] | --condition NAME [--case project.json])
+seacraft heel      hull.fef (--kg m [--draft T] [--lcg x] | --condition NAME [--case project.json] | --case case.json|project.json)
                             [--weight t@x,y,z]... [--heel deg] [--json]
 seacraft damage    hull.fef [case.json|project.json] [--name NAME] [--json]
 seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--stations N]
@@ -737,7 +737,9 @@ seacraft subdiv    hull.fef -o baked.fef [--level N] [--mirror]
 seacraft mcp       [--open hull.fef] [--connect 127.0.0.1:PORT]
 ```
 
-Subdivision level defaults to 3; `--mode cc` selects pure Catmull–Clark.
+Subdivision level defaults to 3; `--mode cc` selects pure Catmull–Clark. For `seacraft heel`, `--case` accepts a
+standalone loading-condition JSON or a project file (picking the first condition when `--condition` is omitted), while
+`--condition` without `--case` reads the model's `<model>.seacraft.json` sidecar.
 
 ### Example
 

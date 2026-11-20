@@ -1009,6 +1009,28 @@ fn a_small_loll_is_found_on_both_sides() {
     assert!((port.heel_deg + 1.2).abs() < 0.05, "{}", port.heel_deg);
 }
 
+/// Source: the wall-sided loll formula of `docs/oracles.md` §47 solved for ±0.4°:
+/// inside 0.5°, where a fixed 0.5° probe already sees a restoring lever and would
+/// miss the negative upright GM.
+#[test]
+fn a_very_small_loll_below_half_a_degree_is_found_on_both_sides() {
+    let (t, b) = (1.0_f64, 4.0_f64);
+    let bm = b * b / (12.0 * t);
+    let tan = 0.4_f64.to_radians().tan();
+    let kg = t / 2.0 + bm + bm * tan * tan / 2.0;
+    let (hull, opts, mass) = heel_barge(kg);
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    let Equilibrium::Loll { port, starboard } = &eq else {
+        panic!("expected loll, got {eq:?}");
+    };
+    assert!(
+        (starboard.heel_deg - 0.4).abs() < 0.02,
+        "{}",
+        starboard.heel_deg
+    );
+    assert!((port.heel_deg + 0.4).abs() < 0.02, "{}", port.heel_deg);
+}
+
 #[test]
 fn heavier_than_the_hull_cannot_float() {
     let (hull, opts, base) = heel_barge(1.6);

@@ -1839,8 +1839,9 @@ Resolving along the heeled water surface gives
   real root when `GM > 0` (Cardano);
 - with `TCG = 0` and `GM < 0`, the loll angle `tan φ = √(−2 GM / BM)`, to either side.
 
-The formula holds while the sides stay wall-sided at the waterline: the deck edge dry (`tan φ < 2(D − T)/B`) and the
-bilge wet (`tan φ < 2T/B`). Each test asserts its case lies inside both limits.
+The formula holds while the sides stay wall-sided at the waterline: the deck edge dry (`|tan φ| < 2(D − T)/B`) and the
+bilge wet (`|tan φ| < 2T/B`). The off-centre weight test asserts both limits, the 22.7° loll test asserts the bilge limit,
+and the 1.2° and 0.4° small-loll tests assert the resulting angles directly.
 
 ### What is compared
 The 10 × 4 × 3 m creased box of §1 in fresh water (ρ 1000 kg/m³, appendage coefficient 1, subdivision level 2),
@@ -1862,7 +1863,8 @@ The small-angle answer `tan φ = TCG / GM` would give 13.7° for the first case:
 - `crates/seacraft-core/tests/analytic.rs`: `a_weight_off_centre_heels_a_box_to_the_wall_sided_angle`,
   `a_starboard_weight_heels_to_starboard`, `a_weight_at_the_centreline_and_lcb_changes_only_the_draft`,
   `negative_gm_lolls_to_both_sides`, `a_small_loll_is_found_on_both_sides` (KG solved from the loll formula for
-  1.2°, inside the first sweep step), `a_high_heavy_weight_capsizes_the_box`, `heavier_than_the_hull_cannot_float`.
+  1.2°, inside the first sweep step), `a_very_small_loll_below_half_a_degree_is_found_on_both_sides` (0.4°, below
+  0.5°), `a_high_heavy_weight_capsizes_the_box`, `heavier_than_the_hull_cannot_float`.
 - `crates/seacraft-core/src/heel.rs`: `centreline_lever_is_the_cross_curve_gz` (same code path: with G on the
   centreline the lever equals the cross curves' GZ to 1e-12 on the demo hull, the 10 m yacht and the 6.5 m runabout),
   `off_centre_g_splits_into_gz_and_heeling_arm` (definition), `weights_combine_by_mass` (arithmetic),
