@@ -764,7 +764,8 @@ fn strings(p: &Value, key: &str, what: &str) -> Result<Option<Vec<String>>, Stri
 }
 
 /// The `build.panels` (and MCP `export_panels`) arguments as panels parameters, every choice
-/// checked: a refusal names the argument.
+/// checked but the page, which [`build_panels`] checks after the PDF-only refusal: a refusal
+/// names the argument.
 fn panels_params(p: &Value) -> Result<commands::PanelsParams, String> {
     use seacraft_core::templates::{StationChoice, MAX_STATIONS};
     let given: Vec<&str> = ["stations", "spacing", "at"]
@@ -818,7 +819,6 @@ fn panels_params(p: &Value) -> Result<commands::PanelsParams, String> {
         overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(d.overlap_mm),
         scale,
     };
-    params.setup().map_err(|e| format!("`paper`: {e}"))?;
     Ok(params)
 }
 
@@ -845,6 +845,8 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
             Some((validated, format))
         }
     };
+    // After the PDF-only refusal: a page that does not work is no reason to refuse an SVG.
+    params.setup()?;
     if target.is_none() {
         let same = params.measured() == app.panels_params().measured();
         if let Some(pv) = app.panels_preview().filter(|_| same) {
@@ -3396,6 +3398,20 @@ mod tests {
         assert_eq!(
             r["error"],
             "paper, single_page apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
+        );
+        // The PDF-only refusal comes before the page is checked: a margin too wide for the
+        // paper is no reason to refuse an SVG.
+        let r = at_once(&mut app, json!({ "path": "p.svg", "margin_mm": 95 }));
+        assert_eq!(
+            r["error"],
+            "margin_mm apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
+        );
+        let r = at_once(&mut app, json!({ "margin_mm": 95 }));
+        let err = r["error"].as_str().expect("refused");
+        assert!(err.contains("95 mm margins"), "{err}");
+        assert!(
+            !err.starts_with("`paper`"),
+            "a margin is not the paper: {err}"
         );
         let r = at_once(&mut app, json!({ "stations": 5, "spacing": 0.3 }));
         assert_eq!(r["ok"], false, "{r}");

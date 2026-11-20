@@ -2758,7 +2758,6 @@ fn panels_args(
         imperial,
         title: String::new(),
     };
-    setup.check().map_err(err)?;
     let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
     let target = match str_arg(a, "path").filter(|p| !p.trim().is_empty()) {
         None => None,
@@ -2778,6 +2777,8 @@ fn panels_args(
             Some((path, format))
         }
     };
+    // After the PDF-only refusal: a page that does not work is no reason to refuse an SVG.
+    setup.check().map_err(err)?;
     let level = match a.get("level") {
         None | Some(Value::Null) => subdivision.level,
         Some(_) => level_arg(a)?,
@@ -6762,6 +6763,17 @@ mod tests {
         assert_eq!(
             err,
             "export_panels: paper, margin_mm apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
+        );
+        // Refused as PDF-only before the page is checked: 95 mm margins leave no room on A4.
+        let err = fails(
+            &mut s,
+            4,
+            "export_panels",
+            json!({"path": temp_path("svg"), "margin_mm": 95}),
+        );
+        assert_eq!(
+            err,
+            "export_panels: margin_mm apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
         );
         let err = fails(
             &mut s,
