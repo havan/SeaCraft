@@ -44,6 +44,7 @@ pub mod fef;
 pub mod flatten;
 /// The embedded DejaVu fonts and their licence.
 pub mod fonts;
+pub mod heel;
 pub mod hydro;
 pub mod iges;
 /// Crash-safe file output: temporary sibling, sync, rename.
