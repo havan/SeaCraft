@@ -240,3 +240,72 @@ fn a_failure_is_shown_not_hidden() {
     assert!(reason.contains("No such layer"), "{reason}");
     assert!(w.shows(&reason), "{:?}", w.painted);
 }
+
+#[test]
+fn the_drawing_shows_every_panel() {
+    let mut w = Window::new(pram("the_drawing_shows_every_panel", 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    assert!(w.shows("Drawing: 2 sheets"), "{:?}", w.widgets);
+    assert!(!w.shows("Nothing to draw"));
+}
+
+#[test]
+fn clicking_a_row_frames_that_panel() {
+    let mut w = Window::new(pram("clicking_a_row_frames_that_panel", 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    let fitted = w.app.panels_view().clone();
+    // The list's row, not the layer panel's button of the same name: the one inside the window.
+    let window = w
+        .widgets
+        .iter()
+        .find(|(_, l, _, _)| l.starts_with("Drawing:"))
+        .map(|(_, _, _, r)| *r)
+        .expect("the drawing");
+    let rect = w
+        .widgets
+        .iter()
+        .filter(|(r, l, _, _)| *r == Role::Button && l == "Side")
+        .map(|(_, _, _, r)| *r)
+        .find(|r| r.min.x >= window.min.x - 1.0)
+        .expect("the Side row");
+    w.click_at(rect.center());
+    assert_eq!(w.app.panels_selected(), Some(1));
+    assert_ne!(
+        w.app.panels_view(),
+        &fitted,
+        "the view moved to the Side panel"
+    );
+}
+
+#[test]
+fn a_panel_that_does_not_lie_flat_is_named_over_the_drawing() {
+    let mut w = Window::new(pram(
+        "a_panel_that_does_not_lie_flat_is_named_over_the_drawing",
+        0.08,
+    ));
+    let mut params = w.app.panels_params().clone();
+    params.choices.max_stretch_pct = 0.0001;
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    let failing = w.app.panels_preview().unwrap().set.failing();
+    assert_eq!(failing.len(), 1);
+    assert!(w.shows(&failing[0]), "{:?}", w.painted);
+}
+
+#[test]
+fn no_panels_draws_nothing_to_draw() {
+    let mut w = Window::new(pram("no_panels_draws_nothing_to_draw", 0.0));
+    let mut params = w.app.panels_params().clone();
+    params.layers = Some(vec!["No such layer".into()]);
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the failure", |app| app.panels_failure().is_some());
+    w.frame(vec![]);
+    assert!(w.shows("Nothing to draw"), "{:?}", w.painted);
+}

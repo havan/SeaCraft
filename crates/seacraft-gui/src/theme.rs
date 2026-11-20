@@ -148,6 +148,9 @@ pub const PATTERN_CUT: Color32 = Color32::from_rgb(0xe6, 0xec, 0xf2);
 pub const PATTERN_MARK: Color32 = Color32::from_rgb(0x7d, 0xb4, 0xe6);
 pub const PATTERN_REFERENCE: Color32 = Color32::from_rgb(0x6f, 0x7f, 0x90);
 pub const PATTERN_LABEL: Color32 = TEXT_SECONDARY;
+/// Over a pattern drawing that is out of date while the new one is measured.
+pub const PATTERN_STALE_VEIL: Color32 =
+    Color32::from_rgba_unmultiplied_const(0x0f, 0x14, 0x1b, 0xa0);
 /// Behind a panel that does not lie flat within the limits.
 pub const PATTERN_NOT_FLAT: Color32 = Color32::from_rgba_unmultiplied_const(0xe0, 0x5c, 0x5c, 0x30);
 /// The window's wave map, trough, calm and crest: dark calm water with crest and trough tints, by the

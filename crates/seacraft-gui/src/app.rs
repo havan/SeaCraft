@@ -5930,23 +5930,57 @@ impl App {
         let mut open = true;
         let mut action = None;
         let selected = self.panels_selected;
+        let mut view = std::mem::take(&mut self.panels_view);
+        let mut clicked = None;
         let status = self.panels_status();
         egui::Window::new("Builder panels")
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_width(760.0)
-            .default_height(760.0)
+            .default_width(1040.0)
+            .default_height(720.0)
             .show(ui.ctx(), |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("panels_top")
-                    .max_height(380.0)
+                // Options on the left; the list and the drawing, which want the room, beside them.
+                egui::Panel::left("panels_options")
+                    .resizable(false)
+                    .default_size(300.0)
                     .show(ui, |ui| {
-                        builder_panels::panels_options(ui, &mut params, &layers);
-                        ui.separator();
-                        action = builder_panels::panels_list(ui, &status, selected);
+                        egui::ScrollArea::vertical()
+                            .id_salt("panels_options_scroll")
+                            .show(ui, |ui| {
+                                builder_panels::panels_options(ui, &mut params, &layers);
+                            });
                     });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("panels_list_scroll")
+                        .max_height(240.0)
+                        .show(ui, |ui| {
+                            action = builder_panels::panels_list(ui, &status, selected);
+                        });
+                    ui.separator();
+                    let set = status.set();
+                    for line in set.map(|s| s.failing()).unwrap_or_default() {
+                        ui.colored_label(crate::theme::TEXT_PRIMARY, line);
+                    }
+                    let sheets = set.map_or(&[][..], |s| &s.sheets[..]);
+                    let not_flat: Vec<bool> = set
+                        .map(|s| s.rows.iter().map(|r| !r.lies_flat).collect())
+                        .unwrap_or_default();
+                    let stale = matches!(status, builder_panels::PanelsStatus::Stale(_));
+                    ui.allocate_ui(
+                        egui::vec2(ui.available_width(), ui.available_height().max(320.0)),
+                        |ui| {
+                            clicked =
+                                crate::sheet_view::show(ui, sheets, &not_flat, stale, &mut view);
+                        },
+                    );
+                });
             });
+        self.panels_view = view;
+        if clicked.is_some() {
+            self.panels_selected = clicked;
+        }
         if params != self.panels_params {
             self.set_panels_params(params);
         }
@@ -5959,6 +5993,16 @@ impl App {
             Some(builder_panels::PanelsAction::Export) | None => {}
         }
         self.show_panels = open;
+    }
+
+    /// Where the Builder panels drawing looks.
+    pub fn panels_view(&self) -> &crate::sheet_view::SheetView {
+        &self.panels_view
+    }
+
+    /// The panel picked in the Builder panels list or drawing.
+    pub fn panels_selected(&self) -> Option<usize> {
+        self.panels_selected
     }
 
     /// Open File > Builder panels (from the File menu or Plate development).

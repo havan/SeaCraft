@@ -172,12 +172,15 @@ impl SheetView {
     }
 }
 
-/// Draws `sheets` in the space left in `ui`, tinting those `not_flat` marks, and returns the
-/// sheet clicked, if any. Scroll zooms about the pointer, dragging pans, a double-click fits all.
+/// Draws `sheets` in the space left in `ui`, tinting those `not_flat` marks and veiling the
+/// whole when `faded` (an out-of-date drawing), and returns the sheet clicked, if any. Scroll
+/// zooms about the pointer, dragging pans, a double-click fits all. Screen readers hear
+/// "Drawing: N sheets".
 pub fn show(
     ui: &mut egui::Ui,
     sheets: &[Sheet],
     not_flat: &[bool],
+    faded: bool,
     view: &mut SheetView,
 ) -> Option<usize> {
     let size = ui.available_size().max(egui::vec2(120.0, 80.0));
@@ -186,6 +189,10 @@ pub fn show(
     painter.rect_filled(rect, 0.0, theme::PLOT_BG);
     let stacked = stack(sheets);
     let bounds: Vec<Option<[f64; 4]>> = stacked.iter().map(|s| s.map(|(_, b)| b)).collect();
+    let drawn = bounds.iter().flatten().count();
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Canvas, true, format!("Drawing: {drawn} sheets"))
+    });
     if union(&bounds).is_none() {
         painter.text(
             rect.center(),
@@ -275,6 +282,9 @@ pub fn show(
         }
     }
 
+    if faded {
+        painter.rect_filled(rect, 0.0, theme::PATTERN_STALE_VEIL);
+    }
     if response.clicked() {
         let p = response.interact_pointer_pos()?;
         let (x, y) = view.to_world(rect, p);
@@ -373,7 +383,7 @@ mod tests {
         let mut view = SheetView::default();
         let not_flat = vec![true; sheets.len()];
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            show(ui, sheets, &not_flat, &mut view);
+            show(ui, sheets, &not_flat, false, &mut view);
         });
         out.textures_delta.clear();
         let mut texts = Vec::new();
