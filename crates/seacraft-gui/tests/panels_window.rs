@@ -309,3 +309,115 @@ fn no_panels_draws_nothing_to_draw() {
     w.frame(vec![]);
     assert!(w.shows("Nothing to draw"), "{:?}", w.painted);
 }
+
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("seacraft-gui-panels-out-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
+#[test]
+fn export_writes_the_measured_patterns() {
+    let mut w = Window::new(pram("export_writes_the_measured_patterns", 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    let set = w.app.panels_preview().unwrap().set.clone();
+    let params = w.app.panels_params().clone();
+    let pdf = scratch("p.pdf");
+    w.app.export_panels_to(&pdf).unwrap();
+    let expected = seacraft_gui::commands::panels_file(
+        &set,
+        &params,
+        seacraft_core::templates::Format::PdfTiled,
+    )
+    .unwrap();
+    assert!(expected.offsets_pages >= 1);
+    assert_eq!(std::fs::read(&pdf).unwrap(), expected.bytes);
+    assert!(w
+        .app
+        .messages()
+        .entries()
+        .any(|m| m.text.starts_with("exported") && m.text.contains("p.pdf")));
+    let svg = scratch("p.svg");
+    w.app.export_panels_to(&svg).unwrap();
+    assert!(std::fs::read_to_string(&svg).unwrap().contains("<svg"));
+    assert!(w.app.export_panels_to(&scratch("p.png")).is_err());
+}
+
+#[test]
+fn export_options_do_not_measure_again() {
+    let mut w = Window::new(pram("export_options_do_not_measure_again", 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    let mut params = w.app.panels_params().clone();
+    params.offsets_pages = false;
+    params.allow_undevelopable = true;
+    params.paper = "a3".into();
+    w.app.set_panels_params(params);
+    assert!(w.app.panels_preview().is_some(), "still current");
+}
+
+#[test]
+fn export_is_disabled_while_a_panel_does_not_lie_flat() {
+    let mut w = Window::new(pram(
+        "export_is_disabled_while_a_panel_does_not_lie_flat",
+        0.08,
+    ));
+    let mut params = w.app.panels_params().clone();
+    params.choices.max_stretch_pct = 0.0001;
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    let (disabled, _) = w.button("Export…").expect("the Export button");
+    assert!(disabled);
+    let reason = w.app.panels_export_block().expect("a reason");
+    assert!(reason.contains("Side"), "{reason}");
+    assert!(w.app.export_panels_to(&scratch("bowed.pdf")).is_err());
+
+    let mut params = w.app.panels_params().clone();
+    params.allow_undevelopable = true;
+    w.app.set_panels_params(params);
+    w.frame(vec![]);
+    let (disabled, _) = w.button("Export…").unwrap();
+    assert!(!disabled);
+}
+
+#[test]
+fn export_waits_for_the_current_panels() {
+    let mut w = Window::new(pram("export_waits_for_the_current_panels", 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    let mut params = w.app.panels_params().clone();
+    params.choices.max_seam_drift_mm = 3.0;
+    w.app.set_panels_params(params);
+    w.frame(vec![]);
+    let (disabled, _) = w.button("Export…").expect("the Export button");
+    assert!(disabled, "the list is out of date");
+    w.until("the new panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    assert!(!w.button("Export…").unwrap().0);
+}
+
+#[test]
+fn export_opens_a_file_dialog() {
+    let mut w = Window::new(pram("export_opens_a_file_dialog", 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.click("Export…");
+    w.frame(vec![]);
+    assert!(w.button("OK").is_some(), "the file dialog is open");
+    let clashes: Vec<&String> = w.painted.iter().filter(|t| t.contains("use of")).collect();
+    assert!(clashes.is_empty(), "egui reports clashing ids: {clashes:?}");
+}
+
+#[test]
+fn plate_development_opens_builder_panels() {
+    let mut w = Window::new(pram("plate_development_opens_builder_panels", 0.0));
+    w.app
+        .open_analysis_view(seacraft_gui::analysis_views::AnalysisView::Plates);
+    w.frame(vec![]);
+    w.click("Export patterns…");
+    assert!(w.app.show_panels());
+}

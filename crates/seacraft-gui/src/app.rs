@@ -559,6 +559,8 @@ enum DialogKind {
     Report,
     /// The builder templates, in the format the path's extension names.
     Templates,
+    /// The panel patterns, in the format the path's extension names.
+    Panels,
     /// The current wave pattern, as PNG, SVG or VTI by the path's extension.
     WaveImage,
 }
@@ -1116,6 +1118,8 @@ pub struct App {
     /// The File > Builder panels window is open.
     show_panels: bool,
     panels_params: crate::commands::PanelsParams,
+    /// Panel patterns being written on a worker thread, and the path.
+    panels_export_job: Option<(PathBuf, Job<usize>)>,
     /// Bumped when `panels_params` changes; part of the measurement's key.
     panels_rev: u64,
     /// The last panels measured, current or not ([`App::panels_key`] says).
@@ -1387,6 +1391,7 @@ impl App {
             templates_track: Track::default(),
             templates_export_job: None,
             show_panels: false,
+            panels_export_job: None,
             panels_params: crate::commands::PanelsParams::default(),
             panels_rev: 0,
             panels_result: None,
@@ -3156,6 +3161,10 @@ impl App {
                 .join(format!("{clean}-moulds.pdf"))
                 .to_string_lossy()
                 .to_string(),
+            DialogKind::Panels => dir
+                .join(format!("{clean}-panels.pdf"))
+                .to_string_lossy()
+                .to_string(),
             DialogKind::WaveImage => {
                 let froude = self.wave_current().map_or(0.0, |w| w.field.froude);
                 dir.join(format!("{clean}-waves-fn{froude:.2}.png"))
@@ -3463,6 +3472,7 @@ impl App {
             DialogKind::Export(k) => k.label(),
             DialogKind::Report => "Design report",
             DialogKind::Templates => "Builder templates",
+            DialogKind::Panels => "Builder panels",
             DialogKind::WaveImage => "Wave pattern image",
         };
         let mut accept = false;
@@ -3485,7 +3495,7 @@ impl App {
                     DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
                     DialogKind::Export(k) => format!(".{}", k.extension()),
                     DialogKind::Report => ".html".to_owned(),
-                    DialogKind::Templates => ".pdf".to_owned(),
+                    DialogKind::Templates | DialogKind::Panels => ".pdf".to_owned(),
                     DialogKind::WaveImage => ".png".to_owned(),
                 };
                 egui::ScrollArea::vertical()
@@ -3524,6 +3534,7 @@ impl App {
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
             DialogKind::Templates => self.start_templates_export(&path),
+            DialogKind::Panels => self.start_panels_export(&path),
             DialogKind::WaveImage => self.write_wave_image(&path),
         };
         match result {
@@ -5913,6 +5924,7 @@ impl App {
 
     /// The File > Builder panels window.
     fn panels_window(&mut self, ui: &mut egui::Ui) {
+        self.poll_panels_export(ui.ctx());
         if !self.show_panels {
             return;
         }
@@ -5932,6 +5944,8 @@ impl App {
         let selected = self.panels_selected;
         let mut view = std::mem::take(&mut self.panels_view);
         let mut clicked = None;
+        let mut export = None;
+        let block = self.panels_export_block();
         let status = self.panels_status();
         egui::Window::new("Builder panels")
             .open(&mut open)
@@ -5949,6 +5963,12 @@ impl App {
                             .id_salt("panels_options_scroll")
                             .show(ui, |ui| {
                                 builder_panels::panels_options(ui, &mut params, &layers);
+                                ui.separator();
+                                export = builder_panels::panels_export(
+                                    ui,
+                                    &mut params,
+                                    block.as_deref(),
+                                );
                             });
                     });
                 egui::CentralPanel::default().show(ui, |ui| {
@@ -5983,6 +6003,9 @@ impl App {
         }
         if params != self.panels_params {
             self.set_panels_params(params);
+        }
+        if export == Some(builder_panels::PanelsAction::Export) {
+            self.open_dialog(DialogKind::Panels);
         }
         match action {
             Some(builder_panels::PanelsAction::Frame(i)) => {
@@ -6025,12 +6048,105 @@ impl App {
         &self.panels_params
     }
 
-    /// Change the panels options; the measurement is stale from now.
+    /// Change the panels options; when a measured one changed, the measurement is stale from
+    /// now ([`crate::commands::PanelsParams::measured`]).
     pub fn set_panels_params(&mut self, params: crate::commands::PanelsParams) {
-        if params != self.panels_params {
-            self.panels_params = params;
+        if params.measured() != self.panels_params.measured() {
             self.panels_rev += 1;
         }
+        self.panels_params = params;
+    }
+
+    /// Why the patterns cannot be exported now, if they cannot: the panels for the current
+    /// options are not measured yet or could not be, or a panel does not lie flat.
+    pub fn panels_export_block(&self) -> Option<String> {
+        match self.panels_status() {
+            builder_panels::PanelsStatus::Working | builder_panels::PanelsStatus::Stale(_) => {
+                Some("Wait for the panels to be measured for these options".to_owned())
+            }
+            builder_panels::PanelsStatus::Failed(reason) => Some(reason.to_owned()),
+            builder_panels::PanelsStatus::Ready(set) if set.sheets.is_empty() => {
+                Some("No panel could be drawn".to_owned())
+            }
+            builder_panels::PanelsStatus::Ready(set) => {
+                crate::commands::panels_refusal(set, &self.panels_params)
+            }
+        }
+    }
+
+    /// The patterns of the measured panels, checked for export to `path`.
+    fn panels_for_export(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<
+        (
+            std::sync::Arc<seacraft_core::panels::PanelSet>,
+            seacraft_core::templates::Format,
+        ),
+        String,
+    > {
+        let format = self.panels_params.format_for(path)?;
+        if let Some(reason) = self.panels_export_block() {
+            return Err(reason);
+        }
+        let set = self
+            .panels_preview()
+            .ok_or("Wait for the panels to be measured")?;
+        Ok((set.set.clone(), format))
+    }
+
+    /// Write the measured panels' patterns to `path` on this thread, in the format its
+    /// extension names (tests and scripts; the window writes on a worker).
+    pub fn export_panels_to(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let (set, format) = self.panels_for_export(path)?;
+        let file = crate::commands::panels_file(&set, &self.panels_params, format)?;
+        let written = seacraft_core::io::write_atomic(path, &file.bytes);
+        self.log_export("Builder panels", path, written)
+    }
+
+    /// Start writing the measured panels' patterns to `path` on a worker.
+    fn start_panels_export(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let (set, format) = match self.panels_for_export(path) {
+            Ok(v) => v,
+            Err(err) => {
+                self.log(Level::Error, err.clone());
+                return Err(err);
+            }
+        };
+        let params = self.panels_params.clone();
+        let target = path.to_path_buf();
+        self.set_status(format!("writing panel patterns {}…", path.display()));
+        let job = Job::spawn(self.revision, move || {
+            let file = crate::commands::panels_file(&set, &params, format)?;
+            seacraft_core::io::write_atomic(&target, &file.bytes)
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+            Ok(file.pages.unwrap_or(0))
+        });
+        self.panels_export_job = Some((path.to_path_buf(), job));
+        Ok(())
+    }
+
+    /// Collect a finished panel patterns export, if any.
+    fn poll_panels_export(&mut self, ctx: &egui::Context) {
+        let Some((path, job)) = &self.panels_export_job else {
+            return;
+        };
+        let (level, msg) = match job.poll() {
+            crate::jobs::Poll::Running => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                return;
+            }
+            crate::jobs::Poll::Done(pages) => (
+                Level::Info,
+                match pages {
+                    0 => format!("exported {} (Builder panels)", path.display()),
+                    n => format!("exported {} (Builder panels, {n} pages)", path.display()),
+                },
+            ),
+            crate::jobs::Poll::Failed(e) => (Level::Error, format!("panel patterns failed: {e}")),
+        };
+        self.log(level, msg);
+        self.panels_export_job = None;
     }
 
     /// The panels measured for the current options and model; `None` while they are being
@@ -9256,6 +9372,7 @@ impl App {
             }
             ViewAction::Close => self.close_analysis_view(),
             ViewAction::Open(other) => self.open_analysis_view(other),
+            ViewAction::OpenBuilderPanels => self.open_builder_panels(),
         }
     }
 }

@@ -2175,6 +2175,23 @@ impl PanelsParams {
         seacraft_core::templates::Format::from_path(path, self.single_page && pdf)
     }
 
+    /// The options the panels are measured with: these, with export-only ones (paper, single
+    /// page, margins, scale, offsets pages, writing panels that do not lie flat) at their
+    /// defaults. Changing an export-only option does not measure the panels again.
+    pub fn measured(&self) -> PanelsParams {
+        let d = PanelsParams::default();
+        PanelsParams {
+            allow_undevelopable: d.allow_undevelopable,
+            offsets_pages: d.offsets_pages,
+            paper: d.paper,
+            single_page: d.single_page,
+            margin_mm: d.margin_mm,
+            overlap_mm: d.overlap_mm,
+            scale: d.scale,
+            ..self.clone()
+        }
+    }
+
     /// The paper the patterns are laid on, checked.
     pub fn setup(&self) -> Result<seacraft_core::sheet::PageSetup, String> {
         let setup = seacraft_core::sheet::PageSetup {

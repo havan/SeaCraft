@@ -141,6 +141,54 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
         });
 }
 
+/// The export options and the Export button, enabled when `block` is `None` and otherwise
+/// disabled with `block` as its hover text.
+pub fn panels_export(
+    ui: &mut egui::Ui,
+    params: &mut PanelsParams,
+    block: Option<&str>,
+) -> Option<PanelsAction> {
+    egui::Grid::new("panels_export_grid")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Paper:");
+            egui::ComboBox::from_id_salt("panels_paper")
+                .selected_text(params.paper.to_uppercase())
+                .show_ui(ui, |ui| {
+                    for paper in ["a4", "a3", "letter"] {
+                        ui.selectable_value(
+                            &mut params.paper,
+                            paper.to_owned(),
+                            paper.to_uppercase(),
+                        );
+                    }
+                });
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut params.single_page, "One page a panel (PDF)");
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(
+                &mut params.offsets_pages,
+                "Offsets tables after the patterns (PDF)",
+            );
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(
+                &mut params.allow_undevelopable,
+                "Write patterns even when a panel does not lie flat",
+            );
+            ui.end_row();
+        });
+    let button = ui.add_enabled(block.is_none(), egui::Button::new("Export…"));
+    let button = match block {
+        Some(reason) => button.on_disabled_hover_text(reason),
+        None => button.on_hover_text("Write the patterns as PDF, SVG or DXF"),
+    };
+    button.clicked().then_some(PanelsAction::Export)
+}
+
 /// The panel list: one row a panel, refused panels with why, then the plywood count. A list
 /// measured for older options is drawn faded under "Out of date". Clicking a panel's name asks
 /// to frame it.
