@@ -170,6 +170,179 @@ pub fn heel_sweep(
     crate::par::par_map(heels_deg, |&h| heel_state(hull, mass, h, base, 0.0))
 }
 
+/// Where the hull settles under a [`MassCondition`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Equilibrium {
+    /// One stable heel: the first from upright on the side the weight pushes.
+    Stable { state: HeelState },
+    /// `TCG = 0` with a negative upright GM: the hull lolls to either side.
+    Loll {
+        port: HeelState,
+        starboard: HeelState,
+    },
+    /// No stable equilibrium within ±90°; `last_heel_deg` is the heel the
+    /// search reached on the side the weight pushes.
+    Capsizes { last_heel_deg: f64 },
+    /// The hull cannot float the displacement at all.
+    CannotFloat,
+}
+
+impl Equilibrium {
+    /// The heel the hull settles at from the side of `side` (`Loll` takes
+    /// the root on `side`'s sign, starboard for `0`); `None` when it capsizes
+    /// or cannot float.
+    pub fn heel_for_side(&self, side: f64) -> Option<f64> {
+        match self {
+            Self::Stable { state } => Some(state.heel_deg),
+            Self::Loll { port, starboard } => Some(if side < 0.0 {
+                port.heel_deg
+            } else {
+                starboard.heel_deg
+            }),
+            Self::Capsizes { .. } | Self::CannotFloat => None,
+        }
+    }
+}
+
+/// The heel tolerance the equilibrium is refined to, degrees.
+pub const EQUILIBRIUM_TOL_DEG: f64 = 0.005;
+
+/// Below this `|TCG|` (metres) the condition is symmetric: the hull is
+/// upright unless its upright GM is negative, when it lolls.
+const SYMMETRIC_TCG_M: f64 = 1e-9;
+
+/// The heel probed either side of upright to tell a stable upright hull from
+/// one with a negative GM, degrees.
+const UPRIGHT_PROBE_DEG: f64 = 0.5;
+
+/// The stable equilibrium of `mass`, large-angle: the root of the lever
+/// nearest upright, on the side the off-centre weight pushes, where a little
+/// more heel is opposed (the lever rises through zero as the heel grows).
+/// It is bracketed on `sweep` (a [`heel_sweep`] of this condition; one on
+/// [`sweep_heels`] is computed when `None`) and refined by bisection on
+/// [`heel_state`] to [`EQUILIBRIUM_TOL_DEG`]. A root past ±90° is
+/// [`Equilibrium::Capsizes`].
+pub fn equilibrium(
+    hull: &Hull,
+    mass: &MassCondition,
+    base: &HydroOptions,
+    sweep: Option<&[Option<HeelState>]>,
+) -> Equilibrium {
+    let owned;
+    let sweep = match sweep {
+        Some(s) => s,
+        None => {
+            owned = heel_sweep(hull, mass, &sweep_heels(), base);
+            &owned
+        }
+    };
+    let mut samples: Vec<&HeelState> = sweep.iter().flatten().collect();
+    if samples.is_empty() {
+        return Equilibrium::CannotFloat;
+    }
+    samples.sort_by(|a, b| a.heel_deg.total_cmp(&b.heel_deg));
+
+    let tcg = mass.tcg();
+    if tcg.abs() <= SYMMETRIC_TCG_M {
+        let probe = heel_state(hull, mass, UPRIGHT_PROBE_DEG, base, 0.0);
+        if probe.is_some_and(|p| p.lever_m > 0.0) {
+            return match heel_state(hull, mass, 0.0, base, 0.0) {
+                Some(state) => Equilibrium::Stable { state },
+                None => Equilibrium::CannotFloat,
+            };
+        }
+        let stbd = root_on_side(hull, mass, base, &samples, 1.0);
+        let port = root_on_side(hull, mass, base, &samples, -1.0);
+        return match (port, stbd) {
+            (Some(port), Some(starboard)) => Equilibrium::Loll { port, starboard },
+            (Some(state), None) | (None, Some(state)) => Equilibrium::Stable { state },
+            (None, None) => Equilibrium::Capsizes {
+                last_heel_deg: last_heel(&samples, 1.0),
+            },
+        };
+    }
+    let side = tcg.signum();
+    match root_on_side(hull, mass, base, &samples, side) {
+        Some(state) => Equilibrium::Stable { state },
+        None => Equilibrium::Capsizes {
+            last_heel_deg: last_heel(&samples, side),
+        },
+    }
+}
+
+/// The furthest heel sampled on `side`.
+fn last_heel(samples: &[&HeelState], side: f64) -> f64 {
+    let heels = samples.iter().map(|s| s.heel_deg * side);
+    heels.fold(0.0, f64::max) * side
+}
+
+/// The first stable root from upright on `side` (+1 starboard, −1 port):
+/// walking the samples away from upright, the first neighbouring pair whose
+/// lever goes from below zero to zero or above as the heel *grows*.
+fn root_on_side(
+    hull: &Hull,
+    mass: &MassCondition,
+    base: &HydroOptions,
+    samples: &[&HeelState],
+    side: f64,
+) -> Option<HeelState> {
+    let mut walk: Vec<&HeelState> = samples
+        .iter()
+        .copied()
+        .filter(|s| s.heel_deg * side >= 0.0)
+        .collect();
+    if side < 0.0 {
+        walk.reverse();
+    }
+    walk.windows(2).find_map(|w| {
+        // `lo` and `hi` in heel order, whichever way the walk runs.
+        let (lo, hi) = if side > 0.0 {
+            (w[0], w[1])
+        } else {
+            (w[1], w[0])
+        };
+        (lo.lever_m < 0.0 && hi.lever_m >= 0.0).then(|| refine(hull, mass, base, lo, hi))
+    })
+}
+
+/// Bisect the bracket `lo.lever < 0 <= hi.lever` (in heel order) to
+/// [`EQUILIBRIUM_TOL_DEG`] and return the state at the root.
+fn refine(
+    hull: &Hull,
+    mass: &MassCondition,
+    base: &HydroOptions,
+    lo: &HeelState,
+    hi: &HeelState,
+) -> HeelState {
+    let (mut lo, mut hi) = (lo.clone(), hi.clone());
+    if hi.lever_m == 0.0 {
+        return hi;
+    }
+    while hi.heel_deg - lo.heel_deg > EQUILIBRIUM_TOL_DEG {
+        let mid = 0.5 * (lo.heel_deg + hi.heel_deg);
+        let hint = lo.trim_m.or(hi.trim_m).unwrap_or(0.0);
+        let Some(m) = heel_state(hull, mass, mid, base, hint) else {
+            break;
+        };
+        if m.lever_m < 0.0 {
+            lo = m;
+        } else {
+            hi = m;
+        }
+    }
+    // The end of the final bracket nearer the root, by linear interpolation
+    // of the lever, solved exactly there.
+    let span = hi.lever_m - lo.lever_m;
+    let at = if span > 0.0 {
+        lo.heel_deg - lo.lever_m * (hi.heel_deg - lo.heel_deg) / span
+    } else {
+        hi.heel_deg
+    };
+    let hint = lo.trim_m.or(hi.trim_m).unwrap_or(0.0);
+    heel_state(hull, mass, at, base, hint).unwrap_or(if -lo.lever_m < hi.lever_m { lo } else { hi })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -842,3 +842,156 @@ fn an_overloaded_open_box_has_no_waterline() {
     let d = stability::solve_draft(&hull, near, 0.0, 0.0).expect("floats just below full");
     assert!((d - near / (l * b)).abs() < 1e-6, "draft {d}");
 }
+
+// --- Heel equilibrium under an off-centre weight (docs/oracles.md §47) ---
+
+use seacraft_core::heel::{self, Equilibrium, MassCondition};
+use seacraft_core::loading::WeightItem;
+
+/// The 10 × 4 × 3 m barge floating at 1.0 m (Δ 40 t in fresh water) with G
+/// at mid-length, on the centreline, `kg` above the keel.
+fn heel_barge(kg: f64) -> (Hull, HydroOptions, MassCondition) {
+    let s = barge(10.0, 4.0, 3.0);
+    let opts = options(&s, 1.0);
+    let hull = Hull::new(&s, opts.subdivision);
+    let mass = MassCondition::bare(&hull, &opts, kg, Some(5.0)).unwrap();
+    (hull, opts, mass)
+}
+
+fn weight(mass_t: f64, x: f64, y: f64, z: f64) -> WeightItem {
+    WeightItem {
+        name: "trial".into(),
+        mass_t,
+        x,
+        y,
+        z,
+    }
+}
+
+/// The real root of `a t³ + c t + d = 0` with `a, c > 0` (Cardano).
+fn cardano(a: f64, c: f64, d: f64) -> f64 {
+    let (p, q) = (c / a, d / a);
+    let r = (q * q / 4.0 + p * p * p / 27.0).sqrt();
+    (-q / 2.0 + r).cbrt() + (-q / 2.0 - r).cbrt()
+}
+
+fn stable_heel(eq: &Equilibrium) -> &heel::HeelState {
+    match eq {
+        Equilibrium::Stable { state } => state,
+        other => panic!("expected a stable equilibrium, got {other:?}"),
+    }
+}
+
+/// Source: derived, not published — the wall-sided formula
+/// `GZ = sin φ (GM + ½ BM tan² φ)` from the immersed and emerged wedges of a
+/// wall-sided section, with the heeling arm `TCG cos φ`; equilibrium solves
+/// `(BM/2) tan³ φ + GM tan φ − TCG = 0` (docs/oracles.md §47).
+#[test]
+fn a_weight_off_centre_heels_a_box_to_the_wall_sided_angle() {
+    let (hull, opts, base) = heel_barge(1.6);
+    let mass = base.with_weights(&[weight(2.0, 5.0, 1.0, 1.6)]);
+    assert!((mass.displacement_t - 42.0).abs() < 1e-9);
+    let (b, d) = (4.0, 3.0);
+    let t = 1.05;
+    let kb = t / 2.0;
+    let bm = b * b / (12.0 * t);
+    let gm = kb + bm - 1.6;
+    let tcg = 2.0 / 42.0;
+    let tan = cardano(bm / 2.0, gm, -tcg);
+    // Inside the wall-sided range: deck edge dry, bilge wet.
+    assert!(tan < 2.0 * (d - t) / b && tan < 2.0 * t / b, "tan {tan}");
+    let expected = tan.atan().to_degrees();
+    assert!((expected - 12.0).abs() < 0.5, "expected {expected}");
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    let s = stable_heel(&eq);
+    assert!(
+        (s.heel_deg - expected).abs() < 0.05,
+        "heel {} vs {expected}",
+        s.heel_deg
+    );
+    assert!(s.trim_m.unwrap().abs() < 1e-4, "trim {:?}", s.trim_m);
+}
+
+#[test]
+fn a_starboard_weight_heels_to_starboard() {
+    let (hull, opts, base) = heel_barge(1.6);
+    let stbd = heel::equilibrium(
+        &hull,
+        &base.with_weights(&[weight(2.0, 5.0, 1.0, 1.6)]),
+        &opts,
+        None,
+    );
+    let port = heel::equilibrium(
+        &hull,
+        &base.with_weights(&[weight(2.0, 5.0, -1.0, 1.6)]),
+        &opts,
+        None,
+    );
+    let (s, p) = (stable_heel(&stbd).heel_deg, stable_heel(&port).heel_deg);
+    assert!(s > 0.0, "starboard weight heels {s}");
+    assert!(p < 0.0, "port weight heels {p}");
+    assert!((s + p).abs() < 1e-3, "{s} vs {p}");
+}
+
+#[test]
+fn a_weight_at_the_centreline_and_lcb_changes_only_the_draft() {
+    let (hull, opts, base) = heel_barge(1.6);
+    let mass = base.with_weights(&[weight(2.0, 5.0, 0.0, 1.6)]);
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    let s = stable_heel(&eq);
+    assert!(s.heel_deg.abs() < 1e-6, "heel {}", s.heel_deg);
+    assert!(
+        (s.draft.unwrap() - 1.05).abs() < 1e-6,
+        "draft {:?}",
+        s.draft
+    );
+}
+
+#[test]
+fn a_high_heavy_weight_capsizes_the_box() {
+    let (hull, opts, base) = heel_barge(1.6);
+    let mass = base.with_weights(&[weight(30.0, 5.0, 1.5, 6.0)]);
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    assert!(matches!(eq, Equilibrium::Capsizes { .. }), "{eq:?}");
+    assert_eq!(eq.heel_for_side(1.0), None);
+}
+
+/// Source: derived (§47). With `TCG = 0` the wall-sided lever vanishes at
+/// `tan φ = √(−2 GM / BM)`: KG 1.95 m gives GM −0.117 m and a loll of about
+/// 22.7°, inside the wall-sided range (bilge emerges at tan φ = 0.5).
+#[test]
+fn negative_gm_lolls_to_both_sides() {
+    let (hull, opts, mass) = heel_barge(1.95);
+    let (t, b) = (1.0_f64, 4.0_f64);
+    let bm = b * b / (12.0 * t);
+    let gm = t / 2.0 + bm - 1.95;
+    let tan = (-2.0 * gm / bm).sqrt();
+    assert!(tan < 2.0 * t / b, "tan {tan}");
+    let expected = tan.atan().to_degrees();
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    let Equilibrium::Loll { port, starboard } = &eq else {
+        panic!("expected loll, got {eq:?}");
+    };
+    assert!(
+        (port.heel_deg + starboard.heel_deg).abs() < 1e-3,
+        "{} vs {}",
+        port.heel_deg,
+        starboard.heel_deg
+    );
+    assert!(
+        (starboard.heel_deg - expected).abs() < 0.05,
+        "loll {} vs {expected}",
+        starboard.heel_deg
+    );
+    assert_eq!(eq.heel_for_side(0.0), Some(starboard.heel_deg));
+    assert_eq!(eq.heel_for_side(-3.0), Some(port.heel_deg));
+}
+
+#[test]
+fn heavier_than_the_hull_cannot_float() {
+    let (hull, opts, base) = heel_barge(1.6);
+    // The box holds 120 t; 200 t more cannot float.
+    let mass = base.with_weights(&[weight(200.0, 5.0, 0.0, 1.6)]);
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    assert!(matches!(eq, Equilibrium::CannotFloat), "{eq:?}");
+}
