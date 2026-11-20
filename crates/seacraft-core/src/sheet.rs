@@ -1197,17 +1197,77 @@ fn map_page(
 /// 100 mm rules, or when the document would have more than [`MAX_TILED_PAGES`] pages.
 pub fn pdf_tiled(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, String> {
     let mut pdf = Pdf::new(&setup.title);
-    pdf_tiled_into(sheets, setup, &mut pdf, &[])?;
+    pdf_tiled_into(sheets, setup, &mut pdf, &[], &[])?;
     pdf.finish()
 }
 
-/// [`pdf_tiled`]'s pages, added to an empty `pdf`. `after` names the sections the caller adds
-/// next and how many pages each takes: the first page lists them, and every tile's "page n of
-/// m" counts them.
+/// Drawing scales an overview page tries, largest first, as the N of 1:N.
+pub const OVERVIEW_SCALES: [f64; 9] = [5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0, 1000.0];
+
+/// One landscape page of `setup.paper` with `sheet` drawn whole at the largest of
+/// [`OVERVIEW_SCALES`] that fits, under `lines` of words and the sheet's notes. Returns the
+/// scale (paper over real size). For a layout to look at, not to cut from.
+pub fn pdf_overview_into(
+    sheet: &Sheet,
+    setup: &PageSetup,
+    lines: &[String],
+    pdf: &mut Pdf,
+) -> Result<f64, String> {
+    setup.check()?;
+    let (w, h) = (
+        setup.paper.width_mm.max(setup.paper.height_mm),
+        setup.paper.width_mm.min(setup.paper.height_mm),
+    );
+    let m = setup.margin_mm;
+    let width_pt = (w - 2.0 * m - 4.0) * PT_PER_MM;
+    let mut words: Vec<String> = Vec::new();
+    for line in lines.iter().chain(&sheet.notes) {
+        words.extend(wrap_text(line, SMALL_PT, width_pt));
+    }
+    let text_mm = (words.len() as f64 + 1.0) * SMALL_LINE_MM;
+    let room = (w - 2.0 * m, h - 2.0 * m - text_mm);
+    let fit = OVERVIEW_SCALES.iter().find_map(|n| {
+        let scale = 1.0 / n;
+        let e = extent_mm(sheet, scale)?;
+        (e[2] - e[0] <= room.0 && e[3] - e[1] <= room.1).then_some((scale, e))
+    });
+    let Some((scale, e)) = fit else {
+        return Err(format!(
+            "`{}` does not fit a {} x {} mm page even at 1:{}",
+            sheet.name,
+            setup.paper.width_mm,
+            setup.paper.height_mm,
+            OVERVIEW_SCALES[OVERVIEW_SCALES.len() - 1]
+        ));
+    };
+    let mut page = Content::new();
+    let top_mm = h - m;
+    for (i, line) in words.iter().enumerate() {
+        let y_mm = top_mm - (i + 1) as f64 * SMALL_LINE_MM;
+        page.text(
+            ((m + 2.0) * PT_PER_MM, y_mm * PT_PER_MM),
+            SMALL_PT,
+            0.0,
+            Anchor::Start,
+            0.0,
+            line,
+        );
+    }
+    let k = scale * 1000.0;
+    let origin = ((e[0] - m) / k, (e[1] - m) / k);
+    page.append(&draw(sheet, scale, origin));
+    pdf.add_page(w * PT_PER_MM, h * PT_PER_MM, page);
+    Ok(scale)
+}
+
+/// [`pdf_tiled`]'s pages, added to `pdf`. `before` names the sections already in `pdf` and how
+/// many pages each took, and `after` the sections the caller adds next: the calibration page
+/// lists them all, and every tile's "page n of m" counts them.
 pub fn pdf_tiled_into(
     sheets: &[Sheet],
     setup: &PageSetup,
     pdf: &mut Pdf,
+    before: &[(&str, usize)],
     after: &[(&str, usize)],
 ) -> Result<(), String> {
     setup.check()?;
@@ -1245,9 +1305,19 @@ pub fn pdf_tiled_into(
             _ => return Err(format!("sheet `{}` could not be laid out", sheet.name)),
         }
     }
-    // The page each sheet starts on, counting from 1 with the calibration page first.
+    // The page each sheet starts on, counting from 1, the pages already in `pdf` first and then
+    // the calibration page.
     let mut index = Vec::new();
-    let mut next = 2;
+    let mut first = 1;
+    for (name, pages) in before.iter().filter(|(_, pages)| *pages > 0) {
+        index.push(match pages {
+            1 => format!("{name}: page {first}"),
+            _ => format!("{name}: pages {first} to {}", first + pages - 1),
+        });
+        first += pages;
+    }
+    let earlier = pdf.page_count();
+    let mut next = earlier + 2;
     for (sheet, t) in &tilings {
         let pages = t.grid.printed.len() + usize::from(has_map(sheet, &t.grid));
         index.push(match pages {
@@ -1263,7 +1333,7 @@ pub fn pdf_tiled_into(
         });
         next += pages;
     }
-    let total = total + after.iter().map(|(_, pages)| pages).sum::<usize>();
+    let total = earlier + total + after.iter().map(|(_, pages)| pages).sum::<usize>();
 
     let upright = (
         setup.paper.width_mm * PT_PER_MM,

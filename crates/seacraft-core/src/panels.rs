@@ -2226,7 +2226,30 @@ pub struct PanelsWritten {
     pub written: crate::templates::Written,
     /// 0 for an SVG or DXF, or when the tables were not asked for.
     pub offsets_pages: usize,
+    /// The layout pages at the front of a PDF, one per sheet or blank; 0 without nesting.
+    pub layout_pages: usize,
+    /// One cutting file per sheet or blank for an SVG or DXF with nesting, in the layout's
+    /// order, to write as [`sheet_file_name`] names them; empty otherwise.
+    pub per_sheet: Vec<crate::templates::Written>,
 }
+
+/// Where the cutting file of layout sheet `i` (from 0) goes beside the patterns at `path`:
+/// `skiff.svg` → `skiff-sheet-1.svg`.
+pub fn sheet_file_name(path: &std::path::Path, i: usize) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem}-sheet-{}.{}", i + 1, ext.to_string_lossy()),
+        None => format!("{stem}-sheet-{}", i + 1),
+    };
+    path.with_file_name(name)
+}
+
+/// What the first lines of a layout page say.
+const LAYOUT_PAGE_WORDS: &str =
+    "Layout, not full size: cut from the SVG or DXF files, or from the full-size patterns that follow";
 
 /// The patterns as `format`. With `offsets_pages`, a PDF also carries every panel's offsets
 /// tables after the patterns (A4 landscape, as [`offsets_pdf`] makes them); an SVG or DXF
@@ -2253,12 +2276,48 @@ pub fn write(
             missing: Vec::new(),
         },
         offsets_pages: 0,
+        layout_pages: 0,
+        per_sheet: Vec::new(),
+    };
+    let drawings = set.layout.as_ref().map_or(&[][..], |l| &l.drawings[..]);
+    let cutting = |one: fn(&[Sheet], f64) -> String| -> Vec<Written> {
+        drawings
+            .iter()
+            .map(|d| Written {
+                bytes: one(std::slice::from_ref(d), setup.scale).into_bytes(),
+                pages: None,
+                missing: Vec::new(),
+            })
+            .collect()
     };
     let tables = offsets_pages && !set.offsets.is_empty();
     let mut doc = crate::pdf::Pdf::new(&setup.title);
+    let mut layout_pages = 0;
+    if matches!(format, Format::PdfSingle | Format::PdfTiled) {
+        for d in drawings {
+            let mut lines = vec![
+                format!("{} · {}", d.name, setup.title),
+                LAYOUT_PAGE_WORDS.to_string(),
+            ];
+            // The scale is known once the page is fitted; written after the first line.
+            let mut scratch = crate::pdf::Pdf::new(&setup.title);
+            let scale = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut scratch)?;
+            lines.insert(1, format!("Scale {}", crate::units::scale_label(scale)));
+            crate::sheet::pdf_overview_into(d, &setup, &lines, &mut doc)?;
+            layout_pages += 1;
+        }
+    }
     match format {
-        Format::Svg => return Ok(text(crate::sheet::svg(&set.sheets, setup.scale))),
-        Format::Dxf => return Ok(text(crate::sheet::dxf(&set.sheets, setup.scale))),
+        Format::Svg => {
+            let mut w = text(crate::sheet::svg(&set.sheets, setup.scale));
+            w.per_sheet = cutting(crate::sheet::svg);
+            return Ok(w);
+        }
+        Format::Dxf => {
+            let mut w = text(crate::sheet::dxf(&set.sheets, setup.scale));
+            w.per_sheet = cutting(crate::sheet::dxf);
+            return Ok(w);
+        }
         Format::PdfSingle => crate::sheet::pdf_single_into(&set.sheets, &setup, &mut doc)?,
         Format::PdfTiled => {
             // The first page lists the tables and every tile counts them, so their page count
@@ -2269,7 +2328,13 @@ pub fn write(
             } else {
                 0
             };
-            crate::sheet::pdf_tiled_into(&set.sheets, &setup, &mut doc, &[("Offsets", count)])?;
+            crate::sheet::pdf_tiled_into(
+                &set.sheets,
+                &setup,
+                &mut doc,
+                &[("Layout", layout_pages)],
+                &[("Offsets", count)],
+            )?;
         }
     }
     let added = if tables {
@@ -2285,6 +2350,8 @@ pub fn write(
             bytes: doc.bytes,
         },
         offsets_pages: added,
+        layout_pages,
+        per_sheet: Vec::new(),
     })
 }
 
@@ -3823,6 +3890,118 @@ mod tests {
                 ..PanelOptions::default()
             };
             assert!(panel_set(&s, &opts).is_err(), "gap {gap_m}");
+        }
+    }
+
+    fn nested_skiff(mode: crate::panel_layout::NestMode) -> PanelSet {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        panel_set(
+            &s,
+            &PanelOptions {
+                nesting: Some(crate::panel_layout::Nesting { mode, gap_m: 0.01 }),
+                ..PanelOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn layout_svg_is_one_file_per_sheet() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let set = nested_skiff(crate::panel_layout::NestMode::Split);
+        let layout = set.layout.as_ref().unwrap();
+        let svg = write(&set, Format::Svg, &PageSetup::default(), false).unwrap();
+        assert_eq!(svg.per_sheet.len(), layout.sheets.len());
+        assert_eq!(svg.layout_pages, 0);
+        for (w, sheet) in svg.per_sheet.iter().zip(&layout.sheets) {
+            let text = String::from_utf8(w.bytes.clone()).unwrap();
+            assert!(
+                text.starts_with("<svg") || text.starts_with("<?xml"),
+                "{}",
+                &text[..40]
+            );
+            assert!(text.contains(&sheet.name));
+        }
+        let dxf = write(&set, Format::Dxf, &PageSetup::default(), false).unwrap();
+        assert_eq!(dxf.per_sheet.len(), layout.sheets.len());
+        for w in &dxf.per_sheet {
+            let text = String::from_utf8(w.bytes.clone()).unwrap();
+            assert!(text.contains("CUT") && text.contains("REFERENCE"));
+        }
+        // The patterns file is the one written without nesting.
+        let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        let before = write(&plain, Format::Svg, &PageSetup::default(), false).unwrap();
+        assert_eq!(svg.written.bytes, before.written.bytes);
+    }
+
+    #[test]
+    fn layout_pdf_pages_come_first() {
+        use crate::pdf::page_text;
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let set = nested_skiff(crate::panel_layout::NestMode::Blanks);
+        let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        let sheets = set.layout.as_ref().unwrap().sheets.len();
+        let setup = PageSetup::default();
+        for format in [Format::PdfSingle, Format::PdfTiled] {
+            let with = write(&set, format, &setup, true).unwrap();
+            let without = write(&plain, format, &setup, true).unwrap();
+            assert_eq!(with.layout_pages, sheets, "{format:?}");
+            assert!(with.per_sheet.is_empty());
+            assert_eq!(
+                with.written.pages.unwrap(),
+                without.written.pages.unwrap() + sheets,
+                "{format:?}"
+            );
+            let first = page_text(&with.written.bytes, 0).join(" ");
+            assert!(first.contains("Layout, not full size"), "{first}");
+            assert!(first.contains("Scale 1:"), "{first}");
+        }
+        // The tiled document's index and captions count the layout pages before them.
+        let tiled = write(&set, Format::PdfTiled, &setup, false).unwrap();
+        let total = tiled.written.pages.unwrap();
+        let index = page_text(&tiled.written.bytes, sheets).join(" ");
+        assert!(
+            index.contains(&format!("Layout: pages 1 to {sheets}"))
+                || (sheets == 1 && index.contains("Layout: page 1")),
+            "{index}"
+        );
+        let last = page_text(&tiled.written.bytes, total - 1).join(" ");
+        assert!(last.contains(&format!("page {total} of {total}")), "{last}");
+    }
+
+    #[test]
+    fn sheet_file_names_number_from_one() {
+        use std::path::{Path, PathBuf};
+        assert_eq!(
+            sheet_file_name(Path::new("skiff.svg"), 0),
+            PathBuf::from("skiff-sheet-1.svg")
+        );
+        assert_eq!(
+            sheet_file_name(Path::new("out/skiff.panels.dxf"), 2),
+            PathBuf::from("out/skiff.panels-sheet-3.dxf")
+        );
+        assert_eq!(
+            sheet_file_name(Path::new("noext"), 0),
+            PathBuf::from("noext-sheet-1")
+        );
+    }
+
+    #[test]
+    fn no_layout_writes_as_before() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        for format in [
+            Format::Svg,
+            Format::Dxf,
+            Format::PdfSingle,
+            Format::PdfTiled,
+        ] {
+            let w = write(&plain, format, &PageSetup::default(), true).unwrap();
+            assert!(w.per_sheet.is_empty());
+            assert_eq!(w.layout_pages, 0);
         }
     }
 }

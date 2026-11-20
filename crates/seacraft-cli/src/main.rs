@@ -3744,6 +3744,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     let panels::PanelsWritten {
         written,
         offsets_pages,
+        ..
     } = panels::write(&set, format, &setup, !a.no_offsets_pages).map_err(anyhow::Error::msg)?;
     let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
     if let Some(path) = &a.offsets_csv {
