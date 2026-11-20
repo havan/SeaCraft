@@ -1926,3 +1926,56 @@ Side), `measurements_are_never_cut_lines` (every measurement line is a reference
 ### Provenance
 By construction for the "C" shape; otherwise the measurements of §32 and §48, written on the drawing in whole
 millimetres. Nothing here is a new measurement.
+
+---
+
+## 50. Panel Nesting: Outline Packing, Blanks and Split Parts
+
+### Formula
+`nest::pack` places closed 2D outlines in decreasing area on rectangular bins of length $L$ and width $W$, keeping a
+gap $g$ between outlines on the same bin ($\mathrm{dist}(A, B) \ge g$) and from every bin edge
+($[g, L - g] \times [g, W - g]$). Each item may be turned end for end (180° in its plane) or turned over (mirrored
+across its length axis, $y \mapsto -y$, when `may_turn_over`), never a quarter turn across the grain. Candidate
+placements step along $x$ by 10 mm and locate the lowest valid $y$ by 10 mm steps followed by bisection to 1 mm;
+the search simplifies outlines by Douglas–Peucker to at most 0.25 mm and widens the inter-item search gap by 0.5 mm
+(twice that tolerance) so the requested gap $g$ holds on the true outlines. Bin-edge clearance uses each pose's true
+bounding box. Negative, non-finite, or oversized gaps ($2g \ge W$) are refused without placing any piece.
+
+`panel_layout::nest_panels` turns each panel into its cut copies (a mirrored pair's second copy is the outline
+mirrored $y \mapsto -y$ before posing):
+- In `NestMode::Blanks`, `new_bin(need)` opens a blank of the fewest whole stock sheets $k \le 100$ with
+  $L + (k - 1)(L - s) - 2g \ge \text{need}$ for scarf $s$, placing joints at $L, 2L - s, \dots$ from the aft end.
+- In `NestMode::Split`, a panel longer than $L - 2g$ is divided square to the baseline into the fewest equal parts
+  fitting $L - 2g$. A joint at an $x$ where the outline is crossed more than twice moves aft, then forward, in 10 mm
+  steps to the nearest $x$ crossed twice; parts are clipped against the vertical slabs by Sutherland–Hodgman, and
+  each joint gets matching `Mark` ticks at a quarter and three quarters of its length, lettered consecutively across
+  the panel set.
+
+### Tests
+- `crates/seacraft-core/src/nest.rs`:
+  - `rectangles_fill_a_bin_without_overlap`: twelve 0.5 × 0.3 m rectangles in one 2.44 × 1.22 m bin, gap 0.01 m;
+    every point inside $[g, L - g] \times [g, W - g]$ and every pair at least $g - 10^{-9}$ m apart.
+  - `two_arches_share_a_width`: two 3 m × 0.5 m bounding-box parabolic arches (whose boxes need 1.03 m > 0.85 m with
+    gaps) both pack into one 3.2 × 0.85 m bin, holding the gap to $10^{-9}$ m, by construction.
+  - `poses_keep_the_shape_and_anchor_the_box`: all four pose flags place the bounding box's low corner at $(x, y)$
+    and preserve area and edge lengths to $10^{-12}$; `turned_over` reverses winding.
+  - `too_wide_is_unplaced_by_name`, `no_bin_long_enough_is_unplaced`, `a_bad_gap_places_nothing_and_says_why`,
+    `packing_is_deterministic`, `the_gap_is_kept_from_bin_edges`.
+- `crates/seacraft-core/src/panel_layout.rs`:
+  - `blanks_hold_the_skiff_without_overlap`: all 4 pieces of `skiff-4m` (`Bottom`, `Side`, `Side, turned over`,
+    `Transom`) placed on at most 3 blanks of 3.0 × 1.5 m, gap 0.01 m held to $10^{-9}$ m.
+  - `a_blank_is_as_long_as_its_sheets_less_the_scarfs`: 4.4 m piece on 3.0 m stock with 0.15 m scarf gives a 2-sheet
+    blank of 5.85 m with its joint at 3.0 m, by construction.
+  - `split_parts_add_up_and_fit`: `skiff-4m` `Side` on 2440 mm stock splits into `"Side 1 of 2"` and `"Side 2 of 2"`,
+    part lengths sum to the panel's length within $10^{-9}$ m, and every part fits $L - 2g$.
+  - `joint_marks_match`: split parts carry `Mark` ticks at matching joint positions and matching letters across the
+    set (`A`/`B`, `C`/`D`).
+  - `a_joint_moves_off_a_triple_crossing`: a 4 × 1 m slotted slab (crossed 4 times for $x > 1.5$ m) moves its joint
+    below $x = 1.5$ m where crossed twice; part lengths sum to 4.0 m and part areas sum to $4.0 - 2.5 \times 0.2 =
+    3.5$ m² within $10^{-9}$.
+  - `the_turned_over_copy_is_the_mirror`, `layout_drawings_cut_only_the_pieces`.
+
+### Provenance
+Synthetic shapes by construction and geometric invariants (no published benchmark). `nest::pack` is a deterministic
+largest-first heuristic, not minimum-sheet packing, and is not checked for plywood grain defects, kerf variation, or
+real shop tolerances.

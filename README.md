@@ -663,14 +663,22 @@ guide.
 `seacraft panels` lays a hard-chine hull's plywood panels flat for
 stitch-and-glue. Panels come from the layers and creases of the refined half
 model; each is flattened with the least stretch (the as-rigid-as-possible
-method of Liu et al., 2008) and drawn full size with station lines, seam ticks
-and what each edge is stitched to. A panel whose seams drift over 2 mm or that
-must stretch over 0.1 % RMS does not lie flat, and then nothing is written
-unless `--allow-undevelopable` is given; the limits are provisional. Offsets
-from a baseline (`--offsets-csv`, `--offsets-pdf`) and a count of plywood
-sheets end to end come with it; the PDF carries the offsets tables after the
-patterns. The desktop app has the same under File ▸ Builder panels…, with a
-live list of the panels and a drawing of their patterns, and the MCP server as
+method of Liu et al., 2008) and drawn full size with station lines, seam ticks,
+what each edge is stitched to, overall length and width, baseline offsets, and
+seam lengths (reference lines and text, never cut lines). A panel whose seams
+drift over 2 mm or that must stretch over 0.1 % RMS does not lie flat, and then
+nothing is written unless `--allow-undevelopable` is given; the limits are
+provisional. Offsets from a baseline (`--offsets-csv`, `--offsets-pdf`) and a
+plywood sheet count come with it; the PDF carries the offsets tables after the
+patterns. Without `--nest`, sheets are counted end to end as an upper bound;
+`--nest blanks` joins sheets end to end into blanks with `--scarf-mm`, `--nest
+split` cuts long pieces at straight butt joints with matching alignment marks,
+and `--gap-mm` (default 10) keeps a gap between pieces and from sheet edges.
+With nesting, SVG and DXF also write one cutting file per sheet (`NAME-sheet-1.svg`,
+…) and PDF puts scaled layout overview pages first. The automatic layout is
+repeatable, not the fewest possible sheets. The desktop app has the same under
+File ▸ Builder panels…, with a live list of the panels, a **Panels | Sheets**
+switch for the patterns and full-size sheets, and the MCP server exposes
 `export_panels`, which can also measure without writing.
 
 ---
@@ -695,7 +703,8 @@ seacraft templates hull.fef -o moulds.pdf|.svg|.dxf [--stations N | --spacing M 
 seacraft panels    hull.fef -o panels.pdf|.svg|.dxf [--layer NAME]... [--stations N | --spacing M | --at x1,...]
                               [--max-seam-drift-mm 2] [--max-stretch-pct 0.1] [--allow-undevelopable]
                               [--offsets-csv out.csv] [--offsets-pdf out.pdf] [--offset-spacing-mm 250]
-                              [--stock-mm 2440x1220] [--scarf-mm MM] [--paper ...] [--single-page]
+                              [--no-offsets-pages] [--stock-mm 2440x1220] [--scarf-mm MM]
+                              [--nest none|blanks|split] [--gap-mm 10] [--paper ...] [--single-page]
                               [--margin-mm MM] [--overlap-mm MM] [--scale 1:N] [--imperial] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]
