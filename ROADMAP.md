@@ -33,9 +33,14 @@ The most important milestone: most results have never been compared with reality
   Molland et al. (2011) (`docs/oracles.md` §42, §43).
 - [x] Compare Michell with published Wigley hull data: Kajitani et al. (1983) towing tests and an independent
   computation (`docs/oracles.md` §39).
-- [ ] Compare seakeeping RAOs with published experiments.
+- [x] Compare seakeeping RAOs with published experiments: strip theory on Wigley I and III in head waves at
+  Fn 0.2 to 0.4, coefficients, wave loads and motions each against Journée (1992) towing tests
+  (`docs/oracles.md` §46).
 - Done when each area has at least one oracle in `docs/oracles.md` with a checkable published source,
   and `DISCLAIMER.md` and the README say exactly what is covered.
+
+M1 is done (2026-11-20): every area above has an oracle with a checkable published source, and `DISCLAIMER.md`
+and the README say what each covers. Most results are still not compared with real vessels; see the gap review.
 
 ### M2: Viewport performance
 
@@ -136,6 +141,10 @@ These have no milestone and no date; the roadmap is not worked in order, and the
   source is in hand.
 - The `wigley` example's fit below half draft (5.5 % thin at a quarter draft, `docs/oracles.md` §44), if a use
   for the example at light drafts turns up.
+- Seakeeping on DTMB 5415 (a transom, a real warship) against Irvine, Longo & Stern (2008), *Journal of Ship
+  Research* 52(2), heave and pitch in head waves.
+- Seakeeping on Wigley II and IV (L/B 5) from the same Journée (1992) report, with the same test code: II was run
+  at Fn 0.2 only and IV not at Fn 0.4.
 
 ## Gap review
 
@@ -147,7 +156,7 @@ These have no milestone and no date; the roadmap is not worked in order, and the
 | Resistance | Holtrop-Mennen, Michell, Savitsky, within each method's range | Appendage detail, sailing yacht performance |
 | Wave pattern | Far-field thin-ship (Michell) waves, checked against Kelvin's asymptotics | A measured wave cut to compare with, the wave profile on the hull, heel and trim |
 | Small craft | None | ISO 12217-2 STIX (the formula is in a paid standard) |
-| Seakeeping | Strip theory, heave and pitch in head seas | 3D panel method, oblique seas, roll |
+| Seakeeping | Strip theory, heave and pitch in head seas; compared with Wigley tank tests (`docs/oracles.md` §46) | 3D panel method, oblique seas, roll |
 | Modelling | Point edits alone, in groups or with followers; split face, insert edge, crease, layers | Edge picking, edge extrusion |
 | File formats | `.fef`, SVG, DXF, IGES, OBJ, STL, 3MF, PLY | FREE!ship's binary `.fbm`, VRML import |
 | GUI | Dark theme, four viewports, docks | Light theme, command palette, smooth 3D on large models |

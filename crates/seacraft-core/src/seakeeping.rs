@@ -1060,11 +1060,53 @@ pub(crate) struct AftStation {
     pub b_a: f64,
 }
 
+/// The wave excitation on the hull held still in regular head waves, at one wave frequency, per
+/// unit wave amplitude: Froude–Krylov plus diffraction, with the speed term and (when
+/// [`SeakeepingSpec::transom_terms`] is on) the transom term. These are the loads the motions
+/// in the matching [`RaoPoint`] were solved with.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct WaveLoads {
+    /// Incident wave frequency in rad/s.
+    pub omega: f64,
+    /// Encounter frequency in rad/s.
+    pub omega_e: f64,
+    /// Heave force (amplitude in N/m, phase in degrees), positive up.
+    pub heave_force: (f64, f64),
+    /// Pitch moment about the LCG (amplitude in N·m/m, phase in degrees), positive bow up.
+    pub pitch_moment: (f64, f64),
+}
+
+/// [`head_sea_raos`] on a hull that is already built, such as an exact mesh from
+/// [`Hull::from_panels`], with the hydrostatic options to measure it with. `hydro_opts.draft`
+/// and `water_density` are replaced by `spec.draft` and `spec.rho`, and the hull is solved
+/// upright and level whatever `trim` and `heel_deg` say. Phases are relative to the
+/// wave crest at the LCG, as in [`RaoPoint`]. Also returns the wave loads of every frequency.
+pub fn head_sea_raos_on_hull(
+    hull: &Hull,
+    hydro_opts: &HydroOptions,
+    spec: &SeakeepingSpec,
+) -> Result<(SeakeepingReport, Vec<WaveLoads>), String> {
+    solve_on_hull(hull, hydro_opts.clone(), spec).map(|(report, _, loads)| (report, loads))
+}
+
 /// [`head_sea_raos`] that also returns the [`AftStation`] of every frequency.
 pub(crate) fn head_sea_raos_detailed(
     surface: &Surface,
     spec: &SeakeepingSpec,
 ) -> Result<(SeakeepingReport, Vec<AftStation>), String> {
+    let subdiv = SubdivisionOptions::default();
+    let hull = Hull::new(surface, subdiv);
+    let hydro_opts = HydroOptions::from_surface(surface, subdiv);
+    solve_on_hull(&hull, hydro_opts, spec).map(|(report, aft, _)| (report, aft))
+}
+
+type Solved = (SeakeepingReport, Vec<AftStation>, Vec<WaveLoads>);
+
+fn solve_on_hull(
+    hull: &Hull,
+    mut hydro_opts: HydroOptions,
+    spec: &SeakeepingSpec,
+) -> Result<Solved, String> {
     if spec.draft <= 0.0 || !spec.draft.is_finite() {
         return Err("draft must be positive and finite".into());
     }
@@ -1076,9 +1118,9 @@ pub(crate) fn head_sea_raos_detailed(
     }
 
     let u_speed = spec.speed_kn * 0.5144444444444445;
-    let subdiv = SubdivisionOptions::default();
-    let hull = Hull::new(surface, subdiv);
-    let mut hydro_opts = HydroOptions::from_surface(surface, subdiv);
+    // The strips below are cut upright and level, so the hydrostatics must be too.
+    hydro_opts.trim = 0.0;
+    hydro_opts.heel_deg = 0.0;
     hydro_opts.draft = spec.draft;
     hydro_opts.water_density = spec.rho;
     let hydro = hull.hydrostatics(&hydro_opts);
@@ -1123,7 +1165,7 @@ pub(crate) fn head_sea_raos_detailed(
 
     for &cut_x in &station_x_models {
         let clamped_x = cut_x.clamp(wl_min + 1e-4 * lwl, wl_max - 1e-4 * lwl);
-        let (_, polys) = curves::station_polygons(&hull, clamped_x);
+        let (_, polys) = curves::station_polygons(hull, clamped_x);
         let sec = extract_submerged_starboard(&polys, zwl);
         station_contours.push((cut_x, sec));
     }
@@ -1186,6 +1228,7 @@ pub(crate) fn head_sea_raos_detailed(
     let mut raos = Vec::with_capacity(omegas.len());
     let mut global_coeffs = Vec::with_capacity(omegas.len());
     let mut aft_stations = Vec::with_capacity(omegas.len());
+    let mut wave_loads = Vec::with_capacity(omegas.len());
 
     // The panel solves dominate the cost and are independent, so do them all
     // up front on every core; the loop below only looks them up.
@@ -1380,6 +1423,13 @@ pub(crate) fn head_sea_raos_detailed(
         let h3_total = trapz_complex(&station_xs, &h3_secs);
         let f5_total = static_m5 + C::new(0.0, -u_speed / w_e) * h3_total + transom_f5;
         let f3_total = f3_total + transom_f3;
+        let polar = |z: C| (z.abs(), z.im.atan2(z.re) * 180.0 / PI);
+        wave_loads.push(WaveLoads {
+            omega: w,
+            omega_e: w_e,
+            heave_force: polar(f3_total),
+            pitch_moment: polar(f5_total),
+        });
 
         // 2x2 complex motion equations
         let k11 = C::new(c33 - w_e * w_e * (mass + a33), w_e * b33);
@@ -1432,6 +1482,7 @@ pub(crate) fn head_sea_raos_detailed(
             x_bow: wl_max,
         },
         aft_stations,
+        wave_loads,
     ))
 }
 
@@ -2357,6 +2408,112 @@ mod tests {
             assert!(pt.heave_phase_deg.is_finite(), "heave phase must be finite");
             assert!(pt.pitch_amp.is_finite(), "pitch amp must be finite");
             assert!(pt.pitch_phase_deg.is_finite(), "pitch phase must be finite");
+        }
+    }
+
+    /// The demo hull (it has a wetted transom) at 6 kn, solved through the surface and
+    /// through an already built hull.
+    fn demo_on_both_paths() -> (
+        SeakeepingReport,
+        SeakeepingReport,
+        Vec<WaveLoads>,
+        SeakeepingSpec,
+    ) {
+        let surface = crate::demo::demo_hull(true);
+        let spec = SeakeepingSpec {
+            draft: 0.62,
+            speed_kn: 6.0,
+            kg: 2.2,
+            points: Some(20),
+            ..Default::default()
+        };
+        let by_surface = head_sea_raos(&surface, &spec).expect("surface path");
+        let subdiv = SubdivisionOptions::default();
+        let hull = Hull::new(&surface, subdiv);
+        let opts = HydroOptions::from_surface(&surface, subdiv);
+        let (by_hull, loads) = head_sea_raos_on_hull(&hull, &opts, &spec).expect("hull path");
+        (by_surface, by_hull, loads, spec)
+    }
+
+    /// The strips are cut upright and level, so a trim or heel left in the caller's
+    /// hydrostatic options must not reach the mass, LCG or restoring either.
+    #[test]
+    fn hull_entry_point_solves_upright_and_level() {
+        let (_, level, level_loads, spec) = demo_on_both_paths();
+        let surface = crate::demo::demo_hull(true);
+        let subdiv = SubdivisionOptions::default();
+        let hull = Hull::new(&surface, subdiv);
+        let mut opts = HydroOptions::from_surface(&surface, subdiv);
+        opts.trim = 0.3;
+        opts.heel_deg = 5.0;
+        let (tilted, tilted_loads) = head_sea_raos_on_hull(&hull, &opts, &spec).expect("hull path");
+        assert_eq!(tilted.x_lcg, level.x_lcg);
+        assert_eq!(tilted.coefficients, level.coefficients);
+        assert_eq!(tilted.frequencies, level.frequencies);
+        assert_eq!(tilted_loads, level_loads);
+    }
+
+    /// Solving on a built hull gives bit for bit what the surface entry point gives,
+    /// transom terms included.
+    #[test]
+    fn hull_entry_point_matches_the_surface_path() {
+        let (a, b, loads, _) = demo_on_both_paths();
+        assert_eq!(a.frequencies.len(), 20);
+        assert_eq!(a.frequencies, b.frequencies);
+        assert_eq!(a.coefficients, b.coefficients);
+        assert_eq!(a.natural_heave_omega, b.natural_heave_omega);
+        assert_eq!(a.natural_pitch_omega, b.natural_pitch_omega);
+        assert_eq!(a.x_lcg, b.x_lcg);
+        assert_eq!(a.x_bow, b.x_bow);
+        assert_eq!(loads.len(), a.frequencies.len());
+    }
+
+    /// The returned wave loads are the ones the motions were solved with: the 2×2 system
+    /// re-solved from the returned coefficients and loads gives the RAOs back.
+    #[test]
+    fn wave_loads_reproduce_the_motions() {
+        let (_, rep, loads, spec) = demo_on_both_paths();
+        let surface = crate::demo::demo_hull(true);
+        let subdiv = SubdivisionOptions::default();
+        let mut opts = HydroOptions::from_surface(&surface, subdiv);
+        opts.draft = spec.draft;
+        opts.water_density = spec.rho;
+        let hydro = Hull::new(&surface, subdiv).hydrostatics(&opts);
+        let mass = spec.rho * hydro.volume_m3;
+        let kyy = 0.25 * hydro.lwl;
+        let i55 = mass * kyy * kyy;
+        let polar = |(amp, deg): (f64, f64)| {
+            let r = deg.to_radians();
+            C::new(amp * r.cos(), amp * r.sin())
+        };
+        let coeffs = rep.coefficients.as_ref().expect("coefficients");
+        for ((p, c), l) in rep.frequencies.iter().zip(coeffs).zip(&loads) {
+            assert_eq!((l.omega, l.omega_e), (p.omega, p.omega_e));
+            let we = c.omega_e;
+            let k11 = C::new(c.c33 - we * we * (mass + c.a33), we * c.b33);
+            let k12 = C::new(c.c35 - we * we * c.a35, we * c.b35);
+            let k21 = C::new(c.c53 - we * we * c.a53, we * c.b53);
+            let k22 = C::new(c.c55 - we * we * (i55 + c.a55), we * c.b55);
+            let (f3, f5) = (polar(l.heave_force), polar(l.pitch_moment));
+            let det = k11 * k22 - k12 * k21;
+            let eta3 = (k22 * f3 - k12 * f5) / det;
+            let eta5 = (-k21 * f3 + k11 * f5) / det;
+            let k = p.omega * p.omega / spec.g;
+            let phase = |z: C| z.im.atan2(z.re).to_degrees();
+            let wrap = |d: f64| (d + 180.0).rem_euclid(360.0) - 180.0;
+            let rel = |x: f64, y: f64| (x - y).abs() / y.abs();
+            assert!(
+                rel(eta3.abs(), p.heave_amp) < 1e-9,
+                "heave at ω {}",
+                p.omega
+            );
+            assert!(
+                rel(eta5.abs() / k, p.pitch_amp) < 1e-9,
+                "pitch at ω {}",
+                p.omega
+            );
+            assert!(wrap(phase(eta3) - p.heave_phase_deg).abs() < 1e-6);
+            assert!(wrap(phase(eta5) - p.pitch_phase_deg).abs() < 1e-6);
         }
     }
 }

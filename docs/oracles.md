@@ -1652,3 +1652,173 @@ An independent integration of the published equation, written and run 2026-11-20
 published table and not approved software. It covers one hull, at one displacement, heeled to starboard up to 80°
 (to port at 10°, 30° and 50°) with no trim, KG 0.35 m; it says nothing about hulls with a transom, a chine or a skeg, or about
 trimmed conditions.
+
+---
+
+## 46. Strip-Theory Heave and Pitch against Journée (1992), Wigley I and III
+
+### Source
+- J.M.J. Journée, *Experiments and Calculations on 4 Wigley Hull Forms in Head Waves*, Delft University of
+  Technology, Ship Hydromechanics Laboratory, Report 0909, May 1992 (reprinted 2003). Read 2026-11-20. The TU
+  Delft repository record is closed; the copy read was the Internet Archive's capture of the author's site
+  (`shipmotions.nl`, `0909-DUT-92.pdf`).
+- Used: §2 (pp. 2 to 3, particulars and the hull formula), §4.1 to §4.3 (pp. 5 to 9, how each quantity was reduced
+  and made non-dimensional), Appendix I (axes), and Tables 2-I, 2-III (pp. 33, 35), 3-I, 3-III (pp. 37, 39), 6-I,
+  6-III (pp. 45, 47), 8-I, 8-III (pp. 51, 53). Every number in the tests is a table value as printed. The figures
+  are scanned and no test or band uses a number read from them.
+
+### What is compared
+Fresh water (ρ 1000 kg/m³, g 9.81 m/s²), L 3 m, draft 0.1875 m, Fn 0.2, 0.3, 0.4 (U 1.085, 1.627, 2.170 m/s), head
+seas, models not free to surge. Wigley I (α 1, ∇ 0.0946 m³) and Wigley III (α 0, ∇ 0.0780 m³), both B 0.3 m,
+KG 0.17 m, kyy 0.75 m; the only two of the four models run at all three speeds. Each part is checked on its own, so
+that a gap in the motions can be traced to the radiation side or the excitation side:
+
+1. **Radiation coefficients** (forced heave at 0.025 and 0.050 m, forced pitch at 1.5° and 3.0°; Tables 2, 3):
+   A33, B33, A53, B53, A55, B55, A35, B35 at the encounter frequencies 3 to 12 rad/s (also 1 and 2 rad/s on
+   Wigley III at Fn 0.2), against `GlobalCoefficients` at the wave frequency that meets the hull at that ω_e
+   (the positive root of ω + ω²U/g = ω_e).
+2. **Wave loads on the restrained model** (Table 6, wave amplitudes about 2.5 and 4.5 cm, λ/L 0.5 to 2.0): the
+   heave force and pitch moment, against the new `WaveLoads` that `head_sea_raos_on_hull` returns (the
+   excitation the motions are solved with: Froude–Krylov, diffraction, the speed term).
+3. **Motions of the free model** (Table 8, λ/L 0.5 to 2.37): heave and pitch amplitude and phase.
+
+Non-dimensional forms, divided by Journée's printed ∇, C33 6119 N/m and C55 2874 N·m (never SeaCraft's):
+A33″ = A33/(ρ∇), B33″ = B33/(ρ∇√(g/L)); A35″, A53″ = A/(ρ∇L), B35″, B53″ = B/(ρ∇L√(g/L)); A55″ = A55/(ρ∇L²),
+B55″ = B55/(ρ∇L²√(g/L)); Xw3″ = |F3|/(ζa C33), Xw5″ = |F5|/(k ζa C55); z″ = z/ζa; θ″ = θa L/(2π ζa), which is
+SeaCraft's `pitch_amp` × L/λ. Phases are relative to the wave crest at the centre of gravity in both.
+
+**Sign map.** Journée's axes (Appendix I) make pitch positive bow down; SeaCraft's is bow up. So pitch and
+pitch-moment phases differ by 180° and A35, B35, A53, B53 change sign; A33, B33, A55, B55 and the heave phases do
+not. Proved, not assumed: in a λ/L = 20 wave on Wigley I at Fn 0.2 SeaCraft's heave phase is −0.0° and its pitch
+phase plus 180° is 270.4° (bow down on the wave slope); at λ/L 2 they are 358° and 261.6° against the measured 360°
+and 265°; and B53″, B35″ on Wigley I at Fn 0.3 have the measured signs at every frequency of 5 rad/s and above.
+
+**C55 ruling.** §4.1 reduces A55 = −Xo5a cos ε/(θa ω²) + C55/ω² − M55*, with C55 = 2ρg∫y_w x² dx (2874 N·m)
+alone, the model turning about KR = 0.1875 m (the waterline). It says nothing of compensating the buoyancy and
+weight moments about KR, and does not give the forced model's mass or KG. If the model weighed ρ∇ with G at the
+printed KG, his A55 holds an offset ρg∇(KB − KG)/ω² (−58.6 N·m on Wigley I, −40.4 N·m on Wigley III). A55 is
+compared **as printed**; the test prints the corrected value beside it. The correction does not explain the gap:
+it makes the low-frequency gaps larger, and the tank's excess over strip theory is roughly constant in ω (about
+0.008 in A55″ on Wigley I at Fn 0.3, 6 to 10 rad/s), not 1/ω².
+
+### The exact hulls
+`tests/journee_1992/mod.rs` meshes the formula directly (no control net, no subdivision): 200 columns over L,
+40 rows below the waterline, wall-sided above it (the ζ = 0 waterline carried straight up), run through
+`head_sea_raos_on_hull`, the same station cutting, close-fit sections and strip integration as
+`head_sea_raos`. Against the formula integrated by hand (not published): volume 4.2e-4 (I) and 1.4e-4 (III) low,
+KB within 2.9e-4, waterplane area 2.9e-5, I_L 5.8e-5; ρg·Awp and ρg·I_L are within 0.1 % of the printed C33 and
+C55, and the volumes within the printed four decimals. Convergence on Wigley I at Fn 0.3 (motions at λ/L 0.75 to
+2.0, B33″ and B55″ at 4 to 12 rad/s): 21 → 41 stations moves the values 1.9 % and 2.4°, 41 → 81 0.48 % and 0.59°,
+81 → 161 0.12 % and 0.14°; mesh (100, 20) → (200, 40) 0.62 %, (200, 40) → (400, 80) 0.15 % and 0.10°. The tests use
+81 stations on the (200, 40) mesh, and `stations_and_mesh_have_converged` holds both steps beyond it to 0.5 %
+and 0.5°.
+
+### Gaps and bands
+A gap is |SeaCraft − tank| / max(|tank|, floor), the floor being 10 % of the largest measured |value| of the group
+(model, Fn, quantity); a phase gap is in degrees, compared only where both the tank's and SeaCraft's amplitudes
+reach the floor. Each band is the largest gap of its group over every row and both amplitudes, rounded up to the
+next 0.01 (phases: the next 2°), measured 2026-11-20. The bands guard against change; they are not a statement
+that strip theory is that accurate on any other hull.
+
+**Radiation coefficients**, ω ≥ 4 rad/s:
+
+| | A33 | B33 | A53 | B53 | A55 | B55 | A35 | B35 |
+|---|---|---|---|---|---|---|---|---|
+| Wigley I, Fn 0.2 | 0.11 | 0.61 | 1.41 | 1.32 | 0.33 | 0.53 | 2.32 | 2.91 |
+| Wigley I, Fn 0.3 | 0.08 | 0.65 | 2.89 | 0.90 | 0.35 | 1.03 | 2.13 | 1.19 |
+| Wigley I, Fn 0.4 | 0.13 | 0.70 | 4.62 | 0.93 | 0.37 | 1.78 | 1.43 | 0.36 |
+| Wigley III, Fn 0.2 | 0.17 | 0.30 | 1.08 | 2.00 | 0.22 | 0.57 | 1.02 | 1.82 |
+| Wigley III, Fn 0.3 | 0.16 | 0.29 | 2.83 | 1.52 | 0.33 | 0.91 | 2.00 | 1.73 |
+| Wigley III, Fn 0.4 | 0.19 | 0.45 | 3.98 | 1.50 | 0.35 | 1.50 | 1.60 | 1.15 |
+
+At 4 to 12 rad/s A33 is within 8 to 19 % (at 3 rad/s, unbanded, up to 60 % off). The large gaps follow strip
+theory's known pattern, and Journée's own strip-theory curves show it too (his Figures 2-I, 5-I, 6-I and 6-III,
+read by hand for this purpose only): B55 1.5 to 2.7 times the tank at 4 to 7 rad/s, growing with speed (the
+U²/ω_e²·B33 term), and about half the tank at 12 rad/s; B33 too low at 10 and 12 rad/s (Wigley I, Fn 0.3: 0.37 and
+0.17 against 0.57 and 0.45); A55 about 30 % low from about 6 rad/s (0.0157 against 0.0235; at 4 rad/s it is up to
+about 30 % high instead). His curves were not read at every point: at ω_e ≈ 4 rad/s and Fn 0.3 to 0.4 SeaCraft's B55 lies
+above them as well as above the tank. The couplings: on these fore-and-aft symmetric hulls without a transom
+SeaCraft's A53 is exactly U·B33/ω_e² and A35 its negative, while the tank's A53 is about half of U·B33/ω_e²
+formed from the tank's own B33 even where it is positive (0.028 against 0.064 on Wigley I, Fn 0.2, 4 rad/s). That
+speed-coupling gap, measured against a 10 % floor, gives bands above 1. The rows at ω ≈ 3
+rad/s (and 1, 2 rad/s on Wigley III at Fn 0.2) are printed but not banded: there τ = ω_e U/g is 0.33 to 0.66,
+around strip theory's limit of 1/4, the measured coefficients jump between neighbouring frequencies, and their
+gaps (up to 23 times the floor) would loosen the bands past catching a doubled coefficient. The one stop rule kept
+is the sign of B35 and B53 above their floor (they carry ±U·A33, so a wrong pitch sign shows at every frequency).
+A35 and A53 are banded only: the tank's A53 on Wigley I at Fn 0.4 turns negative (−0.009 to −0.015) from about
+7 rad/s, where strip theory's U·B33/ω_e² cannot (it also dips just below zero, under the floor, at Fn 0.2 and 0.3
+from 6 to 7 rad/s).
+
+**Wave loads on the restrained model:**
+
+| | Xw3″ | ε3 | Xw5″ | ε5 |
+|---|---|---|---|---|
+| Wigley I, Fn 0.2 | 0.24 | 30° | 0.13 | 44° |
+| Wigley I, Fn 0.3 | 0.52 | 46° | 0.31 | 48° |
+| Wigley I, Fn 0.4 | 0.69 | 24° | 0.57 | 82° |
+| Wigley III, Fn 0.2 | 0.59 | 22° | 0.13 | 28° |
+| Wigley III, Fn 0.3 | 0.73 | 30° | 0.25 | 22° |
+| Wigley III, Fn 0.4 | 0.71 | 22° | 0.43 | 14° |
+
+From λ/L 1.25 up, at Fn 0.2 and 0.3 the heave force is within 15 % and the pitch moment within 24 %; at Fn 0.4
+within 32 % and 43 % (both worst at λ/L 1.25, where on Wigley III the tank's two wave amplitudes give Xw5″ 0.397
+and 0.328). The large amplitude
+gaps are in short waves, measured against the floor: on Wigley III at λ/L 0.5 and 0.75 SeaCraft's heave force
+falls into the cancellation of the Froude–Krylov and diffraction parts (Xw3″ 0.025 to 0.040 against the tank's
+0.051 to 0.12), as Journée's strip theory does at Fn 0.4, λ/L 0.75 (his Figure 13-III). There the computed phase
+swings fast, so the ε3 rows where SeaCraft's amplitude is below the floor (λ/L 0.75 at every speed, λ/L 0.5 at
+Fn 0.3 and 0.4) are not compared (the SeaCraft side of the floor rule; at Fn 0.4, λ/L 0.75 it is 104° from the tank). The
+82° on Wigley I at Fn 0.4 is at λ/L 0.75, where the tank's two wave amplitudes themselves differ by 48°.
+
+**Motions:**
+
+| | z″ | ε_z | θ″ | ε_θ |
+|---|---|---|---|---|
+| Wigley I, Fn 0.2 | 0.49 | 16° | 0.35 | 24° |
+| Wigley I, Fn 0.3 | 0.19 | 34° | 0.54 | 32° |
+| Wigley I, Fn 0.4 | 0.33 | 40° | 0.81 | 40° |
+| Wigley III, Fn 0.2 | 0.47 | 48° | 0.32 | 22° |
+| Wigley III, Fn 0.3 | 0.87 | 42° | 0.68 | 44° |
+| Wigley III, Fn 0.4 | 0.47 | 22° | 1.15 | 58° |
+
+In waves of λ/L ≥ 1.25 at Fn 0.2 and 0.3, away from resonance (more than 0.15 in λ/L from the tank's peak), heave
+is within 30 % and 30° on both hulls and pitch on Wigley III, and the test keeps that as a stop rule. Shorter
+waves away from resonance are not that close (Wigley III, Fn 0.3, λ/L 1.0: θ″ 1.24 against 0.74). The rest follows
+strip theory's known behaviour, and Journée's own strip-theory curves (his Figures 16-III, 17-I, 17-III, read by
+hand) show the same: the pitch resonance comes at shorter waves than the tank's (Wigley I, Fn 0.3: λ/L 1.25 with
+θ″ 1.83, against the tank's 2.00 at λ/L 1.5; Wigley III, Fn 0.4: at λ/L 1.25 SeaCraft gives 1.80 where the tank
+gives 0.84, the tank's own peak being 1.80 at λ/L 1.5), traced to the A55 about 30 % low at the same encounter
+frequencies; Wigley I's pitch peak at Fn 0.4 is overpredicted (2.27 at λ/L 1.4, against the tank's highest 1.35),
+and so is Wigley III's heave peak at Fn 0.3 and 0.4 (Fn 0.4, λ/L 1.25: z″ 2.51 against 1.86). Three rows are named and left out of the stop rule
+(banded only): Wigley I pitch at Fn 0.3, λ/L 1.25 and 1.75 (the resonance shift), and at Fn 0.2, λ/L 1.75, where the
+tank's θ″ of 1.09 stands above both neighbours (0.95 and 0.68). Short-wave rows (λ/L ≤ 0.75) have the largest
+relative gaps against the floor (Wigley III, Fn 0.2, λ/L 0.75: z″ 0.13 against 0.25).
+
+**The tank's own spread.** Each table with two amplitudes measures one linear quantity twice. At 4 rad/s and above
+the direct coefficients A33, B33, A55, B55 of the two amplitudes differ by a median of 1 to 6 % per group and at
+most 19 % (Wigley III, Fn 0.4, B33). The wave loads differ by a median of 2 to 5 %, but up to 91 % on Wigley I
+(Xw3″ at Fn 0.4, λ/L 1.0: 0.108 and 0.206) and 31 % in Xw5″ (Fn 0.3, λ/L 1.5: 0.464 and 0.537). A band takes the
+larger of the two gaps, so one scattered point can set it (Wigley I, Fn 0.2, B35″ at 4 rad/s: 0.101 and 0.015).
+
+### Test locations
+- `crates/seacraft-core/tests/wigley_seakeeping.rs`: `helpers_handle_roots_and_wraps`,
+  `exact_hulls_match_the_formula_and_the_printed_particulars`, `tables_are_consistent`,
+  `signs_and_phases_follow_journee`, `coupling_signs_match_after_mapping`, `stations_and_mesh_have_converged`,
+  `radiation_coefficients_against_forced_oscillation`, `wave_loads_against_the_restrained_model`,
+  `motions_against_the_free_model`; the tables and helpers in `tests/journee_1992/`.
+- `crates/seacraft-core/src/seakeeping.rs`: `hull_entry_point_matches_the_surface_path` (the new entry point gives
+  bit for bit what `head_sea_raos` gives, transom terms included), `hull_entry_point_solves_upright_and_level` (a
+  trim or heel in the caller's options is ignored, as the strips are cut level) and
+  `wave_loads_reproduce_the_motions` (the 2×2 system re-solved from the returned coefficients and loads gives the
+  RAOs back to 1e-9).
+
+### Provenance
+The tables were transcribed page by page from the text layer, the blanks checked against the page images, and
+re-extracted and compared number by number (377 rows, 0 differences), 2026-11-20. Bite checks, 2026-11-20: SeaCraft's
+A33 scaled by 1.05 fails the Wigley I Fn 0.4 A33 band; the coupling sign map flipped fails 183 checks; the pitch-moment
+phase without its 180° shift fails ε5 in every group; kyy 0.80 m instead of 0.75 fails eight heave bands.
+
+What this covers: SeaCraft's strip theory on two slender Wigley hulls (L/B 10, B/T 1.6) in regular head waves at
+Fn 0.2 to 0.4, compared with Journée's (1992) towing-tank measurements, part by part. It shows where strip theory
+departs from the tank on these hulls and freezes those gaps; it does not show the method is accurate for other
+hulls, oblique seas, other speeds, roll, or any hull with a transom, flare or bulb.

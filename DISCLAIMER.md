@@ -15,8 +15,8 @@ own earlier output to catch changes. [`docs/oracles.md`](docs/oracles.md) says w
 from. Passing those tests shows that the code agrees with those cases, not that its results are right
 for a real vessel.
 
-One result has been compared with published tank tests: Michell wave resistance for the Wigley parabolic hull
-(L/B 10, B/T 1.6) at Froude numbers 0.28–0.37, against Kajitani et al. (1983). It is not a match: Michell
+Two results have been compared with published tank tests. One is Michell wave resistance for the Wigley
+parabolic hull (L/B 10, B/T 1.6) at Froude numbers 0.28–0.37, against Kajitani et al. (1983). It is not a match: Michell
 overpredicts the resistance hump near Fn 0.32 by 18–54 % and places it about 0.02 too early, while its hollow
 near Fn 0.35 is at the measured speed. The test holds the program to those bands, read from the published
 figures ([`docs/oracles.md`](docs/oracles.md) §39). It covers that hull and speed range only.
@@ -37,6 +37,19 @@ wetted surface only; it solves Savitsky's trim with the centre of pressure under
 the planing drag as Δ tan τ + D_F, and adds Savitsky's roughness allowance, which Molland's example leaves out.
 Of Holtrop's propulsion factors, the relative rotative efficiency reproduces two printed examples; the wake
 fraction and thrust deduction are checked only against a hand calculation from the printed formulas.
+
+Strip-theory seakeeping (heave and pitch in regular head waves) has been compared with published tank tests for
+two hulls only: Wigley I and III (L/B 10, B/T 1.6) at Fn 0.2 to 0.4, against Journée's (1992) towing-tank
+measurements, with the radiation coefficients, the wave loads on the restrained hull and the motions checked
+separately ([`docs/oracles.md`](docs/oracles.md) §46). It is not a match everywhere. At 4 to 12 rad/s the heave
+added mass agrees within 8–19 % (at 3 rad/s it is up to 60 % off); the pitch damping comes out up to 2.7 times the
+measured value at 4 to 7 rad/s, and from about 6 rad/s the pitch added mass is about 30 % low, so the pitch
+resonance falls at shorter waves than measured. On Wigley I at Fn 0.4 the pitch peak is overpredicted by about
+70 %. In waves of λ/L 1.25 and longer at Fn 0.2 and 0.3, away from resonance, heave on both hulls and pitch on
+Wigley III are within 30 % and 30° of the tank; in shorter waves they can be 70 % off. Journée's own strip-theory
+calculations, in the figures read for this, show the same pattern, though not at every point. The tests hold the
+program to the gaps measured. Nothing else about seakeeping has been compared with experiments: not other hulls,
+transom sterns, other headings, the irregular-sea statistics or the MSI.
 
 The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`, the Wave pattern view and Plan view contours in the
 window, the design report) is far-field thin-ship theory: free waves only, without the local disturbance, so near the hull

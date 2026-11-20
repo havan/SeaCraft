@@ -507,6 +507,12 @@ loads*, SNAME Trans. 78):
   $\omega_e = \omega + \omega^2 U / g$, reporting non-dimensional heave
   amplitude $z_a / \zeta_a$, pitch amplitude $\theta_a / (k \zeta_a)$, phases, and
   natural heave/pitch frequencies.
+* `seakeeping::head_sea_raos_on_hull` runs the same solver on a hull that is
+  already built (for example an exact mesh) and also returns the wave loads
+  (heave force and pitch moment on the hull held still) that the motions were
+  solved with.
+* Compared with Journée's (1992) towing tests on Wigley I and III at Fn 0.2–0.4
+  ([`docs/oracles.md`](docs/oracles.md) §46): see *Status and limitations*.
 
 #### Irregular head seas (`seastate`)
 
@@ -854,7 +860,7 @@ published values, and the demo hull numbers only freeze earlier output to catch 
 not been systematically compared with tank tests, sea trials, full-scale measurements or approved
 software. Comparing them with published data is the most useful contribution anyone could make.
 
-One comparison with published experiment exists so far: Michell wave resistance on the Wigley hull against the
+Two comparisons with published experiments exist so far. Michell wave resistance on the Wigley hull against the
 Kajitani et al. (1983) towing tests, Fn 0.28–0.37 ([`docs/oracles.md`](docs/oracles.md) §39). Michell finds the
 hollow near Fn 0.35 at the measured speed (within 5 % in size for the fixed model), but puts the hump near
 Fn 0.32 about 0.02 early and 18–54 % too high. That says nothing about other hulls.
@@ -864,6 +870,15 @@ drafts and against an independent integration of its GZ curve to 80° ([`docs/or
 §45). The measurement agrees to 0.01 % on an exact mesh of the equation; the `wigley` example's subdivision fit
 is within 0.6 % at the design draft and runs up to 5.5 % thin below half draft. No real hull, published GZ table
 or trimmed condition has been compared yet.
+
+Strip-theory heave and pitch have been compared on Wigley I and III in head waves at Fn 0.2–0.4 with Journée's
+(1992) towing tests, the radiation coefficients, the wave loads and the motions each on its own
+([`docs/oracles.md`](docs/oracles.md) §46). At 4 to 12 rad/s the heave added mass is within 8–19 %. In waves of
+λ/L 1.25 and longer at Fn 0.2 and 0.3, away from resonance, heave on both hulls and pitch on Wigley III are within
+30 % and 30°. The gaps follow strip theory's known pattern, which Journée's own calculations show too: pitch damping
+up to 2.7 times the measured value at 4 to 7 rad/s, pitch added mass about 30 % low from about 6 rad/s, the pitch
+resonance at shorter waves than measured, and Wigley I's pitch peak at Fn 0.4 about 70 % too high. Other hulls,
+transoms, other headings and the irregular-sea results have not been compared with experiments.
 
 The wave pattern (`seacraft waves`) has not been compared with a measured wave pattern; no measured Wigley wave
 cut was found. It is checked against Kelvin's far-field asymptotics and wedge geometry
