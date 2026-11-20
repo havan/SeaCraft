@@ -269,8 +269,9 @@ sections turned through the heel with the water level, B and G, the buoyancy and
 lever between them, green while it rights the hull and orange-red while it heels it further; the profile, seen from
 starboard, shows B, G and the weights along the hull. Beside them: the heel, the righting lever as GZ minus the
 heeling arm, draft, trim, displacement, KG and upright GM, and where the hull settles; the GZ curve is below, and
-clicking it sets the heel. Drag the body plan sideways to heel the hull: let go and it swings back to its equilibrium,
-unless *Hold heel* is ticked; the arrow keys step the heel by 1° (Shift: 5°). Click either drawing to place a trial
+clicking it sets the heel. Drag the body plan sideways to heel the hull: let go and it swings back to its
+equilibrium, unless *Hold heel* is ticked; let go past the heel where its righting lever vanishes and it stays there,
+with a note that it would not come back. The arrow keys step the heel by 1° (Shift: 5°). Click either drawing to place a trial
 weight and type its mass in tonnes; drag a weight to move it in that drawing's plane, double-click it to change its
 mass, Delete to remove it. *Add to this condition* (or *Add to loading condition…*) adds the weights to a loading
 condition, with undo. It is large-angle and always free to trim, measured by the same solver as the GZ curves; the

@@ -100,13 +100,24 @@ impl HullOutlines {
         let mut xs = vec![hull.model_min.x + inset];
         xs.extend(station_xs(hull, n));
         xs.push(hull.model_max.x - inset);
+        // The extents of the panels measured, mirrored halves included: the control net of a
+        // hull with symmetric layers covers only starboard (and stands off the surface).
+        let (min, max) = match hull.verts.split_first() {
+            Some((&first, rest)) => rest.iter().fold((first, first), |(lo, hi), v| {
+                (
+                    Vec3::new(lo.x.min(v.x), lo.y.min(v.y), lo.z.min(v.z)),
+                    Vec3::new(hi.x.max(v.x), hi.y.max(v.y), hi.z.max(v.z)),
+                )
+            }),
+            None => (hull.model_min, hull.model_max),
+        };
         Self {
             stations: xs
                 .into_iter()
                 .map(|x| (x, Self::section_at(hull, x)))
                 .collect(),
-            min: hull.model_min,
-            max: hull.model_max,
+            min,
+            max,
         }
     }
 
@@ -180,6 +191,29 @@ mod tests {
     use seacraft_core::math::Vec3;
     use seacraft_core::subdiv::SubdivisionOptions;
     use seacraft_core::{Layer, ProjectSettings, Surface};
+
+    /// A hull modelled as one half with symmetric layers is drawn whole: its outlines span
+    /// both sides of the centreline (the control net alone covers only starboard).
+    #[test]
+    fn outlines_of_a_half_modelled_hull_span_both_sides() {
+        use seacraft_core::examples::{build, Example};
+        let (surface, _) = build(Example::Yacht10m).expect("the yacht builds");
+        let (net_min, _) = surface.extents();
+        assert!(
+            net_min.y > -1e-6,
+            "the yacht's net is one half: min y {}",
+            net_min.y
+        );
+        let hull = Hull::new(&surface, SubdivisionOptions::default());
+        let o = HullOutlines::new(&hull, 9);
+        assert!(o.max.y > 1.0, "{:?}", o.max);
+        assert!(
+            (o.min.y + o.max.y).abs() < 1e-6,
+            "{:?} .. {:?}",
+            o.min,
+            o.max
+        );
+    }
 
     /// A creased box, 10 × 4 × 3 m, centred on the centreline, with or without its deck face
     /// (as `seacraft-core/tests/analytic.rs` builds it).

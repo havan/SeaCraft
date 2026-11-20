@@ -327,8 +327,18 @@ struct Clock(f64);
 
 impl Clock {
     fn frame(&mut self, ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        self.frame_out(ctx, app, events);
+    }
+
+    /// A frame, and what it drew.
+    fn frame_out(
+        &mut self,
+        ctx: &egui::Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
         self.0 += 1.0 / 60.0;
-        frame_t(ctx, app, events, self.0);
+        frame_t(ctx, app, events, self.0)
     }
 
     /// Click (press and release, no move) at `p`.
@@ -447,9 +457,10 @@ fn release_settles_at_equilibrium() {
         .heel_for_side(1.0)
         .unwrap();
     let d = app.heel_drawn().unwrap();
-    clock.drag(&ctx, &mut app, d.body.center(), 120.0);
+    // 40 pt is 10°: inside the range where the righting lever brings the demo back.
+    clock.drag(&ctx, &mut app, d.body.center(), 40.0);
     assert!(
-        app.heel_state().heel_deg > 20.0,
+        app.heel_state().heel_deg > 8.0,
         "dragging right heels to starboard: {}",
         app.heel_state().heel_deg
     );
@@ -457,6 +468,26 @@ fn release_settles_at_equilibrium() {
     let heel = app.heel_state().heel_deg;
     assert!((heel - eq).abs() < 0.01, "{heel} vs {eq}");
     assert!(app.heel_state().anim.is_none());
+}
+
+#[test]
+fn let_go_past_the_vanishing_angle_it_does_not_come_back() {
+    // The demo at KG 2.2 m rights itself only to about 20°: let go at 40° the lever turns it
+    // further over, so the picture must not swing it back upright.
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let d = app.heel_drawn().unwrap();
+    clock.drag(&ctx, &mut app, d.body.center(), 160.0);
+    let released = app.heel_state().heel_deg;
+    assert!(released > 35.0, "dragged to {released}");
+    clock.wait(&ctx, &mut app, 0.7);
+    assert_eq!(
+        app.heel_state().heel_deg,
+        released,
+        "it stays where it was let go"
+    );
+    assert!(app.heel_state().anim.is_none());
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    assert!(drawn(&out, "would not come back"), "{:?}", texts(&out));
 }
 
 #[test]
@@ -593,5 +624,140 @@ fn dragging_a_weight_moves_it_in_that_drawings_plane() {
         (after.body, after.profile),
         (d.body, d.profile),
         "the drawings stay put when the result goes out of date"
+    );
+}
+
+/// Each drawn text containing `part`, with the rect it may be seen in.
+fn texts_clipped(out: &egui::FullOutput, part: &str) -> Vec<(egui::Rect, egui::Rect)> {
+    fn walk(
+        shape: &egui::Shape,
+        part: &str,
+        clip: egui::Rect,
+        found: &mut Vec<(egui::Rect, egui::Rect)>,
+    ) {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, part, clip, found)),
+            egui::Shape::Text(t) if t.galley.text().contains(part) => {
+                found.push((egui::Rect::from_min_size(t.pos, t.galley.size()), clip));
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for c in &out.shapes {
+        walk(&c.shape, part, c.clip_rect, &mut found);
+    }
+    found
+}
+
+#[test]
+fn the_readout_beside_the_drawings_is_not_cut_off() {
+    // A long body-plan caption once widened the drawings' column and pushed the readout, the
+    // equilibrium line and the weights table past the drawer's right edge, where they were cut.
+    let (_, _, out) = shown_with(Vec::new());
+    for part in ["righting lever", "Settles", "Trial weights"] {
+        let found = texts_clipped(&out, part);
+        assert!(!found.is_empty(), "{part:?} was drawn");
+        for (rect, clip) in found {
+            assert!(
+                rect.max.x <= clip.max.x + 0.5,
+                "{part:?} ends at x {} past its clip at {}",
+                rect.max.x,
+                clip.max.x
+            );
+        }
+    }
+}
+
+#[test]
+fn upright_reads_zero_not_minus_zero() {
+    // Upright the lever and the trim are rounding errors either side of zero (on the demo at
+    // level 3 the lever came out a hair below): they read 0.000, not -0.000.
+    let (_, app, _) = shown_with(Vec::new());
+    let out = app.heel_current().expect("the sweep is current");
+    let mut s = out.upright().expect("an upright state").clone();
+    let tiny = -1e-9;
+    (s.lever_m, s.gz_m, s.heeling_arm_m, s.trim_m) = (tiny, tiny, tiny, Some(tiny));
+    let readout = seacraft_gui::heel_view::readout(&s, out, false);
+    let line = seacraft_gui::heel_view::equilibrium_line(
+        &seacraft_core::heel::Equilibrium::Stable { state: s.clone() },
+        out.mass.displacement_t,
+    );
+    for text in [readout, line] {
+        assert!(
+            !text.contains("-0.000") && !text.contains("−0.000"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn the_weights_table_fits_beside_the_drawings() {
+    // Each weight's row (name, mass, x, y, z and its remove button) is seen whole at 1600 points.
+    let (_, _, out) = shown_with(vec![weight(0.5, 4.3, 2.79, 2.3)]);
+    for part in ["Trial weights", "2.30", "✕"] {
+        let found = texts_clipped(&out, part);
+        assert!(!found.is_empty(), "{part:?} was drawn: {:?}", texts(&out));
+        for (rect, clip) in found {
+            assert!(
+                rect.max.x <= clip.max.x + 0.5,
+                "{part:?} ends at x {} past its clip at {}",
+                rect.max.x,
+                clip.max.x
+            );
+        }
+    }
+}
+
+#[test]
+fn a_capsizing_condition_is_said_once_and_upright_is_not_a_side() {
+    // 0.5 t high and far out to starboard: more heeling arm than the demo has GZ.
+    let (_, _, out) = shown_with(vec![weight(0.5, 4.3, 2.79, 2.3)]);
+    assert!(drawn(&out, "Capsizes"), "{:?}", texts(&out));
+    assert!(!drawn(&out, "would not come back"), "{:?}", texts(&out));
+    assert!(!drawn(&out, "0.0° to port"), "{:?}", texts(&out));
+}
+
+#[test]
+fn a_condition_changed_under_the_view_settles_again() {
+    // Undo after "Add to this condition" takes the weight back out of the condition: the hull
+    // settles at the condition's own equilibrium rather than staying heeled by a weight that is gone.
+    let (ctx, mut app) = demo();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/demo-loadcase.json"
+    ))
+    .unwrap();
+    let cond: LoadingCondition = serde_json::from_str(&text).unwrap();
+    app.project_mut_for_test().loading_conditions.push(cond);
+    app.set_heel_view_open(true);
+    let mut state = app.heel_state().clone();
+    state.start = HeelStart::Condition(0);
+    state.weights = vec![weight(0.5, 4.0, 0.8, 1.5)];
+    app.set_heel_state(state);
+    app.compute_heel_blocking().unwrap();
+    let mut clock = Clock(10.0);
+    clock.wait(&ctx, &mut app, 0.8);
+    let with = app.heel_state().heel_deg;
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    let rect = texts_at(&out, "Add to this condition").expect("the button is drawn");
+    clock.click(&ctx, &mut app, rect.center());
+    app.undo();
+    app.compute_heel_blocking().unwrap();
+    clock.wait(&ctx, &mut app, 0.8);
+    let without = app
+        .heel_current()
+        .expect("current")
+        .equilibrium
+        .heel_for_side(1.0)
+        .expect("the condition floats upright-ish");
+    assert!(
+        (with - without).abs() > 1.0,
+        "the weight heeled it: {with} vs {without}"
+    );
+    let heel = app.heel_state().heel_deg;
+    assert!(
+        (heel - without).abs() < 0.01,
+        "settled at {heel}, equilibrium {without}"
     );
 }

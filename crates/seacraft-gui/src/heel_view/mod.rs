@@ -187,6 +187,59 @@ impl HeelSweepOut {
     }
 }
 
+/// What the hull does when let go at a heel: a reading of the lever curve, not a roll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LetGo {
+    /// Nothing turns it there: its lever is zero, or the heel is outside the sweep.
+    Stays,
+    /// It turns until its lever changes sign, a stable equilibrium, at this heel.
+    Settles(f64),
+    /// Nothing stops it before the end of the sweep: it turns over.
+    Capsizes,
+}
+
+/// The sweep's (heel, righting lever) pairs that float, in heel order.
+pub fn lever_curve(out: &HeelSweepOut) -> Vec<(f64, f64)> {
+    out.sweep
+        .iter()
+        .flatten()
+        .map(|s| (s.heel_deg, s.lever_m))
+        .collect()
+}
+
+/// Where the hull goes when let go at `from` on `curve` ((heel, lever) in heel order): it turns
+/// the way its lever pushes it (a positive lever to port) until the lever changes sign. Past the
+/// heel where the lever vanishes it turns over rather than coming back.
+pub fn let_go(curve: &[(f64, f64)], from: f64) -> LetGo {
+    let Some(i) = curve
+        .windows(2)
+        .position(|w| w[0].0 <= from && from <= w[1].0)
+    else {
+        return LetGo::Stays;
+    };
+    let (a, b) = (curve[i], curve[i + 1]);
+    let lever = a.1 + (b.1 - a.1) * (from - a.0) / (b.0 - a.0);
+    if lever.abs() < 1e-12 {
+        return LetGo::Stays;
+    }
+    let ahead: Vec<(f64, f64)> = if lever > 0.0 {
+        curve[..=i].iter().rev().copied().collect()
+    } else {
+        curve[i + 1..].to_vec()
+    };
+    let mut prev = (from, lever);
+    for (h, l) in ahead {
+        if h == prev.0 {
+            continue;
+        }
+        if l == 0.0 || l.signum() != lever.signum() {
+            return LetGo::Settles(prev.0 + (h - prev.0) * prev.1 / (prev.1 - l));
+        }
+        prev = (h, l);
+    }
+    LetGo::Capsizes
+}
+
 /// The number of stations the drawings cut.
 pub const OUTLINE_STATIONS: usize = 25;
 
@@ -358,19 +411,26 @@ pub fn heel_words(heel_deg: f64, approx: bool) -> String {
     }
 }
 
+/// A signed length to the millimetre, reading 0.000 (not -0.000) when it rounds to zero.
+pub(crate) fn signed(x: f64) -> String {
+    crate::panels::format_signed(x, 3)
+}
+
 /// The readout of the state drawn, in plain words.
 pub fn readout(s: &HeelState, out: &HeelSweepOut, approx: bool) -> String {
     let keel = out.hull.keel;
     let mut parts = vec![
         heel_words(s.heel_deg, approx),
         format!(
-            "righting lever {:+.3} m = GZ {:+.3} m − heeling arm {:+.3} m",
-            s.lever_m, s.gz_m, s.heeling_arm_m
+            "righting lever {} m = GZ {} m − heeling arm {} m",
+            signed(s.lever_m),
+            signed(s.gz_m),
+            signed(s.heeling_arm_m)
         ),
     ];
     if let (Some(d), Some(t)) = (s.draft, s.trim_m) {
         parts.push(format!("draft {d:.3} m"));
-        parts.push(format!("trim {t:+.3} m"));
+        parts.push(format!("trim {} m", signed(t)));
     }
     parts.push(format!("Δ {:.2} t", s.displacement_t));
     let est = if out.mass.kg_estimate { " (est.)" } else { "" };
@@ -385,7 +445,7 @@ pub fn readout(s: &HeelState, out: &HeelSweepOut, approx: bool) -> String {
 pub fn equilibrium_line(eq: &Equilibrium, displacement_t: f64) -> String {
     match eq {
         Equilibrium::Stable { state } if state.heel_deg.abs() < 0.05 => match state.trim_m {
-            Some(t) => format!("Settles upright, trim {t:+.3} m"),
+            Some(t) => format!("Settles upright, trim {} m", signed(t)),
             None => "Settles upright".to_string(),
         },
         Equilibrium::Stable { state } => {
@@ -396,7 +456,7 @@ pub fn equilibrium_line(eq: &Equilibrium, displacement_t: f64) -> String {
             };
             let mut words = format!("Settles at {:.1}° to {side}", state.heel_deg.abs());
             if let Some(t) = state.trim_m {
-                words.push_str(&format!(", trim {t:+.3} m"));
+                words.push_str(&format!(", trim {} m", signed(t)));
             }
             words
         }
@@ -531,8 +591,10 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             // above the drawings comes and goes, so they hold still under a drag that makes the
             // result out of date.
             let width = ui.available_width();
-            let side = (0.34 * width).clamp(260.0, 460.0);
-            let draw_width = (width - side - 12.0).max(200.0);
+            let side = (0.36 * width).clamp(280.0, 460.0);
+            // The row puts item spacing on each side of the 12 pt gap.
+            let spacing = 2.0 * ui.spacing().item_spacing.x;
+            let draw_width = (width - side - 12.0 - spacing).max(200.0);
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(draw_width);
@@ -543,7 +605,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                         let frame = geometry::EarthFrame::from_plane(&s.plane);
                         let trim = s
                             .trim_m
-                            .map_or(String::new(), |t| format!(" · trim {t:+.3} m"));
+                            .map_or(String::new(), |t| format!(" · trim {} m", signed(t)));
                         // Interactive while stale too: moving a weight re-keys the sweep on the
                         // first frame of the drag, and the drag must carry on over the old result.
                         let (a, views) =
@@ -568,6 +630,30 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                         ui.label(egui::RichText::new(readout(s, out, !shown_exact)).strong());
                     }
                     ui.label(equilibrium_line(&out.equilibrium, out.mass.displacement_t));
+                    // When the condition capsizes anyway, the line above has said so.
+                    let resting = state.grab.is_none() && state.anim.is_none();
+                    let capsizes = matches!(out.equilibrium, Equilibrium::Capsizes { .. });
+                    if let (true, false, Some(s)) = (resting, capsizes, shown) {
+                        if let_go(&lever_curve(out), s.heel_deg) == LetGo::Capsizes {
+                            let at = if s.heel_deg.abs() < 0.05 {
+                                "upright".to_string()
+                            } else {
+                                let side = if s.heel_deg > 0.0 {
+                                    "starboard"
+                                } else {
+                                    "port"
+                                };
+                                format!("at {:.1}° to {side}", s.heel_deg.abs())
+                            };
+                            ui.colored_label(
+                                theme::WARN,
+                                format!(
+                                    "Let go {at}, it would not come back: the righting lever \
+                                     turns it further over."
+                                ),
+                            );
+                        }
+                    }
                     ui.add_space(4.0);
                     let a = weights_table(ui, state, conditions);
                     if a != HeelViewAction::None {
@@ -748,11 +834,17 @@ fn weights_table(
                 );
             }
             let mut remove = None;
+            // Units in the headings keep each row narrow; a narrow window scrolls it sideways
+            // rather than cutting off the last columns.
+            egui::ScrollArea::horizontal()
+                .id_salt("heel_weights_scroll")
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
             egui::Grid::new("heel_weights_grid")
                 .striped(true)
                 .show(ui, |ui| {
                     if !state.weights.is_empty() {
-                        for h in ["", "mass", "x", "y", "z", ""] {
+                        for h in ["", "mass t", "x m", "y m", "z m", ""] {
                             ui.label(egui::RichText::new(h).color(theme::TEXT_SECONDARY));
                         }
                         ui.end_row();
@@ -766,21 +858,17 @@ fn weights_table(
                             .add(
                                 egui::DragValue::new(&mut w.mass_t)
                                     .speed(0.05)
-                                    .range(0.001..=1.0e6)
-                                    .suffix(" t"),
+                                    .range(0.001..=1.0e6),
                             )
                             .changed();
                         for v in [&mut w.x, &mut w.y, &mut w.z] {
                             edited |= ui
                                 .add(
-                                    egui::DragValue::new(v)
-                                        .speed(0.02)
-                                        .suffix(" m")
-                                        .fixed_decimals(2),
+                                    egui::DragValue::new(v).speed(0.02).fixed_decimals(2),
                                 )
                                 .changed();
                         }
-                        if ui.button("✕").on_hover_text("Remove this weight").clicked() {
+                        if ui.small_button("✕").on_hover_text("Remove this weight").clicked() {
                             remove = Some(i);
                         }
                         if edited {
@@ -788,6 +876,7 @@ fn weights_table(
                         }
                         ui.end_row();
                     }
+                });
                 });
             if let Some(i) = remove {
                 state.weights.remove(i);
@@ -1108,7 +1197,19 @@ fn drawings(
             .size(theme::SMALL_SIZE)
             .color(theme::TEXT_SECONDARY)
     };
-    ui.horizontal(|ui| {
+    // Each caption wraps within its drawing's width: a wider one would widen the column and push
+    // what sits beside the drawings out of sight.
+    let caption = |ui: &mut egui::Ui, text: String| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(half, 0.0),
+            egui::Layout::top_down(egui::Align::Center),
+            |ui| {
+                ui.set_width(half);
+                ui.add(egui::Label::new(small(text)).wrap());
+            },
+        );
+    };
+    ui.horizontal_top(|ui| {
         let body_caption = match (shown, section_x) {
             (Some(_), Some(x)) => {
                 format!("Looking forward · B and G projected onto the section at x = {x:.2} m")
@@ -1116,12 +1217,9 @@ fn drawings(
             (None, Some(x)) => format!("Looking forward · section at x = {x:.2} m"),
             _ => "Looking forward".to_string(),
         };
-        ui.add_sized([half, 14.0], egui::Label::new(small(body_caption)));
+        caption(ui, body_caption);
         ui.add_space(gap);
-        ui.add_sized(
-            [half, 14.0],
-            egui::Label::new(small(format!("From starboard{profile_note}"))),
-        );
+        caption(ui, format!("From starboard{profile_note}"));
     });
     (action, views)
 }
@@ -1197,4 +1295,58 @@ pub fn header(ui: &mut egui::Ui) -> HeelViewAction {
         });
     });
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// (heel, lever) every 2° from −90° to 90° for `lever(h)`.
+    fn curve(lever: impl Fn(f64) -> f64) -> Vec<(f64, f64)> {
+        (-45..=45)
+            .map(|i| f64::from(i) * 2.0)
+            .map(|h| (h, lever(h)))
+            .collect()
+    }
+
+    // Hand-made lever curves (positive turns the hull to port), not hull numbers.
+
+    #[test]
+    fn let_go_inside_the_righting_range_it_comes_back() {
+        // Rights itself between ±20°, capsizes beyond.
+        let c = curve(|h| h * (400.0 - h * h));
+        for from in [10.0, -10.0, 19.0] {
+            match let_go(&c, from) {
+                LetGo::Settles(to) => assert!(to.abs() < 1e-9, "from {from} to {to}"),
+                other => panic!("from {from}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn let_go_past_the_vanishing_angle_it_capsizes() {
+        let c = curve(|h| h * (400.0 - h * h));
+        assert_eq!(let_go(&c, 30.0), LetGo::Capsizes);
+        assert_eq!(let_go(&c, -21.0), LetGo::Capsizes);
+    }
+
+    #[test]
+    fn let_go_on_a_lolling_hull_it_finds_the_loll_on_its_side() {
+        // Upright is unstable; it lolls at ±10° and capsizes past ±20°.
+        let c = curve(|h| h * (h * h - 100.0) * (400.0 - h * h));
+        let to = |from| match let_go(&c, from) {
+            LetGo::Settles(to) => to,
+            other => panic!("from {from}: {other:?}"),
+        };
+        assert!((to(5.0) - 10.0).abs() < 1e-9);
+        assert!((to(15.0) - 10.0).abs() < 1e-9);
+        assert!((to(-5.0) + 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn let_go_where_nothing_turns_it_it_stays() {
+        let c = curve(|h| h * (400.0 - h * h));
+        assert_eq!(let_go(&c, 0.0), LetGo::Stays);
+        assert_eq!(let_go(&c, 95.0), LetGo::Stays, "outside the sweep");
+    }
 }

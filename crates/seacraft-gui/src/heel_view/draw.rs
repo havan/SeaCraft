@@ -29,8 +29,9 @@ impl View2 {
     }
 }
 
-/// Fit both drawings with one scale: the body plan holds the hull's section turned through any
-/// heel (its breadth-depth diagonal), the profile its length; each centred on the hull's middle.
+/// Fit each drawing at its own scale: the body plan holds the hull's section turned through any
+/// heel (its breadth-depth diagonal), the profile its length and that diagonal; each centred on
+/// the hull's middle. One shared scale would shrink a long ship's section to a few points.
 pub fn fit_views(
     body: egui::Rect,
     profile: egui::Rect,
@@ -40,17 +41,16 @@ pub fn fit_views(
     let (min, max) = (outlines.min, outlines.max);
     let diag = ((max.y - min.y).hypot(max.z - min.z)).max(1e-3) as f32;
     let length = (max.x - min.x).max(1e-3) as f32;
-    let ppm = (body.width() / (1.15 * diag))
-        .min(body.height() / (1.15 * diag))
-        .min(profile.width() / (1.08 * length))
+    let body_ppm = (body.width().min(body.height()) / (1.15 * diag)).max(1e-3);
+    let profile_ppm = (profile.width() / (1.08 * length))
         .min(profile.height() / (1.15 * diag))
         .max(1e-3);
     let (a, c, h) = frame.to_earth((min + max) * 0.5);
-    let at = |rect: egui::Rect, x: f64| View2 {
+    let at = |rect: egui::Rect, x: f64, ppm: f32| View2 {
         origin: rect.center() - egui::vec2(x as f32 * ppm, -(h as f32) * ppm),
         ppm,
     };
-    (at(body, c), at(profile, a))
+    (at(body, c, body_ppm), at(profile, a, profile_ppm))
 }
 
 /// A straight arrow on the screen.
@@ -80,6 +80,17 @@ pub fn force_arrows(view: &View2, b: Point2, g: Point2, len: f32) -> (Arrow, Arr
 /// as the drawing's horizontal is the direction the lever is measured along.
 pub fn lever_dimension(view: &View2, b: Point2, g: Point2, h: f64) -> (egui::Pos2, egui::Pos2) {
     (view.to_screen([g[0], h]), view.to_screen([b[0], h]))
+}
+
+/// Points above the lever's dimension line kept for its label.
+pub const LEVER_LABEL_ROOM: f32 = 18.0;
+
+/// The height (drawing metres) of the lever's dimension line: above B and G by most of an arrow
+/// (`len` points), but never so high that its label leaves the drawing.
+pub fn lever_height(view: &View2, rect: egui::Rect, b: Point2, g: Point2, len: f32) -> f64 {
+    let above = b[1].max(g[1]) + f64::from(len * 0.6 / view.ppm);
+    let highest = view.from_screen(egui::pos2(rect.center().x, rect.top() + LEVER_LABEL_ROOM))[1];
+    above.min(highest)
 }
 
 /// The colour of a lever: righting or capsizing.
@@ -224,7 +235,7 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
         );
         // The lever between the two verticals, above both centres.
         let colour = lever_colour(f.lever_m);
-        let h = f.b[1].max(f.g[1]) + f64::from(len * 0.6 / view.ppm);
+        let h = lever_height(view, rect, f.b, f.g, len);
         let (p0, p1) = lever_dimension(view, f.b, f.g, h);
         let thin = egui::Stroke::new(1.0, colour);
         for (from, to) in [(view.to_screen(f.g), p0), (view.to_screen(f.b), p1)] {
@@ -237,7 +248,7 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
         painter.text(
             egui::pos2(0.5 * (p0.x + p1.x), p0.y - 3.0),
             egui::Align2::CENTER_BOTTOM,
-            format!("lever {:+.3} m", f.lever_m),
+            format!("lever {} m", super::signed(f.lever_m)),
             font,
             colour,
         );
@@ -296,6 +307,47 @@ mod tests {
             origin: egui::pos2(200.0, 150.0),
             ppm: 37.5,
         }
+    }
+
+    /// A long ship's section fills the body plan rather than shrinking to the profile's scale.
+    #[test]
+    fn each_drawing_fits_the_hull_at_its_own_scale() {
+        use crate::heel_view::geometry::HullOutlines;
+        use seacraft_core::math::{Plane, Vec3};
+        let outlines = HullOutlines {
+            stations: Vec::new(),
+            min: Vec3::new(0.0, -16.0, 0.0),
+            max: Vec3::new(230.0, 16.0, 20.0),
+        };
+        let frame = EarthFrame::from_plane(&Plane::new(Vec3::new(0.0, 0.0, 1.0), -10.0));
+        let rect = |x: f32| egui::Rect::from_min_size(egui::pos2(x, 0.0), egui::vec2(300.0, 230.0));
+        let (body, profile) = fit_views(rect(0.0), rect(310.0), &outlines, &frame);
+        let diag = (32.0f32).hypot(20.0);
+        // The section's turning diagonal takes most of the body plan's 230 pt height...
+        assert!(body.ppm * diag > 0.8 * 230.0, "body plan {} pt/m", body.ppm);
+        // ...while the profile still holds the whole length.
+        assert!(profile.ppm * 230.0 <= 300.0, "profile {} pt/m", profile.ppm);
+    }
+
+    /// G high above a shallow hull: the lever's dimension and its label stay inside the drawing.
+    #[test]
+    fn the_lever_label_stays_inside_the_drawing() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 230.0));
+        let v = View2 {
+            origin: egui::pos2(150.0, 130.0),
+            ppm: 50.0,
+        };
+        // G 2.4 m above the water is 10 pt below the top; the arrows are 60 pt long.
+        let (b, g) = ([0.0, -0.3], [0.0, 2.4]);
+        let h = lever_height(&v, rect, b, g, 60.0);
+        let y = v.to_screen([0.0, h]).y;
+        assert!(
+            y - LEVER_LABEL_ROOM >= rect.top() - 1e-3,
+            "dimension at {y}"
+        );
+        // With room, it sits above both centres.
+        let low = lever_height(&v, rect, b, [0.0, 0.5], 60.0);
+        assert!(low > 0.5, "{low}");
     }
 
     #[test]

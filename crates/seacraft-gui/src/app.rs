@@ -1160,6 +1160,9 @@ pub struct App {
     heel_drawn: Option<crate::heel_view::DrawnViews>,
     /// Settle at the equilibrium once the condition is current (after a release or an edit).
     heel_settle_pending: bool,
+    /// The condition key the view last settled for: a new one (weights, start, the condition's
+    /// items, the hull, the dock's KG) settles the hull at its new equilibrium.
+    heel_settle_key: u64,
     /// When the heel shown last moved: the exact solve waits for the hand to rest.
     heel_moved: Option<std::time::Instant>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
@@ -1440,6 +1443,7 @@ impl App {
             heel_section: None,
             heel_drawn: None,
             heel_settle_pending: false,
+            heel_settle_key: 0,
             heel_moved: None,
             analysis: Default::default(),
             hydro_rev: 0,
@@ -5145,15 +5149,31 @@ impl App {
     /// current: eased over half a second between sweep samples, a picture, not a roll.
     fn heel_animate(&mut self, now: f64) -> bool {
         use crate::heel_view::Settle;
+        let key = self.heel_key();
+        if key != self.heel_settle_key {
+            self.heel_settle_key = key;
+            self.heel_settle_pending = true;
+        }
         if self.heel.hold {
             self.heel_settle_pending = false;
             self.heel.anim = None;
         }
         if self.heel_settle_pending && self.heel.grab.is_none() {
             if let Some(out) = self.heel_current() {
+                use crate::heel_view::{let_go, lever_curve, LetGo};
                 let from = self.heel.heel_deg;
-                let side = if from == 0.0 { out.mass.tcg() } else { from };
-                let to = out.equilibrium.heel_for_side(side);
+                // It comes back only where its lever turns it back: past the heel where the
+                // lever vanishes it stays where it was let go (and the view says it capsizes).
+                let to = match let_go(&lever_curve(out), from) {
+                    LetGo::Settles(h) => Some(
+                        out.equilibrium
+                            .heel_for_side(h)
+                            .filter(|e| (e - h).abs() <= seacraft_core::heel::SWEEP_STEP_DEG)
+                            .unwrap_or(h),
+                    ),
+                    LetGo::Stays if from == 0.0 => out.equilibrium.heel_for_side(out.mass.tcg()),
+                    LetGo::Stays | LetGo::Capsizes => None,
+                };
                 self.heel_settle_pending = false;
                 if let Some(to) = to.filter(|to| (to - from).abs() > 1e-9) {
                     self.heel.anim = Some(Settle {
@@ -9690,10 +9710,6 @@ impl App {
         if state != self.heel {
             if state.heel_deg != self.heel.heel_deg {
                 self.heel_moved = Some(std::time::Instant::now());
-            }
-            // A new condition settles at its new equilibrium once computed.
-            if state.weights != self.heel.weights || state.start != self.heel.start {
-                self.heel_settle_pending = true;
             }
             self.heel = state;
             self.check_heel_start();
