@@ -800,8 +800,8 @@ fn panels_params(p: &Value) -> Result<commands::PanelsParams, String> {
         offset_spacing_mm: number(p, "offset_spacing_mm")?.unwrap_or(d.choices.offset_spacing_mm),
         stock_mm: text(p, "stock_mm")?.map_or(d.choices.stock_mm.clone(), str::to_owned),
         scarf_mm: number(p, "scarf_mm")?.unwrap_or(d.choices.scarf_mm),
-        nest: d.choices.nest.clone(),
-        gap_mm: d.choices.gap_mm,
+        nest: text(p, "nest")?.map_or(d.choices.nest.clone(), str::to_owned),
+        gap_mm: number(p, "gap_mm")?.unwrap_or(d.choices.gap_mm),
     };
     seacraft_core::panel_choices::check(&choices).map_err(|e| e.to_string())?;
     let scale = match text(p, "scale")? {
@@ -870,6 +870,7 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
         app.subdivision_mode(),
         app.revision(),
     );
+    let write_roots = app.control_roots().write_roots.clone();
     reply_later(reply.clone(), revision, app.revision_watch(), move || {
         let pv = commands::panels_in(&surface, level, mode, &params, revision)?;
         let mut v = pv.set.summary();
@@ -882,15 +883,32 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
             return Ok(v);
         }
         let file = commands::panels_file(&pv.set, &params, format)?;
-        seacraft_core::io::write_atomic(&path, &file.bytes)
+        let mut sheet_paths = Vec::with_capacity(file.per_sheet.len());
+        for i in 0..file.per_sheet.len() {
+            let p = seacraft_core::panels::sheet_file_name(&path, i);
+            let checked = seacraft_core::control_auth::check_write_path(&p, &write_roots)?;
+            sheet_paths.push(checked);
+        }
+        let mut writes: Vec<(&std::path::Path, &[u8])> =
+            vec![(path.as_path(), file.bytes.as_slice())];
+        for (p, bytes) in sheet_paths.iter().zip(&file.per_sheet) {
+            writes.push((p.as_path(), bytes.as_slice()));
+        }
+        seacraft_core::io::write_all_atomic(&writes)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         let missing: Vec<String> = file.missing.iter().map(char::to_string).collect();
+        let sheet_files: Vec<String> = sheet_paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         v["written"] = json!(true);
         v["path"] = json!(path.to_string_lossy());
         v["format"] = json!(format.name());
         v["bytes"] = json!(file.bytes.len());
         v["pages"] = json!(file.pages);
+        v["layout_pages"] = json!(file.layout_pages);
         v["offsets_pages"] = json!(file.offsets_pages);
+        v["sheet_files"] = json!(sheet_files);
         v["missing_characters"] = json!(missing);
         Ok(v)
     });
@@ -3551,6 +3569,112 @@ mod tests {
         assert_eq!(r["result"]["written"], true, "{r}");
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_panels_nests_inside_the_write_root_only() {
+        let skiff_dir =
+            std::env::temp_dir().join(format!("seacraft-control-skiff-{}", std::process::id()));
+        std::fs::create_dir_all(&skiff_dir).unwrap();
+        let skiff_path = skiff_dir.join("skiff.fef");
+        let (skiff, _) = seacraft_core::examples::build(seacraft_core::examples::Example::Skiff4m)
+            .expect("skiff");
+        std::fs::write(&skiff_path, seacraft_core::fef::write(&skiff)).unwrap();
+        let mut app = App::headless_for_test(Some(skiff_path.to_str().unwrap()));
+        app.set_subdivision_level(3);
+        let ctx = egui::Context::default();
+
+        let dir = root(&mut app, "panels-nest");
+        let canon_dir = dir.canonicalize().unwrap();
+        let inside = dir.join("skiff.svg");
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.panels",
+            json!({ "path": inside.to_string_lossy(), "nest": "split", "gap_mm": 10 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        assert_eq!(v["written"], true, "{v}");
+        assert_eq!(v["layout"]["mode"], "split", "{v}");
+        let sheets = v["layout"]["sheets"].as_array().unwrap().len();
+        assert!(sheets >= 1, "{v}");
+        let files = v["sheet_files"].as_array().expect("sheet_files");
+        assert_eq!(files.len(), sheets, "{v}");
+        assert!(std::fs::read_to_string(&inside).unwrap().contains("<svg"));
+        for f in files {
+            let p = std::path::PathBuf::from(f.as_str().expect("string path"));
+            assert!(
+                p.canonicalize().unwrap().starts_with(&canon_dir),
+                "{} escaped {}",
+                p.display(),
+                canon_dir.display()
+            );
+            assert!(std::fs::read_to_string(&p).unwrap().contains("<svg"));
+        }
+
+        let outside = dir.join("../seacraft-panels-nest-outside.svg");
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&outside, 0));
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.panels",
+            json!({ "path": outside.to_string_lossy(), "nest": "split" }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(!outside.exists());
+        assert!(!seacraft_core::panels::sheet_file_name(&outside, 0).exists());
+
+        #[cfg(unix)]
+        {
+            std::fs::write(&outside, "keep").unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("trap-sheet-1.svg")).unwrap();
+            let trap = dir.join("trap.svg");
+            let r = call(
+                &mut app,
+                &ctx,
+                "build.panels",
+                json!({ "path": trap.to_string_lossy(), "nest": "split" }),
+            );
+            assert_eq!(r["ok"], false, "{r}");
+            assert!(
+                r["error"].as_str().unwrap_or("").contains("write-root"),
+                "{r}"
+            );
+            assert!(!trap.exists());
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "keep");
+            let _ = std::fs::remove_file(&outside);
+        }
+
+        let (tx, _rx) = mpsc::channel();
+        let bad_gap = handle(
+            &mut app,
+            &ctx,
+            &ControlRequest::new("build.panels", json!({ "nest": "split", "gap_mm": 0 }), tx),
+        )
+        .expect("answered at once");
+        assert_eq!(bad_gap["ok"], false, "{bad_gap}");
+        assert!(
+            bad_gap["error"].as_str().unwrap().contains("`gap_mm`"),
+            "{bad_gap}"
+        );
+
+        let (tx, _rx) = mpsc::channel();
+        let bad_nest = handle(
+            &mut app,
+            &ctx,
+            &ControlRequest::new("build.panels", json!({ "nest": "tetris" }), tx),
+        )
+        .expect("answered at once");
+        assert_eq!(bad_nest["ok"], false, "{bad_nest}");
+        assert!(
+            bad_nest["error"].as_str().unwrap().contains("`nest`"),
+            "{bad_nest}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&skiff_dir);
     }
 
     #[test]

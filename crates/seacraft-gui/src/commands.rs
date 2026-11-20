@@ -2245,14 +2245,18 @@ pub fn panels_in(
     })
 }
 
-/// A panel pattern file.
+/// A panel pattern file and any per-sheet cutting files beside it.
 #[derive(Debug, Clone)]
 pub struct PanelsFile {
     pub bytes: Vec<u8>,
     pub format: seacraft_core::templates::Format,
     pub pages: Option<usize>,
+    /// How many of the pages are layout overview pages at the front.
+    pub layout_pages: usize,
     /// How many of the pages are the offsets tables.
     pub offsets_pages: usize,
+    /// Per-sheet cutting files for SVG or DXF with nesting, in layout order.
+    pub per_sheet: Vec<Vec<u8>>,
     pub missing: Vec<char>,
 }
 
@@ -2279,9 +2283,28 @@ pub fn panels_file(
         bytes: w.written.bytes,
         format,
         pages: w.written.pages,
+        layout_pages: w.layout_pages,
         offsets_pages: w.offsets_pages,
+        per_sheet: w.per_sheet.into_iter().map(|s| s.bytes).collect(),
         missing: w.written.missing,
     })
+}
+
+/// Writes `file` to `path` and any per-sheet cutting files beside it, staged together atomically.
+/// Returns the per-sheet file paths written, in order.
+pub fn write_panels_file(
+    path: &std::path::Path,
+    file: &PanelsFile,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let sheet_paths: Vec<std::path::PathBuf> = (0..file.per_sheet.len())
+        .map(|i| seacraft_core::panels::sheet_file_name(path, i))
+        .collect();
+    let mut writes: Vec<(&std::path::Path, &[u8])> = vec![(path, &file.bytes)];
+    for (p, bytes) in sheet_paths.iter().zip(&file.per_sheet) {
+        writes.push((p.as_path(), bytes.as_slice()));
+    }
+    seacraft_core::io::write_all_atomic(&writes)?;
+    Ok(sheet_paths)
 }
 
 #[cfg(test)]
