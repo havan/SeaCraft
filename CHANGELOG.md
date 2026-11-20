@@ -22,6 +22,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   0.7. Wake fraction and delivered power change for every hull given a propeller (on the demo hull at 6 kn, w
   0.573 → 0.961, both far outside the fitted range and flagged). The relative rotative efficiency is now checked
   against two printed examples (`docs/oracles.md` §42).
+- MCP tools run without the GUI now take a whole-number float such as `3.0` wherever a whole number is expected
+  (`level`, `stations`, point indices, picture sizes), as the schema already allowed; before, `level` and the other
+  counts were refused with "must be a whole number", and a picture size fell back to the default (#9).
 - Holtrop wave resistance no longer turns NaN at vanishingly small Froude numbers (below about 1e-154).
 - Holtrop's c15 now switches at L³/∇ 1726.91 as printed, so it can no longer turn slightly positive for hulls with
   L³/∇ between 1726.91 and 1728. A bulb centre above 0.6 T now counts as 0.6 T in the bulb terms, as Holtrop (1984)

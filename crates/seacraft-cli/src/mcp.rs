@@ -1163,19 +1163,7 @@ impl McpServer {
         let count = self.surface.points.len();
         let mut seeds = Vec::with_capacity(list.len());
         for v in list {
-            let idx = v
-                .as_u64()
-                .and_then(|n| usize::try_from(n).ok())
-                .or_else(|| {
-                    v.as_f64()
-                        .filter(|x| {
-                            x.is_finite()
-                                && x.fract() == 0.0
-                                && *x >= 0.0
-                                && *x <= usize::MAX as f64
-                        })
-                        .map(|x| x as usize)
-                })
+            let idx = whole_number(v)
                 .ok_or("move_points: each entry in `points` must be a point index")?;
             if idx >= count {
                 return Err(format!(
@@ -1590,14 +1578,10 @@ impl McpServer {
         let speed_kn = a.get("speed_kn").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let kg = a.get("kg").and_then(|v| v.as_f64()).unwrap_or(self.kg);
         let kyy = a.get("kyy").and_then(|v| v.as_f64());
-        let stations = a
-            .get("stations")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(21);
+        let stations = a.get("stations").and_then(whole_number).unwrap_or(21);
         let lambda_min = a.get("lambda_min").and_then(|v| v.as_f64());
         let lambda_max = a.get("lambda_max").and_then(|v| v.as_f64());
-        let points = a.get("points").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let points = usize_arg(a, "points");
         let transom_terms = match a.get("transom_terms") {
             None | Some(Value::Null) => true,
             Some(Value::Bool(b)) => *b,
@@ -2423,10 +2407,21 @@ fn bool_arg(a: &Map<String, Value>, key: &str) -> Option<bool> {
     a.get(key).and_then(Value::as_bool)
 }
 
-fn usize_arg(a: &Map<String, Value>, key: &str) -> Option<usize> {
-    a.get(key)
-        .and_then(Value::as_u64)
+/// A JSON whole number as a `usize`. The schema's `integer` check accepts a
+/// whole-number float such as `3.0`, so this does too; a fractional, negative,
+/// non-finite or out-of-range value is `None`.
+fn whole_number(v: &Value) -> Option<usize> {
+    v.as_u64()
+        .or_else(|| {
+            v.as_f64()
+                .filter(|x| x.fract() == 0.0 && (0.0..u64::MAX as f64).contains(x))
+                .map(|x| x as u64)
+        })
         .and_then(|n| usize::try_from(n).ok())
+}
+
+fn usize_arg(a: &Map<String, Value>, key: &str) -> Option<usize> {
+    a.get(key).and_then(whole_number)
 }
 
 /// A count clamped to `lo..=hi`, defaulting to `default`.
@@ -2439,7 +2434,7 @@ fn count_arg(
 ) -> Result<usize, String> {
     match a.get(key) {
         None | Some(Value::Null) => Ok(default.clamp(lo, hi)),
-        Some(v) => match v.as_u64().and_then(|n| usize::try_from(n).ok()) {
+        Some(v) => match whole_number(v) {
             Some(n) => Ok(n.clamp(lo, hi)),
             None => Err(format!("`{key}` must be a whole number")),
         },
@@ -2449,11 +2444,7 @@ fn count_arg(
 /// A picture side in pixels, clamped so a hostile size draws a picture rather
 /// than allocating terabytes.
 fn side_arg(a: &Map<String, Value>, key: &str, default: usize) -> usize {
-    a.get(key)
-        .and_then(Value::as_u64)
-        .and_then(|n| usize::try_from(n).ok())
-        .unwrap_or(default)
-        .clamp(16, MAX_SIDE)
+    usize_arg(a, key).unwrap_or(default).clamp(16, MAX_SIDE)
 }
 
 fn level_arg(a: &Map<String, Value>) -> Result<u8, String> {
@@ -3830,19 +3821,7 @@ impl Remote {
                     .ok_or("move_points: `points` must be a non-empty array of point indices")?;
                 let mut points = Vec::with_capacity(list.len());
                 for v in list {
-                    let idx = v
-                        .as_u64()
-                        .and_then(|n| usize::try_from(n).ok())
-                        .or_else(|| {
-                            v.as_f64()
-                                .filter(|x| {
-                                    x.is_finite()
-                                        && x.fract() == 0.0
-                                        && *x >= 0.0
-                                        && *x <= usize::MAX as f64
-                                })
-                                .map(|x| x as usize)
-                        })
+                    let idx = whole_number(v)
                         .ok_or("move_points: each entry in `points` must be a point index")?;
                     points.push(idx);
                 }
@@ -4154,6 +4133,50 @@ fn forward_connected_args(a: &Map<String, Value>, params: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A whole-number float such as `3.0` passes the schema's `integer` check, so the
+    /// headless readers take it as that integer; fractional, negative and non-finite
+    /// values are still refused (issue #9).
+    #[test]
+    fn whole_number_floats_read_as_integers() {
+        let args = |v: Value| json!({ "n": v }).as_object().unwrap().clone();
+        assert_eq!(count_arg(&args(json!(3.0)), "n", 1, 0, 5), Ok(3));
+        assert_eq!(count_arg(&args(json!(9.0)), "n", 1, 0, 5), Ok(5));
+        for bad in [json!(2.5), json!(-1.0), json!(-1), json!("3")] {
+            assert!(
+                count_arg(&args(bad.clone()), "n", 1, 0, 5).is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(usize_arg(&args(json!(4.0)), "n"), Some(4));
+        assert_eq!(usize_arg(&args(json!(4.5)), "n"), None);
+        assert_eq!(usize_arg(&args(json!(1e300)), "n"), None);
+        assert_eq!(side_arg(&args(json!(320.0)), "n", 64), 320);
+
+        let mut s = McpServer::new();
+        let png = temp_path("png");
+        let r = ok(
+            &mut s,
+            1,
+            "render_png",
+            json!({"path": png, "width": 320.0, "height": 200.0, "level": 2.0}),
+        );
+        assert_eq!(
+            (r["width"].clone(), r["height"].clone()),
+            (json!(320), json!(200)),
+            "{r}"
+        );
+        let _ = std::fs::remove_file(&png);
+        // A fractional level never reaches the reader: the schema refuses it.
+        let r = request(
+            &mut s,
+            2,
+            "tools/call",
+            json!({"name": "render_png", "arguments": {"path": png, "level": 2.5}}),
+        );
+        assert_eq!(r["error"]["code"], INVALID_PARAMS, "{r}");
+        assert!(std::fs::metadata(&png).is_err());
+    }
 
     /// Every `tool_name {…}` call in the agent skills names a real tool, and each skill's
     /// frontmatter is well formed.
