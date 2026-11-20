@@ -1644,7 +1644,20 @@ pub fn offsets_pdf(
     title: &str,
     imperial: bool,
 ) -> Result<crate::pdf::Document, String> {
-    use crate::pdf::{add_table, Pdf, Table};
+    let mut doc = crate::pdf::Pdf::new(title);
+    add_offsets_tables(&mut doc, all, title, imperial)?;
+    doc.finish()
+}
+
+/// [`offsets_pdf`]'s tables, added to `doc` after the pages it has; returns how many pages they
+/// took. Each table is headed `"{title}: {panel} offsets, {unit}"`.
+pub fn add_offsets_tables(
+    doc: &mut crate::pdf::Pdf,
+    all: &[PanelOffsets],
+    title: &str,
+    imperial: bool,
+) -> Result<usize, String> {
+    use crate::pdf::{add_table, Table};
     use crate::units::{ft_in_8ths, millimetres};
     if all.is_empty() {
         return Err("there are no panel offsets to tabulate".into());
@@ -1652,7 +1665,7 @@ pub fn offsets_pdf(
     let subtitle =
         "Square off a straight baseline along the panel's lowest edge, from its aft end. \
                     Crossings count up from the baseline; \"-\" means the row has fewer.";
-    let mut doc = Pdf::new(title);
+    let mut pages = 0;
     type Write = fn(f64) -> String;
     let mut systems: Vec<(&str, Write)> = vec![("millimetres", millimetres)];
     if imperial {
@@ -1682,8 +1695,8 @@ pub fn offsets_pdf(
                 })
                 .collect();
             let heading = format!("{title}: {} offsets, {unit}", o.panel);
-            add_table(
-                &mut doc,
+            pages += add_table(
+                doc,
                 &Table {
                     title: &heading,
                     subtitle,
@@ -1695,7 +1708,7 @@ pub fn offsets_pdf(
             );
         }
     }
-    doc.finish()
+    Ok(pages)
 }
 
 /// The plywood the panels are cut from.
@@ -2083,11 +2096,23 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
 }
 
 /// Writes a panel set in `format`, as [`crate::templates::write`] writes moulds.
+/// A pattern file and how many of its pages are the offsets tables after the patterns.
+#[derive(Debug, Clone)]
+pub struct PanelsWritten {
+    pub written: crate::templates::Written,
+    /// 0 for an SVG or DXF, or when the tables were not asked for.
+    pub offsets_pages: usize,
+}
+
+/// The patterns as `format`. With `offsets_pages`, a PDF also carries every panel's offsets
+/// tables after the patterns (A4 landscape, as [`offsets_pdf`] makes them); an SVG or DXF
+/// ignores it.
 pub fn write(
     set: &PanelSet,
     format: crate::templates::Format,
     setup: &crate::sheet::PageSetup,
-) -> Result<crate::templates::Written, String> {
+    offsets_pages: bool,
+) -> Result<PanelsWritten, String> {
     use crate::templates::{Format, Written};
     setup.check()?;
     if set.sheets.is_empty() {
@@ -2097,22 +2122,46 @@ pub fn write(
     if setup.title.trim().is_empty() {
         setup.title = set.title.clone();
     }
-    let pdf = |doc: crate::pdf::Document| Written {
-        pages: Some(doc.pages),
-        missing: doc.missing,
-        bytes: doc.bytes,
+    let text = |text: String| PanelsWritten {
+        written: Written {
+            bytes: text.into_bytes(),
+            pages: None,
+            missing: Vec::new(),
+        },
+        offsets_pages: 0,
     };
-    let text = |text: String| Written {
-        bytes: text.into_bytes(),
-        pages: None,
-        missing: Vec::new(),
-    };
+    let tables = offsets_pages && !set.offsets.is_empty();
+    let mut doc = crate::pdf::Pdf::new(&setup.title);
     match format {
-        Format::PdfTiled => crate::sheet::pdf_tiled(&set.sheets, &setup).map(pdf),
-        Format::PdfSingle => crate::sheet::pdf_single(&set.sheets, &setup).map(pdf),
-        Format::Svg => Ok(text(crate::sheet::svg(&set.sheets, setup.scale))),
-        Format::Dxf => Ok(text(crate::sheet::dxf(&set.sheets, setup.scale))),
+        Format::Svg => return Ok(text(crate::sheet::svg(&set.sheets, setup.scale))),
+        Format::Dxf => return Ok(text(crate::sheet::dxf(&set.sheets, setup.scale))),
+        Format::PdfSingle => crate::sheet::pdf_single_into(&set.sheets, &setup, &mut doc)?,
+        Format::PdfTiled => {
+            // The first page lists the tables and every tile counts them, so their page count
+            // is needed before the patterns are drawn.
+            let count = if tables {
+                let mut scratch = crate::pdf::Pdf::new(&setup.title);
+                add_offsets_tables(&mut scratch, &set.offsets, &set.title, setup.imperial)?
+            } else {
+                0
+            };
+            crate::sheet::pdf_tiled_into(&set.sheets, &setup, &mut doc, &[("Offsets", count)])?;
+        }
     }
+    let added = if tables {
+        add_offsets_tables(&mut doc, &set.offsets, &set.title, setup.imperial)?
+    } else {
+        0
+    };
+    let doc = doc.finish()?;
+    Ok(PanelsWritten {
+        written: Written {
+            pages: Some(doc.pages),
+            missing: doc.missing,
+            bytes: doc.bytes,
+        },
+        offsets_pages: added,
+    })
 }
 
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
@@ -3352,15 +3401,76 @@ mod tests {
         let s = pram_fixture(0.0, 0.0);
         let set = panel_set(&s, &PanelOptions::default()).expect("a set");
         let setup = PageSetup::default();
-        let pdf = write(&set, Format::PdfTiled, &setup).expect("pdf");
+        let pdf = write(&set, Format::PdfTiled, &setup, false)
+            .expect("pdf")
+            .written;
         assert!(pdf.bytes.starts_with(b"%PDF-"));
         assert!(pdf.pages.unwrap() > 1);
-        let svg = String::from_utf8(write(&set, Format::Svg, &setup).unwrap().bytes).unwrap();
+        let svg = write(&set, Format::Svg, &setup, false)
+            .unwrap()
+            .written
+            .bytes;
+        let svg = String::from_utf8(svg).unwrap();
         for r in &set.rows {
             assert!(svg.contains(&r.panel), "{}", r.panel);
         }
-        let dxf = String::from_utf8(write(&set, Format::Dxf, &setup).unwrap().bytes).unwrap();
+        let dxf = write(&set, Format::Dxf, &setup, false)
+            .unwrap()
+            .written
+            .bytes;
+        let dxf = String::from_utf8(dxf).unwrap();
         assert!(dxf.contains("CUT"));
+    }
+
+    /// The offsets tables follow the patterns in the pattern PDF, A4 landscape, counted in the
+    /// tiled document's page captions and listed on its first page; an SVG or DXF is unchanged.
+    #[test]
+    fn write_appends_offsets_pages_to_a_pdf() {
+        use crate::pdf::page_text;
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let s = pram_fixture(0.0, 0.0);
+        let set = panel_set(&s, &PanelOptions::default()).expect("a set");
+        let setup = PageSetup::default();
+        let mut alone = crate::pdf::Pdf::new("x");
+        let tables = add_offsets_tables(&mut alone, &set.offsets, &set.title, false).unwrap();
+        assert!(tables >= set.offsets.len(), "{tables}");
+        for format in [Format::PdfTiled, Format::PdfSingle] {
+            let without = write(&set, format, &setup, false).expect("pdf");
+            let with = write(&set, format, &setup, true).expect("pdf");
+            assert_eq!(without.offsets_pages, 0);
+            assert_eq!(with.offsets_pages, tables, "{format:?}");
+            let (pages, before) = (with.written.pages.unwrap(), without.written.pages.unwrap());
+            assert_eq!(pages, before + tables, "{format:?}");
+            let last = page_text(&with.written.bytes, pages - 1).join(" ");
+            assert!(last.contains("offsets, millimetres"), "{format:?}: {last}");
+            let first_offsets = page_text(&with.written.bytes, before).join(" ");
+            assert!(
+                first_offsets.contains("Square off a straight baseline"),
+                "{format:?}: {first_offsets}"
+            );
+        }
+        let tiled = write(&set, Format::PdfTiled, &setup, true).unwrap();
+        let total = tiled.written.pages.unwrap();
+        let index = page_text(&tiled.written.bytes, 0).join(" ");
+        let first = total - tables + 1;
+        assert!(
+            index.contains(&format!("Offsets: pages {first} to {total}"))
+                || (tables == 1 && index.contains(&format!("Offsets: page {total}"))),
+            "{index}"
+        );
+        // The last pattern page is a tile, whatever maps come before it.
+        let tile = page_text(&tiled.written.bytes, total - tables - 1).join(" ");
+        assert!(
+            tile.contains(&format!("page {} of {total}", total - tables)),
+            "{tile}"
+        );
+        for format in [Format::Svg, Format::Dxf] {
+            let with = write(&set, format, &setup, true).unwrap();
+            let without = write(&set, format, &setup, false).unwrap();
+            assert_eq!(with.offsets_pages, 0);
+            assert_eq!(with.written.bytes, without.written.bytes);
+        }
     }
 
     /// Closed form: a planar panel lies flat with every edge its true length. The demo's transom

@@ -3754,7 +3754,9 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     }
 
     // Every output is made first and written together, so one that cannot be written leaves none.
-    let written = panels::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
+    let written = panels::write(&set, format, &setup, true)
+        .map_err(anyhow::Error::msg)?
+        .written;
     let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
     if let Some(path) = &a.offsets_csv {
         writes.push((path, panels::offsets_csv(&set.offsets).into_bytes()));

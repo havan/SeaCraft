@@ -416,10 +416,16 @@ fn nothing_to_draw(sheets: &[Sheet], scale: f64) -> Result<(), String> {
 /// Fails when there is nothing to draw, when the setup is unusable, or when a page would be
 /// longer than a PDF page can be.
 pub fn pdf_single(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, String> {
+    let mut pdf = Pdf::new(&setup.title);
+    pdf_single_into(sheets, setup, &mut pdf)?;
+    pdf.finish()
+}
+
+/// [`pdf_single`]'s pages, added to `pdf`, so a caller can add pages of its own after them.
+pub fn pdf_single_into(sheets: &[Sheet], setup: &PageSetup, pdf: &mut Pdf) -> Result<(), String> {
     setup.check()?;
     nothing_to_draw(sheets, setup.scale)?;
     let margin = setup.margin_mm;
-    let mut pdf = Pdf::new(&setup.title);
     for sheet in sheets {
         let Some(e) = extent_mm(sheet, setup.scale) else {
             continue;
@@ -457,7 +463,7 @@ pub fn pdf_single(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, Strin
         page.append(&draw(sheet, setup.scale, origin));
         pdf.add_page(width_pt, height_pt, page);
     }
-    pdf.finish()
+    Ok(())
 }
 
 /// A sheet placed in a row of sheets, in millimetres of paper.
@@ -1190,6 +1196,20 @@ fn map_page(
 /// Fails when there is nothing to draw, when the setup is unusable or the paper cannot hold the
 /// 100 mm rules, or when the document would have more than [`MAX_TILED_PAGES`] pages.
 pub fn pdf_tiled(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, String> {
+    let mut pdf = Pdf::new(&setup.title);
+    pdf_tiled_into(sheets, setup, &mut pdf, &[])?;
+    pdf.finish()
+}
+
+/// [`pdf_tiled`]'s pages, added to an empty `pdf`. `after` names the sections the caller adds
+/// next and how many pages each takes: the first page lists them, and every tile's "page n of
+/// m" counts them.
+pub fn pdf_tiled_into(
+    sheets: &[Sheet],
+    setup: &PageSetup,
+    pdf: &mut Pdf,
+    after: &[(&str, usize)],
+) -> Result<(), String> {
     setup.check()?;
     nothing_to_draw(sheets, setup.scale)?;
     let m = setup.margin_mm;
@@ -1236,8 +1256,15 @@ pub fn pdf_tiled(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, String
         });
         next += pages;
     }
+    for (name, pages) in after.iter().filter(|(_, pages)| *pages > 0) {
+        index.push(match pages {
+            1 => format!("{name}: page {next}"),
+            _ => format!("{name}: pages {next} to {}", next + pages - 1),
+        });
+        next += pages;
+    }
+    let total = total + after.iter().map(|(_, pages)| pages).sum::<usize>();
 
-    let mut pdf = Pdf::new(&setup.title);
     let upright = (
         setup.paper.width_mm * PT_PER_MM,
         setup.paper.height_mm * PT_PER_MM,
@@ -1299,7 +1326,7 @@ pub fn pdf_tiled(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, String
             pdf.add_page(width, height, c);
         }
     }
-    pdf.finish()
+    Ok(())
 }
 
 #[cfg(test)]
