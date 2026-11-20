@@ -1879,6 +1879,8 @@ pub struct PanelOptions {
     pub offset_spacing_m: f64,
     pub stock: Stock,
     pub imperial: bool,
+    /// The pieces nested on the plywood; `None` for the patterns alone.
+    pub nesting: Option<crate::panel_layout::Nesting>,
 }
 
 impl Default for PanelOptions {
@@ -1891,6 +1893,7 @@ impl Default for PanelOptions {
             offset_spacing_m: 0.25,
             stock: Stock::default(),
             imperial: false,
+            nesting: None,
         }
     }
 }
@@ -1925,6 +1928,8 @@ pub struct PanelSet {
     pub total_sheets: usize,
     /// Station names and model `x`, as the patterns mark them.
     pub stations: Vec<(String, f64)>,
+    /// The pieces nested on the plywood, when nesting was asked for.
+    pub layout: Option<crate::panel_layout::Layout>,
 }
 
 impl PanelSet {
@@ -1941,7 +1946,8 @@ impl PanelSet {
     }
 
     /// What every front end replies with: `panels` (the rows), `refused`, `mismatches`,
-    /// `total_sheets`, `plywood` (the sheet count in words) and `all_lie_flat`.
+    /// `total_sheets`, `plywood` (the sheet count in words), `all_lie_flat` and `layout` (the
+    /// nested sheets and where each piece lies; `null` without nesting).
     pub fn summary(&self) -> serde_json::Value {
         serde_json::json!({
             "panels": self.rows,
@@ -1950,6 +1956,7 @@ impl PanelSet {
             "total_sheets": self.total_sheets,
             "plywood": self.sheet_count_line(),
             "all_lie_flat": self.all_lie_flat(),
+            "layout": self.layout,
         })
     }
 
@@ -1991,6 +1998,17 @@ impl PanelSet {
     /// The plywood count in words, naming any panel it leaves out and why: one not laid out on
     /// the stock, or one that could not be laid flat at all.
     pub fn sheet_count_line(&self) -> String {
+        if let Some(layout) = &self.layout {
+            let mut line = layout.count_line();
+            if !self.refused.is_empty() {
+                let names: Vec<&str> = self.refused.iter().map(|r| r.panel.as_str()).collect();
+                line.push_str(&format!(
+                    "; not counted, could not be laid flat: {}",
+                    names.join(", ")
+                ));
+            }
+            return line;
+        }
         let mut left_out: Vec<String> = self
             .stock
             .iter()
@@ -2073,6 +2091,13 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
     if !st.scarf_m.is_finite() || st.scarf_m < 0.0 || st.scarf_m >= st.length_m {
         return Err("the scarf must be from 0 to less than the sheet's length".into());
     }
+    if let Some(n) = opts.nesting {
+        if !(n.gap_m.is_finite() && n.gap_m >= 0.0 && 2.0 * n.gap_m < st.width_m) {
+            return Err(
+                "the gap between pieces must be from 0 to less than half the sheet's width".into(),
+            );
+        }
+    }
     let layers = chosen_layers(surface, opts.layers.as_deref())?;
     // Only the model's extent is read from the hull: the panels' layers need not be in its
     // hydrostatics, and a chosen layer with no faces finds no panel below.
@@ -2116,6 +2141,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         stock: Vec::new(),
         total_sheets: 0,
         stations: stations.clone(),
+        layout: None,
     };
     for p in &panels {
         let offsets = panel_offsets(p, opts.offset_spacing_m);
@@ -2173,6 +2199,14 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         set.sheets.push(sheet);
     }
     set.total_sheets = total_sheets(&set.stock);
+    if let Some(n) = opts
+        .nesting
+        .filter(|n| n.mode != crate::panel_layout::NestMode::None)
+    {
+        let layout = crate::panel_layout::nest_panels(&panels, &set.sheets, st, n);
+        set.total_sheets = layout.plywood_sheets;
+        set.layout = Some(layout);
+    }
     // A panel that could not be made is named on every pattern, before the closing sentences.
     for sheet in &mut set.sheets {
         for r in &set.refused {
@@ -2252,6 +2286,43 @@ pub fn write(
         },
         offsets_pages: added,
     })
+}
+
+/// A flat panel made by hand for tests: `xy` both its flat and its 3D points (in the plane
+/// y = 0), no seams, one copy, measured as lying flat.
+#[cfg(test)]
+pub(crate) fn test_flat(name: &str, xy: Vec<(f64, f64)>, tris: Vec<[usize; 3]>) -> FlatPanel {
+    let verts: Vec<Vec3> = xy.iter().map(|&(x, y)| Vec3::new(x, 0.0, y)).collect();
+    let area = tris
+        .iter()
+        .map(|t| crate::flatten::signed_area(xy[t[0]], xy[t[1]], xy[t[2]]))
+        .sum();
+    FlatPanel {
+        found: FoundPanel {
+            name: name.into(),
+            layer: 0,
+            copies: Copies::One,
+            mesh_ids: (0..verts.len()).collect(),
+            verts,
+            tris,
+            welded: HashMap::new(),
+            mirror: HashMap::new(),
+            centreline: Vec::new(),
+            seams: Vec::new(),
+        },
+        xy,
+        measures: Measures {
+            seams: Vec::new(),
+            rms_stretch: 0.0,
+            max_stretch: 0.0,
+            level_shift_m: None,
+            edge_join_gap_m: 0.0,
+            area_3d_m2: area,
+            area_flat_m2: area,
+            unsettled_m: None,
+        },
+        lies_flat: true,
+    }
 }
 
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
@@ -3691,5 +3762,67 @@ mod tests {
             l.developable = false;
         }
         assert_eq!(default_layers(&s), [0, 1, 2]);
+    }
+
+    #[test]
+    fn no_nesting_leaves_the_set_as_it_was() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        let plain = panel_set(&s, &PanelOptions::default()).unwrap();
+        let none = panel_set(
+            &s,
+            &PanelOptions {
+                nesting: None,
+                ..PanelOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(none.layout.is_none());
+        assert_eq!(plain.rows, none.rows);
+        assert_eq!(plain.sheets, none.sheets);
+        assert_eq!(plain.total_sheets, none.total_sheets);
+        assert!(none.summary()["layout"].is_null());
+        assert!(none.sheet_count_line().contains("no nesting"));
+    }
+
+    #[test]
+    fn the_count_comes_from_the_layout() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        for mode in [
+            crate::panel_layout::NestMode::Blanks,
+            crate::panel_layout::NestMode::Split,
+        ] {
+            let set = panel_set(
+                &s,
+                &PanelOptions {
+                    nesting: Some(crate::panel_layout::Nesting { mode, gap_m: 0.01 }),
+                    ..PanelOptions::default()
+                },
+            )
+            .unwrap();
+            let layout = set.layout.as_ref().expect("a layout");
+            assert_eq!(set.total_sheets, layout.plywood_sheets);
+            let line = set.sheet_count_line();
+            assert!(line.contains("nested"), "{line}");
+            assert_eq!(
+                set.summary()["layout"]["plywood_sheets"],
+                layout.plywood_sheets
+            );
+            println!("{line}");
+        }
+    }
+
+    #[test]
+    fn a_gap_with_no_room_is_refused() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        for gap_m in [-0.01, f64::NAN, 0.61] {
+            let opts = PanelOptions {
+                nesting: Some(crate::panel_layout::Nesting {
+                    mode: crate::panel_layout::NestMode::Split,
+                    gap_m,
+                }),
+                ..PanelOptions::default()
+            };
+            assert!(panel_set(&s, &opts).is_err(), "gap {gap_m}");
+        }
     }
 }

@@ -64,6 +64,7 @@ pub mod offsets;
 pub mod optimize;
 pub mod panel_choices;
 pub mod panel_dims;
+pub mod panel_layout;
 pub mod panels;
 mod par;
 pub mod parametric;

@@ -2798,6 +2798,8 @@ fn panels_args(
         offset_spacing_mm: opt_number(a, "offset_spacing_mm")?.unwrap_or(d.offset_spacing_mm),
         stock_mm: opt_str(a, "stock_mm")?.map_or(d.stock_mm, str::to_owned),
         scarf_mm: opt_number(a, "scarf_mm")?.unwrap_or(d.scarf_mm),
+        nest: d.nest,
+        gap_mm: d.gap_mm,
     };
     let checked = check(&choices).map_err(|e| err(e.to_string()))?;
     let paper = match opt_str(a, "paper")? {
@@ -2858,6 +2860,7 @@ fn panels_args(
             offset_spacing_m: checked.offset_spacing_m,
             stock: checked.stock,
             imperial,
+            nesting: checked.nesting,
         },
         setup,
         offsets_pages: opt_bool(a, "offsets_pages")?.unwrap_or(true),

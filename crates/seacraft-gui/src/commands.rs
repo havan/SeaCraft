@@ -2237,6 +2237,7 @@ pub fn panels_in(
         offset_spacing_m: checked.offset_spacing_m,
         stock: checked.stock,
         imperial: p.imperial,
+        nesting: checked.nesting,
     };
     Ok(PanelsPreview {
         set: std::sync::Arc::new(panel_set(surface, &opts)?),

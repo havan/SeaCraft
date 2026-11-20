@@ -800,6 +800,8 @@ fn panels_params(p: &Value) -> Result<commands::PanelsParams, String> {
         offset_spacing_mm: number(p, "offset_spacing_mm")?.unwrap_or(d.choices.offset_spacing_mm),
         stock_mm: text(p, "stock_mm")?.map_or(d.choices.stock_mm.clone(), str::to_owned),
         scarf_mm: number(p, "scarf_mm")?.unwrap_or(d.choices.scarf_mm),
+        nest: d.choices.nest.clone(),
+        gap_mm: d.choices.gap_mm,
     };
     seacraft_core::panel_choices::check(&choices).map_err(|e| e.to_string())?;
     let scale = match text(p, "scale")? {

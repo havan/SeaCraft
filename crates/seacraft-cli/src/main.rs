@@ -3681,6 +3681,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         offset_spacing_mm: a.offset_spacing_mm,
         stock_mm: a.stock_mm.clone(),
         scarf_mm: a.scarf_mm,
+        ..panel_choices::Choices::default()
     })
     .map_err(|e| {
         let flag = match e.field {
@@ -3689,6 +3690,8 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             panel_choices::Field::OffsetSpacing => "--offset-spacing-mm",
             panel_choices::Field::Stock => "--stock-mm",
             panel_choices::Field::Scarf => "--scarf-mm",
+            panel_choices::Field::Nest => "--nest",
+            panel_choices::Field::Gap => "--gap-mm",
         };
         anyhow::anyhow!("{flag} {}", e.message)
     })?;
@@ -3725,6 +3728,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         offset_spacing_m: checked.offset_spacing_m,
         stock: checked.stock,
         imperial: a.imperial,
+        nesting: checked.nesting,
     };
     let set = panels::panel_set(&s, &opts).map_err(anyhow::Error::msg)?;
 
