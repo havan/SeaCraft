@@ -421,3 +421,36 @@ fn plate_development_opens_builder_panels() {
     w.click("Export patterns…");
     assert!(w.app.show_panels());
 }
+
+/// With the window's measurement current for the same options, `build.panels` without a path
+/// answers at once from it, with no worker; other options start a worker.
+#[test]
+fn build_panels_answers_from_the_window_when_it_can() {
+    use seacraft_gui::control::{handle, ControlRequest};
+    let mut w = Window::new(pram(
+        "build_panels_answers_from_the_window_when_it_can",
+        0.0,
+    ));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let req = ControlRequest::new("build.panels", serde_json::json!({}), tx);
+    let r = handle(&mut w.app, &w.ctx, &req).expect("answered at once");
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(
+        r["result"]["plywood"],
+        w.app.panels_preview().unwrap().set.sheet_count_line()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let req = ControlRequest::new(
+        "build.panels",
+        serde_json::json!({ "max_seam_drift_mm": 5 }),
+        tx,
+    );
+    assert!(
+        handle(&mut w.app, &w.ctx, &req).is_none(),
+        "other options: a worker"
+    );
+    let r = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+}
