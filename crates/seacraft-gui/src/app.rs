@@ -1156,6 +1156,12 @@ pub struct App {
     heel_hull_track: Track<crate::heel_view::HeelHull>,
     /// The section drawn strongly, cut on the window thread for its x (to the millimetre).
     heel_section: Option<(u64, Vec<Vec<seacraft_core::math::Vec3>>)>,
+    /// Where the Heel view's drawings were last drawn (tests pick on them).
+    heel_drawn: Option<crate::heel_view::DrawnViews>,
+    /// Settle at the equilibrium once the condition is current (after a release or an edit).
+    heel_settle_pending: bool,
+    /// When the heel shown last moved: the exact solve waits for the hand to rest.
+    heel_moved: Option<std::time::Instant>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
     analysis: crate::analysis_views::AnalysisViews,
@@ -1432,6 +1438,9 @@ impl App {
             heel_hull: None,
             heel_hull_track: Track::default(),
             heel_section: None,
+            heel_drawn: None,
+            heel_settle_pending: false,
+            heel_moved: None,
             analysis: Default::default(),
             hydro_rev: 0,
             project_rev: 0,
@@ -1711,6 +1720,8 @@ impl App {
         self.heel_hull = None;
         self.heel_hull_track.reset();
         self.heel_section = None;
+        self.heel_drawn = None;
+        self.heel_settle_pending = false;
         self.analysis.clear_results();
         self.panels_result = None;
         self.panels_track.reset();
@@ -5125,6 +5136,81 @@ impl App {
         self.heel_sweep_track.busy() || self.heel_exact_track.busy() || self.heel_hull_track.busy()
     }
 
+    /// Where the Heel view's drawings were last drawn, and how they map to the model (tests).
+    pub fn heel_drawn(&self) -> Option<crate::heel_view::DrawnViews> {
+        self.heel_drawn
+    }
+
+    /// Advance the settle animation, or start one when a settle is pending and the condition is
+    /// current: eased over half a second between sweep samples, a picture, not a roll.
+    fn heel_animate(&mut self, now: f64) -> bool {
+        use crate::heel_view::Settle;
+        if self.heel.hold {
+            self.heel_settle_pending = false;
+            self.heel.anim = None;
+        }
+        if self.heel_settle_pending && self.heel.grab.is_none() {
+            if let Some(out) = self.heel_current() {
+                let from = self.heel.heel_deg;
+                let side = if from == 0.0 { out.mass.tcg() } else { from };
+                let to = out.equilibrium.heel_for_side(side);
+                self.heel_settle_pending = false;
+                if let Some(to) = to.filter(|to| (to - from).abs() > 1e-9) {
+                    self.heel.anim = Some(Settle {
+                        from,
+                        to,
+                        started: now,
+                    });
+                }
+            }
+        }
+        let Some(a) = self.heel.anim else {
+            return false;
+        };
+        let t = ((now - a.started) / crate::heel_view::SETTLE_SECONDS).clamp(0.0, 1.0);
+        if t >= 1.0 {
+            self.heel.heel_deg = a.to;
+            self.heel.anim = None;
+        } else {
+            let ease = t * t * (3.0 - 2.0 * t);
+            self.heel.heel_deg = a.from + (a.to - a.from) * ease;
+        }
+        true
+    }
+
+    /// Append the trial weights to loading condition `i`, through undo: the only way a trial
+    /// weight reaches the model. The view then starts from that condition, without the weights.
+    fn heel_add_to_condition(&mut self, i: usize) {
+        if self.heel.weights.is_empty() || i >= self.project.loading_conditions.len() {
+            return;
+        }
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let snap = Snapshot::project_edit(
+            surface,
+            self.hydro.options.draft,
+            self.project.clone(),
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
+        self.history.snapshot(&snap);
+        self.project_edit_source = None;
+        let weights = std::mem::take(&mut self.heel.weights);
+        let n = weights.len();
+        let cond = &mut self.project.loading_conditions[i];
+        cond.items.extend(weights);
+        let name = cond.name.clone();
+        self.heel.selected = None;
+        self.heel.entry = None;
+        self.heel.start = crate::heel_view::HeelStart::Condition(i);
+        self.project_changed();
+        self.refresh_dirty();
+        self.set_status(format!(
+            "Added {n} trial weight{} to {name}",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
     /// A sweep job is running (the condition, not the drawings' hull).
     pub fn heel_sweep_busy(&self) -> bool {
         self.heel_sweep_track.busy()
@@ -5507,7 +5593,14 @@ impl App {
                     }
                 }
                 let exact = self.heel_exact_key();
-                if self.heel_current().is_some() && self.heel_exact_track.due(exact) {
+                // The exact state waits for the hand to rest: no settle running, and no drag
+                // or one held still for a moment (the drawing shows sweep samples meanwhile).
+                let resting = self.heel.anim.is_none()
+                    && (self.heel.grab.is_none()
+                        || self
+                            .heel_moved
+                            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(150)));
+                if resting && self.heel_current().is_some() && self.heel_exact_track.due(exact) {
                     if self.heel_exact_track.ready(exact) {
                         self.start_heel_exact();
                     } else {
@@ -9510,6 +9603,9 @@ impl App {
     fn heel_view_drawer(&mut self, ui: &mut egui::Ui) {
         use crate::heel_view::{HeelStart, HeelViewAction, HeelViewPanel, KgNote};
         let window = ui.ctx().content_rect().height();
+        if self.heel_animate(ui.input(|i| i.time)) {
+            ui.ctx().request_repaint();
+        }
         let stale = self.heel_stale();
         // The condition drawn: current, or kept and dimmed while it recomputes.
         let sweep = if stale {
@@ -9564,6 +9660,7 @@ impl App {
         let busy = self.heel_busy();
         let mut state = self.heel.clone();
         let mut action = HeelViewAction::None;
+        let mut drawn = None;
         egui::Panel::bottom("analysis_drawer")
             .resizable(true)
             .default_size((window * 0.42).round())
@@ -9580,6 +9677,7 @@ impl App {
                         outlines: hull.as_ref().map(|h| h.outlines.as_ref()),
                         section: section.as_deref(),
                         dock_plane,
+                        drawn: &mut drawn,
                         stale,
                         busy,
                         failure: failure.as_deref(),
@@ -9588,7 +9686,15 @@ impl App {
                     },
                 );
             });
+        self.heel_drawn = drawn;
         if state != self.heel {
+            if state.heel_deg != self.heel.heel_deg {
+                self.heel_moved = Some(std::time::Instant::now());
+            }
+            // A new condition settles at its new equilibrium once computed.
+            if state.weights != self.heel.weights || state.start != self.heel.start {
+                self.heel_settle_pending = true;
+            }
             self.heel = state;
             self.check_heel_start();
             ui.ctx().request_repaint();
@@ -9596,7 +9702,12 @@ impl App {
         match action {
             HeelViewAction::Close => self.close_analysis_view(),
             HeelViewAction::Open(other) => self.open_analysis_view(other),
-            _ => {}
+            HeelViewAction::SettleNow => self.heel_settle_pending = true,
+            HeelViewAction::AddToCondition(i) => self.heel_add_to_condition(i),
+            HeelViewAction::None | HeelViewAction::Changed => {}
+        }
+        if self.heel.hold {
+            self.heel_settle_pending = false;
         }
     }
 

@@ -279,3 +279,319 @@ fn a_stale_result_is_drawn_dimmed_and_says_so() {
         texts(&out)
     );
 }
+
+// ---- interaction -------------------------------------------------------
+
+/// A frame at time `t` seconds.
+fn frame_t(
+    ctx: &egui::Context,
+    app: &mut App,
+    events: Vec<egui::Event>,
+    t: f64,
+) -> egui::FullOutput {
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1600.0, 1000.0),
+        )),
+        time: Some(t),
+        events,
+        ..Default::default()
+    };
+    let mut out = ctx.run_ui(input, |ui| app.draw(ui));
+    out.textures_delta.clear();
+    out
+}
+
+fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn key(key: egui::Key) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// A clock for one test: every call is a frame 1/60 s later.
+struct Clock(f64);
+
+impl Clock {
+    fn frame(&mut self, ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        self.0 += 1.0 / 60.0;
+        frame_t(ctx, app, events, self.0);
+    }
+
+    /// Click (press and release, no move) at `p`.
+    fn click(&mut self, ctx: &egui::Context, app: &mut App, p: egui::Pos2) {
+        self.frame(ctx, app, vec![egui::Event::PointerMoved(p)]);
+        self.frame(ctx, app, vec![press(p, true)]);
+        self.frame(ctx, app, vec![press(p, false)]);
+        self.frame(ctx, app, Vec::new());
+    }
+
+    /// Drag from `from` by `dx` points to the right, in steps, and release.
+    fn drag(&mut self, ctx: &egui::Context, app: &mut App, from: egui::Pos2, dx: f32) {
+        self.frame(ctx, app, vec![egui::Event::PointerMoved(from)]);
+        self.frame(ctx, app, vec![press(from, true)]);
+        for k in 1..=12 {
+            let p = from + egui::vec2(dx * k as f32 / 12.0, 0.0);
+            self.frame(ctx, app, vec![egui::Event::PointerMoved(p)]);
+        }
+        self.frame(ctx, app, vec![press(from + egui::vec2(dx, 0.0), false)]);
+    }
+
+    /// Let `seconds` pass, a frame at a time.
+    fn wait(&mut self, ctx: &egui::Context, app: &mut App, seconds: f64) {
+        let end = self.0 + seconds;
+        while self.0 < end {
+            self.frame(ctx, app, Vec::new());
+        }
+    }
+}
+
+/// The view open on the demo with `weights`, computed, drawn on a clock.
+fn interactive(weights: Vec<WeightItem>) -> (egui::Context, App, Clock) {
+    let (ctx, mut app, _) = shown_with(weights);
+    let mut clock = Clock(10.0);
+    clock.frame(&ctx, &mut app, Vec::new());
+    clock.frame(&ctx, &mut app, Vec::new());
+    (ctx, app, clock)
+}
+
+/// A point in the body plan's water, off the hull and its labels: lower left.
+fn body_point(app: &App) -> egui::Pos2 {
+    let d = app.heel_drawn().expect("the drawings were drawn");
+    d.body.left_bottom() + egui::vec2(12.0, -12.0)
+}
+
+#[test]
+fn click_and_type_places_a_weight() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let d = app.heel_drawn().unwrap();
+    let p = body_point(&app);
+    clock.click(&ctx, &mut app, p);
+    assert!(app.heel_state().entry.is_some(), "the mass field opened");
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("2".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    let w = &app.heel_state().weights;
+    assert_eq!(w.len(), 1, "{:?}", app.heel_state());
+    assert_eq!(w[0].mass_t, 2.0);
+    assert!((w[0].x - d.section_x).abs() < 1e-9, "on the section drawn");
+    // Back on the screen where it was clicked.
+    let (_, c, h) = d.frame.to_earth(Vec3::new(w[0].x, w[0].y, w[0].z));
+    let back = d.body_view.to_screen([c, h]);
+    assert!((back - p).length() < 0.5, "{back:?} vs {p:?}");
+    assert!(app.heel_state().entry.is_none());
+}
+
+#[test]
+fn escape_cancels_the_weight() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let p = body_point(&app);
+    clock.click(&ctx, &mut app, p);
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("2".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+    assert!(app.heel_state().weights.is_empty());
+    assert!(app.heel_state().entry.is_none());
+}
+
+#[test]
+fn a_bad_mass_is_refused_with_a_reason() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let p = body_point(&app);
+    clock.click(&ctx, &mut app, p);
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("-3".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    assert!(app.heel_state().weights.is_empty());
+    let entry = app.heel_state().entry.clone().expect("still open");
+    assert_eq!(entry.error.as_deref(), Some("type a mass in tonnes"));
+}
+
+#[test]
+fn a_weight_above_the_deck_is_allowed() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let d = app.heel_drawn().unwrap();
+    let top = app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .map(|p| p.p.z)
+        .fold(f64::MIN, f64::max);
+    let p = d.body.center_top() + egui::vec2(-40.0, 8.0);
+    clock.click(&ctx, &mut app, p);
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("1".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    let w = &app.heel_state().weights;
+    assert_eq!(w.len(), 1);
+    assert!(w[0].z > top, "{} above the deck at {top}", w[0].z);
+}
+
+#[test]
+fn release_settles_at_equilibrium() {
+    let (ctx, mut app, mut clock) = interactive(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    let eq = app
+        .heel_current()
+        .unwrap()
+        .equilibrium
+        .heel_for_side(1.0)
+        .unwrap();
+    let d = app.heel_drawn().unwrap();
+    clock.drag(&ctx, &mut app, d.body.center(), 120.0);
+    assert!(
+        app.heel_state().heel_deg > 20.0,
+        "dragging right heels to starboard: {}",
+        app.heel_state().heel_deg
+    );
+    clock.wait(&ctx, &mut app, 0.7);
+    let heel = app.heel_state().heel_deg;
+    assert!((heel - eq).abs() < 0.01, "{heel} vs {eq}");
+    assert!(app.heel_state().anim.is_none());
+}
+
+#[test]
+fn hold_keeps_the_heel() {
+    let (ctx, mut app, mut clock) = interactive(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    let mut state = app.heel_state().clone();
+    state.hold = true;
+    app.set_heel_state(state);
+    let d = app.heel_drawn().unwrap();
+    clock.drag(&ctx, &mut app, d.body.center(), 120.0);
+    let held = app.heel_state().heel_deg;
+    assert!(held > 20.0, "{held}");
+    clock.wait(&ctx, &mut app, 0.7);
+    assert_eq!(app.heel_state().heel_deg, held);
+}
+
+#[test]
+fn arrow_keys_step_the_heel() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let mut state = app.heel_state().clone();
+    state.hold = true;
+    app.set_heel_state(state);
+    let p = body_point(&app);
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::ArrowRight)]);
+    assert_eq!(app.heel_state().heel_deg, 1.0);
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::ArrowLeft,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        }],
+    );
+    assert_eq!(app.heel_state().heel_deg, -4.0);
+}
+
+#[test]
+fn delete_removes_the_selected_weight() {
+    let (ctx, mut app, mut clock) = interactive(vec![
+        weight(0.5, 4.0, 0.8, 1.5),
+        weight(0.3, 5.0, -0.5, 1.2),
+    ]);
+    let mut state = app.heel_state().clone();
+    state.selected = Some(0);
+    app.set_heel_state(state);
+    let p = body_point(&app);
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Delete)]);
+    let w = &app.heel_state().weights;
+    assert_eq!(w.len(), 1);
+    assert_eq!(w[0].mass_t, 0.3);
+    assert_eq!(app.heel_state().selected, None);
+}
+
+#[test]
+fn add_to_condition_appends_items_and_undo_removes_them() {
+    let (ctx, mut app) = demo();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/demo-loadcase.json"
+    ))
+    .unwrap();
+    let cond: LoadingCondition = serde_json::from_str(&text).unwrap();
+    let items_before = cond.items.len();
+    app.project_mut_for_test().loading_conditions.push(cond);
+    app.set_heel_view_open(true);
+    let mut state = app.heel_state().clone();
+    state.start = HeelStart::Condition(0);
+    state.weights = vec![weight(0.5, 4.0, 0.8, 1.5)];
+    app.set_heel_state(state);
+    app.compute_heel_blocking().unwrap();
+    let mut clock = Clock(10.0);
+    clock.frame(&ctx, &mut app, Vec::new());
+    let out = frame_t(&ctx, &mut app, Vec::new(), 10.1);
+    let rect = texts_at(&out, "Add to this condition").expect("the button is drawn");
+    clock.0 = 10.1;
+    clock.click(&ctx, &mut app, rect.center());
+    let items = &app.project().loading_conditions[0].items;
+    assert_eq!(items.len(), items_before + 1);
+    assert_eq!(items.last().unwrap().mass_t, 0.5);
+    assert!(
+        app.heel_state().weights.is_empty(),
+        "the weights moved into the condition"
+    );
+    assert_eq!(app.heel_state().start, HeelStart::Condition(0));
+    assert!(app.is_dirty());
+    app.undo();
+    assert_eq!(
+        app.project().loading_conditions[0].items.len(),
+        items_before
+    );
+}
+
+/// Where the text `label` was drawn.
+fn texts_at(out: &egui::FullOutput, label: &str) -> Option<egui::Rect> {
+    fn walk(shape: &egui::Shape, label: &str) -> Option<egui::Rect> {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().find_map(|s| walk(s, label)),
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(egui::Rect::from_min_size(t.pos, t.galley.size()))
+            }
+            _ => None,
+        }
+    }
+    out.shapes.iter().find_map(|c| walk(&c.shape, label))
+}
+
+#[test]
+fn dragging_a_weight_moves_it_in_that_drawings_plane() {
+    let (ctx, mut app, mut clock) = interactive(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    let mut state = app.heel_state().clone();
+    state.hold = true;
+    app.set_heel_state(state);
+    clock.frame(&ctx, &mut app, Vec::new());
+    let d = app.heel_drawn().unwrap();
+    let (a, _, h) = d.frame.to_earth(Vec3::new(4.0, 0.8, 1.5));
+    let on = d.profile_view.to_screen([a, h]);
+    let heel = app.heel_state().heel_deg;
+    clock.drag(&ctx, &mut app, on, 40.0);
+    let w = &app.heel_state().weights[0];
+    assert_eq!(w.y, 0.8, "the profile keeps the weight's y");
+    assert!(w.x > 4.5, "moved forward: x {}", w.x);
+    assert_eq!(
+        app.heel_state().heel_deg,
+        heel,
+        "a weight drag is not a heel drag"
+    );
+    let after = app.heel_drawn().unwrap();
+    assert_eq!(
+        (after.body, after.profile),
+        (d.body, d.profile),
+        "the drawings stay put when the result goes out of date"
+    );
+}

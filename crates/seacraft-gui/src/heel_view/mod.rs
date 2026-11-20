@@ -55,6 +55,21 @@ pub struct PendingWeight {
     pub editing: Option<usize>,
     /// Why the last Enter was refused.
     pub error: Option<String>,
+    /// The field has been given the keyboard (once, when it opens).
+    pub focused: bool,
+}
+
+impl PendingWeight {
+    pub fn new(at: Vec3, drawing: Drawing, editing: Option<usize>, text: String) -> Self {
+        Self {
+            at,
+            drawing,
+            text,
+            editing,
+            error: None,
+            focused: false,
+        }
+    }
 }
 
 /// The eased swing back to the equilibrium heel after a release: a picture between static states,
@@ -82,6 +97,17 @@ pub struct HeelViewState {
     pub section: Option<f64>,
     pub entry: Option<PendingWeight>,
     pub anim: Option<Settle>,
+    /// What the pointer holds while it drags in a drawing.
+    pub grab: Option<Grab>,
+}
+
+/// What a drag in a drawing moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Grab {
+    /// The heel (a drag in the body plan off the weights).
+    Heel,
+    /// A trial weight, in that drawing's plane.
+    Weight(usize, Drawing),
 }
 
 /// What the Heel view asked for, applied by the App after the panel.
@@ -94,8 +120,6 @@ pub enum HeelViewAction {
     SettleNow,
     /// Append the trial weights to this loading condition.
     AddToCondition(usize),
-    /// "Add to loading condition…" with the bare hull as start: the menu is open.
-    PickConditionForAdd,
     Close,
     /// Show another Analysis view in the drawer.
     Open(AnalysisView),
@@ -279,6 +303,26 @@ pub enum KgNote {
 /// The hint shown with no KG.
 pub const NO_KG_HINT: &str = "Set KG in the Hydrostatics dock";
 
+/// Where the two drawings were drawn, and how they map to the model.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawnViews {
+    pub body: egui::Rect,
+    pub body_view: draw::View2,
+    pub profile: egui::Rect,
+    pub profile_view: draw::View2,
+    pub frame: geometry::EarthFrame,
+    /// The x of the section the body plan picks on.
+    pub section_x: f64,
+}
+
+/// How long the eased swing back to the equilibrium takes, seconds.
+pub const SETTLE_SECONDS: f64 = 0.5;
+
+/// Heel per point of horizontal drag in the body plan, degrees.
+const DEG_PER_POINT: f64 = 0.25;
+/// How near (points) a pick must be to take a weight rather than the water.
+const WEIGHT_PICK: f32 = 9.0;
+
 /// What the panel draws, and the view state it edits.
 pub struct HeelViewPanel<'a> {
     pub state: &'a mut HeelViewState,
@@ -293,6 +337,8 @@ pub struct HeelViewPanel<'a> {
     pub section: Option<&'a [Vec<Vec3>]>,
     /// The upright waterplane at the dock draft (drawn when there is no condition).
     pub dock_plane: Option<Plane>,
+    /// Where the drawings were drawn this frame (the App keeps it for tests).
+    pub drawn: &'a mut Option<DrawnViews>,
     pub stale: bool,
     pub busy: bool,
     pub failure: Option<&'a str>,
@@ -380,12 +426,14 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         outlines,
         section,
         dock_plane,
+        drawn,
         stale,
         busy,
         failure,
         kg_note,
         conditions,
     } = p;
+    *drawn = None;
     let mut action = header(ui);
     ui.horizontal_wrapped(|ui| {
         let start_name = |s: HeelStart| match s {
@@ -414,9 +462,11 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             });
         ui.separator();
         ui.label("Heel");
+        // One decimal shown, but not rounded: a settle moves the heel in small steps, and a
+        // rounding slider would report them as the user's edit and stop it.
         let slider = egui::Slider::new(&mut state.heel_deg, -90.0..=90.0)
             .suffix("°")
-            .fixed_decimals(1);
+            .custom_formatter(|v, _| format!("{v:.1}"));
         if ui.add(slider).on_hover_text("+ to starboard").changed() {
             state.anim = None;
             action = HeelViewAction::Changed;
@@ -457,15 +507,9 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         ui.colored_label(theme::WARN, NO_KG_HINT);
         if let (Some(o), Some(plane)) = (outlines, dock_plane) {
             let frame = geometry::EarthFrame::from_plane(&plane);
-            drawings(
-                ui,
-                state,
-                o,
-                &frame,
-                section,
-                None,
-                "Upright at the dock draft",
-            );
+            let caption = " · Upright at the dock draft";
+            let (_, views) = drawings(ui, state, o, &frame, section, None, caption, false);
+            *drawn = Some(views);
         }
         return action;
     }
@@ -483,22 +527,57 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         .id_salt("heel_view_body")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            // The drawings on the left; what they say, and the weights, beside them. Nothing
+            // above the drawings comes and goes, so they hold still under a drag that makes the
+            // result out of date.
+            let width = ui.available_width();
+            let side = (0.34 * width).clamp(260.0, 460.0);
+            let draw_width = (width - side - 12.0).max(200.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(draw_width);
+                    if stale {
+                        ui.multiply_opacity(theme::STALE_OPACITY);
+                    }
+                    if let (Some(s), Some(o)) = (shown, outlines) {
+                        let frame = geometry::EarthFrame::from_plane(&s.plane);
+                        let trim = s
+                            .trim_m
+                            .map_or(String::new(), |t| format!(" · trim {t:+.3} m"));
+                        // Interactive while stale too: moving a weight re-keys the sweep on the
+                        // first frame of the drag, and the drag must carry on over the old result.
+                        let (a, views) =
+                            drawings(ui, state, o, &frame, section, Some(s), &trim, true);
+                        *drawn = Some(views);
+                        if a != HeelViewAction::None {
+                            action = a;
+                        }
+                    }
+                });
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    ui.set_width(side);
+                    if stale {
+                        stale_chip(ui);
+                        ui.multiply_opacity(theme::STALE_OPACITY);
+                    }
+                    for w in &out.warnings {
+                        ui.colored_label(theme::WARN, format!("⚠ {w}"));
+                    }
+                    if let Some(s) = shown {
+                        ui.label(egui::RichText::new(readout(s, out, !shown_exact)).strong());
+                    }
+                    ui.label(equilibrium_line(&out.equilibrium, out.mass.displacement_t));
+                    ui.add_space(4.0);
+                    let a = weights_table(ui, state, conditions);
+                    if a != HeelViewAction::None {
+                        action = a;
+                    }
+                });
+            });
             if stale {
-                stale_chip(ui);
                 ui.multiply_opacity(theme::STALE_OPACITY);
             }
-            for w in &out.warnings {
-                ui.colored_label(theme::WARN, format!("⚠ {w}"));
-            }
-            if let (Some(s), Some(o)) = (shown, outlines) {
-                let frame = geometry::EarthFrame::from_plane(&s.plane);
-                let trim = s
-                    .trim_m
-                    .map_or(String::new(), |t| format!(" · trim {t:+.3} m"));
-                drawings(ui, state, o, &frame, section, Some(s), &trim);
-                ui.label(egui::RichText::new(readout(s, out, !shown_exact)).strong());
-            }
-            ui.label(equilibrium_line(&out.equilibrium, out.mass.displacement_t));
             ui.label(
                 egui::RichText::new(STATIC_CAPTION)
                     .size(theme::SMALL_SIZE)
@@ -510,6 +589,367 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 action = HeelViewAction::Changed;
             }
         });
+    if let Some(views) = *drawn {
+        for a in [mass_field(ui, state, &views), keys(ui, state, &views)] {
+            if a != HeelViewAction::None {
+                action = a;
+            }
+        }
+    }
+    action
+}
+
+/// The small field where a weight's mass is typed, at the point picked. Enter places (or edits)
+/// the weight; Esc cancels.
+fn mass_field(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) -> HeelViewAction {
+    let Some(mut entry) = state.entry.clone() else {
+        return HeelViewAction::None;
+    };
+    let (a, c, h) = views.frame.to_earth(entry.at);
+    let at = match entry.drawing {
+        Drawing::BodyPlan => views.body_view.to_screen([c, h]),
+        Drawing::Profile => views.profile_view.to_screen([a, h]),
+    };
+    let mut action = HeelViewAction::None;
+    let mut close = false;
+    egui::Area::new(egui::Id::unique("heel_weight_entry"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at + egui::vec2(10.0, -10.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let edit = ui.add(
+                        egui::TextEdit::singleline(&mut entry.text)
+                            .desired_width(56.0)
+                            .hint_text("mass"),
+                    );
+                    ui.label("t");
+                    if !entry.focused {
+                        edit.request_focus();
+                        entry.focused = true;
+                    }
+                    let (enter, escape) = ui.input(|i| {
+                        (
+                            i.key_pressed(egui::Key::Enter),
+                            i.key_pressed(egui::Key::Escape),
+                        )
+                    });
+                    if escape {
+                        close = true;
+                    } else if enter && (edit.lost_focus() || edit.has_focus()) {
+                        match entry.text.trim().parse::<f64>() {
+                            Ok(m) if m.is_finite() && m > 0.0 => {
+                                place(state, &entry, m);
+                                close = true;
+                                action = HeelViewAction::Changed;
+                            }
+                            _ => {
+                                entry.error = Some("type a mass in tonnes".into());
+                                entry.focused = false;
+                            }
+                        }
+                    }
+                });
+                if let Some(e) = &entry.error {
+                    ui.colored_label(theme::FAIL, e);
+                }
+            });
+        });
+    state.entry = if close { None } else { Some(entry) };
+    action
+}
+
+/// Place a new weight at the entry's point, or set the mass of the one it edits.
+fn place(state: &mut HeelViewState, entry: &PendingWeight, mass_t: f64) {
+    match entry.editing.and_then(|i| state.weights.get_mut(i)) {
+        Some(w) => w.mass_t = mass_t,
+        None => {
+            let n = state.weights.len() + 1;
+            state.weights.push(WeightItem {
+                name: format!("Weight {n}"),
+                mass_t,
+                x: entry.at.x,
+                y: entry.at.y,
+                z: entry.at.z,
+            });
+            state.selected = Some(n - 1);
+        }
+    }
+}
+
+/// ← → step the heel (1°, Shift 5°) and Delete removes the selected weight, while the pointer is
+/// over a drawing and no field has the keyboard.
+fn keys(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) -> HeelViewAction {
+    let over = ui
+        .ctx()
+        .pointer_hover_pos()
+        .is_some_and(|p| views.body.contains(p) || views.profile.contains(p));
+    if !over || ui.ctx().egui_wants_keyboard_input() {
+        return HeelViewAction::None;
+    }
+    let mut action = HeelViewAction::None;
+    // The step is read from each key event's own modifiers: Shift for 5°. Alt+arrows belong to
+    // the station stepping in the modelling views.
+    let (delta, delete) = ui.input_mut(|i| {
+        let mut delta = 0.0;
+        let mut delete = false;
+        i.events.retain(|e| match e {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } if !modifiers.alt && !modifiers.command && !modifiers.ctrl => {
+                let step = if modifiers.shift { 5.0 } else { 1.0 };
+                match key {
+                    egui::Key::ArrowRight => delta += step,
+                    egui::Key::ArrowLeft => delta -= step,
+                    egui::Key::Delete | egui::Key::Backspace => delete = true,
+                    _ => return true,
+                }
+                false
+            }
+            _ => true,
+        });
+        (delta, delete)
+    });
+    if delta != 0.0 {
+        state.heel_deg = (state.heel_deg + delta).clamp(-90.0, 90.0);
+        state.anim = None;
+        action = HeelViewAction::Changed;
+    }
+    if delete {
+        if let Some(i) = state.selected.take() {
+            if i < state.weights.len() {
+                state.weights.remove(i);
+                action = HeelViewAction::Changed;
+            }
+        }
+    }
+    action
+}
+
+/// The trial weights as a table (typed edits) and the way into the model: "Add to this condition".
+fn weights_table(
+    ui: &mut egui::Ui,
+    state: &mut HeelViewState,
+    conditions: &[String],
+) -> HeelViewAction {
+    let mut action = HeelViewAction::None;
+    let title = format!("Trial weights ({})", state.weights.len());
+    egui::CollapsingHeader::new(title)
+        .id_salt("heel_weights")
+        .default_open(true)
+        .show(ui, |ui| {
+            if state.weights.is_empty() {
+                ui.label(
+                    egui::RichText::new("Click a drawing to place a weight, then type its mass.")
+                        .color(theme::TEXT_SECONDARY),
+                );
+            }
+            let mut remove = None;
+            egui::Grid::new("heel_weights_grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    if !state.weights.is_empty() {
+                        for h in ["", "mass", "x", "y", "z", ""] {
+                            ui.label(egui::RichText::new(h).color(theme::TEXT_SECONDARY));
+                        }
+                        ui.end_row();
+                    }
+                    let selected = state.selected;
+                    for (i, w) in state.weights.iter_mut().enumerate() {
+                        if ui.selectable_label(selected == Some(i), &w.name).clicked() {
+                            state.selected = Some(i);
+                        }
+                        let mut edited = ui
+                            .add(
+                                egui::DragValue::new(&mut w.mass_t)
+                                    .speed(0.05)
+                                    .range(0.001..=1.0e6)
+                                    .suffix(" t"),
+                            )
+                            .changed();
+                        for v in [&mut w.x, &mut w.y, &mut w.z] {
+                            edited |= ui
+                                .add(
+                                    egui::DragValue::new(v)
+                                        .speed(0.02)
+                                        .suffix(" m")
+                                        .fixed_decimals(2),
+                                )
+                                .changed();
+                        }
+                        if ui.button("✕").on_hover_text("Remove this weight").clicked() {
+                            remove = Some(i);
+                        }
+                        if edited {
+                            action = HeelViewAction::Changed;
+                        }
+                        ui.end_row();
+                    }
+                });
+            if let Some(i) = remove {
+                state.weights.remove(i);
+                state.selected = None;
+                action = HeelViewAction::Changed;
+            }
+            let none = state.weights.is_empty();
+            match state.start {
+                HeelStart::Condition(i) => {
+                    let button = ui
+                        .add_enabled(!none, egui::Button::new("Add to this condition"))
+                        .on_hover_text(
+                            "Append the trial weights to this loading condition (Undo takes them out)",
+                        )
+                        .on_disabled_hover_text("Place a weight first");
+                    if button.clicked() {
+                        action = HeelViewAction::AddToCondition(i);
+                    }
+                }
+                HeelStart::Dock => {
+                    let enabled = !none && !conditions.is_empty();
+                    let reason = if none {
+                        "Place a weight first"
+                    } else {
+                        "The project has no loading condition yet (Loading tab)"
+                    };
+                    ui.add_enabled_ui(enabled, |ui| {
+                        ui.menu_button("Add to loading condition…", |ui| {
+                            for (i, name) in conditions.iter().enumerate() {
+                                if ui.button(name).clicked() {
+                                    action = HeelViewAction::AddToCondition(i);
+                                    ui.close();
+                                }
+                            }
+                        })
+                        .response
+                        .on_disabled_hover_text(reason);
+                    });
+                }
+            }
+        });
+    action
+}
+
+/// The weight under `p` in `drawing`, if one is within reach.
+fn weight_at(
+    state: &HeelViewState,
+    views: &DrawnViews,
+    drawing: Drawing,
+    p: egui::Pos2,
+) -> Option<usize> {
+    state
+        .weights
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let (a, c, h) = views.frame.to_earth(Vec3::new(w.x, w.y, w.z));
+            let s = match drawing {
+                Drawing::BodyPlan => views.body_view.to_screen([c, h]),
+                Drawing::Profile => views.profile_view.to_screen([a, h]),
+            };
+            (i, (s - p).length())
+        })
+        .filter(|&(_, d)| d <= WEIGHT_PICK)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(i, _)| i)
+}
+
+/// The model point under `p` in `drawing`: on the section drawn (body plan) or the centreline
+/// plane (profile), or in the plane through `keep` when a weight is moved.
+fn model_at(
+    views: &DrawnViews,
+    drawing: Drawing,
+    p: egui::Pos2,
+    keep: Option<Vec3>,
+) -> Option<Vec3> {
+    match drawing {
+        Drawing::BodyPlan => {
+            let [c, h] = views.body_view.from_screen(p);
+            views
+                .frame
+                .model_at_x(c, h, keep.map_or(views.section_x, |k| k.x))
+        }
+        Drawing::Profile => {
+            let [a, h] = views.profile_view.from_screen(p);
+            views.frame.model_at_y(a, h, keep.map_or(0.0, |k| k.y))
+        }
+    }
+}
+
+/// A click places a weight (or selects one), a double click edits a weight's mass, a drag moves
+/// a weight or, in the body plan, the heel.
+fn pointer(
+    state: &mut HeelViewState,
+    resp: &egui::Response,
+    drawing: Drawing,
+    views: &DrawnViews,
+) -> HeelViewAction {
+    let mut action = HeelViewAction::None;
+    let at = resp.interact_pointer_pos();
+    if resp.drag_started() {
+        let hit = at.and_then(|p| weight_at(state, views, drawing, p));
+        state.grab = match (hit, drawing) {
+            (Some(i), _) => {
+                state.selected = Some(i);
+                Some(Grab::Weight(i, drawing))
+            }
+            (None, Drawing::BodyPlan) => Some(Grab::Heel),
+            (None, Drawing::Profile) => None,
+        };
+        state.anim = None;
+        state.entry = None;
+    }
+    if resp.dragged() {
+        match state.grab {
+            Some(Grab::Heel) if drawing == Drawing::BodyPlan => {
+                let dx = f64::from(resp.drag_delta().x);
+                if dx != 0.0 {
+                    state.heel_deg = (state.heel_deg + dx * DEG_PER_POINT).clamp(-90.0, 90.0);
+                    action = HeelViewAction::Changed;
+                }
+            }
+            Some(Grab::Weight(i, d)) if d == drawing => {
+                let keep = state.weights.get(i).map(|w| Vec3::new(w.x, w.y, w.z));
+                if let (Some(p), Some(k)) = (at, keep) {
+                    if let Some(m) = model_at(views, drawing, p, Some(k)) {
+                        let w = &mut state.weights[i];
+                        (w.x, w.y, w.z) = (m.x, m.y, m.z);
+                        action = HeelViewAction::Changed;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if resp.drag_stopped() {
+        if state.grab == Some(Grab::Heel) {
+            action = HeelViewAction::SettleNow;
+        }
+        state.grab = None;
+    }
+    if resp.double_clicked() {
+        if let Some(i) = at.and_then(|p| weight_at(state, views, drawing, p)) {
+            let w = &state.weights[i];
+            let text = format!("{}", w.mass_t);
+            let at = Vec3::new(w.x, w.y, w.z);
+            state.entry = Some(PendingWeight::new(at, drawing, Some(i), text));
+        }
+    } else if resp.clicked() {
+        match at.map(|p| (p, weight_at(state, views, drawing, p))) {
+            Some((_, Some(i))) => {
+                state.selected = Some(i);
+                state.entry = None;
+            }
+            Some((p, None)) => {
+                state.selected = None;
+                state.entry = model_at(views, drawing, p, None)
+                    .map(|m| PendingWeight::new(m, drawing, None, String::new()));
+            }
+            None => {}
+        }
+    }
     action
 }
 
@@ -530,28 +970,65 @@ fn stale_chip(ui: &mut egui::Ui) {
 
 /// The body plan and the profile side by side, with their captions. `shown` carries B, G and the
 /// lever; without it the hull is drawn alone. `profile_note` follows "From starboard".
+#[allow(clippy::too_many_arguments)]
 fn drawings(
     ui: &mut egui::Ui,
-    state: &HeelViewState,
+    state: &mut HeelViewState,
     outlines: &geometry::HullOutlines,
     frame: &geometry::EarthFrame,
     section: Option<&[Vec<Vec3>]>,
     shown: Option<&HeelState>,
     profile_note: &str,
-) {
+    interactive: bool,
+) -> (HeelViewAction, DrawnViews) {
     let width = ui.available_width();
     let gap = 8.0;
     let half = ((width - gap) * 0.5).max(40.0);
     let height = DRAWING_HEIGHT.min(half);
-    let (body_rect, profile_rect) = ui
+    let sense = if interactive {
+        egui::Sense::click_and_drag()
+    } else {
+        egui::Sense::hover()
+    };
+    // Fixed ids: an auto id moves when anything before it changes, and a drag on it ends.
+    let (body_resp, profile_resp) = ui
         .horizontal(|ui| {
-            let (b, _) = ui.allocate_exact_size(egui::vec2(half, height), egui::Sense::hover());
+            let size = egui::vec2(half, height);
+            let (b, _) = ui.allocate_exact_size(size, egui::Sense::hover());
             ui.add_space(gap);
-            let (p, _) = ui.allocate_exact_size(egui::vec2(half, height), egui::Sense::hover());
-            (b, p)
+            let (p, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            (
+                ui.interact(b, egui::Id::unique("heel_view_body_plan"), sense),
+                ui.interact(p, egui::Id::unique("heel_view_profile"), sense),
+            )
         })
         .inner;
+    let (body_rect, profile_rect) = (body_resp.rect, profile_resp.rect);
     let (body_view, profile_view) = draw::fit_views(body_rect, profile_rect, outlines, frame);
+    let section_x = state
+        .section
+        .or(shown.map(|s| s.b.x))
+        .unwrap_or(0.5 * (outlines.min.x + outlines.max.x));
+    let views = DrawnViews {
+        body: body_rect,
+        body_view,
+        profile: profile_rect,
+        profile_view,
+        frame: *frame,
+        section_x,
+    };
+    let mut action = HeelViewAction::None;
+    if interactive {
+        for (resp, drawing) in [
+            (&body_resp, Drawing::BodyPlan),
+            (&profile_resp, Drawing::Profile),
+        ] {
+            let a = pointer(state, resp, drawing, &views);
+            if a != HeelViewAction::None {
+                action = a;
+            }
+        }
+    }
     let stations = geometry::body_plan(outlines, frame);
     let section = section
         .map(|s| geometry::project_section(s, frame))
@@ -625,7 +1102,7 @@ fn drawings(
             weights: &weights_profile,
         },
     );
-    let section_x = state.section.or(shown.map(|s| s.b.x));
+    let section_x = (shown.is_some() || state.section.is_some()).then_some(section_x);
     let small = |t: String| {
         egui::RichText::new(t)
             .size(theme::SMALL_SIZE)
@@ -646,6 +1123,7 @@ fn drawings(
             egui::Label::new(small(format!("From starboard{profile_note}"))),
         );
     });
+    (action, views)
 }
 
 /// The condition's GZ curve (G on the centreline) and heeling arm against heel, the heel shown and
