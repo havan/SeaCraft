@@ -7,8 +7,6 @@
 //! The hulls are exact meshes of Journée's formula (no control net, no subdivision), run through
 //! the same station cutting, close-fit sections and strip integration as `head_sea_raos`.
 
-// Tasks still to come read the remaining table fields.
-#[allow(dead_code)]
 mod journee_1992;
 
 use journee_1992::*;
@@ -636,6 +634,169 @@ fn wave_loads_against_the_restrained_model() {
                         "{} Fn {froude} {what}: {gap:.3} > band {limit}",
                         m.name
                     ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Bands on the motion gaps per (model, Fn, quantity), over every row: amplitudes relative (with
+/// the group floor), next 0.01 above the measured gap; phases in degrees, next 2° above, where both
+/// the tank's and SeaCraft's amplitudes reach the floor.
+const MOTION_BANDS: &[(&str, f64, &str, f64)] = &[
+    // Wigley I, Fn 0.2
+    ("Wigley I", 0.2, "z", 0.49),
+    ("Wigley I", 0.2, "eps_z", 16.0),
+    ("Wigley I", 0.2, "theta", 0.35),
+    ("Wigley I", 0.2, "eps_theta", 24.0),
+    // Wigley I, Fn 0.3
+    ("Wigley I", 0.3, "z", 0.19),
+    ("Wigley I", 0.3, "eps_z", 34.0),
+    ("Wigley I", 0.3, "theta", 0.54),
+    ("Wigley I", 0.3, "eps_theta", 32.0),
+    // Wigley I, Fn 0.4
+    ("Wigley I", 0.4, "z", 0.33),
+    ("Wigley I", 0.4, "eps_z", 40.0),
+    ("Wigley I", 0.4, "theta", 0.81),
+    ("Wigley I", 0.4, "eps_theta", 40.0),
+    // Wigley III, Fn 0.2
+    ("Wigley III", 0.2, "z", 0.47),
+    ("Wigley III", 0.2, "eps_z", 48.0),
+    ("Wigley III", 0.2, "theta", 0.32),
+    ("Wigley III", 0.2, "eps_theta", 22.0),
+    // Wigley III, Fn 0.3
+    ("Wigley III", 0.3, "z", 0.87),
+    ("Wigley III", 0.3, "eps_z", 42.0),
+    ("Wigley III", 0.3, "theta", 0.68),
+    ("Wigley III", 0.3, "eps_theta", 44.0),
+    // Wigley III, Fn 0.4
+    ("Wigley III", 0.4, "z", 0.47),
+    ("Wigley III", 0.4, "eps_z", 22.0),
+    ("Wigley III", 0.4, "theta", 1.15),
+    ("Wigley III", 0.4, "eps_theta", 58.0),
+];
+
+/// The stop rule for the motions: at Fn 0.2 and 0.3, λ/L ≥ 1.25 and away from resonance (more
+/// than 0.15 in λ/L from the largest measured amplitude of the group), an amplitude more than 30 %
+/// or a phase more than 30° from the tank suggests a fault rather than strip theory.
+const MOTION_STOP: (f64, f64) = (0.30, 30.0);
+
+/// Rows the motion stop rule fired on, banded instead (maintainer's ruling, 2026-11-20): (model,
+/// Fn, motion, λ/L). Strip theory puts Wigley I's pitch peak at shorter waves than the tank (λ/L
+/// 1.25 against 1.5 at Fn 0.3; Journée's own strip theory does too), from an A55 about 30 % low
+/// and a B55 too high at the same encounter frequencies (the coefficient bands); at Fn 0.2, λ/L
+/// 1.75 the tank's θ″ of 1.09 stands above both neighbours (0.95 at 1.6, 0.68 at 2.0).
+const MOTION_STOP_EXEMPT: &[(&str, f64, &str, f64)] = &[
+    ("Wigley I", 0.3, "theta", 1.25),
+    ("Wigley I", 0.3, "theta", 1.75),
+    ("Wigley I", 0.2, "theta", 1.75),
+];
+
+#[test]
+fn motions_against_the_free_model() {
+    let mut failures = Vec::new();
+    for (m, table) in [(&WIGLEY_I, TABLE_8_I), (&WIGLEY_III, TABLE_8_III)] {
+        for froude in [0.2, 0.3, 0.4] {
+            let rows: Vec<&MotionRow> = table.iter().filter(|r| r.froude == froude).collect();
+            let omegas = rows
+                .iter()
+                .map(|r| omega_for_wavelength(r.lambda_over_l))
+                .collect();
+            let (rep, _) = run(m, froude, omegas, STATIONS, MESH);
+            // SeaCraft's z″, ε_z, θ″, ε_θ in Journée's form (θ″ = θa/(kζa)·L/λ, bow down).
+            let got: Vec<(f64, f64, f64, f64)> = rep
+                .frequencies
+                .iter()
+                .map(|p| {
+                    (
+                        p.heave_amp,
+                        p.heave_phase_deg.rem_euclid(360.0),
+                        p.pitch_amp / p.lambda_over_l,
+                        bow_down_deg(p.pitch_phase_deg),
+                    )
+                })
+                .collect();
+            for (k, name) in ["z", "theta"].into_iter().enumerate() {
+                let want_amp = |r: &MotionRow| if k == 0 { r.z } else { r.theta };
+                let want_eps = |r: &MotionRow| if k == 0 { r.eps_z_deg } else { r.eps_theta_deg };
+                let have = |g: &(f64, f64, f64, f64)| if k == 0 { (g.0, g.1) } else { (g.2, g.3) };
+                let floor = floor_of(rows.iter().filter_map(|r| want_amp(r)));
+                let peak = rows
+                    .iter()
+                    .filter_map(|r| Some((want_amp(r)?, r.lambda_over_l)))
+                    .fold((0.0, 0.0), |a, b| if b.0 > a.0 { b } else { a })
+                    .1;
+                let exempt = |l: f64| {
+                    MOTION_STOP_EXEMPT
+                        .iter()
+                        .any(|e| e.0 == m.name && e.1 == froude && e.2 == name && e.3 == l)
+                };
+                let near_peak = |l: f64| (l - peak).abs() <= 0.15 + 1e-9;
+                let stop_region =
+                    |l: f64| froude < 0.35 && l >= 1.25 - 1e-9 && !near_peak(l) && !exempt(l);
+                println!(
+                    "{} Fn {froude} {name}″ (floor {floor:.3}, peak at λ/L {peak}):",
+                    m.name
+                );
+                println!("   λ/L  ζa cm    tank  SeaCraft    gap    ε tank SeaCraft   gap");
+                let (mut largest_amp, mut largest_eps) = (0.0f64, 0.0f64);
+                for (r, g) in rows.iter().zip(&got) {
+                    let (amp, eps) = have(g);
+                    let l = r.lambda_over_l;
+                    let note = if stop_region(l) {
+                        ""
+                    } else if froude < 0.35 && l >= 1.25 - 1e-9 && near_peak(l) {
+                        "  (near resonance: no stop rule)"
+                    } else if froude < 0.35 && exempt(l) {
+                        "  (named: no stop rule)"
+                    } else {
+                        ""
+                    };
+                    let mut line = format!("  {l:5.3} {:5.2}", r.zeta_a_cm);
+                    match want_amp(r) {
+                        Some(want) => {
+                            let gap = amp_gap(amp, want, floor);
+                            largest_amp = largest_amp.max(gap);
+                            line += &format!("  {want:6.2} {amp:8.3} {gap:6.3}");
+                            if stop_region(l) && gap > MOTION_STOP.0 {
+                                failures.push(format!(
+                                    "STOP RULE {} Fn {froude} {name}″ λ/L {l}: {want} against {amp:.3}",
+                                    m.name
+                                ));
+                            }
+                        }
+                        None => line += &format!("  {:>6} {amp:8.3} {:>6}", "-", "-"),
+                    }
+                    match (want_eps(r), want_amp(r)) {
+                        (Some(want), Some(a)) if a >= floor && amp >= floor => {
+                            let gap = phase_gap_deg(eps, want);
+                            largest_eps = largest_eps.max(gap);
+                            line += &format!("  {want:6.0} {eps:7.1} {gap:5.1}");
+                            if stop_region(l) && gap > MOTION_STOP.1 {
+                                failures.push(format!(
+                                    "STOP RULE {} Fn {froude} ε_{name} λ/L {l}: {want}° against {eps:.1}°",
+                                    m.name
+                                ));
+                            }
+                        }
+                        (Some(want), _) => line += &format!("  {want:6.0} {eps:7.1} {:>5}", "(fl)"),
+                        (None, _) => line += &format!("  {:>6} {eps:7.1} {:>5}", "-", "-"),
+                    }
+                    println!("{line}{note}");
+                }
+                for (what, gap) in [
+                    (name, largest_amp),
+                    (&format!("eps_{name}")[..], largest_eps),
+                ] {
+                    let limit = band(MOTION_BANDS, m.name, froude, what);
+                    println!("  largest {what} gap {gap:.5} (band {limit})");
+                    if gap > limit {
+                        failures.push(format!(
+                            "{} Fn {froude} {what}: {gap:.3} > band {limit}",
+                            m.name
+                        ));
+                    }
                 }
             }
         }
