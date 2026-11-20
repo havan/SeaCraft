@@ -13,6 +13,8 @@ use eframe::egui;
 use seacraft_core::loading::WeightItem;
 use seacraft_core::math::Vec3;
 
+pub mod geometry;
+
 /// What the view starts from, before the trial weights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HeelStart {
