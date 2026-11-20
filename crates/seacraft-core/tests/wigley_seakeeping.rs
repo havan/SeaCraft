@@ -489,7 +489,7 @@ fn radiation_coefficients_against_forced_oscillation() {
                     // shows at every frequency. The one stop rule kept for the coefficients
                     // (maintainer's ruling, 2026-11-20). A35 and A53 are banded only: the tank's
                     // A53 on Wigley I at Fn 0.4 turns negative from 7 rad/s, where strip theory's
-                    // U/ω_e²·∫b33 cannot.
+                    // U·B33/ω_e² (exact on these symmetric hulls) cannot.
                     if what == "B35" || what == "B53" {
                         for &&(w, _, want, got) in &at {
                             if want.abs() >= floor && want.signum() != got.signum() {
@@ -517,8 +517,8 @@ fn radiation_coefficients_against_forced_oscillation() {
 /// Bands on the wave-load gaps per (model, Fn, quantity), over every row and both wave amplitudes:
 /// amplitudes relative (with the group floor), next 0.01 above the measured gap; phases in degrees,
 /// next 2° above, where both the tank's and SeaCraft's amplitudes reach the floor. That leaves out
-/// the short-wave cancellation of the heave force on Wigley III (λ/L 0.75 at every speed, where
-/// SeaCraft's Xw3″ is 0.025 to 0.036 against the tank's 0.06 to 0.12): there the computed phase
+/// the short-wave cancellation of the heave force on Wigley III (λ/L 0.75 at every speed and 0.5 at
+/// Fn 0.3 and 0.4, where SeaCraft's Xw3″ is 0.025 to 0.040 against the tank's 0.06 to 0.12): there the computed phase
 /// swings fast, and at Fn 0.4 it is 104° from the tank's, as Journée's own strip theory is
 /// (maintainer's ruling, 2026-11-20). The rows stay printed, marked `(fl)`.
 const LOAD_BANDS: &[(&str, f64, &str, f64)] = &[

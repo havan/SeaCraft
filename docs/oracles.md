@@ -1731,17 +1731,23 @@ that strip theory is that accurate on any other hull.
 | Wigley III, Fn 0.3 | 0.16 | 0.29 | 2.83 | 1.52 | 0.33 | 0.91 | 2.00 | 1.73 |
 | Wigley III, Fn 0.4 | 0.19 | 0.45 | 3.98 | 1.50 | 0.35 | 1.50 | 1.60 | 1.15 |
 
-A33 is within 8 to 19 %. The large gaps are strip theory's, and Journée's own strip-theory curves (his Figures 2,
-3, 5, 6) show the same ones: B55 1.5 to 2.7 times the tank at 4 to 7 rad/s, growing with speed (the U²/ω_e²·B33
-term), and about half the tank at 12 rad/s; B33 too low at 10 and 12 rad/s (Wigley I, Fn 0.3: 0.37 and 0.17
-against 0.57 and 0.45); A55 about 30 % low from 6 rad/s (0.0157 against 0.0235). The couplings are small
-differences of large terms and their gaps are relative to a 10 % floor, hence bands above 1. The rows at ω ≈ 3
+At 4 to 12 rad/s A33 is within 8 to 19 % (at 3 rad/s, unbanded, up to 60 % off). The large gaps follow strip
+theory's known pattern, and Journée's own strip-theory curves show it too (his Figures 2-I, 5-I, 6-I and 6-III,
+read by hand for this purpose only): B55 1.5 to 2.7 times the tank at 4 to 7 rad/s, growing with speed (the
+U²/ω_e²·B33 term), and about half the tank at 12 rad/s; B33 too low at 10 and 12 rad/s (Wigley I, Fn 0.3: 0.37 and
+0.17 against 0.57 and 0.45); A55 about 30 % low from about 6 rad/s (0.0157 against 0.0235; at 4 rad/s it is up to
+about 30 % high instead). His curves were not read at every point: at ω_e ≈ 4 rad/s and Fn 0.3 to 0.4 SeaCraft's B55 lies
+above them as well as above the tank. The couplings: on these fore-and-aft symmetric hulls without a transom
+SeaCraft's A53 is exactly U·B33/ω_e² and A35 its negative, while the tank's A53 is about half of U·B33/ω_e²
+formed from the tank's own B33 even where it is positive (0.028 against 0.064 on Wigley I, Fn 0.2, 4 rad/s). That
+speed-coupling gap, measured against a 10 % floor, gives bands above 1. The rows at ω ≈ 3
 rad/s (and 1, 2 rad/s on Wigley III at Fn 0.2) are printed but not banded: there τ = ω_e U/g is 0.33 to 0.66,
 around strip theory's limit of 1/4, the measured coefficients jump between neighbouring frequencies, and their
 gaps (up to 23 times the floor) would loosen the bands past catching a doubled coefficient. The one stop rule kept
 is the sign of B35 and B53 above their floor (they carry ±U·A33, so a wrong pitch sign shows at every frequency).
-A35 and A53 are banded only: the tank's A53 on Wigley I at Fn 0.4 turns negative (−0.013 to −0.015) from about
-7 rad/s, where strip theory's U/ω_e²·∫b33 cannot.
+A35 and A53 are banded only: the tank's A53 on Wigley I at Fn 0.4 turns negative (−0.009 to −0.015) from about
+7 rad/s, where strip theory's U·B33/ω_e² cannot (it also dips just below zero, under the floor, at Fn 0.2 and 0.3
+from 6 to 7 rad/s).
 
 **Wave loads on the restrained model:**
 
@@ -1758,9 +1764,10 @@ From λ/L 1.25 up, at Fn 0.2 and 0.3 the heave force is within 15 % and the pitc
 within 32 % and 43 % (both worst at λ/L 1.25, where on Wigley III the tank's two wave amplitudes give Xw5″ 0.397
 and 0.328). The large amplitude
 gaps are in short waves, measured against the floor: on Wigley III at λ/L 0.5 and 0.75 SeaCraft's heave force
-falls into the cancellation of the Froude–Krylov and diffraction parts (Xw3″ 0.025 to 0.036 against the tank's
-0.06 to 0.12), as Journée's strip theory does (his Figure 13-III). There the computed phase swings fast, so those
-ε3 rows are not compared (the SeaCraft side of the floor rule; at Fn 0.4, λ/L 0.75 it is 104° from the tank). The
+falls into the cancellation of the Froude–Krylov and diffraction parts (Xw3″ 0.025 to 0.040 against the tank's
+0.051 to 0.12), as Journée's strip theory does at Fn 0.4, λ/L 0.75 (his Figure 13-III). There the computed phase
+swings fast, so the ε3 rows where SeaCraft's amplitude is below the floor (λ/L 0.75 at every speed, λ/L 0.5 at
+Fn 0.3 and 0.4) are not compared (the SeaCraft side of the floor rule; at Fn 0.4, λ/L 0.75 it is 104° from the tank). The
 82° on Wigley I at Fn 0.4 is at λ/L 0.75, where the tank's two wave amplitudes themselves differ by 48°.
 
 **Motions:**
@@ -1774,16 +1781,24 @@ falls into the cancellation of the Froude–Krylov and diffraction parts (Xw3″
 | Wigley III, Fn 0.3 | 0.87 | 42° | 0.68 | 44° |
 | Wigley III, Fn 0.4 | 0.47 | 22° | 1.15 | 58° |
 
-Away from resonance at Fn 0.2 and 0.3 (λ/L ≥ 1.25, more than 0.15 from the tank's peak) heave is within 30 % and
-30° on both hulls and pitch on Wigley III, and the test keeps that as a stop rule. The rest is strip theory's
-known behaviour, and Journée's own strip theory (his Figure 17-I) shares it: the pitch resonance comes at
-shorter waves than the tank's (Wigley I, Fn 0.3: λ/L 1.25 with θ″ 1.83, against the tank's 2.00 at λ/L 1.5),
-traced to the A55 about 30 % low at the same encounter frequencies, and the resonant peaks are overpredicted at
-Fn 0.4 (Wigley I, λ/L 1.4: θ″ 2.27 against 1.26; Wigley III, λ/L 1.25: 1.80 against 0.84) and Wigley III's heave at
-Fn 0.3 and 0.4 (λ/L 1.25, Fn 0.4: z″ 2.51 against 1.86). Three rows are named and left out of the stop rule
+In waves of λ/L ≥ 1.25 at Fn 0.2 and 0.3, away from resonance (more than 0.15 in λ/L from the tank's peak), heave
+is within 30 % and 30° on both hulls and pitch on Wigley III, and the test keeps that as a stop rule. Shorter
+waves away from resonance are not that close (Wigley III, Fn 0.3, λ/L 1.0: θ″ 1.24 against 0.74). The rest follows
+strip theory's known behaviour, and Journée's own strip-theory curves (his Figures 16-III, 17-I, 17-III, read by
+hand) show the same: the pitch resonance comes at shorter waves than the tank's (Wigley I, Fn 0.3: λ/L 1.25 with
+θ″ 1.83, against the tank's 2.00 at λ/L 1.5; Wigley III, Fn 0.4: at λ/L 1.25 SeaCraft gives 1.80 where the tank
+gives 0.84, the tank's own peak being 1.80 at λ/L 1.5), traced to the A55 about 30 % low at the same encounter
+frequencies; Wigley I's pitch peak at Fn 0.4 is overpredicted (2.27 at λ/L 1.4, against the tank's highest 1.35),
+and so is Wigley III's heave peak at Fn 0.3 and 0.4 (Fn 0.4, λ/L 1.25: z″ 2.51 against 1.86). Three rows are named and left out of the stop rule
 (banded only): Wigley I pitch at Fn 0.3, λ/L 1.25 and 1.75 (the resonance shift), and at Fn 0.2, λ/L 1.75, where the
 tank's θ″ of 1.09 stands above both neighbours (0.95 and 0.68). Short-wave rows (λ/L ≤ 0.75) have the largest
 relative gaps against the floor (Wigley III, Fn 0.2, λ/L 0.75: z″ 0.13 against 0.25).
+
+**The tank's own spread.** Each table with two amplitudes measures one linear quantity twice. At 4 rad/s and above
+the direct coefficients A33, B33, A55, B55 of the two amplitudes differ by a median of 1 to 6 % per group and at
+most 19 % (Wigley III, Fn 0.4, B33). The wave loads differ by a median of 2 to 5 %, but up to 91 % on Wigley I
+(Xw3″ at Fn 0.4, λ/L 1.0: 0.108 and 0.206) and 31 % in Xw5″ (Fn 0.3, λ/L 1.5: 0.464 and 0.537). A band takes the
+larger of the two gaps, so one scattered point can set it (Wigley I, Fn 0.2, B35″ at 4 rad/s: 0.101 and 0.015).
 
 ### Test locations
 - `crates/seacraft-core/tests/wigley_seakeeping.rs`: `helpers_handle_roots_and_wraps`,
@@ -1792,8 +1807,10 @@ relative gaps against the floor (Wigley III, Fn 0.2, λ/L 0.75: z″ 0.13 agains
   `radiation_coefficients_against_forced_oscillation`, `wave_loads_against_the_restrained_model`,
   `motions_against_the_free_model`; the tables and helpers in `tests/journee_1992/`.
 - `crates/seacraft-core/src/seakeeping.rs`: `hull_entry_point_matches_the_surface_path` (the new entry point gives
-  bit for bit what `head_sea_raos` gives, transom terms included) and `wave_loads_reproduce_the_motions` (the 2×2
-  system re-solved from the returned coefficients and loads gives the RAOs back to 1e-9).
+  bit for bit what `head_sea_raos` gives, transom terms included), `hull_entry_point_solves_upright_and_level` (a
+  trim or heel in the caller's options is ignored, as the strips are cut level) and
+  `wave_loads_reproduce_the_motions` (the 2×2 system re-solved from the returned coefficients and loads gives the
+  RAOs back to 1e-9).
 
 ### Provenance
 The tables were transcribed page by page from the text layer, the blanks checked against the page images, and

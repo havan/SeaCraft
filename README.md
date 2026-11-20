@@ -871,13 +871,14 @@ drafts and against an independent integration of its GZ curve to 80° ([`docs/or
 is within 0.6 % at the design draft and runs up to 5.5 % thin below half draft. No real hull, published GZ table
 or trimmed condition has been compared yet.
 
-Strip-theory heave and pitch on Wigley I and III in head waves at Fn 0.2–0.4 against Journée's (1992) towing
-tests, with the radiation coefficients, the wave loads and the motions each checked on its own
-([`docs/oracles.md`](docs/oracles.md) §46). The heave added mass is within 8–19 %, and away from resonance at
-Fn 0.2 and 0.3 heave on both hulls and pitch on Wigley III are within 30 % and 30°. The gaps are strip theory's and Journée's own
-calculations share them: pitch damping up to 2.7 times the measured value, pitch added mass about 30 % low, the pitch
-resonance at shorter waves than measured and up to about twice too high at Fn 0.4. Other hulls, transoms, other
-headings and the irregular-sea results have not been compared with experiments.
+Strip-theory heave and pitch have been compared on Wigley I and III in head waves at Fn 0.2–0.4 with Journée's
+(1992) towing tests, the radiation coefficients, the wave loads and the motions each on its own
+([`docs/oracles.md`](docs/oracles.md) §46). At 4 to 12 rad/s the heave added mass is within 8–19 %. In waves of
+λ/L 1.25 and longer at Fn 0.2 and 0.3, away from resonance, heave on both hulls and pitch on Wigley III are within
+30 % and 30°. The gaps follow strip theory's known pattern, which Journée's own calculations show too: pitch damping
+up to 2.7 times the measured value at 4 to 7 rad/s, pitch added mass about 30 % low from about 6 rad/s, the pitch
+resonance at shorter waves than measured, and Wigley I's pitch peak at Fn 0.4 about 70 % too high. Other hulls,
+transoms, other headings and the irregular-sea results have not been compared with experiments.
 
 The wave pattern (`seacraft waves`) has not been compared with a measured wave pattern; no measured Wigley wave
 cut was found. It is checked against Kelvin's far-field asymptotics and wedge geometry
