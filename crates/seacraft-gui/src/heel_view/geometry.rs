@@ -86,6 +86,9 @@ fn solve3(rows: [Vec3; 3], rhs: [f64; 3]) -> Option<Vec3> {
 pub struct HullOutlines {
     /// `(x, polylines)` aft to forward; open polylines are kept as they come.
     pub stations: Vec<(f64, Vec<Vec<Vec3>>)>,
+    /// The hull's extents in model coordinates.
+    pub min: Vec3,
+    pub max: Vec3,
 }
 
 impl HullOutlines {
@@ -102,6 +105,8 @@ impl HullOutlines {
                 .into_iter()
                 .map(|x| (x, Self::section_at(hull, x)))
                 .collect(),
+            min: hull.model_min,
+            max: hull.model_max,
         }
     }
 
