@@ -9,7 +9,8 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   shows B, G and the weights along the hull; the heel, the lever as GZ minus the heeling arm, draft and trim read out
   beside them, over the GZ curve. Drag the body plan to heel the
   hull and let go to see it swing back to its equilibrium (or tick *Hold heel*), or stay put, with a note, when let
-  go past the heel where its righting lever vanishes; click a drawing to place a weight
+  go past the heel where its righting lever vanishes; the drawings and the GZ curve fill the drawer, with a line
+  between them to drag; click a drawing to place a weight
   and type its mass, drag it to move it, and add the weights to a loading condition with undo. It starts from the
   bare hull at the dock's draft and KG or from a loading condition, is large-angle and always free to trim, and
   names loll (both heels), a capsize and a hull that cannot float. The equilibrium heel is checked against the

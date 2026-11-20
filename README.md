@@ -271,7 +271,8 @@ starboard, shows B, G and the weights along the hull. Beside them: the heel, the
 heeling arm, draft, trim, displacement, KG and upright GM, and where the hull settles; the GZ curve is below, and
 clicking it sets the heel. Drag the body plan sideways to heel the hull: let go and it swings back to its
 equilibrium, unless *Hold heel* is ticked; let go past the heel where its righting lever vanishes and it stays there,
-with a note that it would not come back. The arrow keys step the heel by 1° (Shift: 5°). Click either drawing to place a trial
+with a note that it would not come back. The arrow keys step the heel by 1° (Shift: 5°). The drawings and the GZ
+curve share the drawer's height; drag the line between them to give either more (double-click it to reset). Click either drawing to place a trial
 weight and type its mass in tonnes; drag a weight to move it in that drawing's plane, double-click it to change its
 mass, Delete to remove it. *Add to this condition* (or *Add to loading condition…*) adds the weights to a loading
 condition, with undo. It is large-angle and always free to trim, measured by the same solver as the GZ curves; the

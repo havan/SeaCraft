@@ -888,3 +888,36 @@ fn the_section_follows_a_model_edit() {
         "the section rose: {before} → {after}"
     );
 }
+
+#[test]
+fn the_splitter_gives_the_drawings_more_height() {
+    let (ctx, mut app, mut clock) = interactive(Vec::new());
+    let d = app.heel_drawn().unwrap();
+    assert!(d.splitter.is_positive(), "the splitter is drawn");
+    assert!(
+        d.body.width() < d.profile.width(),
+        "the body plan is as wide as a section needs: {} vs {}",
+        d.body.width(),
+        d.profile.width()
+    );
+    let from = d.splitter.center();
+    clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)]);
+    clock.frame(&ctx, &mut app, vec![press(from, true)]);
+    for k in 1..=10 {
+        let p = from + egui::vec2(0.0, 6.0 * k as f32);
+        clock.frame(&ctx, &mut app, vec![egui::Event::PointerMoved(p)]);
+    }
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![press(from + egui::vec2(0.0, 60.0), false)],
+    );
+    clock.frame(&ctx, &mut app, Vec::new());
+    let after = app.heel_drawn().unwrap();
+    assert!(
+        after.body.height() > d.body.height() + 15.0,
+        "{} → {}",
+        d.body.height(),
+        after.body.height()
+    );
+}

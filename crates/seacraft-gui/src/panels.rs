@@ -3955,6 +3955,19 @@ pub fn plot_interactive_with_rect(
     marks: &[PlotMark],
     x_range: Option<(f64, f64)>,
 ) -> (egui::Rect, Option<f64>) {
+    plot_interactive_sized(ui, caption, series, marker_x, marks, x_range, PLOT_HEIGHT)
+}
+
+/// [`plot_interactive_with_rect`] at a chosen height, points.
+pub fn plot_interactive_sized(
+    ui: &mut egui::Ui,
+    caption: &str,
+    series: &[PlotSeries],
+    marker_x: Option<f64>,
+    marks: &[PlotMark],
+    x_range: Option<(f64, f64)>,
+    height: f32,
+) -> (egui::Rect, Option<f64>) {
     let plain: Vec<(String, Vec<(f64, f64)>)> = series
         .iter()
         .map(|s| (s.label.clone(), s.points.clone()))
@@ -3965,7 +3978,7 @@ pub fn plot_interactive_with_rect(
         x_range,
         sense: egui::Sense::click_and_drag(),
     };
-    let (response, axes) = plot_core(ui, caption, "", &plain, false, PLOT_HEIGHT, style);
+    let (response, axes) = plot_core(ui, caption, "", &plain, false, height, style);
     let painter = ui.painter_at(response.rect);
     let area = axes.area;
     let font = egui::FontId::proportional(theme::SMALL_SIZE);

@@ -99,7 +99,13 @@ pub struct HeelViewState {
     pub anim: Option<Settle>,
     /// What the pointer holds while it drags in a drawing.
     pub grab: Option<Grab>,
+    /// The share of the drawer's height the drawings take; the GZ plot has the rest. `None` is
+    /// [`DEFAULT_SPLIT`]; the splitter between them sets it.
+    pub split: Option<f32>,
 }
+
+/// The drawings' share of the drawer's height until the splitter is dragged.
+pub const DEFAULT_SPLIT: f32 = 0.6;
 
 /// What a drag in a drawing moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -401,6 +407,8 @@ pub struct DrawnViews {
     pub frame: geometry::EarthFrame,
     /// The x of the section the body plan picks on.
     pub section_x: f64,
+    /// The splitter between the drawings and the GZ plot (empty until drawn).
+    pub splitter: egui::Rect,
 }
 
 /// How long the eased swing back to the equilibrium takes, seconds.
@@ -509,7 +517,30 @@ pub const STATIC_CAPTION: &str = "A static picture, free to trim: the swing back
     simulation. Liquids in tanks do not shift; their free surface is in KG.";
 
 /// Height of the two drawings, points.
-const DRAWING_HEIGHT: f32 = 230.0;
+/// The least height of the drawings and of the GZ plot, points.
+const MIN_DRAWING_HEIGHT: f32 = 120.0;
+const MIN_PLOT_HEIGHT: f32 = 90.0;
+/// Height under the drawings taken by their captions, the static caption, the splitter and the
+/// plot's caption and legend, points.
+const LAYOUT_OVERHEAD: f32 = 80.0;
+/// The body plan's width over its height: a section turned through any heel fits a square, and a
+/// little more leaves room for the labels.
+const BODY_ASPECT: f32 = 1.15;
+
+/// The heights of the drawings and of the GZ plot in a drawer `total` points high: the drawings
+/// take `split` of it, each keeps its least height, and a short drawer scrolls.
+pub fn layout_heights(total: f32, split: f32) -> (f32, f32) {
+    let usable = (total - LAYOUT_OVERHEAD).max(MIN_DRAWING_HEIGHT + MIN_PLOT_HEIGHT);
+    let drawings = (usable * split).clamp(MIN_DRAWING_HEIGHT, usable - MIN_PLOT_HEIGHT);
+    (drawings, usable - drawings)
+}
+
+/// The body plan's and the profile's widths in a row `width` wide with the drawings `height`
+/// high: the body plan as wide as a section needs, the profile the rest.
+pub fn layout_widths(width: f32, height: f32, gap: f32) -> (f32, f32) {
+    let body = (height * BODY_ASPECT).clamp(120.0, ((width - gap) * 0.5).max(120.0));
+    (body, (width - gap - body).max(120.0))
+}
 
 /// Draw the view: header, inputs, the two drawings, the readout and the GZ curve.
 pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
@@ -603,7 +634,8 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         if let (Some(o), Some(plane)) = (outlines, dock_plane) {
             let frame = geometry::EarthFrame::from_plane(&plane);
             let caption = " · Upright at the dock draft";
-            let (_, views) = drawings(ui, state, o, &frame, section, None, caption, false);
+            let height = layout_heights(ui.available_height(), DEFAULT_SPLIT).0;
+            let (_, views) = drawings(ui, state, o, &frame, section, None, caption, false, height);
             *drawn = Some(views);
         }
         return action;
@@ -630,6 +662,11 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         }
         return action;
     }
+    // The drawings and the GZ plot share the drawer's height; the splitter between them moves
+    // the share, and a drawer too short for both scrolls.
+    let (draw_height, plot_height) =
+        layout_heights(ui.available_height(), state.split.unwrap_or(DEFAULT_SPLIT));
+    let total = draw_height + plot_height;
     egui::ScrollArea::vertical()
         .id_salt("heel_view_body")
         .auto_shrink([false, false])
@@ -655,8 +692,17 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                             .map_or(String::new(), |t| format!(" · trim {} m", signed(t)));
                         // Interactive while stale too: moving a weight re-keys the sweep on the
                         // first frame of the drag, and the drag must carry on over the old result.
-                        let (a, views) =
-                            drawings(ui, state, o, &frame, section, Some(s), &trim, true);
+                        let (a, views) = drawings(
+                            ui,
+                            state,
+                            o,
+                            &frame,
+                            section,
+                            Some(s),
+                            &trim,
+                            true,
+                            draw_height,
+                        );
                         *drawn = Some(views);
                         if a != HeelViewAction::None {
                             action = a;
@@ -708,6 +754,37 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     }
                 });
             });
+            // The splitter: drag it to give the drawings or the plot more of the drawer.
+            let (bar, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 8.0), egui::Sense::hover());
+            let split = ui
+                .interact(
+                    bar,
+                    egui::Id::unique("heel_view_splitter"),
+                    egui::Sense::drag(),
+                )
+                .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+                .on_hover_text("Drag to share the height between the drawings and the plot");
+            let stroke = if split.hovered() || split.dragged() {
+                theme::OUTLINE_HOVER
+            } else {
+                theme::GRID_MAJOR
+            };
+            ui.painter().hline(
+                bar.x_range(),
+                bar.center().y,
+                egui::Stroke::new(if split.dragged() { 2.0 } else { 1.0 }, stroke),
+            );
+            if split.dragged() && total > 0.0 {
+                let share = state.split.unwrap_or(draw_height / total);
+                state.split = Some((share + split.drag_delta().y / total).clamp(0.15, 0.9));
+            }
+            if split.double_clicked() {
+                state.split = None;
+            }
+            if let Some(views) = drawn.as_mut() {
+                views.splitter = bar;
+            }
             if stale {
                 ui.multiply_opacity(theme::STALE_OPACITY);
             }
@@ -716,7 +793,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     .size(theme::SMALL_SIZE)
                     .color(theme::TEXT_SECONDARY),
             );
-            if let Some(heel) = gz_plot(ui, out, shown.map(|s| s.heel_deg)) {
+            if let Some(heel) = gz_plot(ui, out, shown.map(|s| s.heel_deg), plot_height) {
                 state.heel_deg = (heel * 10.0).round() / 10.0;
                 state.anim = None;
                 action = HeelViewAction::Changed;
@@ -1116,11 +1193,11 @@ fn drawings(
     shown: Option<&HeelState>,
     profile_note: &str,
     interactive: bool,
+    height: f32,
 ) -> (HeelViewAction, DrawnViews) {
     let width = ui.available_width();
     let gap = 8.0;
-    let half = ((width - gap) * 0.5).max(40.0);
-    let height = DRAWING_HEIGHT.min(half);
+    let (body_width, profile_width) = layout_widths(width, height, gap);
     let sense = if interactive {
         egui::Sense::click_and_drag()
     } else {
@@ -1129,10 +1206,11 @@ fn drawings(
     // Fixed ids: an auto id moves when anything before it changes, and a drag on it ends.
     let (body_resp, profile_resp) = ui
         .horizontal(|ui| {
-            let size = egui::vec2(half, height);
-            let (b, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let (b, _) =
+                ui.allocate_exact_size(egui::vec2(body_width, height), egui::Sense::hover());
             ui.add_space(gap);
-            let (p, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let (p, _) =
+                ui.allocate_exact_size(egui::vec2(profile_width, height), egui::Sense::hover());
             (
                 ui.interact(b, egui::Id::unique("heel_view_body_plan"), sense),
                 ui.interact(p, egui::Id::unique("heel_view_profile"), sense),
@@ -1152,6 +1230,7 @@ fn drawings(
         profile_view,
         frame: *frame,
         section_x,
+        splitter: egui::Rect::NOTHING,
     };
     let mut action = HeelViewAction::None;
     if interactive {
@@ -1246,12 +1325,12 @@ fn drawings(
     };
     // Each caption wraps within its drawing's width: a wider one would widen the column and push
     // what sits beside the drawings out of sight.
-    let caption = |ui: &mut egui::Ui, text: String| {
+    let caption = |ui: &mut egui::Ui, text: String, w: f32| {
         ui.allocate_ui_with_layout(
-            egui::vec2(half, 0.0),
+            egui::vec2(w, 0.0),
             egui::Layout::top_down(egui::Align::Center),
             |ui| {
-                ui.set_width(half);
+                ui.set_width(w);
                 ui.add(egui::Label::new(small(text)).wrap());
             },
         );
@@ -1264,17 +1343,22 @@ fn drawings(
             (None, Some(x)) => format!("Looking forward · section at x = {x:.2} m"),
             _ => "Looking forward".to_string(),
         };
-        caption(ui, body_caption);
+        caption(ui, body_caption, body_width);
         ui.add_space(gap);
-        caption(ui, format!("From starboard{profile_note}"));
+        caption(ui, format!("From starboard{profile_note}"), profile_width);
     });
     (action, views)
 }
 
 /// The condition's GZ curve (G on the centreline) and heeling arm against heel, the heel shown and
 /// the equilibrium marked; returns the heel clicked.
-fn gz_plot(ui: &mut egui::Ui, out: &HeelSweepOut, shown_heel: Option<f64>) -> Option<f64> {
-    use crate::panels::{plot_interactive, PlotMark, PlotSeries};
+fn gz_plot(
+    ui: &mut egui::Ui,
+    out: &HeelSweepOut,
+    shown_heel: Option<f64>,
+    height: f32,
+) -> Option<f64> {
+    use crate::panels::{plot_interactive_sized, PlotMark, PlotSeries};
     let pts = |f: fn(&HeelState) -> f64| -> Vec<(f64, f64)> {
         out.sweep
             .iter()
@@ -1311,14 +1395,16 @@ fn gz_plot(ui: &mut egui::Ui, out: &HeelSweepOut, shown_heel: Option<f64>) -> Op
         ],
         _ => Vec::new(),
     };
-    plot_interactive(
+    plot_interactive_sized(
         ui,
         "Righting arm against heel (°), free to trim",
         &series,
         shown_heel,
         &marks,
         Some((-90.0, 90.0)),
+        height,
     )
+    .1
 }
 
 /// Draw the view's header: the views as tabs and the close button.
@@ -1424,6 +1510,37 @@ mod tests {
         assert_eq!(state.entry, None, "its weight is gone");
         assert_eq!(state.grab, None);
         assert_eq!(state.selected, None);
+    }
+
+    #[test]
+    fn the_drawings_and_the_plot_share_the_drawer() {
+        let (d, p) = layout_heights(1000.0, 0.6);
+        assert!(
+            (d + p - (1000.0 - LAYOUT_OVERHEAD)).abs() < 1e-3,
+            "{d} + {p}"
+        );
+        assert!((d / (d + p) - 0.6).abs() < 1e-3);
+        // A short drawer keeps both at their least height (and scrolls).
+        assert_eq!(
+            layout_heights(150.0, 0.6),
+            (MIN_DRAWING_HEIGHT, MIN_PLOT_HEIGHT)
+        );
+        // The splitter cannot squeeze either away.
+        assert_eq!(layout_heights(1000.0, 0.99).1, MIN_PLOT_HEIGHT);
+        assert_eq!(layout_heights(1000.0, 0.01).0, MIN_DRAWING_HEIGHT);
+    }
+
+    #[test]
+    fn the_body_plan_is_as_wide_as_a_section_needs() {
+        let (b, p) = layout_widths(1100.0, 300.0, 8.0);
+        assert!((b - 300.0 * BODY_ASPECT).abs() < 1e-3, "{b}");
+        assert!((b + p - 1092.0).abs() < 1e-3);
+        // In a narrow row the body plan takes at most half.
+        let (b, p) = layout_widths(400.0, 300.0, 8.0);
+        assert!(
+            (b - 196.0).abs() < 1e-3 && (p - 196.0).abs() < 1e-3,
+            "{b} {p}"
+        );
     }
 
     #[test]
