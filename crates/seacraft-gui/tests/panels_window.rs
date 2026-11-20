@@ -9,15 +9,21 @@ use seacraft_gui::App;
 
 /// The test pram (a hard-chine fixture, not an example hull) at level 2.
 fn pram(test: &str, bow_m: f64) -> App {
+    let path = pram_file(test, bow_m);
+    let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+    app.set_subdivision_level(2);
+    app
+}
+
+/// The test pram written to a file of its own.
+fn pram_file(test: &str, bow_m: f64) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("seacraft-gui-panels-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // One file a test: tests run in parallel, and one must not read another's half-written file.
     let path = dir.join(format!("{test}.fef"));
     let surface = seacraft_core::panels::pram_fixture(0.0, bow_m);
     std::fs::write(&path, seacraft_core::fef::write(&surface)).unwrap();
-    let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
-    app.set_subdivision_level(2);
-    app
+    path
 }
 
 /// One headless window whose widgets are read from egui's AccessKit tree.
@@ -108,6 +114,13 @@ impl Window {
             .button(label)
             .unwrap_or_else(|| panic!("no `{label}` button: {:?}", self.widgets));
         self.click_at(rect.center());
+    }
+
+    fn widget(&self, role: Role, label: &str) -> Option<egui::Rect> {
+        self.widgets
+            .iter()
+            .find(|(r, l, _, _)| *r == role && l == label)
+            .map(|(_, _, _, rect)| *rect)
     }
 
     fn click_at(&mut self, pos: egui::Pos2) {
@@ -486,4 +499,198 @@ fn the_options_are_one_line_apart() {
             pair[1]
         );
     }
+}
+
+/// The window measured and shown, then `Side` picked in the drawing's list.
+fn measured_with_side_picked(test: &str) -> Window {
+    let mut w = Window::new(pram(test, 0.0));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    let window = w
+        .widgets
+        .iter()
+        .find(|(_, l, _, _)| l.starts_with("Drawing:"))
+        .map(|(_, _, _, r)| *r)
+        .expect("the drawing");
+    let row = w
+        .widgets
+        .iter()
+        .filter(|(r, l, _, _)| *r == Role::Button && l == "Side")
+        .map(|(_, _, _, r)| *r)
+        .find(|r| r.min.x >= window.min.x - 1.0)
+        .expect("the Side row");
+    w.click_at(row.center());
+    assert_eq!(w.app.panels_selected(), Some(1));
+    w.frame(vec![]);
+    w
+}
+
+/// The view a fresh window settles on for `app`'s model and options.
+fn fresh_view(mut app: App, params: seacraft_gui::commands::PanelsParams) -> (f32, (f64, f64)) {
+    app.set_panels_params(params);
+    let mut w = Window::new(app);
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    let v = w.app.panels_view();
+    (v.zoom, v.centre)
+}
+
+fn assert_same_view(w: &Window, (zoom, centre): (f32, (f64, f64))) {
+    let v = w.app.panels_view();
+    assert!(
+        (v.zoom - zoom).abs() < 1e-3 * zoom
+            && (v.centre.0 - centre.0).abs() < 1e-6
+            && (v.centre.1 - centre.1).abs() < 1e-6,
+        "framed whole: {v:?} against a fresh window's {zoom}, {centre:?}"
+    );
+}
+
+#[test]
+fn opening_another_hull_shows_none_of_the_old_panels() {
+    let mut w = measured_with_side_picked("opening_another_hull_shows_none_of_the_old_panels");
+    let other = pram_file(
+        "opening_another_hull_shows_none_of_the_old_panels-other",
+        0.08,
+    );
+    w.app.open_model(&other).unwrap();
+    w.frame(vec![]);
+    assert_eq!(w.app.panels_selected(), None, "the old hull's pick is gone");
+    assert!(!w.shows("Out of date"), "{:?}", w.painted);
+    assert!(!w.shows("Drawing: 2 sheets"), "{:?}", w.widgets);
+    assert!(w.shows("Laying the panels flat"), "{:?}", w.painted);
+
+    w.until("the new hull's panels", |app| {
+        app.panels_preview().is_some()
+    });
+    w.frame(vec![]);
+    w.frame(vec![]);
+    let mut app = App::headless_for_test(Some(other.to_str().unwrap()));
+    app.set_subdivision_level(2);
+    let params = w.app.panels_params().clone();
+    assert_same_view(&w, fresh_view(app, params));
+}
+
+#[test]
+fn a_new_set_of_sheets_is_framed_whole() {
+    let test = "a_new_set_of_sheets_is_framed_whole";
+    let mut w = measured_with_side_picked(test);
+    let mut params = w.app.panels_params().clone();
+    params.layers = Some(vec!["Bottom".into()]);
+    w.app.set_panels_params(params.clone());
+    w.until("the bottom alone", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert_eq!(w.app.panels_preview().unwrap().set.sheets.len(), 1);
+    assert_eq!(
+        w.app.panels_selected(),
+        None,
+        "the pick was the second of two sheets"
+    );
+    assert_same_view(&w, fresh_view(pram(test, 0.0), params));
+}
+
+#[test]
+fn a_chosen_layer_renamed_away_can_be_unticked() {
+    let mut w = Window::new(pram("a_chosen_layer_renamed_away_can_be_unticked", 0.0));
+    let mut params = w.app.panels_params().clone();
+    params.layers = Some(vec!["Bottom".into(), "Side".into()]);
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    let bottom = w
+        .app
+        .surface()
+        .unwrap()
+        .layers
+        .iter()
+        .position(|l| l.name == "Bottom")
+        .unwrap();
+    w.app
+        .apply_layer_action(seacraft_gui::panels::LayerAction::Rename {
+            layer: bottom,
+            name: "Floor".into(),
+        });
+    // A window's first frame only sizes it.
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(
+        w.widget(Role::CheckBox, "Floor").is_some(),
+        "{:?}",
+        w.widgets
+    );
+    let gone = w
+        .widget(Role::CheckBox, "Bottom (not in the model)")
+        .unwrap_or_else(|| panic!("the old name can be unticked: {:?}", w.widgets));
+    w.click_at(gone.center());
+    assert_eq!(w.app.panels_params().layers, Some(vec!["Side".to_owned()]));
+}
+
+#[test]
+fn opening_another_hull_forgets_layers_it_does_not_have() {
+    let mut w = Window::new(pram(
+        "opening_another_hull_forgets_layers_it_does_not_have",
+        0.0,
+    ));
+    let mut params = w.app.panels_params().clone();
+    params.layers = Some(vec!["Bottom".into()]);
+    w.app.set_panels_params(params);
+    let same_layers = pram_file(
+        "opening_another_hull_forgets_layers_it_does_not_have-pram",
+        0.08,
+    );
+    w.app.open_model(&same_layers).unwrap();
+    assert_eq!(
+        w.app.panels_params().layers,
+        Some(vec!["Bottom".to_owned()]),
+        "kept where the new hull has it"
+    );
+    let wigley = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/wigley.fef");
+    w.app.open_model(std::path::Path::new(wigley)).unwrap();
+    assert_eq!(
+        w.app.panels_params().layers,
+        None,
+        "none of the chosen layers is in the Wigley hull: back to the layers marked developable"
+    );
+}
+
+#[test]
+fn the_paper_does_not_stop_the_measurement() {
+    let mut w = Window::new(pram("the_paper_does_not_stop_the_measurement", 0.0));
+    let mut params = w.app.panels_params().clone();
+    params.paper = "no such paper".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the panels or a failure", |app| {
+        app.panels_preview().is_some() || app.panels_failure().is_some()
+    });
+    assert_eq!(
+        w.app.panels_failure(),
+        None,
+        "the paper is used when writing only"
+    );
+}
+
+#[test]
+fn a_list_of_stations_can_be_switched_to_spacing() {
+    let mut w = Window::new(pram("a_list_of_stations_can_be_switched_to_spacing", 0.0));
+    let mut params = w.app.panels_params().clone();
+    params.stations = seacraft_core::templates::StationChoice::At(vec![0.5, 1.0]);
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.frame(vec![]);
+    w.frame(vec![]);
+    let spacing = w
+        .widget(Role::RadioButton, "Spacing")
+        .unwrap_or_else(|| panic!("the Spacing radio: {:?}", w.widgets));
+    w.click_at(spacing.center());
+    assert!(
+        matches!(
+            w.app.panels_params().stations,
+            seacraft_core::templates::StationChoice::Spacing(_)
+        ),
+        "{:?}",
+        w.app.panels_params().stations
+    );
 }

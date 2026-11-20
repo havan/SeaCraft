@@ -2224,8 +2224,8 @@ pub fn panels_in(
     revision: u64,
 ) -> Result<PanelsPreview, String> {
     use seacraft_core::panels::{panel_set, PanelOptions};
+    // The paper is not checked here: it is used when writing, and is no part of what is measured.
     let checked = seacraft_core::panel_choices::check(&p.choices).map_err(|e| e.to_string())?;
-    p.setup()?;
     let opts = PanelOptions {
         subdivision: SubdivisionOptions {
             level: p.level.unwrap_or(level),
@@ -2359,10 +2359,13 @@ mod panels_tests {
             e,
             "`stock_mm` takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `2440`"
         );
+        // The paper is no part of what is measured: refused when writing, not when measuring.
         let p = PanelsParams {
             paper: "nonsense".into(),
             ..PanelsParams::default()
         };
-        assert!(preview(&pram, &p).is_err());
+        let pv = preview(&pram, &p).expect("measured whatever the paper");
+        let e = panels_file(&pv.set, &p, Format::PdfTiled).unwrap_err();
+        assert!(e.contains("not a paper size"), "{e}");
     }
 }

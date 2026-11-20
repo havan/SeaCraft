@@ -1682,6 +1682,23 @@ impl App {
         self.perf_state.wave_drag = None;
         self.wave_drag_track.reset();
         self.analysis.clear_results();
+        self.panels_result = None;
+        self.panels_track.reset();
+        self.panels_view = crate::sheet_view::SheetView::default();
+        self.panels_selected = None;
+        // Keep the chosen panel layers the new model has; with none of them, go back to the
+        // layers marked developable rather than fail on names the window cannot show.
+        if let (Some(chosen), Some(s)) = (&mut self.panels_params.layers, &self.surface) {
+            chosen.retain(|n| s.layers.iter().any(|l| &l.name == n));
+        }
+        if self
+            .panels_params
+            .layers
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            self.panels_params.layers = None;
+        }
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
@@ -5881,6 +5898,13 @@ impl App {
     fn drive_panels_preview(&mut self, ctx: &egui::Context) {
         let key = self.panels_key();
         if let Some(Ok(result)) = self.panels_track.poll(key) {
+            // Other sheets than those drawn (other layers, another model): frame them whole,
+            // and drop a pick that may no longer name the same panel.
+            let drawn = self.panels_result.as_ref().map(|r| r.set.sheets.len());
+            if drawn != Some(result.set.sheets.len()) {
+                self.panels_view.fit_all();
+                self.panels_selected = None;
+            }
             self.panels_result = Some(result);
         }
         let quiet = self
@@ -6012,7 +6036,6 @@ impl App {
                 self.panels_selected = Some(i);
                 self.panels_view.frame(i);
             }
-            Some(builder_panels::PanelsAction::FitAll) => self.panels_view.fit_all(),
             Some(builder_panels::PanelsAction::Export) | None => {}
         }
         self.show_panels = open;

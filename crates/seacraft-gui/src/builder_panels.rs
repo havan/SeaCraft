@@ -16,8 +16,6 @@ pub enum PanelsAction {
     Export,
     /// Frame panel `i` in the drawing and select its row.
     Frame(usize),
-    /// Frame every panel.
-    FitAll,
 }
 
 /// Where the measured panels stand for the current options and model.
@@ -71,15 +69,35 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     }
                     ui.end_row();
                 }
+                // A chosen name the model no longer has (a layer renamed or deleted): shown, so
+                // it can be unticked.
+                let gone: Vec<String> = chosen
+                    .iter()
+                    .filter(|n| !layers.contains(*n))
+                    .cloned()
+                    .collect();
+                for name in gone {
+                    ui.label("");
+                    let mut on = true;
+                    if ui
+                        .checkbox(&mut on, format!("{name} (not in the model)"))
+                        .changed()
+                        && !on
+                    {
+                        chosen.retain(|n| *n != name);
+                    }
+                    ui.end_row();
+                }
             }
 
             ui.label("Stations:");
             ui.horizontal(|ui| {
                 let count = matches!(params.stations, StationChoice::Count(_));
+                let spacing = matches!(params.stations, StationChoice::Spacing(_));
                 if ui.radio(count, "Count").clicked() && !count {
                     params.stations = StationChoice::Count(11);
                 }
-                if ui.radio(!count, "Spacing").clicked() && count {
+                if ui.radio(spacing, "Spacing").clicked() && !spacing {
                     params.stations = StationChoice::Spacing(0.5);
                 }
                 match &mut params.stations {
@@ -90,7 +108,7 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                         ui.add(theme::num(s).speed(0.01).range(0.05..=10.0).suffix(" m"));
                     }
                     StationChoice::At(_) => {
-                        ui.label("a list (set over the control channel)");
+                        ui.label("at a list of positions");
                     }
                 }
             });
