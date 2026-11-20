@@ -418,8 +418,22 @@ pub fn equilibrium(
                 None => Equilibrium::CannotFloat,
             };
         }
-        let stbd = root_on_side(hull, mass, base, &samples, 1.0);
-        let port = root_on_side(hull, mass, base, &samples, -1.0);
+        // The upright sample's lever is rounding noise of either sign: each side's walk starts
+        // from that side's probe instead, so a loll inside the first sample step is bracketed on
+        // both sides rather than on whichever side the noise favours.
+        let side_from = |side: f64| -> Option<HeelState> {
+            let mut walk: Vec<&HeelState> = samples
+                .iter()
+                .copied()
+                .filter(|s| s.heel_deg * side >= UPRIGHT_PROBE_DEG)
+                .collect();
+            let inner = heel_state(hull, mass, side * UPRIGHT_PROBE_DEG, base, 0.0)?;
+            walk.push(&inner);
+            walk.sort_by(|a, b| a.heel_deg.total_cmp(&b.heel_deg));
+            root_on_side(hull, mass, base, &walk, side)
+        };
+        let stbd = side_from(1.0);
+        let port = side_from(-1.0);
         return match (port, stbd) {
             (Some(port), Some(starboard)) => Equilibrium::Loll { port, starboard },
             (Some(state), None) | (None, Some(state)) => Equilibrium::Stable { state },

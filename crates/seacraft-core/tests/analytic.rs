@@ -987,6 +987,28 @@ fn negative_gm_lolls_to_both_sides() {
     assert_eq!(eq.heel_for_side(-3.0), Some(port.heel_deg));
 }
 
+/// Source: the wall-sided loll angle of `docs/oracles.md` §47, `tan φ = √(−2 GM / BM)`, here
+/// solved for KG so the loll is 1.2°: between the 0.5° upright probe and the first 2° sample,
+/// where the upright sample's lever is only rounding noise and must not pick a side.
+#[test]
+fn a_small_loll_is_found_on_both_sides() {
+    let (t, b) = (1.0_f64, 4.0_f64);
+    let bm = b * b / (12.0 * t);
+    let tan = 1.2_f64.to_radians().tan();
+    let kg = t / 2.0 + bm + bm * tan * tan / 2.0;
+    let (hull, opts, mass) = heel_barge(kg);
+    let eq = heel::equilibrium(&hull, &mass, &opts, None);
+    let Equilibrium::Loll { port, starboard } = &eq else {
+        panic!("expected loll, got {eq:?}");
+    };
+    assert!(
+        (starboard.heel_deg - 1.2).abs() < 0.05,
+        "{}",
+        starboard.heel_deg
+    );
+    assert!((port.heel_deg + 1.2).abs() < 0.05, "{}", port.heel_deg);
+}
+
 #[test]
 fn heavier_than_the_hull_cannot_float() {
     let (hull, opts, base) = heel_barge(1.6);

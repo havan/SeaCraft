@@ -1163,6 +1163,9 @@ pub struct App {
     /// The condition key the view last settled for: a new one (weights, start, the condition's
     /// items, the hull, the dock's KG) settles the hull at its new equilibrium.
     heel_settle_key: u64,
+    /// The loading condition the Heel view starts from, as last seen: its index and name. A
+    /// condition deleted before it shifts the index; the name finds it again.
+    heel_start_seen: Option<(usize, String)>,
     /// When the heel shown last moved: the exact solve waits for the hand to rest.
     heel_moved: Option<std::time::Instant>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
@@ -1444,6 +1447,7 @@ impl App {
             heel_drawn: None,
             heel_settle_pending: false,
             heel_settle_key: 0,
+            heel_start_seen: None,
             heel_moved: None,
             analysis: Default::default(),
             hydro_rev: 0,
@@ -5076,8 +5080,14 @@ impl App {
             mode: self.mode,
         };
         let hull = self.hydro_hull_current();
-        self.heel_hull_track.start(self.heel_hull_key(), move || {
-            Ok(crate::heel_view::compute_hull(&surface, subdivision, hull))
+        let key = self.heel_hull_key();
+        self.heel_hull_track.start(key, move || {
+            Ok(crate::heel_view::compute_hull(
+                &surface,
+                subdivision,
+                hull,
+                key,
+            ))
         });
     }
 
@@ -5138,6 +5148,11 @@ impl App {
     /// A Heel job is running.
     pub fn heel_busy(&self) -> bool {
         self.heel_sweep_track.busy() || self.heel_exact_track.busy() || self.heel_hull_track.busy()
+    }
+
+    /// The section the Heel view's body plan draws strongly (tests).
+    pub fn heel_section_drawn(&self) -> Option<&[Vec<Vec3>]> {
+        self.heel_section.as_ref().map(|(_, s)| s.as_slice())
     }
 
     /// Where the Heel view's drawings were last drawn, and how they map to the model (tests).
@@ -5242,10 +5257,35 @@ impl App {
     }
 
     /// A start on a loading condition that is gone falls back to the bare hull, and says so.
+    /// The start is followed by name: a condition deleted before it moves its index, and the
+    /// view follows; one deleted or renamed itself is gone.
     fn check_heel_start(&mut self) {
-        if let crate::heel_view::HeelStart::Condition(i) = self.heel.start {
-            if i >= self.project.loading_conditions.len() {
-                self.heel.start = crate::heel_view::HeelStart::Dock;
+        use crate::heel_view::HeelStart;
+        let HeelStart::Condition(i) = self.heel.start else {
+            self.heel_start_seen = None;
+            return;
+        };
+        let conditions = &self.project.loading_conditions;
+        let name_at = |k: usize| conditions.get(k).map(|c| c.name.clone());
+        let found = match self.heel_start_seen.take() {
+            // Still the condition it was, where it was.
+            Some((k, name)) if k == i => {
+                if name_at(i).as_ref() == Some(&name) {
+                    Some(i)
+                } else {
+                    conditions.iter().position(|c| c.name == name)
+                }
+            }
+            // A start just chosen (the panel, add-to-condition, a test): take it as it stands.
+            _ => (i < conditions.len()).then_some(i),
+        };
+        match found {
+            Some(j) => {
+                self.heel.start = HeelStart::Condition(j);
+                self.heel_start_seen = name_at(j).map(|n| (j, n));
+            }
+            None => {
+                self.heel.start = HeelStart::Dock;
                 self.set_status("Heel view: that loading condition is gone; showing the bare hull");
             }
         }
@@ -5324,8 +5364,12 @@ impl App {
                 level: self.level,
                 mode: self.mode,
             };
-            let out =
-                crate::heel_view::compute_hull(surface, subdivision, self.hydro_hull_current());
+            let out = crate::heel_view::compute_hull(
+                surface,
+                subdivision,
+                self.hydro_hull_current(),
+                self.heel_hull_key(),
+            );
             self.heel_hull = Some(out);
             self.heel_hull_track.stamp(self.heel_hull_key());
         }
@@ -9626,7 +9670,10 @@ impl App {
         if self.heel_animate(ui.input(|i| i.time)) {
             ui.ctx().request_repaint();
         }
-        let stale = self.heel_stale();
+        // A hull being refined again (the model changed) makes the picture out of date too: its
+        // outlines and section are the old hull's.
+        let stale =
+            self.heel_stale() || (self.heel_hull.is_some() && self.heel_hull_current().is_none());
         // The condition drawn: current, or kept and dimmed while it recomputes.
         let sweep = if stale {
             self.heel_sweep.clone()
@@ -9651,7 +9698,8 @@ impl App {
                     .map(|h| 0.5 * (h.outlines.min.x + h.outlines.max.x))
             });
         if let (Some(x), Some(h)) = (section_x, &hull) {
-            let key = revision_key(&[self.heel_hull_key(), (x * 1000.0).round() as i64 as u64]);
+            // Keyed on the hull it is cut from, so a new hull is always cut again.
+            let key = revision_key(&[h.key, (x * 1000.0).round() as i64 as u64]);
             if self.heel_section.as_ref().is_none_or(|(k, _)| *k != key) {
                 let cut = crate::heel_view::geometry::HullOutlines::section_at(&h.hull, x);
                 self.heel_section = Some((key, cut));

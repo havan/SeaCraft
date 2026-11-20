@@ -187,6 +187,34 @@ impl HeelSweepOut {
     }
 }
 
+/// Remove trial weight `i`. The selection, the mass field and a drag stay on the weights they
+/// were on (their indices shift down past `i`); one that was on `i` itself ends.
+pub fn remove_weight(state: &mut HeelViewState, i: usize) {
+    if i >= state.weights.len() {
+        return;
+    }
+    state.weights.remove(i);
+    let shift = |j: usize| match j.cmp(&i) {
+        std::cmp::Ordering::Less => Some(j),
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(j - 1),
+    };
+    state.selected = state.selected.and_then(shift);
+    if let Some(j) = state.entry.as_ref().and_then(|e| e.editing) {
+        match shift(j) {
+            Some(k) => {
+                if let Some(e) = state.entry.as_mut() {
+                    e.editing = Some(k);
+                }
+            }
+            None => state.entry = None,
+        }
+    }
+    if let Some(Grab::Weight(j, d)) = state.grab {
+        state.grab = shift(j).map(|k| Grab::Weight(k, d));
+    }
+}
+
 /// What the hull does when let go at a heel: a reading of the lever curve, not a roll.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LetGo {
@@ -249,6 +277,8 @@ pub const OUTLINE_STATIONS: usize = 25;
 pub struct HeelHull {
     pub hull: Arc<Hull>,
     pub outlines: Arc<geometry::HullOutlines>,
+    /// The key of the model it was built from: what a section cut from it is cached under.
+    pub key: u64,
 }
 
 /// Refine the hull (or take the one given) and cut its outlines (the outline job).
@@ -256,10 +286,15 @@ pub fn compute_hull(
     surface: &Surface,
     subdivision: SubdivisionOptions,
     hull: Option<Arc<Hull>>,
+    key: u64,
 ) -> HeelHull {
     let hull = hull.unwrap_or_else(|| Arc::new(Hull::new(surface, subdivision)));
     let outlines = Arc::new(geometry::HullOutlines::new(&hull, OUTLINE_STATIONS));
-    HeelHull { hull, outlines }
+    HeelHull {
+        hull,
+        outlines,
+        key,
+    }
 }
 
 /// Compute one condition: the start's mass, the sweep, the equilibrium (the sweep job).
@@ -577,10 +612,22 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         return action;
     };
     if let Equilibrium::CannotFloat = out.equilibrium {
-        ui.colored_label(
-            theme::FAIL,
-            equilibrium_line(&out.equilibrium, out.mass.displacement_t),
-        );
+        // No picture of a hull that does not float, but the weights stay editable: an overweight
+        // typo must not be a dead end.
+        ui.scope(|ui| {
+            if stale {
+                stale_chip(ui);
+                ui.multiply_opacity(theme::STALE_OPACITY);
+            }
+            ui.colored_label(
+                theme::FAIL,
+                equilibrium_line(&out.equilibrium, out.mass.displacement_t),
+            );
+        });
+        let a = weights_table(ui, state, conditions);
+        if a != HeelViewAction::None {
+            action = a;
+        }
         return action;
     }
     egui::ScrollArea::vertical()
@@ -805,12 +852,13 @@ fn keys(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) -> Hee
         action = HeelViewAction::Changed;
     }
     if delete {
-        if let Some(i) = state.selected.take() {
+        if let Some(i) = state.selected {
             if i < state.weights.len() {
-                state.weights.remove(i);
+                remove_weight(state, i);
                 action = HeelViewAction::Changed;
             }
         }
+        state.selected = None;
     }
     action
 }
@@ -879,8 +927,7 @@ fn weights_table(
                 });
                 });
             if let Some(i) = remove {
-                state.weights.remove(i);
-                state.selected = None;
+                remove_weight(state, i);
                 action = HeelViewAction::Changed;
             }
             let none = state.weights.is_empty();
@@ -1341,6 +1388,42 @@ mod tests {
         assert!((to(5.0) - 10.0).abs() < 1e-9);
         assert!((to(15.0) - 10.0).abs() < 1e-9);
         assert!((to(-5.0) + 10.0).abs() < 1e-9);
+    }
+
+    fn trial(x: f64) -> WeightItem {
+        WeightItem {
+            name: format!("at {x}"),
+            mass_t: 1.0,
+            x,
+            y: 0.0,
+            z: 1.0,
+        }
+    }
+
+    /// Removing a weight keeps the mass field and a drag on the weights they were on.
+    #[test]
+    fn removing_a_weight_keeps_edits_and_drags_on_their_own_weight() {
+        let mut state = HeelViewState {
+            weights: vec![trial(1.0), trial(2.0), trial(3.0)],
+            entry: Some(PendingWeight::new(
+                Vec3::ZERO,
+                Drawing::Profile,
+                Some(2),
+                "1".into(),
+            )),
+            grab: Some(Grab::Weight(2, Drawing::Profile)),
+            selected: Some(2),
+            ..HeelViewState::default()
+        };
+        remove_weight(&mut state, 0);
+        assert_eq!(state.weights[1].x, 3.0);
+        assert_eq!(state.entry.as_ref().unwrap().editing, Some(1));
+        assert_eq!(state.grab, Some(Grab::Weight(1, Drawing::Profile)));
+        assert_eq!(state.selected, Some(1));
+        remove_weight(&mut state, 1);
+        assert_eq!(state.entry, None, "its weight is gone");
+        assert_eq!(state.grab, None);
+        assert_eq!(state.selected, None);
     }
 
     #[test]

@@ -761,3 +761,130 @@ fn a_condition_changed_under_the_view_settles_again() {
         "settled at {heel}, equilibrium {without}"
     );
 }
+
+#[test]
+fn a_weight_the_hull_cannot_float_can_be_removed() {
+    // A typo (1000 t for 1 t) must not trap the user: the weights table stays, and its ✕ removes
+    // the weight, after which the view recovers.
+    let (ctx, mut app, out) = shown_with(vec![weight(1000.0, 4.0, 0.0, 1.0)]);
+    assert!(drawn(&out, "cannot float"), "{:?}", texts(&out));
+    assert!(drawn(&out, "Trial weights (1)"), "{:?}", texts(&out));
+    let mut clock = Clock(10.0);
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    let found = texts_clipped(&out, "✕");
+    let remove = found
+        .iter()
+        .map(|(r, _)| *r)
+        .find(|r| r.min.y > 560.0)
+        .expect("the weight's ✕ is drawn");
+    clock.click(&ctx, &mut app, remove.center());
+    assert!(
+        app.heel_state().weights.is_empty(),
+        "the weight was removed"
+    );
+    app.compute_heel_blocking().unwrap();
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    assert!(!drawn(&out, "cannot float"), "{:?}", texts(&out));
+    assert!(drawn(&out, "Settles"), "{:?}", texts(&out));
+}
+
+#[test]
+fn a_kept_cannot_float_result_is_marked_out_of_date() {
+    let (ctx, mut app, _) = shown_with(vec![weight(1000.0, 4.0, 0.0, 1.0)]);
+    let mut state = app.heel_state().clone();
+    state.weights[0].mass_t = 1.0;
+    app.set_heel_state(state);
+    let out = frame(&ctx, &mut app, Vec::new());
+    assert!(
+        drawn(&out, "cannot float"),
+        "the kept result: {:?}",
+        texts(&out)
+    );
+    assert!(drawn(&out, "out of date"), "{:?}", texts(&out));
+}
+
+/// The demo with three loading conditions, A, B and C, open on the Heel view starting from `at`.
+fn three_conditions(at: usize) -> (egui::Context, App) {
+    let (ctx, mut app) = demo();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/demo-loadcase.json"
+    ))
+    .unwrap();
+    for name in ["A", "B", "C"] {
+        let mut cond: LoadingCondition = serde_json::from_str(&text).unwrap();
+        cond.name = name.into();
+        app.project_mut_for_test().loading_conditions.push(cond);
+    }
+    app.set_heel_view_open(true);
+    let mut state = app.heel_state().clone();
+    state.start = HeelStart::Condition(at);
+    app.set_heel_state(state);
+    frame(&ctx, &mut app, Vec::new());
+    (ctx, app)
+}
+
+#[test]
+fn deleting_another_condition_keeps_the_start_on_its_own() {
+    for at in [1, 2] {
+        let (ctx, mut app) = three_conditions(at);
+        let name = app.project().loading_conditions[at].name.clone();
+        app.project_mut_for_test().loading_conditions.remove(0);
+        frame(&ctx, &mut app, Vec::new());
+        let HeelStart::Condition(i) = app.heel_state().start else {
+            panic!("{name}: fell back to {:?}", app.heel_state().start);
+        };
+        assert_eq!(app.project().loading_conditions[i].name, name);
+        assert!(!app.status().contains("gone"), "{}", app.status());
+    }
+}
+
+#[test]
+fn renaming_the_start_condition_falls_back_and_says_so() {
+    let (ctx, mut app) = three_conditions(1);
+    app.project_mut_for_test().loading_conditions[1].name = "B renamed".into();
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.heel_state().start, HeelStart::Dock);
+    assert!(
+        app.status().contains("that loading condition is gone"),
+        "{}",
+        app.status()
+    );
+}
+
+#[test]
+fn the_section_follows_a_model_edit() {
+    // Raise the sheer at the section drawn: once the view is current again, its strong section is
+    // the edited hull's, not one cut from the old hull while the new one was being refined.
+    let (ctx, mut app, _) = shown_with(Vec::new());
+    let top = |app: &App| {
+        app.heel_section_drawn()
+            .expect("a section is drawn")
+            .iter()
+            .flatten()
+            .map(|p| p.z)
+            .fold(f64::MIN, f64::max)
+    };
+    let surface = app.surface_mut().unwrap();
+    let (i, p) = surface
+        .points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i, p.p))
+        .max_by(|a, b| a.1.z.total_cmp(&b.1.z))
+        .unwrap();
+    let mut state = app.heel_state().clone();
+    state.section = Some(p.x);
+    app.set_heel_state(state);
+    frame(&ctx, &mut app, Vec::new());
+    let before = top(&app);
+    app.move_point(i, Vec3::new(p.x, p.y, p.z + 0.5)).unwrap();
+    frame(&ctx, &mut app, Vec::new());
+    app.compute_heel_blocking().unwrap();
+    frame(&ctx, &mut app, Vec::new());
+    let after = top(&app);
+    assert!(
+        after > before + 0.05,
+        "the section rose: {before} → {after}"
+    );
+}
