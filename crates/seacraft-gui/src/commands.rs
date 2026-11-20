@@ -2261,8 +2261,7 @@ pub fn panels_refusal(set: &seacraft_core::panels::PanelSet, p: &PanelsParams) -
     if p.allow_undevelopable {
         return None;
     }
-    let summary = set.not_flat_summary()?;
-    Some(format!("{summary}: {}", set.failing().join("; ")))
+    set.not_flat_reason()
 }
 
 /// The patterns of `set` as `format`. Pure: safe to run on a job thread.

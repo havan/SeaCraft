@@ -1899,6 +1899,13 @@ impl PanelSet {
         self.refused.is_empty() && self.rows.iter().all(|r| r.lies_flat)
     }
 
+    /// Why the patterns are not written when a panel does not lie flat: the summary, then each
+    /// failing panel's line, joined by "; ". `None` when every panel lies flat.
+    pub fn not_flat_reason(&self) -> Option<String> {
+        let summary = self.not_flat_summary()?;
+        Some(format!("{summary}: {}", self.failing().join("; ")))
+    }
+
     /// What every front end replies with: `panels` (the rows), `refused`, `mismatches`,
     /// `total_sheets`, `plywood` (the sheet count in words) and `all_lie_flat`.
     pub fn summary(&self) -> serde_json::Value {
@@ -3450,9 +3457,17 @@ mod tests {
             set.not_flat_summary().as_deref(),
             Some("1 of 2 panels do not lie flat within the limits")
         );
+        assert_eq!(
+            set.not_flat_reason(),
+            Some(format!(
+                "1 of 2 panels do not lie flat within the limits: {}",
+                failing[0]
+            ))
+        );
         let flat = panel_set(&s, &PanelOptions::default()).expect("a set");
         if flat.all_lie_flat() {
             assert!(flat.failing().is_empty() && flat.not_flat_summary().is_none());
+            assert!(flat.not_flat_reason().is_none());
         }
     }
 

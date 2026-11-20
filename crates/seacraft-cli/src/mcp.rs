@@ -855,6 +855,7 @@ impl McpServer {
             "optimize_hull" => self.optimize_hull(a),
             "export_linesplan" => self.export_linesplan(a),
             "export_templates" => self.export_templates(a),
+            "export_panels" => self.export_panels(a),
             "export_offsets_pdf" => self.export_offsets_pdf(a),
             "render_png" => self.render_png(a),
             "design_report" => self.design_report(a),
@@ -2147,6 +2148,34 @@ impl McpServer {
         }))
     }
 
+    fn export_panels(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let req = panels_args(a, self.opts.subdivision)?;
+        let set = seacraft_core::panels::panel_set(&self.surface, &req.opts)
+            .map_err(|e| format!("export_panels: {e}"))?;
+        let mut v = set.summary();
+        let Some((path, format)) = req.target else {
+            return Ok(v);
+        };
+        if let Some(reason) = set.not_flat_reason().filter(|_| !req.allow_undevelopable) {
+            v["written"] = json!(false);
+            v["reason"] = json!(reason);
+            return Ok(v);
+        }
+        let w = seacraft_core::panels::write(&set, format, &req.setup, req.offsets_pages)
+            .map_err(|e| format!("export_panels: {e}"))?;
+        seacraft_core::io::write_atomic(&path, &w.written.bytes)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let missing: Vec<String> = w.written.missing.iter().map(char::to_string).collect();
+        v["written"] = json!(true);
+        v["path"] = json!(path.to_string_lossy());
+        v["format"] = json!(format.name());
+        v["bytes"] = json!(w.written.bytes.len());
+        v["pages"] = json!(w.written.pages);
+        v["offsets_pages"] = json!(w.offsets_pages);
+        v["missing_characters"] = json!(missing);
+        Ok(v)
+    }
+
     fn export_templates(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
         let req = templates_args(a, self.opts.subdivision)?;
         let set = seacraft_core::templates::template_set(&self.surface, &req.set)
@@ -2641,6 +2670,135 @@ fn templates_args(
         format,
         set,
         setup,
+    })
+}
+
+/// What `export_panels` was asked for, checked.
+struct PanelsArgs {
+    /// Where and how to write the patterns; `None` measures only.
+    target: Option<(PathBuf, seacraft_core::templates::Format)>,
+    opts: seacraft_core::panels::PanelOptions,
+    setup: seacraft_core::sheet::PageSetup,
+    offsets_pages: bool,
+    allow_undevelopable: bool,
+}
+
+/// Read and check `export_panels`'s arguments, which are `build.panels`'s. `subdivision` is
+/// what an omitted `level` means.
+fn panels_args(
+    a: &Map<String, Value>,
+    subdivision: SubdivisionOptions,
+) -> Result<PanelsArgs, String> {
+    use seacraft_core::panel_choices::{check, pdf_only, Choices};
+    use seacraft_core::sheet::{PageSetup, Paper};
+    use seacraft_core::templates::{Format, StationChoice, MAX_STATIONS};
+    let err = |e: String| format!("export_panels: {e}");
+    let given: Vec<&str> = ["stations", "spacing", "at"]
+        .into_iter()
+        .filter(|k| !matches!(a.get(*k), None | Some(Value::Null)))
+        .collect();
+    if given.len() > 1 {
+        return Err(err(format!(
+            "give one of `stations`, `spacing` and `at`, not `{}`",
+            given.join("` and `")
+        )));
+    }
+    let stations = if let Some(n) = opt_number_in(a, "stations", 2.0..=MAX_STATIONS as f64)? {
+        if n.fract() != 0.0 {
+            return Err(err("`stations` must be a whole number".into()));
+        }
+        StationChoice::Count(n as usize)
+    } else if let Some(spacing) = opt_number_in(a, "spacing", 0.001..=1.0e4)? {
+        StationChoice::Spacing(spacing)
+    } else if let Some(v) = a.get("at").filter(|v| !v.is_null()) {
+        StationChoice::At(numbers(v, "at")?)
+    } else {
+        StationChoice::Count(11)
+    };
+    let layers = match a.get("layers").filter(|v| !v.is_null()) {
+        None => None,
+        Some(v) => Some(
+            v.as_array()
+                .filter(|items| items.len() <= 10_000)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|i| i.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .ok_or_else(|| err("`layers` must be an array of layer names".into()))?,
+        ),
+    };
+    let d = Choices::default();
+    let choices = Choices {
+        max_seam_drift_mm: opt_number(a, "max_seam_drift_mm")?.unwrap_or(d.max_seam_drift_mm),
+        max_stretch_pct: opt_number(a, "max_stretch_pct")?.unwrap_or(d.max_stretch_pct),
+        offset_spacing_mm: opt_number(a, "offset_spacing_mm")?.unwrap_or(d.offset_spacing_mm),
+        stock_mm: opt_str(a, "stock_mm")?.map_or(d.stock_mm, str::to_owned),
+        scarf_mm: opt_number(a, "scarf_mm")?.unwrap_or(d.scarf_mm),
+    };
+    let checked = check(&choices).map_err(|e| err(e.to_string()))?;
+    let paper = match opt_str(a, "paper")? {
+        Some(text) => Paper::parse(text).map_err(|e| err(format!("`paper`: {e}")))?,
+        None => Paper::A4,
+    };
+    let scale = match opt_str(a, "scale")? {
+        Some(text) => {
+            seacraft_core::units::parse_scale(text).map_err(|e| err(format!("`scale`: {e}")))?
+        }
+        None => 1.0,
+    };
+    let imperial = opt_bool(a, "imperial")?.unwrap_or(false);
+    let defaults = PageSetup::default();
+    let setup = PageSetup {
+        paper,
+        margin_mm: opt_number_in(a, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
+        overlap_mm: opt_number_in(a, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
+        scale,
+        imperial,
+        title: String::new(),
+    };
+    setup.check().map_err(err)?;
+    let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
+    let target = match str_arg(a, "path").filter(|p| !p.trim().is_empty()) {
+        None => None,
+        Some(path) => {
+            let path = PathBuf::from(path.trim());
+            let extension = path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let given: Vec<&str> = ["paper", "single_page", "margin_mm", "overlap_mm"]
+                .into_iter()
+                .filter(|k| !matches!(a.get(*k), None | Some(Value::Null)))
+                .collect();
+            pdf_only(&extension, &given).map_err(err)?;
+            let pdf = extension.eq_ignore_ascii_case("pdf");
+            let format = Format::from_path(&path, single_page && pdf).map_err(err)?;
+            Some((path, format))
+        }
+    };
+    let level = match a.get("level") {
+        None | Some(Value::Null) => subdivision.level,
+        Some(_) => level_arg(a)?,
+    };
+    Ok(PanelsArgs {
+        target,
+        opts: seacraft_core::panels::PanelOptions {
+            subdivision: SubdivisionOptions {
+                level,
+                mode: subdivision.mode,
+            },
+            layers,
+            stations,
+            limits: checked.limits,
+            offset_spacing_m: checked.offset_spacing_m,
+            stock: checked.stock,
+            imperial,
+        },
+        setup,
+        offsets_pages: opt_bool(a, "offsets_pages")?.unwrap_or(true),
+        allow_undevelopable: opt_bool(a, "allow_undevelopable")?.unwrap_or(false),
     })
 }
 
@@ -3418,6 +3576,46 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Files,
         ),
         tool(
+            "export_panels",
+            "Measure and export plywood panel patterns",
+            "Find the hull's panels (one per layer, split at creases; by default the layers marked \
+             developable), lay each flat by least stretch and measure how far it is from lying flat: RMS \
+             and largest stretch in per cent, and seam drift in mm, the most a flat seam's length runs \
+             off its length on the model. A panel over either limit (default 2 mm and 0.1 % RMS, \
+             provisional) does not lie flat. Without `path` this only measures: call it first and read \
+             `panels` (one row a panel), `refused`, `mismatches`, `plywood` (sheets end to end, no \
+             nesting) and `all_lie_flat`. With `path` it also writes the patterns: `.pdf` (tiled, or one \
+             page a panel with `single_page`, with each panel's offsets tables after the patterns unless \
+             `offsets_pages` is false), `.svg` or `.dxf`. When a panel does not lie flat nothing is \
+             written (`written: false` and the `reason`) unless `allow_undevelopable`. The measures are \
+             against the modelled surface, not a bending test of real plywood: say so to the builder.",
+            obj(
+                json!({
+                    "path": string("Output path; .pdf, .svg or .dxf. Leave out to measure only"),
+                    "layers": {"type": "array", "items": {"type": "string"}, "description": "Layers to make panels from (default: those marked developable, or every hull layer when none is)"},
+                    "stations": integer("Stations marked on the panels, at the middles of equal slices (default 11; give one of stations, spacing and at)"),
+                    "spacing": number("A station at every multiple of this many metres of x inside the hull"),
+                    "at": {"type": "array", "items": {"type": "number"}, "description": "Stations at these x positions in metres"},
+                    "max_seam_drift_mm": number("Seam drift limit, mm (default 2)"),
+                    "max_stretch_pct": number("RMS stretch limit, per cent (default 0.1)"),
+                    "offset_spacing_mm": number("Rows of the panel offsets every this many mm along the baseline (default 250)"),
+                    "stock_mm": string("The plywood sheet, LENGTHxWIDTH in mm (default 2440x1220)"),
+                    "scarf_mm": number("How much joined sheets overlap at a scarf, mm; 0 for butt joints (default 0)"),
+                    "imperial": boolean("Add feet and inches beside the metric readings"),
+                    "allow_undevelopable": boolean("Write the patterns even when a panel does not lie flat; each such pattern is headed so"),
+                    "offsets_pages": boolean("Put the offsets tables after the patterns in a PDF (default true)"),
+                    "paper": string("Paper the PDF is tiled over: a4, a3, letter or WxH in millimetres (default a4)"),
+                    "single_page": boolean("One page a panel, sized to fit it, for a plotter (PDF only)"),
+                    "margin_mm": number("Strip around each page a printer cannot reach, mm (default 10)"),
+                    "overlap_mm": number("How much neighbouring tiles share, mm (default 10)"),
+                    "scale": string("Drawing scale, as 1:N or one number (default 1:1)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::Files,
+        ),
+        tool(
             "export_offsets_pdf",
             "Export the table of offsets as PDF",
             "Write the table of offsets as a printable PDF: half-breadths on waterlines and heights on buttocks, \
@@ -3978,6 +4176,12 @@ impl Remote {
                 templates_args(a, SubdivisionOptions::default())?;
                 self.request("build.templates", Value::Object(a.clone()))
             }
+            "export_panels" => {
+                // Checked here as the headless tool checks it, then sent as given: the
+                // arguments are `build.panels`'s, with the same names.
+                panels_args(a, SubdivisionOptions::default())?;
+                self.request("build.panels", Value::Object(a.clone()))
+            }
             "export_offsets_pdf" => {
                 offsets_pdf_args(a)?;
                 let mut p = json!({"format": "offsets_pdf"});
@@ -4401,6 +4605,7 @@ mod tests {
                 "optimize_hull",
                 "export_linesplan",
                 "export_templates",
+                "export_panels",
                 "export_offsets_pdf",
                 "render_png",
                 "design_report",
@@ -5129,6 +5334,8 @@ mod tests {
                 "export_templates",
                 json!({"stations": 5, "spacing": 0.5, "path": "x.pdf"}),
             ),
+            ("export_panels", json!({"path": "x.png"})),
+            ("export_panels", json!({"scarf_mm": -1})),
             ("export_offsets_pdf", json!({"path": "x.png"})),
             ("export_offsets_pdf", json!({"path": "/no/such/dir/x.pdf"})),
             ("render_png", json!({"path": "/no/such/dir/x.png"})),
@@ -6447,6 +6654,141 @@ mod tests {
         let _ = std::fs::remove_file(&dxf);
     }
 
+    fn pram_server(bow_m: f64) -> McpServer {
+        McpServer::from_surface(seacraft_core::panels::pram_fixture(0.0, bow_m))
+    }
+
+    #[test]
+    fn export_panels_schema_lists_its_arguments() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tool = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "export_panels")
+            .expect("export_panels")
+            .clone();
+        let props = tool["inputSchema"]["properties"].as_object().unwrap();
+        for key in [
+            "path",
+            "layers",
+            "stations",
+            "spacing",
+            "at",
+            "max_seam_drift_mm",
+            "max_stretch_pct",
+            "offset_spacing_mm",
+            "stock_mm",
+            "scarf_mm",
+            "imperial",
+            "allow_undevelopable",
+            "offsets_pages",
+            "paper",
+            "single_page",
+            "margin_mm",
+            "overlap_mm",
+            "scale",
+            "level",
+        ] {
+            assert!(props.contains_key(key), "{key}");
+        }
+        let required = &tool["inputSchema"]["required"];
+        assert!(required.is_null() || *required == json!([]), "{required}");
+        let text = tool["description"].as_str().unwrap().to_lowercase();
+        // "Marked developable" is a layer property; what must never appear is a claim about a panel.
+        for claim in [
+            "is developable",
+            "are developable",
+            "ready to cut",
+            "verified",
+            "validated",
+        ] {
+            assert!(!text.contains(claim), "{claim}");
+        }
+    }
+
+    #[test]
+    fn export_panels_measures_without_a_path() {
+        let mut s = pram_server(0.0);
+        let r = ok(&mut s, 1, "export_panels", json!({"level": 2}));
+        assert_eq!(r["panels"].as_array().unwrap().len(), 2, "{r}");
+        assert_eq!(r["all_lie_flat"], true, "{r}");
+        assert!(r["plywood"].as_str().unwrap().contains("sheet"), "{r}");
+        assert!(r.get("written").is_none() && r.get("path").is_none(), "{r}");
+    }
+
+    #[test]
+    fn export_panels_writes_patterns_headless() {
+        let mut s = pram_server(0.0);
+        let path = temp_path("pdf");
+        let r = ok(
+            &mut s,
+            1,
+            "export_panels",
+            json!({"path": path, "level": 2}),
+        );
+        assert_eq!(r["written"], true, "{r}");
+        assert_eq!(r["format"], "pdf");
+        let tables = r["offsets_pages"].as_u64().unwrap();
+        assert!(tables >= 1, "{r}");
+        let pages = r["pages"].as_u64().unwrap();
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+        let r = ok(
+            &mut s,
+            2,
+            "export_panels",
+            json!({"path": path, "level": 2, "offsets_pages": false}),
+        );
+        assert_eq!(r["offsets_pages"], 0, "{r}");
+        assert_eq!(r["pages"].as_u64().unwrap() + tables, pages);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_panels_refuses_bad_choices_naming_them() {
+        let mut s = pram_server(0.0);
+        let err = fails(&mut s, 1, "export_panels", json!({"stock_mm": "2440"}));
+        assert_eq!(
+            err,
+            "export_panels: `stock_mm` takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `2440`"
+        );
+        let err = fails(
+            &mut s,
+            2,
+            "export_panels",
+            json!({"path": temp_path("svg"), "paper": "a3", "margin_mm": 5}),
+        );
+        assert_eq!(
+            err,
+            "export_panels: paper, margin_mm apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
+        );
+        let err = fails(
+            &mut s,
+            3,
+            "export_panels",
+            json!({"stations": 5, "spacing": 0.3}),
+        );
+        assert!(err.contains("spacing"), "{err}");
+    }
+
+    #[test]
+    fn export_panels_does_not_write_a_panel_that_does_not_lie_flat() {
+        let mut s = pram_server(0.08);
+        let path = temp_path("pdf");
+        let args = json!({"path": path, "level": 2, "max_stretch_pct": 0.0001});
+        let r = ok(&mut s, 1, "export_panels", args.clone());
+        assert_eq!(r["written"], false, "{r}");
+        assert!(r["reason"].as_str().unwrap().contains("Side"), "{r}");
+        assert_eq!(r["panels"].as_array().unwrap().len(), 2);
+        assert!(!std::path::Path::new(&path).exists());
+        let mut allowed = args;
+        allowed["allow_undevelopable"] = json!(true);
+        let r = ok(&mut s, 2, "export_panels", allowed);
+        assert_eq!(r["written"], true, "{r}");
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn export_offsets_pdf_writes_headless() {
         let mut s = McpServer::new();
@@ -6477,7 +6819,7 @@ mod tests {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
             let mut seen = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let mut line = String::new();
                 reader.read_line(&mut line).expect("read");
                 let v: Value = serde_json::from_str(line.trim()).expect("json");
@@ -6508,7 +6850,20 @@ mod tests {
             "export_offsets_pdf",
             json!({"path": "/tmp/o.pdf", "stations": 30, "imperial": true}),
         );
+        let err = fails(&mut s, 4, "export_panels", json!({"stock_mm": "x"}));
+        assert!(err.contains("stock_mm"), "{err}");
+        ok(
+            &mut s,
+            5,
+            "export_panels",
+            json!({"path": "/tmp/p.pdf", "max_stretch_pct": 0.2, "layers": ["Bottom"]}),
+        );
         let seen = handle.join().expect("server thread finished");
+        assert_eq!(seen[2].0, "build.panels");
+        assert_eq!(
+            seen[2].1,
+            json!({"path": "/tmp/p.pdf", "max_stretch_pct": 0.2, "layers": ["Bottom"]})
+        );
         assert_eq!(seen[0].0, "build.templates");
         assert_eq!(
             seen[0].1,
