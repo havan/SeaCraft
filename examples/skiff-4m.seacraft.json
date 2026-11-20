@@ -1,0 +1,79 @@
+{
+  "format": "seacraft-project",
+  "version": 1,
+  "loading_conditions": [
+    {
+      "name": "Design",
+      "lightship": {
+        "name": "Lightship (plywood hull, thwarts, oarlocks)",
+        "mass_t": 0.083,
+        "x": 1.92,
+        "y": 0.0,
+        "z": 0.257
+      },
+      "items": [
+        {
+          "name": "Helmsman at the tiller, seated",
+          "mass_t": 0.08,
+          "x": 0.5,
+          "y": 0.0,
+          "z": 0.55
+        },
+        {
+          "name": "Passenger on the middle thwart",
+          "mass_t": 0.08,
+          "x": 1.8,
+          "y": 0.0,
+          "z": 0.55
+        },
+        {
+          "name": "Outboard, 6 hp",
+          "mass_t": 0.027,
+          "x": -0.15,
+          "y": 0.0,
+          "z": 0.45
+        },
+        {
+          "name": "Fuel, 12 l",
+          "mass_t": 0.01,
+          "x": 0.4,
+          "y": 0.0,
+          "z": 0.15
+        },
+        {
+          "name": "Oars, anchor and gear",
+          "mass_t": 0.02,
+          "x": 2.2,
+          "y": 0.0,
+          "z": 0.15
+        }
+      ],
+      "tanks": [],
+      "windage_extra": [],
+      "bilge": "sharp",
+      "downflooding_deg": null
+    }
+  ],
+  "compartments": [],
+  "damage_cases": [],
+  "windage": [],
+  "report": {
+    "kg": 0.42,
+    "lcg_x": 1.291,
+    "speeds_kn": [
+      6.0,
+      9.0,
+      12.0,
+      15.0
+    ],
+    "include_planing": true
+  },
+  "requirements": {
+    "name": "4.3 m plywood skiff",
+    "draft": 0.118,
+    "depth": 0.47,
+    "displacement_t": 0.3,
+    "design_speed_kn": 12.0
+  },
+  "kg": 0.42
+}

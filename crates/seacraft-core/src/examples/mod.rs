@@ -49,6 +49,7 @@ use crate::project::Project;
 mod container;
 mod kayik;
 mod runabout;
+mod skiff;
 mod trawler;
 mod wigley;
 mod yacht;
@@ -63,6 +64,8 @@ pub enum Example {
     Kayik9m,
     /// 6.5 m hard-chine outboard runabout.
     Runabout6m,
+    /// 4.3 m flat-bottom plywood skiff.
+    Skiff4m,
     /// "KCS-like" 230 m container ship.
     Container230m,
     /// 22 m steel fishing vessel.
@@ -76,10 +79,11 @@ pub type Built = (Surface, Project);
 
 impl Example {
     /// Every variant, in menu order (available or not).
-    pub const VARIANTS: [Example; 6] = [
+    pub const VARIANTS: [Example; 7] = [
         Example::Yacht10m,
         Example::Kayik9m,
         Example::Runabout6m,
+        Example::Skiff4m,
         Example::Container230m,
         Example::Trawler22m,
         Example::Wigley,
@@ -91,6 +95,7 @@ impl Example {
             Example::Yacht10m => Some(yacht::build),
             Example::Kayik9m => Some(kayik::build),
             Example::Runabout6m => Some(runabout::build),
+            Example::Skiff4m => Some(skiff::build),
             Example::Container230m => Some(container::build),
             Example::Trawler22m => Some(trawler::build),
             Example::Wigley => Some(wigley::build),
@@ -103,6 +108,7 @@ impl Example {
             Example::Yacht10m => "yacht-10m",
             Example::Kayik9m => "kayik-9m",
             Example::Runabout6m => "runabout-6m",
+            Example::Skiff4m => "skiff-4m",
             Example::Container230m => "container-230m",
             Example::Trawler22m => "trawler-22m",
             Example::Wigley => "wigley",
@@ -115,6 +121,7 @@ impl Example {
             Example::Yacht10m => "10 m cruising yacht",
             Example::Kayik9m => "9 m Aegean kayık (piyade)",
             Example::Runabout6m => "6.5 m outboard runabout",
+            Example::Skiff4m => "4.3 m plywood skiff",
             Example::Container230m => "230 m container ship (KCS-like)",
             Example::Trawler22m => "22 m fishing vessel",
             Example::Wigley => "Wigley hull (benchmark)",
@@ -130,6 +137,9 @@ impl Example {
             }
             Example::Runabout6m => {
                 "Hard-chine deep-V planing boat (23° deadrise), flat raked transom for an outboard, 30 kn; KG 0.65 m assumed"
+            }
+            Example::Skiff4m => {
+                "Flat-bottom stitch-and-glue skiff for oars or a 6 hp outboard, 12 kn; bottom, sides and transom lie flat in plywood within the default panel limits; KG 0.42 m estimated"
             }
             Example::Container230m => "Bulbous bow and transom stern, KCS particulars, own lines",
             Example::Trawler22m => {
@@ -148,6 +158,7 @@ impl Example {
             Example::Container230m => "KCS benchmark particulars; lines our own",
             Example::Trawler22m => "representative of vessels of this size",
             Example::Wigley => "closed form",
+            Example::Skiff4m => "representative of home-built skiffs of this size; lines our own",
             _ => "representative of production boats of this size",
         }
     }
@@ -222,6 +233,8 @@ pub(crate) const GRP: f64 = 1900.0;
 pub(crate) const TIMBER: f64 = 600.0;
 /// Heavy structural timber for keels and deadwood (oak).
 pub(crate) const OAK: f64 = 800.0;
+/// Okoume marine plywood, a typical density.
+pub(crate) const PLYWOOD: f64 = 500.0;
 /// Cast lead, for a ballast keel.
 pub(crate) const LEAD: f64 = 11300.0;
 
@@ -594,7 +607,7 @@ mod tests {
             let (s, p) = build(e).unwrap();
             for l in &s.layers {
                 assert!(
-                    [STEEL, GRP, TIMBER, OAK, LEAD].contains(&l.density),
+                    [STEEL, GRP, TIMBER, OAK, PLYWOOD, LEAD].contains(&l.density),
                     "{e} {}: density {}",
                     l.name,
                     l.density
