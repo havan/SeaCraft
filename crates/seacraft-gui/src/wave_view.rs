@@ -114,7 +114,7 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
     ui.horizontal(|ui| {
         for other in AnalysisView::ALL {
             let shown = other == AnalysisView::Waves;
-            if ui.selectable_label(shown, other.label()).clicked() && !shown {
+            if ui.selectable_label(shown, other.tab_label(shown)).clicked() && !shown {
                 action = WaveViewAction::Open(other);
             }
         }

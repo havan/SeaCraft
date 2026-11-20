@@ -21,6 +21,7 @@ pub mod commands;
 pub mod connected_presets;
 pub mod control;
 pub mod gpu_hull;
+pub mod heel_view;
 pub mod history;
 pub mod jobs;
 pub mod messages;

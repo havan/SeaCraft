@@ -31,6 +31,8 @@ pub enum AnalysisView {
     Bonjean,
     Offsets,
     TrimScan,
+    /// The hull heeled under trial weights: drawn by `heel_view`, computed live on the app's heel jobs.
+    Heel,
     /// The far-field wave pattern: drawn by `wave_view`, computed live on the app's wave job.
     Waves,
     Plates,
@@ -38,12 +40,13 @@ pub enum AnalysisView {
 
 impl AnalysisView {
     /// Every view, in menu order.
-    pub const ALL: [AnalysisView; 6] = [
+    pub const ALL: [AnalysisView; 7] = [
         AnalysisView::HydroTable,
         AnalysisView::Bonjean,
         AnalysisView::Offsets,
         AnalysisView::TrimScan,
         AnalysisView::Waves,
+        AnalysisView::Heel,
         AnalysisView::Plates,
     ];
 
@@ -54,8 +57,18 @@ impl AnalysisView {
             AnalysisView::Bonjean => "Bonjean curves",
             AnalysisView::Offsets => "Offsets",
             AnalysisView::TrimScan => "Trim scan",
+            AnalysisView::Heel => "Heel and righting arm",
             AnalysisView::Waves => "Wave pattern",
             AnalysisView::Plates => "Plate development",
+        }
+    }
+
+    /// The view's tab in the drawer's header: its label when it is the view shown, else a short
+    /// name, so the row of tabs still leaves room for the header's buttons.
+    pub fn tab_label(self, shown: bool) -> &'static str {
+        match self {
+            AnalysisView::Heel if !shown => "Heel",
+            _ => self.label(),
         }
     }
 
@@ -66,6 +79,7 @@ impl AnalysisView {
             AnalysisView::Bonjean => "bonjean",
             AnalysisView::Offsets => "offsets",
             AnalysisView::TrimScan => "trim_scan",
+            AnalysisView::Heel => "heel",
             AnalysisView::Waves => "waves",
             AnalysisView::Plates => "plates",
         }
@@ -87,9 +101,9 @@ impl AnalysisView {
     }
 
     /// The view is computed on its slot's job by [`compute`], on *Compute* or F5. The wave pattern
-    /// is not: it recomputes live on the app's own wave jobs.
+    /// and the Heel view are not: they recompute live on the app's own jobs.
     pub fn uses_slot(self) -> bool {
-        !matches!(self, AnalysisView::Waves)
+        !matches!(self, AnalysisView::Waves | AnalysisView::Heel)
     }
 }
 
@@ -227,6 +241,9 @@ pub fn compute(
         AnalysisView::Plates => ViewResult::Plates(plates(model, &inputs.plates)?),
         AnalysisView::Waves => {
             return Err("the wave pattern is computed by the window's wave job".into())
+        }
+        AnalysisView::Heel => {
+            return Err("the Heel view is computed by the window's heel jobs".into())
         }
     })
 }
@@ -647,11 +664,14 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
     let mut action = ViewAction::None;
     let view = p.view;
     let has_result = p.state.slot(view).result.is_some();
-    ui.horizontal(|ui| {
+    // The row wraps when the drawer is too narrow for every tab and button, so none is pushed
+    // off its edge.
+    ui.horizontal_wrapped(|ui| {
         // The views as tabs: the one shown is the drawer's title, and the
         // others are one click away without the menu.
         for other in AnalysisView::ALL {
-            if ui.selectable_label(other == view, other.label()).clicked() && other != view {
+            let shown = other == view;
+            if ui.selectable_label(shown, other.tab_label(shown)).clicked() && !shown {
                 action = ViewAction::Open(other);
             }
         }
@@ -832,8 +852,8 @@ fn inputs(
                 .checkbox(&mut p.hold_volume, "hold displacement")
                 .changed();
         }
-        // The wave view draws its own inputs (`wave_view`).
-        AnalysisView::Waves => {}
+        // The wave and heel views draw their own inputs (`wave_view`, `heel_view`).
+        AnalysisView::Waves | AnalysisView::Heel => {}
         AnalysisView::Plates => {
             let p = &mut inputs.plates;
             let name = |l: PlateLayers| match l {

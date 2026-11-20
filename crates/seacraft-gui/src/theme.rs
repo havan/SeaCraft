@@ -179,6 +179,27 @@ pub const SECTION_CURVE: Color32 = Color32::from_rgb(0x9a, 0xb8, 0xd4);
 pub const COMB_SPIKE: Color32 = Color32::from_rgb(0x4b, 0x9c, 0x62);
 pub const COMB_ENVELOPE: Color32 = Color32::from_rgb(0x63, 0xd4, 0x82);
 
+// ---- heel view ---------------------------------------------------------
+
+/// The buoyancy arrow, up from B (blue, as the reference sketch).
+pub const BUOYANCY: Color32 = Color32::from_rgb(0x4a, 0x9b, 0xe0);
+/// The weight arrow, down from G (red, as the reference sketch).
+pub const WEIGHT: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
+/// The lever between the two verticals when it rights the hull.
+pub const LEVER_RIGHTING: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
+/// The lever when it heels the hull further: the crease reds, lighter than the weight arrow.
+pub const LEVER_CAPSIZING: Color32 = Color32::from_rgb(0xff, 0x8f, 0x6b);
+/// The water surface across the heeled drawings.
+pub const WATER_LINE: Color32 = Color32::from_rgb(0x3f, 0xb8, 0xc8);
+/// The water below the surface, faint.
+pub const WATER_FILL: Color32 = Color32::from_rgba_unmultiplied_const(0x1c, 0x4a, 0x70, 0x40);
+/// A trial weight placed on the hull.
+pub const TRIAL_WEIGHT: Color32 = Color32::from_rgb(0xe8, 0xa2, 0x30);
+/// The section drawn strongly in the body plan, and the profile's outline.
+pub const HEEL_SECTION: Color32 = HULL_DEFAULT;
+/// The other stations behind it.
+pub const HEEL_STATION: Color32 = Color32::from_rgba_unmultiplied_const(0x9f, 0xb4, 0xc7, 0x48);
+
 // ---- tanks, compartments, windage --------------------------------------
 
 pub const TANK_FILL: Color32 = Color32::from_rgba_unmultiplied_const(235, 160, 40, 25);
@@ -702,7 +723,7 @@ mod tests {
     }
 
     /// Every GUI source except this one. A new module must be added here.
-    const SOURCES: [(&str, &str); 29] = [
+    const SOURCES: [(&str, &str); 30] = [
         ("analysis_views.rs", include_str!("analysis_views.rs")),
         ("app.rs", include_str!("app.rs")),
         ("builder_panels.rs", include_str!("builder_panels.rs")),
@@ -715,6 +736,7 @@ mod tests {
         ("gpu_hull/geometry.rs", include_str!("gpu_hull/geometry.rs")),
         ("gpu_hull/pipeline.rs", include_str!("gpu_hull/pipeline.rs")),
         ("gpu_hull/view.rs", include_str!("gpu_hull/view.rs")),
+        ("heel_view/mod.rs", include_str!("heel_view/mod.rs")),
         ("history.rs", include_str!("history.rs")),
         ("jobs.rs", include_str!("jobs.rs")),
         ("lib.rs", include_str!("lib.rs")),

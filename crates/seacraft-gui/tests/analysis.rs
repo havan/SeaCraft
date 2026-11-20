@@ -117,12 +117,16 @@ fn each_analysis_menu_item_opens_its_view_in_the_drawer() {
     let (ctx, mut app, mut out) = settled();
     assert_eq!(app.analysis_view(), None);
     assert!(!app.dock_wide());
+    let heel = AnalysisView::from_key("heel").expect("the Heel view is in the menu");
+    assert_eq!(heel.label(), "Heel and righting arm");
+    assert!(!heel.uses_slot(), "the Heel view computes on its own jobs");
     for view in AnalysisView::ALL {
         open_from_menu(&ctx, &mut app, &out, view);
         assert_eq!(app.analysis_view(), Some(view), "{}", view.label());
         assert!(!app.dock_wide(), "a view leaves the dock's width alone");
         if !view.uses_slot() {
-            // The wave pattern computes live on its own jobs (tests/waves.rs), with no Copy CSV.
+            // The wave pattern and the Heel view compute live on their own jobs (tests/waves.rs,
+            // tests/heel.rs), with no Copy CSV.
             frame(&ctx, &mut app, Vec::new());
             out = frame(&ctx, &mut app, Vec::new());
             assert!(

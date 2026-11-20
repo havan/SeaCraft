@@ -9091,6 +9091,10 @@ impl App {
             self.wave_view_drawer(ui);
             return;
         }
+        if view == crate::analysis_views::AnalysisView::Heel {
+            self.heel_view_drawer(ui);
+            return;
+        }
         let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
         let window = ui.ctx().content_rect().height();
         let mut action = crate::analysis_views::ViewAction::None;
@@ -9187,6 +9191,26 @@ impl App {
         }
         if settings != before {
             self.set_wave_settings(settings);
+        }
+    }
+
+    /// The Heel view in the drawer under the viewports.
+    fn heel_view_drawer(&mut self, ui: &mut egui::Ui) {
+        use crate::heel_view::HeelViewAction;
+        let window = ui.ctx().content_rect().height();
+        let mut action = HeelViewAction::None;
+        egui::Panel::bottom("analysis_drawer")
+            .resizable(true)
+            .default_size((window * 0.42).round())
+            .size_range(160.0..=(window * 0.8).round())
+            .show(ui, |ui| {
+                ui.set_min_height(ui.available_height());
+                action = crate::heel_view::header(ui);
+            });
+        match action {
+            HeelViewAction::Close => self.close_analysis_view(),
+            HeelViewAction::Open(other) => self.open_analysis_view(other),
+            _ => {}
         }
     }
 
