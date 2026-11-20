@@ -1530,3 +1530,125 @@ the test's output on 2026-11-19.
 What this covers: the transcription of the Savitsky equations as Molland states them, for one craft at one speed.
 It does not show that the method predicts any real craft's resistance, and it does not cover spray or whisker
 drag, appendages, or Savitsky's mean bottom velocity (Molland uses V in the Reynolds number, and so does SeaCraft).
+
+## 44. Wigley Hydrostatics over Drafts against the Closed Forms
+
+### Sources
+- **Hull equation, published.** Kajitani et al. (1983), p. 8, as cited in §39:
+  $y = \pm(B/2)(1 - \xi^2)(1 - \zeta^2)$, $\xi = 2x/L - 1$, $\zeta = (T - z)/T$ (the report's $D$ is the
+  draft, here $T$). SeaCraft takes it wall-sided above $T$ to a flat deck at $D$, as `examples/wigley.fef` does.
+  $L$ 10 m, $B$ 1 m, $T$ 0.625 m, $D$ 1 m, $\rho$ 1025 kg/m³.
+- **Wetted surface, published.** $S = 0.661\,L(2T + B) = 14.8725$ m² (Nomenclature, p. 6). The coefficient is
+  printed to three figures, so half a unit in its last place is ±0.076 %.
+- **Closed forms, not published.** Our own integration of the equation, written 2026-11-20.
+
+### Formula
+With $\tau = t/T$ at draft $t \le T$:
+
+- $\nabla = \tfrac23 LBT(\tau^2 - \tau^3/3)$; $KB = T(\tfrac23\tau^3 - \tfrac14\tau^4)/(\tau^2 - \tau^3/3)$
+- $A_{wp} = \tfrac23 LB(2\tau - \tau^2)$; $I_T = \tfrac23 (B/2)^3 (2\tau - \tau^2)^3 \cdot \tfrac{L}{2} \cdot \tfrac{32}{35}$;
+  $I_L = B(2\tau - \tau^2)(L/2)^3 \cdot \tfrac{4}{15}$; $BM = I/\nabla$
+- $A_m = BT(\tau^2 - \tau^3/3)$; $LCB = LCF = L/2$
+
+Above $T$ the sides are vertical: $\nabla = \tfrac49 LBT + \tfrac23 LB(t - T)$, the moment about the keel gains
+$\tfrac23 LB(t^2 - T^2)/2$ over $\tfrac49 LBT \cdot \tfrac58 T$, $A_{wp}$, $I_T$, $I_L$ stay at their $\tau = 1$
+values, and $A_m = \tfrac23 BT + B(t - T)$. At $T$ these give $\nabla = \tfrac49 LBT$, $KB = 0.625\,T$,
+$BM_T = 9B^2/(105\,T)$, the forms in the header of `examples/wigley.rs`.
+
+Two levels are measured, so a failure says which part is wrong:
+
+- **Exact mesh**: the equation faceted directly (400 columns, 120 rows to $T$, rows at 0.8 m and $D$, diagonals
+  mirrored at midship), no subdivision, measured by the production `Hull`. This checks the measurement.
+- **The example**: `examples/wigley.fef` refined as the CLI measures it (Loop, level 3). Its control rows were
+  scaled to match the closed forms at $T$ only, so off $T$ this measures the model's fit, not the code.
+
+### Test Location
+- `crates/seacraft-core/tests/wigley_hydro.rs::the_closed_forms_reduce_to_the_design_draft_values`
+- `crates/seacraft-core/tests/wigley_hydro.rs::exact_mesh_matches_the_closed_forms_over_drafts`
+- `crates/seacraft-core/tests/wigley_hydro.rs::exact_mesh_wetted_surface_matches_kajitani`
+- `crates/seacraft-core/tests/wigley_hydro.rs::example_hull_follows_the_closed_forms_off_design`
+- `crates/seacraft-core/tests/wigley_hydro.rs::example_wetted_surface_matches_kajitani`
+
+### Numbers Used
+Drafts 0.25T, 0.5T, 0.75T, T and 0.8 m (on the wall-sided topside); ∇, KB, $A_{wp}$, $BM_T$, $BM_L$, $A_m$,
+LCB, LCF.
+
+- **Exact mesh**, within 0.01 %, twice the worst measured gap: at most 0.0051 % ($A_m$ at 0.25T, where the keel's
+  facets are coarsest against the section); volume within 0.002 %, KB 0.001 %. LCB and LCF at $L/2$ within
+  $10^{-6}L$. Wetted surface at $T$: 14.879 m², +0.044 % on Kajitani's 14.8725 (0.1 % allowed, which covers the
+  coefficient's ±0.076 % rounding).
+- **The example**, gap in %, measured 2026-11-20. Each band is the gap rounded up to the next 0.1 % plus 0.1 %:
+
+  | draft | volume |  KB   |  $A_{wp}$ | $BM_T$ | $BM_L$ | $A_m$ |
+  |-------|--------|-------|-------|-------|-------|-------|
+  | 0.25T | −5.55  | +1.03 | −2.11 | −0.39 | +3.35 | −5.40 |
+  | 0.5T  | −1.86  | +0.92 | −0.01 | +2.16 | +1.59 | −1.71 |
+  | 0.75T | −0.83  | +0.64 | +0.31 | +2.06 | +0.85 | −0.67 |
+  | T     | −0.48  | +0.44 | −0.07 | +0.56 | +0.13 | −0.33 |
+  | 0.8 m | −0.34  | +0.32 | −0.01 | +0.61 | +0.04 | −0.18 |
+
+  Wetted surface at $T$: +0.041 % on Kajitani's value (0.2 % allowed). LCB and LCF at $L/2$ within $10^{-6}L$.
+
+  At 0.25T the gaps pass 3 % (volume −5.5 %). They are recorded as bands rather than refitting the example
+  (project decision, 2026-11-20). Loop refinement pulls the limit surface in near the keel, so the
+  example is a design-draft fit that runs thin below about 0.5T.
+
+### Provenance
+The equation and $S$ are published (read 2026-11-18, §39); the closed forms and the bands are our own, written
+2026-11-20. This covers one hull form (parabolic, L/B 10, B/T 1.6), upright and level, at drafts 0.16–0.8 m, with
+no appendages. It is not a comparison with a real hull or with approved software.
+
+## 45. Wigley GZ to 80° against an Independent Integration
+
+### Sources
+- **Hull equation, published.** Kajitani et al. (1983), p. 8, as in §44.
+- **KN table, independent computation, not published.** `docs/oracles/wigley_gz.py`, standard-library Python
+  that shares no code with SeaCraft, run 2026-11-20. No published KN or GZ for this hull was found.
+
+### Formula
+Body axes x forward, y to starboard, z up from the keel. Heeled $\varphi$ to starboard, a point is under water when
+$z\cos\varphi - y\sin\varphi \le c$. Each section (2000 intervals a side, the deck at $D$) is clipped by that
+half-plane (Sutherland–Hodgman) and integrated for area and centroid; Simpson's rule over 400 intervals in $x$
+sums them (the 201 stations of the aft half, doubled, since the hull is symmetric fore and aft).
+$c$ is solved for $\nabla = \tfrac49 LBT$ to $10^{-10}\nabla$. Then
+
+$$KN = y_B\cos\varphi + z_B\sin\varphi, \qquad GZ = KN - KG\sin\varphi,$$
+
+with K on the keel at the centreline, as `stability.rs` reports it. The hull is symmetric fore and aft, so it
+stays level in trim at every heel and no trim is solved for. The script asserts its own checks: upright ∇ and KB
+match §44 to $10^{-6}$; KN(0) = 0; KN(5°) within 1 % of $KM\sin 5°$; halving both resolutions moves no KN by
+more than $10^{-5}$ m (measured $9 \times 10^{-8}$ m).
+
+### Test Location
+- `crates/seacraft-core/tests/wigley_hydro.rs::exact_mesh_gz_matches_the_independent_script`
+- `crates/seacraft-core/tests/wigley_hydro.rs::example_gz_follows_the_independent_script`
+- `crates/seacraft-core/tests/wigley_hydro.rs::example_free_trim_stays_level_and_gz_is_odd`
+- `crates/seacraft-core/tests/wigley_hydro.rs::small_angle_gz_is_gm_sin_phi`
+
+### Numbers Used
+Δ = 2.8472 t (∇ at $T$, ρ 1025), KG 0.35 m (the example's). The midship deck edge goes under at 37.7°, so the
+rows from 40° on are taken past deck immersion.
+
+| heel (°) | 0 | 5 | 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| KN (m) | 0 | 0.04602 | 0.09182 | 0.18201 | 0.26937 | 0.35368 | 0.42846 | 0.48813 | 0.53297 | 0.56450 |
+| GZ (m) | 0 | 0.01552 | 0.03105 | 0.06230 | 0.09437 | 0.12870 | 0.16035 | 0.18502 | 0.20408 | 0.21982 |
+
+- **Exact mesh** (§44), heeled by `cross_curves` at fixed zero trim: within $5 \times 10^{-5}$ m at every heel;
+  measured at most $4.7 \times 10^{-6}$ m, the table's rounding.
+- **The example**: KN above the script by +0.59, +0.63, +0.69, +0.71, +0.70, +0.62, +0.55, +0.46 and +0.33 % of KN
+  from 5° to 80° (at most 2.7 mm), the same sign as its $BM_T$ gap at $T$ (§44). Band 0.9 % of KN, the largest
+  rounded up to the next 0.1 % plus 0.1 %.
+- **Free trim**, on the example floating at LCG $L/2$, the solve started 0.05 m out of trim so that it iterates:
+  trim within $10^{-5}$ m of level at every heel and KN within $10^{-6}$ m of the fixed-trim KN (the solver stops
+  at $|LCB - LCG| < 10^{-6}$ m; measured trim at most $6 \times 10^{-12}$ m). **Heel sign**: GZ at −10°, −30°,
+  −50° is minus GZ at +10°, +30°, +50° within $10^{-6}$ m (the mirrored half model; measured about $10^{-15}$ m).
+- **Small angle**, exact mesh: GZ(5°) = 0.01552 m within 0.5 % of $GM\sin 5° = 0.01549$ m (+0.19 %),
+  $GM = KM - KG$ from §44. The term $GM\sin\varphi$ drops is $BM/(2\,GM)\tan^2\varphi = 0.29$ % at 5° for a
+  wall-sided hull.
+
+### Provenance
+An independent integration of the published equation, written and run 2026-11-20: not an experiment, not a
+published table and not approved software. It covers one hull, at one displacement, heeled to starboard up to 80°
+(to port at 10°, 30° and 50°) with no trim, KG 0.35 m; it says nothing about hulls with a transom, a chine or a skeg, or about
+trimmed conditions.

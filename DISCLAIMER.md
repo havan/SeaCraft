@@ -21,6 +21,12 @@ overpredicts the resistance hump near Fn 0.32 by 18–54 % and places it about 0
 near Fn 0.35 is at the measured speed. The test holds the program to those bands, read from the published
 figures ([`docs/oracles.md`](docs/oracles.md) §39). It covers that hull and speed range only.
 
+Hydrostatics and GZ have been compared on that one hull as well, though not with experiment: its hydrostatics at
+five drafts against closed forms worked out from the published hull equation, and its GZ curve to 80° against an
+independent integration of the same equation ([`docs/oracles.md`](docs/oracles.md) §44, §45). The example model
+departs from the equation by up to 5.5 % below half draft, and the test holds it to those measured gaps. No real
+hull, no published GZ table and no trimmed condition has been compared.
+
 The Holtrop-Mennen resistance equations reproduce the worked examples printed in Holtrop & Mennen (1982) and
 Holtrop (1984), and the Savitsky planing equations reproduce the worked example in Molland, Turnock & Hudson
 (2011) ([`docs/oracles.md`](docs/oracles.md) §42, §43). That checks that the equations were transcribed

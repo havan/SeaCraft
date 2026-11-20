@@ -27,6 +27,12 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   L³/∇ between 1726.91 and 1728. A bulb centre above 0.6 T now counts as 0.6 T in the bulb terms, as Holtrop (1984)
   says it should, and the resistance warnings say so (CLI, MCP, GUI). The bulb resistance of such a bulb drops
   (by about half for ABT 20 m², T 10 m, hB 7 m).
+- Hydrostatics and GZ are compared on the Wigley hull (`docs/oracles.md` §44, §45): ∇, KB, waterplane area,
+  BM, midship area, LCB and LCF at five drafts from a quarter draft to the wall-sided topside, against closed
+  forms worked out from the published hull equation; and KN to 80° heel, through deck-edge immersion at 37.7°,
+  against an independent integration (`docs/oracles/wigley_gz.py`). An exact mesh of the equation agrees within
+  0.01 % and 5e-6 m. The `wigley` example is held to its measured gaps: within 0.6 % at the design draft, up to
+  5.5 % thin at a quarter draft, KN 0.3–0.7 % high. Tests and documents only; no result changes.
 
 - The far-field wave pattern in the window, as the **Wave pattern** view in the Analysis drawer (Analysis menu,
   after Trim scan, or "Open wave pattern" in the Performance tab). Its header names the theory, thin-ship

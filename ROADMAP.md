@@ -27,7 +27,8 @@ see [`DISCLAIMER.md`](DISCLAIMER.md).
 
 The most important milestone: most results have never been compared with reality.
 
-- [ ] Compare hydrostatics and GZ with a published or independently computed hull.
+- [x] Compare hydrostatics and GZ with a published or independently computed hull: the Wigley hull's published
+  equation, by closed forms over drafts and an independent GZ integration to 80° (`docs/oracles.md` §44, §45).
 - [x] Compare Holtrop-Mennen and Savitsky with published worked examples: Holtrop & Mennen (1982), Holtrop (1984),
   Molland et al. (2011) (`docs/oracles.md` §42, §43).
 - [x] Compare Michell with published Wigley hull data: Kajitani et al. (1983) towing tests and an independent
@@ -124,6 +125,17 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 - [ ] Build a skiff from the panel patterns and recalibrate the 2 mm / 0.1 % limits on it.
 - [ ] Materials and weight: skin area, plywood sheets, glass and resin, and the weight they add.
 - [ ] A build pack: patterns, offsets, panels and a cutting list in one document.
+
+## Possible later work
+
+These have no milestone and no date; the roadmap is not worked in order, and they are here so they are not lost.
+
+- DTMB 5415 against the SIMMAN 2008 particulars (∇ 8424.4 m³, S 2972.6 m², CB 0.507, CM 0.821, LCB −0.683 %
+  Lpp). It needs a new example fitted to the published hull lines.
+- A published GZ or KN table for a hull with printed offsets (for example a textbook worked example), once a
+  source is in hand.
+- The `wigley` example's fit below half draft (5.5 % thin at a quarter draft, `docs/oracles.md` §44), if a use
+  for the example at light drafts turns up.
 
 ## Gap review
 
