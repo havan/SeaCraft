@@ -31,6 +31,7 @@ pub mod picking;
 pub mod recent;
 pub mod render;
 pub mod selection;
+pub mod sheet_view;
 pub mod theme;
 pub mod visibility;
 pub mod wave_view;
