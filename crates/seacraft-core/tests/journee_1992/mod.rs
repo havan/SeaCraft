@@ -15,7 +15,9 @@
 
 use seacraft_core::hydro::{Hull, HydroOptions};
 use seacraft_core::math::Vec3;
-use seacraft_core::seakeeping::SeakeepingSpec;
+use seacraft_core::seakeeping::{
+    head_sea_raos_on_hull, GlobalCoefficients, SeakeepingReport, SeakeepingSpec, WaveLoads,
+};
 use seacraft_core::subdiv::SubdivisionOptions;
 
 /// Model length between perpendiculars (m).
@@ -26,6 +28,9 @@ pub const D: f64 = 0.1875;
 pub const RHO: f64 = 1000.0;
 /// Gravity (m/s²). Journée's printed C33 6119 implies 9.806; the 0.04 % is below every band.
 pub const G: f64 = 9.81;
+mod tables;
+pub use tables::*;
+
 /// The `a2` of the hull formula, common to all four models.
 const A2: f64 = 0.2;
 
@@ -195,3 +200,72 @@ pub fn phase_gap_deg(got: f64, want: f64) -> f64 {
     let d = (got - want).rem_euclid(360.0);
     d.min(360.0 - d)
 }
+
+/// The frequency in rad/s of a non-dimensional ω″ = ω√(L/g).
+pub fn omega_from_nd(omega_nd: f64) -> f64 {
+    omega_nd * (G / L).sqrt()
+}
+
+/// The deep-water wave frequency in rad/s of a wave λ/L long.
+pub fn omega_for_wavelength(lambda_over_l: f64) -> f64 {
+    (2.0 * std::f64::consts::PI * G / (lambda_over_l * L)).sqrt()
+}
+
+/// One model at one Froude number and the given wave frequencies, on an exact mesh of `mesh`
+/// (columns, rows below the waterline) with `stations` strips.
+pub fn run(
+    m: &Model,
+    froude: f64,
+    omegas: Vec<f64>,
+    stations: usize,
+    mesh: (usize, usize),
+) -> (SeakeepingReport, Vec<WaveLoads>) {
+    let hull = exact_hull(m, mesh.0, mesh.1);
+    head_sea_raos_on_hull(&hull, &hydro_options(), &spec(m, froude, omegas, stations))
+        .expect("the exact Wigley hull solves")
+}
+
+/// SeaCraft's coefficients in Journée's non-dimensional form and signs: divided by his printed ∇
+/// (§4.1), and the couplings negated, because his pitch is positive bow down and SeaCraft's bow
+/// up (`coupling_signs_match_after_mapping` is the check).
+#[derive(Debug, Clone, Copy)]
+pub struct Coefficients {
+    pub a33: f64,
+    pub b33: f64,
+    pub a53: f64,
+    pub b53: f64,
+    pub a55: f64,
+    pub b55: f64,
+    pub a35: f64,
+    pub b35: f64,
+}
+
+pub fn journee_coefficients(c: &GlobalCoefficients, m: &Model) -> Coefficients {
+    let mass = RHO * m.volume;
+    let root = (G / L).sqrt();
+    Coefficients {
+        a33: c.a33 / mass,
+        b33: c.b33 / (mass * root),
+        a53: -c.a53 / (mass * L),
+        b53: -c.b53 / (mass * L * root),
+        a55: c.a55 / (mass * L * L),
+        b55: c.b55 / (mass * L * L * root),
+        a35: -c.a35 / (mass * L),
+        b35: -c.b35 / (mass * L * root),
+    }
+}
+
+/// SeaCraft's pitch phase (bow up) in Journée's convention (bow down), in [0, 360).
+pub fn bow_down_deg(bow_up_deg: f64) -> f64 {
+    (bow_up_deg + 180.0).rem_euclid(360.0)
+}
+
+/// The floor of a group of measured values: 10 % of the largest |value| (module documentation).
+pub fn floor_of(values: impl IntoIterator<Item = f64>) -> f64 {
+    0.1 * values.into_iter().fold(0.0, |a: f64, v| a.max(v.abs()))
+}
+
+/// Strips along the waterline (see `stations_and_mesh_have_converged`).
+pub const STATIONS: usize = 81;
+/// Exact-mesh columns over L and rows below the waterline (see `stations_and_mesh_have_converged`).
+pub const MESH: (usize, usize) = (200, 40);

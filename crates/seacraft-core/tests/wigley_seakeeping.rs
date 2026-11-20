@@ -7,6 +7,8 @@
 //! The hulls are exact meshes of Journée's formula (no control net, no subdivision), run through
 //! the same station cutting, close-fit sections and strip integration as `head_sea_raos`.
 
+// Tasks still to come read the remaining table fields.
+#[allow(dead_code)]
 mod journee_1992;
 
 use journee_1992::*;
@@ -114,4 +116,193 @@ fn exact_hulls_match_the_formula_and_the_printed_particulars() {
     assert!(rel(closed_form(&WIGLEY_III).kb, 0.117188) < 1e-5);
     assert!(rel(closed_form(&WIGLEY_I).awp, 0.624) < 1e-5);
     assert!(rel(closed_form(&WIGLEY_I).i_l, 0.293143) < 1e-5);
+}
+
+/// The forced-oscillation frequencies Journée ran: 3 to 12 rad/s, and also 1 and 2 rad/s on
+/// Wigley III at Fn 0.2 (Table 2-III and 3-III print ω″ 0.55 and 1.10 there).
+const FORCED_OMEGAS: [f64; 10] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0];
+
+#[test]
+fn tables_are_consistent() {
+    let froudes = [0.2, 0.3, 0.4];
+    let forced = [
+        (TABLE_2_I, 48, [0.025, 0.050]),
+        (TABLE_2_III, 52, [0.025, 0.050]),
+        (TABLE_3_I, 48, [1.5, 3.0]),
+        (TABLE_3_III, 52, [1.5, 3.0]),
+    ];
+    for (table, rows, amplitudes) in forced {
+        assert_eq!(table.len(), rows);
+        for r in table {
+            assert!(froudes.contains(&r.froude));
+            assert!(amplitudes.contains(&r.amplitude));
+            let w = omega_from_nd(r.omega_nd);
+            assert!(
+                FORCED_OMEGAS.iter().any(|t| (w - t).abs() < 0.1),
+                "ω″ {} is {w} rad/s",
+                r.omega_nd
+            );
+        }
+    }
+    // λ/L runs 0.5 to 2.0, and to 2.367 on one row of Table 8-III.
+    let lambdas = |l: f64| (0.5..=2.4).contains(&l);
+    for (table, rows) in [(TABLE_6_I, 37), (TABLE_6_III, 42)] {
+        assert_eq!(table.len(), rows);
+        assert!(table
+            .iter()
+            .all(|r| froudes.contains(&r.froude) && lambdas(r.lambda_over_l)));
+    }
+    for (table, rows) in [(TABLE_8_I, 34), (TABLE_8_III, 64)] {
+        assert_eq!(table.len(), rows);
+        assert!(table
+            .iter()
+            .all(|r| froudes.contains(&r.froude) && lambdas(r.lambda_over_l)));
+    }
+}
+
+/// Very long waves are followed: heave in phase with the crest at the centre of gravity and the
+/// pitch on the wave slope, which is 270° bow down; at λ/L = 2 both phases fall in the quadrant
+/// Table 8-I measured. This is the proof of the pitch sign map (bow up + 180° = bow down).
+#[test]
+fn signs_and_phases_follow_journee() {
+    let omegas = vec![omega_for_wavelength(20.0), omega_for_wavelength(2.0)];
+    let (rep, _) = run(&WIGLEY_I, 0.2, omegas, STATIONS, MESH);
+    let long = &rep.frequencies[0];
+    println!(
+        "λ/L 20: heave {:.3} at {:.1}°, pitch bow down {:.1}°",
+        long.heave_amp,
+        long.heave_phase_deg,
+        bow_down_deg(long.pitch_phase_deg)
+    );
+    assert!(phase_gap_deg(long.heave_phase_deg, 0.0) < 5.0);
+    assert!(phase_gap_deg(bow_down_deg(long.pitch_phase_deg), 270.0) < 5.0);
+    let two = &rep.frequencies[1];
+    let measured = TABLE_8_I
+        .iter()
+        .find(|r| r.froude == 0.2 && r.lambda_over_l == 2.0)
+        .expect("Table 8-I, Fn 0.2, λ/L 2");
+    let (ez, et) = (measured.eps_z_deg.unwrap(), measured.eps_theta_deg.unwrap());
+    let (gz, gt) = (two.heave_phase_deg, bow_down_deg(two.pitch_phase_deg));
+    println!("λ/L 2: heave {gz:.1}° (measured {ez}), pitch {gt:.1}° (measured {et})");
+    assert!(phase_gap_deg(gz, ez) < 30.0);
+    assert!(phase_gap_deg(gt, et) < 30.0);
+}
+
+/// Wherever Journée's coupled damping B35″ (forced pitch) or B53″ (forced heave) on Wigley I at
+/// Fn 0.3 and ω ≥ 5 rad/s stands above its floor, SeaCraft's, negated for the pitch sign, has the
+/// same sign.
+#[test]
+fn coupling_signs_match_after_mapping() {
+    let froude = 0.3;
+    let u = speed(froude);
+    for (table, which) in [(TABLE_2_I, "B53"), (TABLE_3_I, "B35")] {
+        let rows: Vec<_> = table.iter().filter(|r| r.froude == froude).collect();
+        let floor = floor_of(rows.iter().filter_map(|r| r.b_coupled));
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|r| omega_from_nd(r.omega_nd) >= 5.0 - 0.1)
+            .collect();
+        let omegas = rows
+            .iter()
+            .map(|r| omega_for_encounter(omega_from_nd(r.omega_nd), u, G))
+            .collect();
+        let (rep, _) = run(&WIGLEY_I, froude, omegas, STATIONS, MESH);
+        let coefficients = rep.coefficients.expect("coefficients");
+        let mut compared = 0;
+        for (r, c) in rows.iter().zip(&coefficients) {
+            let got = journee_coefficients(c, &WIGLEY_I);
+            let got = if which == "B53" { got.b53 } else { got.b35 };
+            let want = r.b_coupled.unwrap();
+            println!(
+                "{which} ω″ {}: measured {want}, SeaCraft {got:.4}",
+                r.omega_nd
+            );
+            if want.abs() >= floor {
+                assert_eq!(got.signum(), want.signum(), "{which} at ω″ {}", r.omega_nd);
+                compared += 1;
+            }
+        }
+        assert!(compared >= 4, "{which}: {compared} points above the floor");
+    }
+}
+
+/// What the convergence check compares, on Wigley I at Fn 0.3: heave and pitch amplitude and phase
+/// at λ/L 0.75 to 2.0, and B33″, B55″ at ω_e 4 to 12 rad/s. Amplitudes are grouped by quantity so
+/// each gets its own floor.
+fn convergence_values(stations: usize, mesh: (usize, usize)) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let froude = 0.3;
+    let lambdas = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+    let encounters = [4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0];
+    let u = speed(froude);
+    let mut omegas: Vec<f64> = lambdas.iter().map(|&l| omega_for_wavelength(l)).collect();
+    omegas.extend(encounters.iter().map(|&we| omega_for_encounter(we, u, G)));
+    let (rep, _) = run(&WIGLEY_I, froude, omegas, stations, mesh);
+    let n = lambdas.len();
+    let motions = &rep.frequencies[..n];
+    let coefficients: Vec<_> = rep.coefficients.expect("coefficients")[n..]
+        .iter()
+        .map(|c| journee_coefficients(c, &WIGLEY_I))
+        .collect();
+    let amplitudes = vec![
+        motions.iter().map(|p| p.heave_amp).collect(),
+        motions.iter().map(|p| p.pitch_amp).collect(),
+        coefficients.iter().map(|c| c.b33).collect(),
+        coefficients.iter().map(|c| c.b55).collect(),
+    ];
+    let phases = vec![
+        motions.iter().map(|p| p.heave_phase_deg).collect(),
+        motions.iter().map(|p| p.pitch_phase_deg).collect(),
+    ];
+    (amplitudes, phases)
+}
+
+/// The largest change from `a` to the finer `b`: amplitudes relative (with the group floor), phases
+/// in degrees.
+fn largest_change(
+    a: &(Vec<Vec<f64>>, Vec<Vec<f64>>),
+    b: &(Vec<Vec<f64>>, Vec<Vec<f64>>),
+) -> (f64, f64) {
+    let mut amp: f64 = 0.0;
+    for (ga, gb) in a.0.iter().zip(&b.0) {
+        let floor = floor_of(gb.iter().copied());
+        for (x, y) in ga.iter().zip(gb) {
+            amp = amp.max(amp_gap(*x, *y, floor));
+        }
+    }
+    // Phases only where the amplitude (heave, pitch: the first two groups) reaches its floor.
+    let mut phase: f64 = 0.0;
+    for ((ga, gb), amps) in a.1.iter().zip(&b.1).zip(&b.0) {
+        let floor = floor_of(amps.iter().copied());
+        for ((x, y), amp) in ga.iter().zip(gb).zip(amps) {
+            if amp.abs() >= floor {
+                phase = phase.max(phase_gap_deg(*x, *y));
+            }
+        }
+    }
+    (amp, phase)
+}
+
+/// `STATIONS` and `MESH` are the smallest of 21, 41, 81 stations and meshes (100, 20), (200, 40),
+/// (400, 80) whose step to the next finer moves every compared value by at most 0.5 % and 0.5°.
+/// Measured 2026-11-20 (amplitudes, phases): stations 21 → 41 1.93 %, 2.40°; 41 → 81 0.48 %, 0.59°;
+/// 81 → 161 0.12 %, 0.14°; mesh (100, 20) → (200, 40) 0.62 %, 0.39°; (200, 40) → (400, 80)
+/// 0.15 %, 0.10°. So 81 stations on the (200, 40) mesh; this test holds both steps beyond it.
+#[test]
+fn stations_and_mesh_have_converged() {
+    assert_eq!((STATIONS, MESH), (81, (200, 40)));
+    let chosen = convergence_values(STATIONS, MESH);
+    for (what, finer) in [
+        ("stations", convergence_values(2 * STATIONS - 1, MESH)),
+        (
+            "mesh",
+            convergence_values(STATIONS, (2 * MESH.0, 2 * MESH.1)),
+        ),
+    ] {
+        let (amp, phase) = largest_change(&chosen, &finer);
+        println!(
+            "finer {what}: amplitudes {:.3} %, phases {phase:.3}°",
+            100.0 * amp
+        );
+        assert!(amp <= 0.005 && phase <= 0.5, "{what}: {amp}, {phase}°");
+    }
 }
