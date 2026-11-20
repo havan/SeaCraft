@@ -4,7 +4,7 @@
 
 use eframe::egui;
 use seacraft_core::pdf::Anchor;
-use seacraft_core::sheet::{PathKind, Sheet};
+use seacraft_core::sheet::{PathKind, Sheet, DRAW_ORDER};
 
 use crate::theme;
 
@@ -232,7 +232,11 @@ pub fn show(
             continue;
         };
         let at = |(x, y): (f64, f64)| view.to_screen(rect, (x + dx, y + dy));
-        for path in &sheet.paths {
+        // As on paper: the cut line over the marks, the marks over the references.
+        let ordered = DRAW_ORDER
+            .iter()
+            .flat_map(|kind| sheet.paths.iter().filter(move |p| p.kind == *kind));
+        for path in ordered {
             let mut points: Vec<egui::Pos2> = path.points.iter().map(|p| at(*p)).collect();
             if path.closed && points.len() > 2 {
                 points.push(points[0]);
@@ -404,5 +408,63 @@ mod tests {
         assert!(!painted(&[rect_sheet("A", 1.0, 1.0)])
             .iter()
             .any(|t| t == "Nothing to draw"));
+    }
+
+    /// The colour of every line painted in one headless frame of `show`, in paint order.
+    fn line_colours(sheets: &[Sheet]) -> Vec<egui::Color32> {
+        let ctx = egui::Context::default();
+        let mut view = SheetView::default();
+        let not_flat = vec![false; sheets.len()];
+        let mut colours = Vec::new();
+        // Two frames: the first only settles the pending fit.
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(ui, sheets, &not_flat, false, &mut view);
+            });
+            out.textures_delta.clear();
+            fn walk(shape: &egui::Shape, colours: &mut Vec<egui::Color32>) {
+                match shape {
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, colours)),
+                    egui::Shape::LineSegment { stroke, .. } => colours.push(stroke.color),
+                    egui::Shape::Path(p) => {
+                        if let egui::epaint::ColorMode::Solid(c) = p.stroke.color {
+                            colours.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            colours.clear();
+            for clipped in &out.shapes {
+                walk(&clipped.shape, &mut colours);
+            }
+        }
+        colours
+    }
+
+    #[test]
+    fn the_cut_line_is_painted_over_marks_and_references_as_on_paper() {
+        // Stored cut first, reference last, as the panels' plywood outlines are.
+        let mut sheet = rect_sheet("A", 2.0, 1.0);
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Reference,
+            points: vec![(0.0, 0.0), (2.0, 0.0)],
+            closed: false,
+        });
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Mark,
+            points: vec![(1.0, 0.0), (1.0, 1.0)],
+            closed: false,
+        });
+        let colours = line_colours(&[sheet]);
+        let last = |c| colours.iter().rposition(|x| *x == c);
+        let first = |c| colours.iter().position(|x| *x == c);
+        let cut = first(theme::PATTERN_CUT).expect("the cut line");
+        let mark = first(theme::PATTERN_MARK).expect("the mark");
+        assert!(
+            last(theme::PATTERN_REFERENCE).expect("the reference") < mark,
+            "{colours:?}"
+        );
+        assert!(last(theme::PATTERN_MARK).unwrap() < cut, "{colours:?}");
     }
 }

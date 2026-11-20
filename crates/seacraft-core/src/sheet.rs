@@ -261,7 +261,7 @@ pub(crate) fn stroke_for(kind: PathKind) -> Stroke {
 }
 
 /// The order kinds are drawn in, so that the cut line lies on top.
-const DRAW_ORDER: [PathKind; 3] = [PathKind::Reference, PathKind::Mark, PathKind::Cut];
+pub const DRAW_ORDER: [PathKind; 3] = [PathKind::Reference, PathKind::Mark, PathKind::Cut];
 
 /// The sheet's paths and labels in points, with `origin_m` at (0, 0). Every path and label is
 /// written once.
