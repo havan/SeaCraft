@@ -306,3 +306,212 @@ fn stations_and_mesh_have_converged() {
         assert!(amp <= 0.005 && phase <= 0.5, "{what}: {amp}, {phase}°");
     }
 }
+
+/// The restoring Journée's A55 reduction leaves out (§4.1 subtracts C55 = 2ρg∫y_w·x²dx alone):
+/// ρg∇(KB − KG), with his printed ∇ and KG and the formula's KB. His forced-pitch model turned about
+/// KR = 0.1875 m and §4.1 says nothing of compensating the buoyancy and weight moments about it, so
+/// if the model weighed ρ∇ with G at the printed KG, his A55″ holds an offset of this over
+/// ω²ρ∇L². Wigley I −58.6 N·m, Wigley III −40.4 N·m.
+fn c55_missing(m: &Model) -> f64 {
+    let kb = if m.alpha == 1.0 { 0.106893 } else { 0.117188 };
+    RHO * G * m.volume * (kb - m.kg)
+}
+
+/// Bands on the gaps of the radiation coefficients at ω ≥ 4 rad/s, per (model, Fn, coefficient):
+/// the larger of the two oscillation amplitudes' gaps at each frequency, largest over the
+/// frequencies, rounded up to the next 0.01. The gaps are strip theory's, not only SeaCraft's:
+/// Journée's own strip-theory curves (his Figures 2, 5 and 6, read by hand, not used here) show
+/// B55 too high at ω 4 to 7 rad/s and too low at 12, B33 too low at 10 and 12, and A55 too low
+/// from 6 rad/s, as SeaCraft does (maintainer's ruling, 2026-11-20: band them).
+///
+/// The rows at ω ≈ 3 rad/s (and 1, 2 rad/s on Wigley III at Fn 0.2) are printed but not banded:
+/// there τ = ω_e·U/g is 0.33 to 0.66, around strip theory's limit of 1/4, several measured
+/// coefficients jump between neighbouring frequencies, and their gaps (up to 23 times the floor)
+/// would loosen the bands past catching a doubled coefficient.
+const COEFFICIENT_BANDS: &[(&str, f64, &str, f64)] = &[
+    // Wigley I, Fn 0.2
+    ("Wigley I", 0.2, "A33", 0.11),
+    ("Wigley I", 0.2, "B33", 0.61),
+    ("Wigley I", 0.2, "A53", 1.41),
+    ("Wigley I", 0.2, "B53", 1.32),
+    ("Wigley I", 0.2, "A55", 0.33),
+    ("Wigley I", 0.2, "B55", 0.53),
+    ("Wigley I", 0.2, "A35", 2.32),
+    ("Wigley I", 0.2, "B35", 2.91),
+    // Wigley I, Fn 0.3
+    ("Wigley I", 0.3, "A33", 0.08),
+    ("Wigley I", 0.3, "B33", 0.65),
+    ("Wigley I", 0.3, "A53", 2.89),
+    ("Wigley I", 0.3, "B53", 0.90),
+    ("Wigley I", 0.3, "A55", 0.35),
+    ("Wigley I", 0.3, "B55", 1.03),
+    ("Wigley I", 0.3, "A35", 2.13),
+    ("Wigley I", 0.3, "B35", 1.19),
+    // Wigley I, Fn 0.4
+    ("Wigley I", 0.4, "A33", 0.13),
+    ("Wigley I", 0.4, "B33", 0.70),
+    ("Wigley I", 0.4, "A53", 4.62),
+    ("Wigley I", 0.4, "B53", 0.93),
+    ("Wigley I", 0.4, "A55", 0.37),
+    ("Wigley I", 0.4, "B55", 1.78),
+    ("Wigley I", 0.4, "A35", 1.43),
+    ("Wigley I", 0.4, "B35", 0.36),
+    // Wigley III, Fn 0.2
+    ("Wigley III", 0.2, "A33", 0.17),
+    ("Wigley III", 0.2, "B33", 0.30),
+    ("Wigley III", 0.2, "A53", 1.08),
+    ("Wigley III", 0.2, "B53", 2.00),
+    ("Wigley III", 0.2, "A55", 0.22),
+    ("Wigley III", 0.2, "B55", 0.57),
+    ("Wigley III", 0.2, "A35", 1.02),
+    ("Wigley III", 0.2, "B35", 1.82),
+    // Wigley III, Fn 0.3
+    ("Wigley III", 0.3, "A33", 0.16),
+    ("Wigley III", 0.3, "B33", 0.29),
+    ("Wigley III", 0.3, "A53", 2.83),
+    ("Wigley III", 0.3, "B53", 1.52),
+    ("Wigley III", 0.3, "A55", 0.33),
+    ("Wigley III", 0.3, "B55", 0.91),
+    ("Wigley III", 0.3, "A35", 2.00),
+    ("Wigley III", 0.3, "B35", 1.73),
+    // Wigley III, Fn 0.4
+    ("Wigley III", 0.4, "A33", 0.19),
+    ("Wigley III", 0.4, "B33", 0.45),
+    ("Wigley III", 0.4, "A53", 3.98),
+    ("Wigley III", 0.4, "B53", 1.50),
+    ("Wigley III", 0.4, "A55", 0.35),
+    ("Wigley III", 0.4, "B55", 1.50),
+    ("Wigley III", 0.4, "A35", 1.60),
+    ("Wigley III", 0.4, "B35", 1.15),
+];
+
+/// The lowest frequency the coefficient bands hold, in rad/s.
+const BANDED_FROM: f64 = 4.0 - 0.1;
+
+fn band(bands: &[(&str, f64, &str, f64)], model: &str, froude: f64, what: &str) -> f64 {
+    bands
+        .iter()
+        .find(|b| b.0 == model && b.1 == froude && b.2 == what)
+        .map_or(f64::INFINITY, |b| b.3)
+}
+
+/// The radiation coefficients of one model and speed from one forced-oscillation table:
+/// (name, measured, SeaCraft) per row, in Journée's non-dimensional form and signs.
+type Compared = Vec<(&'static str, Vec<(f64, f64, f64, f64)>)>;
+
+fn coefficients_against(m: &Model, froude: f64, table: &[ForcedRow], heave: bool) -> Compared {
+    let rows: Vec<&ForcedRow> = table.iter().filter(|r| r.froude == froude).collect();
+    let u = speed(froude);
+    let omegas = rows
+        .iter()
+        .map(|r| omega_for_encounter(omega_from_nd(r.omega_nd), u, G))
+        .collect();
+    let (rep, _) = run(m, froude, omegas, STATIONS, MESH);
+    let got: Vec<_> = rep
+        .coefficients
+        .expect("coefficients")
+        .iter()
+        .map(|c| journee_coefficients(c, m))
+        .collect();
+    // (ω_e, oscillation amplitude, measured, SeaCraft)
+    let column = |want: fn(&ForcedRow) -> Option<f64>, have: fn(&Coefficients) -> f64| {
+        rows.iter()
+            .zip(&got)
+            .filter_map(|(r, c)| Some((omega_from_nd(r.omega_nd), r.amplitude, want(r)?, have(c))))
+            .collect::<Vec<_>>()
+    };
+    if heave {
+        vec![
+            ("A33", column(|r| r.a_direct, |c| c.a33)),
+            ("B33", column(|r| r.b_direct, |c| c.b33)),
+            ("A53", column(|r| r.a_coupled, |c| c.a53)),
+            ("B53", column(|r| r.b_coupled, |c| c.b53)),
+        ]
+    } else {
+        vec![
+            ("A55", column(|r| r.a_direct, |c| c.a55)),
+            ("B55", column(|r| r.b_direct, |c| c.b55)),
+            ("A35", column(|r| r.a_coupled, |c| c.a35)),
+            ("B35", column(|r| r.b_coupled, |c| c.b35)),
+        ]
+    }
+}
+
+#[test]
+fn radiation_coefficients_against_forced_oscillation() {
+    let models = [
+        (&WIGLEY_I, TABLE_2_I, TABLE_3_I),
+        (&WIGLEY_III, TABLE_2_III, TABLE_3_III),
+    ];
+    let mut failures = Vec::new();
+    for (m, heave_table, pitch_table) in models {
+        for froude in [0.2, 0.3, 0.4] {
+            let mut groups = coefficients_against(m, froude, heave_table, true);
+            groups.extend(coefficients_against(m, froude, pitch_table, false));
+            for (what, rows) in groups {
+                let floor = floor_of(rows.iter().map(|r| r.2));
+                let limit = band(COEFFICIENT_BANDS, m.name, froude, what);
+                println!(
+                    "{} Fn {froude} {what} (floor {floor:.4}, band {limit}):",
+                    m.name
+                );
+                println!(
+                    "   ω_e   amp    measured  SeaCraft    gap  {}",
+                    if what == "A55" { "corrected gap" } else { "" }
+                );
+                // Pair the two amplitudes at each nominal frequency.
+                let mut largest: f64 = 0.0;
+                for nominal in FORCED_OMEGAS {
+                    let at: Vec<_> = rows
+                        .iter()
+                        .filter(|r| (r.0 - nominal).abs() < 0.1)
+                        .collect();
+                    if at.is_empty() {
+                        continue;
+                    }
+                    let mut gaps = Vec::new();
+                    for &&(w, amp, want, got) in &at {
+                        let gap = amp_gap(got, want, floor);
+                        gaps.push(gap);
+                        let mut extra = String::new();
+                        if what == "A55" {
+                            let shift = c55_missing(m) / (w * w * RHO * m.volume * L * L);
+                            let c = amp_gap(got, want + shift, floor);
+                            extra = format!("{c:7.3} (A55″ {:+.4})", want + shift);
+                        }
+                        println!("  {w:5.2} {amp:5.3} {want:9.4} {got:9.4} {gap:7.3} {extra}");
+                    }
+                    if nominal < BANDED_FROM {
+                        println!("  (not banded: below 4 rad/s)");
+                        continue;
+                    }
+                    largest = gaps.iter().copied().fold(largest, f64::max);
+                    // A damping coupling above its floor with the wrong sign is a convention
+                    // error, not strip theory: B35 and B53 carry ±U·A33, so a wrong pitch sign
+                    // shows at every frequency. The one stop rule kept for the coefficients
+                    // (maintainer's ruling, 2026-11-20). A35 and A53 are banded only: the tank's
+                    // A53 on Wigley I at Fn 0.4 turns negative from 7 rad/s, where strip theory's
+                    // U/ω_e²·∫b33 cannot.
+                    if what == "B35" || what == "B53" {
+                        for &&(w, _, want, got) in &at {
+                            if want.abs() >= floor && want.signum() != got.signum() {
+                                failures.push(format!(
+                                    "STOP RULE {} Fn {froude} {what} ω {w:.2}: sign {want} against {got:.4}",
+                                    m.name
+                                ));
+                            }
+                        }
+                    }
+                }
+                println!("  largest gap {largest:.5}");
+                if largest > limit {
+                    failures.push(format!(
+                        "{} Fn {froude} {what}: {largest:.3} > band {limit}",
+                        m.name
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
