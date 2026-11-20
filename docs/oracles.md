@@ -1904,3 +1904,25 @@ The limits are §32's project judgement, not a published rule. The skiff's lines
 SeaCraft's own, representative of home-built skiffs of this size; Δ 0.30 t is the design target and the other
 coefficients in `skiff_meets_the_board_targets` were measured on the net and frozen. Lying flat is measured
 against the modelled surface with no plywood thickness: not a bending test of real plywood.
+
+---
+
+## 49. Measurements on Panel Patterns
+
+### Formula
+None new. The numbers written on each pattern are ones already measured: the overall length and width are the
+pattern's extent (its lowest corner is at the origin, `panels::orient`); the offsets are the rows of the panel's
+offsets table (`panels::panel_offsets`, every "Offsets every" from the baseline along the pattern's lowest edge),
+one label per crossing; each seam's length is its flat length (`SeamMeasure::length_flat_m`), the same number
+the seam drift is measured from.
+
+### Tests
+`crates/seacraft-core/src/panel_dims.rs`: `the_overall_size_is_the_extent` (the flat pram's Side, and a hand-built
+3 m "C" shape, whose size is 3000 by 3000 mm by construction), `offsets_are_written_at_every_crossing` (one label
+per ordinate of every row on the pram), `a_notched_outline_writes_every_ordinate` (the "C" is crossed four times at
+x = 2 m, at 0, 1000, 2000 and 3000 mm by construction), `seam_lengths_are_labelled` (every seam of the skiff's
+Side), `measurements_are_never_cut_lines` (every measurement line is a reference line).
+
+### Provenance
+By construction for the "C" shape; otherwise the measurements of §32 and §48, written on the drawing in whole
+millimetres. Nothing here is a new measurement.

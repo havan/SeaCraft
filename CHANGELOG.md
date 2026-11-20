@@ -4,6 +4,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- Every plywood panel pattern now carries its measurements: the overall length and width as dimension lines, the
+  offsets from the baseline written at each crossing on the same rows as the offsets tables, and each seam's
+  length along the flat edge under what it is stitched to. They are reference lines and text, never cut lines, so
+  the window, PDF, SVG and DXF all show the same (`docs/oracles.md` §49).
 - A new example hull, `skiff-4m`: a 4.3 m flat-bottom plywood skiff for oars or a 6 hp outboard, built
   stitch-and-glue, whose bottom (one piece across the centreline), sides and transom all lie flat in plywood within
   the default panel limits at subdivision levels 3 and 4. Open it from **File ▸ New design** or with

@@ -1091,7 +1091,7 @@ pub fn measure_panels(
 
 /// Letter heights on paper, in millimetres, as the mould patterns use them.
 const MARK_LABEL_MM: f64 = 3.0;
-const TITLE_LABEL_MM: f64 = 5.0;
+pub(crate) const TITLE_LABEL_MM: f64 = 5.0;
 /// How long a seam tick is, metres.
 const TICK_M: f64 = 0.02;
 /// How far a seam's label sits inside the edge, metres.
@@ -1300,10 +1300,71 @@ pub fn unsettled_note(unsettled_m: f64) -> String {
     }
 }
 
+/// Where a seam's label goes on a pattern: inside the edge at its middle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SeamSpot {
+    /// Index into the panel's `found.seams` (and `measures.seams`).
+    pub seam: usize,
+    pub at: (f64, f64),
+    pub angle_deg: f64,
+    /// The unit direction from the edge into the panel.
+    pub inward: (f64, f64),
+}
+
+/// What each edge is stitched to is written inside the edge at its middle; on a joined panel, a
+/// seam that does not run across the centreline is labelled on both sides.
+pub(crate) fn seam_spots(panel: &FlatPanel) -> Vec<SeamSpot> {
+    let found = &panel.found;
+    let xy = &panel.xy;
+    let mut runs = Vec::new();
+    for (k, seam) in found.seams.iter().enumerate() {
+        let Some(ids) = found.seam_local(seam) else {
+            continue;
+        };
+        if !seam.across {
+            if let Some(m) = found.mirror_local(&ids) {
+                runs.push((k, m));
+            }
+        }
+        runs.push((k, ids));
+    }
+    let mut out = Vec::new();
+    for (k, ids) in runs {
+        let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
+        let Some((p, d)) = midpoint(&pts) else {
+            continue;
+        };
+        // The outline runs anticlockwise, so the panel is on the left of a seam that runs with
+        // it; a seam that runs against it has the panel on its right.
+        let left = (-d.1, d.0);
+        let probe = (
+            p.0 + left.0 * SEAM_LABEL_INSET_M,
+            p.1 + left.1 * SEAM_LABEL_INSET_M,
+        );
+        let s = if point_in_panel(found, xy, probe) {
+            1.0
+        } else {
+            -1.0
+        };
+        let inward = (s * left.0, s * left.1);
+        out.push(SeamSpot {
+            seam: k,
+            at: (
+                p.0 + inward.0 * SEAM_LABEL_INSET_M,
+                p.1 + inward.1 * SEAM_LABEL_INSET_M,
+            ),
+            angle_deg: reading_angle(d),
+            inward,
+        });
+    }
+    out
+}
+
 /// The full-size pattern of one panel: its outline to cut, the station lines and the seam ticks
 /// to mark, what each edge is stitched to, and what was measured.
 pub fn panel_sheet(
     panel: &FlatPanel,
+    offsets: &PanelOffsets,
     stations: &[(String, f64)],
     limits: Limits,
     imperial: bool,
@@ -1398,46 +1459,15 @@ pub fn panel_sheet(
         });
     }
 
-    // What each edge is stitched to, inside the edge at its middle; on a joined panel, a seam
-    // that does not run across the centreline is labelled on both sides.
-    let mut runs = Vec::new();
-    for seam in &found.seams {
-        let Some(ids) = found.seam_local(seam) else {
-            continue;
-        };
-        if !seam.across {
-            if let Some(m) = found.mirror_local(&ids) {
-                runs.push((seam, m));
-            }
-        }
-        runs.push((seam, ids));
-    }
-    for (seam, ids) in runs {
-        let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
-        let Some((p, d)) = midpoint(&pts) else {
-            continue;
-        };
-        // The outline runs anticlockwise, so the panel is on the left of a seam that runs with
-        // it; a seam that runs against it has the panel on its right.
-        let inward = (-d.1, d.0);
-        let probe = (
-            p.0 + inward.0 * SEAM_LABEL_INSET_M,
-            p.1 + inward.1 * SEAM_LABEL_INSET_M,
-        );
-        let inside = point_in_panel(found, xy, probe);
-        let s = if inside { 1.0 } else { -1.0 };
-        let at = (
-            p.0 + s * inward.0 * SEAM_LABEL_INSET_M,
-            p.1 + s * inward.1 * SEAM_LABEL_INSET_M,
-        );
-        let text = match &seam.mate {
+    for spot in seam_spots(panel) {
+        let text = match &found.seams[spot.seam].mate {
             Mate::Panel(m) => format!("Stitch to {m}"),
             Mate::Centreline => "Centreline: stitch to its mirror".into(),
             Mate::Open => "Open edge".into(),
         };
         sheet
             .labels
-            .push(mark_label(at, reading_angle(d), Anchor::Middle, text));
+            .push(mark_label(spot.at, spot.angle_deg, Anchor::Middle, text));
     }
 
     // Title, copies and the tick rule in the middle of the panel.
@@ -1476,6 +1506,10 @@ pub fn panel_sheet(
             "Ticks match from either end".into(),
         ));
     }
+
+    let (dim_paths, dim_labels) = crate::panel_dims::dimensions(panel, offsets, imperial);
+    sheet.paths.extend(dim_paths);
+    sheet.labels.extend(dim_labels);
 
     let m = &panel.measures;
     if !panel.lies_flat {
@@ -1743,7 +1777,7 @@ pub struct StockRow {
 }
 
 /// The pattern's extent: `(min x, min y, length, width)`.
-fn extent(panel: &FlatPanel) -> (f64, f64, f64, f64) {
+pub(crate) fn extent(panel: &FlatPanel) -> (f64, f64, f64, f64) {
     let (x0, y0, x1, y1) = panel
         .xy
         .iter()
@@ -2084,7 +2118,8 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         stations: stations.clone(),
     };
     for p in &panels {
-        let mut sheet = panel_sheet(p, &stations, opts.limits, opts.imperial);
+        let offsets = panel_offsets(p, opts.offset_spacing_m);
+        let mut sheet = panel_sheet(p, &offsets, &stations, opts.limits, opts.imperial);
         let row = lay_out(p, st);
         sheet.paths.extend(stock_paths(&row, p, st));
         let plywood = match (&row.note, row.sheets_each) {
@@ -2133,7 +2168,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             sheets_each: row.sheets_each,
             unsettled_mm: m.unsettled_m.map(|d| d * 1000.0),
         });
-        set.offsets.push(panel_offsets(p, opts.offset_spacing_m));
+        set.offsets.push(offsets);
         set.stock.push(row);
         set.sheets.push(sheet);
     }
@@ -2806,7 +2841,13 @@ mod tests {
         let (ps, _, _) = measured(&s, 3);
         let side = flat(&ps, "Side");
         let stations = named(&STATIONS);
-        let sheet = panel_sheet(side, &stations, Limits::default(), false);
+        let sheet = panel_sheet(
+            side,
+            &panel_offsets(side, 0.25),
+            &stations,
+            Limits::default(),
+            false,
+        );
         assert_eq!(sheet.name, "Side");
         let cuts: Vec<_> = sheet
             .paths
@@ -2861,8 +2902,10 @@ mod tests {
     fn a_joined_panel_says_cut_one_and_its_centreline_seam_is_labelled() {
         let s = pram_fixture(12.0, 0.0);
         let (ps, _, _) = measured(&s, 2);
+        let bottom = flat(&ps, "Bottom");
         let words = texts(&panel_sheet(
-            flat(&ps, "Bottom"),
+            bottom,
+            &panel_offsets(bottom, 0.25),
             &[],
             Limits::default(),
             false,
@@ -2879,8 +2922,10 @@ mod tests {
         );
         let s = pram_fixture(0.0, 0.0);
         let (ps, _, _) = measured(&s, 2);
+        let bottom = flat(&ps, "Bottom");
         let words = texts(&panel_sheet(
-            flat(&ps, "Bottom"),
+            bottom,
+            &panel_offsets(bottom, 0.25),
             &[],
             Limits::default(),
             false,
@@ -2923,7 +2968,13 @@ mod tests {
             "{t:?}"
         );
 
-        let sheet = panel_sheet(bottom, &[], Limits::default(), false);
+        let sheet = panel_sheet(
+            bottom,
+            &panel_offsets(bottom, 0.25),
+            &[],
+            Limits::default(),
+            false,
+        );
         let words = texts(&sheet);
         assert_eq!(
             words.iter().filter(|t| *t == "Stitch to Side").count(),
@@ -2951,7 +3002,13 @@ mod tests {
         let limits = Limits::default();
         let panel = measure_found(hand_made("Cap", mesh), &[0.0], limits).unwrap();
         assert!(!panel.lies_flat);
-        let sheet = panel_sheet(&panel, &named(&[0.0]), limits, false);
+        let sheet = panel_sheet(
+            &panel,
+            &panel_offsets(&panel, 0.25),
+            &named(&[0.0]),
+            limits,
+            false,
+        );
         let m = &panel.measures;
         let worst = m.worst_seam().unwrap();
         let heading = format!(
@@ -2988,7 +3045,7 @@ mod tests {
         panel.measures.unsettled_m = Some(0.0005);
         assert!(!lies_flat(&panel.measures, limits));
         panel.lies_flat = false;
-        let sheet = panel_sheet(&panel, &[], limits, false);
+        let sheet = panel_sheet(&panel, &panel_offsets(&panel, 0.25), &[], limits, false);
         assert!(
             sheet.notes[0].contains("the flattening stopped at its limit before it settled"),
             "{:?}",
