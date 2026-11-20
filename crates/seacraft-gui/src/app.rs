@@ -21,6 +21,7 @@ use seacraft_core::seastate::{IrregularReport, IrregularSpec};
 use seacraft_core::stability::{self, CrossCurve};
 use seacraft_core::{demo, fef, SubdivisionMode, Surface};
 
+use crate::builder_panels;
 use crate::camera::{Camera, ViewKind};
 use crate::gpu_hull::geometry::{build_geometry, HullGeometry};
 use crate::gpu_hull::{self, HullCallback};
@@ -558,6 +559,8 @@ enum DialogKind {
     Report,
     /// The builder templates, in the format the path's extension names.
     Templates,
+    /// The panel patterns, in the format the path's extension names.
+    Panels,
     /// The current wave pattern, as PNG, SVG or VTI by the path's extension.
     WaveImage,
 }
@@ -1020,8 +1023,10 @@ pub struct App {
     recent_failure: Option<String>,
     /// The recent file an Open recent waiting on the unsaved prompt opens.
     pending_recent: Option<PathBuf>,
-    /// Bumped by every edit; keys all derived state.
+    /// Bumped by every edit; keys all derived state. Only through [`App::bump_revision`].
     revision: u64,
+    /// `revision`, readable from a worker thread ([`App::revision_watch`]).
+    revision_watch: std::sync::Arc<std::sync::atomic::AtomicU64>,
     level: u8,
     mode: SubdivisionMode,
     display: DisplayOptions,
@@ -1110,6 +1115,19 @@ pub struct App {
     templates_track: Track<crate::commands::TemplatesResult>,
     /// Templates in another format being written on a worker thread, and the path.
     templates_export_job: Option<(PathBuf, Job<()>)>,
+    /// The File > Builder panels window is open.
+    show_panels: bool,
+    panels_params: crate::commands::PanelsParams,
+    /// Panel patterns being written on a worker thread, and the path.
+    panels_export_job: Option<(PathBuf, Job<usize>)>,
+    /// Bumped when `panels_params` changes; part of the measurement's key.
+    panels_rev: u64,
+    /// The last panels measured, current or not ([`App::panels_key`] says).
+    panels_result: Option<crate::commands::PanelsPreview>,
+    panels_track: Track<crate::commands::PanelsPreview>,
+    /// Where the window's drawing looks, and the panel picked in it or the list.
+    panels_view: crate::sheet_view::SheetView,
+    panels_selected: Option<usize>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
     loading_track: Track<LoadingResult>,
@@ -1316,6 +1334,7 @@ impl App {
             recent_failure: None,
             pending_recent: None,
             revision: 0,
+            revision_watch: Default::default(),
             level: 3,
             mode: SubdivisionMode::Loop,
             display: DisplayOptions::default(),
@@ -1371,6 +1390,14 @@ impl App {
             templates_result: None,
             templates_track: Track::default(),
             templates_export_job: None,
+            show_panels: false,
+            panels_export_job: None,
+            panels_params: crate::commands::PanelsParams::default(),
+            panels_rev: 0,
+            panels_result: None,
+            panels_track: Track::default(),
+            panels_view: crate::sheet_view::SheetView::default(),
+            panels_selected: None,
             loading_selected: 0,
             loading_result: None,
             loading_track: Track::default(),
@@ -1618,7 +1645,7 @@ impl App {
     /// Everything derived from the model, reset for a new one (the undo
     /// history is the caller's business).
     fn reset_derived(&mut self) {
-        self.revision += 1;
+        self.bump_revision();
         // Measured on the previous model: left in place, it would trim the
         // new one to a point that means nothing there.
         self.hydro.lcg = None;
@@ -1655,6 +1682,23 @@ impl App {
         self.perf_state.wave_drag = None;
         self.wave_drag_track.reset();
         self.analysis.clear_results();
+        self.panels_result = None;
+        self.panels_track.reset();
+        self.panels_view = crate::sheet_view::SheetView::default();
+        self.panels_selected = None;
+        // Keep the chosen panel layers the new model has; with none of them, go back to the
+        // layers marked developable rather than fail on names the window cannot show.
+        if let (Some(chosen), Some(s)) = (&mut self.panels_params.layers, &self.surface) {
+            chosen.retain(|n| s.layers.iter().any(|l| &l.name == n));
+        }
+        if self
+            .panels_params
+            .layers
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+        {
+            self.panels_params.layers = None;
+        }
         self.last_change = Some(std::time::Instant::now());
         self.cursor_world = None;
         self.analysis_frames = [None, None, None, None];
@@ -2162,6 +2206,7 @@ impl App {
         self.dialog_window(ui);
         self.report_options_window(ui);
         self.templates_window(ui);
+        self.panels_window(ui);
         self.finish_project_edit_frame(ui.ctx());
         self.messages_window(ui);
         self.poll_report(ui.ctx());
@@ -2475,6 +2520,13 @@ impl App {
                         .clicked()
                     {
                         self.show_templates = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(self.surface.is_some(), egui::Button::new("Builder panels…"))
+                        .clicked()
+                    {
+                        self.open_builder_panels();
                         ui.close();
                     }
                     if ui
@@ -3126,6 +3178,10 @@ impl App {
                 .join(format!("{clean}-moulds.pdf"))
                 .to_string_lossy()
                 .to_string(),
+            DialogKind::Panels => dir
+                .join(format!("{clean}-panels.pdf"))
+                .to_string_lossy()
+                .to_string(),
             DialogKind::WaveImage => {
                 let froude = self.wave_current().map_or(0.0, |w| w.field.froude);
                 dir.join(format!("{clean}-waves-fn{froude:.2}.png"))
@@ -3433,6 +3489,7 @@ impl App {
             DialogKind::Export(k) => k.label(),
             DialogKind::Report => "Design report",
             DialogKind::Templates => "Builder templates",
+            DialogKind::Panels => "Builder panels",
             DialogKind::WaveImage => "Wave pattern image",
         };
         let mut accept = false;
@@ -3455,7 +3512,7 @@ impl App {
                     DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
                     DialogKind::Export(k) => format!(".{}", k.extension()),
                     DialogKind::Report => ".html".to_owned(),
-                    DialogKind::Templates => ".pdf".to_owned(),
+                    DialogKind::Templates | DialogKind::Panels => ".pdf".to_owned(),
                     DialogKind::WaveImage => ".png".to_owned(),
                 };
                 egui::ScrollArea::vertical()
@@ -3494,6 +3551,7 @@ impl App {
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
             DialogKind::Templates => self.start_templates_export(&path),
+            DialogKind::Panels => self.start_panels_export(&path),
             DialogKind::WaveImage => self.write_wave_image(&path),
         };
         match result {
@@ -3751,7 +3809,7 @@ impl App {
         }
         self.hydro.options.draft = snap.draft;
         if geometry_changed {
-            self.revision += 1;
+            self.bump_revision();
             self.touch_geometry();
         }
         self.refresh_dirty();
@@ -4024,7 +4082,7 @@ impl App {
                         if moved {
                             // Full refinement and measurement again; the
                             // automatic recomputes count from the release.
-                            self.revision += 1;
+                            self.bump_revision();
                             self.touch_geometry();
                             let count = drag.plan.weights().len();
                             if count > 1 {
@@ -4710,7 +4768,7 @@ impl App {
                 "dragging control point {point} · hold X, Y or Z to lock an axis"
             ));
         }
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         self.sync_cache();
     }
@@ -4729,7 +4787,7 @@ impl App {
         // Against the file, not the flag at the press: a save may have
         // happened since.
         self.refresh_dirty();
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         self.sync_cache();
         self.set_status("drag cancelled".to_owned());
@@ -4788,7 +4846,7 @@ impl App {
         }
         self.dirty = true;
         self.autosave.note_dirty();
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         // Refine now (at the drag level), so the dragged view shows the point
         // under the cursor this frame instead of the next.
@@ -4815,7 +4873,7 @@ impl App {
         ));
         self.dirty = true;
         self.autosave.note_dirty();
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
         self.sync_cache();
     }
@@ -5820,6 +5878,311 @@ impl App {
             self.open_dialog(DialogKind::Templates);
         }
         self.show_templates = open;
+    }
+
+    /// What the panels measurement depends on: the model, its name (the patterns' title) and
+    /// the options.
+    fn panels_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let name = self.surface.as_ref().map_or(0, |s| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            s.settings.name.hash(&mut h);
+            h.finish()
+        });
+        revision_key(&[self.revision, self.panels_rev, name])
+    }
+
+    /// Collect the measurement and start the next when it is due: one job at a time (laying
+    /// panels flat is slow and a superseded job cannot be stopped), never while a point is
+    /// being dragged, and only once edits have paused.
+    fn drive_panels_preview(&mut self, ctx: &egui::Context) {
+        let key = self.panels_key();
+        if let Some(Ok(result)) = self.panels_track.poll(key) {
+            // Other sheets than those drawn (other layers, another model): frame them whole,
+            // and drop a pick that may no longer name the same panel.
+            let drawn = self.panels_result.as_ref().map(|r| r.set.sheets.len());
+            if drawn != Some(result.set.sheets.len()) {
+                self.panels_view.fit_all();
+                self.panels_selected = None;
+            }
+            self.panels_result = Some(result);
+        }
+        let quiet = self
+            .last_change
+            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(300));
+        if self.panels_track.ready(key) && self.drag.is_none() {
+            match (&self.surface, quiet) {
+                (Some(surface), true) => {
+                    let surface = surface.clone();
+                    let (level, mode, revision) = (self.level, self.mode, self.revision);
+                    let params = self.panels_params.clone();
+                    self.panels_track.start(key, move || {
+                        crate::commands::panels_in(&surface, level, mode, &params, revision)
+                    });
+                }
+                (Some(_), false) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100))
+                }
+                (None, _) => {}
+            }
+        }
+        if self.panels_track.busy() || self.panels_track.due(key) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Where the measurement stands for the current options and model.
+    fn panels_status(&self) -> builder_panels::PanelsStatus<'_> {
+        let key = self.panels_key();
+        if let Some(reason) = self.panels_track.failure(key) {
+            return builder_panels::PanelsStatus::Failed(reason);
+        }
+        match &self.panels_result {
+            Some(r) if self.panels_track.is_current(key) => {
+                builder_panels::PanelsStatus::Ready(&r.set)
+            }
+            Some(r) => builder_panels::PanelsStatus::Stale(&r.set),
+            None => builder_panels::PanelsStatus::Working,
+        }
+    }
+
+    /// The File > Builder panels window.
+    fn panels_window(&mut self, ui: &mut egui::Ui) {
+        self.poll_panels_export(ui.ctx());
+        if !self.show_panels {
+            return;
+        }
+        if self.surface.is_none() {
+            self.show_panels = false;
+            return;
+        }
+        self.drive_panels_preview(ui.ctx());
+        let layers: Vec<String> = self
+            .surface
+            .as_ref()
+            .map(|s| s.layers.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default();
+        let mut params = self.panels_params.clone();
+        let mut open = true;
+        let mut action = None;
+        let selected = self.panels_selected;
+        let mut view = std::mem::take(&mut self.panels_view);
+        let mut clicked = None;
+        let mut export = None;
+        let block = self.panels_export_block();
+        let status = self.panels_status();
+        egui::Window::new("Builder panels")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(1040.0)
+            .default_height(720.0)
+            .show(ui.ctx(), |ui| {
+                // Options on the left; the list and the drawing, which want the room, beside them.
+                egui::Panel::left("panels_options")
+                    .resizable(false)
+                    .default_size(300.0)
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("panels_options_scroll")
+                            .show(ui, |ui| {
+                                builder_panels::panels_options(ui, &mut params, &layers);
+                                ui.separator();
+                                export = builder_panels::panels_export(
+                                    ui,
+                                    &mut params,
+                                    block.as_deref(),
+                                );
+                            });
+                    });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("panels_list_scroll")
+                        .max_height(240.0)
+                        .show(ui, |ui| {
+                            action = builder_panels::panels_list(ui, &status, selected);
+                        });
+                    ui.separator();
+                    let set = status.set();
+                    for line in set.map(|s| s.failing()).unwrap_or_default() {
+                        ui.colored_label(crate::theme::TEXT_PRIMARY, line);
+                    }
+                    let sheets = set.map_or(&[][..], |s| &s.sheets[..]);
+                    let not_flat: Vec<bool> = set
+                        .map(|s| s.rows.iter().map(|r| !r.lies_flat).collect())
+                        .unwrap_or_default();
+                    let stale = matches!(status, builder_panels::PanelsStatus::Stale(_));
+                    ui.allocate_ui(
+                        egui::vec2(ui.available_width(), ui.available_height().max(320.0)),
+                        |ui| {
+                            clicked =
+                                crate::sheet_view::show(ui, sheets, &not_flat, stale, &mut view);
+                        },
+                    );
+                });
+            });
+        self.panels_view = view;
+        if clicked.is_some() {
+            self.panels_selected = clicked;
+        }
+        if params != self.panels_params {
+            self.set_panels_params(params);
+        }
+        if export == Some(builder_panels::PanelsAction::Export) {
+            self.open_dialog(DialogKind::Panels);
+        }
+        match action {
+            Some(builder_panels::PanelsAction::Frame(i)) => {
+                self.panels_selected = Some(i);
+                self.panels_view.frame(i);
+            }
+            Some(builder_panels::PanelsAction::Export) | None => {}
+        }
+        self.show_panels = open;
+    }
+
+    /// Where the Builder panels drawing looks.
+    pub fn panels_view(&self) -> &crate::sheet_view::SheetView {
+        &self.panels_view
+    }
+
+    /// The panel picked in the Builder panels list or drawing.
+    pub fn panels_selected(&self) -> Option<usize> {
+        self.panels_selected
+    }
+
+    /// Open File > Builder panels (from the File menu or Plate development).
+    pub fn open_builder_panels(&mut self) {
+        if self.surface.is_some() {
+            self.show_panels = true;
+        }
+    }
+
+    /// Is the Builder panels window open?
+    pub fn show_panels(&self) -> bool {
+        self.show_panels
+    }
+
+    pub fn set_show_panels(&mut self, show: bool) {
+        self.show_panels = show;
+    }
+
+    pub fn panels_params(&self) -> &crate::commands::PanelsParams {
+        &self.panels_params
+    }
+
+    /// Change the panels options; when a measured one changed, the measurement is stale from
+    /// now ([`crate::commands::PanelsParams::measured`]).
+    pub fn set_panels_params(&mut self, params: crate::commands::PanelsParams) {
+        if params.measured() != self.panels_params.measured() {
+            self.panels_rev += 1;
+        }
+        self.panels_params = params;
+    }
+
+    /// Why the patterns cannot be exported now, if they cannot: the panels for the current
+    /// options are not measured yet or could not be, or a panel does not lie flat.
+    pub fn panels_export_block(&self) -> Option<String> {
+        match self.panels_status() {
+            builder_panels::PanelsStatus::Working | builder_panels::PanelsStatus::Stale(_) => {
+                Some("Wait for the panels to be measured for these options".to_owned())
+            }
+            builder_panels::PanelsStatus::Failed(reason) => Some(reason.to_owned()),
+            builder_panels::PanelsStatus::Ready(set) if set.sheets.is_empty() => {
+                Some("No panel could be drawn".to_owned())
+            }
+            builder_panels::PanelsStatus::Ready(set) => {
+                crate::commands::panels_refusal(set, &self.panels_params)
+            }
+        }
+    }
+
+    /// The patterns of the measured panels, checked for export to `path`.
+    fn panels_for_export(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<
+        (
+            std::sync::Arc<seacraft_core::panels::PanelSet>,
+            seacraft_core::templates::Format,
+        ),
+        String,
+    > {
+        let format = self.panels_params.format_for(path)?;
+        if let Some(reason) = self.panels_export_block() {
+            return Err(reason);
+        }
+        let set = self
+            .panels_preview()
+            .ok_or("Wait for the panels to be measured")?;
+        Ok((set.set.clone(), format))
+    }
+
+    /// Write the measured panels' patterns to `path` on this thread, in the format its
+    /// extension names (tests and scripts; the window writes on a worker).
+    pub fn export_panels_to(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let (set, format) = self.panels_for_export(path)?;
+        let file = crate::commands::panels_file(&set, &self.panels_params, format)?;
+        let written = seacraft_core::io::write_atomic(path, &file.bytes);
+        self.log_export("Builder panels", path, written)
+    }
+
+    /// Start writing the measured panels' patterns to `path` on a worker.
+    fn start_panels_export(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let (set, format) = match self.panels_for_export(path) {
+            Ok(v) => v,
+            Err(err) => {
+                self.log(Level::Error, err.clone());
+                return Err(err);
+            }
+        };
+        let params = self.panels_params.clone();
+        let target = path.to_path_buf();
+        self.set_status(format!("writing panel patterns {}…", path.display()));
+        let job = Job::spawn(self.revision, move || {
+            let file = crate::commands::panels_file(&set, &params, format)?;
+            seacraft_core::io::write_atomic(&target, &file.bytes)
+                .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
+            Ok(file.pages.unwrap_or(0))
+        });
+        self.panels_export_job = Some((path.to_path_buf(), job));
+        Ok(())
+    }
+
+    /// Collect a finished panel patterns export, if any.
+    fn poll_panels_export(&mut self, ctx: &egui::Context) {
+        let Some((path, job)) = &self.panels_export_job else {
+            return;
+        };
+        let (level, msg) = match job.poll() {
+            crate::jobs::Poll::Running => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                return;
+            }
+            crate::jobs::Poll::Done(pages) => (
+                Level::Info,
+                match pages {
+                    0 => format!("exported {} (Builder panels)", path.display()),
+                    n => format!("exported {} (Builder panels, {n} pages)", path.display()),
+                },
+            ),
+            crate::jobs::Poll::Failed(e) => (Level::Error, format!("panel patterns failed: {e}")),
+        };
+        self.log(level, msg);
+        self.panels_export_job = None;
+    }
+
+    /// The panels measured for the current options and model; `None` while they are being
+    /// measured or after a failure.
+    pub fn panels_preview(&self) -> Option<&crate::commands::PanelsPreview> {
+        self.panels_result
+            .as_ref()
+            .filter(|_| self.panels_track.is_current(self.panels_key()))
+    }
+
+    /// Why measuring the panels for the current options and model failed, if it did.
+    pub fn panels_failure(&self) -> Option<&str> {
+        self.panels_track.failure(self.panels_key())
     }
 
     /// Is the Builder templates window open?
@@ -6909,10 +7272,27 @@ impl App {
         }
     }
 
+    /// The model revision: bumped by every edit.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The model revision as a worker thread sees it: always equal to [`App::revision`].
+    pub fn revision_watch(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.revision_watch.clone()
+    }
+
+    /// Bumps the model revision; the only place it changes.
+    fn bump_revision(&mut self) {
+        self.revision += 1;
+        self.revision_watch
+            .store(self.revision, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn mark_geometry_changed(&mut self) {
         let n = self.surface.as_ref().map_or(0, |s| s.points.len());
         self.selection.retain_valid(n);
-        self.revision += 1;
+        self.bump_revision();
         self.dirty = true;
         self.autosave.note_dirty();
         if let Ok(mut guard) = self.clipped_volumes_cache.lock() {
@@ -6977,13 +7357,13 @@ impl App {
     /// repeated solves cheap; the UI drives the same field from the menu.
     pub fn set_subdivision_level(&mut self, level: u8) {
         self.level = level.clamp(0, 5);
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
     }
 
     pub fn set_subdivision_mode(&mut self, mode: SubdivisionMode) {
         self.mode = mode;
-        self.revision += 1;
+        self.bump_revision();
         self.touch_geometry();
     }
 
@@ -7793,8 +8173,10 @@ impl App {
                     break;
                 }
             };
-            let reply = crate::control::handle(self, ctx, &request);
-            let _ = request.reply.send(reply);
+            // `None`: a worker answers on `request.reply` when it is done.
+            if let Some(reply) = crate::control::handle(self, ctx, &request) {
+                let _ = request.reply.send(reply);
+            }
         }
         // The listener thread holds no `egui::Context`, so it cannot wake the
         // window: poll instead. A request waiting at most 100 ms is the price.
@@ -9013,6 +9395,7 @@ impl App {
             }
             ViewAction::Close => self.close_analysis_view(),
             ViewAction::Open(other) => self.open_analysis_view(other),
+            ViewAction::OpenBuilderPanels => self.open_builder_panels(),
         }
     }
 }

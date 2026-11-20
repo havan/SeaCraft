@@ -648,7 +648,10 @@ and what each edge is stitched to. A panel whose seams drift over 2 mm or that
 must stretch over 0.1 % RMS does not lie flat, and then nothing is written
 unless `--allow-undevelopable` is given; the limits are provisional. Offsets
 from a baseline (`--offsets-csv`, `--offsets-pdf`) and a count of plywood
-sheets end to end come with it. The GUI and MCP do not have it yet.
+sheets end to end come with it; the PDF carries the offsets tables after the
+patterns. The desktop app has the same under File ▸ Builder panels…, with a
+live list of the panels and a drawing of their patterns, and the MCP server as
+`export_panels`, which can also measure without writing.
 
 ---
 
@@ -916,7 +919,7 @@ the hull, where the local disturbance it leaves out matters, and transom sterns 
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
   `planing_curve`, `wave_pattern`, `trim_scan`, `optimize_hull`, `export_linesplan`, `export_templates`,
-  `export_offsets_pdf` and `render_png`.
+  `export_panels`, `export_offsets_pdf` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install
   steps and the CI test that keeps them in step with the tools.

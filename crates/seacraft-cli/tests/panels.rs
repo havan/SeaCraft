@@ -253,3 +253,22 @@ fn two_outputs_to_one_file_are_refused_before_any_is_written() {
         assert!(dir.join(f).exists(), "{f}");
     }
 }
+
+#[test]
+fn no_offsets_pages_leaves_them_out_of_the_pdf() {
+    let dir = workdir("offsets-pages");
+    let json = |extra: &[&str]| -> serde_json::Value {
+        let mut args = vec!["panels", "pram.fef", "-o", "p.pdf", "--json"];
+        args.extend_from_slice(extra);
+        serde_json::from_str(&ok(&dir, &args)).expect("JSON on standard output")
+    };
+    let with = json(&[]);
+    let without = json(&["--no-offsets-pages"]);
+    let tables = with["offsets_pages"].as_u64().expect("offsets_pages");
+    assert!(tables >= 1, "{with}");
+    assert_eq!(without["offsets_pages"], 0, "{without}");
+    assert_eq!(
+        with["pages"].as_u64().unwrap(),
+        without["pages"].as_u64().unwrap() + tables
+    );
+}

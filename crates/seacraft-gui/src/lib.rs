@@ -15,6 +15,7 @@ pub fn window_icon() -> eframe::egui::IconData {
 pub mod analysis_views;
 pub mod app;
 pub mod autosave;
+pub mod builder_panels;
 pub mod camera;
 pub mod commands;
 pub mod connected_presets;
@@ -31,6 +32,7 @@ pub mod picking;
 pub mod recent;
 pub mod render;
 pub mod selection;
+pub mod sheet_view;
 pub mod theme;
 pub mod visibility;
 pub mod wave_view;

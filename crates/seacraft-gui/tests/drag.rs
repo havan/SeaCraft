@@ -1670,7 +1670,7 @@ fn bad_presets_file_keeps_builtins_and_reports_error_in_toolbar_and_inspect() {
     let ctx = egui::Context::default();
     let call = |app: &mut App, method: &str, params: serde_json::Value| {
         let (tx, _rx) = mpsc::channel();
-        handle(app, &ctx, &ControlRequest::new(method, params, tx))
+        handle(app, &ctx, &ControlRequest::new(method, params, tx)).expect("answered at once")
     };
 
     let insp = call(&mut app, "ui.inspect", json!({}));
@@ -2426,7 +2426,7 @@ fn an_agent_cannot_move_points_while_a_point_is_being_dragged() {
 
     let call = |app: &mut App, ctx: &egui::Context, method: &str, params| {
         let (tx, _rx) = mpsc::channel();
-        handle(app, ctx, &ControlRequest::new(method, params, tx))
+        handle(app, ctx, &ControlRequest::new(method, params, tx)).expect("answered at once")
     };
     let mut app = App::headless_for_test(Some(&demo_path()));
     let ctx = egui::Context::default();

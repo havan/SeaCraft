@@ -13,6 +13,20 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   the `WaveLoads` (heave force and pitch moment on the hull held still, per unit wave amplitude) that the motions
   are solved with. It solves upright and level whatever trim and heel its hydrostatic options carry, as its strips
   are cut level. `head_sea_raos` and the CLI, MCP and GUI outputs are unchanged.
+- Plywood panels in the desktop app and over MCP. **File ▸ Builder panels…** (also **Export patterns…** in the
+  Plate development view) lays the hull's panels flat in the background and lists each with whether it lies flat,
+  its stretch, seam drift, area and plywood sheets, over a drawing of the same patterns the PDF prints; panels that
+  do not lie flat are tinted and named with the reason. **Export…** writes PDF, SVG or DXF, and stays disabled,
+  saying why, while a panel does not lie flat unless that is allowed. The control channel has `build.panels` and
+  `ui.set {"panels": true}`; MCP has `export_panels`, which without a `path` only measures, and with one writes
+  nothing when a panel does not lie flat (`written: false` and the reason) unless `allow_undevelopable`.
+- The panel pattern PDF now carries each panel's offsets tables after the patterns (A4 landscape), listed on the
+  first page and counted in every tile's "page n of m"; `seacraft panels --no-offsets-pages` (`offsets_pages:
+  false`) leaves them out. The `--json` summary gives `offsets_pages`. The CLI's stretch limit message now reads
+  like the others: "--max-stretch-pct must be more than zero, not 0".
+- `build.templates` on the control channel no longer freezes the window: it is checked at once and drawn and
+  written by a worker, and like `build.panels` its reply names the model revision it was computed on and whether
+  the model changed meanwhile (`revision`, `model_changed`). Builder requests wait up to 300 s for their reply.
 
 - Holtrop-Mennen and Savitsky are now checked against published worked examples (`docs/oracles.md` §42, §43), and
   two fixes came out of it. Holtrop wave resistance uses the 1984 hump coefficient `m4` in both wave fits, as

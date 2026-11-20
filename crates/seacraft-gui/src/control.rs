@@ -19,7 +19,9 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
@@ -36,6 +38,50 @@ use crate::App;
 const MAX_LINE: usize = 64 * 1024;
 /// How long a connection waits for the window to answer one request.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a connection waits for a request a worker answers ([`reply_later`]).
+const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How long a connection waits for the reply to `method`.
+fn reply_timeout(method: &str) -> Duration {
+    match method {
+        "build.templates" | "build.panels" => WORKER_TIMEOUT,
+        _ => REPLY_TIMEOUT,
+    }
+}
+
+/// Answers a request from a worker thread, so slow work never holds the window: `work` runs
+/// there and its result goes to `reply` as [`handle`] would send it, with the model `revision`
+/// it was computed on and whether the window's model has changed since (`watch`, from
+/// [`App::revision_watch`]). A result that is not a JSON object is sent as it is.
+fn reply_later(
+    reply: Sender<Value>,
+    revision: u64,
+    watch: Arc<AtomicU64>,
+    work: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) {
+    let spawned = std::thread::Builder::new()
+        .name("seacraft-control-work".into())
+        .spawn(move || {
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let answer = match res {
+                Ok(Ok(mut v)) => {
+                    if let Some(o) = v.as_object_mut() {
+                        o.insert("revision".into(), json!(revision));
+                        let changed = watch.load(Ordering::SeqCst) != revision;
+                        o.insert("model_changed".into(), json!(changed));
+                    }
+                    json!({ "ok": true, "result": v })
+                }
+                Ok(Err(e)) => error(e),
+                Err(payload) => error(format!("internal error: {}", panic_message(&*payload))),
+            };
+            let _ = reply.send(answer);
+        });
+    if let Err(e) = spawned {
+        // The sender went with the closure; the connection's wait ends in its timeout.
+        eprintln!("seacraft-gui: cannot start a worker for a control request: {e}");
+    }
+}
 /// Largest image side `ui.render` accepts, in pixels.
 const MAX_RENDER: usize = 4096;
 /// The default `ui.render` image size.
@@ -292,17 +338,20 @@ fn serve(stream: TcpStream, tx: &Sender<ControlRequest>, expected_token: Option<
         }
 
         let (reply_tx, reply_rx) = mpsc::channel();
+        let timeout = reply_timeout(&method);
+        let named = method.clone();
         if tx
             .send(ControlRequest::new(method, params, reply_tx))
             .is_err()
         {
             break; // the window is gone
         }
-        let reply = match reply_rx.recv_timeout(REPLY_TIMEOUT) {
+        let reply = match reply_rx.recv_timeout(timeout) {
             Ok(v) => v,
             Err(mpsc::RecvTimeoutError::Timeout) => error(format!(
-                "the window did not answer within {} s",
-                REPLY_TIMEOUT.as_secs()
+                "`{}`: the window did not answer within {} s",
+                named,
+                timeout.as_secs()
             )),
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
@@ -671,7 +720,9 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Answer one request. Every arm validates its input before touching the app,
 /// so a bad request leaves the window exactly as it was.
-pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value {
+/// Answers one request. `None` means a worker answers it later, on `req.reply`
+/// ([`reply_later`]); the caller sends `Some` replies itself.
+pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Option<Value> {
     let empty = Value::Object(serde_json::Map::new());
     let p = if req.params.is_null() {
         &empty
@@ -679,19 +730,265 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Value
         &req.params
     };
     if !p.is_object() {
-        return error("`params` must be a JSON object");
+        return Some(error("`params` must be a JSON object"));
     }
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        handle_inner(app, ctx, req, p)
-    }));
+    let res =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match req.method.as_str() {
+            "build.templates" => build_templates(app, p, &req.reply),
+            "build.panels" => build_panels(app, p, &req.reply),
+            _ => handle_inner(app, ctx, req, p).map(Some),
+        }));
     match res {
-        Ok(Ok(v)) => json!({ "ok": true, "result": v }),
-        Ok(Err(e)) => error(e),
+        Ok(Ok(Some(v))) => Some(json!({ "ok": true, "result": v })),
+        Ok(Ok(None)) => None,
+        Ok(Err(e)) => Some(error(e)),
         Err(payload) => {
             let msg = panic_message(&*payload);
-            error(format!("internal error: {msg}"))
+            Some(error(format!("internal error: {msg}")))
         }
     }
+}
+
+/// An optional array of strings from `key`; `what` names one entry in the error.
+fn strings(p: &Value, key: &str, what: &str) -> Result<Option<Vec<String>>, String> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) if items.len() <= 10_000 => items
+            .iter()
+            .map(|v| v.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or_else(|| format!("`{key}` must be an array of {what}s")),
+        Some(_) => Err(format!("`{key}` must be an array of {what}s")),
+    }
+}
+
+/// The `build.panels` (and MCP `export_panels`) arguments as panels parameters, every choice
+/// checked but the page, which [`build_panels`] checks after the PDF-only refusal: a refusal
+/// names the argument.
+fn panels_params(p: &Value) -> Result<commands::PanelsParams, String> {
+    use seacraft_core::templates::{StationChoice, MAX_STATIONS};
+    let given: Vec<&str> = ["stations", "spacing", "at"]
+        .into_iter()
+        .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
+        .collect();
+    if given.len() > 1 {
+        return Err(format!(
+            "give one of `stations`, `spacing` and `at`, not `{}`",
+            given.join("` and `")
+        ));
+    }
+    let d = commands::PanelsParams::default();
+    let stations = if let Some(n) = number_in(p, "stations", 2.0..=MAX_STATIONS as f64)? {
+        if n.fract() != 0.0 {
+            return Err("`stations` must be a whole number".into());
+        }
+        StationChoice::Count(n as usize)
+    } else if let Some(s) = number_in(p, "spacing", 0.001..=1.0e4)? {
+        StationChoice::Spacing(s)
+    } else if let Some(xs) = numbers(p, "at")? {
+        StationChoice::At(xs)
+    } else {
+        d.stations.clone()
+    };
+    let choices = seacraft_core::panel_choices::Choices {
+        max_seam_drift_mm: number(p, "max_seam_drift_mm")?.unwrap_or(d.choices.max_seam_drift_mm),
+        max_stretch_pct: number(p, "max_stretch_pct")?.unwrap_or(d.choices.max_stretch_pct),
+        offset_spacing_mm: number(p, "offset_spacing_mm")?.unwrap_or(d.choices.offset_spacing_mm),
+        stock_mm: text(p, "stock_mm")?.map_or(d.choices.stock_mm.clone(), str::to_owned),
+        scarf_mm: number(p, "scarf_mm")?.unwrap_or(d.choices.scarf_mm),
+    };
+    seacraft_core::panel_choices::check(&choices).map_err(|e| e.to_string())?;
+    let scale = match text(p, "scale")? {
+        Some(scale) => {
+            seacraft_core::units::parse_scale(scale).map_err(|e| format!("`scale`: {e}"))?
+        }
+        None => d.scale,
+    };
+    let params = commands::PanelsParams {
+        level: level_arg(p)?,
+        layers: strings(p, "layers", "layer name")?,
+        stations,
+        choices,
+        imperial: boolean(p, "imperial")?.unwrap_or(d.imperial),
+        allow_undevelopable: boolean(p, "allow_undevelopable")?.unwrap_or(d.allow_undevelopable),
+        offsets_pages: boolean(p, "offsets_pages")?.unwrap_or(d.offsets_pages),
+        paper: text(p, "paper")?.map_or(d.paper.clone(), str::to_owned),
+        single_page: boolean(p, "single_page")?.unwrap_or(d.single_page),
+        margin_mm: number_in(p, "margin_mm", 0.0..=100.0)?.unwrap_or(d.margin_mm),
+        overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(d.overlap_mm),
+        scale,
+    };
+    Ok(params)
+}
+
+/// `build.panels`: checked here; measured, and written when `path` is given, by a worker
+/// ([`reply_later`]). Without `path`, the window's own measurement answers at once when it is
+/// current for the same options.
+fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Option<Value>, String> {
+    let params = panels_params(p)?;
+    let target = match text(p, "path")?.filter(|s| !s.trim().is_empty()) {
+        None => None,
+        Some(path) => {
+            let path = std::path::PathBuf::from(path.trim());
+            let extension = path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let given: Vec<&str> = ["paper", "single_page", "margin_mm", "overlap_mm"]
+                .into_iter()
+                .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
+                .collect();
+            seacraft_core::panel_choices::pdf_only(&extension, &given)?;
+            let validated = app.check_control_write_path(&path)?;
+            let format = params.format_for(&validated)?;
+            Some((validated, format))
+        }
+    };
+    // After the PDF-only refusal: a page that does not work is no reason to refuse an SVG.
+    params.setup()?;
+    if target.is_none() {
+        let same = params.measured() == app.panels_params().measured();
+        if let Some(pv) = app.panels_preview().filter(|_| same) {
+            let mut v = pv.set.summary();
+            v["revision"] = json!(pv.revision);
+            v["model_changed"] = json!(false);
+            return Ok(Some(v));
+        }
+    }
+    let surface = app
+        .surface()
+        .ok_or("build.panels: no model is loaded")?
+        .clone();
+    let (level, mode, revision) = (
+        app.subdivision_level(),
+        app.subdivision_mode(),
+        app.revision(),
+    );
+    reply_later(reply.clone(), revision, app.revision_watch(), move || {
+        let pv = commands::panels_in(&surface, level, mode, &params, revision)?;
+        let mut v = pv.set.summary();
+        let Some((path, format)) = target else {
+            return Ok(v);
+        };
+        if let Some(reason) = commands::panels_refusal(&pv.set, &params) {
+            v["written"] = json!(false);
+            v["reason"] = json!(reason);
+            return Ok(v);
+        }
+        let file = commands::panels_file(&pv.set, &params, format)?;
+        seacraft_core::io::write_atomic(&path, &file.bytes)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        let missing: Vec<String> = file.missing.iter().map(char::to_string).collect();
+        v["written"] = json!(true);
+        v["path"] = json!(path.to_string_lossy());
+        v["format"] = json!(format.name());
+        v["bytes"] = json!(file.bytes.len());
+        v["pages"] = json!(file.pages);
+        v["offsets_pages"] = json!(file.offsets_pages);
+        v["missing_characters"] = json!(missing);
+        Ok(v)
+    });
+    Ok(None)
+}
+
+/// `build.templates`: checked here, drawn and written by a worker ([`reply_later`]).
+fn build_templates(
+    app: &mut App,
+    p: &Value,
+    reply: &Sender<Value>,
+) -> Result<Option<Value>, String> {
+    use seacraft_core::templates::{StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS};
+    let path = text(p, "path")?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("missing `path`")?;
+    let given: Vec<&str> = ["stations", "spacing", "at"]
+        .into_iter()
+        .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
+        .collect();
+    if given.len() > 1 {
+        return Err(format!(
+            "give one of `stations`, `spacing` and `at`, not `{}`",
+            given.join("` and `")
+        ));
+    }
+    let defaults = commands::TemplatesParams::default();
+    let stations = if let Some(n) = number_in(p, "stations", 2.0..=MAX_STATIONS as f64)? {
+        StationChoice::Count(n.round() as usize)
+    } else if let Some(s) = number_in(p, "spacing", 0.001..=1.0e4)? {
+        StationChoice::Spacing(s)
+    } else if let Some(xs) = numbers(p, "at")? {
+        StationChoice::At(xs)
+    } else {
+        defaults.stations.clone()
+    };
+    let transom = match (number(p, "transom_x")?, number(p, "transom_rake_deg")?) {
+        (Some(x), Some(rake_deg)) => Some(Transom { x, rake_deg }),
+        (None, None) => None,
+        _ => {
+            return Err(
+                "`transom_x` and `transom_rake_deg` go together: give both or neither".into(),
+            )
+        }
+    };
+    let paper = match text(p, "paper")? {
+        Some(paper) => {
+            seacraft_core::sheet::Paper::parse(paper).map_err(|e| format!("`paper`: {e}"))?;
+            paper.to_owned()
+        }
+        None => defaults.paper.clone(),
+    };
+    let scale = match text(p, "scale")? {
+        Some(scale) => {
+            seacraft_core::units::parse_scale(scale).map_err(|e| format!("`scale`: {e}"))?
+        }
+        None => defaults.scale,
+    };
+    let params = commands::TemplatesParams {
+        level: level_arg(p)?,
+        stations,
+        skin_mm: number_in(p, "skin_mm", 0.0..=MAX_SKIN_M * 1000.0)?.unwrap_or(defaults.skin_mm),
+        half: boolean(p, "half")?.unwrap_or(defaults.half),
+        strongback_z: number(p, "strongback_z")?,
+        waterlines: numbers(p, "waterlines")?,
+        profile: boolean(p, "profile")?.unwrap_or(defaults.profile),
+        transom,
+        paper,
+        single_page: boolean(p, "single_page")?.unwrap_or(defaults.single_page),
+        margin_mm: number_in(p, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
+        overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
+        scale,
+        imperial: boolean(p, "imperial")?.unwrap_or(defaults.imperial),
+    };
+    let path = std::path::PathBuf::from(path.trim());
+    let validated = app.check_control_write_path(&path)?;
+    let format = params.format_for(&validated)?;
+    let surface = app
+        .surface()
+        .ok_or("build.templates: no model is loaded")?
+        .clone();
+    let (level, mode) = (app.subdivision_level(), app.subdivision_mode());
+    reply_later(
+        reply.clone(),
+        app.revision(),
+        app.revision_watch(),
+        move || {
+            let r = commands::templates_in(&surface, level, mode, &params, format)?;
+            seacraft_core::io::write_atomic(&validated, &r.bytes)
+                .map_err(|e| format!("cannot write {}: {e}", validated.display()))?;
+            let missing: Vec<String> = r.missing.iter().map(char::to_string).collect();
+            Ok(json!({
+                "path": validated.to_string_lossy(),
+                "format": format.name(),
+                "bytes": r.bytes.len(),
+                "pages": r.pages,
+                "sheets": r.rows,
+                "warnings": r.warnings,
+                "missing_characters": missing,
+            }))
+        },
+    );
+    Ok(None)
 }
 
 fn handle_inner(
@@ -720,6 +1017,7 @@ fn handle_inner(
             let mut maximised: Option<bool> = None;
             let mut messages: Option<bool> = None;
             let mut templates: Option<bool> = None;
+            let mut panels: Option<bool> = None;
             let mut waves: Option<bool> = None;
             let mut connected_on: Option<bool> = None;
             let mut connected_preset: Option<String> = None;
@@ -815,6 +1113,9 @@ fn handle_inner(
                     "templates" => {
                         templates =
                             Some(value.as_bool().ok_or("`templates` must be true or false")?)
+                    }
+                    "panels" => {
+                        panels = Some(value.as_bool().ok_or("`panels` must be true or false")?)
                     }
                     "waves" => {
                         waves = Some(value.as_bool().ok_or("`waves` must be true or false")?)
@@ -943,6 +1244,13 @@ fn handle_inner(
             }
             if let Some(show) = templates {
                 app.set_show_templates(show);
+            }
+            if let Some(show) = panels {
+                if show {
+                    app.open_builder_panels();
+                } else {
+                    app.set_show_panels(false);
+                }
             }
             if let Some(show) = loading_panel {
                 app.set_show_loading(show);
@@ -2020,96 +2328,6 @@ fn handle_inner(
             };
             reply_app(commands::bonjean(app, &params)?)
         }
-        "build.templates" => {
-            use seacraft_core::templates::{StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS};
-            let path = text(p, "path")?
-                .filter(|s| !s.trim().is_empty())
-                .ok_or("missing `path`")?;
-            let given: Vec<&str> = ["stations", "spacing", "at"]
-                .into_iter()
-                .filter(|k| !matches!(p.get(*k), None | Some(Value::Null)))
-                .collect();
-            if given.len() > 1 {
-                return Err(format!(
-                    "give one of `stations`, `spacing` and `at`, not `{}`",
-                    given.join("` and `")
-                ));
-            }
-            let defaults = commands::TemplatesParams::default();
-            let stations = if let Some(n) = number_in(p, "stations", 2.0..=MAX_STATIONS as f64)? {
-                StationChoice::Count(n.round() as usize)
-            } else if let Some(s) = number_in(p, "spacing", 0.001..=1.0e4)? {
-                StationChoice::Spacing(s)
-            } else if let Some(xs) = numbers(p, "at")? {
-                StationChoice::At(xs)
-            } else {
-                defaults.stations.clone()
-            };
-            let transom = match (number(p, "transom_x")?, number(p, "transom_rake_deg")?) {
-                (Some(x), Some(rake_deg)) => Some(Transom { x, rake_deg }),
-                (None, None) => None,
-                _ => {
-                    return Err(
-                        "`transom_x` and `transom_rake_deg` go together: give both or neither"
-                            .into(),
-                    )
-                }
-            };
-            let paper = match text(p, "paper")? {
-                Some(paper) => {
-                    seacraft_core::sheet::Paper::parse(paper)
-                        .map_err(|e| format!("`paper`: {e}"))?;
-                    paper.to_owned()
-                }
-                None => defaults.paper.clone(),
-            };
-            let scale = match text(p, "scale")? {
-                Some(scale) => {
-                    seacraft_core::units::parse_scale(scale).map_err(|e| format!("`scale`: {e}"))?
-                }
-                None => defaults.scale,
-            };
-            let params = commands::TemplatesParams {
-                level: level_arg(p)?,
-                stations,
-                skin_mm: number_in(p, "skin_mm", 0.0..=MAX_SKIN_M * 1000.0)?
-                    .unwrap_or(defaults.skin_mm),
-                half: boolean(p, "half")?.unwrap_or(defaults.half),
-                strongback_z: number(p, "strongback_z")?,
-                waterlines: numbers(p, "waterlines")?,
-                profile: boolean(p, "profile")?.unwrap_or(defaults.profile),
-                transom,
-                paper,
-                single_page: boolean(p, "single_page")?.unwrap_or(defaults.single_page),
-                margin_mm: number_in(p, "margin_mm", 0.0..=100.0)?.unwrap_or(defaults.margin_mm),
-                overlap_mm: number_in(p, "overlap_mm", 0.0..=100.0)?.unwrap_or(defaults.overlap_mm),
-                scale,
-                imperial: boolean(p, "imperial")?.unwrap_or(defaults.imperial),
-            };
-            let path = std::path::PathBuf::from(path.trim());
-            let validated = app.check_control_write_path(&path)?;
-            let format = params.format_for(&validated)?;
-            let surface = app.surface().ok_or("build.templates: no model is loaded")?;
-            let r = commands::templates_in(
-                surface,
-                app.subdivision_level(),
-                app.subdivision_mode(),
-                &params,
-                format,
-            )?;
-            seacraft_core::io::write_atomic(&validated, &r.bytes)
-                .map_err(|e| format!("cannot write {}: {e}", validated.display()))?;
-            let missing: Vec<String> = r.missing.iter().map(char::to_string).collect();
-            Ok(json!({
-                "path": validated.to_string_lossy(),
-                "format": format.name(),
-                "bytes": r.bytes.len(),
-                "pages": r.pages,
-                "sheets": r.rows,
-                "warnings": r.warnings,
-                "missing_characters": missing,
-            }))
-        }
         "curves.offsets" => {
             // Read-only, like curves.bonjean: no snapshot, no dirty flag.
             let defaults = commands::OffsetsParams::default();
@@ -2941,9 +3159,108 @@ mod tests {
         (app, egui::Context::default())
     }
 
+    /// One request, answered at once or, for a request a worker answers, when it does.
     fn call(app: &mut App, ctx: &egui::Context, method: &str, params: Value) -> Value {
+        let (tx, rx) = mpsc::channel();
+        handle(app, ctx, &ControlRequest::new(method, params, tx)).unwrap_or_else(|| {
+            rx.recv_timeout(Duration::from_secs(60))
+                .expect("the worker replies")
+        })
+    }
+
+    /// A builder request is answered by a worker: the window answers other requests
+    /// meanwhile, and the reply arrives on the request's own channel.
+    #[test]
+    fn a_builder_request_leaves_the_window_free() {
+        let (mut app, ctx) = demo();
+        let dir = std::env::temp_dir().join(format!("seacraft-later-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        let path = dir.join("m.pdf");
+        let (tx, rx) = mpsc::channel();
+        let req = ControlRequest::new(
+            "build.templates",
+            json!({ "path": path.to_string_lossy() }),
+            tx,
+        );
+        assert!(
+            handle(&mut app, &ctx, &req).is_none(),
+            "answered by a worker"
+        );
+        let inspect = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(inspect["ok"], true, "{inspect}");
+        let r = rx.recv_timeout(Duration::from_secs(60)).expect("a reply");
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["model_changed"], false, "{r}");
+        assert!(r["result"]["revision"].is_u64(), "{r}");
+        assert!(std::fs::read(&path).unwrap().starts_with(b"%PDF-"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the window can check, it refuses at once, without a worker.
+    #[test]
+    fn a_builder_request_is_refused_at_once() {
+        let (mut app, ctx) = demo();
         let (tx, _rx) = mpsc::channel();
-        handle(app, ctx, &ControlRequest::new(method, params, tx))
+        let req = ControlRequest::new("build.templates", json!({ "path": "x.png" }), tx);
+        let r = handle(&mut app, &ctx, &req).expect("answered at once");
+        assert_eq!(r["ok"], false, "{r}");
+        let (tx, _rx) = mpsc::channel();
+        let req = ControlRequest::new("build.templates", json!({ "stations": 1 }), tx);
+        assert!(handle(&mut app, &ctx, &req).is_some());
+    }
+
+    /// A reply computed on an older model says so.
+    #[test]
+    fn a_reply_says_when_the_model_changed_while_it_was_computed() {
+        let watch = Arc::new(AtomicU64::new(5));
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let (tx, rx) = mpsc::channel();
+        reply_later(tx, 5, watch.clone(), move || {
+            gate_rx.recv().unwrap();
+            Ok(json!({ "answer": 42 }))
+        });
+        watch.store(6, Ordering::SeqCst);
+        gate_tx.send(()).unwrap();
+        let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["answer"], 42);
+        assert_eq!(r["result"]["revision"], 5);
+        assert_eq!(r["result"]["model_changed"], true);
+
+        let (tx, rx) = mpsc::channel();
+        reply_later(tx, 6, watch.clone(), || Err("no".into()));
+        let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            (r["ok"].clone(), r["error"].clone()),
+            (json!(false), json!("no"))
+        );
+        let (tx, rx) = mpsc::channel();
+        reply_later(tx, 6, watch, || panic!("boom"));
+        let r = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(r["error"].as_str().unwrap().contains("boom"), "{r}");
+    }
+
+    /// The window's revision watch follows every edit.
+    #[test]
+    fn the_revision_watch_follows_edits() {
+        let (mut app, ctx) = demo();
+        let watch = app.revision_watch();
+        let before = watch.load(Ordering::SeqCst);
+        let r = call(&mut app, &ctx, "model.transform", json!({ "mirror": "x" }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(watch.load(Ordering::SeqCst) > before);
+    }
+
+    #[test]
+    fn builder_requests_wait_longer_for_their_reply() {
+        assert_eq!(reply_timeout("build.templates"), Duration::from_secs(300));
+        assert_eq!(reply_timeout("build.panels"), Duration::from_secs(300));
+        assert_eq!(reply_timeout("ui.inspect"), REPLY_TIMEOUT);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -2951,6 +3268,184 @@ mod tests {
             "seacraft-control-{name}-{}.bin",
             std::process::id()
         ))
+    }
+
+    /// The test pram (a hard-chine fixture, not an example hull) at level 2, its side bowed
+    /// out by `bow_m`; `name` keeps each test's file its own.
+    fn pram(name: &str, bow_m: f64) -> (App, egui::Context) {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-control-pram-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.fef"));
+        let surface = seacraft_core::panels::pram_fixture(0.0, bow_m);
+        std::fs::write(&path, seacraft_core::fef::write(&surface)).unwrap();
+        let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+        app.set_subdivision_level(2);
+        (app, egui::Context::default())
+    }
+
+    /// A write root of its own for one test.
+    fn root(app: &mut App, name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "seacraft-panels-root-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        dir
+    }
+
+    #[test]
+    fn build_panels_writes_inside_the_write_root_only() {
+        let (mut app, ctx) = pram("writes", 0.0);
+        let dir = root(&mut app, "writes");
+        let inside = dir.join("p.pdf");
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.panels",
+            json!({ "path": inside.to_string_lossy() }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        assert_eq!(v["written"], true, "{v}");
+        assert_eq!(v["format"], "pdf");
+        assert_eq!(v["panels"].as_array().unwrap().len(), 2, "{v}");
+        assert!(v["offsets_pages"].as_u64().unwrap() >= 1, "{v}");
+        assert!(v["pages"].as_u64().unwrap() > v["offsets_pages"].as_u64().unwrap());
+        assert_eq!(v["all_lie_flat"], true);
+        assert_eq!(v["model_changed"], false);
+        assert!(std::fs::read(&inside).unwrap().starts_with(b"%PDF-"));
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.panels",
+            json!({ "path": inside.to_string_lossy(), "offsets_pages": false }),
+        );
+        assert_eq!(r["result"]["offsets_pages"], 0, "{r}");
+
+        let outside = dir.join("../seacraft-panels-outside.pdf");
+        let panels = call(
+            &mut app,
+            &ctx,
+            "build.panels",
+            json!({ "path": outside.to_string_lossy() }),
+        );
+        let export = call(
+            &mut app,
+            &ctx,
+            "model.export",
+            json!({ "path": outside.to_string_lossy(), "format": "offsets_pdf" }),
+        );
+        assert_eq!(panels["ok"], false, "{panels}");
+        assert_eq!(panels["error"], export["error"]);
+        assert!(!outside.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_panels_without_path_measures_only() {
+        let (mut app, ctx) = pram("measures", 0.0);
+        let dir = root(&mut app, "measures");
+        let r = call(&mut app, &ctx, "build.panels", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        for key in [
+            "panels",
+            "refused",
+            "mismatches",
+            "total_sheets",
+            "plywood",
+            "all_lie_flat",
+        ] {
+            assert!(v.get(key).is_some(), "{key}: {v}");
+        }
+        assert!(v.get("written").is_none() && v.get("path").is_none(), "{v}");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "nothing written"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_panels_refuses_bad_choices_at_once_with_their_names() {
+        let (mut app, ctx) = pram("refuses", 0.0);
+        let at_once = |app: &mut App, params: Value| {
+            let (tx, _rx) = mpsc::channel();
+            handle(app, &ctx, &ControlRequest::new("build.panels", params, tx))
+                .expect("answered at once")
+        };
+        let r = at_once(&mut app, json!({ "stock_mm": "2440" }));
+        assert_eq!(
+            r["error"],
+            "`stock_mm` takes LENGTHxWIDTH in millimetres, such as 2440x1220, not `2440`"
+        );
+        let r = at_once(&mut app, json!({ "max_stretch_pct": 0 }));
+        assert_eq!(
+            r["error"],
+            "`max_stretch_pct` must be more than zero, not 0"
+        );
+        let r = at_once(
+            &mut app,
+            json!({ "path": "p.svg", "paper": "a3", "single_page": true }),
+        );
+        assert_eq!(
+            r["error"],
+            "paper, single_page apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
+        );
+        // The PDF-only refusal comes before the page is checked: a margin too wide for the
+        // paper is no reason to refuse an SVG.
+        let r = at_once(&mut app, json!({ "path": "p.svg", "margin_mm": 95 }));
+        assert_eq!(
+            r["error"],
+            "margin_mm apply to PDF only: an SVG or a DXF is one drawing at the scale asked for"
+        );
+        let r = at_once(&mut app, json!({ "margin_mm": 95 }));
+        let err = r["error"].as_str().expect("refused");
+        assert!(err.contains("95 mm margins"), "{err}");
+        assert!(
+            !err.starts_with("`paper`"),
+            "a margin is not the paper: {err}"
+        );
+        let r = at_once(&mut app, json!({ "stations": 5, "spacing": 0.3 }));
+        assert_eq!(r["ok"], false, "{r}");
+        let r = at_once(&mut app, json!({ "layers": "Bottom" }));
+        assert_eq!(r["error"], "`layers` must be an array of layer names");
+    }
+
+    #[test]
+    fn build_panels_does_not_write_a_panel_that_does_not_lie_flat() {
+        let (mut app, ctx) = pram("bowed", 0.08);
+        let dir = root(&mut app, "bowed");
+        let path = dir.join("bowed.pdf");
+        let params = json!({ "path": path.to_string_lossy(), "max_stretch_pct": 0.0001 });
+        let r = call(&mut app, &ctx, "build.panels", params.clone());
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        assert_eq!(v["written"], false, "{v}");
+        assert!(v["reason"].as_str().unwrap().contains("Side"), "{v}");
+        assert_eq!(v["panels"].as_array().unwrap().len(), 2);
+        assert!(!path.exists());
+        let mut allowed = params;
+        allowed["allow_undevelopable"] = json!(true);
+        let r = call(&mut app, &ctx, "build.panels", allowed);
+        assert_eq!(r["result"]["written"], true, "{r}");
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ui_set_opens_builder_panels() {
+        let (mut app, ctx) = pram("ui_set", 0.0);
+        let r = call(&mut app, &ctx, "ui.set", json!({ "panels": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert!(app.show_panels());
     }
 
     #[test]
@@ -4444,11 +4939,12 @@ mod tests {
             let request = rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("the request reached the app");
-            let reply = handle(app, &ctx, &request);
-            request
-                .reply
-                .send(reply)
-                .expect("the app is still listening");
+            if let Some(reply) = handle(app, &ctx, &request) {
+                request
+                    .reply
+                    .send(reply)
+                    .expect("the app is still listening");
+            }
             read_reply(reader)
         };
 
@@ -4569,8 +5065,9 @@ mod tests {
         let req = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("receive request");
-        let res = handle(&mut app, &ctx, &req);
-        req.reply.send(res).unwrap();
+        if let Some(res) = handle(&mut app, &ctx, &req) {
+            req.reply.send(res).unwrap();
+        }
 
         line.clear();
         reader.read_line(&mut line).unwrap();

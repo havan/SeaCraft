@@ -1,6 +1,6 @@
 ---
 name: seacraft-boatbuilding
-description: Use when a builder wants to build a SeaCraft hull: full-size station moulds, profile or transom patterns, a table of offsets to loft from, or the skin thickness to take off the moulds.
+description: Use when a builder wants to build a SeaCraft hull: full-size station moulds, profile or transom patterns, plywood panel patterns for stitch-and-glue, a table of offsets to loft from, or the skin thickness to take off the moulds.
 ---
 
 # SeaCraft boatbuilding
@@ -23,6 +23,15 @@ Read the hull first: `hull_info {}` for extents and `validation.ok` (a leaking n
 4. The demo hull at 1:1 on A4 is 822 pages for 11 moulds. A large hull at full size can pass the 1000-page limit; offer larger `paper`, `single_page`, or a DXF before a smaller `scale`, since a scaled pattern cannot be cut from.
 5. The table of offsets for lofting by hand: `export_offsets_pdf {"path": "/tmp/offsets.pdf", "imperial": true}`.
 
+## Plywood panels
+
+For a hard-chine hull built stitch-and-glue, each panel is laid flat and measured. Measure before writing anything:
+
+1. `export_panels {}` measures the panels of the layers marked developable (or name them: `"layers": ["Bottom", "Side"]`). Each row of `panels` has `lies_flat`, `rms_stretch_pct`, `max_stretch_pct`, `max_seam_drift_mm`, `area_m2` and `sheets_each`. `refused` names panels that could not be laid flat at all and why; `mismatches` gives how far two stitched edges differ at the ticks; `plywood` is the sheet count in words, end to end with no nesting, an upper bound.
+2. A panel does not lie flat when its seam drift is over 2 mm or its RMS stretch over 0.1 % (`max_seam_drift_mm`, `max_stretch_pct`). These limits are the project's provisional judgement, not a published rule; tell the builder so. A round-bilge hull does not lie flat in plywood: that is the right answer, not a fault.
+3. Then write: `export_panels {"path": "/tmp/panels.pdf"}`. The PDF carries each panel's offsets tables after the patterns (`"offsets_pages": false` leaves them out). When a panel does not lie flat, nothing is written: the reply has `"written": false` and the `reason`. Write anyway only when the builder asks, with `"allow_undevelopable": true`, and say which panels fail and by how much; those patterns are headed "Does not lie flat".
+4. The measures are against the modelled surface, with no plywood thickness: not a bending test of real plywood.
+
 ## Read the reply
 
 - `sheets` has a row a pattern: `x`, `half_breadth_m`, `face` and `max_bevel_deg`. `face` says which side of the mould goes on its station line so the mould needs no bevel to clear the skin: `forward` means the hull narrows going forward and the mould stands aft of its line; `aft` the other way; `either` where the hull is parallel. Where parts of a section narrow opposite ways, `face` follows the greater length and the sheet's notes say which face to bevel, and by up to how much, where the rest stands proud; relay that note.
@@ -44,4 +53,5 @@ Read the hull first: `hull_info {}` for extents and `validation.ok` (a leaking n
 - Dropping or summarising away a warning.
 - Changing `scale` to get under the page limit for a pattern the builder will cut from.
 - Exporting before `hull_info` shows `validation.ok`.
+- Calling a panel developable or ready to cut, or writing `allow_undevelopable` patterns without naming the panels that do not lie flat.
 - A strongback level below the sheer: the tool refuses it, because moulds stand on it upside down.

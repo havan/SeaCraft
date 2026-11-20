@@ -624,6 +624,8 @@ pub enum ViewAction {
     Close,
     /// Show another view in the drawer.
     Open(AnalysisView),
+    /// Open File > Builder panels, for patterns of the developable panels.
+    OpenBuilderPanels,
 }
 
 /// The view's panel inputs.
@@ -667,6 +669,16 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
             .clicked()
         {
             action = ViewAction::CopyCsv;
+        }
+        if view == AnalysisView::Plates
+            && ui
+                .button("Export patterns…")
+                .on_hover_text(
+                    "Builder panels: lay each panel flat, measure it and write its pattern",
+                )
+                .clicked()
+        {
+            action = ViewAction::OpenBuilderPanels;
         }
         if p.busy {
             ui.spinner();
