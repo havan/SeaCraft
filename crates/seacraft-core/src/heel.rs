@@ -438,6 +438,42 @@ enum SideSearch {
     None,
 }
 
+/// Initial free-trim upright GM (`n.z * (I_eff / V) + B.z - G.z`) from the closed
+/// waterplane's moments at `u`, returning `None` when the waterplane has no closed loops.
+fn upright_waterplane_gm(hull: &Hull, u: &HeelState) -> Option<f64> {
+    let (v, _) = hull.buoyancy_in(&u.plane);
+    if v <= 1e-12 || u.plane.n.z <= 1e-9 {
+        return None;
+    }
+    let (i_t, i_l, i_tl) = hull.waterplane_inertias(&u.plane)?;
+    if !i_t.is_finite() || i_l <= 1e-12 || !i_tl.is_finite() {
+        return None;
+    }
+    // Free-trim condition delta(B.x) = 0 couples pitch into roll as
+    // delta_theta = -(I_TL / I_L) * delta_alpha, giving effective inertia
+    // I_eff = I_T - I_TL^2 / I_L and lever slope n.z * (I_eff / V) + (B.z - G.z).
+    let i_eff = (i_t - (i_tl * i_tl) / i_l).max(0.0);
+    Some(u.plane.n.z * (i_eff / v) + (u.b.z - u.g.z))
+}
+
+/// Free-trim initial transverse metacentric height at upright (`d(lever)/dφ` in m/rad),
+/// accounting for heel–trim coupling through `I_TL`, with a small-angle finite-difference
+/// fallback when waterplane inertias are unavailable.
+pub fn upright_free_trim_gm(
+    hull: &Hull,
+    mass: &MassCondition,
+    base: &HydroOptions,
+    u: &HeelState,
+) -> Option<f64> {
+    if let Some(gm) = upright_waterplane_gm(hull, u) {
+        return Some(gm);
+    }
+    let hint = u.trim_m.unwrap_or(0.0);
+    let stbd = heel_state(hull, mass, EQUILIBRIUM_TOL_DEG, base, hint)?;
+    let port = heel_state(hull, mass, -EQUILIBRIUM_TOL_DEG, base, hint)?;
+    Some((stbd.lever_m - port.lever_m) / (2.0 * EQUILIBRIUM_TOL_DEG.to_radians()))
+}
+
 /// Whether `u` at 0° is locally stable with trim free (`LCB.x == G.x`), accounting for
 /// heel–trim coupling through the waterplane product of inertia `I_TL`.
 fn upright_locally_stable(
@@ -446,18 +482,8 @@ fn upright_locally_stable(
     base: &HydroOptions,
     u: &HeelState,
 ) -> bool {
-    let (v, _) = hull.buoyancy_in(&u.plane);
-    if v > 1e-12 && u.plane.n.z > 1e-9 {
-        if let Some((i_t, i_l, i_tl)) = hull.waterplane_inertias(&u.plane) {
-            if i_t.is_finite() && i_l > 1e-12 && i_tl.is_finite() {
-                // Free-trim condition delta(B.x) = 0 couples pitch into roll as
-                // delta_theta = -(I_TL / I_L) * delta_alpha, giving effective inertia
-                // I_eff = I_T - I_TL^2 / I_L and lever slope n.z * (I_eff / V) + (B.z - G.z).
-                let i_eff = (i_t - (i_tl * i_tl) / i_l).max(0.0);
-                let slope = u.plane.n.z * (i_eff / v) + (u.b.z - u.g.z);
-                return slope >= 0.0;
-            }
-        }
+    if let Some(gm) = upright_waterplane_gm(hull, u) {
+        return gm >= 0.0;
     }
     let stbd = heel_state(
         hull,
@@ -1191,6 +1217,11 @@ mod tests {
         let mass = MassCondition::bare(&hull, &base, 1.90, Some(5.0)).unwrap();
         let upright = heel_state(&hull, &mass, 0.0, &base, 0.0).unwrap();
         assert!(!upright_locally_stable(&hull, &mass, &base, &upright));
+        let free_gm = upright_free_trim_gm(&hull, &mass, &base, &upright).unwrap();
+        assert!(
+            (free_gm + 1.0 / 15.0).abs() < 1e-4,
+            "free-trim GM {free_gm} vs -0.0667"
+        );
         let eq = equilibrium(&hull, &mass, &base, None);
         assert!(
             !matches!(&eq, Equilibrium::Stable { state } if state.heel_deg.abs() < 1e-3),
@@ -1203,5 +1234,99 @@ mod tests {
             Equilibrium::Stable { state } => assert!(state.heel_deg.abs() < 1e-6),
             other => panic!("expected Stable upright, got {other:?}"),
         }
+    }
+
+    /// Source: analytic. Twin 10 x 2 m pontoons at y = +/-3 (starboard closed deck z = 3,
+    /// port open boundary z = 0.5 + 0.1x) at waterplane z = 1.0 m with G = (B.x, B.y, 1.0):
+    /// V = 37.5 m^3, KB = 43/90 m, I_eff = 2270/11 m^4, giving free-trim GM = +4.9808 m
+    /// rather than omitting the open pontoon (-0.344 m).
+    #[test]
+    fn open_and_closed_twin_pontoons_remain_locally_stable_upright() {
+        let mut s = crate::Surface::new();
+        s.layers = vec![crate::Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Default::default()
+        }];
+        s.settings = crate::ProjectSettings {
+            name: "twin-pontoons".into(),
+            length: 10.0,
+            beam: 8.0,
+            draft: 1.0,
+            water_density: 1000.0,
+            appendage_coefficient: 1.0,
+            main_particulars_set: true,
+            ..Default::default()
+        };
+        let add_pontoon =
+            |s: &mut crate::Surface, y0: f64, y1: f64, z_top: fn(f64) -> f64, closed: bool| {
+                let base = s.points.len();
+                for (x, y, z) in [
+                    (0.0, y0, 0.0),
+                    (10.0, y0, 0.0),
+                    (10.0, y1, 0.0),
+                    (0.0, y1, 0.0),
+                    (0.0, y0, z_top(0.0)),
+                    (10.0, y0, z_top(10.0)),
+                    (10.0, y1, z_top(10.0)),
+                    (0.0, y1, z_top(0.0)),
+                ] {
+                    s.add_point(Vec3::new(x, y, z));
+                }
+                let faces = [
+                    [0, 3, 2, 1],
+                    [4, 5, 6, 7],
+                    [0, 1, 5, 4],
+                    [1, 2, 6, 5],
+                    [2, 3, 7, 6],
+                    [3, 0, 4, 7],
+                ];
+                for (idx, f) in faces.into_iter().enumerate() {
+                    if !closed && idx == 1 {
+                        continue;
+                    }
+                    s.add_face(f.into_iter().map(|k| base + k).collect(), 0);
+                }
+            };
+        add_pontoon(&mut s, 2.0, 4.0, |_| 3.0, true);
+        add_pontoon(&mut s, -4.0, -2.0, |x| 0.5 + 0.1 * x, false);
+        s.initialize_trace();
+        s.edges.iter_mut().for_each(|e| e.crease = true);
+        s.points
+            .iter_mut()
+            .for_each(|p| p.kind = crate::mesh::VertexKind::Corner);
+
+        let sub = level1();
+        let base = HydroOptions::from_surface(&s, sub);
+        let hull = Hull::new(&s, sub);
+        let wp = crate::math::Plane::new(Vec3::new(0.0, 0.0, 1.0), -1.0);
+        let (v, b) = hull.buoyancy_in(&wp);
+        let mass = MassCondition {
+            displacement_t: v * base.water_density * base.appendage_coefficient / 1000.0,
+            g: Vec3::new(b.x, b.y, 1.0),
+            kg_estimate: false,
+        };
+        let u = HeelState {
+            heel_deg: 0.0,
+            b,
+            g: mass.g,
+            lever_m: 0.0,
+            gz_m: b.y,
+            heeling_arm_m: mass.g.y,
+            draft: Some(1.0),
+            trim_m: Some(0.0),
+            displacement_t: mass.displacement_t,
+            lid_submerged: hull.lid_submerged(&wp),
+            plane: wp,
+        };
+        assert!(upright_locally_stable(&hull, &mass, &base, &u));
+        let gm = upright_free_trim_gm(&hull, &mass, &base, &u).unwrap();
+        let expected = (2270.0 / 11.0) / 37.5 + (43.0 / 90.0 - 1.0);
+        assert!(
+            (gm - expected).abs() < 1e-3,
+            "free-trim GM {gm} vs {expected}"
+        );
     }
 }

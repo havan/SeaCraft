@@ -1221,12 +1221,12 @@ fn gz_plot_sits_directly_below_the_splitter_without_a_gap() {
     let toggle_gap = toggle.min.y - d.splitter.max.y;
     let plot_gap = plot_title.min.y - d.splitter.max.y;
     assert!(
-        toggle_gap < 30.0,
-        "toggle pushed {toggle_gap} pt below splitter"
+        (-2.0..30.0).contains(&toggle_gap),
+        "toggle out of place: {toggle_gap} pt from splitter"
     );
     assert!(
-        plot_gap < 50.0,
-        "GZ plot pushed {plot_gap} pt below splitter"
+        (0.0..50.0).contains(&plot_gap),
+        "GZ plot out of place: {plot_gap} pt from splitter"
     );
 }
 
@@ -1337,4 +1337,153 @@ fn plot_toggle_switches_between_gz_and_moment() {
         "{:?}",
         texts(&after)
     );
+}
+
+#[test]
+fn sheared_box_readout_displays_negative_free_trim_gm() {
+    use seacraft_core::{Layer, ProjectSettings, Surface};
+    let (l, b, d, t) = (10.0, 4.0, 3.0, 1.0);
+    let mut s = Surface::new();
+    s.layers = vec![Layer {
+        name: "Hull".into(),
+        symmetric: false,
+        use_in_hydrostatics: true,
+        visible: true,
+        ..Default::default()
+    }];
+    s.settings = ProjectSettings {
+        name: "sheared-box".into(),
+        length: l,
+        beam: b,
+        draft: t,
+        water_density: 1000.0,
+        appendage_coefficient: 1.0,
+        main_particulars_set: true,
+        ..Default::default()
+    };
+    for (x, y, z) in [
+        (0.0, 0.0, 0.0),
+        (l, 0.0, 0.0),
+        (l, b, 0.0),
+        (0.0, b, 0.0),
+        (0.0, 0.0, d),
+        (l, 0.0, d),
+        (l, b, d),
+        (0.0, b, d),
+    ] {
+        let y_sheared = (y - b * 0.5) + 0.4 * (x - 5.0);
+        s.add_point(Vec3::new(x, y_sheared, z));
+    }
+    for f in [
+        vec![0, 3, 2, 1],
+        vec![4, 5, 6, 7],
+        vec![0, 1, 5, 4],
+        vec![1, 2, 6, 5],
+        vec![2, 3, 7, 6],
+        vec![3, 0, 4, 7],
+    ] {
+        s.add_face(f, 0);
+    }
+    s.initialize_trace();
+    s.edges.iter_mut().for_each(|e| e.crease = true);
+    s.points
+        .iter_mut()
+        .for_each(|p| p.kind = seacraft_core::mesh::VertexKind::Corner);
+
+    let dir = std::env::temp_dir().join(format!("seacraft-heel-sheared-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sheared.fef");
+    std::fs::write(&path, seacraft_core::fef::write(&s)).unwrap();
+
+    let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+    app.set_subdivision_level(1);
+    app.set_kg(1.90);
+    app.set_free_trim(true, Some(5.0));
+    app.set_heel_view_open(true);
+    app.compute_heel_blocking().unwrap();
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    let out = frame(&ctx, &mut app, Vec::new());
+
+    let gm = app
+        .heel_current()
+        .expect("sheared-box condition computed")
+        .upright_gm
+        .expect("upright GM computed");
+    assert!(gm < -0.05, "expected negative free-trim GM, got {gm}");
+    let drawn_texts = texts(&out);
+    assert!(
+        drawn_texts
+            .windows(3)
+            .any(|w| w == ["Upright GM", "-0.067", "m"]),
+        "Heel readout must show free-trim Upright GM -0.067 m: {drawn_texts:?}"
+    );
+    assert!(
+        !drawn_texts
+            .windows(2)
+            .any(|w| w[0] == "Upright GM" && w[1].contains("1.267")),
+        "fixed-trim +1.267 m GM must not appear as Upright GM: {drawn_texts:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn manual_recalculate_survives_automatic_dock_lcg_install() {
+    let (ctx, mut app, _) = shown_with(Vec::new());
+    let mut state = app.heel_state().clone();
+    state.auto_recalculate = false;
+    app.set_heel_state(state);
+
+    let mut clock = Clock(10.0);
+    clock.frame(&ctx, &mut app, Vec::new());
+
+    // Clear LCG so the pending hydro job will install it automatically once done.
+    app.set_free_trim(true, None);
+    assert_eq!(app.lcg(), None);
+
+    // Pressing F5 immediately before hydro completes must carry the manual Heel
+    // request across the automatic `None -> Some(lcb.x)` LCG install.
+    app.recompute_stale();
+    for _ in 0..300 {
+        clock.frame(&ctx, &mut app, Vec::new());
+        if app.lcg().is_some() && app.heel_current().is_some() && !app.heel_busy() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(app.lcg().is_some(), "hydrostatics installed automatic LCG");
+    assert!(
+        app.heel_current().is_some(),
+        "manual F5 sweep completed after automatic LCG install without a second F5"
+    );
+    assert!(!app.heel_stale());
+
+    // A later user edit (adding a trial weight while manual request is pending) still
+    // cancels the pending manual request even after hydro installs its LCG.
+    app.set_free_trim(true, None);
+    app.recompute_stale();
+    let mut edited = app.heel_state().clone();
+    edited.weights.push(weight(0.5, 4.0, 0.8, 1.5));
+    app.set_heel_state(edited);
+
+    std::thread::sleep(std::time::Duration::from_millis(160));
+    for _ in 0..300 {
+        clock.frame(&ctx, &mut app, Vec::new());
+        if app.lcg().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    for _ in 0..5 {
+        clock.frame(&ctx, &mut app, Vec::new());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.lcg().is_some());
+    assert!(!app.heel_sweep_busy());
+    assert!(
+        app.heel_current().is_none(),
+        "user edit must cancel the pending manual request"
+    );
+    assert!(app.heel_stale());
 }

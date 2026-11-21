@@ -372,14 +372,16 @@ pub fn moment_arc(rect: egui::Rect, hull_rect: egui::Rect, f: Forces) -> Option<
     let base_r = 0.5 * hull_rect.width().max(hull_rect.height()) + 14.0;
     let safe = rect.shrink2(egui::vec2(18.0, 26.0));
     let max_x = if on_starboard {
-        (safe.right() - center.x).max(20.0)
+        safe.right() - center.x
     } else {
-        (center.x - safe.left()).max(20.0)
+        center.x - safe.left()
     };
-    let max_y = (center.y - safe.top())
-        .min(safe.bottom() - center.y)
-        .max(20.0);
-    let radius = base_r.clamp(28.0, max_x.min(max_y));
+    let max_y = (center.y - safe.top()).min(safe.bottom() - center.y);
+    let max_r = max_x.min(max_y);
+    if !max_r.is_finite() || max_r < 28.0 {
+        return None;
+    }
+    let radius = base_r.clamp(28.0, max_r);
     Some(MomentArc {
         center,
         radius,
@@ -914,5 +916,32 @@ mod tests {
             ..cap_stbd
         };
         assert!(moment_arc(rect, hull, balanced).is_none());
+    }
+
+    #[test]
+    fn moment_arc_is_omitted_without_panicking_when_room_is_under_28_pt() {
+        let f = Forces {
+            b: [0.0, -0.2],
+            g: [0.1, 0.5],
+            heel_deg: 25.0,
+            lever_m: -0.15,
+            displacement_t: 10.0,
+        };
+        // 120-pt-high body plan with projected hull near the bottom: safe.bottom() is top + 94,
+        // leaving only 8 pt below center.
+        let shallow = egui::Rect::from_min_size(egui::pos2(0.0, 10.0), egui::vec2(300.0, 120.0));
+        let low_hull =
+            egui::Rect::from_center_size(egui::pos2(150.0, 96.0), egui::vec2(20.0, 16.0));
+        assert!(moment_arc(shallow, low_hull, f).is_none());
+
+        // Degenerate viewport smaller than the safe inset itself must also return None.
+        let tiny = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(30.0, 40.0));
+        assert!(moment_arc(tiny, tiny, f).is_none());
+
+        // Exactly 28 pt of vertical clearance draws the minimum 28-pt arc cleanly.
+        let exact = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(300.0, 108.0));
+        let exact_hull = egui::Rect::from_center_size(exact.center(), egui::vec2(12.0, 12.0));
+        let arc = moment_arc(exact, exact_hull, f).expect("28 pt room keeps the arc");
+        assert!((arc.radius - 28.0).abs() < 1e-4, "radius {}", arc.radius);
     }
 }

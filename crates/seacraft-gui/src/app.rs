@@ -5369,6 +5369,30 @@ impl App {
             .start(key, move || crate::heel_view::compute_exact(&out, heel));
     }
 
+    /// Whether the dock Heel sweep is waiting for the current hydrostatics job to
+    /// install an automatic LCG before its sweep key settles.
+    fn heel_awaiting_auto_lcg(&self) -> bool {
+        matches!(self.heel.start, crate::heel_view::HeelStart::Dock)
+            && self.hydro.free_trim
+            && self.hydro.lcg.is_none()
+            && (self.hydro.track.due(self.hydro_key()) || self.hydro.track.busy())
+    }
+
+    /// Install an automatic dock LCG derived from a finished hydrostatics or curves
+    /// job, carrying a pending manual Heel request across `None -> Some(lcg)`.
+    fn install_auto_dock_lcg(&mut self, lcg: Option<f64>) {
+        let Some(lcg) = lcg else {
+            return;
+        };
+        let prev = (self.heel_hull_key(), self.heel_key());
+        self.hydro.lcg = Some(lcg);
+        if self.heel_recalc_for == Some(prev) {
+            let next = (self.heel_hull_key(), self.heel_key());
+            self.heel_recalc_for = Some(next);
+            self.heel_sweep_track.retry(next.1);
+        }
+    }
+
     /// Trigger an immediate recompute of the Heel view for the current inputs (used by the
     /// Recalculate button and F5, including when Auto-recalculate is disabled).
     fn request_heel_recalculate(&mut self) {
@@ -5380,10 +5404,15 @@ impl App {
         self.heel_exact_track.retry(exact);
         self.heel_recalc_for = Some((hull_key, key));
         if self.drag.is_none() && self.surface.is_some() {
+            let awaiting_lcg = self.heel_awaiting_auto_lcg();
+            let hydro_key = self.hydro_key();
+            if awaiting_lcg && self.hydro.track.ready(hydro_key) {
+                self.start_hydro_job();
+            }
             if self.heel_hull_track.ready(hull_key) {
                 self.start_heel_hull();
             }
-            if self.heel_sweep_track.ready(key) {
+            if !awaiting_lcg && self.heel_sweep_track.ready(key) {
                 self.start_heel_sweep();
             }
         }
@@ -5683,6 +5712,7 @@ impl App {
                 }
                 let manual = self.heel_recalc_for == Some((hull_key, key));
                 let allow = self.heel.auto_recalculate || manual;
+                let awaiting_lcg = self.heel_awaiting_auto_lcg();
                 if allow && self.heel_hull_track.due(hull_key) {
                     if (manual || hydro_quiet) && self.heel_hull_track.ready(hull_key) {
                         self.start_heel_hull();
@@ -5691,7 +5721,9 @@ impl App {
                     }
                 }
                 if allow && self.heel_sweep_track.due(key) {
-                    if (manual || hydro_quiet) && self.heel_sweep_track.ready(key) {
+                    if awaiting_lcg {
+                        waiting = true;
+                    } else if (manual || hydro_quiet) && self.heel_sweep_track.ready(key) {
                         self.start_heel_sweep();
                     } else {
                         waiting = true;
@@ -5713,6 +5745,7 @@ impl App {
                     }
                 }
                 if manual
+                    && !awaiting_lcg
                     && !self.heel_hull_track.due(hull_key)
                     && !self.heel_hull_track.busy()
                     && !self.heel_sweep_track.due(key)
@@ -5840,7 +5873,7 @@ impl App {
         if let Some(trim) = out.trim {
             self.hydro.options.trim = trim;
             if self.hydro.lcg.is_none() {
-                self.hydro.lcg = Some(out.result.lcb.x);
+                self.install_auto_dock_lcg(Some(out.result.lcb.x));
             }
         }
         self.hydro.result = Some(out.result);
@@ -5896,7 +5929,7 @@ impl App {
             self.hydro.track.stamp(key);
         }
         if self.hydro.free_trim && self.hydro.lcg.is_none() {
-            self.hydro.lcg = out.lcg;
+            self.install_auto_dock_lcg(out.lcg);
         }
         let free = self.hydro.free_trim;
         self.hydro.curves = out.curves;

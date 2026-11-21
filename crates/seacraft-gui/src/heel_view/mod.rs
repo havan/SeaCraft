@@ -195,7 +195,8 @@ pub struct HeelSweepOut {
     /// [`heel::heel_state`] on [`heel::sweep_heels`], in order (`None` where it does not float).
     pub sweep: Vec<Option<HeelState>>,
     pub equilibrium: Equilibrium,
-    /// The upright GM of the condition (KM at its upright waterline − KG), when it floats upright.
+    /// The free-trim upright GM (`d(lever)/dφ` at 0° including heel–trim coupling through
+    /// `I_TL`), when it floats upright.
     pub upright_gm: Option<f64>,
     /// Why the start is doubtful (a loading condition not in equilibrium).
     pub warnings: Vec<String>,
@@ -424,14 +425,7 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
         .iter()
         .flatten()
         .find(|s| s.heel_deg == 0.0)
-        .and_then(|s| {
-            let (draft, trim) = (s.draft?, s.trim_m?);
-            let mut o = opts.clone();
-            o.draft = draft;
-            o.trim = trim;
-            o.heel_deg = 0.0;
-            Some(hull.hydrostatics(&o).km_transverse - mass.kg(hull.keel))
-        });
+        .and_then(|s| heel::upright_free_trim_gm(&hull, &mass, &opts, s));
     Ok(HeelSweepOut {
         start,
         mass,
@@ -776,7 +770,7 @@ pub fn readout_rows(s: &HeelState, out: &HeelSweepOut) -> (Vec<ReadoutRow>, Vec<
                 theme::TEXT_PRIMARY
             },
             strong: gm < 0.0,
-            hint: "Initial transverse metacentric height at 0° heel (negative means upright is unstable)",
+            hint: "Free-trim initial transverse metacentric height at 0° heel, including heel–trim coupling (negative means upright is unstable)",
         });
     }
     (couple, condition)
@@ -2503,5 +2497,85 @@ mod tests {
         assert!(couple_ok.iter().any(|r| r.name == "Righting moment"));
         assert!(!valid_trial_mass(f64::INFINITY));
         assert!(valid_trial_mass(0.0005));
+    }
+
+    #[test]
+    fn sheared_box_compute_sweep_and_readout_report_negative_free_trim_gm() {
+        use seacraft_core::{Layer, ProjectSettings, Surface};
+        let (l, b, d, t) = (10.0, 4.0, 3.0, 1.0);
+        let mut s = Surface::new();
+        s.layers = vec![Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Layer::default()
+        }];
+        s.settings = ProjectSettings {
+            name: "sheared-box".into(),
+            length: l,
+            beam: b,
+            draft: t,
+            water_density: 1000.0,
+            appendage_coefficient: 1.0,
+            main_particulars_set: true,
+            ..ProjectSettings::default()
+        };
+        for (x, y, z) in [
+            (0.0, 0.0, 0.0),
+            (l, 0.0, 0.0),
+            (l, b, 0.0),
+            (0.0, b, 0.0),
+            (0.0, 0.0, d),
+            (l, 0.0, d),
+            (l, b, d),
+            (0.0, b, d),
+        ] {
+            let y_sheared = (y - b * 0.5) + 0.4 * (x - 5.0);
+            s.add_point(Vec3::new(x, y_sheared, z));
+        }
+        for f in [
+            vec![0, 3, 2, 1],
+            vec![4, 5, 6, 7],
+            vec![0, 1, 5, 4],
+            vec![1, 2, 6, 5],
+            vec![2, 3, 7, 6],
+            vec![3, 0, 4, 7],
+        ] {
+            s.add_face(f, 0);
+        }
+        s.initialize_trace();
+        s.edges.iter_mut().for_each(|e| e.crease = true);
+        s.points
+            .iter_mut()
+            .for_each(|p| p.kind = seacraft_core::mesh::VertexKind::Corner);
+        let sub = SubdivisionOptions {
+            level: 1,
+            mode: Default::default(),
+        };
+        let opts = HydroOptions::from_surface(&s, sub);
+        let out = compute_sweep(SweepInput {
+            surface: s,
+            hull: None,
+            subdivision: sub,
+            opts,
+            start: StartInput::Dock {
+                kg: 1.90,
+                kg_estimate: false,
+                lcg: Some(5.0),
+            },
+            weights: Vec::new(),
+        })
+        .unwrap();
+        let gm = out.upright_gm.expect("upright GM is computed");
+        assert!((gm + 1.0 / 15.0).abs() < 1e-3, "got {gm}");
+        let u = out.upright().unwrap();
+        let (_, cond) = readout_rows(u, &out);
+        let row = cond.iter().find(|r| r.name == "Upright GM").unwrap();
+        assert_eq!(row.value, "-0.067");
+        assert_eq!(row.colour, theme::FAIL);
+        assert!(row.strong);
+        assert!(row.hint.contains("Free-trim"), "{}", row.hint);
+        assert!(readout(u, &out, false).contains("upright GM -0.067 m"));
     }
 }
