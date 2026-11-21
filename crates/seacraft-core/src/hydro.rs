@@ -959,6 +959,24 @@ impl Hull {
         (volume, b)
     }
 
+    /// Central second moments `(I_T, I_L, I_TL)` of the closed waterplane cut by `wp`, in the
+    /// plane's `(u, v)` basis. `None` when the waterline has no closed loop.
+    pub(crate) fn waterplane_inertias(&self, wp: &Plane) -> Option<(f64, f64, f64)> {
+        let segs = plane_segments(&self.verts, &self.tris, wp);
+        let scale = (self.model_max.x - self.model_min.x)
+            .max(self.model_max.y - self.model_min.y)
+            .max(1.0);
+        let loops = chain_loops(&segs, scale * 1e-7);
+        let m = loop_moments(&loops, wp)?;
+        let s = m.area.signum();
+        let cx = m.mx / m.area;
+        let cy = m.my / m.area;
+        let i_t = s * (m.ix - cy * cy * m.area);
+        let i_l = s * (m.iy - cx * cx * m.area);
+        let i_tl = s * (m.ixy - cx * cy * m.area);
+        Some((i_t, i_l, i_tl))
+    }
+
     /// Lowest and highest `n · p` over the refined hull: the waterplane
     /// offsets ([`waterplane_at_offset`]) at which it is dry and fully
     /// submerged.

@@ -3256,7 +3256,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 json!({
                     "kg": number("KG above the keel for the bare hull (default: the server's)"),
                     "draft": number("Draft the bare hull floats at before the weights (default: the model's)"),
-                    "lcg": number("LCG of the bare hull in model x (default: the upright LCB)"),
+                    "lcg": number("LCG of the bare hull in model x (default: the dock's LCG when connected with free trim enabled, else the upright LCB)"),
                     "condition": string("Start from this loading condition of the project instead of the bare hull"),
                     "weights": {"type": "array", "description": "Trial weights",
                         "items": {"type": "object", "properties": {

@@ -438,23 +438,25 @@ enum SideSearch {
     None,
 }
 
-/// Whether `u` at 0° is locally stable (upright GM >= 0 at its solved waterline).
+/// Whether `u` at 0° is locally stable with trim free (`LCB.x == G.x`), accounting for
+/// heel–trim coupling through the waterplane product of inertia `I_TL`.
 fn upright_locally_stable(
     hull: &Hull,
     mass: &MassCondition,
     base: &HydroOptions,
     u: &HeelState,
 ) -> bool {
-    if let (Some(draft), Some(trim)) = (u.draft, u.trim_m) {
-        let mut o = base.clone();
-        o.draft = draft;
-        o.trim = trim;
-        o.heel_deg = 0.0;
-        o.appendage_coefficient = 1.0;
-        o.stations = 0;
-        let h = hull.hydrostatics(&o);
-        if h.waterplane_area_m2 > 0.0 && h.km_transverse.is_finite() {
-            return h.km_transverse - mass.kg(hull.keel) >= 0.0;
+    let (v, _) = hull.buoyancy_in(&u.plane);
+    if v > 1e-12 && u.plane.n.z > 1e-9 {
+        if let Some((i_t, i_l, i_tl)) = hull.waterplane_inertias(&u.plane) {
+            if i_t.is_finite() && i_l > 1e-12 && i_tl.is_finite() {
+                // Free-trim condition delta(B.x) = 0 couples pitch into roll as
+                // delta_theta = -(I_TL / I_L) * delta_alpha, giving effective inertia
+                // I_eff = I_T - I_TL^2 / I_L and lever slope n.z * (I_eff / V) + (B.z - G.z).
+                let i_eff = (i_t - (i_tl * i_tl) / i_l).max(0.0);
+                let slope = u.plane.n.z * (i_eff / v) + (u.b.z - u.g.z);
+                return slope >= 0.0;
+            }
         }
     }
     let stbd = heel_state(
@@ -689,6 +691,11 @@ fn walk_side(
         }
         prev = Some(cur);
         saw_gap = false;
+    }
+    if saw_gap || prev.is_none() {
+        return SideSearch::Unresolved(
+            "no free-trim waterline across the remaining heel range".into(),
+        );
     }
     SideSearch::None
 }
@@ -1098,10 +1105,21 @@ mod tests {
         let full = heel_sweep(&hull, &mass, &sweep_heels(), &base);
         // Drop samples from +2° to +30° so the crossing near 12° spans an unsolved gap.
         let gapped: Vec<Option<HeelState>> = full
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|o| o.filter(|s| !(2.0..=30.0).contains(&s.heel_deg)))
             .collect();
         let eq = equilibrium(&hull, &mass, &base, Some(&gapped));
+        assert!(matches!(eq, Equilibrium::Unresolved { .. }), "got {eq:?}");
+
+        // Keep samples through +2° (where the starboard lever is still negative) and replace
+        // +4° through +90° with None: losing the rest of the search side must return Unresolved,
+        // never Capsizes.
+        let truncated: Vec<Option<HeelState>> = full
+            .into_iter()
+            .map(|o| o.filter(|s| s.heel_deg <= 2.0))
+            .collect();
+        let eq = equilibrium(&hull, &mass, &base, Some(&truncated));
         assert!(matches!(eq, Equilibrium::Unresolved { .. }), "got {eq:?}");
 
         // Force refine() to fail its midpoint solve by overloading mass on a synthetic bracket.
@@ -1110,5 +1128,80 @@ mod tests {
         let mut heavy = mass;
         heavy.displacement_t = 500.0;
         assert!(refine(&hull, &heavy, &base, &lo, &hi).is_none());
+    }
+
+    /// Source: analytic. A 10 x 4 x 3 m box at 1 m draft sheared in plan by `y += 0.4 * (x - 5)`
+    /// with KG = 1.90 m and LCG = 5.0 m has KB = 0.50 m, I_T = 320/3, I_L = 1000/3, I_TL = 400/3
+    /// and V = 40 m^3, giving fixed-trim GM = +1.267 m but free-trim GM = -0.067 m (unstable
+    /// upright once pitch couples with roll).
+    #[test]
+    fn sheared_box_with_negative_free_trim_gm_is_unstable_upright() {
+        let (l, b, d) = (10.0, 4.0, 3.0);
+        let mut s = crate::Surface::new();
+        s.layers = vec![crate::Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Default::default()
+        }];
+        s.settings = crate::ProjectSettings {
+            name: "sheared-box".into(),
+            length: l,
+            beam: b,
+            draft: 1.0,
+            water_density: 1000.0,
+            appendage_coefficient: 1.0,
+            main_particulars_set: true,
+            ..Default::default()
+        };
+        for (x, y, z) in [
+            (0.0, 0.0, 0.0),
+            (l, 0.0, 0.0),
+            (l, b, 0.0),
+            (0.0, b, 0.0),
+            (0.0, 0.0, d),
+            (l, 0.0, d),
+            (l, b, d),
+            (0.0, b, d),
+        ] {
+            let y_sheared = (y - b * 0.5) + 0.4 * (x - 5.0);
+            s.add_point(Vec3::new(x, y_sheared, z));
+        }
+        for face in [
+            vec![0, 3, 2, 1],
+            vec![4, 5, 6, 7],
+            vec![0, 1, 5, 4],
+            vec![1, 2, 6, 5],
+            vec![2, 3, 7, 6],
+            vec![3, 0, 4, 7],
+        ] {
+            s.add_face(face, 0);
+        }
+        s.initialize_trace();
+        for edge in &mut s.edges {
+            edge.crease = true;
+        }
+        for point in &mut s.points {
+            point.kind = crate::mesh::VertexKind::Corner;
+        }
+        let sub = level1();
+        let base = HydroOptions::from_surface(&s, sub);
+        let hull = Hull::new(&s, sub);
+        let mass = MassCondition::bare(&hull, &base, 1.90, Some(5.0)).unwrap();
+        let upright = heel_state(&hull, &mass, 0.0, &base, 0.0).unwrap();
+        assert!(!upright_locally_stable(&hull, &mass, &base, &upright));
+        let eq = equilibrium(&hull, &mass, &base, None);
+        assert!(
+            !matches!(&eq, Equilibrium::Stable { state } if state.heel_deg.abs() < 1e-3),
+            "sheared box with negative free-trim GM must not be Stable at 0°: {eq:?}"
+        );
+
+        // Unsheared box with positive GM remains Stable upright.
+        let (unsheared, base_u, mass_u) = box_hull(true, 0.0, Some(5.0));
+        match equilibrium(&unsheared, &mass_u, &base_u, None) {
+            Equilibrium::Stable { state } => assert!(state.heel_deg.abs() < 1e-6),
+            other => panic!("expected Stable upright, got {other:?}"),
+        }
     }
 }

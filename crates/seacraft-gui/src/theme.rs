@@ -189,6 +189,19 @@ pub const WEIGHT: Color32 = Color32::from_rgb(0xe0, 0x5c, 0x5c);
 pub const LEVER_RIGHTING: Color32 = Color32::from_rgb(0x5a, 0xd0, 0x6a);
 /// The lever when it heels the hull further: the crease reds, lighter than the weight arrow.
 pub const LEVER_CAPSIZING: Color32 = Color32::from_rgb(0xff, 0x8f, 0x6b);
+/// Dashed roll-over continuation arc when a turning couple is capsizing.
+pub const HEEL_MOMENT_GHOST: Color32 =
+    Color32::from_rgba_unmultiplied_const(0xff, 0x8f, 0x6b, 0x88);
+/// Top and horizon colours of the sky danger wash painted when the hull capsizes.
+pub const HEEL_SKY_CAPSIZE_TOP: Color32 = Color32::from_rgb(0x3a, 0x15, 0x1b);
+pub const HEEL_SKY_CAPSIZE_HORIZON: Color32 = Color32::from_rgb(0x22, 0x12, 0x18);
+/// Backing behind the capsizing warning badge in the Heel view's body plan.
+pub const HEEL_CAPSIZE_BADGE_BG: Color32 =
+    Color32::from_rgba_unmultiplied_const(0x3e, 0x16, 0x1d, 0xe8);
+/// Subtle status-banner fills for the Heel view's equilibrium summary card.
+pub const HEEL_STATUS_OK_BG: Color32 = Color32::from_rgb(0x18, 0x29, 0x22);
+pub const HEEL_STATUS_WARN_BG: Color32 = Color32::from_rgb(0x2c, 0x23, 0x18);
+pub const HEEL_STATUS_FAIL_BG: Color32 = Color32::from_rgb(0x31, 0x19, 0x1e);
 /// The water surface across the heeled drawings.
 pub const WATER_LINE: Color32 = Color32::from_rgb(0x3f, 0xb8, 0xc8);
 /// The water below the surface, faint.

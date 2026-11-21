@@ -216,8 +216,11 @@ fn the_view_draws_the_readout_and_captions() {
         "to starboard",
         "Buoyancy",
         "Weight",
-        "righting lever",
-        "heeling arm",
+        "kN",
+        "Righting lever",
+        "Heeling arm",
+        "moment",
+        "kN·m",
         "projected onto the section",
         "From starboard",
         "not a roll simulation",
@@ -225,6 +228,16 @@ fn the_view_draws_the_readout_and_captions() {
     ] {
         assert!(drawn(&out, part), "`{part}` not drawn: {all:?}");
     }
+    assert!(
+        all.iter()
+            .any(|t| t.starts_with("Weight ") && t.contains(" kN (") && t.contains(" t)")),
+        "Weight pill must show both kN and mass: {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|t| t.starts_with("Buoyancy ") && t.contains(" kN (") && t.contains(" t)")),
+        "Buoyancy pill must show both kN and mass: {all:?}"
+    );
 }
 
 #[test]
@@ -663,7 +676,12 @@ fn the_readout_beside_the_drawings_is_not_cut_off() {
     // A long body-plan caption once widened the drawings' column and pushed the readout, the
     // equilibrium line and the weights table past the drawer's right edge, where they were cut.
     let (_, _, out) = shown_with(Vec::new());
-    for part in ["righting lever", "Settles", "Trial weights"] {
+    for part in [
+        "Righting lever",
+        "Buoyancy / weight",
+        "Settles",
+        "Trial weights",
+    ] {
         let found = texts_clipped(&out, part);
         assert!(!found.is_empty(), "{part:?} was drawn");
         for (rect, clip) in found {
@@ -1129,5 +1147,194 @@ fn stale_result_shows_update_failed_when_current_input_fails() {
         !drawn(&out, "out of date — recomputing"),
         "{:?}",
         texts(&out)
+    );
+}
+
+fn has_colour(out: &egui::FullOutput, want: egui::Color32) -> bool {
+    fn walk(shape: &egui::Shape, want: egui::Color32) -> bool {
+        match shape {
+            egui::Shape::Vec(v) => v.iter().any(|s| walk(s, want)),
+            egui::Shape::Mesh(m) => m.vertices.iter().any(|v| v.color == want),
+            egui::Shape::Rect(r) => r.fill == want || r.stroke.color == want,
+            _ => false,
+        }
+    }
+    out.shapes.iter().any(|c| walk(&c.shape, want))
+}
+
+#[test]
+fn capsizing_condition_paints_red_sky_and_capsize_badge() {
+    // 0.5 t high and far out to starboard: the condition capsizes across the sweep.
+    let (_ctx, _app, cap_out) = shown_with(vec![weight(0.5, 4.3, 2.79, 2.3)]);
+    assert!(
+        has_colour(&cap_out, seacraft_gui::theme::HEEL_SKY_CAPSIZE_TOP),
+        "capsizing view must paint reddish sky backdrop"
+    );
+    assert!(drawn(&cap_out, "⚠ Capsizes"), "{:?}", texts(&cap_out));
+    assert!(drawn(&cap_out, "Capsizing"), "{:?}", texts(&cap_out));
+    assert!(drawn(&cap_out, "kN·m"), "{:?}", texts(&cap_out));
+    assert!(drawn(&cap_out, "kN"), "{:?}", texts(&cap_out));
+
+    // A settled condition must not paint the danger sky, unless held past its vanishing angle.
+    let (ctx, mut app, safe_out) = shown_with(Vec::new());
+    assert!(
+        !has_colour(&safe_out, seacraft_gui::theme::HEEL_SKY_CAPSIZE_TOP),
+        "stable upright hull must not paint reddish sky"
+    );
+    assert!(!drawn(&safe_out, "⚠ Capsizes"));
+
+    let mut state = app.heel_state().clone();
+    state.hold = true;
+    state.heel_deg = 40.0;
+    app.set_heel_state(state);
+    app.compute_heel_blocking().unwrap();
+    frame(&ctx, &mut app, Vec::new());
+    let past_out = frame(&ctx, &mut app, Vec::new());
+    assert!(
+        has_colour(&past_out, seacraft_gui::theme::HEEL_SKY_CAPSIZE_TOP),
+        "holding beyond vanishing angle paints reddish sky"
+    );
+    assert!(
+        drawn(&past_out, "Past vanishing angle — capsizes"),
+        "{:?}",
+        texts(&past_out)
+    );
+    assert!(
+        !drawn(&past_out, "Settles upright"),
+        "must not display a contradicting Settles headline above the capsize card: {:?}",
+        texts(&past_out)
+    );
+    assert!(
+        drawn(&past_out, "Within righting range: settles upright"),
+        "{:?}",
+        texts(&past_out)
+    );
+}
+
+#[test]
+fn gz_plot_sits_directly_below_the_splitter_without_a_gap() {
+    let (_ctx, app, out) = shown_with(Vec::new());
+    let d = app.heel_drawn().unwrap();
+    let plot_title = texts_at(&out, "Righting arm against heel (°), free to trim")
+        .expect("GZ plot title is drawn");
+    let toggle = texts_at(&out, "Moment (kN·m)").expect("plot moment toggle is drawn");
+    let toggle_gap = toggle.min.y - d.splitter.max.y;
+    let plot_gap = plot_title.min.y - d.splitter.max.y;
+    assert!(
+        toggle_gap < 30.0,
+        "toggle pushed {toggle_gap} pt below splitter"
+    );
+    assert!(
+        plot_gap < 50.0,
+        "GZ plot pushed {plot_gap} pt below splitter"
+    );
+}
+
+#[test]
+fn manual_recalculate_waits_for_button_click() {
+    let (ctx, mut app, _) = shown_with(Vec::new());
+    let mut state = app.heel_state().clone();
+    state.auto_recalculate = false;
+    app.set_heel_state(state);
+
+    let mut clock = Clock(10.0);
+    clock.frame(&ctx, &mut app, Vec::new());
+
+    let mut state = app.heel_state().clone();
+    state.weights.push(weight(0.5, 4.0, 0.8, 1.5));
+    app.set_heel_state(state);
+
+    std::thread::sleep(std::time::Duration::from_millis(160));
+    let mut out = clock.frame_out(&ctx, &mut app, Vec::new());
+    for _ in 0..3 {
+        out = clock.frame_out(&ctx, &mut app, Vec::new());
+    }
+    assert!(app.heel_stale(), "result stays stale until Recalculate");
+    assert!(
+        !app.heel_sweep_busy(),
+        "manual mode must not auto-start sweep job"
+    );
+    assert!(app.heel_current().is_none());
+    assert!(
+        drawn(&out, "out of date — click Recalculate"),
+        "{:?}",
+        texts(&out)
+    );
+    let btn = texts_at(&out, "Recalculate").expect("Recalculate button is drawn");
+    clock.click(&ctx, &mut app, btn.center());
+
+    for _ in 0..300 {
+        clock.frame(&ctx, &mut app, Vec::new());
+        if app.heel_current().is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let computed = app.heel_current().expect("Recalculate completed the sweep");
+    assert!(!app.heel_stale());
+    assert!(computed.equilibrium.heel_for_side(0.0).unwrap() > 0.0);
+}
+
+#[test]
+fn non_finite_mass_in_table_is_rejected() {
+    let (ctx, mut app, mut clock) = interactive(vec![weight(1.234, 4.0, 0.0, 1.0)]);
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    let field = texts_at(&out, "1.234").expect("table mass field is drawn");
+    clock.click(&ctx, &mut app, field.center());
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        }],
+    );
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("inf".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    let m = app.heel_state().weights[0].mass_t;
+    assert!(m.is_finite(), "non-finite mass must never be stored: {m}");
+    assert!((m - 1.234).abs() < 1e-12, "mass stayed unchanged: {m}");
+
+    // Confirm the same click target actually opens the mass DragValue for valid edits.
+    let out = clock.frame_out(&ctx, &mut app, Vec::new());
+    let field = texts_at(&out, "1.234").expect("mass field still drawn");
+    clock.click(&ctx, &mut app, field.center());
+    clock.frame(
+        &ctx,
+        &mut app,
+        vec![egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL,
+        }],
+    );
+    clock.frame(&ctx, &mut app, vec![egui::Event::Text("2.5".into())]);
+    clock.frame(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+    let m = app.heel_state().weights[0].mass_t;
+    assert!((m - 2.5).abs() < 1e-12, "valid mass edit applied: {m}");
+}
+
+#[test]
+fn plot_toggle_switches_between_gz_and_moment() {
+    let (ctx, mut app, out) = shown_with(vec![weight(0.5, 4.0, 0.8, 1.5)]);
+    assert!(
+        drawn(&out, "Righting arm against heel"),
+        "{:?}",
+        texts(&out)
+    );
+    let mut clock = Clock(10.0);
+    let toggle = texts_at(&out, "Moment (kN·m)").expect("plot moment toggle is drawn");
+    clock.click(&ctx, &mut app, toggle.center());
+    assert!(app.heel_state().plot_moment);
+    let after = clock.frame_out(&ctx, &mut app, Vec::new());
+    assert!(
+        drawn(&after, "Righting moment against heel"),
+        "{:?}",
+        texts(&after)
     );
 }

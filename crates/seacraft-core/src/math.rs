@@ -235,6 +235,8 @@ pub struct PolygonMoments {
     pub ix: f64,
     /// `integral x^2 dA`
     pub iy: f64,
+    /// `integral x y dA`
+    pub ixy: f64,
 }
 
 impl PolygonMoments {
@@ -253,12 +255,14 @@ impl PolygonMoments {
             m.my += (y1 + y2) * cross;
             m.ix += (y1 * y1 + y1 * y2 + y2 * y2) * cross;
             m.iy += (x1 * x1 + x1 * x2 + x2 * x2) * cross;
+            m.ixy += (x1 * y2 + 2.0 * x1 * y1 + 2.0 * x2 * y2 + x2 * y1) * cross;
         }
         m.area *= 0.5;
         m.mx /= 6.0;
         m.my /= 6.0;
         m.ix /= 12.0;
         m.iy /= 12.0;
+        m.ixy /= 24.0;
         m
     }
 
@@ -268,6 +272,7 @@ impl PolygonMoments {
         self.my += other.my;
         self.ix += other.ix;
         self.iy += other.iy;
+        self.ixy += other.ixy;
     }
 
     /// Every moment multiplied by `k` (`-1.0` reverses the orientation).
@@ -278,6 +283,7 @@ impl PolygonMoments {
             my: self.my * k,
             ix: self.ix * k,
             iy: self.iy * k,
+            ixy: self.ixy * k,
         }
     }
 }
@@ -400,5 +406,15 @@ mod tests {
         let b = Vec3::new(1.0, 0.0, 0.0);
         let c = Vec3::new(0.0, 2.0, 0.0);
         assert!((polygon_area3(&[a, b, c]) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn polygon_product_moment_matches_analytic_parallelogram() {
+        // Source: analytic integral over unit square [0, 1]^2 and sheared rectangle.
+        let sq = polygon_moments_2d(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
+        assert!((sq.ixy - 0.25).abs() < 1e-12, "{}", sq.ixy);
+        // x in [-5, 5], y in [0.4x - 2, 0.4x + 2]: Ixy = 0.4 * Ix = 0.4 * 1000 / 3 = 400 / 3.
+        let sheared = polygon_moments_2d(&[(-5.0, -4.0), (5.0, 0.0), (5.0, 4.0), (-5.0, 0.0)]);
+        assert!((sheared.ixy - 400.0 / 3.0).abs() < 1e-10, "{}", sheared.ixy);
     }
 }

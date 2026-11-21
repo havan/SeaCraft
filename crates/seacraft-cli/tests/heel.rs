@@ -89,3 +89,38 @@ fn heel_needs_a_kg_or_a_condition_and_a_well_formed_weight() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--lcg"), "{err}");
 }
+
+#[test]
+fn heel_case_and_unreachable_lcg_report_accurately() {
+    let hull = example("demo-hull.fef");
+    let case = example("demo-loadcase.json");
+
+    // Standalone loading condition without --condition works cleanly.
+    let text = stdout(&["heel", &hull, "--case", &case, "--level", "1"]);
+    assert!(text.contains("settles"), "{text}");
+
+    // Named --condition with a standalone condition file is rejected.
+    let out = run(&[
+        "heel",
+        &hull,
+        "--case",
+        &case,
+        "--condition",
+        "Loaded",
+        "--level",
+        "1",
+    ]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--condition"), "{err}");
+
+    // Unreachable LCG reports missing free-trim solution at requested heel, not "does not float".
+    let text = stdout(&[
+        "heel", &hull, "--kg", "2.2", "--lcg", "100", "--heel", "20", "--level", "1",
+    ]);
+    assert!(
+        text.contains("no free-trim solution found at this heel"),
+        "{text}"
+    );
+    assert!(!text.contains("does not float"), "{text}");
+}

@@ -4233,18 +4233,28 @@ fn read_case_or_project(model: &Path, case: Option<&Path>) -> Result<(CaseSource
 
 /// The loading condition `case` (or the model's sidecar) holds: a bare
 /// condition, or the one called `name` in a project (the first when `None`),
-/// validated.
-fn read_loading_condition(
+/// validated. When `reject_bare_name` is true, passing `name` for a bare case
+/// file returns an error rather than ignoring it.
+fn read_loading_condition_with_mode(
     model: &Path,
     case: Option<&Path>,
     name: Option<&str>,
+    reject_bare_name: bool,
 ) -> Result<loading::LoadingCondition> {
     let (cond, from) = match read_case_or_project(model, case)? {
-        (CaseSource::Bare(text), path) => (
-            serde_json::from_str::<loading::LoadingCondition>(&text)
-                .with_context(|| format!("cannot parse {}", path.display()))?,
-            path,
-        ),
+        (CaseSource::Bare(text), path) => {
+            if reject_bare_name && name.is_some() {
+                bail!(
+                    "{}: --condition cannot be used with a standalone loading condition file",
+                    path.display()
+                );
+            }
+            (
+                serde_json::from_str::<loading::LoadingCondition>(&text)
+                    .with_context(|| format!("cannot parse {}", path.display()))?,
+                path,
+            )
+        }
         (CaseSource::Project(p), path) => {
             let c = p
                 .loading_condition(name)
@@ -4254,6 +4264,14 @@ fn read_loading_condition(
     };
     loading::validate(&cond).map_err(|e| anyhow::anyhow!("{}: {e}", from.display()))?;
     Ok(cond)
+}
+
+fn read_loading_condition(
+    model: &Path,
+    case: Option<&Path>,
+    name: Option<&str>,
+) -> Result<loading::LoadingCondition> {
+    read_loading_condition_with_mode(model, case, name, false)
 }
 
 fn cmd_heel(a: HeelArgs) -> Result<()> {
@@ -4286,7 +4304,12 @@ fn cmd_heel(a: HeelArgs) -> Result<()> {
     let hull = hydro::Hull::new(&s, opts.subdivision);
     let mut warnings = Vec::new();
     let start = if a.condition.is_some() || a.case.is_some() {
-        let cond = read_loading_condition(&a.file, a.case.as_deref(), a.condition.as_deref())?;
+        let cond = read_loading_condition_with_mode(
+            &a.file,
+            a.case.as_deref(),
+            a.condition.as_deref(),
+            true,
+        )?;
         let res = loading::evaluate(&s, &opts, &cond);
         if !res.equilibrium_found {
             warnings.extend(res.warnings.iter().cloned());
@@ -4372,7 +4395,14 @@ fn cmd_heel(a: HeelArgs) -> Result<()> {
                     }
                 ),
             ),
-            None => row(&format!("at {h:+.1}°"), "does not float".into()),
+            None => row(
+                &format!("at {h:+.1}°"),
+                if matches!(r.equilibrium, heel::Equilibrium::CannotFloat) {
+                    "does not float".into()
+                } else {
+                    "no free-trim solution found at this heel".into()
+                },
+            ),
         }
     }
     Ok(())

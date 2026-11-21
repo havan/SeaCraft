@@ -1168,6 +1168,9 @@ pub struct App {
     heel_start_seen: Option<(usize, String)>,
     /// When the heel shown last moved: the exact solve waits for the hand to rest.
     heel_moved: Option<std::time::Instant>,
+    /// One-shot manual recalculation key pair `(heel_hull_key, heel_key)` queued when the
+    /// user presses Recalculate (or F5) while Auto-recalculate is disabled.
+    heel_recalc_for: Option<(u64, u64)>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
     analysis: crate::analysis_views::AnalysisViews,
@@ -1449,6 +1452,7 @@ impl App {
             heel_settle_key: 0,
             heel_start_seen: None,
             heel_moved: None,
+            heel_recalc_for: None,
             analysis: Default::default(),
             hydro_rev: 0,
             project_rev: 0,
@@ -1730,6 +1734,7 @@ impl App {
         self.heel_section = None;
         self.heel_drawn = None;
         self.heel_settle_pending = false;
+        self.heel_recalc_for = None;
         self.analysis.clear_results();
         self.panels_result = None;
         self.panels_track.reset();
@@ -5364,6 +5369,26 @@ impl App {
             .start(key, move || crate::heel_view::compute_exact(&out, heel));
     }
 
+    /// Trigger an immediate recompute of the Heel view for the current inputs (used by the
+    /// Recalculate button and F5, including when Auto-recalculate is disabled).
+    fn request_heel_recalculate(&mut self) {
+        let hull_key = self.heel_hull_key();
+        let key = self.heel_key();
+        let exact = self.heel_exact_key();
+        self.heel_hull_track.retry(hull_key);
+        self.heel_sweep_track.retry(key);
+        self.heel_exact_track.retry(exact);
+        self.heel_recalc_for = Some((hull_key, key));
+        if self.drag.is_none() && self.surface.is_some() {
+            if self.heel_hull_track.ready(hull_key) {
+                self.start_heel_hull();
+            }
+            if self.heel_sweep_track.ready(key) {
+                self.start_heel_sweep();
+            }
+        }
+    }
+
     /// Compute the Heel view's condition (and the exact state at the heel shown) on this thread
     /// (tests and scripts).
     pub fn compute_heel_blocking(&mut self) -> Result<(), String> {
@@ -5647,20 +5672,26 @@ impl App {
                 }
             }
             // The Heel view: one sweep at a time, on the hydrostatics' quiet; the exact state at
-            // the heel shown once the sweep is current.
+            // the heel shown once the sweep is current. When `auto_recalculate` is off, hull and
+            // sweep wait for an explicit `request_heel_recalculate` (`heel_recalc_for`).
             self.check_heel_start();
             if self.heel_needed() {
                 let hull_key = self.heel_hull_key();
-                if self.heel_hull_track.due(hull_key) {
-                    if hydro_quiet && self.heel_hull_track.ready(hull_key) {
+                let key = self.heel_key();
+                if self.heel_recalc_for.is_some_and(|k| k != (hull_key, key)) {
+                    self.heel_recalc_for = None;
+                }
+                let manual = self.heel_recalc_for == Some((hull_key, key));
+                let allow = self.heel.auto_recalculate || manual;
+                if allow && self.heel_hull_track.due(hull_key) {
+                    if (manual || hydro_quiet) && self.heel_hull_track.ready(hull_key) {
                         self.start_heel_hull();
                     } else {
                         waiting = true;
                     }
                 }
-                let key = self.heel_key();
-                if self.heel_sweep_track.due(key) {
-                    if hydro_quiet && self.heel_sweep_track.ready(key) {
+                if allow && self.heel_sweep_track.due(key) {
+                    if (manual || hydro_quiet) && self.heel_sweep_track.ready(key) {
                         self.start_heel_sweep();
                     } else {
                         waiting = true;
@@ -5680,6 +5711,19 @@ impl App {
                     } else {
                         waiting = true;
                     }
+                }
+                if manual
+                    && !self.heel_hull_track.due(hull_key)
+                    && !self.heel_hull_track.busy()
+                    && !self.heel_sweep_track.due(key)
+                    && !self.heel_sweep_track.busy()
+                    && (self.heel_current().is_none()
+                        || (!self.heel_settle_pending
+                            && self.heel.anim.is_none()
+                            && !self.heel_exact_track.due(exact)
+                            && !self.heel_exact_track.busy()))
+                {
+                    self.heel_recalc_for = None;
                 }
             }
             if loading_due || resistance_due {
@@ -5912,6 +5956,9 @@ impl App {
             if self.waves_track.ready(key) {
                 self.start_waves_compute();
             }
+        }
+        if self.heel_needed() {
+            self.request_heel_recalculate();
         }
         // The drawer's view and the dock's tab are each on screen on their
         // own: the drawer stays when the dock is hidden, and does not cover
@@ -9776,6 +9823,7 @@ impl App {
         match action {
             HeelViewAction::Close => self.close_analysis_view(),
             HeelViewAction::Open(other) => self.open_analysis_view(other),
+            HeelViewAction::Recalculate => self.request_heel_recalculate(),
             HeelViewAction::SettleNow => self.heel_settle_pending = true,
             HeelViewAction::ManualHeel => self.heel_settle_pending = false,
             HeelViewAction::AddToCondition(i) => self.heel_add_to_condition(i),
@@ -9791,6 +9839,7 @@ impl App {
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
         if view != crate::analysis_views::AnalysisView::Heel {
             self.heel.grab = None;
+            self.heel_recalc_for = None;
         }
         self.analysis.open = Some(view);
         if !view.uses_slot() {
@@ -9808,6 +9857,7 @@ impl App {
     pub fn close_analysis_view(&mut self) {
         self.analysis.open = None;
         self.heel.grab = None;
+        self.heel_recalc_for = None;
     }
 
     /// The view shown in the Analysis dock, if any.

@@ -83,7 +83,7 @@ pub struct Settle {
 }
 
 /// The view's own state, kept by the App between frames.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HeelViewState {
     pub start: HeelStart,
     /// Trial weights, model coordinates; kept when the start changes.
@@ -93,6 +93,10 @@ pub struct HeelViewState {
     pub heel_deg: f64,
     /// Keep the heel where the hand leaves it instead of settling.
     pub hold: bool,
+    /// Automatically recompute the sweep and equilibrium when inputs change.
+    pub auto_recalculate: bool,
+    /// Plot turning moment (kN·m) instead of righting lever (m).
+    pub plot_moment: bool,
     /// The x of the section drawn in the body plan; `None` is at the centre of buoyancy.
     pub section: Option<f64>,
     pub entry: Option<PendingWeight>,
@@ -102,6 +106,25 @@ pub struct HeelViewState {
     /// The share of the drawer's height the drawings take; the GZ plot has the rest. `None` is
     /// [`DEFAULT_SPLIT`]; the splitter between them sets it.
     pub split: Option<f32>,
+}
+
+impl Default for HeelViewState {
+    fn default() -> Self {
+        Self {
+            start: HeelStart::default(),
+            weights: Vec::new(),
+            selected: None,
+            heel_deg: 0.0,
+            hold: false,
+            auto_recalculate: true,
+            plot_moment: false,
+            section: None,
+            entry: None,
+            anim: None,
+            grab: None,
+            split: None,
+        }
+    }
 }
 
 /// The drawings' share of the drawer's height until the splitter is dragged.
@@ -122,6 +145,8 @@ pub enum HeelViewAction {
     None,
     /// The state was edited in place (heel, weights, start): the App re-keys the jobs.
     Changed,
+    /// The user explicitly asked to recalculate the sweep for the current inputs.
+    Recalculate,
     /// The user explicitly chose a heel via the slider, arrow keys, or GZ plot.
     ManualHeel,
     /// The hand left the heel: settle to the equilibrium (unless Hold is on).
@@ -600,6 +625,163 @@ pub fn layout_widths(width: f32, height: f32, gap: f32) -> (f32, f32) {
     (body, (width - gap - body).max(120.0))
 }
 
+/// Combine panel actions so higher-precedence button actions (Recalculate, Close, Open) are
+/// never overwritten by secondary state edits in the same frame.
+fn combine_action(cur: HeelViewAction, next: HeelViewAction) -> HeelViewAction {
+    let rank = |a: HeelViewAction| match a {
+        HeelViewAction::None => 0u8,
+        HeelViewAction::Changed | HeelViewAction::ManualHeel | HeelViewAction::SettleNow => 1,
+        HeelViewAction::AddToCondition(_) | HeelViewAction::Recalculate => 2,
+        HeelViewAction::Open(_) | HeelViewAction::Close => 3,
+    };
+    if next != HeelViewAction::None && rank(next) >= rank(cur) {
+        next
+    } else {
+        cur
+    }
+}
+
+/// Capsize alert shown across the viewports for the condition and currently displayed heel.
+pub fn capsize_alert(out: &HeelSweepOut, shown: Option<&HeelState>) -> draw::CapsizeAlert {
+    if matches!(out.equilibrium, Equilibrium::Capsizes { .. }) {
+        return draw::CapsizeAlert::ConditionCapsizes;
+    }
+    if !matches!(
+        out.equilibrium,
+        Equilibrium::CannotFloat | Equilibrium::Unresolved { .. }
+    ) && shown.is_some_and(|s| settle_target(out, s.heel_deg) == LetGo::Capsizes)
+    {
+        return draw::CapsizeAlert::PastVanishingAngle;
+    }
+    draw::CapsizeAlert::None
+}
+
+/// A single row in the right-hand Heel readout table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadoutRow {
+    pub name: &'static str,
+    pub value: String,
+    pub unit: &'static str,
+    pub colour: egui::Color32,
+    pub strong: bool,
+    pub hint: &'static str,
+}
+
+/// Structured rows for the right-hand readout table: (turning-couple rows, condition rows).
+pub fn readout_rows(s: &HeelState, out: &HeelSweepOut) -> (Vec<ReadoutRow>, Vec<ReadoutRow>) {
+    let force_kn = draw::weight_force_kn(s.displacement_t);
+    let moment_knm = draw::righting_moment_knm(s.displacement_t, s.lever_m);
+    let righting = draw::is_righting(s.heel_deg, s.lever_m);
+    let lever_col = draw::lever_colour(s.heel_deg, s.lever_m);
+    let moment_name = if righting || moment_knm.abs() < 0.005 {
+        "Righting moment"
+    } else if capsize_alert(out, Some(s)) != draw::CapsizeAlert::None {
+        "Capsizing moment"
+    } else {
+        "Heeling moment"
+    };
+    let couple = vec![
+        ReadoutRow {
+            name: "Righting lever",
+            value: signed(s.lever_m),
+            unit: "m",
+            colour: lever_col,
+            strong: true,
+            hint: "Actual righting arm between B and G perpendicular to gravity (GZ − heeling arm)",
+        },
+        ReadoutRow {
+            name: "GZ (centreline)",
+            value: signed(s.gz_m),
+            unit: "m",
+            colour: theme::TEXT_PRIMARY,
+            strong: false,
+            hint: "Righting arm with G placed on the hull centreline",
+        },
+        ReadoutRow {
+            name: "Heeling arm",
+            value: signed(s.heeling_arm_m),
+            unit: "m",
+            colour: theme::TEXT_PRIMARY,
+            strong: false,
+            hint: "Righting arm consumed by off-centre transverse gravity (TCG)",
+        },
+        ReadoutRow {
+            name: moment_name,
+            value: draw::format_moment_knm(moment_knm),
+            unit: "kN·m",
+            colour: lever_col,
+            strong: true,
+            hint: "Turning couple Δ × g × |lever| acting to right or capsize the hull (g = 9.80665 m/s²)",
+        },
+        ReadoutRow {
+            name: "Buoyancy / weight",
+            value: draw::format_force_kn(force_kn),
+            unit: "kN",
+            colour: theme::TEXT_PRIMARY,
+            strong: false,
+            hint: "Vertical buoyant and weight force Δ × g (equal in magnitude)",
+        },
+    ];
+
+    let mut condition = Vec::new();
+    if let Some(d) = s.draft {
+        condition.push(ReadoutRow {
+            name: "Draft",
+            value: format!("{d:.3}"),
+            unit: "m",
+            colour: theme::TEXT_PRIMARY,
+            strong: false,
+            hint: "Mean free-trim hydrostatic draft above keel",
+        });
+    }
+    if let Some(t) = s.trim_m {
+        condition.push(ReadoutRow {
+            name: "Trim",
+            value: signed(t),
+            unit: "m",
+            colour: theme::TEXT_PRIMARY,
+            strong: false,
+            hint: "Free-trim stern-to-bow difference (+ bow up)",
+        });
+    }
+    let (disp_val, disp_unit) = draw::format_mass_parts(s.displacement_t);
+    condition.push(ReadoutRow {
+        name: "Displacement",
+        value: disp_val,
+        unit: disp_unit,
+        colour: theme::TEXT_PRIMARY,
+        strong: false,
+        hint: "Total displacement Δ including trial weights",
+    });
+    condition.push(ReadoutRow {
+        name: "KG",
+        value: format!("{:.3}", out.mass.kg(out.hull.keel)),
+        unit: if out.mass.kg_estimate {
+            "m (est.)"
+        } else {
+            "m"
+        },
+        colour: theme::TEXT_PRIMARY,
+        strong: false,
+        hint: "Height of the combined centre of gravity above the keel",
+    });
+    if let Some(gm) = out.upright_gm {
+        condition.push(ReadoutRow {
+            name: "Upright GM",
+            value: format!("{gm:.3}"),
+            unit: "m",
+            colour: if gm < 0.0 {
+                theme::FAIL
+            } else {
+                theme::TEXT_PRIMARY
+            },
+            strong: gm < 0.0,
+            hint: "Initial transverse metacentric height at 0° heel (negative means upright is unstable)",
+        });
+    }
+    (couple, condition)
+}
+
 /// Draw the view: header, inputs, the two drawings, the readout and the GZ curve.
 pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
     let HeelViewPanel {
@@ -640,7 +822,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                         && state.start != option
                     {
                         state.start = option;
-                        action = HeelViewAction::Changed;
+                        action = combine_action(action, HeelViewAction::Changed);
                     }
                 }
             });
@@ -653,7 +835,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             .custom_formatter(|v, _| format!("{v:.1}"));
         if ui.add(slider).on_hover_text("+ to starboard").changed() {
             state.anim = None;
-            action = HeelViewAction::ManualHeel;
+            action = combine_action(action, HeelViewAction::ManualHeel);
         }
         ui.checkbox(&mut state.hold, "Hold heel")
             .on_hover_text("Keep the heel where you leave it instead of settling");
@@ -680,6 +862,32 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         {
             state.section = None;
         }
+        ui.separator();
+        if ui
+            .checkbox(&mut state.auto_recalculate, "Auto-recalculate")
+            .on_hover_text("Recompute automatically when weights, start, or model inputs change")
+            .changed()
+        {
+            action = combine_action(action, HeelViewAction::Changed);
+        }
+        if !state.auto_recalculate {
+            let no_kg_dock = kg_note == KgNote::Unset && state.start == HeelStart::Dock;
+            let needs_recalc = stale || (sweep.is_none() && failure.is_none() && !no_kg_dock);
+            let btn = if needs_recalc && !busy {
+                theme::primary_button("Recalculate")
+            } else {
+                egui::Button::new("Recalculate")
+            };
+            if ui
+                .add_enabled(!busy, btn)
+                .on_hover_text(
+                    "Recompute the heel sweep and equilibrium for the current inputs (F5)",
+                )
+                .clicked()
+            {
+                action = combine_action(action, HeelViewAction::Recalculate);
+            }
+        }
         if busy {
             ui.spinner();
         }
@@ -693,12 +901,48 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             let frame = geometry::EarthFrame::from_plane(&plane);
             let caption = " · Upright at the dock draft";
             let height = layout_heights(ui.available_height(), DEFAULT_SPLIT).0;
-            let (_, views) = drawings(ui, state, o, &frame, section, None, caption, false, height);
+            let (_, views) = drawings(
+                ui,
+                state,
+                o,
+                &frame,
+                section,
+                None,
+                caption,
+                draw::CapsizeAlert::None,
+                false,
+                height,
+            );
             *drawn = Some(views);
         }
         return action;
     }
+    let waiting_manual = !state.auto_recalculate && !busy;
     let Some(out) = sweep else {
+        if waiting_manual && failure.is_none() {
+            ui.colored_label(
+                theme::WARN,
+                "Auto-recalculate is off — click Recalculate to compute.",
+            );
+            if let (Some(o), Some(plane)) = (outlines, dock_plane) {
+                let frame = geometry::EarthFrame::from_plane(&plane);
+                let caption = " · Upright at the dock draft";
+                let height = layout_heights(ui.available_height(), DEFAULT_SPLIT).0;
+                let (_, views) = drawings(
+                    ui,
+                    state,
+                    o,
+                    &frame,
+                    section,
+                    None,
+                    caption,
+                    draw::CapsizeAlert::None,
+                    false,
+                    height,
+                );
+                *drawn = Some(views);
+            }
+        }
         return action;
     };
     let no_floating = matches!(out.equilibrium, Equilibrium::CannotFloat)
@@ -709,18 +953,13 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         // typo must not be a dead end.
         ui.scope(|ui| {
             if stale {
-                stale_chip(ui, failure.is_some());
+                stale_chip(ui, failure.is_some(), waiting_manual);
                 ui.multiply_opacity(theme::STALE_OPACITY);
             }
-            ui.colored_label(
-                theme::FAIL,
-                equilibrium_line(&out.equilibrium, out.mass.displacement_t),
-            );
+            status_banner(ui, out, None);
         });
         let a = weights_table(ui, state, conditions);
-        if a != HeelViewAction::None {
-            action = a;
-        }
+        action = combine_action(action, a);
         return action;
     }
     // The drawings and the GZ plot share the drawer's height; the splitter between them moves
@@ -728,6 +967,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
     let (draw_height, plot_height) =
         layout_heights(ui.available_height(), state.split.unwrap_or(DEFAULT_SPLIT));
     let total = draw_height + plot_height;
+    let capsize = capsize_alert(out, shown);
     egui::ScrollArea::vertical()
         .id_salt("heel_view_body")
         .auto_shrink([false, false])
@@ -736,7 +976,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             // above the drawings comes and goes, so they hold still under a drag that makes the
             // result out of date.
             let width = ui.available_width();
-            let side = (0.36 * width).clamp(280.0, 460.0);
+            let side = (0.45 * width).clamp(280.0, 480.0);
             // The row puts item spacing on each side of the 12 pt gap.
             let spacing = 2.0 * ui.spacing().item_spacing.x;
             let draw_width = (width - side - 12.0 - spacing).max(200.0);
@@ -761,67 +1001,49 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                             section,
                             Some(s),
                             &trim,
+                            capsize,
                             true,
                             draw_height,
                         );
                         *drawn = Some(views);
-                        if a != HeelViewAction::None {
-                            action = a;
-                        }
+                        action = combine_action(action, a);
                     }
                 });
                 ui.add_space(12.0);
                 ui.vertical(|ui| {
                     ui.set_width(side);
                     if stale {
-                        stale_chip(ui, failure.is_some());
+                        stale_chip(ui, failure.is_some(), waiting_manual);
                         ui.multiply_opacity(theme::STALE_OPACITY);
                     }
+                    status_banner(ui, out, shown);
                     for w in &out.warnings {
-                        ui.colored_label(theme::WARN, format!("⚠ {w}"));
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("⚠ {w}")).color(theme::WARN),
+                            )
+                            .wrap(),
+                        );
                     }
                     if shown.is_some_and(|s| s.lid_submerged) {
-                        ui.colored_label(
-                            theme::WARN,
-                            format!("⚠ {}", seacraft_core::heel::LID_SUBMERGED_WARNING),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "⚠ {}",
+                                    seacraft_core::heel::LID_SUBMERGED_WARNING
+                                ))
+                                .color(theme::WARN),
+                            )
+                            .wrap(),
                         );
                     }
                     if let Some(s) = shown {
-                        ui.label(egui::RichText::new(readout(s, out, !shown_exact)).strong());
+                        ui.add_space(3.0);
+                        readout_table(ui, s, out, !shown_exact);
                     }
-                    ui.label(equilibrium_line(&out.equilibrium, out.mass.displacement_t));
-                    // When the condition capsizes anyway, the line above has said so.
-                    let resting = state.grab.is_none() && state.anim.is_none();
-                    let capsizes = matches!(
-                        out.equilibrium,
-                        Equilibrium::Capsizes { .. } | Equilibrium::CannotFloat
-                    );
-                    if let (true, false, Some(s)) = (resting, capsizes, shown) {
-                        if settle_target(out, s.heel_deg) == LetGo::Capsizes {
-                            let at = if s.heel_deg.abs() < 0.05 {
-                                "upright".to_string()
-                            } else {
-                                let side = if s.heel_deg > 0.0 {
-                                    "starboard"
-                                } else {
-                                    "port"
-                                };
-                                format!("at {:.1}° to {side}", s.heel_deg.abs())
-                            };
-                            ui.colored_label(
-                                theme::WARN,
-                                format!(
-                                    "Let go {at}, it would not come back: the righting lever \
-                                     turns it further over."
-                                ),
-                            );
-                        }
-                    }
-                    ui.add_space(4.0);
+                    ui.add_space(3.0);
                     let a = weights_table(ui, state, conditions);
-                    if a != HeelViewAction::None {
-                        action = a;
-                    }
+                    action = combine_action(action, a);
                 });
             });
             // The splitter: drag it to give the drawings or the plot more of the drawer.
@@ -858,27 +1080,377 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             if stale {
                 ui.multiply_opacity(theme::STALE_OPACITY);
             }
-            ui.label(
-                egui::RichText::new(STATIC_CAPTION)
-                    .size(theme::SMALL_SIZE)
-                    .color(theme::TEXT_SECONDARY),
-            );
-            if let Some(heel) = gz_plot(ui, out, shown.map(|s| s.heel_deg), plot_height) {
+            let caption_w = (ui.available_width() - 200.0).max(160.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(caption_w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(caption_w);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(STATIC_CAPTION)
+                                    .size(theme::SMALL_SIZE)
+                                    .color(theme::TEXT_SECONDARY),
+                            )
+                            .wrap(),
+                        );
+                    },
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    theme::segmented(ui, |ui| {
+                        ui.selectable_value(&mut state.plot_moment, true, "Moment (kN·m)")
+                            .on_hover_text("Plot righting and heeling moments in kN·m");
+                        ui.selectable_value(&mut state.plot_moment, false, "Lever (m)")
+                            .on_hover_text("Plot righting and heeling levers in metres");
+                    });
+                });
+            });
+            if let Some(heel) = gz_plot(
+                ui,
+                out,
+                shown.map(|s| s.heel_deg),
+                plot_height,
+                state.plot_moment,
+            ) {
                 state.heel_deg = (heel * 10.0).round() / 10.0;
                 state.anim = None;
-                action = HeelViewAction::ManualHeel;
+                action = combine_action(action, HeelViewAction::ManualHeel);
             }
         });
     if let Some(views) = *drawn {
         for a in [mass_field(ui, state, &views), keys(ui, state, &views)] {
-            if a != HeelViewAction::None
-                && (action != HeelViewAction::ManualHeel || a == HeelViewAction::ManualHeel)
-            {
-                action = a;
-            }
+            action = combine_action(action, a);
         }
     }
     action
+}
+
+/// Draw a single left-accented status banner for the condition and currently displayed heel:
+/// when held past the vanishing angle, leads with the immediate capsize hazard and tucks the
+/// small-angle equilibrium inside as secondary context so the two never contradict each other.
+fn status_banner(ui: &mut egui::Ui, out: &HeelSweepOut, shown: Option<&HeelState>) {
+    let disp = out.mass.displacement_t;
+    if capsize_alert(out, shown) == draw::CapsizeAlert::PastVanishingAngle {
+        if let Some(s) = shown {
+            let at = if s.heel_deg.abs() < 0.05 {
+                "upright".to_string()
+            } else {
+                let side = if s.heel_deg > 0.0 {
+                    "starboard"
+                } else {
+                    "port"
+                };
+                format!("at {:.1}° to {side}", s.heel_deg.abs())
+            };
+            let righting_note = match &out.equilibrium {
+                Equilibrium::Stable { state } if state.heel_deg.abs() < 0.05 => {
+                    Some("Within righting range: settles upright".to_string())
+                }
+                Equilibrium::Stable { state } => {
+                    let side = if state.heel_deg > 0.0 {
+                        "starboard"
+                    } else {
+                        "port"
+                    };
+                    Some(format!(
+                        "Within righting range: settles at {:.1}° to {side}",
+                        state.heel_deg.abs()
+                    ))
+                }
+                _ => Some(format!(
+                    "Within righting range: {}",
+                    out.equilibrium.describe(disp)
+                )),
+            };
+            paint_status_card(
+                ui,
+                theme::FAIL,
+                theme::HEEL_STATUS_FAIL_BG,
+                "⚠ Past vanishing angle — capsizes",
+                &format!(
+                    "Let go {at}, it would not come back: the righting lever turns it further over."
+                ),
+                righting_note.as_deref(),
+            );
+            return;
+        }
+    }
+
+    let (accent, fill, title, detail) = match &out.equilibrium {
+        Equilibrium::Stable { state } => {
+            let headline = if state.heel_deg.abs() < 0.05 {
+                "Settles upright".to_string()
+            } else {
+                let side = if state.heel_deg > 0.0 {
+                    "starboard"
+                } else {
+                    "port"
+                };
+                format!("Settles at {:.1}° to {side}", state.heel_deg.abs())
+            };
+            let detail = match (state.trim_m, state.draft) {
+                (Some(t), Some(d)) => format!("Trim {} m · draft {d:.3} m", signed(t)),
+                (Some(t), None) => format!("Trim {} m", signed(t)),
+                _ => String::new(),
+            };
+            (theme::OK, theme::HEEL_STATUS_OK_BG, headline, detail)
+        }
+        Equilibrium::Loll { .. } => (
+            theme::WARN,
+            theme::HEEL_STATUS_WARN_BG,
+            equilibrium_line(&out.equilibrium, disp),
+            "Upright GM is negative".to_string(),
+        ),
+        Equilibrium::Capsizes { .. } => (
+            theme::FAIL,
+            theme::HEEL_STATUS_FAIL_BG,
+            "⚠ Capsizes".to_string(),
+            "No stable equilibrium within ±90°".to_string(),
+        ),
+        Equilibrium::CannotFloat => (
+            theme::FAIL,
+            theme::HEEL_STATUS_FAIL_BG,
+            "⚠ Cannot float".to_string(),
+            format!("The hull cannot float {disp:.2} t"),
+        ),
+        Equilibrium::Unresolved { reason } => (
+            theme::WARN,
+            theme::HEEL_STATUS_WARN_BG,
+            "⚠ No equilibrium determined".to_string(),
+            reason.clone(),
+        ),
+    };
+    paint_status_card(ui, accent, fill, &title, &detail, None);
+}
+
+fn paint_status_card(
+    ui: &mut egui::Ui,
+    accent: egui::Color32,
+    fill: egui::Color32,
+    title: &str,
+    detail: &str,
+    note: Option<&str>,
+) {
+    let resp = egui::Frame::new()
+        .fill(fill)
+        .stroke(egui::Stroke::new(1.0, theme::FRAME))
+        .corner_radius(theme::RADIUS)
+        .inner_margin(egui::Margin {
+            left: 10,
+            right: 6,
+            top: 3,
+            bottom: 3,
+        })
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.add(egui::Label::new(egui::RichText::new(title).strong().color(accent)).wrap());
+            if !detail.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(detail)
+                            .size(theme::SMALL_SIZE)
+                            .color(theme::TEXT_LABEL),
+                    )
+                    .wrap(),
+                );
+            }
+            if let Some(n) = note.filter(|s| !s.is_empty()) {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(n)
+                            .size(theme::SMALL_SIZE)
+                            .color(theme::TEXT_MUTED),
+                    )
+                    .wrap(),
+                );
+            }
+        });
+    let r = resp.response.rect;
+    let strip = egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 3.0, r.bottom()));
+    ui.painter().rect_filled(strip, 1.0, accent);
+}
+
+/// Width at which the right-hand readout splits Turning couple and Floating condition side-by-side
+/// so Trial weights and the GZ plot stay above the fold.
+const READOUT_TWO_COL_WIDTH: f32 = 360.0;
+
+/// Structured three-column readout card for the currently displayed heel angle.
+fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: bool) {
+    let (couple, condition) = readout_rows(s, out);
+    let moment_knm = draw::righting_moment_knm(s.displacement_t, s.lever_m);
+    let righting = draw::is_righting(s.heel_deg, s.lever_m);
+    let peak_knm = out
+        .sweep
+        .iter()
+        .flatten()
+        .map(|st| draw::righting_moment_knm(st.displacement_t, st.lever_m).abs())
+        .fold(moment_knm.abs(), f64::max)
+        .max(1e-6);
+
+    let max_width = |rows: &[ReadoutRow]| {
+        rows.iter()
+            .map(|r| r.value.chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+
+    let two_cols = ui.available_width() >= READOUT_TWO_COL_WIDTH;
+    egui::Frame::new()
+        .fill(theme::PLOT_BG)
+        .stroke(egui::Stroke::new(1.0, theme::FRAME))
+        .corner_radius(theme::RADIUS)
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(
+                egui::RichText::new(heel_words(s.heel_deg, approx))
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            if two_cols {
+                let avail = ui.available_width();
+                let gap = 8.0;
+                let left_w = ((avail - gap) * 0.54).round();
+                let right_w = (avail - gap - left_w).max(120.0);
+                let (w_c, w_k) = (max_width(&couple), max_width(&condition));
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(left_w);
+                        paint_readout_grid(
+                            ui,
+                            "heel_couple_grid",
+                            "Turning couple",
+                            &couple,
+                            w_c,
+                            true,
+                        );
+                        paint_moment_bar(ui, moment_knm.abs(), peak_knm, righting);
+                    });
+                    ui.add_space(gap);
+                    ui.vertical(|ui| {
+                        ui.set_width(right_w);
+                        paint_readout_grid(
+                            ui,
+                            "heel_condition_grid",
+                            "Floating condition",
+                            &condition,
+                            w_k,
+                            true,
+                        );
+                    });
+                });
+            } else {
+                let w = max_width(&couple).max(max_width(&condition));
+                paint_readout_grid(ui, "heel_couple_grid", "Turning couple", &couple, w, false);
+                paint_moment_bar(ui, moment_knm.abs(), peak_knm, righting);
+                ui.separator();
+                paint_readout_grid(
+                    ui,
+                    "heel_condition_grid",
+                    "Floating condition",
+                    &condition,
+                    w,
+                    false,
+                );
+            }
+        });
+}
+
+fn paint_readout_grid(
+    ui: &mut egui::Ui,
+    id: &str,
+    subhead: &str,
+    rows: &[ReadoutRow],
+    width: usize,
+    compact: bool,
+) {
+    ui.label(
+        egui::RichText::new(subhead)
+            .size(theme::SMALL_SIZE)
+            .color(theme::TEXT_MUTED),
+    );
+    let col_gap = if compact { 4.0 } else { 10.0 };
+    let unit_min_w = if compact { 20.0 } else { theme::UNIT_WIDTH };
+    egui::Grid::new(id)
+        .num_columns(3)
+        .striped(true)
+        .min_col_width(0.0)
+        .spacing(egui::vec2(col_gap, 1.0))
+        .show(ui, |ui| {
+            for r in rows {
+                let name = ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
+                let mut val_text = egui::RichText::new(format!("{:>width$}", r.value))
+                    .monospace()
+                    .color(r.colour);
+                if r.strong {
+                    val_text = val_text.strong();
+                }
+                let val = ui.label(val_text);
+                ui.horizontal(|ui| {
+                    ui.set_min_width(unit_min_w);
+                    ui.label(
+                        egui::RichText::new(r.unit)
+                            .size(theme::SMALL_SIZE)
+                            .color(theme::TEXT_MUTED),
+                    );
+                });
+                name.on_hover_text(r.hint);
+                val.on_hover_text(r.hint);
+                ui.end_row();
+            }
+        });
+}
+
+/// Zero-centred horizontal bar comparing the current turning moment against peak sweep moment:
+/// green to the right when righting, coral-red to the left when capsizing.
+fn paint_moment_bar(ui: &mut egui::Ui, abs_knm: f64, peak_knm: f64, righting: bool) {
+    let w = ui.available_width().max(80.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 8.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect(
+        rect,
+        2.0,
+        theme::FIELD,
+        egui::Stroke::new(1.0, theme::FRAME),
+        egui::StrokeKind::Inside,
+    );
+    let mid_x = rect.center().x;
+    let frac = (abs_knm / peak_knm.max(1e-6)).clamp(0.0, 1.0) as f32;
+    let half = 0.5 * (rect.width() - 2.0);
+    if frac > 0.005 {
+        let fill_col = if righting {
+            theme::LEVER_RIGHTING
+        } else {
+            theme::LEVER_CAPSIZING
+        };
+        let fill = if righting {
+            egui::Rect::from_min_max(
+                egui::pos2(mid_x, rect.top() + 1.0),
+                egui::pos2(mid_x + half * frac, rect.bottom() - 1.0),
+            )
+        } else {
+            egui::Rect::from_min_max(
+                egui::pos2(mid_x - half * frac, rect.top() + 1.0),
+                egui::pos2(mid_x, rect.bottom() - 1.0),
+            )
+        };
+        p.rect_filled(fill, 1.0, fill_col);
+    }
+    p.line_segment(
+        [
+            egui::pos2(mid_x, rect.top()),
+            egui::pos2(mid_x, rect.bottom()),
+        ],
+        egui::Stroke::new(1.0, theme::GRID_DATUM),
+    );
+    resp.on_hover_text(format!(
+        "{:.0}% of peak sweep moment ({} kN·m)",
+        frac * 100.0,
+        draw::format_moment_knm(peak_knm),
+    ));
 }
 
 /// Minimum accepted trial-weight mass (tonnes), shared by both mass editors.
@@ -1056,24 +1628,33 @@ fn weights_table(
                     }
                     let selected = state.selected;
                     for (i, w) in state.weights.iter_mut().enumerate() {
+                        let mut edited = false;
                         if ui.selectable_label(selected == Some(i), &w.name).clicked() {
                             state.selected = Some(i);
                         }
-                        let mut edited = ui
-                            .add(
-                                egui::DragValue::new(&mut w.mass_t)
-                                    .speed(0.05)
-                                    .max_decimals(6)
-                                    .range(TRIAL_MASS_RANGE)
-                                    .clamp_existing_to_range(false),
-                            )
-                            .changed();
+                        let mut mass = w.mass_t;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut mass)
+                                .speed(0.05)
+                                .max_decimals(6)
+                                .range(TRIAL_MASS_RANGE)
+                                .clamp_existing_to_range(false),
+                        );
+                        if resp.changed() && valid_trial_mass(mass) {
+                            w.mass_t = mass;
+                            edited = true;
+                        }
                         for v in [&mut w.x, &mut w.y, &mut w.z] {
-                            edited |= ui
-                                .add(
-                                    egui::DragValue::new(v).speed(0.02).fixed_decimals(2),
-                                )
-                                .changed();
+                            let mut coord = *v;
+                            let resp = ui.add(
+                                egui::DragValue::new(&mut coord)
+                                    .speed(0.02)
+                                    .fixed_decimals(2),
+                            );
+                            if resp.changed() && coord.is_finite() {
+                                *v = coord;
+                                edited = true;
+                            }
                         }
                         if ui.small_button("✕").on_hover_text("Remove this weight").clicked() {
                             remove = Some(i);
@@ -1249,22 +1830,25 @@ fn pointer(
     action
 }
 
-/// The view's out-of-date chip: says whether the update failed or is recomputing.
-fn stale_chip(ui: &mut egui::Ui, failed: bool) {
-    let text = if failed {
-        "out of date — update failed"
+/// The view's out-of-date chip: says whether the update failed, waits for manual
+/// recalculation, or is recomputing.
+fn stale_chip(ui: &mut egui::Ui, failed: bool, waiting_manual: bool) {
+    let (text, colour) = if failed {
+        ("out of date — update failed", theme::STALE)
+    } else if waiting_manual {
+        ("out of date — click Recalculate", theme::WARN)
     } else {
-        "out of date — recomputing"
+        ("out of date — recomputing", theme::STALE)
     };
     egui::Frame::new()
-        .stroke(egui::Stroke::new(1.0, theme::STALE))
+        .stroke(egui::Stroke::new(1.0, colour))
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(text)
                     .size(theme::SMALL_SIZE)
-                    .color(theme::STALE),
+                    .color(colour),
             )
         });
 }
@@ -1280,6 +1864,7 @@ fn drawings(
     section: Option<&[Vec<Vec3>]>,
     shown: Option<&HeelState>,
     profile_note: &str,
+    capsize: draw::CapsizeAlert,
     interactive: bool,
     height: f32,
 ) -> (HeelViewAction, DrawnViews) {
@@ -1384,6 +1969,7 @@ fn drawings(
             section: &section,
             forces,
             weights: &weights_body,
+            capsize,
         },
     );
     let (top, bottom) = geometry::profile_silhouette(outlines, frame);
@@ -1404,6 +1990,7 @@ fn drawings(
                 [a, h]
             }),
             weights: &weights_profile,
+            capsize,
         },
     );
     let section_x = (shown.is_some() || state.section.is_some()).then_some(section_x);
@@ -1439,13 +2026,14 @@ fn drawings(
     (action, views)
 }
 
-/// The condition's GZ curve (G on the centreline) and heeling arm against heel, the heel shown and
-/// the equilibrium marked; returns the heel clicked.
+/// The condition's GZ curve (G on the centreline) and heeling arm against heel — as lever (m) or
+/// turning moment (kN·m) — with the heel shown and the equilibrium marked; returns the heel clicked.
 fn gz_plot(
     ui: &mut egui::Ui,
     out: &HeelSweepOut,
     shown_heel: Option<f64>,
     height: f32,
+    as_moment: bool,
 ) -> Option<f64> {
     use crate::panels::{plot_interactive_sized, PlotMark, PlotSeries};
     let pts = |f: fn(&HeelState) -> f64| -> Vec<(f64, f64)> {
@@ -1457,18 +2045,38 @@ fn gz_plot(
             })
             .collect()
     };
-    let series = [
-        PlotSeries {
-            label: "GZ, G on the centreline (m)".into(),
-            points: pts(|s| s.gz_m),
-            dashed: false,
-        },
-        PlotSeries {
-            label: "Heeling arm (m)".into(),
-            points: pts(|s| s.heeling_arm_m),
-            dashed: true,
-        },
-    ];
+    let series = if as_moment {
+        [
+            PlotSeries {
+                label: "GZ moment, G on the centreline (kN·m)".into(),
+                points: pts(|s| draw::righting_moment_knm(s.displacement_t, s.gz_m)),
+                dashed: false,
+            },
+            PlotSeries {
+                label: "Heeling moment (kN·m)".into(),
+                points: pts(|s| draw::righting_moment_knm(s.displacement_t, s.heeling_arm_m)),
+                dashed: true,
+            },
+        ]
+    } else {
+        [
+            PlotSeries {
+                label: "GZ, G on the centreline (m)".into(),
+                points: pts(|s| s.gz_m),
+                dashed: false,
+            },
+            PlotSeries {
+                label: "Heeling arm (m)".into(),
+                points: pts(|s| s.heeling_arm_m),
+                dashed: true,
+            },
+        ]
+    };
+    let title = if as_moment {
+        "Righting moment against heel (°), free to trim"
+    } else {
+        "Righting arm against heel (°), free to trim"
+    };
     let marks: Vec<PlotMark> = match &out.equilibrium {
         Equilibrium::Stable { state } => vec![PlotMark {
             x: state.heel_deg,
@@ -1488,7 +2096,7 @@ fn gz_plot(
     };
     plot_interactive_sized(
         ui,
-        "Righting arm against heel (°), free to trim",
+        title,
         &series,
         shown_heel,
         &marks,
@@ -1795,5 +2403,105 @@ mod tests {
             ),
             "Lolls to 11.4° port or 13.8° starboard: the upright GM is negative"
         );
+    }
+
+    #[test]
+    fn readout_rows_include_forces_in_kn_and_moments_in_knm() {
+        let mut s = HeelState {
+            heel_deg: 20.0,
+            b: Vec3::new(5.0, 0.1, 0.4),
+            g: Vec3::new(5.0, 0.0, 1.2),
+            lever_m: -0.2,
+            gz_m: -0.2,
+            heeling_arm_m: 0.0,
+            draft: Some(0.9),
+            trim_m: Some(0.02),
+            displacement_t: 10.0,
+            lid_submerged: false,
+            plane: Plane::new(Vec3::new(0.0, 0.0, 1.0), -0.9),
+        };
+        let out = HeelSweepOut {
+            start: MassCondition {
+                displacement_t: 10.0,
+                g: s.g,
+                kg_estimate: false,
+            },
+            mass: MassCondition {
+                displacement_t: 10.0,
+                g: s.g,
+                kg_estimate: false,
+            },
+            sweep: vec![Some(s.clone())],
+            equilibrium: Equilibrium::Capsizes {
+                last_heel_deg: 90.0,
+            },
+            upright_gm: Some(-0.15),
+            warnings: Vec::new(),
+            hull: Arc::new(Hull::new(&Surface::new(), SubdivisionOptions::default())),
+            opts: HydroOptions::from_surface(&Surface::new(), SubdivisionOptions::default()),
+        };
+        let (couple, cond) = readout_rows(&s, &out);
+        let m_row = couple
+            .iter()
+            .find(|r| r.name == "Capsizing moment")
+            .unwrap();
+        assert_eq!(m_row.unit, "kN·m");
+        assert_eq!(m_row.value, "19.61");
+        let f_row = couple
+            .iter()
+            .find(|r| r.name == "Buoyancy / weight")
+            .unwrap();
+        assert_eq!(f_row.unit, "kN");
+        assert_eq!(f_row.value, "98.1");
+        let gm_row = cond.iter().find(|r| r.name == "Upright GM").unwrap();
+        assert_eq!(gm_row.colour, theme::FAIL);
+        let disp_row = cond.iter().find(|r| r.name == "Displacement").unwrap();
+        assert_eq!((disp_row.value.as_str(), disp_row.unit), ("10.0", "t"));
+
+        let mut light = s.clone();
+        light.displacement_t = 0.45;
+        let (_, light_cond) = readout_rows(&light, &out);
+        let light_disp = light_cond
+            .iter()
+            .find(|r| r.name == "Displacement")
+            .unwrap();
+        assert_eq!((light_disp.value.as_str(), light_disp.unit), ("450", "kg"));
+
+        let mut stable = s.clone();
+        stable.lever_m = -0.1;
+        let out_stable = HeelSweepOut {
+            equilibrium: Equilibrium::Stable {
+                state: {
+                    let mut eq = s.clone();
+                    eq.heel_deg = 25.0;
+                    eq.lever_m = 0.0;
+                    eq
+                },
+            },
+            sweep: vec![
+                Some(stable.clone()),
+                Some({
+                    let mut mid = s.clone();
+                    mid.heel_deg = 25.0;
+                    mid.lever_m = 0.0;
+                    mid
+                }),
+                Some({
+                    let mut end = s.clone();
+                    end.heel_deg = 40.0;
+                    end.lever_m = 0.2;
+                    end
+                }),
+            ],
+            ..out.clone()
+        };
+        let (couple_heel, _) = readout_rows(&stable, &out_stable);
+        assert!(couple_heel.iter().any(|r| r.name == "Heeling moment"));
+
+        s.lever_m = 0.2;
+        let (couple_ok, _) = readout_rows(&s, &out);
+        assert!(couple_ok.iter().any(|r| r.name == "Righting moment"));
+        assert!(!valid_trial_mass(f64::INFINITY));
+        assert!(valid_trial_mass(0.0005));
     }
 }

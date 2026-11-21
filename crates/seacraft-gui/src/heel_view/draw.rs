@@ -100,17 +100,99 @@ pub fn lever_height(view: &View2, rect: egui::Rect, b: Point2, g: Point2, len: f
 /// The colour of a lever relative to the heel direction: righting or capsizing.
 /// A positive core lever pushes towards smaller signed heel (port), so for nonzero
 /// heel it rights the hull when `heel_deg * lever_m >= 0`.
-pub fn lever_colour(heel_deg: f64, lever_m: f64) -> egui::Color32 {
-    let righting = if heel_deg.abs() > 1e-12 {
+pub fn is_righting(heel_deg: f64, lever_m: f64) -> bool {
+    if heel_deg.abs() > 1e-12 {
         heel_deg * lever_m >= 0.0
     } else {
         lever_m.abs() <= 1e-12
-    };
-    if righting {
+    }
+}
+
+/// The colour of a lever relative to the heel direction: righting or capsizing.
+pub fn lever_colour(heel_deg: f64, lever_m: f64) -> egui::Color32 {
+    if is_righting(heel_deg, lever_m) {
         theme::LEVER_RIGHTING
     } else {
         theme::LEVER_CAPSIZING
     }
+}
+
+/// Total weight / buoyancy force in kilonewtons (`displacement_t * g`, with standard `g = 9.80665 m/s²`).
+pub fn weight_force_kn(displacement_t: f64) -> f64 {
+    displacement_t * seacraft_core::resistance::GRAVITY
+}
+
+/// Righting (or capsizing) turning moment in kilonewton-metres (`Δ * g * lever_m`).
+pub fn righting_moment_knm(displacement_t: f64, lever_m: f64) -> f64 {
+    weight_force_kn(displacement_t) * lever_m
+}
+
+/// Format a non-negative force magnitude in kN cleanly (never shows `-0.00`).
+pub fn format_force_kn(kn: f64) -> String {
+    let a = kn.abs();
+    if a < 0.005 {
+        "0.00".to_string()
+    } else if a < 10.0 {
+        format!("{a:.2}")
+    } else {
+        format!("{a:.1}")
+    }
+}
+
+/// Format a non-negative moment magnitude in kN·m cleanly (never shows `-0.00`).
+pub fn format_moment_knm(knm: f64) -> String {
+    let a = knm.abs();
+    if a < 0.005 {
+        "0.00".to_string()
+    } else if a < 100.0 {
+        format!("{a:.2}")
+    } else {
+        format!("{a:.1}")
+    }
+}
+
+/// Split a non-negative mass (in metric tonnes) into `(formatted_number, unit)`,
+/// choosing kilograms below 1 t and tonnes from 1 t upward (never shows `-0`).
+pub fn format_mass_parts(tonnes: f64) -> (String, &'static str) {
+    let a = tonnes.abs();
+    if a < 0.9995 {
+        let kg = a * 1000.0;
+        let num = if kg < 0.05 {
+            "0".to_string()
+        } else if kg < 9.95 {
+            format!("{kg:.1}")
+        } else {
+            format!("{kg:.0}")
+        };
+        (num, "kg")
+    } else {
+        let num = if a < 9.995 {
+            format!("{a:.2}")
+        } else if a < 999.5 {
+            format!("{a:.1}")
+        } else {
+            format!("{a:.0}")
+        };
+        (num, "t")
+    }
+}
+
+/// Format a non-negative mass (in metric tonnes) in `kg` below 1 t and `t` from 1 t upward.
+pub fn format_mass(tonnes: f64) -> String {
+    let (val, unit) = format_mass_parts(tonnes);
+    format!("{val} {unit}")
+}
+
+/// Capsize alert state painted into the viewports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CapsizeAlert {
+    /// Condition settles safely (or is awaiting equilibrium).
+    #[default]
+    None,
+    /// Condition has no stable equilibrium within ±90°.
+    ConditionCapsizes,
+    /// Condition has an equilibrium, but letting go at this heel rolls over.
+    PastVanishingAngle,
 }
 
 fn arrow(painter: &egui::Painter, a: Arrow, colour: egui::Color32) {
@@ -136,12 +218,35 @@ fn polyline(painter: &egui::Painter, view: &View2, pts: &[Point2], stroke: egui:
     ));
 }
 
-/// The water: a faint fill below the surface and the surface line, across the drawing.
-pub fn paint_water(painter: &egui::Painter, rect: egui::Rect, view: &View2) {
+/// The sky, water fill and waterline across the drawing. When `capsize` is active the sky washes
+/// subtly crimson above the horizon so an impending capsize stands out immediately in the scene.
+pub fn paint_backdrop(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &View2,
+    capsize: CapsizeAlert,
+) {
+    painter.rect_filled(rect, 2.0, theme::PLOT_BG);
     let y = view
         .to_screen([0.0, 0.0])
         .y
         .clamp(rect.top(), rect.bottom());
+    if capsize != CapsizeAlert::None && y > rect.top() + 1.0 {
+        let mut sky = egui::Mesh::default();
+        sky.colored_vertex(
+            egui::pos2(rect.left(), rect.top()),
+            theme::HEEL_SKY_CAPSIZE_TOP,
+        );
+        sky.colored_vertex(
+            egui::pos2(rect.right(), rect.top()),
+            theme::HEEL_SKY_CAPSIZE_TOP,
+        );
+        sky.colored_vertex(egui::pos2(rect.right(), y), theme::HEEL_SKY_CAPSIZE_HORIZON);
+        sky.colored_vertex(egui::pos2(rect.left(), y), theme::HEEL_SKY_CAPSIZE_HORIZON);
+        sky.add_triangle(0, 1, 2);
+        sky.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::Mesh(std::sync::Arc::new(sky)));
+    }
     painter.rect_filled(
         egui::Rect::from_min_max(egui::pos2(rect.left(), y), rect.right_bottom()),
         0.0,
@@ -151,6 +256,167 @@ pub fn paint_water(painter: &egui::Painter, rect: egui::Rect, view: &View2) {
         [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
         egui::Stroke::new(1.5, theme::WATER_LINE),
     );
+}
+
+struct PillStyle {
+    text: egui::Color32,
+    bg: egui::Color32,
+    border: egui::Stroke,
+}
+
+/// Draw a pill-backed label, clamped inside `bounds` when `bounds` is finite.
+fn paint_label_pill(
+    painter: &egui::Painter,
+    bounds: egui::Rect,
+    anchor: egui::Pos2,
+    align: egui::Align2,
+    text: String,
+    font: egui::FontId,
+    style: PillStyle,
+) {
+    let galley = painter.layout_no_wrap(text, font, style.text);
+    let raw = align
+        .anchor_size(anchor, galley.size())
+        .expand2(egui::vec2(5.0, 2.0));
+    let safe = bounds.shrink(4.0);
+    let mut pill = raw;
+    if safe.width() > pill.width() {
+        if pill.left() < safe.left() {
+            pill = pill.translate(egui::vec2(safe.left() - pill.left(), 0.0));
+        } else if pill.right() > safe.right() {
+            pill = pill.translate(egui::vec2(safe.right() - pill.right(), 0.0));
+        }
+    }
+    if safe.height() > pill.height() {
+        if pill.top() < safe.top() {
+            pill = pill.translate(egui::vec2(0.0, safe.top() - pill.top()));
+        } else if pill.bottom() > safe.bottom() {
+            pill = pill.translate(egui::vec2(0.0, safe.bottom() - pill.bottom()));
+        }
+    }
+    painter.rect(pill, 3.0, style.bg, style.border, egui::StrokeKind::Inside);
+    painter.galley(pill.left_top() + egui::vec2(5.0, 2.0), galley, style.text);
+}
+
+/// Geometry of the turning-moment arc around the body plan hull.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MomentArc {
+    pub center: egui::Pos2,
+    pub radius: f32,
+    /// Angle in screen radians (`0` right, `+pi/2` down, increasing clockwise).
+    pub start_rad: f32,
+    /// Angle in screen radians. `end_rad > start_rad` is clockwise on screen.
+    pub end_rad: f32,
+    pub clockwise: bool,
+    pub righting: bool,
+    pub moment_knm: f64,
+}
+
+impl MomentArc {
+    /// Sample `n + 1` points from `start_rad` to `end_rad`.
+    pub fn sample(&self, from: f32, to: f32, segments: usize) -> Vec<egui::Pos2> {
+        (0..=segments)
+            .map(|i| {
+                let t = i as f32 / segments.max(1) as f32;
+                let a = from + (to - from) * t;
+                self.center + egui::vec2(a.cos(), a.sin()) * self.radius
+            })
+            .collect()
+    }
+
+    /// Position along the arc at `t in [0, 1]`.
+    pub fn point_at(&self, t: f32) -> egui::Pos2 {
+        let a = self.start_rad + (self.end_rad - self.start_rad) * t;
+        self.center + egui::vec2(a.cos(), a.sin()) * self.radius
+    }
+
+    /// Tangent unit vector in the sweep direction at `end_rad`.
+    pub fn end_tangent(&self) -> egui::Vec2 {
+        let sign = if self.end_rad >= self.start_rad {
+            1.0
+        } else {
+            -1.0
+        };
+        egui::vec2(-self.end_rad.sin() * sign, self.end_rad.cos() * sign)
+    }
+}
+
+/// Build the curved turning-couple arc beside the heeled hull section in `rect`.
+/// Returns `None` when the turning moment is negligible (< 0.005 kN·m).
+pub fn moment_arc(rect: egui::Rect, hull_rect: egui::Rect, f: Forces) -> Option<MomentArc> {
+    let moment_knm = righting_moment_knm(f.displacement_t, f.lever_m);
+    if moment_knm.abs() < 0.005 {
+        return None;
+    }
+    let righting = is_righting(f.heel_deg, f.lever_m);
+    // Positive core lever rotates towards port (CCW on screen); negative turns starboard (CW).
+    let clockwise = f.lever_m < 0.0;
+    let on_starboard = f.heel_deg > 1e-6 || (f.heel_deg.abs() <= 1e-6 && clockwise);
+    let sweep = (0.46 + 0.44 * (f.lever_m.abs() / 0.35).min(1.0)) as f32;
+    let pi = std::f32::consts::PI;
+    let (start_rad, end_rad) = match (on_starboard, clockwise) {
+        // Starboard capsizing (CW downward into water)
+        (true, true) => (-0.08 * pi, -0.08 * pi + sweep),
+        // Starboard righting (CCW upward out of water)
+        (true, false) => (0.28 * pi, 0.28 * pi - sweep),
+        // Port righting (CW upward out of water)
+        (false, true) => (0.72 * pi, 0.72 * pi + sweep),
+        // Port capsizing (CCW downward into water)
+        (false, false) => (1.08 * pi, 1.08 * pi - sweep),
+    };
+    let center = if hull_rect.is_positive() {
+        hull_rect.center()
+    } else {
+        rect.center()
+    };
+    let base_r = 0.5 * hull_rect.width().max(hull_rect.height()) + 14.0;
+    let safe = rect.shrink2(egui::vec2(18.0, 26.0));
+    let max_x = if on_starboard {
+        (safe.right() - center.x).max(20.0)
+    } else {
+        (center.x - safe.left()).max(20.0)
+    };
+    let max_y = (center.y - safe.top())
+        .min(safe.bottom() - center.y)
+        .max(20.0);
+    let radius = base_r.clamp(28.0, max_x.min(max_y));
+    Some(MomentArc {
+        center,
+        radius,
+        start_rad,
+        end_rad,
+        clockwise,
+        righting,
+        moment_knm,
+    })
+}
+
+fn paint_arrowhead(
+    painter: &egui::Painter,
+    tip: egui::Pos2,
+    dir: egui::Vec2,
+    colour: egui::Color32,
+) {
+    let dir = dir.normalized();
+    if !dir.is_finite() || dir.length_sq() < 1e-6 {
+        return;
+    }
+    let side = egui::vec2(-dir.y, dir.x) * 4.5;
+    let back = tip - dir * 9.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![tip, back + side, back - side],
+        colour,
+        egui::Stroke::NONE,
+    ));
+}
+
+fn paint_viewport_border(painter: &egui::Painter, rect: egui::Rect, capsize: CapsizeAlert) {
+    let stroke = if capsize != CapsizeAlert::None {
+        egui::Stroke::new(1.5, theme::FAIL)
+    } else {
+        egui::Stroke::new(1.0, theme::FRAME)
+    };
+    painter.rect_stroke(rect, 2.0, stroke, egui::StrokeKind::Inside);
 }
 
 /// A centre (B or G) as a ringed dot with its letter.
@@ -193,6 +459,7 @@ pub struct BodyPlanScene<'a> {
     /// B and G projected, the lever and Δ; `None` with no condition (no KG): the hull only.
     pub forces: Option<Forces>,
     pub weights: &'a [(Point2, String, bool)],
+    pub capsize: CapsizeAlert,
 }
 
 /// The two centres, the heel, the lever and the displacement.
@@ -207,8 +474,13 @@ pub struct Forces {
 
 /// Paint the body plan in `rect`.
 pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, s: &BodyPlanScene) {
-    painter.rect_filled(rect, 2.0, theme::PLOT_BG);
-    paint_water(painter, rect, view);
+    paint_backdrop(painter, rect, view, s.capsize);
+    let mut hull_rect = egui::Rect::NOTHING;
+    for line in s.stations.iter().chain(s.section.iter()) {
+        for &p in line {
+            hull_rect.extend_with(view.to_screen(p));
+        }
+    }
     for line in s.stations {
         polyline(
             painter,
@@ -231,19 +503,33 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
         arrow(painter, up, theme::BUOYANCY);
         arrow(painter, down, theme::WEIGHT);
         let font = egui::FontId::proportional(theme::SMALL_SIZE);
-        painter.text(
-            up.to + egui::vec2(4.0, 0.0),
+        let force_kn = format_force_kn(weight_force_kn(f.displacement_t));
+        let mass = format_mass(f.displacement_t);
+        paint_label_pill(
+            painter,
+            rect,
+            up.to + egui::vec2(5.0, 0.0),
             egui::Align2::LEFT_TOP,
-            format!("Buoyancy {:.1} t", f.displacement_t),
+            format!("Buoyancy {force_kn} kN ({mass})"),
             font.clone(),
-            theme::BUOYANCY,
+            PillStyle {
+                text: theme::BUOYANCY,
+                bg: theme::HUD_BACKING,
+                border: egui::Stroke::NONE,
+            },
         );
-        painter.text(
-            down.to + egui::vec2(4.0, 0.0),
+        paint_label_pill(
+            painter,
+            rect,
+            down.to + egui::vec2(5.0, 0.0),
             egui::Align2::LEFT_BOTTOM,
-            format!("Weight {:.1} t", f.displacement_t),
+            format!("Weight {force_kn} kN ({mass})"),
             font.clone(),
-            theme::WEIGHT,
+            PillStyle {
+                text: theme::WEIGHT,
+                bg: theme::HUD_BACKING,
+                border: egui::Stroke::NONE,
+            },
         );
         // The lever between the two verticals, above both centres.
         let colour = lever_colour(f.heel_deg, f.lever_m);
@@ -257,19 +543,98 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
         for p in [p0, p1] {
             painter.line_segment([p - egui::vec2(0.0, 4.0), p + egui::vec2(0.0, 4.0)], thin);
         }
-        painter.text(
-            egui::pos2(0.5 * (p0.x + p1.x), p0.y - 3.0),
+        paint_label_pill(
+            painter,
+            rect,
+            egui::pos2(0.5 * (p0.x + p1.x), p0.y - 4.0),
             egui::Align2::CENTER_BOTTOM,
             format!("lever {} m", super::signed(f.lever_m)),
-            font,
-            colour,
+            font.clone(),
+            PillStyle {
+                text: colour,
+                bg: theme::HUD_BACKING,
+                border: egui::Stroke::NONE,
+            },
         );
+        // Curved turning-moment arc around the heeled hull.
+        if let Some(arc) = moment_arc(rect, hull_rect, f) {
+            let pts = arc.sample(arc.start_rad, arc.end_rad, 20);
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(2.5, colour)));
+            paint_arrowhead(painter, arc.point_at(1.0), arc.end_tangent(), colour);
+            if !arc.righting {
+                let sign = if arc.end_rad >= arc.start_rad {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let ghost_end = arc.end_rad + sign * 0.45;
+                let ghost_pts = arc.sample(arc.end_rad, ghost_end, 10);
+                painter.extend(egui::Shape::dashed_line(
+                    &ghost_pts,
+                    egui::Stroke::new(1.5, theme::HEEL_MOMENT_GHOST),
+                    4.0,
+                    3.0,
+                ));
+            }
+            let mid = arc.point_at(0.5);
+            let out = (mid - arc.center).normalized();
+            let on_right = out.x >= 0.0;
+            let label = format!(
+                "{} {} kN·m",
+                if arc.righting {
+                    "Righting"
+                } else if s.capsize != CapsizeAlert::None {
+                    "Capsizing"
+                } else {
+                    "Heeling"
+                },
+                format_moment_knm(arc.moment_knm),
+            );
+            paint_label_pill(
+                painter,
+                rect,
+                mid + out * 10.0,
+                if on_right {
+                    egui::Align2::LEFT_CENTER
+                } else {
+                    egui::Align2::RIGHT_CENTER
+                },
+                label,
+                font,
+                PillStyle {
+                    text: colour,
+                    bg: theme::HUD_BACKING,
+                    border: egui::Stroke::new(1.0, colour),
+                },
+            );
+        }
         paint_centre(painter, view.to_screen(f.b), "B", theme::BUOYANCY);
         paint_centre(painter, view.to_screen(f.g), "G", theme::WEIGHT);
     }
     for (at, label, selected) in s.weights {
         paint_weight(painter, view.to_screen(*at), label, *selected);
     }
+    if s.capsize != CapsizeAlert::None {
+        let badge = match s.capsize {
+            CapsizeAlert::ConditionCapsizes => "⚠ Capsizes",
+            CapsizeAlert::PastVanishingAngle => "⚠ Past vanishing angle",
+            CapsizeAlert::None => unreachable!(),
+        };
+        paint_label_pill(
+            painter,
+            rect,
+            rect.left_top() + egui::vec2(8.0, 8.0),
+            egui::Align2::LEFT_TOP,
+            badge.to_string(),
+            egui::FontId::proportional(theme::SMALL_SIZE),
+            PillStyle {
+                text: theme::TEXT_ON_ACCENT,
+                bg: theme::HEEL_CAPSIZE_BADGE_BG,
+                border: egui::Stroke::new(1.0, theme::FAIL),
+            },
+        );
+    }
+    paint_viewport_border(painter, rect, s.capsize);
 }
 
 /// What the profile shows: the silhouette, B and G, the weights.
@@ -279,12 +644,12 @@ pub struct ProfileScene<'a> {
     pub b: Option<Point2>,
     pub g: Option<Point2>,
     pub weights: &'a [(Point2, String, bool)],
+    pub capsize: CapsizeAlert,
 }
 
 /// Paint the profile in `rect`.
 pub fn paint_profile(painter: &egui::Painter, rect: egui::Rect, view: &View2, s: &ProfileScene) {
-    painter.rect_filled(rect, 2.0, theme::PLOT_BG);
-    paint_water(painter, rect, view);
+    paint_backdrop(painter, rect, view, s.capsize);
     let stroke = egui::Stroke::new(2.0, theme::HEEL_SECTION);
     let pts = |e: &Envelope| -> Vec<Point2> { e.iter().map(|&(a, h)| [a, h]).collect() };
     let (top, bottom) = (pts(s.top), pts(s.bottom));
@@ -305,6 +670,7 @@ pub fn paint_profile(painter: &egui::Painter, rect: egui::Rect, view: &View2, s:
     for (at, label, selected) in s.weights {
         paint_weight(painter, view.to_screen(*at), label, *selected);
     }
+    paint_viewport_border(painter, rect, s.capsize);
 }
 
 #[cfg(test)]
@@ -472,5 +838,81 @@ mod tests {
         assert_eq!(lever_colour(0.0, 0.0), theme::LEVER_RIGHTING);
         assert_eq!(lever_colour(0.0, 0.2), theme::LEVER_CAPSIZING);
         assert_eq!(lever_colour(0.0, -0.2), theme::LEVER_CAPSIZING);
+    }
+
+    #[test]
+    fn force_and_moment_match_si_definitions() {
+        // Source: definition (kN = t * g, with g = seacraft_core::resistance::GRAVITY = 9.80665 m/s^2).
+        assert!((weight_force_kn(10.0) - 98.0665).abs() < 1e-9);
+        assert!((righting_moment_knm(10.0, -0.2) + 19.6133).abs() < 1e-9);
+        assert_eq!(format_force_kn(9.84), "9.84");
+        assert_eq!(format_force_kn(124.46), "124.5");
+        assert_eq!(format_moment_knm(-0.001), "0.00");
+        assert_eq!(format_moment_knm(12.345), "12.35");
+        assert_eq!(format_moment_knm(123.45), "123.5");
+    }
+
+    #[test]
+    fn format_mass_switches_between_kg_and_tonnes() {
+        assert_eq!(format_mass(0.0), "0 kg");
+        assert_eq!(format_mass(-1e-9), "0 kg");
+        assert_eq!(format_mass(0.0005), "0.5 kg");
+        assert_eq!(format_mass(0.0084), "8.4 kg");
+        assert_eq!(format_mass(0.00996), "10 kg");
+        assert_eq!(format_mass(0.45), "450 kg");
+        assert_eq!(format_mass(0.9994), "999 kg");
+        assert_eq!(format_mass(0.9996), "1.00 t");
+        assert_eq!(format_mass(1.0), "1.00 t");
+        assert_eq!(format_mass(6.37), "6.37 t");
+        assert_eq!(format_mass(9.95), "9.95 t");
+        assert_eq!(format_mass(9.996), "10.0 t");
+        assert_eq!(format_mass(12.76), "12.8 t");
+        assert_eq!(format_mass(250.4), "250.4 t");
+        assert_eq!(format_mass(999.6), "1000 t");
+        assert_eq!(format_mass(4520.0), "4520 t");
+    }
+
+    #[test]
+    fn moment_arc_turns_clockwise_for_starboard_capsize_and_ccw_for_starboard_righting() {
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 260.0));
+        let hull = egui::Rect::from_center_size(rect.center(), egui::vec2(100.0, 80.0));
+
+        let cap_stbd = Forces {
+            b: [0.0, -0.2],
+            g: [0.1, 0.5],
+            heel_deg: 25.0,
+            lever_m: -0.15,
+            displacement_t: 10.0,
+        };
+        let a = moment_arc(rect, hull, cap_stbd).expect("capsize arc");
+        assert!(!a.righting);
+        assert!(a.clockwise);
+        assert!(a.end_rad > a.start_rad, "screen CW increases angle");
+        assert!(rect.contains(a.point_at(0.0)) && rect.contains(a.point_at(1.0)));
+
+        let right_stbd = Forces {
+            lever_m: 0.15,
+            ..cap_stbd
+        };
+        let a = moment_arc(rect, hull, right_stbd).expect("righting arc");
+        assert!(a.righting);
+        assert!(!a.clockwise);
+        assert!(a.end_rad < a.start_rad, "screen CCW decreases angle");
+
+        let cap_port = Forces {
+            heel_deg: -25.0,
+            lever_m: 0.15,
+            ..cap_stbd
+        };
+        let a = moment_arc(rect, hull, cap_port).expect("port capsize arc");
+        assert!(!a.righting);
+        assert!(!a.clockwise);
+        assert!(a.end_rad < a.start_rad);
+
+        let balanced = Forces {
+            lever_m: 0.0,
+            ..cap_stbd
+        };
+        assert!(moment_arc(rect, hull, balanced).is_none());
     }
 }
