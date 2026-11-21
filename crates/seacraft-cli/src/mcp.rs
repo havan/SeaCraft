@@ -590,6 +590,16 @@ impl McpServer {
             );
         }
 
+        if let Some((i, error)) = batch_nested_export(calls) {
+            return text_result(
+                &json!({
+                    "failed": {"index": i, "name": "export_panels", "error": error},
+                    "completed": 0,
+                }),
+                true,
+            );
+        }
+
         let snapshot = self.snapshot();
         let mut results = Vec::with_capacity(calls.len());
 
@@ -704,6 +714,16 @@ impl McpServer {
             return text_result(
                 &json!({
                     "failed": {"index": 0, "name": "batch", "error": "batch too long (at most 100 calls)"},
+                    "completed": 0,
+                }),
+                true,
+            );
+        }
+
+        if let Some((i, error)) = batch_nested_export(calls) {
+            return text_result(
+                &json!({
+                    "failed": {"index": i, "name": "export_panels", "error": error},
                     "completed": 0,
                 }),
                 true,
@@ -2246,6 +2266,7 @@ impl McpServer {
             ));
         }
         seacraft_core::io::write_all_atomic(&writes).map_err(|e| format!("export_panels: {e}"))?;
+        let stale = seacraft_core::panels::stale_sheet_files(&path, sheet_paths.len());
         let missing: Vec<String> = w.written.missing.iter().map(char::to_string).collect();
         let sheet_files: Vec<String> = sheet_paths
             .iter()
@@ -2259,6 +2280,13 @@ impl McpServer {
         v["layout_pages"] = json!(w.layout_pages);
         v["offsets_pages"] = json!(w.offsets_pages);
         v["sheet_files"] = json!(sheet_files);
+        v["stale_sheet_files"] = json!(stale
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>());
+        v["warnings"] = json!(seacraft_core::panels::stale_sheet_note(&stale)
+            .into_iter()
+            .collect::<Vec<_>>());
         v["missing_characters"] = json!(missing);
         Ok(v)
     }
@@ -2772,6 +2800,31 @@ struct PanelsArgs {
 
 /// Read and check `export_panels`'s arguments, which are `build.panels`'s. `subdivision` is
 /// what an omitted `level` means.
+/// The first call in a batch that would write nested panel cutting files, and why it is refused:
+/// a batch rolls the model back on a later failure, but files on disk cannot be, and a nested
+/// export writes (and may replace) a whole set of them. Measuring with `export_panels` (no `path`)
+/// and exports without nesting stay allowed.
+fn batch_nested_export(calls: &[Value]) -> Option<(usize, String)> {
+    calls.iter().enumerate().find_map(|(i, call)| {
+        let call = call.as_object()?;
+        if call.get("name").and_then(Value::as_str) != Some("export_panels") {
+            return None;
+        }
+        let args = call.get("arguments")?.as_object()?;
+        let path = args.get("path").and_then(Value::as_str)?;
+        let nest = args.get("nest").and_then(Value::as_str).unwrap_or("none");
+        (!path.trim().is_empty() && nest != "none").then(|| {
+            (
+                i,
+                "export_panels with `nest` and a `path` is rejected in a batch: its per-sheet \
+                 cutting files could not be rolled back if a later call failed. Call it on its \
+                 own, after the batch"
+                    .to_owned(),
+            )
+        })
+    })
+}
+
 fn panels_args(
     a: &Map<String, Value>,
     subdivision: SubdivisionOptions,
@@ -3711,7 +3764,8 @@ pub fn tool_definitions() -> Vec<Value> {
              cuts long pieces at straight joints), keeping `gap_mm` (default 10). With `path` it also \
              writes the patterns: `.pdf` (layout overview pages first when nested, then tiled or one \
              page a panel with `single_page`, plus offsets tables unless `offsets_pages` is false), \
-             `.svg` or `.dxf` (plus one per-sheet cutting file listed in `sheet_files` when nested). \
+             `.svg` or `.dxf` (plus one full-size per-sheet cutting file listed in `sheet_files` when \
+             nested; `stale_sheet_files` and `warnings` name older ones beyond this layout, left in place). \
              When a panel does not lie flat nothing is written (`written: false` and the `reason`) \
              unless `allow_undevelopable`. The measures are against the modelled surface, not a \
              bending test of real plywood, and any layout is repeatable rather than the fewest possible \
@@ -3806,7 +3860,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "Run tool calls in order, stopping at the first error. Each step is {name, arguments}. On an error earlier steps \
              are rolled back, so the batch is all-or-nothing (both headless and when connected to the GUI). Returns each \
              call's result on success, or {failed: {index, name, error}, completed: N} on failure. At most 100 calls; \
-             nested batch is rejected.",
+             nested batch is rejected, and so is export_panels with both `nest` and `path` (files on disk cannot be \
+             rolled back; call it on its own).",
             obj(
                 json!({
                     "calls": {
@@ -6977,6 +7032,59 @@ mod tests {
             assert_eq!(p, seacraft_core::panels::sheet_file_name(&path, i));
             assert!(std::fs::read_to_string(&p).unwrap().contains("<svg"));
         }
+        assert_eq!(written["stale_sheet_files"], json!([]), "{written}");
+        assert_eq!(written["warnings"], json!([]), "{written}");
+
+        // A sheet file beyond this layout is named in the reply and left untouched.
+        let extra = seacraft_core::panels::sheet_file_name(&path, sheets);
+        std::fs::write(&extra, "hand edited").unwrap();
+        let again = ok(
+            &mut s,
+            3,
+            "export_panels",
+            json!({"path": path, "nest": "split", "gap_mm": 10}),
+        );
+        assert_eq!(
+            again["stale_sheet_files"],
+            json!([extra.to_string_lossy()]),
+            "{again}"
+        );
+        let warning = again["warnings"][0].as_str().unwrap_or_default();
+        assert!(warning.contains("1 older sheet file"), "{again}");
+        assert_eq!(std::fs::read_to_string(&extra).unwrap(), "hand edited");
+
+        // In a batch, a nested export with a path is refused before any call runs or any file
+        // is written; measuring in a batch still works.
+        let batched = dir.join("batched.svg");
+        let err = fails(
+            &mut s,
+            4,
+            "batch",
+            json!({"calls": [
+                {"name": "export_panels", "arguments": {"nest": "split"}},
+                {"name": "export_panels", "arguments": {"path": batched, "nest": "split"}},
+            ]}),
+        );
+        let fail: Value = serde_json::from_str(&err).expect("batch failure json");
+        assert_eq!(fail["failed"]["index"], 1, "{fail}");
+        assert_eq!(fail["failed"]["name"], "export_panels", "{fail}");
+        assert_eq!(fail["completed"], 0, "{fail}");
+        assert!(!batched.exists());
+        assert!(!seacraft_core::panels::sheet_file_name(&batched, 0).exists());
+        let measured = ok(
+            &mut s,
+            5,
+            "batch",
+            json!({"calls": [
+                {"name": "export_panels", "arguments": {"nest": "split"}},
+                {"name": "export_panels", "arguments": {"path": "", "nest": "split"}},
+            ]}),
+        );
+        assert_eq!(
+            measured["results"].as_array().unwrap().len(),
+            2,
+            "{measured}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

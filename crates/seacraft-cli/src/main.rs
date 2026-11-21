@@ -3788,9 +3788,15 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         );
     }
     seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
+    // Sheet files an earlier, larger layout left beside these: named, never deleted.
+    let stale = panels::stale_sheet_files(&a.output, sheet_paths.len());
+    if let Some(note) = panels::stale_sheet_note(&stale) {
+        eprintln!("warning: {note}");
+    }
 
     let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
     if a.json {
+        let stale_files: Vec<String> = stale.iter().map(|p| p.display().to_string()).collect();
         let sheet_files: Vec<String> = sheet_paths
             .iter()
             .map(|p| p.display().to_string())
@@ -3808,6 +3814,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             "total_sheets": set.total_sheets,
             "layout": set.layout,
             "sheet_files": sheet_files,
+            "stale_sheet_files": stale_files,
             "missing_characters": missing,
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
@@ -3909,7 +3916,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
                 "sheet files"
             };
             println!(
-                "one drawing plus {} {noun}, scale {scale_label}",
+                "one drawing, scale {scale_label}, plus {} full-size {noun}",
                 sheet_paths.len()
             );
         }

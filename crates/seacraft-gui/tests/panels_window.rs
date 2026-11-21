@@ -842,6 +842,77 @@ fn export_writes_a_file_per_sheet() {
 }
 
 #[test]
+fn export_asks_before_replacing_sheet_files_and_names_older_ones() {
+    use seacraft_gui::messages::Level;
+    let mut w = Window::new(skiff("export_asks_before_replacing_sheet_files"));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the nested layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    let n = w
+        .app
+        .panels_preview()
+        .unwrap()
+        .set
+        .layout
+        .as_ref()
+        .unwrap()
+        .drawings
+        .len();
+    assert!(n >= 1);
+
+    // An earlier export left sheet 1 (now hand edited) and one sheet more than this layout has.
+    let svg = scratch("confirm-gui.svg");
+    let _ = std::fs::remove_file(&svg);
+    for i in 0..=n {
+        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&svg, i));
+    }
+    let first = seacraft_core::panels::sheet_file_name(&svg, 0);
+    let extra = seacraft_core::panels::sheet_file_name(&svg, n);
+    std::fs::write(&first, "old sheet").unwrap();
+    std::fs::write(&extra, "hand edited").unwrap();
+
+    w.click("Export…");
+    assert!(w.app.dialog_open());
+    w.app.set_dialog_path(svg.to_str().unwrap());
+    w.frame(vec![]);
+    w.click("OK");
+    // The first OK only asks: it names both files and writes nothing.
+    assert!(w.app.dialog_open(), "the dialog stays open to ask");
+    assert!(w.button("Write anyway").is_some(), "{:?}", w.widgets);
+    assert!(w.shows("This replaces"), "{:?}", w.painted);
+    assert!(w.shows("1 older sheet file"), "{:?}", w.painted);
+    assert!(!svg.exists());
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "old sheet");
+
+    w.click("Write anyway");
+    w.until("the export", |_| {
+        std::fs::read_to_string(&first).is_ok_and(|t| t.contains("<svg"))
+    });
+    w.until("the export logged", |app| {
+        app.messages()
+            .entries()
+            .any(|m| m.level == Level::Warning && m.text.contains("older sheet file"))
+    });
+    assert!(!w.app.dialog_open());
+    assert_eq!(std::fs::read_to_string(&extra).unwrap(), "hand edited");
+    let warning = w
+        .app
+        .messages()
+        .entries()
+        .find(|m| m.level == Level::Warning)
+        .unwrap();
+    assert!(
+        warning.text.contains(&extra.display().to_string()),
+        "{}",
+        warning.text
+    );
+}
+
+#[test]
 fn no_nesting_hides_the_switch() {
     let mut w = Window::new(skiff("no_nesting_hides_the_switch"));
     w.app.set_show_panels(true);

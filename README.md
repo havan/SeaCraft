@@ -674,8 +674,9 @@ patterns. Without `--nest`, sheets are counted end to end as an upper bound;
 `--nest blanks` joins sheets end to end into blanks with `--scarf-mm`, `--nest
 split` cuts long pieces at straight butt joints with matching alignment marks,
 and `--gap-mm` (default 10) keeps a gap between pieces and from sheet edges.
-With nesting, SVG and DXF also write one cutting file per sheet (`NAME-sheet-1.svg`,
-…) and PDF puts scaled layout overview pages first. The automatic layout is
+With nesting, SVG and DXF also write one full-size cutting file per sheet
+(`NAME-sheet-1.svg`, …; older extra ones are named, never deleted) and PDF puts
+scaled layout overview pages first. The automatic layout is
 repeatable, not the fewest possible sheets. The desktop app has the same under
 File ▸ Builder panels…, with a live list of the panels, a **Panels | Sheets**
 switch for the patterns and full-size sheets, and the MCP server exposes

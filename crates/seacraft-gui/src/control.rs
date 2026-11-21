@@ -909,6 +909,7 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
         }
         seacraft_core::io::write_all_atomic(&writes)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        let stale = seacraft_core::panels::stale_sheet_files(&path, sheet_paths.len());
         let missing: Vec<String> = file.missing.iter().map(char::to_string).collect();
         let sheet_files: Vec<String> = sheet_paths
             .iter()
@@ -922,6 +923,13 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
         v["layout_pages"] = json!(file.layout_pages);
         v["offsets_pages"] = json!(file.offsets_pages);
         v["sheet_files"] = json!(sheet_files);
+        v["stale_sheet_files"] = json!(stale
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>());
+        v["warnings"] = json!(seacraft_core::panels::stale_sheet_note(&stale)
+            .into_iter()
+            .collect::<Vec<_>>());
         v["missing_characters"] = json!(missing);
         Ok(v)
     });
@@ -3625,6 +3633,32 @@ mod tests {
             );
             assert!(std::fs::read_to_string(&p).unwrap().contains("<svg"));
         }
+        assert_eq!(v["stale_sheet_files"], json!([]), "{v}");
+
+        // A sheet file beyond this layout is named in the reply and left untouched.
+        let extra = seacraft_core::panels::sheet_file_name(&inside, sheets);
+        std::fs::write(&extra, "hand edited").unwrap();
+        let r = call(
+            &mut app,
+            &ctx,
+            "build.panels",
+            json!({ "path": inside.to_string_lossy(), "nest": "split", "gap_mm": 10 }),
+        );
+        let v = &r["result"];
+        assert_eq!(
+            v["stale_sheet_files"],
+            json!([extra.to_string_lossy()]),
+            "{v}"
+        );
+        assert!(
+            v["warnings"][0]
+                .as_str()
+                .unwrap_or_default()
+                .contains("1 older sheet file"),
+            "{v}"
+        );
+        assert_eq!(std::fs::read_to_string(&extra).unwrap(), "hand edited");
+        std::fs::remove_file(&extra).unwrap();
 
         let outside = dir.join("../seacraft-panels-nest-outside.svg");
         let _ = std::fs::remove_file(&outside);

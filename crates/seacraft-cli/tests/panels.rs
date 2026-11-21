@@ -318,6 +318,42 @@ fn panels_nest_writes_a_file_per_sheet() {
         assert!(body.contains("<svg"), "{name}");
     }
 
+    assert_eq!(v["stale_sheet_files"], serde_json::json!([]), "{v}");
+
+    // A later export with fewer sheets names the older files it leaves and touches none.
+    let extra = format!("j-sheet-{}.svg", files.len() + 1);
+    std::fs::write(dir.join(&extra), "hand edited").unwrap();
+    let out = run(
+        &dir,
+        &["panels", "skiff.fef", "-o", "j.svg", "--nest", "split"],
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let err = text(&out.stderr);
+    assert!(err.contains("warning: 1 older sheet file"), "{err}");
+    assert!(err.contains(&extra), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join(&extra)).unwrap(),
+        "hand edited"
+    );
+    let again: serde_json::Value = serde_json::from_str(&ok(
+        &dir,
+        &[
+            "panels",
+            "skiff.fef",
+            "-o",
+            "j.svg",
+            "--nest",
+            "split",
+            "--json",
+        ],
+    ))
+    .expect("JSON");
+    assert_eq!(
+        again["stale_sheet_files"],
+        serde_json::json!([extra.clone()]),
+        "{again}"
+    );
+
     let plain_json = ok(&dir, &["panels", "skiff.fef", "-o", "plain.svg", "--json"]);
     let pv: serde_json::Value = serde_json::from_str(&plain_json).expect("JSON");
     assert!(pv["layout"].is_null(), "{pv}");

@@ -2279,7 +2279,8 @@ pub struct PanelsWritten {
     /// The layout pages at the front of a PDF, one per sheet or blank; 0 without nesting.
     pub layout_pages: usize,
     /// One cutting file per sheet or blank for an SVG or DXF with nesting, in the layout's
-    /// order, to write as [`sheet_file_name`] names them; empty otherwise.
+    /// order, to write as [`sheet_file_name`] names them; empty otherwise. Always full size
+    /// (1:1), whatever scale the patterns are drawn at: they describe real stock.
     pub per_sheet: Vec<crate::templates::Written>,
 }
 
@@ -2295,6 +2296,68 @@ pub fn sheet_file_name(path: &std::path::Path, i: usize) -> std::path::PathBuf {
         None => format!("{stem}-sheet-{}", i + 1),
     };
     path.with_file_name(name)
+}
+
+/// Cutting files beside the patterns at `path` that a layout of `count` sheets does not write:
+/// `NAME-sheet-N` with N above `count`, left from an earlier export with more sheets. Listed in
+/// sheet order so the caller can tell the user; never deleted, since they may hold manual edits.
+/// A folder that cannot be read lists none.
+pub fn stale_sheet_files(path: &std::path::Path, count: usize) -> Vec<std::path::PathBuf> {
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut stale: Vec<(usize, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_str()?;
+            let n = sheet_number(path, name)?;
+            (n > count).then(|| (n, path.with_file_name(name)))
+        })
+        .collect();
+    stale.sort();
+    stale.into_iter().map(|(_, p)| p).collect()
+}
+
+/// What to tell the user about [`stale_sheet_files`]; `None` when there are none.
+pub fn stale_sheet_note(stale: &[std::path::PathBuf]) -> Option<String> {
+    let names: Vec<String> = stale.iter().map(|p| p.display().to_string()).collect();
+    let (what, verb) = match names.len() {
+        0 => return None,
+        1 => ("1 older sheet file".to_owned(), "is"),
+        n => (format!("{n} older sheet files"), "are"),
+    };
+    Some(format!(
+        "{what} from an earlier export {verb} not part of this layout and {} left in place: {}. \
+         Delete or move {} so {} not cut by mistake",
+        if names.len() == 1 { "was" } else { "were" },
+        names.join(", "),
+        if names.len() == 1 { "it" } else { "them" },
+        if names.len() == 1 {
+            "it is"
+        } else {
+            "they are"
+        },
+    ))
+}
+
+/// The sheet number N when `name` is exactly what [`sheet_file_name`] gives `path` for sheet N.
+fn sheet_number(path: &std::path::Path, name: &str) -> Option<usize> {
+    let stem = path.file_stem()?.to_str()?;
+    let rest = name.strip_prefix(stem)?.strip_prefix("-sheet-")?;
+    let digits = match path.extension() {
+        Some(ext) => rest.strip_suffix(ext.to_str()?)?.strip_suffix('.')?,
+        None => rest,
+    };
+    if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let n: usize = digits.parse().ok()?;
+    (sheet_file_name(path, n - 1).file_name()?.to_str()? == name).then_some(n)
 }
 
 /// What the first lines of a layout page say.
@@ -2330,11 +2393,13 @@ pub fn write(
         per_sheet: Vec::new(),
     };
     let drawings = set.layout.as_ref().map_or(&[][..], |l| &l.drawings[..]);
+    // Cutting files are for the shop: full size, whatever scale the patterns are drawn at,
+    // so their geometry matches the stock their notes name.
     let cutting = |one: fn(&[Sheet], f64) -> String| -> Vec<Written> {
         drawings
             .iter()
             .map(|d| Written {
-                bytes: one(std::slice::from_ref(d), setup.scale).into_bytes(),
+                bytes: one(std::slice::from_ref(d), 1.0).into_bytes(),
                 pages: None,
                 missing: Vec::new(),
             })
@@ -4042,6 +4107,70 @@ mod tests {
         );
         let last = page_text(&tiled.written.bytes, total - 1).join(" ");
         assert!(last.contains(&format!("page {total} of {total}")), "{last}");
+    }
+
+    #[test]
+    fn cutting_files_stay_full_size_at_any_pattern_scale() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let set = nested_skiff(crate::panel_layout::NestMode::Split);
+        let full = PageSetup::default();
+        assert_eq!(full.scale, 1.0);
+        let half = PageSetup {
+            scale: 0.5,
+            ..PageSetup::default()
+        };
+        for format in [Format::Svg, Format::Dxf] {
+            let at_full = write(&set, format, &full, false).unwrap();
+            let at_half = write(&set, format, &half, false).unwrap();
+            assert!(!at_full.per_sheet.is_empty(), "{format:?}");
+            // The patterns follow the chosen scale; the cutting files do not.
+            assert_ne!(at_full.written.bytes, at_half.written.bytes, "{format:?}");
+            for (a, b) in at_full.per_sheet.iter().zip(&at_half.per_sheet) {
+                assert_eq!(a.bytes, b.bytes, "{format:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn stale_sheet_files_lists_only_higher_numbers_in_order() {
+        use std::path::Path;
+        let dir = std::env::temp_dir().join(format!(
+            "seacraft-stale-sheets-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("skiff.svg");
+        for name in [
+            "skiff-sheet-1.svg",
+            "skiff-sheet-2.svg",
+            "skiff-sheet-3.svg",
+            "skiff-sheet-10.svg",
+            "skiff-sheet-03.svg",
+            "skiff-sheet-4.dxf",
+            "skiff-sheet-x.svg",
+            "other-sheet-5.svg",
+        ] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        let stale = stale_sheet_files(&main, 2);
+        assert_eq!(
+            stale,
+            vec![
+                dir.join("skiff-sheet-3.svg"),
+                dir.join("skiff-sheet-10.svg")
+            ]
+        );
+        assert!(stale_sheet_files(&main, 10).is_empty());
+        assert!(stale_sheet_files(&dir.join("missing").join("a.svg"), 0).is_empty());
+        assert_eq!(sheet_number(Path::new("noext"), "noext-sheet-2"), Some(2));
+        assert_eq!(stale_sheet_note(&[]), None);
+        let note = stale_sheet_note(&stale).unwrap();
+        assert!(note.starts_with("2 older sheet files"), "{note}");
+        assert!(note.contains("skiff-sheet-10.svg"), "{note}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

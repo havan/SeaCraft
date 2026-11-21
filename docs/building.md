@@ -171,10 +171,11 @@ a quarter turn across the grain) while keeping `--gap-mm` (default 10 mm) betwee
   both sides of each joint, and nests the parts onto single sheets.
 
 When nesting is on, the sheet count comes from the layout, SVG and DXF write one per-sheet cutting file beside the
-main patterns (`NAME-sheet-1.svg`, …), and the PDF puts one scaled layout overview page per sheet or blank first (for
+main patterns (`NAME-sheet-1.svg`, …), always full size whatever scale the patterns are drawn at, and the PDF puts one scaled layout overview page per sheet or blank first (for
 looking at, not full size) followed by the full-size patterns and offsets tables. The automatic layout is repeatable,
 not the fewest possible sheets, and any piece too wide or without a straight joint is left unplaced and named in the
-count. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways) is named in the
+count. A later export with fewer sheets leaves the extra older `NAME-sheet-N` files where they are, since they may hold
+your edits, and names them in a warning so they are not cut by mistake. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways) is named in the
 table and on every pattern of the set, and is not counted either.
 
 The patterns allow no plywood thickness: they are the modelled surface.
@@ -186,7 +187,9 @@ sheets. Below the list, a **Panels | Sheets** switch (shown when nesting is on) 
 full-size sheets or blanks with the nested pieces on them; a panel that does not lie flat is tinted and named over the
 patterns with the reason. Click a panel in the list to zoom to it; scroll to zoom, drag to move, double-click to see
 them all. When you change a choice the list and drawing are marked out of date and shown faded until measured again.
-**Export…** writes PDF, SVG (plus the per-sheet SVG files when nested) or DXF (plus the per-sheet DXF files); it stays
+**Export…** writes PDF, SVG (plus the per-sheet SVG files when nested) or DXF (plus the per-sheet DXF files). When
+that would replace sheet files already there, or leave older ones from a larger layout, the dialog names them first
+and writes only when you press **Write anyway**. It stays
 disabled, and says why when you hover over it, while the measurement is out of date or while a panel does not lie flat,
 unless you tick "Write patterns even when a panel does not lie flat".
 

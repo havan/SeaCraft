@@ -2290,6 +2290,57 @@ pub fn panels_file(
     })
 }
 
+/// How many per-sheet cutting files writing `set` as `format` makes: one per layout sheet or
+/// blank for an SVG or DXF with nesting, none otherwise (as [`seacraft_core::panels::write`]).
+pub fn panels_sheet_count(
+    set: &seacraft_core::panels::PanelSet,
+    format: seacraft_core::templates::Format,
+) -> usize {
+    use seacraft_core::templates::Format;
+    match format {
+        Format::Svg | Format::Dxf => set.layout.as_ref().map_or(0, |l| l.drawings.len()),
+        _ => 0,
+    }
+}
+
+/// What to ask before writing `count` cutting files beside `path`: the sheet files that already
+/// exist and would be replaced, and older ones beyond `count` that would be left in place.
+/// `None` when the export touches no existing sheet file and leaves none behind.
+pub fn panels_sheet_clash(path: &std::path::Path, count: usize) -> Option<String> {
+    let replaced: Vec<String> = (0..count)
+        .map(|i| seacraft_core::panels::sheet_file_name(path, i))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .collect();
+    let stale: Vec<String> = seacraft_core::panels::stale_sheet_files(path, count)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    let mut parts = Vec::new();
+    match replaced.len() {
+        0 => {}
+        1 => parts.push(format!("This replaces a sheet file: {}.", replaced[0])),
+        n => parts.push(format!(
+            "This replaces {n} sheet files: {}.",
+            replaced.join(", ")
+        )),
+    }
+    match stale.len() {
+        0 => {}
+        1 => parts.push(format!(
+            "1 older sheet file from an earlier export is not part of this layout; it will be \
+             left in place, so set it aside: {}.",
+            stale[0]
+        )),
+        n => parts.push(format!(
+            "{n} older sheet files from an earlier export are not part of this layout; they will \
+             be left in place, so set them aside: {}.",
+            stale.join(", ")
+        )),
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
 /// Writes `file` to `path` and any per-sheet cutting files beside it, staged together atomically.
 /// Returns the per-sheet file paths written, in order.
 pub fn write_panels_file(
