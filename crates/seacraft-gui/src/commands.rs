@@ -2303,6 +2303,17 @@ pub fn write_panels_file(
     for (p, bytes) in sheet_paths.iter().zip(&file.per_sheet) {
         writes.push((p.as_path(), bytes.as_slice()));
     }
+    let all_paths: Vec<&std::path::Path> = writes.iter().map(|(p, _)| *p).collect();
+    if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "`{}` and `{}` resolve to the same file: each output needs a file of its own",
+                all_paths[i].display(),
+                all_paths[j].display()
+            ),
+        ));
+    }
     seacraft_core::io::write_all_atomic(&writes)?;
     Ok(sheet_paths)
 }
@@ -2391,5 +2402,33 @@ mod panels_tests {
         let pv = preview(&pram, &p).expect("measured whatever the paper");
         let e = panels_file(&pv.set, &p, Format::PdfTiled).unwrap_err();
         assert!(e.contains("not a paper size"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_panels_file_rejects_aliased_sheet_symlink() {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-commands-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("out.svg");
+        let sheet1 = seacraft_core::panels::sheet_file_name(&main, 0);
+        std::os::unix::fs::symlink(&main, &sheet1).unwrap();
+        let file = PanelsFile {
+            bytes: b"<svg>main</svg>".to_vec(),
+            format: Format::Svg,
+            pages: None,
+            layout_pages: 0,
+            offsets_pages: 0,
+            per_sheet: vec![b"<svg>sheet1</svg>".to_vec()],
+            missing: Vec::new(),
+        };
+        let err = write_panels_file(&main, &file).unwrap_err();
+        assert!(
+            err.to_string().contains("same file"),
+            "expected shared_output refusal, got: {err}"
+        );
+        assert!(!main.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

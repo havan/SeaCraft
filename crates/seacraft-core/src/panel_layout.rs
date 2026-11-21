@@ -217,12 +217,45 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
                 && clear_of_points(x)
                 && crossings(outline, x).len() == 2
         };
+        let lo = (x1 - (n - k) as f64 * usable).max(prev);
+        let hi = (prev + usable).min(x1);
         let found = (0..=steps)
             .flat_map(|j| {
                 let d = j as f64 * JOINT_STEP_M;
                 [ideal - d, ideal + d]
             })
-            .find(|&x| fits(x));
+            .find(|&x| fits(x))
+            .or_else(|| {
+                // Exact fallback over open sub-intervals between outline vertex x-coordinates in
+                // [lo, hi], where the crossing count is piecewise constant.
+                let mut cuts: Vec<f64> = vec![lo, hi];
+                for p in outline {
+                    if p.0 > lo && p.0 < hi {
+                        cuts.push(p.0);
+                    }
+                }
+                cuts.sort_by(f64::total_cmp);
+                let mut candidates: Vec<f64> = Vec::new();
+                let margin = 2.0 * JOINT_CLEAR_M;
+                for w in cuts.windows(2) {
+                    let (a, b) = (w[0], w[1]);
+                    let x = if b - a > 2.0 * margin {
+                        ideal.clamp(a + margin, b - margin)
+                    } else {
+                        (a + b) / 2.0
+                    };
+                    if fits(x) {
+                        candidates.push(x);
+                    }
+                }
+                candidates.sort_by(|a, b| {
+                    (a - ideal)
+                        .abs()
+                        .total_cmp(&(b - ideal).abs())
+                        .then_with(|| a.total_cmp(b))
+                });
+                candidates.into_iter().next()
+            });
         let Some(x) = found else {
             return Err("no straight joint found".into());
         };
@@ -377,7 +410,26 @@ fn piece_drawing(
     s
 }
 
+/// Distance from `(x, y)` in direction `dir` (+1 or -1 along x) to the first edge of `outline`.
+fn horizontal_clearance(outline: &[Pt], x: f64, y: f64, dir: f64) -> f64 {
+    let n = outline.len();
+    let mut best = f64::INFINITY;
+    for i in 0..n {
+        let (p, q) = (outline[i], outline[(i + 1) % n]);
+        if (p.1 >= y) != (q.1 >= y) {
+            let ix = p.0 + (y - p.1) / (q.1 - p.1) * (q.0 - p.0);
+            let dist = (ix - x) * dir;
+            if dist > 1e-9 {
+                best = best.min(dist);
+            }
+        }
+    }
+    best
+}
+
 /// The marks across a split joint at `x`, on the part before it (`after` false) or after it.
+/// Each tick and its letter are clipped to the available material in direction `s` so tapered
+/// edges never leave marks floating outside the cut outline.
 fn joint_marks(
     outline: &[Pt],
     x: f64,
@@ -394,13 +446,23 @@ fn joint_marks(
     let mut labels = Vec::new();
     for (k, f) in [0.25, 0.75].into_iter().enumerate() {
         let y = lo + f * (hi - lo);
+        let avail = horizontal_clearance(outline, x, y, s);
+        let (tick_len, label_off) = if avail >= JOINT_MARK_M + 0.003 {
+            (JOINT_MARK_M, JOINT_MARK_M + 0.003)
+        } else if avail.is_finite() && avail > 1e-6 {
+            let tick = JOINT_MARK_M.min(avail * 0.65);
+            let off = (tick + 0.0015).min(avail * 0.9);
+            (tick, off)
+        } else {
+            (JOINT_MARK_M, JOINT_MARK_M + 0.003)
+        };
         paths.push(SheetPath {
             kind: PathKind::Mark,
-            points: vec![(x, y), (x + s * JOINT_MARK_M, y)],
+            points: vec![(x, y), (x + s * tick_len, y)],
             closed: false,
         });
         labels.push(Label {
-            at: (x + s * (JOINT_MARK_M + 0.003), y),
+            at: (x + s * label_off, y),
             height_mm: JOINT_LABEL_MM,
             angle_deg: 0.0,
             anchor: if after { Anchor::Start } else { Anchor::End },
@@ -716,6 +778,36 @@ pub fn nest_panels(
         reason,
     }));
     layout.not_placed = not_placed;
+    // Carry each failing panel's flatness warning onto every sheet holding one of its pieces.
+    let failing_notes: Vec<(&str, &str)> = panels
+        .iter()
+        .zip(patterns)
+        .filter(|(p, _)| !p.lies_flat)
+        .filter_map(|(p, pat)| {
+            pat.notes
+                .iter()
+                .find(|n| n.starts_with("Does not lie flat"))
+                .map(|n| (p.found.name.as_str(), n.as_str()))
+        })
+        .collect();
+    if !failing_notes.is_empty() {
+        for (b, d) in layout.drawings.iter_mut().enumerate() {
+            let mut warnings = Vec::new();
+            for &(panel_name, note) in &failing_notes {
+                if layout
+                    .pieces
+                    .iter()
+                    .any(|p| p.sheet == b && p.panel == panel_name)
+                {
+                    warnings.push(format!("{panel_name}: {note}"));
+                }
+            }
+            if !warnings.is_empty() {
+                warnings.append(&mut d.notes);
+                d.notes = warnings;
+            }
+        }
+    }
     // The cut lines drawn last, over marks and references, as on paper.
     for d in &mut layout.drawings {
         d.paths.sort_by_key(|p| match p.kind {
@@ -1148,5 +1240,133 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn split_finds_a_joint_inside_a_narrow_feasible_interval() {
+        // 4.838 m panel on 2.420 m usable length -> feasible joint range [2.418, 2.420].
+        // A vertex at the ideal 2.419 m rejects the ideal and both 10 mm steps lie outside the
+        // feasible range; the exact sub-interval fallback must still find a valid joint.
+        let p = test_flat(
+            "Narrow",
+            vec![
+                (0.0, 0.0),
+                (2.419, 0.0),
+                (4.838, 0.0),
+                (4.838, 0.5),
+                (2.419, 0.5),
+                (0.0, 0.5),
+            ],
+            vec![[0, 1, 4], [0, 4, 5], [1, 2, 3], [1, 3, 4]],
+        );
+        let joints = split_points(&p, 2.420).expect("a joint inside [2.418, 2.420]");
+        assert_eq!(joints.len(), 1);
+        assert!(joints[0] >= 2.418 && joints[0] <= 2.420, "{joints:?}");
+        assert!((joints[0] - 2.419).abs() > JOINT_CLEAR_M);
+    }
+
+    #[test]
+    fn split_joint_marks_stay_inside_tapered_material() {
+        // Tapered strip rising steeply after x = 1.0: at x = 1.0 the span is 4 mm ([0.0, 0.004]),
+        // and both edges rise 1 mm per 10 mm so the lower mark (y = 0.001) hits the bottom edge
+        // at dx = 10 mm (< 15 mm JOINT_MARK_M).
+        let outline = vec![
+            (0.0, -0.1),
+            (1.0, 0.0),
+            (2.0, 0.1),
+            (2.0, 0.104),
+            (1.0, 0.004),
+            (0.0, -0.096),
+        ];
+        for after in [false, true] {
+            let (paths, labels) = joint_marks(&outline, 1.0, b'A', after);
+            assert_eq!(paths.len(), 2);
+            assert_eq!(labels.len(), 2);
+            for path in &paths {
+                let tip = path.points[1];
+                assert!(
+                    inside(tip, &outline),
+                    "after={after}: mark tip {tip:?} left the outline"
+                );
+            }
+            for label in &labels {
+                assert!(
+                    inside(label.at, &outline),
+                    "after={after}: mark label {:?} left the outline",
+                    label.at
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_flat_warning_is_carried_onto_nested_sheets_holding_the_panel() {
+        let mut bad = test_flat(
+            "Warped",
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        bad.lies_flat = false;
+        let good = test_flat(
+            "Flat",
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let bad_pat = panel_sheet(
+            &bad,
+            &panel_offsets(&bad, 0.25),
+            &[],
+            Limits::default(),
+            false,
+        );
+        // Ensure the failure note is present as panel_sheet emits it for a non-flat panel.
+        assert!(bad_pat
+            .notes
+            .iter()
+            .any(|n| n.starts_with("Does not lie flat")));
+        let good_pat = panel_sheet(
+            &good,
+            &panel_offsets(&good, 0.25),
+            &[],
+            Limits::default(),
+            false,
+        );
+        // Each 2.0 x 1.0 m panel fills its own 2.44 x 1.22 m sheet.
+        let layout = nest_panels(
+            &[bad, good],
+            &[bad_pat, good_pat],
+            stock(2.44, 1.22, 0.0),
+            nested(NestMode::Split),
+        );
+        assert_eq!(layout.sheets.len(), 2);
+        let warped_sheet = layout
+            .pieces
+            .iter()
+            .find(|p| p.panel == "Warped")
+            .unwrap()
+            .sheet;
+        let flat_sheet = layout
+            .pieces
+            .iter()
+            .find(|p| p.panel == "Flat")
+            .unwrap()
+            .sheet;
+        assert_ne!(warped_sheet, flat_sheet);
+        assert!(
+            layout.drawings[warped_sheet]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Warped: Does not lie flat")),
+            "{:?}",
+            layout.drawings[warped_sheet].notes
+        );
+        assert!(
+            !layout.drawings[flat_sheet]
+                .notes
+                .iter()
+                .any(|n| n.contains("Does not lie flat")),
+            "{:?}",
+            layout.drawings[flat_sheet].notes
+        );
     }
 }

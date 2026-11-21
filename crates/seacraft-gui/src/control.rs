@@ -894,6 +894,16 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
         for (p, bytes) in sheet_paths.iter().zip(&file.per_sheet) {
             writes.push((p.as_path(), bytes.as_slice()));
         }
+        let all_paths: Vec<&std::path::Path> = writes.iter().map(|(p, _)| *p).collect();
+        if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?
+        {
+            return Err(format!(
+                "`{}` and `{}` resolve to the same file: each output needs a file of its own",
+                all_paths[i].display(),
+                all_paths[j].display()
+            ));
+        }
         seacraft_core::io::write_all_atomic(&writes)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         let missing: Vec<String> = file.missing.iter().map(char::to_string).collect();

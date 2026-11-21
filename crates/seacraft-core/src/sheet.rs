@@ -1018,7 +1018,12 @@ fn address(col: usize, row: usize) -> String {
 }
 
 /// The first page: how to print, the rules to measure, and where each sheet is.
-fn calibration_page(setup: &PageSetup, index: &[String]) -> Content {
+fn calibration_page(
+    setup: &PageSetup,
+    before: &[String],
+    sheets: &[String],
+    after: &[String],
+) -> Content {
     let (pw, ph) = (setup.paper.width_mm, setup.paper.height_mm);
     let m = setup.margin_mm;
     let width_pt = (pw - 2.0 * m) * PT_PER_MM;
@@ -1048,18 +1053,46 @@ fn calibration_page(setup: &PageSetup, index: &[String]) -> Content {
     say(&mut c, 10.0, &format!("Scale {}", scale_label(setup.scale)));
     say(&mut c, 8.0, crate::NOT_VALIDATED_NOTE);
     y_mm -= 4.0;
-    // The sheets, in as many columns as fit above the rules.
+    // The sheets, in as many columns as fit above the rules. When the list overflows, reserve room
+    // for leading (`before`) and trailing (`after`) named sections so their page ranges stay visible.
     let line_mm = SMALL_LINE_MM;
     let floor_mm = m + RULES_HEIGHT_MM + 4.0;
     let per_column = (((y_mm - floor_mm) / line_mm).floor().max(1.0)) as usize;
     let columns = ((pw - 2.0 * m) / 70.0).floor().max(1.0) as usize;
     let room = per_column * columns;
-    for (i, entry) in index.iter().enumerate().take(room) {
-        let text = if i + 1 == room && index.len() > room {
-            format!("… and {} more sheets", index.len() - room + 1)
+    let total_entries = before.len() + sheets.len() + after.len();
+    let visible: Vec<String> = if total_entries <= room {
+        before.iter().chain(sheets).chain(after).cloned().collect()
+    } else {
+        let reserved = before.len() + after.len();
+        if room > reserved + 1 {
+            let keep_sheets = room - reserved - 1;
+            let hidden = sheets.len() - keep_sheets;
+            let mut v = Vec::with_capacity(room);
+            v.extend(before.iter().cloned());
+            v.extend(sheets.iter().take(keep_sheets).cloned());
+            v.push(format!("… and {hidden} more sheets"));
+            v.extend(after.iter().cloned());
+            v
+        } else if room > after.len() {
+            let keep_head = room - after.len() - 1;
+            let hidden = before.len() + sheets.len() - keep_head;
+            let mut v = Vec::with_capacity(room);
+            v.extend(before.iter().chain(sheets).take(keep_head).cloned());
+            v.push(format!("… and {hidden} more sheets"));
+            v.extend(after.iter().cloned());
+            v
         } else {
-            entry.clone()
-        };
+            before
+                .iter()
+                .chain(sheets)
+                .chain(after)
+                .take(room)
+                .cloned()
+                .collect()
+        }
+    };
+    for (i, text) in visible.iter().enumerate() {
         let x_mm = m + (i / per_column) as f64 * (pw - 2.0 * m) / columns as f64;
         let line_y = y_mm - ((i % per_column) + 1) as f64 * line_mm;
         c.text(
@@ -1068,7 +1101,7 @@ fn calibration_page(setup: &PageSetup, index: &[String]) -> Content {
             0.0,
             Anchor::Start,
             0.0,
-            &text,
+            text,
         );
     }
     c
@@ -1307,10 +1340,10 @@ pub fn pdf_tiled_into(
     }
     // The page each sheet starts on, counting from 1, the pages already in `pdf` first and then
     // the calibration page.
-    let mut index = Vec::new();
+    let mut before_index = Vec::new();
     let mut first = 1;
     for (name, pages) in before.iter().filter(|(_, pages)| *pages > 0) {
-        index.push(match pages {
+        before_index.push(match pages {
             1 => format!("{name}: page {first}"),
             _ => format!("{name}: pages {first} to {}", first + pages - 1),
         });
@@ -1318,16 +1351,18 @@ pub fn pdf_tiled_into(
     }
     let earlier = pdf.page_count();
     let mut next = earlier + 2;
+    let mut sheet_index = Vec::new();
     for (sheet, t) in &tilings {
         let pages = t.grid.printed.len() + usize::from(has_map(sheet, &t.grid));
-        index.push(match pages {
+        sheet_index.push(match pages {
             1 => format!("{}: page {next}", sheet.name),
             _ => format!("{}: pages {next} to {}", sheet.name, next + pages - 1),
         });
         next += pages;
     }
+    let mut after_index = Vec::new();
     for (name, pages) in after.iter().filter(|(_, pages)| *pages > 0) {
-        index.push(match pages {
+        after_index.push(match pages {
             1 => format!("{name}: page {next}"),
             _ => format!("{name}: pages {next} to {}", next + pages - 1),
         });
@@ -1339,7 +1374,11 @@ pub fn pdf_tiled_into(
         setup.paper.width_mm * PT_PER_MM,
         setup.paper.height_mm * PT_PER_MM,
     );
-    pdf.add_page(upright.0, upright.1, calibration_page(setup, &index));
+    pdf.add_page(
+        upright.0,
+        upright.1,
+        calibration_page(setup, &before_index, &sheet_index, &after_index),
+    );
     let k = setup.scale * 1000.0;
     let margin_pt = m * PT_PER_MM;
     for (sheet, t) in &tilings {
@@ -2360,5 +2399,32 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn calibration_index_keeps_before_and_after_sections_when_overflowing() {
+        let setup = PageSetup::default();
+        // Enough small sheets to overflow the calibration index columns on A4.
+        let sheets: Vec<Sheet> = (0..120)
+            .map(|i| {
+                let mut s = rect(0.1, 0.1);
+                s.name = format!("Panel {i}");
+                s
+            })
+            .collect();
+        let mut pdf = Pdf::new(&setup.title);
+        pdf_tiled_into(
+            &sheets,
+            &setup,
+            &mut pdf,
+            &[("Layout", 2)],
+            &[("Offsets", 3)],
+        )
+        .unwrap();
+        let doc = pdf.finish().unwrap();
+        let cal = crate::pdf::page_text(&doc.bytes, 0).join("\n");
+        assert!(cal.contains("Layout: pages 1 to 2"), "{cal}");
+        assert!(cal.contains("Offsets: pages"), "{cal}");
+        assert!(cal.contains("more sheets"), "{cal}");
     }
 }

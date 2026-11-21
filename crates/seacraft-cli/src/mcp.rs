@@ -2232,6 +2232,16 @@ impl McpServer {
         for (p, sheet) in sheet_paths.iter().zip(&w.per_sheet) {
             writes.push((p.as_path(), &sheet.bytes));
         }
+        let all_paths: Vec<&Path> = writes.iter().map(|(p, _)| *p).collect();
+        if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)
+            .map_err(|e| format!("export_panels: {e}"))?
+        {
+            return Err(format!(
+                "export_panels: `{}` and `{}` resolve to the same file: each output needs a file of its own",
+                all_paths[i].display(),
+                all_paths[j].display()
+            ));
+        }
         seacraft_core::io::write_all_atomic(&writes).map_err(|e| format!("export_panels: {e}"))?;
         let missing: Vec<String> = w.written.missing.iter().map(char::to_string).collect();
         let sheet_files: Vec<String> = sheet_paths

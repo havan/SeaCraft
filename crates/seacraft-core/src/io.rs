@@ -11,9 +11,13 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// Distinguishes temporary files of concurrent writes within one process.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Serializes multi-file atomic writes in this process so concurrent exports to overlapping paths
+/// cannot interleave their renames.
+static WRITE_ALL_LOCK: Mutex<()> = Mutex::new(());
 
 /// Write `bytes` to `path` atomically: a temporary file in the same
 /// directory (`.<name>.tmp-<pid>-<n>`) is written, flushed and synced, then
@@ -35,6 +39,7 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Resu
 /// error names it. A rename can still fail after earlier ones, but staging has shown every folder
 /// writable, so that takes a change on disk between the two steps.
 pub fn write_all_atomic<P: AsRef<Path>, B: AsRef<[u8]>>(files: &[(P, B)]) -> io::Result<()> {
+    let _guard = WRITE_ALL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut staged = Vec::with_capacity(files.len());
     for (path, bytes) in files {
         let path = path.as_ref();

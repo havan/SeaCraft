@@ -19,6 +19,12 @@ const REFINE_M: f64 = 0.001;
 const SIMPLIFY_M: f64 = 0.00025;
 /// The cell of the grid that finds a placed outline's nearby edges, metres.
 const CELL_M: f64 = 0.05;
+/// Maximum cells in one placed outline's spatial grid so huge outlines cannot exhaust memory.
+const MAX_GRID_CELLS: f64 = 250_000.0;
+/// Maximum sample coordinates per axis in `lowest_spot` (500 m at 10 mm steps).
+const MAX_AXIS_STEPS: usize = 50_000;
+/// Maximum candidate grid spots (`xs * ys`) searched for one pose.
+const MAX_SEARCH_SPOTS: usize = 10_000_000;
 
 /// One thing to place: a closed outline in metres, any winding.
 #[derive(Clone, Debug, PartialEq)]
@@ -245,6 +251,7 @@ fn shapes(item: &Item) -> Vec<Shape> {
 struct Placed {
     pts: Vec<Pt>,
     bbox: [f64; 4],
+    cell_m: f64,
     nx: usize,
     ny: usize,
     cells: Vec<Vec<usize>>,
@@ -253,10 +260,14 @@ struct Placed {
 impl Placed {
     fn new(pts: Vec<Pt>) -> Placed {
         let b = bbox(&pts);
-        let nx = (((b[2] - b[0]) / CELL_M).floor() as usize + 1).min(10_000);
-        let ny = (((b[3] - b[1]) / CELL_M).floor() as usize + 1).min(10_000);
+        let w = (b[2] - b[0]).max(0.0);
+        let h = (b[3] - b[1]).max(0.0);
+        let cell_m = CELL_M.max((w * h / MAX_GRID_CELLS).sqrt());
+        let nx = ((w / cell_m).floor() as usize + 1).min(10_000);
+        let ny = ((h / cell_m).floor() as usize + 1).min(10_000);
         let mut placed = Placed {
             bbox: b,
+            cell_m,
             nx,
             ny,
             cells: vec![Vec::new(); nx * ny],
@@ -276,8 +287,9 @@ impl Placed {
     }
 
     fn cell_range(&self, b: [f64; 4]) -> ((usize, usize), (usize, usize)) {
+        let cell_m = self.cell_m;
         let c =
-            |v: f64, lo: f64, n: usize| (((v - lo) / CELL_M).floor().max(0.0) as usize).min(n - 1);
+            |v: f64, lo: f64, n: usize| (((v - lo) / cell_m).floor().max(0.0) as usize).min(n - 1);
         (
             (
                 c(b[0], self.bbox[0], self.nx),
@@ -345,6 +357,22 @@ impl Placed {
     }
 }
 
+/// Number of grid sample coordinates from `lo` to `hi`, or `None` if it exceeds [`MAX_AXIS_STEPS`].
+fn sample_count(lo: f64, hi: f64) -> Option<usize> {
+    let hi = hi.max(lo);
+    let span = hi - lo;
+    if !span.is_finite() {
+        return None;
+    }
+    let steps = (span / STEP_M + 1e-9).floor();
+    if !steps.is_finite() || steps < 0.0 || steps > MAX_AXIS_STEPS as f64 {
+        return None;
+    }
+    let n = steps as usize;
+    let extra = usize::from(hi - (lo + n as f64 * STEP_M).min(hi) > 1e-12);
+    Some(n + 1 + extra)
+}
+
 /// Grid sample coordinates from `lo` to `hi` in `STEP_M` increments, always including `hi` so
 /// slack smaller than one step at the far edge is never skipped.
 fn samples(lo: f64, hi: f64) -> Vec<f64> {
@@ -357,35 +385,43 @@ fn samples(lo: f64, hi: f64) -> Vec<f64> {
     out
 }
 
+enum Spot {
+    Found(Pt),
+    None,
+    TooLarge,
+}
+
 /// The lowest spot, then the leftmost, for `shape` on a bin of `bin` among `placed`, keeping
 /// `gap` from the bin's edges (on the true box) and `search_gap` from the placed outlines.
-fn lowest_spot(
-    shape: &Shape,
-    bin: Bin,
-    placed: &[Placed],
-    gap: f64,
-    search_gap: f64,
-) -> Option<Pt> {
+fn lowest_spot(shape: &Shape, bin: Bin, placed: &[Placed], gap: f64, search_gap: f64) -> Spot {
     if !bin.length.is_finite()
         || !bin.width.is_finite()
         || bin.length - 2.0 * gap <= 0.0
         || bin.width - 2.0 * gap <= 0.0
     {
-        return None;
+        return Spot::None;
     }
     let cb = bbox(&shape.simple);
     let x_max = bin.length - gap - shape.length;
     let y_max = bin.width - gap - shape.width;
     if !x_max.is_finite() || !y_max.is_finite() || x_max < gap - 1e-9 || y_max < gap - 1e-9 {
-        return None;
+        return Spot::None;
+    }
+    let x_hi = x_max.max(gap);
+    let y_hi = y_max.max(gap);
+    let (Some(nx), Some(ny)) = (sample_count(gap, x_hi), sample_count(gap, y_hi)) else {
+        return Spot::TooLarge;
+    };
+    if nx.saturating_mul(ny) > MAX_SEARCH_SPOTS {
+        return Spot::TooLarge;
     }
     let clear = |x: f64, y: f64| {
         placed
             .iter()
             .all(|p| p.clear_of(&shape.simple, cb, (x, y), search_gap))
     };
-    let xs = samples(gap, x_max.max(gap));
-    let ys = samples(gap, y_max.max(gap));
+    let xs = samples(gap, x_hi);
+    let ys = samples(gap, y_hi);
     let mut best: Option<Pt> = None;
     for &x in &xs {
         let mut found = None;
@@ -425,7 +461,10 @@ fn lowest_spot(
             }
         }
     }
-    best
+    match best {
+        Some(p) => Spot::Found(p),
+        None => Spot::None,
+    }
 }
 
 /// Places `items` on bins, largest first. `new_bin(length)` gives the bin to open for an item
@@ -460,23 +499,32 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
             continue;
         }
         let shapes = shapes(item);
-        let try_bin = |bin: Bin, placed: &[Placed]| -> Option<(usize, Pt)> {
+        let try_bin = |bin: Bin, placed: &[Placed]| -> Result<Option<(usize, Pt)>, ()> {
             let mut best: Option<(usize, Pt)> = None;
+            let mut too_large = false;
             for (s, shape) in shapes.iter().enumerate() {
-                if let Some(at) = lowest_spot(shape, bin, placed, gap, search_gap) {
-                    let better = best.is_none_or(|(_, b)| {
-                        at.1 < b.1 - 1e-12 || (at.1 <= b.1 + 1e-12 && at.0 < b.0 - 1e-12)
-                    });
-                    if better {
-                        best = Some((s, at));
+                match lowest_spot(shape, bin, placed, gap, search_gap) {
+                    Spot::Found(at) => {
+                        let better = best.is_none_or(|(_, b)| {
+                            at.1 < b.1 - 1e-12 || (at.1 <= b.1 + 1e-12 && at.0 < b.0 - 1e-12)
+                        });
+                        if better {
+                            best = Some((s, at));
+                        }
                     }
+                    Spot::None => {}
+                    Spot::TooLarge => too_large = true,
                 }
             }
-            best
+            if best.is_none() && too_large {
+                Err(())
+            } else {
+                Ok(best)
+            }
         };
         let mut spot = None;
         for (b, bin) in out.bins.iter().enumerate() {
-            if let Some(found) = try_bin(*bin, &placed[b]) {
+            if let Ok(Some(found)) = try_bin(*bin, &placed[b]) {
                 spot = Some((b, found));
                 break;
             }
@@ -515,12 +563,12 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                 continue;
             }
             match try_bin(bin, &[]) {
-                Some(found) => {
+                Ok(Some(found)) => {
                     out.bins.push(bin);
                     placed.push(Vec::new());
                     spot = Some((out.bins.len() - 1, found));
                 }
-                None => {
+                Ok(None) => {
                     out.unplaced.push((
                         i,
                         format!(
@@ -528,6 +576,14 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                             crate::units::millimetres(length),
                             crate::units::millimetres((bin.length - 2.0 * gap).max(0.0))
                         ),
+                    ));
+                    continue;
+                }
+                Err(()) => {
+                    out.unplaced.push((
+                        i,
+                        "the sheet or blank is too large to search (exceeds nesting search limit)"
+                            .into(),
                     ));
                     continue;
                 }
@@ -927,5 +983,30 @@ mod tests {
         );
         assert!(p.placements.is_empty());
         assert_eq!(p.unplaced.len(), 1);
+    }
+
+    #[test]
+    fn oversized_bin_exceeds_search_budget_without_allocating() {
+        let items = vec![Item {
+            outline: rect(1.0, 0.3),
+            may_turn_over: false,
+        }];
+        let p = pack(
+            &items,
+            &|_| {
+                Some(Bin {
+                    length: 1.0e9,
+                    width: 1.22,
+                })
+            },
+            0.01,
+        );
+        assert!(p.placements.is_empty());
+        assert_eq!(p.unplaced.len(), 1);
+        assert!(
+            p.unplaced[0].1.contains("too large to search"),
+            "{}",
+            p.unplaced[0].1
+        );
     }
 }

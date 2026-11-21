@@ -2143,31 +2143,70 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         stations: stations.clone(),
         layout: None,
     };
+    let split_nesting = opts
+        .nesting
+        .filter(|n| n.mode == crate::panel_layout::NestMode::Split);
     for p in &panels {
         let offsets = panel_offsets(p, opts.offset_spacing_m);
         let mut sheet = panel_sheet(p, &offsets, &stations, opts.limits, opts.imperial);
         let row = lay_out(p, st);
-        sheet.paths.extend(stock_paths(&row, p, st));
-        let plywood = match (&row.note, row.sheets_each) {
-            (Some(note), _) => format!("Plywood: {note}"),
-            (None, Some(n)) => {
-                let joints: Vec<String> = row
-                    .joints_m
-                    .iter()
-                    .map(|j| crate::units::length(*j, opts.imperial))
-                    .collect();
-                let sheets = if n == 1 { "sheet" } else { "sheets" };
-                let mut text = format!(
-                    "Plywood: {n} {sheets} of {} × {} mm each copy",
+        let plywood = if let Some(n) = split_nesting {
+            let usable = st.length_m - 2.0 * n.gap_m;
+            let (x0, y0, _, width) = extent(p);
+            match crate::panel_layout::split_points(p, usable) {
+                Ok(joints) if joints.is_empty() => format!(
+                    "Plywood (split layout): fits one {} × {} mm sheet (gap {} mm)",
                     crate::units::millimetres(st.length_m),
-                    crate::units::millimetres(st.width_m)
-                );
-                if !joints.is_empty() {
-                    text.push_str(&format!(", joints {} from the aft end", joints.join(", ")));
+                    crate::units::millimetres(st.width_m),
+                    crate::units::millimetres(n.gap_m)
+                ),
+                Ok(joints) => {
+                    for &j in &joints {
+                        sheet.paths.push(SheetPath {
+                            kind: PathKind::Reference,
+                            points: vec![(j, y0), (j, y0 + width)],
+                            closed: false,
+                        });
+                    }
+                    let joint_text: Vec<String> = joints
+                        .iter()
+                        .map(|j| crate::units::length(*j - x0, opts.imperial))
+                        .collect();
+                    format!(
+                        "Plywood (split layout): {} parts on {} × {} mm sheets (gap {} mm), \
+                         split joints {} from the aft end",
+                        joints.len() + 1,
+                        crate::units::millimetres(st.length_m),
+                        crate::units::millimetres(st.width_m),
+                        crate::units::millimetres(n.gap_m),
+                        joint_text.join(", ")
+                    )
                 }
-                text
+                Err(why) => format!("Plywood (split layout): not split ({why})"),
             }
-            (None, None) => "Plywood: not laid out".into(),
+        } else {
+            sheet.paths.extend(stock_paths(&row, p, st));
+            match (&row.note, row.sheets_each) {
+                (Some(note), _) => format!("Plywood: {note}"),
+                (None, Some(n)) => {
+                    let joints: Vec<String> = row
+                        .joints_m
+                        .iter()
+                        .map(|j| crate::units::length(*j, opts.imperial))
+                        .collect();
+                    let sheets = if n == 1 { "sheet" } else { "sheets" };
+                    let mut text = format!(
+                        "Plywood: {n} {sheets} of {} × {} mm each copy",
+                        crate::units::millimetres(st.length_m),
+                        crate::units::millimetres(st.width_m)
+                    );
+                    if !joints.is_empty() {
+                        text.push_str(&format!(", joints {} from the aft end", joints.join(", ")));
+                    }
+                    text
+                }
+                (None, None) => "Plywood: not laid out".into(),
+            }
         };
         // Before the three closing sentences.
         let at = sheet.notes.len().saturating_sub(3);
@@ -3940,10 +3979,22 @@ mod tests {
             let text = String::from_utf8(w.bytes.clone()).unwrap();
             assert!(text.contains("CUT") && text.contains("REFERENCE"));
         }
-        // The patterns file is the one written without nesting.
+        // With Blanks, the patterns file matches no nesting; with Split, the pattern notes and
+        // guides name the split layout instead of the un-nested end-to-end estimate.
         let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        let blanks = nested_skiff(crate::panel_layout::NestMode::Blanks);
         let before = write(&plain, Format::Svg, &PageSetup::default(), false).unwrap();
-        assert_eq!(svg.written.bytes, before.written.bytes);
+        let blanks_svg = write(&blanks, Format::Svg, &PageSetup::default(), false).unwrap();
+        assert_eq!(blanks_svg.written.bytes, before.written.bytes);
+        let split_text = String::from_utf8(svg.written.bytes).unwrap();
+        assert!(
+            split_text.contains("Plywood (split layout)"),
+            "{split_text}"
+        );
+        assert!(
+            !split_text.contains("joints 2.440 m from the aft end"),
+            "split pattern must not show the non-nested 2.44 m joint"
+        );
     }
 
     #[test]
