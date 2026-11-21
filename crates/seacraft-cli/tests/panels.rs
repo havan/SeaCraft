@@ -272,3 +272,98 @@ fn no_offsets_pages_leaves_them_out_of_the_pdf() {
         without["pages"].as_u64().unwrap() + tables
     );
 }
+
+#[test]
+fn panels_nest_writes_a_file_per_sheet() {
+    let dir = workdir("nest");
+    let ex = run(&dir, &["example", "skiff-4m", "-o", "skiff.fef"]);
+    assert!(ex.status.success(), "{}", text(&ex.stderr));
+
+    let out = ok(
+        &dir,
+        &["panels", "skiff.fef", "-o", "x.svg", "--nest", "split"],
+    );
+    assert!(out.contains("nested"), "{out}");
+    assert!(out.contains("wrote x.svg"), "{out}");
+    assert!(out.contains("wrote x-sheet-1.svg"), "{out}");
+    assert!(std::fs::read_to_string(dir.join("x.svg"))
+        .unwrap()
+        .contains("<svg"));
+    assert!(std::fs::read_to_string(dir.join("x-sheet-1.svg"))
+        .unwrap()
+        .contains("<svg"));
+
+    let json_out = ok(
+        &dir,
+        &[
+            "panels",
+            "skiff.fef",
+            "-o",
+            "j.svg",
+            "--nest",
+            "split",
+            "--json",
+        ],
+    );
+    let v: serde_json::Value = serde_json::from_str(&json_out).expect("JSON");
+    assert_eq!(v["layout"]["mode"], "split", "{v}");
+    let sheets = v["layout"]["sheets"].as_array().expect("layout.sheets");
+    assert!(!sheets.is_empty(), "{v}");
+    let files = v["sheet_files"].as_array().expect("sheet_files");
+    assert_eq!(files.len(), sheets.len(), "{v}");
+    for (i, f) in files.iter().enumerate() {
+        let name = f.as_str().expect("string path");
+        assert_eq!(name, format!("j-sheet-{}.svg", i + 1), "{v}");
+        let body = std::fs::read_to_string(dir.join(name)).expect("sheet file exists");
+        assert!(body.contains("<svg"), "{name}");
+    }
+
+    let plain_json = ok(&dir, &["panels", "skiff.fef", "-o", "plain.svg", "--json"]);
+    let pv: serde_json::Value = serde_json::from_str(&plain_json).expect("JSON");
+    assert!(pv["layout"].is_null(), "{pv}");
+    assert_eq!(pv["sheet_files"], serde_json::json!([]), "{pv}");
+
+    for bad_gap in ["0", "-5"] {
+        let err = fails(
+            &dir,
+            &[
+                "panels",
+                "skiff.fef",
+                "-o",
+                "bad.svg",
+                "--nest",
+                "split",
+                "--gap-mm",
+                bad_gap,
+            ],
+        );
+        assert!(err.contains("--gap-mm"), "{err}");
+    }
+    let err = fails(
+        &dir,
+        &["panels", "skiff.fef", "-o", "bad.svg", "--nest", "tetris"],
+    );
+    assert!(
+        err.contains("--nest") && err.contains("none, blanks or split"),
+        "{err}"
+    );
+
+    let err = fails(
+        &dir,
+        &[
+            "panels",
+            "skiff.fef",
+            "-o",
+            "clash.svg",
+            "--nest",
+            "split",
+            "--offsets-csv",
+            "clash-sheet-1.svg",
+        ],
+    );
+    assert!(err.contains("same file"), "{err}");
+    assert!(!dir.join("clash.svg").exists());
+    assert!(!dir.join("clash-sheet-1.svg").exists());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

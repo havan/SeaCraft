@@ -25,12 +25,16 @@ Read the hull first: `hull_info {}` for extents and `validation.ok` (a leaking n
 
 ## Plywood panels
 
-For a hard-chine hull built stitch-and-glue, each panel is laid flat and measured. Measure before writing anything:
+For a hard-chine hull built stitch-and-glue, each panel is laid flat and measured. The `skiff-4m` example (a 4.3 m flat-bottom skiff) is a hull whose panels all lie flat at the default limits; use it to show the tools before the builder's own hull. Measure before writing anything:
 
-1. `export_panels {}` measures the panels of the layers marked developable (or name them: `"layers": ["Bottom", "Side"]`). Each row of `panels` has `lies_flat`, `rms_stretch_pct`, `max_stretch_pct`, `max_seam_drift_mm`, `area_m2` and `sheets_each`. `refused` names panels that could not be laid flat at all and why; `mismatches` gives how far two stitched edges differ at the ticks; `plywood` is the sheet count in words, end to end with no nesting, an upper bound.
-2. A panel does not lie flat when its seam drift is over 2 mm or its RMS stretch over 0.1 % (`max_seam_drift_mm`, `max_stretch_pct`). These limits are the project's provisional judgement, not a published rule; tell the builder so. A round-bilge hull does not lie flat in plywood: that is the right answer, not a fault.
-3. Then write: `export_panels {"path": "/tmp/panels.pdf"}`. The PDF carries each panel's offsets tables after the patterns (`"offsets_pages": false` leaves them out). When a panel does not lie flat, nothing is written: the reply has `"written": false` and the `reason`. Write anyway only when the builder asks, with `"allow_undevelopable": true`, and say which panels fail and by how much; those patterns are headed "Does not lie flat".
-4. The measures are against the modelled surface, with no plywood thickness: not a bending test of real plywood.
+1. `export_panels {}` measures the panels of the layers marked developable (or name them: `"layers": ["Bottom", "Side"]`). Each row of `panels` has `lies_flat`, `rms_stretch_pct`, `max_stretch_pct`, `max_seam_drift_mm`, `area_m2` and `sheets_each`. `refused` names panels that could not be laid flat at all and why; `mismatches` gives how far two stitched edges differ at the ticks; `plywood` is the sheet count in words (end to end with no nesting by default, an upper bound); `layout` is `null` without nesting; `all_lie_flat` tells whether every panel passes.
+2. To nest pieces onto plywood sheets (`stock_mm`, default `"2440x1220"`) with `gap_mm` between pieces and from the sheet edges (default 10 mm), pass `"nest"`:
+   - Offer `"blanks"` when the builder plans to scarf sheets end to end (`scarf_mm`) into full-length blanks before cutting pieces whole.
+   - Offer `"split"` when the builder wants to cut from single sheets and join parts later: pieces longer than a sheet are cut at straight butt joints with matching lettered alignment marks (`A`, `B`, …).
+   - Tell the builder that the layout is automatic and repeatable, **not** optimal (not the fewest possible sheets), and relay every entry of `layout.not_placed` (any piece left off the sheets and why).
+3. A panel does not lie flat when its seam drift is over 2 mm or its RMS stretch over 0.1 % (`max_seam_drift_mm`, `max_stretch_pct`). These limits are the project's provisional judgement, not a published rule; tell the builder so. A round-bilge hull does not lie flat in plywood: that is the right answer, not a fault.
+4. Then write: `export_panels {"path": "/tmp/panels.pdf"}` (or `.svg` / `.dxf`; e.g. `export_panels {"path": "/tmp/panels.svg", "nest": "split", "gap_mm": 10}`). With nesting on, SVG and DXF also write one per-sheet cutting file listed in `sheet_files` (relay every written path), and a PDF puts scaled layout overview pages at the front before the full-size patterns and offsets tables (`"offsets_pages": false` leaves the tables out). When a panel does not lie flat, nothing is written: the reply has `"written": false` and the `reason`. Write anyway only when the builder asks, with `"allow_undevelopable": true`, and say which panels fail and by how much; those patterns are headed "Does not lie flat".
+5. The measures are against the modelled surface, with no plywood thickness: not a bending test of real plywood. Every pattern carries its overall size, baseline offsets and seam lengths as reference lines and text, never cut lines.
 
 ## Read the reply
 
@@ -49,8 +53,8 @@ For a hard-chine hull built stitch-and-glue, each panel is laid flat and measure
 ## Red flags
 
 - Writing a pattern with `skin_mm` you did not get from the builder.
-- Calling a pattern accurate, checked or ready to build. Say what it was computed from and what the builder must measure.
-- Dropping or summarising away a warning.
+- Calling a pattern or nested layout accurate, checked, optimal, verified, validated or ready to cut. Say what it was computed from and what the builder must measure against the full-size patterns.
+- Dropping or summarising away a warning or an entry in `layout.not_placed`.
 - Changing `scale` to get under the page limit for a pattern the builder will cut from.
 - Exporting before `hull_info` shows `validation.ok`.
 - Calling a panel developable or ready to cut, or writing `allow_undevelopable` patterns without naming the panels that do not lie flat.

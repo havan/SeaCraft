@@ -26,6 +26,19 @@ fn pram_file(test: &str, bow_m: f64) -> std::path::PathBuf {
     path
 }
 
+/// The skiff-4m example (bottom, sides and transom all lie flat) at level 3.
+fn skiff(test: &str) -> App {
+    let dir = std::env::temp_dir().join(format!("seacraft-gui-panels-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{test}.fef"));
+    let (surface, _) =
+        seacraft_core::examples::build(seacraft_core::examples::Example::Skiff4m).expect("skiff");
+    std::fs::write(&path, seacraft_core::fef::write(&surface)).unwrap();
+    let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+    app.set_subdivision_level(3);
+    app
+}
+
 /// One headless window whose widgets are read from egui's AccessKit tree.
 struct Window {
     ctx: egui::Context,
@@ -34,6 +47,8 @@ struct Window {
     widgets: Vec<(Role, String, bool, egui::Rect)>,
     /// Every text painted in the last frame, egui's own warnings included.
     painted: Vec<String>,
+    /// Whether the stale-drawing veil was painted in the last frame.
+    has_stale_veil: bool,
 }
 
 impl Window {
@@ -45,6 +60,7 @@ impl Window {
             app,
             widgets: Vec::new(),
             painted: Vec::new(),
+            has_stale_veil: false,
         };
         w.frame(vec![]);
         w.frame(vec![]);
@@ -63,16 +79,20 @@ impl Window {
         let app = &mut self.app;
         let mut out = self.ctx.run_ui(input, |ui| app.draw(ui));
         out.textures_delta.clear();
-        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>, stale_veil: &mut bool) {
             match shape {
-                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts, stale_veil)),
                 egui::Shape::Text(t) => texts.push(t.galley.text().to_string()),
+                egui::Shape::Rect(r) if r.fill == seacraft_gui::theme::PATTERN_STALE_VEIL => {
+                    *stale_veil = true;
+                }
                 _ => {}
             }
         }
         self.painted.clear();
+        self.has_stale_veil = false;
         for clipped in &out.shapes {
-            walk(&clipped.shape, &mut self.painted);
+            walk(&clipped.shape, &mut self.painted, &mut self.has_stale_veil);
         }
         self.widgets = out
             .platform_output
@@ -693,4 +713,195 @@ fn a_list_of_stations_can_be_switched_to_spacing() {
         "{:?}",
         w.app.panels_params().stations
     );
+}
+
+#[test]
+fn choosing_blanks_shows_the_sheets() {
+    let mut w = Window::new(skiff("choosing_blanks_shows_the_sheets"));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.shows("Nesting:"), "{:?}", w.painted);
+    assert!(w.shows("No nesting"), "{:?}", w.painted);
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.until("the nested blanks", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+
+    assert!(w.button("Panels").is_some(), "{:?}", w.widgets);
+    assert!(w.button("Sheets").is_some(), "{:?}", w.widgets);
+    assert!(w.app.panels_showing_sheets());
+    assert!(w.shows("Join sheets into blanks"), "{:?}", w.painted);
+    assert!(w.shows("Gap between pieces:"), "{:?}", w.painted);
+
+    let n = w
+        .app
+        .panels_preview()
+        .unwrap()
+        .set
+        .layout
+        .as_ref()
+        .unwrap()
+        .drawings
+        .len();
+    assert!(n >= 1);
+    assert!(w.shows(&format!("Drawing: {n} sheets")), "{:?}", w.widgets);
+    assert!(w.shows("nested"), "{:?}", w.painted);
+    assert!(w.app.panels_sheets_view().zoom > 0.0);
+
+    w.click("Panels");
+    assert!(!w.app.panels_showing_sheets());
+    assert!(w.shows("Drawing: 3 sheets"), "{:?}", w.widgets);
+
+    w.click("Sheets");
+    assert!(w.app.panels_showing_sheets());
+    assert!(w.shows(&format!("Drawing: {n} sheets")), "{:?}", w.widgets);
+}
+
+#[test]
+fn a_stale_layout_is_faded_and_export_waits() {
+    let mut w = Window::new(skiff("a_stale_layout_is_faded_and_export_waits"));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the nested layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.app.panels_showing_sheets());
+    assert!(!w.has_stale_veil);
+    assert!(!w.button("Export…").unwrap().0);
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.gap_mm = 20.0;
+    w.app.set_panels_params(params);
+    w.frame(vec![]);
+
+    assert!(w.app.panels_preview().is_none(), "stale at once");
+    assert!(w.shows("Out of date"), "{:?}", w.painted);
+    assert!(w.has_stale_veil, "sheet view drawn under the stale veil");
+    assert!(w.button("Export…").unwrap().0, "Export waits");
+    assert!(w.app.export_panels_to(&scratch("stale.svg")).is_err());
+
+    w.until("the new layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(!w.has_stale_veil);
+    assert!(!w.shows("Out of date"));
+    assert!(!w.button("Export…").unwrap().0);
+}
+
+#[test]
+fn export_writes_a_file_per_sheet() {
+    let mut w = Window::new(skiff("export_writes_a_file_per_sheet"));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the nested layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+
+    let n = w
+        .app
+        .panels_preview()
+        .unwrap()
+        .set
+        .layout
+        .as_ref()
+        .unwrap()
+        .sheets
+        .len();
+    assert!(n >= 1);
+
+    let svg = scratch("nested-gui.svg");
+    let _ = std::fs::remove_file(&svg);
+    for i in 0..n {
+        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&svg, i));
+    }
+    w.app.export_panels_to(&svg).unwrap();
+    assert!(std::fs::read_to_string(&svg).unwrap().contains("<svg"));
+    for i in 0..n {
+        let p = seacraft_core::panels::sheet_file_name(&svg, i);
+        assert!(
+            std::fs::read_to_string(&p).unwrap().contains("<svg"),
+            "{p:?}"
+        );
+    }
+
+    let pdf = scratch("nested-gui.pdf");
+    let _ = std::fs::remove_file(&pdf);
+    let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&pdf, 0));
+    w.app.export_panels_to(&pdf).unwrap();
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-"));
+    assert!(!seacraft_core::panels::sheet_file_name(&pdf, 0).exists());
+}
+
+#[test]
+fn no_nesting_hides_the_switch() {
+    let mut w = Window::new(skiff("no_nesting_hides_the_switch"));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.button("Panels").is_none());
+    assert!(w.button("Sheets").is_none());
+    assert!(!w.app.panels_showing_sheets());
+    assert!(!w.shows("Gap between pieces:"));
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.until("the blanks layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.button("Panels").is_some());
+    assert!(w.button("Sheets").is_some());
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "none".into();
+    w.app.set_panels_params(params);
+    w.until("no nesting", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.button("Panels").is_none());
+    assert!(w.button("Sheets").is_none());
+    assert!(!w.app.panels_showing_sheets());
+}
+
+#[test]
+fn clicking_a_panel_row_from_sheets_switches_back_to_panels() {
+    let mut w = Window::new(skiff(
+        "clicking_a_panel_row_from_sheets_switches_back_to_panels",
+    ));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the blanks layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.app.panels_showing_sheets());
+
+    let window = w
+        .widgets
+        .iter()
+        .find(|(_, l, _, _)| l.starts_with("Drawing:"))
+        .map(|(_, _, _, r)| *r)
+        .expect("the drawing");
+    let row = w
+        .widgets
+        .iter()
+        .filter(|(r, l, _, _)| *r == Role::Button && l == "Side")
+        .map(|(_, _, _, r)| *r)
+        .find(|r| r.min.x >= window.min.x - 1.0)
+        .expect("the Side row");
+    w.click_at(row.center());
+    w.frame(vec![]);
+    assert!(!w.app.panels_showing_sheets());
+    assert_eq!(w.app.panels_selected(), Some(1));
 }

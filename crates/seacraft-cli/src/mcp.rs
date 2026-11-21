@@ -2225,15 +2225,40 @@ impl McpServer {
         }
         let w = seacraft_core::panels::write(&set, format, &req.setup, req.offsets_pages)
             .map_err(|e| format!("export_panels: {e}"))?;
-        seacraft_core::io::write_atomic(&path, &w.written.bytes)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let sheet_paths: Vec<PathBuf> = (0..w.per_sheet.len())
+            .map(|i| seacraft_core::panels::sheet_file_name(&path, i))
+            .collect();
+        let mut writes: Vec<(&Path, &[u8])> = vec![(path.as_path(), &w.written.bytes)];
+        for (p, sheet) in sheet_paths.iter().zip(&w.per_sheet) {
+            writes.push((p.as_path(), &sheet.bytes));
+        }
+        let all_paths: Vec<&Path> = writes.iter().map(|(p, _)| *p).collect();
+        let shared = if all_paths.len() > 1 {
+            seacraft_core::io::shared_output(&all_paths)
+        } else {
+            Ok(None)
+        };
+        if let Some((i, j)) = shared.map_err(|e| format!("export_panels: {e}"))? {
+            return Err(format!(
+                "export_panels: `{}` and `{}` resolve to the same file: each output needs a file of its own",
+                all_paths[i].display(),
+                all_paths[j].display()
+            ));
+        }
+        seacraft_core::io::write_all_atomic(&writes).map_err(|e| format!("export_panels: {e}"))?;
         let missing: Vec<String> = w.written.missing.iter().map(char::to_string).collect();
+        let sheet_files: Vec<String> = sheet_paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         v["written"] = json!(true);
         v["path"] = json!(path.to_string_lossy());
         v["format"] = json!(format.name());
         v["bytes"] = json!(w.written.bytes.len());
         v["pages"] = json!(w.written.pages);
+        v["layout_pages"] = json!(w.layout_pages);
         v["offsets_pages"] = json!(w.offsets_pages);
+        v["sheet_files"] = json!(sheet_files);
         v["missing_characters"] = json!(missing);
         Ok(v)
     }
@@ -2798,6 +2823,8 @@ fn panels_args(
         offset_spacing_mm: opt_number(a, "offset_spacing_mm")?.unwrap_or(d.offset_spacing_mm),
         stock_mm: opt_str(a, "stock_mm")?.map_or(d.stock_mm, str::to_owned),
         scarf_mm: opt_number(a, "scarf_mm")?.unwrap_or(d.scarf_mm),
+        nest: opt_str(a, "nest")?.map_or(d.nest, str::to_owned),
+        gap_mm: opt_number(a, "gap_mm")?.unwrap_or(d.gap_mm),
     };
     let checked = check(&choices).map_err(|e| err(e.to_string()))?;
     let paper = match opt_str(a, "paper")? {
@@ -2858,6 +2885,7 @@ fn panels_args(
             offset_spacing_m: checked.offset_spacing_m,
             stock: checked.stock,
             imperial,
+            nesting: checked.nesting,
         },
         setup,
         offsets_pages: opt_bool(a, "offsets_pages")?.unwrap_or(true),
@@ -3677,12 +3705,17 @@ pub fn tool_definitions() -> Vec<Value> {
              and largest stretch in per cent, and seam drift in mm, the most a flat seam's length runs \
              off its length on the model. A panel over either limit (default 2 mm and 0.1 % RMS, \
              provisional) does not lie flat. Without `path` this only measures: call it first and read \
-             `panels` (one row a panel), `refused`, `mismatches`, `plywood` (sheets end to end, no \
-             nesting) and `all_lie_flat`. With `path` it also writes the patterns: `.pdf` (tiled, or one \
-             page a panel with `single_page`, with each panel's offsets tables after the patterns unless \
-             `offsets_pages` is false), `.svg` or `.dxf`. When a panel does not lie flat nothing is \
-             written (`written: false` and the `reason`) unless `allow_undevelopable`. The measures are \
-             against the modelled surface, not a bending test of real plywood: say so to the builder.",
+             `panels` (one row a panel), `refused`, `mismatches`, `plywood` (the sheet count in words), \
+             `layout` (`null` without nesting) and `all_lie_flat`. `nest` puts the pieces onto sheets \
+             automatically (`none` default; `blanks` joins sheets end to end with `scarf_mm`; `split` \
+             cuts long pieces at straight joints), keeping `gap_mm` (default 10). With `path` it also \
+             writes the patterns: `.pdf` (layout overview pages first when nested, then tiled or one \
+             page a panel with `single_page`, plus offsets tables unless `offsets_pages` is false), \
+             `.svg` or `.dxf` (plus one per-sheet cutting file listed in `sheet_files` when nested). \
+             When a panel does not lie flat nothing is written (`written: false` and the `reason`) \
+             unless `allow_undevelopable`. The measures are against the modelled surface, not a \
+             bending test of real plywood, and any layout is repeatable rather than the fewest possible \
+             sheets: say so to the builder.",
             obj(
                 json!({
                     "path": string("Output path; .pdf, .svg or .dxf. Leave out to measure only"),
@@ -3695,6 +3728,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "offset_spacing_mm": number("Rows of the panel offsets every this many mm along the baseline (default 250)"),
                     "stock_mm": string("The plywood sheet, LENGTHxWIDTH in mm (default 2440x1220)"),
                     "scarf_mm": number("How much joined sheets overlap at a scarf, mm; 0 for butt joints (default 0)"),
+                    "nest": {"type": "string", "enum": ["none", "blanks", "split"], "description": "Automatic nesting onto plywood sheets: none (default), blanks (sheets joined end to end), or split (long pieces cut at straight joints)"},
+                    "gap_mm": number("Gap between nested pieces and from the sheet edges, mm (default 10)"),
                     "imperial": boolean("Add feet and inches beside the metric readings"),
                     "allow_undevelopable": boolean("Write the patterns even when a panel does not lie flat; each such pattern is headed so"),
                     "offsets_pages": boolean("Put the offsets tables after the patterns in a PDF (default true)"),
@@ -6777,6 +6812,8 @@ mod tests {
             "offset_spacing_mm",
             "stock_mm",
             "scarf_mm",
+            "nest",
+            "gap_mm",
             "imperial",
             "allow_undevelopable",
             "offsets_pages",
@@ -6894,6 +6931,82 @@ mod tests {
         let r = ok(&mut s, 2, "export_panels", allowed);
         assert_eq!(r["written"], true, "{r}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_panels_nests_and_lists_the_sheet_files() {
+        let (skiff, _) = seacraft_core::examples::build(seacraft_core::examples::Example::Skiff4m)
+            .expect("skiff");
+        let mut s = McpServer::from_surface(skiff);
+        let measured = ok(
+            &mut s,
+            1,
+            "export_panels",
+            json!({"nest": "blanks", "gap_mm": 10}),
+        );
+        assert_eq!(measured["layout"]["mode"], "blanks", "{measured}");
+        assert!(
+            !measured["layout"]["sheets"].as_array().unwrap().is_empty(),
+            "{measured}"
+        );
+        assert!(
+            measured.get("written").is_none() && measured.get("sheet_files").is_none(),
+            "{measured}"
+        );
+
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-mcp-panels-nest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("skiff.svg");
+        let written = ok(
+            &mut s,
+            2,
+            "export_panels",
+            json!({"path": path, "nest": "split", "gap_mm": 10}),
+        );
+        assert_eq!(written["written"], true, "{written}");
+        assert_eq!(written["layout"]["mode"], "split", "{written}");
+        let sheets = written["layout"]["sheets"].as_array().unwrap().len();
+        assert!(sheets >= 1, "{written}");
+        let files = written["sheet_files"].as_array().expect("sheet_files");
+        assert_eq!(files.len(), sheets, "{written}");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("<svg"));
+        for (i, f) in files.iter().enumerate() {
+            let p = PathBuf::from(f.as_str().expect("string path"));
+            assert_eq!(p, seacraft_core::panels::sheet_file_name(&path, i));
+            assert!(std::fs::read_to_string(&p).unwrap().contains("<svg"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_panels_refuses_a_bad_gap_naming_it() {
+        let mut s = pram_server(0.0);
+        for (id, gap) in [(1, 0.0), (2, -1.0), (3, 700.0)] {
+            let err = fails(
+                &mut s,
+                id,
+                "export_panels",
+                json!({"nest": "split", "gap_mm": gap}),
+            );
+            assert!(
+                err.starts_with("export_panels: ") && err.contains("`gap_mm`"),
+                "{err}"
+            );
+        }
+        let bad_nest = request(
+            &mut s,
+            4,
+            "tools/call",
+            json!({"name": "export_panels", "arguments": {"nest": "tetris"}}),
+        );
+        assert_eq!(bad_nest["error"]["code"], -32602, "{bad_nest}");
+        let msg = bad_nest["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("`nest`") && msg.contains("split"),
+            "{bad_nest}"
+        );
     }
 
     #[test]

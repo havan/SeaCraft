@@ -16,7 +16,15 @@ pub enum PanelsAction {
     Export,
     /// Frame panel `i` in the drawing and select its row.
     Frame(usize),
+    /// Switch between the panel patterns and the nested sheets.
+    ShowSheets(bool),
 }
+
+const NEST_MODES: [(&str, &str); 3] = [
+    ("none", "No nesting"),
+    ("blanks", "Join sheets into blanks"),
+    ("split", "Split pieces to fit sheets"),
+];
 
 /// Where the measured panels stand for the current options and model.
 #[derive(Clone, Copy, Debug)]
@@ -153,10 +161,43 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     .suffix(" mm"),
             );
             ui.end_row();
+            ui.label("Nesting:");
+            let current_nest = NEST_MODES
+                .iter()
+                .find(|(k, _)| c.nest.trim().eq_ignore_ascii_case(k))
+                .map_or(c.nest.as_str(), |(_, label)| *label);
+            egui::ComboBox::from_id_salt("panels_nest")
+                .selected_text(current_nest)
+                .show_ui(ui, |ui| {
+                    for (key, label) in NEST_MODES {
+                        ui.selectable_value(&mut c.nest, key.to_owned(), label);
+                    }
+                });
+            ui.end_row();
+            if !c.nest.trim().eq_ignore_ascii_case("none") {
+                ui.label("Gap between pieces:");
+                ui.add(
+                    theme::num(&mut c.gap_mm)
+                        .speed(1.0)
+                        .range(1.0..=500.0)
+                        .suffix(" mm"),
+                );
+                ui.end_row();
+            }
             ui.label("Units:");
             ui.checkbox(&mut params.imperial, "Imperial beside metric");
             ui.end_row();
         });
+}
+
+/// The `Panels | Sheets` switch above the drawing, shown when a layout exists.
+pub fn panels_view_switch(ui: &mut egui::Ui, show_sheets: bool) -> Option<PanelsAction> {
+    let mut next = show_sheets;
+    theme::segmented(ui, |ui| {
+        ui.selectable_value(&mut next, false, "Panels");
+        ui.selectable_value(&mut next, true, "Sheets");
+    });
+    (next != show_sheets).then_some(PanelsAction::ShowSheets(next))
 }
 
 /// The export options and the Export button, enabled when `block` is `None` and otherwise

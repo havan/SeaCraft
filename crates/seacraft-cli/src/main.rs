@@ -1554,6 +1554,17 @@ struct PanelsArgs {
         allow_negative_numbers = true
     )]
     scarf_mm: f64,
+    /// Automatically nest pieces onto plywood sheets: none, blanks or split
+    #[arg(long, value_name = "MODE", default_value = "none")]
+    nest: String,
+    /// Gap between nested pieces and from the sheet edges, millimetres
+    #[arg(
+        long,
+        value_name = "MM",
+        default_value_t = 10.0,
+        allow_negative_numbers = true
+    )]
+    gap_mm: f64,
     /// Write the patterns even when a panel does not lie flat; each such pattern is headed so
     #[arg(long)]
     allow_undevelopable: bool,
@@ -3681,6 +3692,8 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         offset_spacing_mm: a.offset_spacing_mm,
         stock_mm: a.stock_mm.clone(),
         scarf_mm: a.scarf_mm,
+        nest: a.nest.clone(),
+        gap_mm: a.gap_mm,
     })
     .map_err(|e| {
         let flag = match e.field {
@@ -3689,6 +3702,8 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             panel_choices::Field::OffsetSpacing => "--offset-spacing-mm",
             panel_choices::Field::Stock => "--stock-mm",
             panel_choices::Field::Scarf => "--scarf-mm",
+            panel_choices::Field::Nest => "--nest",
+            panel_choices::Field::Gap => "--gap-mm",
         };
         anyhow::anyhow!("{flag} {}", e.message)
     })?;
@@ -3725,6 +3740,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         offset_spacing_m: checked.offset_spacing_m,
         stock: checked.stock,
         imperial: a.imperial,
+        nesting: checked.nesting,
     };
     let set = panels::panel_set(&s, &opts).map_err(anyhow::Error::msg)?;
 
@@ -3740,30 +3756,58 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     let panels::PanelsWritten {
         written,
         offsets_pages,
+        layout_pages,
+        per_sheet,
     } = panels::write(&set, format, &setup, !a.no_offsets_pages).map_err(anyhow::Error::msg)?;
+    let sheet_paths: Vec<PathBuf> = (0..per_sheet.len())
+        .map(|i| panels::sheet_file_name(&a.output, i))
+        .collect();
+    let mut named_outputs: Vec<(String, &Path)> = vec![("-o".to_owned(), a.output.as_path())];
     let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
+    for (i, (path, sheet)) in sheet_paths.iter().zip(per_sheet).enumerate() {
+        named_outputs.push((format!("sheet {}", i + 1), path.as_path()));
+        writes.push((path.as_path(), sheet.bytes));
+    }
     if let Some(path) = &a.offsets_csv {
+        named_outputs.push(("--offsets-csv".to_owned(), path.as_path()));
         writes.push((path, panels::offsets_csv(&set.offsets).into_bytes()));
     }
     if let Some(path) = &a.offsets_pdf {
+        named_outputs.push(("--offsets-pdf".to_owned(), path.as_path()));
         let doc = panels::offsets_pdf(&set.offsets, &set.title, a.imperial)
             .map_err(anyhow::Error::msg)?;
         writes.push((path, doc.bytes));
+    }
+    let write_paths: Vec<&Path> = named_outputs.iter().map(|(_, p)| *p).collect();
+    if let Some((j, i)) = seacraft_core::io::shared_output(&write_paths)? {
+        bail!(
+            "{} and {} name the same file, `{}`: each output needs a file of its own",
+            named_outputs[i].0,
+            named_outputs[j].0,
+            named_outputs[i].1.display()
+        );
     }
     seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
 
     let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
     if a.json {
+        let sheet_files: Vec<String> = sheet_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
         let v = serde_json::json!({
             "path": a.output.display().to_string(),
             "format": format.name(),
             "pages": written.pages,
+            "layout_pages": layout_pages,
             "offsets_pages": offsets_pages,
             "scale": units::scale_label(scale),
             "panels": set.rows,
             "mismatches": set.mismatches,
             "refused": set.refused,
             "total_sheets": set.total_sheets,
+            "layout": set.layout,
+            "sheet_files": sheet_files,
             "missing_characters": missing,
         });
         println!("{}", serde_json::to_string_pretty(&v)?);
@@ -3831,10 +3875,21 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         ),
     }
     let scale_label = units::scale_label(scale);
-    let tables = match offsets_pages {
-        0 => String::new(),
-        1 => " (the last the offsets tables)".to_owned(),
-        n => format!(" (the last {n} the offsets tables)"),
+    let mut page_parts = Vec::new();
+    match layout_pages {
+        0 => {}
+        1 => page_parts.push("the first page is the layout".to_owned()),
+        n => page_parts.push(format!("the first {n} pages are the layout")),
+    }
+    match offsets_pages {
+        0 => {}
+        1 => page_parts.push("the last page is the offsets tables".to_owned()),
+        n => page_parts.push(format!("the last {n} pages are the offsets tables")),
+    }
+    let tables = if page_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", page_parts.join(", "))
     };
     match (format, written.pages) {
         (Format::PdfTiled, Some(pages)) => {
@@ -3846,7 +3901,18 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         (_, Some(pages)) => {
             println!("{pages} pages, one a panel{tables}, scale {scale_label}")
         }
-        (_, None) => println!("one drawing, scale {scale_label}"),
+        (_, None) if sheet_paths.is_empty() => println!("one drawing, scale {scale_label}"),
+        (_, None) => {
+            let noun = if sheet_paths.len() == 1 {
+                "sheet file"
+            } else {
+                "sheet files"
+            };
+            println!(
+                "one drawing plus {} {noun}, scale {scale_label}",
+                sheet_paths.len()
+            );
+        }
     }
     if !missing.is_empty() {
         println!(
@@ -3855,6 +3921,9 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         );
     }
     println!("wrote {}", a.output.display());
+    for path in &sheet_paths {
+        println!("wrote {}", path.display());
+    }
     for path in [&a.offsets_csv, &a.offsets_pdf].into_iter().flatten() {
         println!("wrote {}", path.display());
     }

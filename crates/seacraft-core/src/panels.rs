@@ -1091,7 +1091,7 @@ pub fn measure_panels(
 
 /// Letter heights on paper, in millimetres, as the mould patterns use them.
 const MARK_LABEL_MM: f64 = 3.0;
-const TITLE_LABEL_MM: f64 = 5.0;
+pub(crate) const TITLE_LABEL_MM: f64 = 5.0;
 /// How long a seam tick is, metres.
 const TICK_M: f64 = 0.02;
 /// How far a seam's label sits inside the edge, metres.
@@ -1300,10 +1300,71 @@ pub fn unsettled_note(unsettled_m: f64) -> String {
     }
 }
 
+/// Where a seam's label goes on a pattern: inside the edge at its middle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SeamSpot {
+    /// Index into the panel's `found.seams` (and `measures.seams`).
+    pub seam: usize,
+    pub at: (f64, f64),
+    pub angle_deg: f64,
+    /// The unit direction from the edge into the panel.
+    pub inward: (f64, f64),
+}
+
+/// What each edge is stitched to is written inside the edge at its middle; on a joined panel, a
+/// seam that does not run across the centreline is labelled on both sides.
+pub(crate) fn seam_spots(panel: &FlatPanel) -> Vec<SeamSpot> {
+    let found = &panel.found;
+    let xy = &panel.xy;
+    let mut runs = Vec::new();
+    for (k, seam) in found.seams.iter().enumerate() {
+        let Some(ids) = found.seam_local(seam) else {
+            continue;
+        };
+        if !seam.across {
+            if let Some(m) = found.mirror_local(&ids) {
+                runs.push((k, m));
+            }
+        }
+        runs.push((k, ids));
+    }
+    let mut out = Vec::new();
+    for (k, ids) in runs {
+        let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
+        let Some((p, d)) = midpoint(&pts) else {
+            continue;
+        };
+        // The outline runs anticlockwise, so the panel is on the left of a seam that runs with
+        // it; a seam that runs against it has the panel on its right.
+        let left = (-d.1, d.0);
+        let probe = (
+            p.0 + left.0 * SEAM_LABEL_INSET_M,
+            p.1 + left.1 * SEAM_LABEL_INSET_M,
+        );
+        let s = if point_in_panel(found, xy, probe) {
+            1.0
+        } else {
+            -1.0
+        };
+        let inward = (s * left.0, s * left.1);
+        out.push(SeamSpot {
+            seam: k,
+            at: (
+                p.0 + inward.0 * SEAM_LABEL_INSET_M,
+                p.1 + inward.1 * SEAM_LABEL_INSET_M,
+            ),
+            angle_deg: reading_angle(d),
+            inward,
+        });
+    }
+    out
+}
+
 /// The full-size pattern of one panel: its outline to cut, the station lines and the seam ticks
 /// to mark, what each edge is stitched to, and what was measured.
 pub fn panel_sheet(
     panel: &FlatPanel,
+    offsets: &PanelOffsets,
     stations: &[(String, f64)],
     limits: Limits,
     imperial: bool,
@@ -1398,46 +1459,15 @@ pub fn panel_sheet(
         });
     }
 
-    // What each edge is stitched to, inside the edge at its middle; on a joined panel, a seam
-    // that does not run across the centreline is labelled on both sides.
-    let mut runs = Vec::new();
-    for seam in &found.seams {
-        let Some(ids) = found.seam_local(seam) else {
-            continue;
-        };
-        if !seam.across {
-            if let Some(m) = found.mirror_local(&ids) {
-                runs.push((seam, m));
-            }
-        }
-        runs.push((seam, ids));
-    }
-    for (seam, ids) in runs {
-        let pts: Vec<(f64, f64)> = ids.iter().map(|&i| xy[i]).collect();
-        let Some((p, d)) = midpoint(&pts) else {
-            continue;
-        };
-        // The outline runs anticlockwise, so the panel is on the left of a seam that runs with
-        // it; a seam that runs against it has the panel on its right.
-        let inward = (-d.1, d.0);
-        let probe = (
-            p.0 + inward.0 * SEAM_LABEL_INSET_M,
-            p.1 + inward.1 * SEAM_LABEL_INSET_M,
-        );
-        let inside = point_in_panel(found, xy, probe);
-        let s = if inside { 1.0 } else { -1.0 };
-        let at = (
-            p.0 + s * inward.0 * SEAM_LABEL_INSET_M,
-            p.1 + s * inward.1 * SEAM_LABEL_INSET_M,
-        );
-        let text = match &seam.mate {
+    for spot in seam_spots(panel) {
+        let text = match &found.seams[spot.seam].mate {
             Mate::Panel(m) => format!("Stitch to {m}"),
             Mate::Centreline => "Centreline: stitch to its mirror".into(),
             Mate::Open => "Open edge".into(),
         };
         sheet
             .labels
-            .push(mark_label(at, reading_angle(d), Anchor::Middle, text));
+            .push(mark_label(spot.at, spot.angle_deg, Anchor::Middle, text));
     }
 
     // Title, copies and the tick rule in the middle of the panel.
@@ -1476,6 +1506,10 @@ pub fn panel_sheet(
             "Ticks match from either end".into(),
         ));
     }
+
+    let (dim_paths, dim_labels) = crate::panel_dims::dimensions(panel, offsets, imperial);
+    sheet.paths.extend(dim_paths);
+    sheet.labels.extend(dim_labels);
 
     let m = &panel.measures;
     if !panel.lies_flat {
@@ -1743,7 +1777,7 @@ pub struct StockRow {
 }
 
 /// The pattern's extent: `(min x, min y, length, width)`.
-fn extent(panel: &FlatPanel) -> (f64, f64, f64, f64) {
+pub(crate) fn extent(panel: &FlatPanel) -> (f64, f64, f64, f64) {
     let (x0, y0, x1, y1) = panel
         .xy
         .iter()
@@ -1845,6 +1879,8 @@ pub struct PanelOptions {
     pub offset_spacing_m: f64,
     pub stock: Stock,
     pub imperial: bool,
+    /// The pieces nested on the plywood; `None` for the patterns alone.
+    pub nesting: Option<crate::panel_layout::Nesting>,
 }
 
 impl Default for PanelOptions {
@@ -1857,6 +1893,7 @@ impl Default for PanelOptions {
             offset_spacing_m: 0.25,
             stock: Stock::default(),
             imperial: false,
+            nesting: None,
         }
     }
 }
@@ -1891,6 +1928,8 @@ pub struct PanelSet {
     pub total_sheets: usize,
     /// Station names and model `x`, as the patterns mark them.
     pub stations: Vec<(String, f64)>,
+    /// The pieces nested on the plywood, when nesting was asked for.
+    pub layout: Option<crate::panel_layout::Layout>,
 }
 
 impl PanelSet {
@@ -1907,7 +1946,8 @@ impl PanelSet {
     }
 
     /// What every front end replies with: `panels` (the rows), `refused`, `mismatches`,
-    /// `total_sheets`, `plywood` (the sheet count in words) and `all_lie_flat`.
+    /// `total_sheets`, `plywood` (the sheet count in words), `all_lie_flat` and `layout` (the
+    /// nested sheets and where each piece lies; `null` without nesting).
     pub fn summary(&self) -> serde_json::Value {
         serde_json::json!({
             "panels": self.rows,
@@ -1916,6 +1956,7 @@ impl PanelSet {
             "total_sheets": self.total_sheets,
             "plywood": self.sheet_count_line(),
             "all_lie_flat": self.all_lie_flat(),
+            "layout": self.layout,
         })
     }
 
@@ -1957,6 +1998,17 @@ impl PanelSet {
     /// The plywood count in words, naming any panel it leaves out and why: one not laid out on
     /// the stock, or one that could not be laid flat at all.
     pub fn sheet_count_line(&self) -> String {
+        if let Some(layout) = &self.layout {
+            let mut line = layout.count_line();
+            if !self.refused.is_empty() {
+                let names: Vec<&str> = self.refused.iter().map(|r| r.panel.as_str()).collect();
+                line.push_str(&format!(
+                    "; not counted, could not be laid flat: {}",
+                    names.join(", ")
+                ));
+            }
+            return line;
+        }
         let mut left_out: Vec<String> = self
             .stock
             .iter()
@@ -2039,6 +2091,13 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
     if !st.scarf_m.is_finite() || st.scarf_m < 0.0 || st.scarf_m >= st.length_m {
         return Err("the scarf must be from 0 to less than the sheet's length".into());
     }
+    if let Some(n) = opts.nesting {
+        if !(n.gap_m.is_finite() && n.gap_m >= 0.0 && 2.0 * n.gap_m < st.width_m) {
+            return Err(
+                "the gap between pieces must be from 0 to less than half the sheet's width".into(),
+            );
+        }
+    }
     let layers = chosen_layers(surface, opts.layers.as_deref())?;
     // Only the model's extent is read from the hull: the panels' layers need not be in its
     // hydrostatics, and a chosen layer with no faces finds no panel below.
@@ -2082,31 +2141,83 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         stock: Vec::new(),
         total_sheets: 0,
         stations: stations.clone(),
+        layout: None,
     };
+    let split_nesting = opts
+        .nesting
+        .filter(|n| n.mode == crate::panel_layout::NestMode::Split);
     for p in &panels {
-        let mut sheet = panel_sheet(p, &stations, opts.limits, opts.imperial);
+        let offsets = panel_offsets(p, opts.offset_spacing_m);
+        let mut sheet = panel_sheet(p, &offsets, &stations, opts.limits, opts.imperial);
         let row = lay_out(p, st);
-        sheet.paths.extend(stock_paths(&row, p, st));
-        let plywood = match (&row.note, row.sheets_each) {
-            (Some(note), _) => format!("Plywood: {note}"),
-            (None, Some(n)) => {
-                let joints: Vec<String> = row
-                    .joints_m
-                    .iter()
-                    .map(|j| crate::units::length(*j, opts.imperial))
-                    .collect();
-                let sheets = if n == 1 { "sheet" } else { "sheets" };
-                let mut text = format!(
-                    "Plywood: {n} {sheets} of {} × {} mm each copy",
+        let plywood = if let Some(n) = split_nesting {
+            let usable = st.length_m - 2.0 * n.gap_m;
+            let usable_w = st.width_m - 2.0 * n.gap_m;
+            let (x0, y0, _, width) = extent(p);
+            if width > usable_w + 1e-9 {
+                format!(
+                    "Plywood (split layout): wider than {} × {} mm sheet less gaps ({} mm > {} mm)",
                     crate::units::millimetres(st.length_m),
-                    crate::units::millimetres(st.width_m)
-                );
-                if !joints.is_empty() {
-                    text.push_str(&format!(", joints {} from the aft end", joints.join(", ")));
+                    crate::units::millimetres(st.width_m),
+                    crate::units::millimetres(width),
+                    crate::units::millimetres(usable_w.max(0.0))
+                )
+            } else {
+                match crate::panel_layout::split_points(p, usable) {
+                    Ok(joints) if joints.is_empty() => format!(
+                        "Plywood (split layout): fits one {} × {} mm sheet (gap {} mm)",
+                        crate::units::millimetres(st.length_m),
+                        crate::units::millimetres(st.width_m),
+                        crate::units::millimetres(n.gap_m)
+                    ),
+                    Ok(joints) => {
+                        for &j in &joints {
+                            sheet.paths.push(SheetPath {
+                                kind: PathKind::Reference,
+                                points: vec![(j, y0), (j, y0 + width)],
+                                closed: false,
+                            });
+                        }
+                        let joint_text: Vec<String> = joints
+                            .iter()
+                            .map(|j| crate::units::length(*j - x0, opts.imperial))
+                            .collect();
+                        format!(
+                            "Plywood (split layout): {} parts on {} × {} mm sheets (gap {} mm), \
+                             split joints {} from the aft end",
+                            joints.len() + 1,
+                            crate::units::millimetres(st.length_m),
+                            crate::units::millimetres(st.width_m),
+                            crate::units::millimetres(n.gap_m),
+                            joint_text.join(", ")
+                        )
+                    }
+                    Err(why) => format!("Plywood (split layout): not split ({why})"),
                 }
-                text
             }
-            (None, None) => "Plywood: not laid out".into(),
+        } else {
+            sheet.paths.extend(stock_paths(&row, p, st));
+            match (&row.note, row.sheets_each) {
+                (Some(note), _) => format!("Plywood: {note}"),
+                (None, Some(n)) => {
+                    let joints: Vec<String> = row
+                        .joints_m
+                        .iter()
+                        .map(|j| crate::units::length(*j, opts.imperial))
+                        .collect();
+                    let sheets = if n == 1 { "sheet" } else { "sheets" };
+                    let mut text = format!(
+                        "Plywood: {n} {sheets} of {} × {} mm each copy",
+                        crate::units::millimetres(st.length_m),
+                        crate::units::millimetres(st.width_m)
+                    );
+                    if !joints.is_empty() {
+                        text.push_str(&format!(", joints {} from the aft end", joints.join(", ")));
+                    }
+                    text
+                }
+                (None, None) => "Plywood: not laid out".into(),
+            }
         };
         // Before the three closing sentences.
         let at = sheet.notes.len().saturating_sub(3);
@@ -2133,11 +2244,19 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             sheets_each: row.sheets_each,
             unsettled_mm: m.unsettled_m.map(|d| d * 1000.0),
         });
-        set.offsets.push(panel_offsets(p, opts.offset_spacing_m));
+        set.offsets.push(offsets);
         set.stock.push(row);
         set.sheets.push(sheet);
     }
     set.total_sheets = total_sheets(&set.stock);
+    if let Some(n) = opts
+        .nesting
+        .filter(|n| n.mode != crate::panel_layout::NestMode::None)
+    {
+        let layout = crate::panel_layout::nest_panels(&panels, &set.sheets, st, n);
+        set.total_sheets = layout.plywood_sheets;
+        set.layout = Some(layout);
+    }
     // A panel that could not be made is named on every pattern, before the closing sentences.
     for sheet in &mut set.sheets {
         for r in &set.refused {
@@ -2157,7 +2276,30 @@ pub struct PanelsWritten {
     pub written: crate::templates::Written,
     /// 0 for an SVG or DXF, or when the tables were not asked for.
     pub offsets_pages: usize,
+    /// The layout pages at the front of a PDF, one per sheet or blank; 0 without nesting.
+    pub layout_pages: usize,
+    /// One cutting file per sheet or blank for an SVG or DXF with nesting, in the layout's
+    /// order, to write as [`sheet_file_name`] names them; empty otherwise.
+    pub per_sheet: Vec<crate::templates::Written>,
 }
+
+/// Where the cutting file of layout sheet `i` (from 0) goes beside the patterns at `path`:
+/// `skiff.svg` → `skiff-sheet-1.svg`.
+pub fn sheet_file_name(path: &std::path::Path, i: usize) -> std::path::PathBuf {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem}-sheet-{}.{}", i + 1, ext.to_string_lossy()),
+        None => format!("{stem}-sheet-{}", i + 1),
+    };
+    path.with_file_name(name)
+}
+
+/// What the first lines of a layout page say.
+const LAYOUT_PAGE_WORDS: &str =
+    "Layout, not full size: cut from the SVG or DXF files, or from the full-size patterns that follow";
 
 /// The patterns as `format`. With `offsets_pages`, a PDF also carries every panel's offsets
 /// tables after the patterns (A4 landscape, as [`offsets_pdf`] makes them); an SVG or DXF
@@ -2184,12 +2326,59 @@ pub fn write(
             missing: Vec::new(),
         },
         offsets_pages: 0,
+        layout_pages: 0,
+        per_sheet: Vec::new(),
+    };
+    let drawings = set.layout.as_ref().map_or(&[][..], |l| &l.drawings[..]);
+    let cutting = |one: fn(&[Sheet], f64) -> String| -> Vec<Written> {
+        drawings
+            .iter()
+            .map(|d| Written {
+                bytes: one(std::slice::from_ref(d), setup.scale).into_bytes(),
+                pages: None,
+                missing: Vec::new(),
+            })
+            .collect()
     };
     let tables = offsets_pages && !set.offsets.is_empty();
     let mut doc = crate::pdf::Pdf::new(&setup.title);
+    let mut layout_pages = 0;
+    if matches!(format, Format::PdfSingle | Format::PdfTiled) {
+        for d in drawings {
+            let mut lines = vec![
+                format!("{} · {}", d.name, setup.title),
+                "Scale 1:1000".to_string(),
+                LAYOUT_PAGE_WORDS.to_string(),
+            ];
+            // The scale is known once the page is fitted; reserve its line on the scratch pass
+            // so the final pass has the same room and cannot drop to a different scale.
+            let mut scratch = crate::pdf::Pdf::new(&setup.title);
+            let mut scale = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut scratch)?;
+            loop {
+                lines[1] = format!("Scale {}", crate::units::scale_label(scale));
+                let mut check = crate::pdf::Pdf::new(&setup.title);
+                let next = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut check)?;
+                if (next - scale).abs() <= 1e-12 {
+                    break;
+                }
+                scale = next;
+            }
+            let drawn = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut doc)?;
+            debug_assert!((drawn - scale).abs() <= 1e-12);
+            layout_pages += 1;
+        }
+    }
     match format {
-        Format::Svg => return Ok(text(crate::sheet::svg(&set.sheets, setup.scale))),
-        Format::Dxf => return Ok(text(crate::sheet::dxf(&set.sheets, setup.scale))),
+        Format::Svg => {
+            let mut w = text(crate::sheet::svg(&set.sheets, setup.scale));
+            w.per_sheet = cutting(crate::sheet::svg);
+            return Ok(w);
+        }
+        Format::Dxf => {
+            let mut w = text(crate::sheet::dxf(&set.sheets, setup.scale));
+            w.per_sheet = cutting(crate::sheet::dxf);
+            return Ok(w);
+        }
         Format::PdfSingle => crate::sheet::pdf_single_into(&set.sheets, &setup, &mut doc)?,
         Format::PdfTiled => {
             // The first page lists the tables and every tile counts them, so their page count
@@ -2200,7 +2389,13 @@ pub fn write(
             } else {
                 0
             };
-            crate::sheet::pdf_tiled_into(&set.sheets, &setup, &mut doc, &[("Offsets", count)])?;
+            crate::sheet::pdf_tiled_into(
+                &set.sheets,
+                &setup,
+                &mut doc,
+                &[("Layout", layout_pages)],
+                &[("Offsets", count)],
+            )?;
         }
     }
     let added = if tables {
@@ -2216,7 +2411,46 @@ pub fn write(
             bytes: doc.bytes,
         },
         offsets_pages: added,
+        layout_pages,
+        per_sheet: Vec::new(),
     })
+}
+
+/// A flat panel made by hand for tests: `xy` both its flat and its 3D points (in the plane
+/// y = 0), no seams, one copy, measured as lying flat.
+#[cfg(test)]
+pub(crate) fn test_flat(name: &str, xy: Vec<(f64, f64)>, tris: Vec<[usize; 3]>) -> FlatPanel {
+    let verts: Vec<Vec3> = xy.iter().map(|&(x, y)| Vec3::new(x, 0.0, y)).collect();
+    let area = tris
+        .iter()
+        .map(|t| crate::flatten::signed_area(xy[t[0]], xy[t[1]], xy[t[2]]))
+        .sum();
+    FlatPanel {
+        found: FoundPanel {
+            name: name.into(),
+            layer: 0,
+            copies: Copies::One,
+            mesh_ids: (0..verts.len()).collect(),
+            verts,
+            tris,
+            welded: HashMap::new(),
+            mirror: HashMap::new(),
+            centreline: Vec::new(),
+            seams: Vec::new(),
+        },
+        xy,
+        measures: Measures {
+            seams: Vec::new(),
+            rms_stretch: 0.0,
+            max_stretch: 0.0,
+            level_shift_m: None,
+            edge_join_gap_m: 0.0,
+            area_3d_m2: area,
+            area_flat_m2: area,
+            unsettled_m: None,
+        },
+        lies_flat: true,
+    }
 }
 
 /// A 2.4 m pram for tests: **not an example hull**. Flat bottom (`deadrise_deg` 0) or a V bottom,
@@ -2806,7 +3040,13 @@ mod tests {
         let (ps, _, _) = measured(&s, 3);
         let side = flat(&ps, "Side");
         let stations = named(&STATIONS);
-        let sheet = panel_sheet(side, &stations, Limits::default(), false);
+        let sheet = panel_sheet(
+            side,
+            &panel_offsets(side, 0.25),
+            &stations,
+            Limits::default(),
+            false,
+        );
         assert_eq!(sheet.name, "Side");
         let cuts: Vec<_> = sheet
             .paths
@@ -2861,8 +3101,10 @@ mod tests {
     fn a_joined_panel_says_cut_one_and_its_centreline_seam_is_labelled() {
         let s = pram_fixture(12.0, 0.0);
         let (ps, _, _) = measured(&s, 2);
+        let bottom = flat(&ps, "Bottom");
         let words = texts(&panel_sheet(
-            flat(&ps, "Bottom"),
+            bottom,
+            &panel_offsets(bottom, 0.25),
             &[],
             Limits::default(),
             false,
@@ -2879,8 +3121,10 @@ mod tests {
         );
         let s = pram_fixture(0.0, 0.0);
         let (ps, _, _) = measured(&s, 2);
+        let bottom = flat(&ps, "Bottom");
         let words = texts(&panel_sheet(
-            flat(&ps, "Bottom"),
+            bottom,
+            &panel_offsets(bottom, 0.25),
             &[],
             Limits::default(),
             false,
@@ -2923,7 +3167,13 @@ mod tests {
             "{t:?}"
         );
 
-        let sheet = panel_sheet(bottom, &[], Limits::default(), false);
+        let sheet = panel_sheet(
+            bottom,
+            &panel_offsets(bottom, 0.25),
+            &[],
+            Limits::default(),
+            false,
+        );
         let words = texts(&sheet);
         assert_eq!(
             words.iter().filter(|t| *t == "Stitch to Side").count(),
@@ -2951,7 +3201,13 @@ mod tests {
         let limits = Limits::default();
         let panel = measure_found(hand_made("Cap", mesh), &[0.0], limits).unwrap();
         assert!(!panel.lies_flat);
-        let sheet = panel_sheet(&panel, &named(&[0.0]), limits, false);
+        let sheet = panel_sheet(
+            &panel,
+            &panel_offsets(&panel, 0.25),
+            &named(&[0.0]),
+            limits,
+            false,
+        );
         let m = &panel.measures;
         let worst = m.worst_seam().unwrap();
         let heading = format!(
@@ -2988,7 +3244,7 @@ mod tests {
         panel.measures.unsettled_m = Some(0.0005);
         assert!(!lies_flat(&panel.measures, limits));
         panel.lies_flat = false;
-        let sheet = panel_sheet(&panel, &[], limits, false);
+        let sheet = panel_sheet(&panel, &panel_offsets(&panel, 0.25), &[], limits, false);
         assert!(
             sheet.notes[0].contains("the flattening stopped at its limit before it settled"),
             "{:?}",
@@ -3634,5 +3890,252 @@ mod tests {
             l.developable = false;
         }
         assert_eq!(default_layers(&s), [0, 1, 2]);
+    }
+
+    #[test]
+    fn no_nesting_leaves_the_set_as_it_was() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        let plain = panel_set(&s, &PanelOptions::default()).unwrap();
+        let none = panel_set(
+            &s,
+            &PanelOptions {
+                nesting: None,
+                ..PanelOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(none.layout.is_none());
+        assert_eq!(plain.rows, none.rows);
+        assert_eq!(plain.sheets, none.sheets);
+        assert_eq!(plain.total_sheets, none.total_sheets);
+        assert!(none.summary()["layout"].is_null());
+        assert!(none.sheet_count_line().contains("no nesting"));
+    }
+
+    #[test]
+    fn the_count_comes_from_the_layout() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        for mode in [
+            crate::panel_layout::NestMode::Blanks,
+            crate::panel_layout::NestMode::Split,
+        ] {
+            let set = panel_set(
+                &s,
+                &PanelOptions {
+                    nesting: Some(crate::panel_layout::Nesting { mode, gap_m: 0.01 }),
+                    ..PanelOptions::default()
+                },
+            )
+            .unwrap();
+            let layout = set.layout.as_ref().expect("a layout");
+            assert_eq!(set.total_sheets, layout.plywood_sheets);
+            let line = set.sheet_count_line();
+            assert!(line.contains("nested"), "{line}");
+            assert_eq!(
+                set.summary()["layout"]["plywood_sheets"],
+                layout.plywood_sheets
+            );
+            println!("{line}");
+        }
+    }
+
+    #[test]
+    fn a_gap_with_no_room_is_refused() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        for gap_m in [-0.01, f64::NAN, 0.61] {
+            let opts = PanelOptions {
+                nesting: Some(crate::panel_layout::Nesting {
+                    mode: crate::panel_layout::NestMode::Split,
+                    gap_m,
+                }),
+                ..PanelOptions::default()
+            };
+            assert!(panel_set(&s, &opts).is_err(), "gap {gap_m}");
+        }
+    }
+
+    fn nested_skiff(mode: crate::panel_layout::NestMode) -> PanelSet {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        panel_set(
+            &s,
+            &PanelOptions {
+                nesting: Some(crate::panel_layout::Nesting { mode, gap_m: 0.01 }),
+                ..PanelOptions::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn layout_svg_is_one_file_per_sheet() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let set = nested_skiff(crate::panel_layout::NestMode::Split);
+        let layout = set.layout.as_ref().unwrap();
+        let svg = write(&set, Format::Svg, &PageSetup::default(), false).unwrap();
+        assert_eq!(svg.per_sheet.len(), layout.sheets.len());
+        assert_eq!(svg.layout_pages, 0);
+        for (w, sheet) in svg.per_sheet.iter().zip(&layout.sheets) {
+            let text = String::from_utf8(w.bytes.clone()).unwrap();
+            assert!(
+                text.starts_with("<svg") || text.starts_with("<?xml"),
+                "{}",
+                &text[..40]
+            );
+            assert!(text.contains(&sheet.name));
+        }
+        let dxf = write(&set, Format::Dxf, &PageSetup::default(), false).unwrap();
+        assert_eq!(dxf.per_sheet.len(), layout.sheets.len());
+        for w in &dxf.per_sheet {
+            let text = String::from_utf8(w.bytes.clone()).unwrap();
+            assert!(text.contains("CUT") && text.contains("REFERENCE"));
+        }
+        // With Blanks, the patterns file matches no nesting; with Split, the pattern notes and
+        // guides name the split layout instead of the un-nested end-to-end estimate.
+        let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        let blanks = nested_skiff(crate::panel_layout::NestMode::Blanks);
+        let before = write(&plain, Format::Svg, &PageSetup::default(), false).unwrap();
+        let blanks_svg = write(&blanks, Format::Svg, &PageSetup::default(), false).unwrap();
+        assert_eq!(blanks_svg.written.bytes, before.written.bytes);
+        let split_text = String::from_utf8(svg.written.bytes).unwrap();
+        assert!(
+            split_text.contains("Plywood (split layout)"),
+            "{split_text}"
+        );
+        assert!(
+            !split_text.contains("joints 2.440 m from the aft end"),
+            "split pattern must not show the non-nested 2.44 m joint"
+        );
+    }
+
+    #[test]
+    fn layout_pdf_pages_come_first() {
+        use crate::pdf::page_text;
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let set = nested_skiff(crate::panel_layout::NestMode::Blanks);
+        let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        let sheets = set.layout.as_ref().unwrap().sheets.len();
+        let setup = PageSetup::default();
+        for format in [Format::PdfSingle, Format::PdfTiled] {
+            let with = write(&set, format, &setup, true).unwrap();
+            let without = write(&plain, format, &setup, true).unwrap();
+            assert_eq!(with.layout_pages, sheets, "{format:?}");
+            assert!(with.per_sheet.is_empty());
+            assert_eq!(
+                with.written.pages.unwrap(),
+                without.written.pages.unwrap() + sheets,
+                "{format:?}"
+            );
+            let first = page_text(&with.written.bytes, 0).join(" ");
+            assert!(first.contains("Layout, not full size"), "{first}");
+            assert!(first.contains("Scale 1:"), "{first}");
+        }
+        // The tiled document's index and captions count the layout pages before them.
+        let tiled = write(&set, Format::PdfTiled, &setup, false).unwrap();
+        let total = tiled.written.pages.unwrap();
+        let index = page_text(&tiled.written.bytes, sheets).join(" ");
+        assert!(
+            index.contains(&format!("Layout: pages 1 to {sheets}"))
+                || (sheets == 1 && index.contains("Layout: page 1")),
+            "{index}"
+        );
+        let last = page_text(&tiled.written.bytes, total - 1).join(" ");
+        assert!(last.contains(&format!("page {total} of {total}")), "{last}");
+    }
+
+    #[test]
+    fn sheet_file_names_number_from_one() {
+        use std::path::{Path, PathBuf};
+        assert_eq!(
+            sheet_file_name(Path::new("skiff.svg"), 0),
+            PathBuf::from("skiff-sheet-1.svg")
+        );
+        assert_eq!(
+            sheet_file_name(Path::new("out/skiff.panels.dxf"), 2),
+            PathBuf::from("out/skiff.panels-sheet-3.dxf")
+        );
+        assert_eq!(
+            sheet_file_name(Path::new("noext"), 0),
+            PathBuf::from("noext-sheet-1")
+        );
+    }
+
+    #[test]
+    fn no_layout_writes_as_before() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+        let plain = nested_skiff(crate::panel_layout::NestMode::None);
+        for format in [
+            Format::Svg,
+            Format::Dxf,
+            Format::PdfSingle,
+            Format::PdfTiled,
+        ] {
+            let w = write(&plain, format, &PageSetup::default(), true).unwrap();
+            assert!(w.per_sheet.is_empty());
+            assert_eq!(w.layout_pages, 0);
+        }
+    }
+
+    #[test]
+    fn pdf_overview_scale_caption_matches_drawn_scale_near_boundary() {
+        use crate::pdf::page_text;
+        use crate::sheet::{PageSetup, PathKind, Sheet, SheetPath};
+        use crate::templates::Format;
+
+        let mut set = nested_skiff(crate::panel_layout::NestMode::Blanks);
+        let setup = PageSetup::default();
+        // A4 landscape (297 x 210 mm), 10 mm margins -> printable height 190 mm.
+        // With 2 header lines + 0 notes: text_mm = (2 + 1) * 3.5 = 10.5 mm -> room = 179.5 mm.
+        // With 3 header lines (including "Scale 1:N"): text_mm = (3 + 1) * 3.5 = 14.0 mm -> room = 176.0 mm.
+        // A sheet 1.78 m wide fits 1:10 (178 mm) without the scale line, but drops to 1:20 (89 mm) with it.
+        let mut sheet = Sheet::new("Sheet 1");
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Reference,
+            points: vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.78), (0.0, 1.78)],
+            closed: true,
+        });
+        let layout = set.layout.as_mut().unwrap();
+        layout.drawings = vec![sheet];
+        layout.sheets.truncate(1);
+
+        let w = write(&set, Format::PdfSingle, &setup, false).unwrap();
+        assert_eq!(w.layout_pages, 1);
+        let text = page_text(&w.written.bytes, 0).join(" ");
+        assert!(
+            text.contains("Scale 1:20"),
+            "caption must match the 1:20 drawn scale, got: {text}"
+        );
+        assert!(!text.contains("Scale 1:10"), "{text}");
+    }
+
+    #[test]
+    fn split_pattern_note_does_not_claim_fit_when_panel_is_too_wide() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        let opts = PanelOptions {
+            stock: Stock {
+                length_m: 2.44,
+                width_m: 0.40,
+                scarf_m: 0.0,
+            },
+            nesting: Some(crate::panel_layout::Nesting {
+                mode: crate::panel_layout::NestMode::Split,
+                gap_m: 0.01,
+            }),
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&s, &opts).unwrap();
+        // Bottom is wider than 0.38 m usable width: its pattern note must not claim it fits.
+        let bottom = set.sheets.iter().find(|sh| sh.name == "Bottom").unwrap();
+        let plywood_note = bottom
+            .notes
+            .iter()
+            .find(|n| n.starts_with("Plywood (split layout):"))
+            .expect("split layout note");
+        assert!(
+            plywood_note.contains("wider than") && !plywood_note.contains("fits one"),
+            "{plywood_note}"
+        );
     }
 }
