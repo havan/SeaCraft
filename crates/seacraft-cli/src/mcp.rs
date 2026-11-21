@@ -2233,9 +2233,12 @@ impl McpServer {
             writes.push((p.as_path(), &sheet.bytes));
         }
         let all_paths: Vec<&Path> = writes.iter().map(|(p, _)| *p).collect();
-        if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)
-            .map_err(|e| format!("export_panels: {e}"))?
-        {
+        let shared = if all_paths.len() > 1 {
+            seacraft_core::io::shared_output(&all_paths)
+        } else {
+            Ok(None)
+        };
+        if let Some((i, j)) = shared.map_err(|e| format!("export_panels: {e}"))? {
             return Err(format!(
                 "export_panels: `{}` and `{}` resolve to the same file: each output needs a file of its own",
                 all_paths[i].display(),

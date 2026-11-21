@@ -53,14 +53,27 @@ pub fn write_all_atomic<P: AsRef<Path>, B: AsRef<[u8]>>(files: &[(P, B)]) -> io:
             }
         }
     }
+    let mut committed: Vec<PathBuf> = Vec::with_capacity(staged.len());
     let mut staged = staged.into_iter();
     while let Some(s) = staged.next() {
+        let target = s.target.clone();
         if let Err(e) = s.commit() {
             for rest in staged {
                 let _ = fs::remove_file(&rest.tmp);
             }
-            return Err(e);
+            let msg = if committed.is_empty() {
+                format!("{}: {e}", target.display())
+            } else {
+                let done: Vec<String> = committed.iter().map(|p| p.display().to_string()).collect();
+                format!(
+                    "{}: {e} (partial export: already wrote {}; regenerate all outputs)",
+                    target.display(),
+                    done.join(", ")
+                )
+            };
+            return Err(io::Error::new(e.kind(), msg));
         }
+        committed.push(target);
     }
     Ok(())
 }

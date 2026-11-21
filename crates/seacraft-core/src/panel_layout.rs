@@ -141,6 +141,8 @@ impl Layout {
 pub(crate) struct Piece {
     pub label: String,
     pub panel: String,
+    /// Index into the `panels` slice passed to [`nest_panels`].
+    pub panel_index: usize,
     pub outline: Vec<Pt>,
     /// Its outline to cut, the marks to transfer and the words, in the same frame.
     pub drawing: Sheet,
@@ -187,6 +189,63 @@ pub fn split_points(panel: &FlatPanel, usable_m: f64) -> Result<Vec<f64>, String
     split_outline(&outline(panel), usable_m)
 }
 
+/// Closed sub-intervals of `[x0, x1]` where the vertical line crosses `outline` exactly twice and
+/// clears every outline vertex by more than [`JOINT_CLEAR_M`].
+fn valid_joint_intervals(outline: &[Pt], x0: f64, x1: f64) -> Vec<(f64, f64)> {
+    let mut cuts: Vec<f64> = vec![x0, x1];
+    for p in outline {
+        if p.0 > x0 && p.0 < x1 {
+            cuts.push(p.0);
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    let margin = JOINT_CLEAR_M * 1.001;
+    let mut valid = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0] + margin, w[1] - margin);
+        if a <= b && crossings(outline, (a + b) / 2.0).len() == 2 {
+            valid.push((a, b));
+        }
+    }
+    valid
+}
+
+fn coalesce_intervals(mut intervals: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(intervals.len());
+    for (l, r) in intervals {
+        if l > r {
+            continue;
+        }
+        if let Some(last) = merged.last_mut() {
+            if l <= last.1 {
+                last.1 = last.1.max(r);
+                continue;
+            }
+        }
+        merged.push((l, r));
+    }
+    merged
+}
+
+fn intersect_intervals(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        let lo = a[i].0.max(b[j].0);
+        let hi = a[i].1.min(b[j].1);
+        if lo <= hi {
+            out.push((lo, hi));
+        }
+        if a[i].1 < b[j].1 {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    out
+}
+
 fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
     if !(usable.is_finite() && usable > 0.0) {
         return Err("the sheet leaves no room inside the gaps".into());
@@ -203,22 +262,38 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
             "would take more than {MAX_SHEETS_EACH} parts: not split"
         ));
     }
+    // Precompute backward-reachable valid intervals for each joint k in 1..n so committing to an
+    // earlier joint never leaves a later joint infeasible when a valid sequence exists.
+    let valid = valid_joint_intervals(outline, x0, x1);
+    let mut reach: Vec<Vec<(f64, f64)>> = vec![Vec::new(); n];
+    reach[n - 1] = intersect_intervals(&valid, &[(x1 - usable - 1e-12, x1)]);
+    for k in (1..n - 1).rev() {
+        let shifted: Vec<(f64, f64)> = reach[k + 1]
+            .iter()
+            .map(|&(nl, nr)| (nl - usable - 1e-12, nr - 1e-12))
+            .collect();
+        let union = coalesce_intervals(shifted);
+        reach[k] = intersect_intervals(&valid, &union);
+    }
+
     let clear_of_points = |x: f64| outline.iter().all(|p| (p.0 - x).abs() > JOINT_CLEAR_M);
     let mut joints = Vec::new();
     let mut prev = x0;
-    for k in 1..n {
+    for (k, feasible) in reach.iter().enumerate().skip(1) {
+        if feasible.is_empty() {
+            return Err("no straight joint found".into());
+        }
         let ideal = x0 + length * k as f64 / n as f64;
-        let reach = (length / n as f64).max(JOINT_STEP_M);
-        let steps = (reach / JOINT_STEP_M).ceil() as usize;
+        let span = (length / n as f64).max(JOINT_STEP_M);
+        let steps = (span / JOINT_STEP_M).ceil() as usize;
+        let in_reach = |x: f64| feasible.iter().any(|&(rl, rr)| x >= rl && x <= rr);
         let fits = |x: f64| {
             x - prev <= usable + 1e-12
                 && x > prev + 1e-12
-                && x1 - x <= (n - k) as f64 * usable + 1e-12
+                && in_reach(x)
                 && clear_of_points(x)
                 && crossings(outline, x).len() == 2
         };
-        let lo = (x1 - (n - k) as f64 * usable).max(prev);
-        let hi = (prev + usable).min(x1);
         let found = (0..=steps)
             .flat_map(|j| {
                 let d = j as f64 * JOINT_STEP_M;
@@ -226,28 +301,15 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
             })
             .find(|&x| fits(x))
             .or_else(|| {
-                // Exact fallback over open sub-intervals between outline vertex x-coordinates in
-                // [lo, hi], where the crossing count is piecewise constant.
-                let mut cuts: Vec<f64> = vec![lo, hi];
-                for p in outline {
-                    if p.0 > lo && p.0 < hi {
-                        cuts.push(p.0);
-                    }
-                }
-                cuts.sort_by(f64::total_cmp);
-                let mut candidates: Vec<f64> = Vec::new();
-                let margin = 2.0 * JOINT_CLEAR_M;
-                for w in cuts.windows(2) {
-                    let (a, b) = (w[0], w[1]);
-                    let x = if b - a > 2.0 * margin {
-                        ideal.clamp(a + margin, b - margin)
-                    } else {
-                        (a + b) / 2.0
-                    };
-                    if fits(x) {
-                        candidates.push(x);
-                    }
-                }
+                // Exact fallback over feasible intervals clipped to [prev, prev + usable].
+                let window = [(prev + 1e-12, prev + usable + 1e-12)];
+                let mut candidates: Vec<f64> = intersect_intervals(feasible, &window)
+                    .into_iter()
+                    .filter_map(|(a, b)| {
+                        let x = ideal.clamp(a, b);
+                        fits(x).then_some(x)
+                    })
+                    .collect();
                 candidates.sort_by(|a, b| {
                     (a - ideal)
                         .abs()
@@ -489,7 +551,7 @@ pub(crate) fn pieces(
     let mut out = Vec::new();
     let mut refused = Vec::new();
     let mut joint_pairs = 0usize;
-    for (panel, pattern) in panels.iter().zip(patterns) {
+    for (panel_index, (panel, pattern)) in panels.iter().zip(patterns).enumerate() {
         let name = panel.found.name.clone();
         let base = outline(panel);
         if base.len() < 3 {
@@ -541,6 +603,7 @@ pub(crate) fn pieces(
                 out.push(Piece {
                     label,
                     panel: name.clone(),
+                    panel_index,
                     outline,
                     drawing,
                 });
@@ -571,6 +634,7 @@ pub(crate) fn pieces(
                 out.push(Piece {
                     label: part_label,
                     panel: name.clone(),
+                    panel_index,
                     outline: part,
                     drawing,
                 });
@@ -759,12 +823,14 @@ pub fn nest_panels(
     }
     let mut placements = packing.placements.clone();
     placements.sort_by_key(|p| (p.bin, p.item));
+    let mut sheet_panels: Vec<Vec<usize>> = vec![Vec::new(); layout.drawings.len()];
     for pl in placements {
         let piece = &pieces[pl.item];
         let (paths, labels) = posed(&piece.drawing, &piece.outline, pl.pose);
         let drawing = &mut layout.drawings[pl.bin];
         drawing.paths.extend(paths);
         drawing.labels.extend(labels);
+        sheet_panels[pl.bin].push(piece.panel_index);
         layout.pieces.push(PlacedPiece {
             label: piece.label.clone(),
             panel: piece.panel.clone(),
@@ -778,27 +844,25 @@ pub fn nest_panels(
         reason,
     }));
     layout.not_placed = not_placed;
-    // Carry each failing panel's flatness warning onto every sheet holding one of its pieces.
-    let failing_notes: Vec<(&str, &str)> = panels
+    // Carry each failing panel's flatness warning onto every sheet holding one of its pieces,
+    // matched by originating panel index rather than display name.
+    let failing_notes: Vec<(usize, &str, &str)> = panels
         .iter()
         .zip(patterns)
-        .filter(|(p, _)| !p.lies_flat)
-        .filter_map(|(p, pat)| {
+        .enumerate()
+        .filter(|(_, (p, _))| !p.lies_flat)
+        .filter_map(|(idx, (p, pat))| {
             pat.notes
                 .iter()
                 .find(|n| n.starts_with("Does not lie flat"))
-                .map(|n| (p.found.name.as_str(), n.as_str()))
+                .map(|n| (idx, p.found.name.as_str(), n.as_str()))
         })
         .collect();
     if !failing_notes.is_empty() {
         for (b, d) in layout.drawings.iter_mut().enumerate() {
             let mut warnings = Vec::new();
-            for &(panel_name, note) in &failing_notes {
-                if layout
-                    .pieces
-                    .iter()
-                    .any(|p| p.sheet == b && p.panel == panel_name)
-                {
+            for &(panel_idx, panel_name, note) in &failing_notes {
+                if sheet_panels[b].contains(&panel_idx) {
                     warnings.push(format!("{panel_name}: {note}"));
                 }
             }
@@ -1368,5 +1432,81 @@ mod tests {
             "{:?}",
             layout.drawings[flat_sheet].notes
         );
+    }
+
+    #[test]
+    fn duplicate_panel_names_match_flatness_warning_by_index() {
+        let mut bad = test_flat(
+            "Side 1",
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        bad.lies_flat = false;
+        let good = test_flat(
+            "Side 1",
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let bad_pat = panel_sheet(
+            &bad,
+            &panel_offsets(&bad, 0.25),
+            &[],
+            Limits::default(),
+            false,
+        );
+        let good_pat = panel_sheet(
+            &good,
+            &panel_offsets(&good, 0.25),
+            &[],
+            Limits::default(),
+            false,
+        );
+        let layout = nest_panels(
+            &[bad, good],
+            &[bad_pat, good_pat],
+            stock(2.44, 1.22, 0.0),
+            nested(NestMode::Split),
+        );
+        assert_eq!(layout.drawings.len(), 2);
+        let warned = layout
+            .drawings
+            .iter()
+            .filter(|d| {
+                d.notes
+                    .iter()
+                    .any(|n| n.starts_with("Side 1: Does not lie flat"))
+            })
+            .count();
+        assert_eq!(warned, 1, "only the failing panel's sheet must be warned");
+    }
+
+    #[test]
+    fn split_reconsiders_earlier_joint_for_later_feasibility() {
+        // 6 m panel on 2.42 m usable stock: 2 crossings on (0, 2.10) and (4.45, 6.0), 4 crossings
+        // on (2.10, 4.45). A greedy first joint at the ideal 2.00 m leaves [3.58, 4.42] for the
+        // second joint (all 4-crossing), whereas moving the first joint to [2.04, 2.10) lets the
+        // second joint land past 4.45 m.
+        let outline = vec![
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 1.0),
+            (2.10, 1.0),
+            (2.10, 0.7),
+            (4.45, 0.7),
+            (4.45, 0.5),
+            (0.0, 0.5),
+        ];
+        // Confirm crossing counts match the intended 2 / 4 / 2 profile.
+        assert_eq!(crossings(&outline, 2.00).len(), 2);
+        assert_eq!(crossings(&outline, 3.00).len(), 4);
+        assert_eq!(crossings(&outline, 4.46).len(), 2);
+        let joints = split_outline(&outline, 2.42).expect("feasible 3-part split exists");
+        assert_eq!(joints.len(), 2, "{joints:?}");
+        assert!(joints[0] <= 2.42 + 1e-12);
+        assert!(joints[1] - joints[0] <= 2.42 + 1e-12);
+        assert!(6.0 - joints[1] <= 2.42 + 1e-12);
+        for &j in &joints {
+            assert_eq!(crossings(&outline, j).len(), 2, "joint at {j}");
+        }
     }
 }

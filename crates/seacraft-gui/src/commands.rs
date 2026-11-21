@@ -2304,15 +2304,17 @@ pub fn write_panels_file(
         writes.push((p.as_path(), bytes.as_slice()));
     }
     let all_paths: Vec<&std::path::Path> = writes.iter().map(|(p, _)| *p).collect();
-    if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)? {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "`{}` and `{}` resolve to the same file: each output needs a file of its own",
-                all_paths[i].display(),
-                all_paths[j].display()
-            ),
-        ));
+    if all_paths.len() > 1 {
+        if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "`{}` and `{}` resolve to the same file: each output needs a file of its own",
+                    all_paths[i].display(),
+                    all_paths[j].display()
+                ),
+            ));
+        }
     }
     seacraft_core::io::write_all_atomic(&writes)?;
     Ok(sheet_paths)

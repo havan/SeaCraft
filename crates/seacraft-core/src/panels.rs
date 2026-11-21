@@ -2152,37 +2152,48 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         let row = lay_out(p, st);
         let plywood = if let Some(n) = split_nesting {
             let usable = st.length_m - 2.0 * n.gap_m;
+            let usable_w = st.width_m - 2.0 * n.gap_m;
             let (x0, y0, _, width) = extent(p);
-            match crate::panel_layout::split_points(p, usable) {
-                Ok(joints) if joints.is_empty() => format!(
-                    "Plywood (split layout): fits one {} × {} mm sheet (gap {} mm)",
+            if width > usable_w + 1e-9 {
+                format!(
+                    "Plywood (split layout): wider than {} × {} mm sheet less gaps ({} mm > {} mm)",
                     crate::units::millimetres(st.length_m),
                     crate::units::millimetres(st.width_m),
-                    crate::units::millimetres(n.gap_m)
-                ),
-                Ok(joints) => {
-                    for &j in &joints {
-                        sheet.paths.push(SheetPath {
-                            kind: PathKind::Reference,
-                            points: vec![(j, y0), (j, y0 + width)],
-                            closed: false,
-                        });
-                    }
-                    let joint_text: Vec<String> = joints
-                        .iter()
-                        .map(|j| crate::units::length(*j - x0, opts.imperial))
-                        .collect();
-                    format!(
-                        "Plywood (split layout): {} parts on {} × {} mm sheets (gap {} mm), \
-                         split joints {} from the aft end",
-                        joints.len() + 1,
+                    crate::units::millimetres(width),
+                    crate::units::millimetres(usable_w.max(0.0))
+                )
+            } else {
+                match crate::panel_layout::split_points(p, usable) {
+                    Ok(joints) if joints.is_empty() => format!(
+                        "Plywood (split layout): fits one {} × {} mm sheet (gap {} mm)",
                         crate::units::millimetres(st.length_m),
                         crate::units::millimetres(st.width_m),
-                        crate::units::millimetres(n.gap_m),
-                        joint_text.join(", ")
-                    )
+                        crate::units::millimetres(n.gap_m)
+                    ),
+                    Ok(joints) => {
+                        for &j in &joints {
+                            sheet.paths.push(SheetPath {
+                                kind: PathKind::Reference,
+                                points: vec![(j, y0), (j, y0 + width)],
+                                closed: false,
+                            });
+                        }
+                        let joint_text: Vec<String> = joints
+                            .iter()
+                            .map(|j| crate::units::length(*j - x0, opts.imperial))
+                            .collect();
+                        format!(
+                            "Plywood (split layout): {} parts on {} × {} mm sheets (gap {} mm), \
+                             split joints {} from the aft end",
+                            joints.len() + 1,
+                            crate::units::millimetres(st.length_m),
+                            crate::units::millimetres(st.width_m),
+                            crate::units::millimetres(n.gap_m),
+                            joint_text.join(", ")
+                        )
+                    }
+                    Err(why) => format!("Plywood (split layout): not split ({why})"),
                 }
-                Err(why) => format!("Plywood (split layout): not split ({why})"),
             }
         } else {
             sheet.paths.extend(stock_paths(&row, p, st));
@@ -4097,5 +4108,34 @@ mod tests {
             "caption must match the 1:20 drawn scale, got: {text}"
         );
         assert!(!text.contains("Scale 1:10"), "{text}");
+    }
+
+    #[test]
+    fn split_pattern_note_does_not_claim_fit_when_panel_is_too_wide() {
+        let (s, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+        let opts = PanelOptions {
+            stock: Stock {
+                length_m: 2.44,
+                width_m: 0.40,
+                scarf_m: 0.0,
+            },
+            nesting: Some(crate::panel_layout::Nesting {
+                mode: crate::panel_layout::NestMode::Split,
+                gap_m: 0.01,
+            }),
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&s, &opts).unwrap();
+        // Bottom is wider than 0.38 m usable width: its pattern note must not claim it fits.
+        let bottom = set.sheets.iter().find(|sh| sh.name == "Bottom").unwrap();
+        let plywood_note = bottom
+            .notes
+            .iter()
+            .find(|n| n.starts_with("Plywood (split layout):"))
+            .expect("split layout note");
+        assert!(
+            plywood_note.contains("wider than") && !plywood_note.contains("fits one"),
+            "{plywood_note}"
+        );
     }
 }

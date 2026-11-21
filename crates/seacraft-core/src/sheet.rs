@@ -1065,7 +1065,7 @@ fn calibration_page(
         before.iter().chain(sheets).chain(after).cloned().collect()
     } else {
         let reserved = before.len() + after.len();
-        if room > reserved + 1 {
+        if room > reserved {
             let keep_sheets = room - reserved - 1;
             let hidden = sheets.len() - keep_sheets;
             let mut v = Vec::with_capacity(room);
@@ -1074,14 +1074,16 @@ fn calibration_page(
             v.push(format!("… and {hidden} more sheets"));
             v.extend(after.iter().cloned());
             v
+        } else if room == reserved {
+            before.iter().chain(after).cloned().collect()
         } else if room > after.len() {
-            let keep_head = room - after.len() - 1;
-            let hidden = before.len() + sheets.len() - keep_head;
-            let mut v = Vec::with_capacity(room);
-            v.extend(before.iter().chain(sheets).take(keep_head).cloned());
-            v.push(format!("… and {hidden} more sheets"));
-            v.extend(after.iter().cloned());
-            v
+            let keep_before = room - after.len();
+            before
+                .iter()
+                .take(keep_before)
+                .chain(after)
+                .cloned()
+                .collect()
         } else {
             before
                 .iter()
@@ -2426,5 +2428,29 @@ mod tests {
         assert!(cal.contains("Layout: pages 1 to 2"), "{cal}");
         assert!(cal.contains("Offsets: pages"), "{cal}");
         assert!(cal.contains("more sheets"), "{cal}");
+
+        // With room == 2 (160 x 170 mm gives 2 columns x 1 row) and both Layout and Offsets
+        // present, both named ranges stay visible instead of replacing Layout with the omission line.
+        let tiny = PageSetup {
+            paper: Paper {
+                width_mm: 160.0,
+                height_mm: 170.0,
+            },
+            ..PageSetup::default()
+        };
+        let mut pdf2 = Pdf::new(&tiny.title);
+        pdf_tiled_into(
+            &sheets[..20],
+            &tiny,
+            &mut pdf2,
+            &[("Layout", 1)],
+            &[("Offsets", 2)],
+        )
+        .unwrap();
+        let doc2 = pdf2.finish().unwrap();
+        let cal2 = crate::pdf::page_text(&doc2.bytes, 0).join("\n");
+        assert!(cal2.contains("Layout: page 1"), "{cal2}");
+        assert!(cal2.contains("Offsets: pages"), "{cal2}");
+        assert!(!cal2.contains("more sheets"), "{cal2}");
     }
 }
