@@ -913,6 +913,51 @@ fn export_asks_before_replacing_sheet_files_and_names_older_ones() {
 }
 
 #[test]
+fn changing_the_nesting_after_the_warning_asks_again() {
+    let mut w = Window::new(skiff("changing_the_nesting_after_the_warning_asks_again"));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+
+    // Without nesting an earlier sheet 1 is only left in place, and the user agrees to that.
+    let svg = scratch("confirm-stale.svg");
+    let _ = std::fs::remove_file(&svg);
+    for i in 0..16 {
+        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&svg, i));
+    }
+    let first = seacraft_core::panels::sheet_file_name(&svg, 0);
+    std::fs::write(&first, "hand edited").unwrap();
+    w.click("Export…");
+    w.app.set_dialog_path(svg.to_str().unwrap());
+    w.frame(vec![]);
+    w.click("OK");
+    assert!(w.shows("1 older sheet file"), "{:?}", w.painted);
+    assert!(w.button("Write anyway").is_some(), "{:?}", w.widgets);
+
+    // Splitting now writes sheet 1, so the earlier answer no longer covers it.
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.until("the nested layout", |app| {
+        app.panels_preview().is_some_and(|p| p.set.layout.is_some())
+    });
+    w.frame(vec![]);
+    w.click("Write anyway");
+    assert!(w.app.dialog_open(), "the dialog asks again");
+    assert!(w.shows("This replaces"), "{:?}", w.painted);
+    assert!(!svg.exists());
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "hand edited");
+
+    // Agreeing to the new warning writes.
+    w.click("Write anyway");
+    w.until("the export", |_| {
+        std::fs::read_to_string(&first).is_ok_and(|t| t.contains("<svg"))
+    });
+    assert!(!w.app.dialog_open());
+}
+
+#[test]
 fn no_nesting_hides_the_switch() {
     let mut w = Window::new(skiff("no_nesting_hides_the_switch"));
     w.app.set_show_panels(true);

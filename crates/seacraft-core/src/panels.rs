@@ -2345,19 +2345,25 @@ pub fn stale_sheet_note(stale: &[std::path::PathBuf]) -> Option<String> {
     ))
 }
 
-/// The sheet number N when `name` is exactly what [`sheet_file_name`] gives `path` for sheet N.
+/// The sheet number N when `name` is what [`sheet_file_name`] gives `path` for sheet N, ignoring
+/// case as [`crate::io::shared_output`] does: on a case-insensitive filesystem `skiff-sheet-3.SVG`
+/// is the file an export to `skiff.svg` would write as its third sheet.
 fn sheet_number(path: &std::path::Path, name: &str) -> Option<usize> {
-    let stem = path.file_stem()?.to_str()?;
-    let rest = name.strip_prefix(stem)?.strip_prefix("-sheet-")?;
+    let name = name.to_lowercase();
+    let stem = path.file_stem()?.to_str()?.to_lowercase();
+    let rest = name.strip_prefix(&stem)?.strip_prefix("-sheet-")?;
     let digits = match path.extension() {
-        Some(ext) => rest.strip_suffix(ext.to_str()?)?.strip_suffix('.')?,
+        Some(ext) => rest
+            .strip_suffix(&ext.to_str()?.to_lowercase())?
+            .strip_suffix('.')?,
         None => rest,
     };
     if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let n: usize = digits.parse().ok()?;
-    (sheet_file_name(path, n - 1).file_name()?.to_str()? == name).then_some(n)
+    let expected = sheet_file_name(path, n - 1);
+    (expected.file_name()?.to_str()?.to_lowercase() == name).then_some(n)
 }
 
 /// What the first lines of a layout page say.
@@ -4147,6 +4153,8 @@ mod tests {
             "skiff-sheet-1.svg",
             "skiff-sheet-2.svg",
             "skiff-sheet-3.svg",
+            "skiff-sheet-5.SVG",
+            "Skiff-Sheet-7.svg",
             "skiff-sheet-10.svg",
             "skiff-sheet-03.svg",
             "skiff-sheet-4.dxf",
@@ -4158,8 +4166,11 @@ mod tests {
         let stale = stale_sheet_files(&main, 2);
         assert_eq!(
             stale,
+            // Case-variant names are kept as the folder spells them.
             vec![
                 dir.join("skiff-sheet-3.svg"),
+                dir.join("skiff-sheet-5.SVG"),
+                dir.join("Skiff-Sheet-7.svg"),
                 dir.join("skiff-sheet-10.svg")
             ]
         );
@@ -4168,7 +4179,7 @@ mod tests {
         assert_eq!(sheet_number(Path::new("noext"), "noext-sheet-2"), Some(2));
         assert_eq!(stale_sheet_note(&[]), None);
         let note = stale_sheet_note(&stale).unwrap();
-        assert!(note.starts_with("2 older sheet files"), "{note}");
+        assert!(note.starts_with("4 older sheet files"), "{note}");
         assert!(note.contains("skiff-sheet-10.svg"), "{note}");
         let _ = std::fs::remove_dir_all(&dir);
     }

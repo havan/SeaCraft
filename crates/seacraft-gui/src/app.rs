@@ -3631,14 +3631,16 @@ impl App {
         }
         let path = std::path::PathBuf::from(dialog.path.trim());
         // Sheet files the user did not name: say which would be replaced or left behind, and
-        // write only on a second OK for the same path.
+        // write only on a second OK for the same path and the same warning. The warning is
+        // worked out again on every OK, so a change to the nesting or the files on disk since
+        // the user agreed asks again instead of acting on the old answer.
         if dialog.kind == DialogKind::Panels {
-            let confirmed = dialog
-                .confirm
-                .as_ref()
-                .is_some_and(|(p, _)| p.trim() == dialog.path.trim());
-            if !confirmed {
-                if let Some(warning) = self.panels_export_clash(&path) {
+            if let Some(warning) = self.panels_export_clash(&path) {
+                let confirmed = dialog
+                    .confirm
+                    .as_ref()
+                    .is_some_and(|(p, w)| p.trim() == dialog.path.trim() && *w == warning);
+                if !confirmed {
                     dialog.error = None;
                     dialog.confirm = Some((dialog.path.clone(), warning));
                     self.dialog = Some(dialog);
