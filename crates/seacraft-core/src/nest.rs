@@ -89,14 +89,14 @@ fn turn(outline: &[Pt], end_for_end: bool, turned_over: bool) -> Vec<Pt> {
         .collect()
 }
 
-fn bbox(p: &[Pt]) -> [f64; 4] {
+pub(crate) fn bbox(p: &[Pt]) -> [f64; 4] {
     p.iter()
         .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, q| {
             [b[0].min(q.0), b[1].min(q.1), b[2].max(q.0), b[3].max(q.1)]
         })
 }
 
-fn area(p: &[Pt]) -> f64 {
+pub(crate) fn signed_area(p: &[Pt]) -> f64 {
     let n = p.len();
     (0..n)
         .map(|i| {
@@ -104,8 +104,11 @@ fn area(p: &[Pt]) -> f64 {
             a.0 * b.1 - b.0 * a.1
         })
         .sum::<f64>()
-        .abs()
         / 2.0
+}
+
+fn area(p: &[Pt]) -> f64 {
+    signed_area(p).abs()
 }
 
 fn point_segment(p: Pt, a: Pt, b: Pt) -> f64 {
@@ -139,7 +142,7 @@ fn segment_distance(a: Pt, b: Pt, c: Pt, d: Pt) -> f64 {
         .min(point_segment(d, a, b))
 }
 
-fn inside(p: Pt, poly: &[Pt]) -> bool {
+pub(crate) fn inside(p: Pt, poly: &[Pt]) -> bool {
     let mut odd = false;
     let n = poly.len();
     for i in 0..n {
@@ -342,6 +345,18 @@ impl Placed {
     }
 }
 
+/// Grid sample coordinates from `lo` to `hi` in `STEP_M` increments, always including `hi` so
+/// slack smaller than one step at the far edge is never skipped.
+fn samples(lo: f64, hi: f64) -> Vec<f64> {
+    let hi = hi.max(lo);
+    let n = ((hi - lo) / STEP_M + 1e-9).floor() as usize;
+    let mut out: Vec<f64> = (0..=n).map(|i| (lo + i as f64 * STEP_M).min(hi)).collect();
+    if out.last().is_none_or(|&last| hi - last > 1e-12) {
+        out.push(hi);
+    }
+    out
+}
+
 /// The lowest spot, then the leftmost, for `shape` on a bin of `bin` among `placed`, keeping
 /// `gap` from the bin's edges (on the true box) and `search_gap` from the placed outlines.
 fn lowest_spot(
@@ -351,10 +366,17 @@ fn lowest_spot(
     gap: f64,
     search_gap: f64,
 ) -> Option<Pt> {
+    if !bin.length.is_finite()
+        || !bin.width.is_finite()
+        || bin.length - 2.0 * gap <= 0.0
+        || bin.width - 2.0 * gap <= 0.0
+    {
+        return None;
+    }
     let cb = bbox(&shape.simple);
     let x_max = bin.length - gap - shape.length;
     let y_max = bin.width - gap - shape.width;
-    if x_max < gap - 1e-12 || y_max < gap - 1e-12 {
+    if !x_max.is_finite() || !y_max.is_finite() || x_max < gap - 1e-9 || y_max < gap - 1e-9 {
         return None;
     }
     let clear = |x: f64, y: f64| {
@@ -362,19 +384,25 @@ fn lowest_spot(
             .iter()
             .all(|p| p.clear_of(&shape.simple, cb, (x, y), search_gap))
     };
-    let steps = |lo: f64, hi: f64| ((hi - lo) / STEP_M + 1e-9).floor() as usize;
+    let xs = samples(gap, x_max.max(gap));
+    let ys = samples(gap, y_max.max(gap));
     let mut best: Option<Pt> = None;
-    for i in 0..=steps(gap, x_max) {
-        let x = gap + i as f64 * STEP_M;
+    for &x in &xs {
         let mut found = None;
-        for k in 0..=steps(gap, y_max) {
-            let y = gap + k as f64 * STEP_M;
-            if best.is_some_and(|b| y > b.1) {
-                break;
-            }
-            if clear(x, y) {
+        let mut prev_y = gap;
+        for (k, &y) in ys.iter().enumerate() {
+            let (probe_y, stop_after) = match best {
+                Some(b) if y > b.1 => {
+                    if k == 0 || prev_y >= b.1 - 1e-12 {
+                        break;
+                    }
+                    (b.1, true)
+                }
+                _ => (y, false),
+            };
+            if clear(x, probe_y) {
                 // Down to the last spot that was not clear.
-                let (mut lo, mut hi) = (if k == 0 { y } else { y - STEP_M }, y);
+                let (mut lo, mut hi) = (if k == 0 { probe_y } else { prev_y }, probe_y);
                 while hi - lo > REFINE_M {
                     let mid = (lo + hi) / 2.0;
                     if clear(x, mid) {
@@ -386,6 +414,10 @@ fn lowest_spot(
                 found = Some((x, hi));
                 break;
             }
+            if stop_after {
+                break;
+            }
+            prev_y = y;
         }
         if let Some(f) = found {
             if best.is_none_or(|b| f.1 < b.1 - 1e-12) {
@@ -462,13 +494,22 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                 ));
                 continue;
             };
-            if width > bin.width - 2.0 * gap + 1e-12 {
+            if !bin.length.is_finite()
+                || !bin.width.is_finite()
+                || bin.length <= 0.0
+                || bin.width <= 0.0
+            {
+                out.unplaced
+                    .push((i, "the sheet or blank has no usable size".into()));
+                continue;
+            }
+            if bin.width - 2.0 * gap <= 0.0 || width > bin.width - 2.0 * gap + 1e-9 {
                 out.unplaced.push((
                     i,
                     format!(
                         "wider than the sheet less the gaps ({} mm > {} mm)",
                         crate::units::millimetres(width),
-                        crate::units::millimetres(bin.width - 2.0 * gap)
+                        crate::units::millimetres((bin.width - 2.0 * gap).max(0.0))
                     ),
                 ));
                 continue;
@@ -485,7 +526,7 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                         format!(
                             "longer than the sheet or blank less the gaps ({} mm > {} mm)",
                             crate::units::millimetres(length),
-                            crate::units::millimetres(bin.length - 2.0 * gap)
+                            crate::units::millimetres((bin.length - 2.0 * gap).max(0.0))
                         ),
                     ));
                     continue;
@@ -799,5 +840,92 @@ mod tests {
         let pose = p.placements[0].pose;
         assert_eq!((pose.x, pose.y), (0.02, 0.02));
         assert!(!pose.turned_over);
+    }
+
+    #[test]
+    fn tight_fit_within_one_step_of_bin_edges() {
+        let bin = Bin {
+            length: 2.44,
+            width: 1.22,
+        };
+        // Two 1000 x 592 mm pieces on 2440 x 1220 mm with 10 mm gap leave 5.5 mm (< STEP_M) of
+        // width slack; probing y_max must fit both on one bin.
+        let stacked = vec![
+            Item {
+                outline: rect(1.0, 0.592),
+                may_turn_over: false,
+            },
+            Item {
+                outline: rect(1.0, 0.592),
+                may_turn_over: false,
+            },
+        ];
+        let p = pack(&stacked, &|_| Some(bin), 0.01);
+        assert!(p.unplaced.is_empty(), "{:?}", p.unplaced);
+        assert_eq!(p.bins.len(), 1, "both pieces must fit on one bin");
+        assert_sound(&stacked, &p, 0.01);
+
+        // Two 1202 x 800 mm pieces leave 5.5 mm (< STEP_M) of length slack; probing x_max fits both.
+        let side_by_side = vec![
+            Item {
+                outline: rect(1.202, 0.8),
+                may_turn_over: false,
+            },
+            Item {
+                outline: rect(1.202, 0.8),
+                may_turn_over: false,
+            },
+        ];
+        let p = pack(&side_by_side, &|_| Some(bin), 0.01);
+        assert!(p.unplaced.is_empty(), "{:?}", p.unplaced);
+        assert_eq!(
+            p.bins.len(),
+            1,
+            "both pieces must fit end to end on one bin"
+        );
+        assert_sound(&side_by_side, &p, 0.01);
+    }
+
+    #[test]
+    fn non_finite_bin_and_zero_usable_width_are_unplaced() {
+        let items = vec![Item {
+            outline: rect(1.0, 0.3),
+            may_turn_over: false,
+        }];
+        for bad_bin in [
+            Bin {
+                length: f64::NAN,
+                width: 1.22,
+            },
+            Bin {
+                length: 2.44,
+                width: f64::NAN,
+            },
+            Bin {
+                length: 2.44,
+                width: -1.0,
+            },
+        ] {
+            let p = pack(&items, &|_| Some(bad_bin), 0.01);
+            assert!(p.placements.is_empty(), "{bad_bin:?}");
+            assert_eq!(p.unplaced.len(), 1, "{bad_bin:?}");
+        }
+        // 2g == W leaves zero usable width and must refuse even a degenerate zero-width shape.
+        let flat = vec![Item {
+            outline: vec![(0.0, 0.0), (1.0, 0.0), (0.5, 0.0)],
+            may_turn_over: false,
+        }];
+        let p = pack(
+            &flat,
+            &|_| {
+                Some(Bin {
+                    length: 2.44,
+                    width: 1.22,
+                })
+            },
+            0.61,
+        );
+        assert!(p.placements.is_empty());
+        assert_eq!(p.unplaced.len(), 1);
     }
 }

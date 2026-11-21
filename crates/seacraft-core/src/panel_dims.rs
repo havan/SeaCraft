@@ -68,6 +68,18 @@ fn text(at: (f64, f64), height_mm: f64, angle_deg: f64, anchor: Anchor, text: St
     }
 }
 
+/// Whether `l` is a baseline offset ordinate written by [`dims`]: vertical, anchored at its
+/// start or end, and formatted by [`ordinate_text`] (whole millimetres or feet-inches-eighths).
+pub(crate) fn is_offset_label(l: &Label) -> bool {
+    matches!(l.anchor, Anchor::Start | Anchor::End)
+        && (l.angle_deg.abs() - 90.0).abs() < 1e-6
+        && (l.height_mm - DIM_LABEL_MM).abs() < 1e-6
+        && !l.text.is_empty()
+        && l.text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'-' || b == b'+')
+}
+
 /// The measurements of `panel` as reference lines and labels, to add to its pattern.
 pub fn dimensions(
     panel: &FlatPanel,

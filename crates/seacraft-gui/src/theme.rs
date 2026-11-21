@@ -143,11 +143,10 @@ pub const AXIS_Z: Color32 = Color32::from_rgb(0x5c, 0xa8, 0xf0);
 pub const WATERPLANE_FILL: Color32 = Color32::from_rgba_premultiplied(0x07, 0x10, 0x1b, 0x24);
 pub const WATERPLANE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x5c, 0xa8, 0xf0, 0x80);
 /// Pattern sheets drawn in a window (Builder panels): the cut line brightest, marks blue, lines
-/// for the eye only faint and dashed, labels as secondary text, on `PLOT_BG`.
+/// for the eye only faint and dashed, on `PLOT_BG`.
 pub const PATTERN_CUT: Color32 = Color32::from_rgb(0xe6, 0xec, 0xf2);
 pub const PATTERN_MARK: Color32 = Color32::from_rgb(0x7d, 0xb4, 0xe6);
 pub const PATTERN_REFERENCE: Color32 = Color32::from_rgb(0x6f, 0x7f, 0x90);
-pub const PATTERN_LABEL: Color32 = TEXT_SECONDARY;
 /// Pattern labels at rest: quiet enough that cut lines and marks read first, brightening to
 /// [`PATTERN_LABEL_HOVER`] when the pointer is over them.
 pub const PATTERN_LABEL_DIM: Color32 =

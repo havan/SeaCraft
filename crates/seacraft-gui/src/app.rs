@@ -6471,14 +6471,28 @@ impl App {
                 self.panels_view.fit_all();
                 self.panels_selected = None;
             }
-            let had_layout = self
-                .panels_result
-                .as_ref()
-                .is_some_and(|r| r.set.layout.is_some());
-            if result.set.layout.is_some() {
-                self.panels_sheets_view.fit_all();
-                if !had_layout {
+            let prev_layout_sheets = self.panels_result.as_ref().and_then(|r| {
+                r.set.layout.as_ref().map(|l| {
+                    l.sheets
+                        .iter()
+                        .map(|s| (s.length_m.to_bits(), s.width_m.to_bits()))
+                        .collect::<Vec<_>>()
+                })
+            });
+            let next_layout_sheets = result.set.layout.as_ref().map(|l| {
+                l.sheets
+                    .iter()
+                    .map(|s| (s.length_m.to_bits(), s.width_m.to_bits()))
+                    .collect::<Vec<_>>()
+            });
+            if let Some(layout) = &result.set.layout {
+                if prev_layout_sheets != next_layout_sheets {
+                    self.panels_sheets_view.fit_all();
+                }
+                if prev_layout_sheets.is_none() && !layout.drawings.is_empty() {
                     self.panels_show_sheets = true;
+                } else if layout.drawings.is_empty() {
+                    self.panels_show_sheets = false;
                 }
             } else {
                 self.panels_show_sheets = false;

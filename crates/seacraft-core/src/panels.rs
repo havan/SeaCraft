@@ -2297,13 +2297,24 @@ pub fn write(
         for d in drawings {
             let mut lines = vec![
                 format!("{} · {}", d.name, setup.title),
+                "Scale 1:1000".to_string(),
                 LAYOUT_PAGE_WORDS.to_string(),
             ];
-            // The scale is known once the page is fitted; written after the first line.
+            // The scale is known once the page is fitted; reserve its line on the scratch pass
+            // so the final pass has the same room and cannot drop to a different scale.
             let mut scratch = crate::pdf::Pdf::new(&setup.title);
-            let scale = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut scratch)?;
-            lines.insert(1, format!("Scale {}", crate::units::scale_label(scale)));
-            crate::sheet::pdf_overview_into(d, &setup, &lines, &mut doc)?;
+            let mut scale = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut scratch)?;
+            loop {
+                lines[1] = format!("Scale {}", crate::units::scale_label(scale));
+                let mut check = crate::pdf::Pdf::new(&setup.title);
+                let next = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut check)?;
+                if (next - scale).abs() <= 1e-12 {
+                    break;
+                }
+                scale = next;
+            }
+            let drawn = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut doc)?;
+            debug_assert!((drawn - scale).abs() <= 1e-12);
             layout_pages += 1;
         }
     }
@@ -4003,5 +4014,37 @@ mod tests {
             assert!(w.per_sheet.is_empty());
             assert_eq!(w.layout_pages, 0);
         }
+    }
+
+    #[test]
+    fn pdf_overview_scale_caption_matches_drawn_scale_near_boundary() {
+        use crate::pdf::page_text;
+        use crate::sheet::{PageSetup, PathKind, Sheet, SheetPath};
+        use crate::templates::Format;
+
+        let mut set = nested_skiff(crate::panel_layout::NestMode::Blanks);
+        let setup = PageSetup::default();
+        // A4 landscape (297 x 210 mm), 10 mm margins -> printable height 190 mm.
+        // With 2 header lines + 0 notes: text_mm = (2 + 1) * 3.5 = 10.5 mm -> room = 179.5 mm.
+        // With 3 header lines (including "Scale 1:N"): text_mm = (3 + 1) * 3.5 = 14.0 mm -> room = 176.0 mm.
+        // A sheet 1.78 m wide fits 1:10 (178 mm) without the scale line, but drops to 1:20 (89 mm) with it.
+        let mut sheet = Sheet::new("Sheet 1");
+        sheet.paths.push(SheetPath {
+            kind: PathKind::Reference,
+            points: vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.78), (0.0, 1.78)],
+            closed: true,
+        });
+        let layout = set.layout.as_mut().unwrap();
+        layout.drawings = vec![sheet];
+        layout.sheets.truncate(1);
+
+        let w = write(&set, Format::PdfSingle, &setup, false).unwrap();
+        assert_eq!(w.layout_pages, 1);
+        let text = page_text(&w.written.bytes, 0).join(" ");
+        assert!(
+            text.contains("Scale 1:20"),
+            "caption must match the 1:20 drawn scale, got: {text}"
+        );
+        assert!(!text.contains("Scale 1:10"), "{text}");
     }
 }

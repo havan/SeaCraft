@@ -3762,17 +3762,30 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     let sheet_paths: Vec<PathBuf> = (0..per_sheet.len())
         .map(|i| panels::sheet_file_name(&a.output, i))
         .collect();
+    let mut named_outputs: Vec<(String, &Path)> = vec![("-o".to_owned(), a.output.as_path())];
     let mut writes: Vec<(&Path, Vec<u8>)> = vec![(&a.output, written.bytes)];
-    for (path, sheet) in sheet_paths.iter().zip(per_sheet) {
+    for (i, (path, sheet)) in sheet_paths.iter().zip(per_sheet).enumerate() {
+        named_outputs.push((format!("sheet {}", i + 1), path.as_path()));
         writes.push((path.as_path(), sheet.bytes));
     }
     if let Some(path) = &a.offsets_csv {
+        named_outputs.push(("--offsets-csv".to_owned(), path.as_path()));
         writes.push((path, panels::offsets_csv(&set.offsets).into_bytes()));
     }
     if let Some(path) = &a.offsets_pdf {
+        named_outputs.push(("--offsets-pdf".to_owned(), path.as_path()));
         let doc = panels::offsets_pdf(&set.offsets, &set.title, a.imperial)
             .map_err(anyhow::Error::msg)?;
         writes.push((path, doc.bytes));
+    }
+    let write_paths: Vec<&Path> = named_outputs.iter().map(|(_, p)| *p).collect();
+    if let Some((j, i)) = seacraft_core::io::shared_output(&write_paths)? {
+        bail!(
+            "{} and {} name the same file, `{}`: each output needs a file of its own",
+            named_outputs[i].0,
+            named_outputs[j].0,
+            named_outputs[i].1.display()
+        );
     }
     seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
 
@@ -3865,13 +3878,13 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     let mut page_parts = Vec::new();
     match layout_pages {
         0 => {}
-        1 => page_parts.push("the first the layout".to_owned()),
-        n => page_parts.push(format!("the first {n} the layout")),
+        1 => page_parts.push("the first page is the layout".to_owned()),
+        n => page_parts.push(format!("the first {n} pages are the layout")),
     }
     match offsets_pages {
         0 => {}
-        1 => page_parts.push("the last the offsets tables".to_owned()),
-        n => page_parts.push(format!("the last {n} the offsets tables")),
+        1 => page_parts.push("the last page is the offsets tables".to_owned()),
+        n => page_parts.push(format!("the last {n} pages are the offsets tables")),
     }
     let tables = if page_parts.is_empty() {
         String::new()
@@ -3888,7 +3901,18 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         (_, Some(pages)) => {
             println!("{pages} pages, one a panel{tables}, scale {scale_label}")
         }
-        (_, None) => println!("one drawing, scale {scale_label}"),
+        (_, None) if sheet_paths.is_empty() => println!("one drawing, scale {scale_label}"),
+        (_, None) => {
+            let noun = if sheet_paths.len() == 1 {
+                "sheet file"
+            } else {
+                "sheet files"
+            };
+            println!(
+                "one drawing plus {} {noun}, scale {scale_label}",
+                sheet_paths.len()
+            );
+        }
     }
     if !missing.is_empty() {
         println!(

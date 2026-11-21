@@ -872,3 +872,36 @@ fn no_nesting_hides_the_switch() {
     assert!(w.button("Sheets").is_none());
     assert!(!w.app.panels_showing_sheets());
 }
+
+#[test]
+fn clicking_a_panel_row_from_sheets_switches_back_to_panels() {
+    let mut w = Window::new(skiff(
+        "clicking_a_panel_row_from_sheets_switches_back_to_panels",
+    ));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the blanks layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.app.panels_showing_sheets());
+
+    let window = w
+        .widgets
+        .iter()
+        .find(|(_, l, _, _)| l.starts_with("Drawing:"))
+        .map(|(_, _, _, r)| *r)
+        .expect("the drawing");
+    let row = w
+        .widgets
+        .iter()
+        .filter(|(r, l, _, _)| *r == Role::Button && l == "Side")
+        .map(|(_, _, _, r)| *r)
+        .find(|r| r.min.x >= window.min.x - 1.0)
+        .expect("the Side row");
+    w.click_at(row.center());
+    w.frame(vec![]);
+    assert!(!w.app.panels_showing_sheets());
+    assert_eq!(w.app.panels_selected(), Some(1));
+}

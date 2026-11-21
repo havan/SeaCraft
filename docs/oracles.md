@@ -1887,7 +1887,7 @@ A ruled surface between a chine $c(u)$ and a sheer $s(u)$, with rulings $s(u) - 
 tangent plane does not turn along a ruling, that is when $c'(u)$, $s'(u)$ and $s(u) - c(u)$ are coplanar:
 $\det[c'(u),\ s'(u),\ s(u) - c(u)] = 0$ (worked by hand, 2026-11-20: the surface normal along the ruling
 $c + v(s - c)$ is $(c' + v(s' - c')) \times (s - c)$, whose direction does not depend on $v$ exactly when the
-determinant vanishes). `examples/skiff.rs` solves it for the sheer point of every chine station
+determinant vanishes). `crates/seacraft-core/src/examples/skiff.rs` solves it for the sheer point of every chine station
 (`sheer_partner`); where no root exists, at the transom and at the stem, the rungs fan from one corner, a cone.
 The bottom is flat across (both rows of a station at one height), a cylinder, and straight over its last 0.6 m
 so that the narrow forefoot stays flat across through refinement.
@@ -1935,11 +1935,12 @@ millimetres. Nothing here is a new measurement.
 `nest::pack` places closed 2D outlines in decreasing area on rectangular bins of length $L$ and width $W$, keeping a
 gap $g$ between outlines on the same bin ($\mathrm{dist}(A, B) \ge g$) and from every bin edge
 ($[g, L - g] \times [g, W - g]$). Each item may be turned end for end (180° in its plane) or turned over (mirrored
-across its length axis, $y \mapsto -y$, when `may_turn_over`), never a quarter turn across the grain. Candidate
-placements step along $x$ by 10 mm and locate the lowest valid $y$ by 10 mm steps followed by bisection to 1 mm;
-the search simplifies outlines by Douglas–Peucker to at most 0.25 mm and widens the inter-item search gap by 0.5 mm
-(twice that tolerance) so the requested gap $g$ holds on the true outlines. Bin-edge clearance uses each pose's true
-bounding box. Negative, non-finite, or oversized gaps ($2g \ge W$) are refused without placing any piece.
+across its length axis, $y \mapsto -y$, when `may_turn_over`), never a quarter turn across the grain. Candidate placements step along $x$ by 10 mm (always including $x_{\max}$) and locate the lowest valid $y$ by 10 mm
+steps (always including $y_{\max}$) followed by bisection to 1 mm; the search simplifies outlines by Douglas–Peucker
+to at most 0.25 mm and widens the inter-item search gap by 0.5 mm (twice that tolerance) so the requested gap $g$
+holds on the true outlines. Bin-edge clearance uses each pose's true bounding box. Negative, non-finite, or oversized
+gaps ($2g \ge W$ or $2g \ge L$), as well as non-finite or non-positive bin sizes, are refused without placing any
+piece.
 
 `panel_layout::nest_panels` turns each panel into its cut copies (a mirrored pair's second copy is the outline
 mirrored $y \mapsto -y$ before posing):
@@ -1960,7 +1961,8 @@ mirrored $y \mapsto -y$ before posing):
   - `poses_keep_the_shape_and_anchor_the_box`: all four pose flags place the bounding box's low corner at $(x, y)$
     and preserve area and edge lengths to $10^{-12}$; `turned_over` reverses winding.
   - `too_wide_is_unplaced_by_name`, `no_bin_long_enough_is_unplaced`, `a_bad_gap_places_nothing_and_says_why`,
-    `packing_is_deterministic`, `the_gap_is_kept_from_bin_edges`.
+    `packing_is_deterministic`, `the_gap_is_kept_from_bin_edges`, `tight_fit_within_one_step_of_bin_edges`,
+    `non_finite_bin_and_zero_usable_width_are_unplaced`.
 - `crates/seacraft-core/src/panel_layout.rs`:
   - `blanks_hold_the_skiff_without_overlap`: all 4 pieces of `skiff-4m` (`Bottom`, `Side`, `Side, turned over`,
     `Transom`) placed on at most 3 blanks of 3.0 × 1.5 m, gap 0.01 m held to $10^{-9}$ m.
@@ -1973,7 +1975,8 @@ mirrored $y \mapsto -y$ before posing):
   - `a_joint_moves_off_a_triple_crossing`: a 4 × 1 m slotted slab (crossed 4 times for $x > 1.5$ m) moves its joint
     below $x = 1.5$ m where crossed twice; part lengths sum to 4.0 m and part areas sum to $4.0 - 2.5 \times 0.2 =
     3.5$ m² within $10^{-9}$.
-  - `the_turned_over_copy_is_the_mirror`, `layout_drawings_cut_only_the_pieces`.
+  - `the_turned_over_copy_is_the_mirror`, `layout_drawings_cut_only_the_pieces`,
+    `tolerance_boundary_pieces_still_place`, `three_way_split_and_mirrored_label_orientation`.
 
 ### Provenance
 Synthetic shapes by construction and geometric invariants (no published benchmark). `nest::pack` is a deterministic

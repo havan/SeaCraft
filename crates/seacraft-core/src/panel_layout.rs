@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::flatten::boundary_loops;
-use crate::nest::{pack, Bin, Item, Pose, Pt};
+use crate::nest::{bbox, inside, pack, signed_area, Bin, Item, Pose, Pt};
+use crate::panel_dims::is_offset_label;
 use crate::panels::{FlatPanel, Stock, MAX_SHEETS_EACH};
 use crate::pdf::Anchor;
 use crate::sheet::{Label, PathKind, Sheet, SheetPath};
@@ -156,24 +157,6 @@ const PIECE_LABEL_MM: f64 = 5.0;
 /// Letter height of a joint mark's letter, millimetres.
 const JOINT_LABEL_MM: f64 = 3.0;
 
-fn bbox(p: &[Pt]) -> [f64; 4] {
-    p.iter()
-        .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, q| {
-            [b[0].min(q.0), b[1].min(q.1), b[2].max(q.0), b[3].max(q.1)]
-        })
-}
-
-fn signed_area(p: &[Pt]) -> f64 {
-    let n = p.len();
-    (0..n)
-        .map(|i| {
-            let (a, b) = (p[i], p[(i + 1) % n]);
-            a.0 * b.1 - b.0 * a.1
-        })
-        .sum::<f64>()
-        / 2.0
-}
-
 /// Where the square line at `x` crosses a closed outline, lowest first.
 fn crossings(outline: &[Pt], x: f64) -> Vec<f64> {
     let n = outline.len();
@@ -211,10 +194,10 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
     let b = bbox(outline);
     let (x0, x1) = (b[0], b[2]);
     let length = x1 - x0;
-    if length <= usable + 1e-9 {
+    if length <= usable + 1e-12 {
         return Ok(Vec::new());
     }
-    let n = (length / usable - 1e-9).ceil() as usize;
+    let n = (length / usable - 1e-12).ceil() as usize;
     if n > MAX_SHEETS_EACH {
         return Err(format!(
             "would take more than {MAX_SHEETS_EACH} parts: not split"
@@ -228,9 +211,9 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
         let reach = (length / n as f64).max(JOINT_STEP_M);
         let steps = (reach / JOINT_STEP_M).ceil() as usize;
         let fits = |x: f64| {
-            x - prev <= usable + 1e-9
-                && x > prev + 1e-9
-                && x1 - x <= (n - k) as f64 * usable + 1e-9
+            x - prev <= usable + 1e-12
+                && x > prev + 1e-12
+                && x1 - x <= (n - k) as f64 * usable + 1e-12
                 && clear_of_points(x)
                 && crossings(outline, x).len() == 2
         };
@@ -325,18 +308,6 @@ fn clip_polyline(points: &[Pt], closed: bool, a: f64, b: f64) -> Vec<Vec<Pt>> {
     runs
 }
 
-fn inside(p: Pt, poly: &[Pt]) -> bool {
-    let mut odd = false;
-    let n = poly.len();
-    for i in 0..n {
-        let (a, b) = (poly[i], poly[(i + 1) % n]);
-        if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0) {
-            odd = !odd;
-        }
-    }
-    odd
-}
-
 /// A spot inside an outline for its name: the middle of its box, or failing that the middle of
 /// the first span of the square line through it.
 fn name_spot(outline: &[Pt]) -> Pt {
@@ -361,7 +332,8 @@ fn mirror_label(l: &Label) -> Label {
 
 /// A piece's drawing from its panel's pattern: its outline to cut, the pattern's marks inside
 /// `a ≤ x ≤ b`, and the pattern's words inside the outline, without the pattern's own name,
-/// its copies line, its reference lines (measurements, sheet outlines) or its notes.
+/// its copies line, its baseline offset ordinates, its reference lines (measurements, sheet
+/// outlines) or its notes.
 fn piece_drawing(
     pattern: &Sheet,
     panel: &str,
@@ -391,7 +363,7 @@ fn piece_drawing(
     for l in &pattern.labels {
         let own_name =
             l.text == panel || l.text.starts_with("Cut 1") || l.text.starts_with("Cut 2");
-        if !own_name && l.at.0 >= a && l.at.0 <= b && inside(l.at, outline) {
+        if !own_name && !is_offset_label(l) && l.at.0 >= a && l.at.0 <= b && inside(l.at, outline) {
             s.labels.push(l.clone());
         }
     }
@@ -428,7 +400,7 @@ fn joint_marks(
             closed: false,
         });
         labels.push(Label {
-            at: (x + s * (JOINT_MARK_M + 0.003), y - 0.0015),
+            at: (x + s * (JOINT_MARK_M + 0.003), y),
             height_mm: JOINT_LABEL_MM,
             angle_deg: 0.0,
             anchor: if after { Anchor::Start } else { Anchor::End },
@@ -552,7 +524,7 @@ fn blank_for(stock: Stock, gap: f64, need: f64) -> Option<(usize, f64)> {
     let reach = stock.length_m - stock.scarf_m;
     (1..=MAX_SHEETS_EACH)
         .map(|k| (k, stock.length_m + (k - 1) as f64 * reach))
-        .find(|&(_, len)| len - 2.0 * gap >= need - 1e-9)
+        .find(|&(_, len)| len - 2.0 * gap >= need - 1e-12)
 }
 
 /// Moves a drawing as `pose` moves `outline`: half a turn and turning over about the outline,
@@ -651,8 +623,8 @@ pub fn nest_panels(
     };
     let reach = stock.length_m - stock.scarf_m;
     for (b, bin) in packing.bins.iter().enumerate() {
-        let k = if nesting.mode == NestMode::Blanks {
-            blank_for(stock, 0.0, bin.length).map_or(1, |(k, _)| k)
+        let k = if nesting.mode == NestMode::Blanks && reach > 0.0 {
+            (((bin.length - stock.length_m) / reach).round().max(0.0) as usize) + 1
         } else {
             1
         };
@@ -922,7 +894,11 @@ mod tests {
                     .drawing
                     .labels
                     .iter()
-                    .filter(|l| l.text.len() == 1 && (l.at.1 - y).abs() < 0.002)
+                    .filter(|l| {
+                        l.text.len() == 1
+                            && (l.at.0 - x).abs() < JOINT_MARK_M + 0.01
+                            && (l.at.1 - y).abs() < 0.002
+                    })
                     .map(|l| l.text.clone())
                     .next()
                     .unwrap_or_default();
@@ -1059,5 +1035,118 @@ mod tests {
             NestMode::parse("tetris"),
             Err("takes none, blanks or split, not `tetris`".into())
         );
+    }
+
+    #[test]
+    fn tolerance_boundary_pieces_still_place() {
+        let st = stock(2.44, 1.22, 0.0);
+        let gap = 0.01;
+        let usable = st.length_m - 2.0 * gap;
+        // Length strictly between usable + 1e-12 and usable + 1e-9: must not fall between
+        // panel_layout's and nest's tolerances.
+        let len = usable + 5e-10;
+        let p = test_flat(
+            "Edge",
+            vec![(0.0, 0.0), (len, 0.0), (len, 0.5), (0.0, 0.5)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let pattern = panel_sheet(&p, &panel_offsets(&p, 0.25), &[], Limits::default(), false);
+        for mode in [NestMode::Split, NestMode::Blanks] {
+            let layout = nest_panels(
+                std::slice::from_ref(&p),
+                std::slice::from_ref(&pattern),
+                st,
+                Nesting { mode, gap_m: gap },
+            );
+            assert!(
+                layout.not_placed.is_empty(),
+                "{mode:?}: {:?}",
+                layout.not_placed
+            );
+            assert!(!layout.pieces.is_empty());
+            assert_sound(&layout);
+        }
+    }
+
+    #[test]
+    fn three_way_split_and_mirrored_label_orientation() {
+        let p = test_flat(
+            "Long",
+            vec![(0.0, 0.0), (6.5, 0.0), (6.5, 0.4), (0.0, 0.4)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        let pattern = panel_sheet(&p, &panel_offsets(&p, 0.25), &[], Limits::default(), false);
+        let (ps, refused) = pieces(
+            std::slice::from_ref(&p),
+            std::slice::from_ref(&pattern),
+            NestMode::Split,
+            2.42,
+        );
+        assert!(refused.is_empty(), "{refused:?}");
+        let labels: Vec<&str> = ps.iter().map(|q| q.label.as_str()).collect();
+        assert_eq!(labels, ["Long 1 of 3", "Long 2 of 3", "Long 3 of 3"]);
+        let sum: f64 = ps
+            .iter()
+            .map(|q| {
+                let b = bbox(&q.outline);
+                b[2] - b[0]
+            })
+            .sum();
+        assert!((sum - 6.5).abs() < 1e-9, "{sum}");
+        let j1 = bbox(&ps[0].outline)[2];
+        let j2 = bbox(&ps[1].outline)[2];
+        assert_eq!(
+            marks_at(&ps[0], j1)
+                .into_iter()
+                .map(|m| m.1)
+                .collect::<Vec<_>>(),
+            ["A", "B"]
+        );
+        assert_eq!(
+            marks_at(&ps[1], j1)
+                .into_iter()
+                .map(|m| m.1)
+                .collect::<Vec<_>>(),
+            ["A", "B"]
+        );
+        assert_eq!(
+            marks_at(&ps[1], j2)
+                .into_iter()
+                .map(|m| m.1)
+                .collect::<Vec<_>>(),
+            ["C", "D"]
+        );
+        assert_eq!(
+            marks_at(&ps[2], j2)
+                .into_iter()
+                .map(|m| m.1)
+                .collect::<Vec<_>>(),
+            ["C", "D"]
+        );
+
+        // Nested skiff sheets: every label stays readable in (-90°, 90°] and carries no orphaned
+        // baseline offset ordinates.
+        let (panels, patterns) = skiff();
+        let layout = nest_panels(
+            &panels,
+            &patterns,
+            stock(2.44, 1.22, 0.0),
+            nested(NestMode::Split),
+        );
+        assert!(layout.not_placed.is_empty(), "{:?}", layout.not_placed);
+        for d in &layout.drawings {
+            for l in &d.labels {
+                assert!(
+                    l.angle_deg > -90.0 - 1e-9 && l.angle_deg <= 90.0 + 1e-9,
+                    "upside-down label on {}: {l:?}",
+                    d.name
+                );
+                assert!(
+                    !is_offset_label(l),
+                    "orphaned offset ordinate on {}: {l:?}",
+                    d.name
+                );
+            }
+        }
     }
 }

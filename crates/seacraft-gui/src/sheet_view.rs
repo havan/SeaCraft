@@ -215,8 +215,7 @@ fn label_tier(label: &seacraft_core::sheet::Label) -> u8 {
     }
     let t = label.text.as_str();
     if t.ends_with(" mm")
-        || t.ends_with('"')
-        || t.ends_with(')')
+        || t.contains(" mm (")
         || t.starts_with("St ")
         || (t.len() == 1 && t.chars().all(|c| c.is_ascii_alphabetic()))
     {
@@ -318,8 +317,16 @@ pub fn show(
         );
         painter.rect_filled(r.expand(4.0), 2.0, theme::PATTERN_NOT_FLAT);
     }
-    let mut placed_labels: Vec<PlacedLabel> = Vec::new();
-    for (placed, sheet) in stacked.iter().zip(sheets) {
+    struct Candidate<'a> {
+        tier: u8,
+        sheet_idx: usize,
+        label_idx: usize,
+        label: &'a seacraft_core::sheet::Label,
+        offset: (f64, f64),
+        cb: Option<[f64; 4]>,
+    }
+    let mut candidates: Vec<Candidate<'_>> = Vec::new();
+    for (sheet_idx, (placed, sheet)) in stacked.iter().zip(sheets).enumerate() {
         let Some(((dx, dy), _)) = placed else {
             continue;
         };
@@ -353,96 +360,107 @@ pub fn show(
             }
         }
         let cb = cut_bounds(sheet);
-        let mut order: Vec<usize> = (0..sheet.labels.len()).collect();
-        order.sort_by_key(|&i| label_tier(&sheet.labels[i]));
-        for i in order {
-            let label = &sheet.labels[i];
+        for (label_idx, label) in sheet.labels.iter().enumerate() {
             if !label.height_mm.is_finite()
                 || label.height_mm <= 0.0
                 || label.text.trim().is_empty()
             {
                 continue;
             }
-            let tier = label_tier(label);
-            let px = label_px(label.height_mm);
-            let galley = painter.layout_no_wrap(
-                label.text.clone(),
-                egui::FontId::proportional(px),
-                theme::PATTERN_LABEL_DIM,
-            );
-            let size = galley.size();
-            let along = match label.anchor {
-                Anchor::Start => 0.0,
-                Anchor::Middle => 0.5,
-                Anchor::End => 1.0,
+            candidates.push(Candidate {
+                tier: label_tier(label),
+                sheet_idx,
+                label_idx,
+                label,
+                offset: (*dx, *dy),
+                cb,
+            });
+        }
+    }
+    candidates.sort_by_key(|c| (c.tier, c.sheet_idx, c.label_idx));
+    let mut placed_labels: Vec<PlacedLabel> = Vec::new();
+    for c in candidates {
+        let label = c.label;
+        let (dx, dy) = c.offset;
+        let at = |(x, y): (f64, f64)| view.to_screen(rect, (x + dx, y + dy));
+        let tier = c.tier;
+        let px = label_px(label.height_mm);
+        let galley = painter.layout_no_wrap(
+            label.text.clone(),
+            egui::FontId::proportional(px),
+            theme::PATTERN_LABEL_DIM,
+        );
+        let size = galley.size();
+        let along = match label.anchor {
+            Anchor::Start => 0.0,
+            Anchor::Middle => 0.5,
+            Anchor::End => 1.0,
+        };
+        // `at` is the text's baseline point; the galley is placed by its top-left corner and
+        // turned about it (anticlockwise on paper is clockwise on a y-down screen).
+        let angle = -(label.angle_deg.to_radians() as f32);
+        let rot = egui::emath::Rot2::from_angle(angle);
+        let anchor_screen = at(label.at);
+        let mut y_off = -0.8 * size.y;
+        if let Some(cb) = c.cb {
+            let below_cut = label.at.1 < cb[1] && label.angle_deg.abs() < 15.0;
+            let right_of_cut = label.at.0 > cb[2] && (label.angle_deg.abs() - 90.0).abs() < 15.0;
+            let gap_px = if below_cut {
+                anchor_screen.y - at((label.at.0, cb[1])).y
+            } else if right_of_cut {
+                anchor_screen.x - at((cb[2], label.at.1)).x
+            } else {
+                f32::INFINITY
             };
-            // `at` is the text's baseline point; the galley is placed by its top-left corner and
-            // turned about it (anticlockwise on paper is clockwise on a y-down screen).
-            let angle = -(label.angle_deg.to_radians() as f32);
-            let rot = egui::emath::Rot2::from_angle(angle);
-            let anchor_screen = at(label.at);
-            let mut y_off = -0.8 * size.y;
-            if let Some(cb) = cb {
-                let below_cut = label.at.1 < cb[1] && label.angle_deg.abs() < 15.0;
-                let right_of_cut =
-                    label.at.0 > cb[2] && (label.angle_deg.abs() - 90.0).abs() < 15.0;
-                let gap_px = if below_cut {
-                    anchor_screen.y - at((label.at.0, cb[1])).y
-                } else if right_of_cut {
-                    anchor_screen.x - at((cb[2], label.at.1)).x
-                } else {
-                    f32::INFINITY
-                };
-                if gap_px < size.y + OUTSIDE_CLEAR_MARGIN_PX {
-                    y_off = 2.0;
-                }
+            if gap_px < size.y + OUTSIDE_CLEAR_MARGIN_PX {
+                y_off = 2.0;
             }
-            let pos = anchor_screen + rot * egui::vec2(-along * size.x, y_off);
-            let aabb = label_aabb(pos, size, angle);
-            let mut chosen = Some((pos, aabb));
-            if let Some(hit) = placed_labels
-                .iter()
-                .find(|e| e.aabb.expand(LABEL_PAD_PX).intersects(aabb))
-            {
-                let close_pair = (anchor_screen - hit.anchor_screen).length() <= PAIR_DIST_PX
-                    && (angle - hit.angle).abs() < 0.2;
-                if close_pair {
-                    let delta = anchor_screen - hit.anchor_screen;
-                    let dir = if delta.length_sq() > 1e-6 {
-                        delta.normalized()
-                    } else {
-                        rot * egui::vec2(0.0, 1.0)
-                    };
-                    let shifted = pos + dir * (hit.size.y + 2.0);
-                    let shifted_aabb = label_aabb(shifted, size, angle);
-                    if !placed_labels
-                        .iter()
-                        .any(|e| e.aabb.expand(LABEL_PAD_PX).intersects(shifted_aabb))
-                    {
-                        chosen = Some((shifted, shifted_aabb));
-                    } else if tier > 0 {
-                        chosen = None;
-                    }
+        }
+        let pos = anchor_screen + rot * egui::vec2(-along * size.x, y_off);
+        let aabb = label_aabb(pos, size, angle);
+        let mut chosen = Some((pos, aabb));
+        if let Some(hit) = placed_labels
+            .iter()
+            .find(|e| e.aabb.expand(LABEL_PAD_PX).intersects(aabb))
+        {
+            let close_pair = (anchor_screen - hit.anchor_screen).length() <= PAIR_DIST_PX
+                && (angle - hit.angle).abs() < 0.2;
+            if close_pair {
+                let delta = anchor_screen - hit.anchor_screen;
+                let dir = if delta.length_sq() > 1e-6 {
+                    delta.normalized()
+                } else {
+                    rot * egui::vec2(0.0, 1.0)
+                };
+                let shifted = pos + dir * (hit.size.y + 2.0);
+                let shifted_aabb = label_aabb(shifted, size, angle);
+                if !placed_labels
+                    .iter()
+                    .any(|e| e.aabb.expand(LABEL_PAD_PX).intersects(shifted_aabb))
+                {
+                    chosen = Some((shifted, shifted_aabb));
                 } else if tier > 0 {
                     chosen = None;
                 }
+            } else if tier > 0 {
+                chosen = None;
             }
-            let Some((pos, aabb)) = chosen else {
-                continue;
-            };
-            let hovered = label_hovered(hover_pos, pos, size, angle);
-            placed_labels.push(PlacedLabel {
-                galley,
-                pos,
-                angle,
-                size,
-                aabb,
-                anchor_screen,
-                text: label.text.clone(),
-                px,
-                hovered,
-            });
         }
+        let Some((pos, aabb)) = chosen else {
+            continue;
+        };
+        let hovered = label_hovered(hover_pos, pos, size, angle);
+        placed_labels.push(PlacedLabel {
+            galley,
+            pos,
+            angle,
+            size,
+            aabb,
+            anchor_screen,
+            text: label.text.clone(),
+            px,
+            hovered,
+        });
     }
 
     for pl in &placed_labels {
@@ -854,5 +872,46 @@ mod tests {
         v.settle(screen(), &bounds);
         v.zoom_by(1e6, screen().center(), screen(), &bounds);
         assert!(v.zoom >= 10_000.0, "zoom capped too low: {}", v.zoom);
+    }
+
+    #[test]
+    fn cross_sheet_titles_win_over_lower_tier_labels_when_zoomed_out() {
+        let ctx = egui::Context::default();
+        let mut top = rect_sheet("Top", 4.0, 0.5);
+        top.labels.push(seacraft_core::sheet::Label {
+            at: (2.0, -0.04),
+            height_mm: 3.0,
+            angle_deg: 0.0,
+            anchor: Anchor::Middle,
+            text: "4000 mm".into(),
+        });
+        let mut bottom = rect_sheet("Bottom", 4.0, 0.5);
+        bottom.labels.push(seacraft_core::sheet::Label {
+            at: (2.0, 0.48),
+            height_mm: 5.0,
+            angle_deg: 0.0,
+            anchor: Anchor::Middle,
+            text: "Bottom".into(),
+        });
+        let sheets = [top, bottom];
+        let bounds = placed_bounds(&sheets);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0));
+        let mut view = SheetView::default();
+        let _ = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        // Zoom all the way out to fit / 4 so the two sheets' labels collide on screen.
+        view.zoom_by(1e-6, rect.center(), rect, &bounds);
+        let (texts, _) = run_sheet_frame(&ctx, &sheets, &mut view, vec![]);
+        let title = texts
+            .iter()
+            .find(|t| t.text == "Bottom")
+            .expect("tier-0 title of lower sheet must be drawn");
+        if let Some(dim) = texts.iter().find(|t| t.text == "4000 mm") {
+            assert!(
+                !dim.bounds.intersects(title.bounds),
+                "tier-1 label {:?} overlaps tier-0 title {:?}",
+                dim.bounds,
+                title.bounds
+            );
+        }
     }
 }

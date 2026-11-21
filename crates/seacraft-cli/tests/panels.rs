@@ -348,5 +348,22 @@ fn panels_nest_writes_a_file_per_sheet() {
         "{err}"
     );
 
+    let err = fails(
+        &dir,
+        &[
+            "panels",
+            "skiff.fef",
+            "-o",
+            "clash.svg",
+            "--nest",
+            "split",
+            "--offsets-csv",
+            "clash-sheet-1.svg",
+        ],
+    );
+    assert!(err.contains("same file"), "{err}");
+    assert!(!dir.join("clash.svg").exists());
+    assert!(!dir.join("clash-sheet-1.svg").exists());
+
     let _ = std::fs::remove_dir_all(&dir);
 }
