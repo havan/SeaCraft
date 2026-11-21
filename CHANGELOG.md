@@ -4,6 +4,22 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- Heel and righting arm, a new Analysis view: where the hull settles with trial weights added, and why. The body
+  plan shows the hull at its heel with B, G, the buoyancy and weight arrows and the righting lever, and the profile
+  shows B, G and the weights along the hull; the heel, the lever as GZ minus the heeling arm, draft and trim read out
+  beside them, over the GZ curve. Drag the body plan to heel the
+  hull and let go to see it swing back to its equilibrium (or tick *Hold heel*), or stay put, with a note, when let
+  go past the heel where its righting lever vanishes; the drawings and the GZ curve fill the drawer, with a line
+  between them to drag; click a drawing to place a weight
+  and type its mass, drag it to move it, and add the weights to a loading condition with undo. It starts from the
+  bare hull at the dock's draft and KG or from a loading condition, is large-angle and always free to trim, and
+  names loll (both heels), a capsize and a hull that cannot float. The equilibrium heel is checked against the
+  wall-sided box-barge formula, derived in `docs/oracles.md` §47 rather than taken from a published source; with
+  G on the centreline the lever matches the GZ curves, which use the same solver.
+- `seacraft heel hull.fef (--kg m | --condition NAME) [--weight t@x,y,z]... [--heel deg] [--json]` reports the
+  equilibrium heel, trim and draft with the weights added, or loll, a capsize or a hull that cannot float, and at
+  `--heel` the righting lever split as GZ minus the heeling arm. MCP has `heel_equilibrium`, the control channel
+  `stability.heel` and `ui.set {"heel": true}`; the stability-check skill uses it.
 - Seakeeping is now compared with towing-tank measurements: SeaCraft's strip theory on Wigley I and III in regular
   head waves at Fn 0.2, 0.3 and 0.4 against Journée (1992), with the radiation coefficients, the wave loads on the
   restrained hull and the motions each checked on its own and their gaps held as bands (`docs/oracles.md` §46).

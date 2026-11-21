@@ -1143,6 +1143,34 @@ pub struct App {
     /// Bumped each time a wave result is installed: the texture's key.
     wave_result_rev: u64,
     raos_track: Track<RaoResult>,
+    /// The Heel view's own state: start, trial weights, heel shown.
+    heel: crate::heel_view::HeelViewState,
+    /// The Heel view's condition (sweep and equilibrium), current or not ([`App::heel_key`]).
+    heel_sweep: Option<crate::heel_view::HeelSweepOut>,
+    heel_sweep_track: Track<crate::heel_view::HeelSweepOut>,
+    /// The exact state at the heel shown ([`App::heel_exact_key`]).
+    heel_exact: Option<seacraft_core::heel::HeelState>,
+    heel_exact_track: Track<seacraft_core::heel::HeelState>,
+    /// The hull and its outlines for the drawings ([`App::heel_hull_key`]: the geometry alone).
+    heel_hull: Option<crate::heel_view::HeelHull>,
+    heel_hull_track: Track<crate::heel_view::HeelHull>,
+    /// The section drawn strongly, cut on the window thread for its x (to the millimetre).
+    heel_section: Option<(u64, Vec<Vec<seacraft_core::math::Vec3>>)>,
+    /// Where the Heel view's drawings were last drawn (tests pick on them).
+    heel_drawn: Option<crate::heel_view::DrawnViews>,
+    /// Settle at the equilibrium once the condition is current (after a release or an edit).
+    heel_settle_pending: bool,
+    /// The condition key the view last settled for: a new one (weights, start, the condition's
+    /// items, the hull, the dock's KG) settles the hull at its new equilibrium.
+    heel_settle_key: u64,
+    /// The loading condition the Heel view starts from, as last seen: its index and name. A
+    /// condition deleted before it shifts the index; the name finds it again.
+    heel_start_seen: Option<(usize, String)>,
+    /// When the heel shown last moved: the exact solve waits for the hand to rest.
+    heel_moved: Option<std::time::Instant>,
+    /// One-shot manual recalculation key pair `(heel_hull_key, heel_key)` queued when the
+    /// user presses Recalculate (or F5) while Auto-recalculate is disabled.
+    heel_recalc_for: Option<(u64, u64)>,
     /// The Analysis menu's views (hydrostatic table, Bonjean, offsets, trim
     /// scan, plate development): inputs, results and jobs.
     analysis: crate::analysis_views::AnalysisViews,
@@ -1411,6 +1439,20 @@ impl App {
             wave_map: Default::default(),
             wave_result_rev: 0,
             raos_track: Track::default(),
+            heel: Default::default(),
+            heel_sweep: None,
+            heel_sweep_track: Track::default(),
+            heel_exact: None,
+            heel_exact_track: Track::default(),
+            heel_hull: None,
+            heel_hull_track: Track::default(),
+            heel_section: None,
+            heel_drawn: None,
+            heel_settle_pending: false,
+            heel_settle_key: 0,
+            heel_start_seen: None,
+            heel_moved: None,
+            heel_recalc_for: None,
             analysis: Default::default(),
             hydro_rev: 0,
             project_rev: 0,
@@ -1681,6 +1723,18 @@ impl App {
         self.waves_track.reset();
         self.perf_state.wave_drag = None;
         self.wave_drag_track.reset();
+        // Trial weights sit at points of the old hull: they go with it.
+        self.heel = Default::default();
+        self.heel_sweep = None;
+        self.heel_sweep_track.reset();
+        self.heel_exact = None;
+        self.heel_exact_track.reset();
+        self.heel_hull = None;
+        self.heel_hull_track.reset();
+        self.heel_section = None;
+        self.heel_drawn = None;
+        self.heel_settle_pending = false;
+        self.heel_recalc_for = None;
         self.analysis.clear_results();
         self.panels_result = None;
         self.panels_track.reset();
@@ -4982,6 +5036,432 @@ impl App {
         ])
     }
 
+    /// The Heel view's condition: the geometry and level, the dock's floating condition and KG,
+    /// the start (a loading condition's contents through the project's revision) and the trial
+    /// weights.
+    fn heel_key(&self) -> u64 {
+        use crate::heel_view::HeelStart;
+        let start = match self.heel.start {
+            HeelStart::Dock => [0, 0, 0],
+            HeelStart::Condition(i) => [1, i as u64, self.project_rev],
+        };
+        // The dock LCG enters the sweep only when free trim uses it.
+        let (has_lcg, lcg_bits) = match self.heel.start {
+            HeelStart::Dock if self.hydro.free_trim => match self.hydro.lcg {
+                Some(x) => (1, x.to_bits()),
+                None => (0, 0),
+            },
+            _ => (0, 0),
+        };
+        revision_key(&[
+            self.revision,
+            self.hydro_rev,
+            start[0],
+            start[1],
+            start[2],
+            crate::heel_view::weights_key(&self.heel.weights),
+            has_lcg,
+            lcg_bits,
+        ])
+    }
+
+    /// The drawings' hull: the geometry and its refinement.
+    fn heel_hull_key(&self) -> u64 {
+        revision_key(&[self.revision, 0x4845_454c])
+    }
+
+    /// The hull and outlines for the drawings, when current.
+    fn heel_hull_current(&self) -> Option<&crate::heel_view::HeelHull> {
+        if !self.heel_hull_track.is_current(self.heel_hull_key()) {
+            return None;
+        }
+        self.heel_hull.as_ref()
+    }
+
+    /// The hydrostatics' hull, when it is current (a job reuses it rather than refine again).
+    fn hydro_hull_current(&self) -> Option<Arc<Hull>> {
+        self.hydro
+            .hull
+            .clone()
+            .filter(|_| self.hydro.track.is_current(self.hydro_key()))
+    }
+
+    fn start_heel_hull(&mut self) {
+        let Some(surface) = self.surface.clone() else {
+            return;
+        };
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let hull = self.hydro_hull_current();
+        let key = self.heel_hull_key();
+        self.heel_hull_track.start(key, move || {
+            Ok(crate::heel_view::compute_hull(
+                &surface,
+                subdivision,
+                hull,
+                key,
+            ))
+        });
+    }
+
+    /// The exact state's key: the condition's and the heel shown.
+    fn heel_exact_key(&self) -> u64 {
+        revision_key(&[self.heel_key(), self.heel.heel_deg.to_bits()])
+    }
+
+    /// Whether the Heel view is open (it computes only then).
+    pub fn heel_needed(&self) -> bool {
+        self.analysis.open == Some(crate::analysis_views::AnalysisView::Heel)
+    }
+
+    /// Open the Heel view in the drawer, or close it if it is the view shown.
+    pub fn set_heel_view_open(&mut self, open: bool) {
+        use crate::analysis_views::AnalysisView;
+        if open {
+            self.open_analysis_view(AnalysisView::Heel);
+        } else if self.analysis.open == Some(AnalysisView::Heel) {
+            self.close_analysis_view();
+        }
+    }
+
+    /// The Heel view's state.
+    pub fn heel_state(&self) -> &crate::heel_view::HeelViewState {
+        &self.heel
+    }
+
+    /// Replace the Heel view's state (tests and the control channel; the panel edits it in place).
+    pub fn set_heel_state(&mut self, state: crate::heel_view::HeelViewState) {
+        self.heel = state;
+        self.check_heel_start();
+    }
+
+    /// The Heel view's condition, `Some` only while the view is open and the result is for the
+    /// current model, floating condition, start and weights. Every drawing goes through this gate.
+    pub fn heel_current(&self) -> Option<&crate::heel_view::HeelSweepOut> {
+        if !self.heel_needed() || !self.heel_sweep_track.is_current(self.heel_key()) {
+            return None;
+        }
+        self.heel_sweep.as_ref()
+    }
+
+    /// The exact state at the heel shown, when current.
+    pub fn heel_exact_current(&self) -> Option<&seacraft_core::heel::HeelState> {
+        if self.heel_current().is_none() || !self.heel_exact_track.is_current(self.heel_exact_key())
+        {
+            return None;
+        }
+        self.heel_exact.as_ref()
+    }
+
+    /// A Heel result is kept but no longer for the current inputs (drawn dimmed).
+    pub fn heel_stale(&self) -> bool {
+        self.heel_sweep.is_some() && !self.heel_sweep_track.is_current(self.heel_key())
+    }
+
+    /// A Heel job is running.
+    pub fn heel_busy(&self) -> bool {
+        self.heel_sweep_track.busy() || self.heel_exact_track.busy() || self.heel_hull_track.busy()
+    }
+
+    /// The section the Heel view's body plan draws strongly (tests).
+    pub fn heel_section_drawn(&self) -> Option<&[Vec<Vec3>]> {
+        self.heel_section.as_ref().map(|(_, s)| s.as_slice())
+    }
+
+    /// Where the Heel view's drawings were last drawn, and how they map to the model (tests).
+    pub fn heel_drawn(&self) -> Option<crate::heel_view::DrawnViews> {
+        self.heel_drawn
+    }
+
+    /// Advance the settle animation, or start one when a settle is pending and the condition is
+    /// current: eased over half a second between sweep samples, a picture, not a roll.
+    fn heel_animate(&mut self, now: f64) -> bool {
+        use crate::heel_view::Settle;
+        let key = self.heel_key();
+        if key != self.heel_settle_key {
+            self.heel_settle_key = key;
+            self.heel_settle_pending = true;
+        }
+        if self.heel.hold {
+            self.heel_settle_pending = false;
+            self.heel.anim = None;
+        }
+        if self.heel_settle_pending && self.heel.grab.is_none() {
+            if let Some(out) = self.heel_current() {
+                use crate::heel_view::{settle_target, LetGo};
+                let from = self.heel.heel_deg;
+                // It comes back only where its lever turns it back: past the heel where the
+                // lever vanishes it stays where it was let go (and the view says it capsizes).
+                let to = match settle_target(out, from) {
+                    LetGo::Settles(h) => Some(
+                        out.equilibrium
+                            .heel_for_side(if h.abs() > 1e-9 { h } else { from })
+                            .filter(|e| (e - h).abs() <= seacraft_core::heel::SWEEP_STEP_DEG)
+                            .unwrap_or(h),
+                    ),
+                    LetGo::Stays if from == 0.0 => out.equilibrium.heel_for_side(out.mass.tcg()),
+                    LetGo::Stays | LetGo::Capsizes => None,
+                };
+                self.heel_settle_pending = false;
+                if let Some(to) = to.filter(|to| (to - from).abs() > 1e-9) {
+                    self.heel.anim = Some(Settle {
+                        from,
+                        to,
+                        started: now,
+                    });
+                }
+            }
+        }
+        let Some(a) = self.heel.anim else {
+            return false;
+        };
+        let t = ((now - a.started) / crate::heel_view::SETTLE_SECONDS).clamp(0.0, 1.0);
+        if t >= 1.0 {
+            self.heel.heel_deg = a.to;
+            self.heel.anim = None;
+        } else {
+            let ease = t * t * (3.0 - 2.0 * t);
+            self.heel.heel_deg = a.from + (a.to - a.from) * ease;
+        }
+        true
+    }
+
+    /// Append the trial weights to loading condition `i`, through undo: the only way a trial
+    /// weight reaches the model. The view then starts from that condition, without the weights.
+    fn heel_add_to_condition(&mut self, i: usize) {
+        if self.heel.weights.is_empty() || i >= self.project.loading_conditions.len() {
+            return;
+        }
+        let Some(surface) = self.surface.as_ref() else {
+            return;
+        };
+        let snap = Snapshot::project_edit(
+            surface,
+            self.hydro.options.draft,
+            self.project.clone(),
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
+        self.history.snapshot(&snap);
+        self.project_edit_source = None;
+        let weights = std::mem::take(&mut self.heel.weights);
+        let n = weights.len();
+        let cond = &mut self.project.loading_conditions[i];
+        cond.items.extend(weights);
+        let name = cond.name.clone();
+        self.heel.selected = None;
+        self.heel.entry = None;
+        self.heel.start = crate::heel_view::HeelStart::Condition(i);
+        self.project_changed();
+        self.refresh_dirty();
+        self.set_status(format!(
+            "Added {n} trial weight{} to {name}",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// A sweep job is running (the condition, not the drawings' hull).
+    pub fn heel_sweep_busy(&self) -> bool {
+        self.heel_sweep_track.busy()
+    }
+
+    /// Why the Heel view's condition failed for the current inputs, if it did.
+    pub fn heel_failure(&self) -> Option<&str> {
+        self.heel_sweep_track.failure(self.heel_key())
+    }
+
+    /// A start on a loading condition that is gone falls back to the bare hull, and says so.
+    /// The start is followed by name: a condition deleted before it moves its index, and the
+    /// view follows; one deleted or renamed itself is gone.
+    fn check_heel_start(&mut self) {
+        use crate::heel_view::HeelStart;
+        let HeelStart::Condition(i) = self.heel.start else {
+            self.heel_start_seen = None;
+            return;
+        };
+        let conditions = &self.project.loading_conditions;
+        let name_at = |k: usize| conditions.get(k).map(|c| c.name.clone());
+        let found = match self.heel_start_seen.take() {
+            // Still the condition it was, where it was.
+            Some((k, name)) if k == i => {
+                if name_at(i).as_ref() == Some(&name) {
+                    Some(i)
+                } else {
+                    conditions.iter().position(|c| c.name == name)
+                }
+            }
+            // A start just chosen (the panel, add-to-condition, a test): take it as it stands.
+            _ => (i < conditions.len()).then_some(i),
+        };
+        match found {
+            Some(j) => {
+                self.heel.start = HeelStart::Condition(j);
+                self.heel_start_seen = name_at(j).map(|n| (j, n));
+            }
+            None => {
+                self.heel.start = HeelStart::Dock;
+                self.set_status("Heel view: that loading condition is gone; showing the bare hull");
+            }
+        }
+    }
+
+    /// The inputs of the Heel view's sweep job; `Err` when there is nothing to compute (no model,
+    /// no KG for the bare hull).
+    fn heel_sweep_input(&self) -> Result<crate::heel_view::SweepInput, String> {
+        use crate::heel_view::{HeelStart, StartInput};
+        let surface = self.surface.clone().ok_or("no model loaded")?;
+        let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+            level: self.level,
+            mode: self.mode,
+        };
+        let start = match self.heel.start {
+            HeelStart::Dock => StartInput::Dock {
+                kg: self.hydro.kg.ok_or("Set KG in the Hydrostatics dock")?,
+                kg_estimate: self.kg_is_estimate(),
+                lcg: if self.hydro.free_trim {
+                    self.hydro.lcg
+                } else {
+                    None
+                },
+            },
+            HeelStart::Condition(i) => {
+                let c = self
+                    .project
+                    .loading_conditions
+                    .get(i)
+                    .ok_or("that loading condition is gone")?;
+                StartInput::Condition(Box::new(self.project.with_windage(c)))
+            }
+        };
+        let hull = self
+            .heel_hull_current()
+            .map(|h| h.hull.clone())
+            .or_else(|| self.hydro_hull_current());
+        let mut opts = self.hydro.options.clone();
+        opts.subdivision = subdivision;
+        Ok(crate::heel_view::SweepInput {
+            surface,
+            hull,
+            subdivision,
+            opts,
+            start,
+            weights: self.heel.weights.clone(),
+        })
+    }
+
+    fn start_heel_sweep(&mut self) {
+        let key = self.heel_key();
+        match self.heel_sweep_input() {
+            Ok(input) => self
+                .heel_sweep_track
+                .start(key, move || crate::heel_view::compute_sweep(input)),
+            Err(e) => self.heel_sweep_track.fail(key, e),
+        }
+    }
+
+    fn start_heel_exact(&mut self) {
+        let Some(out) = self.heel_current().cloned() else {
+            return;
+        };
+        let (key, heel) = (self.heel_exact_key(), self.heel.heel_deg);
+        self.heel_exact_track
+            .start(key, move || crate::heel_view::compute_exact(&out, heel));
+    }
+
+    /// Whether the dock Heel sweep is waiting for the current hydrostatics job to
+    /// install an automatic LCG before its sweep key settles.
+    fn heel_awaiting_auto_lcg(&self) -> bool {
+        matches!(self.heel.start, crate::heel_view::HeelStart::Dock)
+            && self.hydro.free_trim
+            && self.hydro.lcg.is_none()
+            && (self.hydro.track.due(self.hydro_key()) || self.hydro.track.busy())
+    }
+
+    /// Install an automatic dock LCG derived from a finished hydrostatics or curves
+    /// job, carrying a pending manual Heel request across `None -> Some(lcg)`.
+    fn install_auto_dock_lcg(&mut self, lcg: Option<f64>) {
+        let Some(lcg) = lcg else {
+            return;
+        };
+        let prev = (self.heel_hull_key(), self.heel_key());
+        self.hydro.lcg = Some(lcg);
+        if self.heel_recalc_for == Some(prev) {
+            let next = (self.heel_hull_key(), self.heel_key());
+            self.heel_recalc_for = Some(next);
+            self.heel_sweep_track.retry(next.1);
+        }
+    }
+
+    /// Trigger an immediate recompute of the Heel view for the current inputs (used by the
+    /// Recalculate button and F5, including when Auto-recalculate is disabled).
+    fn request_heel_recalculate(&mut self) {
+        let hull_key = self.heel_hull_key();
+        let key = self.heel_key();
+        let exact = self.heel_exact_key();
+        self.heel_hull_track.retry(hull_key);
+        self.heel_sweep_track.retry(key);
+        self.heel_exact_track.retry(exact);
+        self.heel_recalc_for = Some((hull_key, key));
+        if self.drag.is_none() && self.surface.is_some() {
+            let awaiting_lcg = self.heel_awaiting_auto_lcg();
+            let hydro_key = self.hydro_key();
+            if awaiting_lcg && self.hydro.track.ready(hydro_key) {
+                self.start_hydro_job();
+            }
+            if self.heel_hull_track.ready(hull_key) {
+                self.start_heel_hull();
+            }
+            if !awaiting_lcg && self.heel_sweep_track.ready(key) {
+                self.start_heel_sweep();
+            }
+        }
+    }
+
+    /// Compute the Heel view's condition (and the exact state at the heel shown) on this thread
+    /// (tests and scripts).
+    pub fn compute_heel_blocking(&mut self) -> Result<(), String> {
+        self.check_heel_start();
+        if self.heel_hull_current().is_none() {
+            let surface = self.surface.as_ref().ok_or("no model loaded")?;
+            let subdivision = seacraft_core::subdiv::SubdivisionOptions {
+                level: self.level,
+                mode: self.mode,
+            };
+            let out = crate::heel_view::compute_hull(
+                surface,
+                subdivision,
+                self.hydro_hull_current(),
+                self.heel_hull_key(),
+            );
+            self.heel_hull = Some(out);
+            self.heel_hull_track.stamp(self.heel_hull_key());
+        }
+        let key = self.heel_key();
+        let out = match self
+            .heel_sweep_input()
+            .and_then(crate::heel_view::compute_sweep)
+        {
+            Ok(out) => out,
+            Err(e) => {
+                self.heel_sweep_track.fail(key, e.clone());
+                return Err(e);
+            }
+        };
+        let exact = crate::heel_view::compute_exact(&out, self.heel.heel_deg);
+        self.heel_sweep = Some(out);
+        self.heel_sweep_track.stamp(key);
+        let key = self.heel_exact_key();
+        match exact {
+            Ok(s) => {
+                self.heel_exact = Some(s);
+                self.heel_exact_track.stamp(key);
+            }
+            Err(e) => self.heel_exact_track.fail(key, e),
+        }
+        Ok(())
+    }
+
     /// Whether the wave pattern and its drag curve are computed: while the Wave pattern view is
     /// open or the Plan view contours are on.
     pub fn waves_needed(&self) -> bool {
@@ -5220,6 +5700,65 @@ impl App {
                     waiting = true;
                 }
             }
+            // The Heel view: one sweep at a time, on the hydrostatics' quiet; the exact state at
+            // the heel shown once the sweep is current. When `auto_recalculate` is off, hull and
+            // sweep wait for an explicit `request_heel_recalculate` (`heel_recalc_for`).
+            self.check_heel_start();
+            if self.heel_needed() {
+                let hull_key = self.heel_hull_key();
+                let key = self.heel_key();
+                if self.heel_recalc_for.is_some_and(|k| k != (hull_key, key)) {
+                    self.heel_recalc_for = None;
+                }
+                let manual = self.heel_recalc_for == Some((hull_key, key));
+                let allow = self.heel.auto_recalculate || manual;
+                let awaiting_lcg = self.heel_awaiting_auto_lcg();
+                if allow && self.heel_hull_track.due(hull_key) {
+                    if (manual || hydro_quiet) && self.heel_hull_track.ready(hull_key) {
+                        self.start_heel_hull();
+                    } else {
+                        waiting = true;
+                    }
+                }
+                if allow && self.heel_sweep_track.due(key) {
+                    if awaiting_lcg {
+                        waiting = true;
+                    } else if (manual || hydro_quiet) && self.heel_sweep_track.ready(key) {
+                        self.start_heel_sweep();
+                    } else {
+                        waiting = true;
+                    }
+                }
+                let exact = self.heel_exact_key();
+                // The exact state waits for the hand to rest: no settle running, and no drag
+                // or one held still for a moment (the drawing shows sweep samples meanwhile).
+                let resting = self.heel.anim.is_none()
+                    && (self.heel.grab.is_none()
+                        || self
+                            .heel_moved
+                            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(150)));
+                if resting && self.heel_current().is_some() && self.heel_exact_track.due(exact) {
+                    if self.heel_exact_track.ready(exact) {
+                        self.start_heel_exact();
+                    } else {
+                        waiting = true;
+                    }
+                }
+                if manual
+                    && !awaiting_lcg
+                    && !self.heel_hull_track.due(hull_key)
+                    && !self.heel_hull_track.busy()
+                    && !self.heel_sweep_track.due(key)
+                    && !self.heel_sweep_track.busy()
+                    && (self.heel_current().is_none()
+                        || (!self.heel_settle_pending
+                            && self.heel.anim.is_none()
+                            && !self.heel_exact_track.due(exact)
+                            && !self.heel_exact_track.busy()))
+                {
+                    self.heel_recalc_for = None;
+                }
+            }
             if loading_due || resistance_due {
                 if !quiet {
                     waiting = true;
@@ -5240,6 +5779,9 @@ impl App {
             || self.resistance_track.busy()
             || self.waves_track.busy()
             || self.wave_drag_track.busy()
+            || self.heel_sweep_track.busy()
+            || self.heel_exact_track.busy()
+            || self.heel_hull_track.busy()
             || self.raos_track.busy()
             || self.analysis.busy();
         if busy || waiting {
@@ -5284,6 +5826,20 @@ impl App {
             Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
             None => {}
         }
+        match self.heel_sweep_track.poll(self.heel_key()) {
+            Some(Ok(out)) => self.heel_sweep = Some(out),
+            Some(Err(e)) => self.log(Level::Error, format!("Heel view failed: {e}")),
+            None => {}
+        }
+        match self.heel_hull_track.poll(self.heel_hull_key()) {
+            Some(Ok(h)) => self.heel_hull = Some(h),
+            Some(Err(e)) => self.log(Level::Error, format!("Heel view hull failed: {e}")),
+            None => {}
+        }
+        // A failed exact solve leaves the drawing on the nearest sweep sample: nothing to report.
+        if let Some(Ok(s)) = self.heel_exact_track.poll(self.heel_exact_key()) {
+            self.heel_exact = Some(s);
+        }
         match self.wave_drag_track.poll(self.wave_drag_key()) {
             Some(Ok(d)) => self.perf_state.wave_drag = Some(d),
             Some(Err(e)) => self.log(Level::Error, format!("Wave drag curve failed: {e}")),
@@ -5317,7 +5873,7 @@ impl App {
         if let Some(trim) = out.trim {
             self.hydro.options.trim = trim;
             if self.hydro.lcg.is_none() {
-                self.hydro.lcg = Some(out.result.lcb.x);
+                self.install_auto_dock_lcg(Some(out.result.lcb.x));
             }
         }
         self.hydro.result = Some(out.result);
@@ -5373,7 +5929,7 @@ impl App {
             self.hydro.track.stamp(key);
         }
         if self.hydro.free_trim && self.hydro.lcg.is_none() {
-            self.hydro.lcg = out.lcg;
+            self.install_auto_dock_lcg(out.lcg);
         }
         let free = self.hydro.free_trim;
         self.hydro.curves = out.curves;
@@ -5433,6 +5989,9 @@ impl App {
             if self.waves_track.ready(key) {
                 self.start_waves_compute();
             }
+        }
+        if self.heel_needed() {
+            self.request_heel_recalculate();
         }
         // The drawer's view and the dock's tab are each on screen on their
         // own: the drawer stays when the dock is hidden, and does not cover
@@ -9091,6 +9650,10 @@ impl App {
             self.wave_view_drawer(ui);
             return;
         }
+        if view == crate::analysis_views::AnalysisView::Heel {
+            self.heel_view_drawer(ui);
+            return;
+        }
         let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
         let window = ui.ctx().content_rect().height();
         let mut action = crate::analysis_views::ViewAction::None;
@@ -9190,9 +9753,127 @@ impl App {
         }
     }
 
+    /// The Heel view in the drawer under the viewports.
+    fn heel_view_drawer(&mut self, ui: &mut egui::Ui) {
+        use crate::heel_view::{HeelStart, HeelViewAction, HeelViewPanel, KgNote};
+        let window = ui.ctx().content_rect().height();
+        if self.heel_animate(ui.input(|i| i.time)) {
+            ui.ctx().request_repaint();
+        }
+        // A hull being refined again (the model changed) makes the picture out of date too: its
+        // outlines and section are the old hull's.
+        let stale =
+            self.heel_stale() || (self.heel_hull.is_some() && self.heel_hull_current().is_none());
+        // The condition drawn: current, or kept and dimmed while it recomputes.
+        let sweep = if stale {
+            self.heel_sweep.clone()
+        } else {
+            self.heel_current().cloned()
+        };
+        let exact = self.heel_exact_current().cloned();
+        let shown = match (&exact, &sweep) {
+            (Some(e), _) if !stale => Some(e.clone()),
+            (_, Some(out)) => out.nearest(self.heel.heel_deg).cloned(),
+            _ => None,
+        };
+        let shown_exact = exact.is_some() && !stale;
+        let hull = self.heel_hull.clone();
+        // The strong section, cut for its x to the millimetre.
+        let section_x = self
+            .heel
+            .section
+            .or(shown.as_ref().map(|s| s.b.x))
+            .or_else(|| {
+                hull.as_ref()
+                    .map(|h| 0.5 * (h.outlines.min.x + h.outlines.max.x))
+            });
+        if let (Some(x), Some(h)) = (section_x, &hull) {
+            // Keyed on the hull it is cut from, so a new hull is always cut again.
+            let key = revision_key(&[h.key, (x * 1000.0).round() as i64 as u64]);
+            if self.heel_section.as_ref().is_none_or(|(k, _)| *k != key) {
+                let cut = crate::heel_view::geometry::HullOutlines::section_at(&h.hull, x);
+                self.heel_section = Some((key, cut));
+            }
+        }
+        let section = self.heel_section.as_ref().map(|(_, s)| s.clone());
+        let kg_note = match (self.heel.start, self.hydro.kg) {
+            (HeelStart::Condition(_), _) => KgNote::Typed,
+            (HeelStart::Dock, None) => KgNote::Unset,
+            (HeelStart::Dock, Some(_)) if self.kg_is_estimate() => KgNote::Estimate,
+            (HeelStart::Dock, Some(_)) => KgNote::Typed,
+        };
+        let dock_plane = hull.as_ref().map(|h| {
+            seacraft_core::math::Plane::new(
+                seacraft_core::math::Vec3::new(0.0, 0.0, 1.0),
+                -(h.hull.keel + self.hydro.options.draft),
+            )
+        });
+        let conditions: Vec<String> = self
+            .project
+            .loading_conditions
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let failure = self.heel_failure().map(str::to_owned);
+        let busy = self.heel_busy();
+        let mut state = self.heel.clone();
+        let mut action = HeelViewAction::None;
+        let mut drawn = None;
+        egui::Panel::bottom("analysis_drawer")
+            .resizable(true)
+            .default_size((window * 0.42).round())
+            .size_range(160.0..=(window * 0.8).round())
+            .show(ui, |ui| {
+                ui.set_min_height(ui.available_height());
+                action = crate::heel_view::panel(
+                    ui,
+                    HeelViewPanel {
+                        state: &mut state,
+                        shown: shown.as_ref(),
+                        shown_exact,
+                        sweep: sweep.as_ref(),
+                        outlines: hull.as_ref().map(|h| h.outlines.as_ref()),
+                        section: section.as_deref(),
+                        dock_plane,
+                        drawn: &mut drawn,
+                        stale,
+                        busy,
+                        failure: failure.as_deref(),
+                        kg_note,
+                        conditions: &conditions,
+                    },
+                );
+            });
+        self.heel_drawn = drawn;
+        if state != self.heel {
+            if state.heel_deg != self.heel.heel_deg {
+                self.heel_moved = Some(std::time::Instant::now());
+            }
+            self.heel = state;
+            self.check_heel_start();
+            ui.ctx().request_repaint();
+        }
+        match action {
+            HeelViewAction::Close => self.close_analysis_view(),
+            HeelViewAction::Open(other) => self.open_analysis_view(other),
+            HeelViewAction::Recalculate => self.request_heel_recalculate(),
+            HeelViewAction::SettleNow => self.heel_settle_pending = true,
+            HeelViewAction::ManualHeel => self.heel_settle_pending = false,
+            HeelViewAction::AddToCondition(i) => self.heel_add_to_condition(i),
+            HeelViewAction::None | HeelViewAction::Changed => {}
+        }
+        if self.heel.hold {
+            self.heel_settle_pending = false;
+        }
+    }
+
     /// Show `view` in the drawer under the viewports. Opening a view that
     /// has no result yet computes it.
     pub fn open_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        if view != crate::analysis_views::AnalysisView::Heel {
+            self.heel.grab = None;
+            self.heel_recalc_for = None;
+        }
         self.analysis.open = Some(view);
         if !view.uses_slot() {
             // The wave pattern computes on its own jobs while the view is open.
@@ -9208,6 +9889,8 @@ impl App {
     /// Close the drawer. The viewports take its height back.
     pub fn close_analysis_view(&mut self) {
         self.analysis.open = None;
+        self.heel.grab = None;
+        self.heel_recalc_for = None;
     }
 
     /// The view shown in the Analysis dock, if any.

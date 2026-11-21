@@ -58,6 +58,7 @@ crates/seacraft-core/
   src/resistance.rs         still-water resistance and effective power (Holtrop & Mennen 1982, Holtrop 1984)
   src/michell.rs            Michell thin-ship wave resistance (Michlet-style) for slender monohulls and catamarans
   src/wave_pattern.rs       far-field thin-ship wave pattern (Kelvin wedge) from Michell's spectrum, cuts, PNG/SVG/VTI
+  src/heel.rs               heel under trial weights: mass condition, state at a heel, sweep, equilibrium, report
   src/demo.rs               parametric 12 m demo hull, full and half model
   src/examples/             example-hull library: Example enum, build() -> (Surface, Project),
                             net primitives (mod.rs), shared acceptance checks (checks.rs),
@@ -86,6 +87,10 @@ crates/seacraft-gui/
   src/waves.rs              wave-pattern settings, the off-thread computations (field and readouts at one
                             speed; the C_w curve over speed), the window's dark colour map
   src/wave_view.rs          the Wave pattern Analysis view: speed, fit banner, readouts, map, plots
+  src/heel_view/mod.rs      the Heel and righting arm Analysis view: off-thread sweep and exact solve, readout,
+                            trial weights, pointer and keys, GZ plot
+  src/heel_view/geometry.rs the earth frame of a heeled waterplane, hull outlines, body plan, profile, sections
+  src/heel_view/draw.rs     painting the body plan and profile: water, B, G, force arrows, lever, weights
   src/gpu_hull/             the viewport hull on the GPU: vertex data, view uniforms, offscreen pipelines
   src/theme.rs              colour tokens (the only colour literals), type scale, spacing
   src/picking.rs            screen-space picking (visible points first), marquee, drag plane

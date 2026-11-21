@@ -959,6 +959,25 @@ impl Hull {
         (volume, b)
     }
 
+    /// Central second moments `(I_T, I_L, I_TL)` of the closed waterplane cut by `wp`, in the
+    /// plane's `(u, v)` basis. `None` when the waterline has no closed loop.
+    pub(crate) fn waterplane_inertias(&self, wp: &Plane) -> Option<(f64, f64, f64)> {
+        let closed = self.closed_tris();
+        let segs = plane_segments(&self.verts, &closed, wp);
+        let scale = (self.model_max.x - self.model_min.x)
+            .max(self.model_max.y - self.model_min.y)
+            .max(1.0);
+        let loops = chain_loops(&segs, scale * 1e-7);
+        let m = loop_moments(&loops, wp)?;
+        let s = m.area.signum();
+        let cx = m.mx / m.area;
+        let cy = m.my / m.area;
+        let i_t = s * (m.ix - cy * cy * m.area);
+        let i_l = s * (m.iy - cx * cx * m.area);
+        let i_tl = s * (m.ixy - cx * cy * m.area);
+        Some((i_t, i_l, i_tl))
+    }
+
     /// Lowest and highest `n · p` over the refined hull: the waterplane
     /// offsets ([`waterplane_at_offset`]) at which it is dry and fully
     /// submerged.
@@ -1310,5 +1329,78 @@ mod tests {
                 assert!((area.abs() / 2.0 - 1.0).abs() < 1e-12, "{area}");
             }
         }
+    }
+
+    /// Source: analytic parallel-axis theorem over two waterplane rectangles at z = 1.0 m:
+    /// starboard closed pontoon [0, 10] x [2, 4] (A = 20, centroid (5, 3)) and port open
+    /// pontoon [0, 10] x [-4, -2] with sheer z = 0.5 + 0.1x, whose lid crosses z = 1 at x = 5
+    /// so its waterplane is [5, 10] x [-4, -2] (A = 10, centroid (7.5, -3)). Combined
+    /// A = 30, centroid (35/6, 1), I_T = 250 m^4, I_L = 1375/6 m^4, I_TL = -100 m^4.
+    #[test]
+    fn waterplane_inertias_include_open_hull_lids_alongside_closed_components() {
+        let mut s = Surface::new();
+        s.layers = vec![crate::Layer {
+            name: "Hull".into(),
+            symmetric: false,
+            use_in_hydrostatics: true,
+            visible: true,
+            ..Default::default()
+        }];
+        let add_pontoon =
+            |s: &mut Surface, y0: f64, y1: f64, z_top: fn(f64) -> f64, closed: bool| {
+                let base = s.points.len();
+                for (x, y, z) in [
+                    (0.0, y0, 0.0),
+                    (10.0, y0, 0.0),
+                    (10.0, y1, 0.0),
+                    (0.0, y1, 0.0),
+                    (0.0, y0, z_top(0.0)),
+                    (10.0, y0, z_top(10.0)),
+                    (10.0, y1, z_top(10.0)),
+                    (0.0, y1, z_top(0.0)),
+                ] {
+                    s.add_point(Vec3::new(x, y, z));
+                }
+                let faces = [
+                    [0, 3, 2, 1],
+                    [4, 5, 6, 7],
+                    [0, 1, 5, 4],
+                    [1, 2, 6, 5],
+                    [2, 3, 7, 6],
+                    [3, 0, 4, 7],
+                ];
+                for (idx, f) in faces.into_iter().enumerate() {
+                    if !closed && idx == 1 {
+                        continue;
+                    }
+                    s.add_face(f.into_iter().map(|k| base + k).collect(), 0);
+                }
+            };
+        add_pontoon(&mut s, 2.0, 4.0, |_| 3.0, true);
+        add_pontoon(&mut s, -4.0, -2.0, |x| 0.5 + 0.1 * x, false);
+        s.initialize_trace();
+        s.edges.iter_mut().for_each(|e| e.crease = true);
+        s.points
+            .iter_mut()
+            .for_each(|p| p.kind = crate::mesh::VertexKind::Corner);
+        let hull = Hull::new(
+            &s,
+            SubdivisionOptions {
+                level: 1,
+                mode: Default::default(),
+            },
+        );
+        assert!(!hull.lids.is_empty(), "open pontoon must generate a lid");
+        let wp = Plane::new(Vec3::new(0.0, 0.0, 1.0), -1.0);
+        let (i_t, i_l, i_tl) = hull
+            .waterplane_inertias(&wp)
+            .expect("both closed and lid-closed waterplanes combine");
+        assert!((i_t - 250.0).abs() < 1e-6, "I_T {i_t} vs 250");
+        assert!(
+            (i_l - 1375.0 / 6.0).abs() < 1e-6,
+            "I_L {i_l} vs {}",
+            1375.0 / 6.0
+        );
+        assert!((i_tl + 100.0).abs() < 1e-6, "I_TL {i_tl} vs -100");
     }
 }

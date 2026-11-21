@@ -10,6 +10,8 @@ see [`DISCLAIMER.md`](DISCLAIMER.md).
 - Desktop modeller: four linked viewports, control-point dragging with undo, split face and insert edge,
   docks, autosave and crash recovery.
 - Hydrostatics, cross curves, GZ with free trim, IMO A.749 and IS Code weather criteria.
+- Heel under trial weights: the equilibrium heel (or loll, or capsize), free to trim, in the window's Heel and
+  righting arm view with B, G and the righting lever drawn live, on the command line (`seacraft heel`) and over MCP.
 - Loading conditions with tanks and free-surface correction; deterministic lost-buoyancy damage stability.
 - Resistance by Holtrop-Mennen, Michell thin-ship theory and Savitsky; a hull optimiser.
 - The far-field thin-ship wave pattern behind a hull or catamaran (PNG, SVG contours, VTK), with the speed

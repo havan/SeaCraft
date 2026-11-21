@@ -584,6 +584,20 @@ fn group_cross_curves(
         .collect()
 }
 
+/// The direction a righting lever is measured along: on the water surface,
+/// across the hull (`n × x̂`, to starboard when upright).
+pub(crate) fn lever_direction(plane: &Plane) -> Vec3 {
+    plane.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm()
+}
+
+/// The righting lever of buoyancy at `b` against weight at `g` below the
+/// waterplane `plane`: `(b − g) · t` with `t` the [`lever_direction`]. The
+/// lever arm runs along the water surface, across the hull: a positive lever
+/// turns the hull back towards smaller heel at any heel, past 90° too.
+pub(crate) fn righting_lever(plane: &Plane, b: Vec3, g: Vec3) -> f64 {
+    (b - g).dot(lever_direction(plane))
+}
+
 /// `KN` and `GZ` at one heel and displacement (`None`s when no floating
 /// condition is found or the lever is not finite).
 fn cross_curve_point(
@@ -611,11 +625,8 @@ fn cross_curve_point(
     // a full `hydrostatics` call would also chain the waterline and cut
     // every station, none of which a righting lever uses.
     let (_, b) = hull.buoyancy_in(&wl.plane);
-    // The lever arm runs along the water surface, across the hull: `GZ > 0`
-    // turns the hull back towards smaller heel at any heel, past 90° too.
-    let t = wl.plane.n.cross(Vec3::new(1.0, 0.0, 0.0)).norm();
     let g = Vec3::new(0.0, 0.0, hull.keel + cond.kg);
-    let gz = (b - g).dot(t);
+    let gz = righting_lever(&wl.plane, b, g);
     let kn = gz + cond.kg * deg_to_rad(heel).sin();
     if gz.is_finite() && kn.is_finite() {
         CrossCurvePoint {

@@ -44,7 +44,9 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a connection waits for the reply to `method`.
 fn reply_timeout(method: &str) -> Duration {
     match method {
-        "build.templates" | "build.panels" => WORKER_TIMEOUT,
+        "build.templates" | "build.panels" | "stability.heel" | "heel_equilibrium" => {
+            WORKER_TIMEOUT
+        }
         _ => REPLY_TIMEOUT,
     }
 }
@@ -736,6 +738,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Optio
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match req.method.as_str() {
             "build.templates" => build_templates(app, p, &req.reply),
             "build.panels" => build_panels(app, p, &req.reply),
+            "stability.heel" | "heel_equilibrium" => stability_heel(app, p, &req.reply),
             _ => handle_inner(app, ctx, req, p).map(Some),
         }));
     match res {
@@ -991,6 +994,109 @@ fn build_templates(
     Ok(None)
 }
 
+/// `stability.heel` / `heel_equilibrium`: inputs validated and snapshotted here,
+/// solved on a worker ([`reply_later`]) so the window never blocks.
+fn stability_heel(
+    app: &mut App,
+    p: &Value,
+    reply: &Sender<Value>,
+) -> Result<Option<Value>, String> {
+    use seacraft_core::heel;
+    enum Start {
+        Condition(Box<seacraft_core::loading::LoadingCondition>),
+        Bare {
+            kg: f64,
+            estimate: bool,
+            lcg: Option<f64>,
+        },
+    }
+    let err = |e: String| format!("stability.heel: {e}");
+    let surface = app
+        .surface()
+        .ok_or_else(|| err("no model is loaded".into()))?
+        .clone();
+    let mut opts = app.hydro_options().clone();
+    let level = match p.get("level") {
+        None | Some(Value::Null) => app.subdivision_level(),
+        Some(_) => number_in(p, "level", 0.0..=6.0)?
+            .map(|l| l.round() as u8)
+            .unwrap_or_else(|| app.subdivision_level()),
+    };
+    opts.subdivision = seacraft_core::subdiv::SubdivisionOptions {
+        level,
+        mode: app.subdivision_mode(),
+    };
+    let weights = match p.get("weights") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(v) => heel::weights_from_json(v).map_err(err)?,
+    };
+    let at_heel = number_in(p, "heel", -90.0..=90.0)?;
+    let start = if let Some(name) = text(p, "condition")? {
+        let project = app.project();
+        let c = project.loading_condition(Some(name)).map_err(err)?;
+        let cond = project.with_windage(c);
+        seacraft_core::loading::validate(&cond).map_err(err)?;
+        Start::Condition(Box::new(cond))
+    } else {
+        let (kg, estimate) = match p.get("kg") {
+            None | Some(Value::Null) => (
+                app.kg()
+                    .ok_or_else(|| err("set KG first (or pass `kg`)".into()))?,
+                app.kg_is_estimate(),
+            ),
+            Some(_) => (
+                number_in(p, "kg", 0.0..=1.0e3)?.ok_or_else(|| err("`kg` must be >= 0".into()))?,
+                false,
+            ),
+        };
+        if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
+            opts.draft = d;
+        }
+        // The dock's LCG when it is free to trim, else the upright LCB.
+        let lcg = number_in(p, "lcg", -1.0e4..=1.0e4)?
+            .or_else(|| app.free_trim().then(|| app.lcg()).flatten());
+        Start::Bare { kg, estimate, lcg }
+    };
+    reply_later(
+        reply.clone(),
+        app.revision(),
+        app.revision_watch(),
+        move || {
+            let hull = seacraft_core::hydro::Hull::new(&surface, opts.subdivision);
+            let mut warnings = Vec::new();
+            let start = match start {
+                Start::Condition(cond) => {
+                    let res = seacraft_core::loading::evaluate(&surface, &opts, &cond);
+                    if !res.equilibrium_found {
+                        warnings.extend(res.warnings.iter().cloned());
+                    }
+                    heel::MassCondition::from_loading(&res, hull.keel)
+                }
+                Start::Bare { kg, estimate, lcg } => {
+                    let mut m =
+                        heel::MassCondition::bare(&hull, &opts, kg, lcg).ok_or_else(|| {
+                            err(format!(
+                                "the hull displaces nothing at draft {}",
+                                opts.draft
+                            ))
+                        })?;
+                    m.kg_estimate = estimate;
+                    m
+                }
+            };
+            let mut r = heel::report(&hull, &opts, &start, &weights, at_heel);
+            warnings.extend(r.warnings);
+            r.warnings = warnings;
+            let mut v = serde_json::to_value(&r).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        },
+    );
+    Ok(None)
+}
+
 fn handle_inner(
     app: &mut App,
     ctx: &egui::Context,
@@ -1019,6 +1125,7 @@ fn handle_inner(
             let mut templates: Option<bool> = None;
             let mut panels: Option<bool> = None;
             let mut waves: Option<bool> = None;
+            let mut heel: Option<bool> = None;
             let mut connected_on: Option<bool> = None;
             let mut connected_preset: Option<String> = None;
             let mut connected_reach: Option<Option<f64>> = None;
@@ -1120,6 +1227,7 @@ fn handle_inner(
                     "waves" => {
                         waves = Some(value.as_bool().ok_or("`waves` must be true or false")?)
                     }
+                    "heel" => heel = Some(value.as_bool().ok_or("`heel` must be true or false")?),
                     "analysis" => {
                         let name = value.as_str().ok_or("`analysis` must be a string")?;
                         analysis = Some(analysis_from(name).ok_or_else(|| {
@@ -1241,6 +1349,9 @@ fn handle_inner(
             }
             if let Some(show) = waves {
                 app.set_wave_view_open(show);
+            }
+            if let Some(show) = heel {
+                app.set_heel_view_open(show);
             }
             if let Some(show) = templates {
                 app.set_show_templates(show);
@@ -4865,6 +4976,7 @@ mod tests {
             "hydro.compute",
             "stability.cross_curves",
             "stability.weather",
+            "stability.heel",
             "report.design",
             "app.quit",
             "no.such.method",
@@ -6305,5 +6417,83 @@ mod tests {
         );
         assert_eq!(r["ok"], false, "{r}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `stability.heel` measures on the app's own model with the dock KG,
+    /// as the MCP tool `heel_equilibrium` does headless.
+    #[test]
+    fn stability_heel_answers_on_the_app_model() {
+        let (mut app, ctx) = demo();
+        app.set_kg(2.2);
+        let r = call(
+            &mut app,
+            &ctx,
+            "stability.heel",
+            json!({ "weights": [{"mass_t": 0.5, "x": 4.0, "y": 0.8, "z": 1.5}], "heel": 10.0 }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let res = &r["result"];
+        assert_eq!(res["backend"], "app", "{res}");
+        assert_eq!(res["equilibrium"]["kind"], "stable", "{res}");
+        assert!(res["equilibrium"]["state"]["heel_deg"].as_f64().unwrap() > 0.0);
+        assert!((res["start"]["kg_m"].as_f64().unwrap() - 2.2).abs() < 1e-12);
+        assert!(res["at_heel"]["lever_m"].is_f64(), "{res}");
+        let dirty = app.is_dirty();
+        let r = call(
+            &mut app,
+            &ctx,
+            "stability.heel",
+            json!({ "weights": [{"mass_t": 0.0, "x": 4.0, "y": 0.8, "z": 1.5}] }),
+        );
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(app.is_dirty(), dirty, "read-only");
+    }
+
+    /// `ui.set {"heel": true}` opens the Heel view in the drawer, `false` closes it.
+    #[test]
+    fn ui_set_heel_opens_and_closes_the_view() {
+        use crate::analysis_views::AnalysisView;
+        let (mut app, ctx) = demo();
+        let r = call(&mut app, &ctx, "ui.set", json!({ "heel": true }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.analysis_view(), Some(AnalysisView::Heel));
+        let r = call(&mut app, &ctx, "ui.set", json!({ "heel": false }));
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(app.analysis_view(), None);
+        assert_eq!(
+            call(&mut app, &ctx, "ui.set", json!({ "heel": 1 }))["ok"],
+            false
+        );
+    }
+
+    #[test]
+    fn stability_heel_runs_off_the_window_thread() {
+        let (mut app, ctx) = demo();
+        app.set_kg(2.2);
+        let (tx, rx) = mpsc::channel();
+        let req = ControlRequest::new(
+            "stability.heel",
+            json!({ "weights": [{"mass_t": 0.5, "x": 4.0, "y": 0.8, "z": 1.5}] }),
+            tx,
+        );
+        assert!(
+            handle(&mut app, &ctx, &req).is_none(),
+            "valid stability.heel is answered by a worker"
+        );
+        let inspect = call(&mut app, &ctx, "ui.inspect", json!({}));
+        assert_eq!(inspect["ok"], true, "{inspect}");
+        let r = rx.recv_timeout(Duration::from_secs(60)).expect("a reply");
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["model_changed"], false, "{r}");
+        assert!(r["result"]["revision"].is_u64(), "{r}");
+
+        let (tx, _rx) = mpsc::channel();
+        let bad = ControlRequest::new(
+            "stability.heel",
+            json!({ "weights": [{"mass_t": 0.0, "x": 4.0, "y": 0.8, "z": 1.5}] }),
+            tx,
+        );
+        let r = handle(&mut app, &ctx, &bad).expect("invalid input fails on window thread");
+        assert_eq!(r["ok"], false, "{r}");
     }
 }

@@ -1822,3 +1822,58 @@ What this covers: SeaCraft's strip theory on two slender Wigley hulls (L/B 10, B
 Fn 0.2 to 0.4, compared with Journée's (1992) towing-tank measurements, part by part. It shows where strip theory
 departs from the tank on these hulls and freezes those gaps; it does not show the method is accurate for other
 hulls, oblique seas, other speeds, roll, or any hull with a transom, flare or bulb.
+
+---
+
+## 47. Box Barge Heel under an Off-Centre Weight against the Wall-Sided Formula
+
+### Source
+**Derived, not published.** The wall-sided formula is worked from first principles for this test (2026-11-20): heel a
+wall-sided section by φ about the upright waterline's centre; the immersed and emerged wedges are equal triangles of
+half-breadth `B/2`, and their shift moves B by `(B²/12T) tan φ` across and `(B²/24T) tan² φ` up in the upright frame.
+Resolving along the heeled water surface gives
+
+- `GZ = sin φ (GM + ½ BM tan² φ)`, with `GM = KB + BM − KG`, `KB = T/2`, `BM = B²/(12T)`;
+- an off-centre centre of gravity at `TCG` takes `TCG cos φ` off the lever (the heeling arm);
+- equilibrium, `GZ = TCG cos φ`, divided by `cos φ`: `(BM/2) tan³ φ + GM tan φ − TCG = 0`, a cubic in `tan φ` with one
+  real root when `GM > 0` (Cardano);
+- with `TCG = 0` and `GM < 0`, the loll angle `tan φ = √(−2 GM / BM)`, to either side.
+
+The formula holds while the sides stay wall-sided at the waterline: the deck edge dry (`|tan φ| < 2(D − T)/B`) and the
+bilge wet (`|tan φ| < 2T/B`). The off-centre weight test asserts both limits, the 22.7° loll test asserts the bilge limit,
+and the 1.2° and 0.4° small-loll tests assert the resulting angles directly.
+
+### What is compared
+The 10 × 4 × 3 m creased box of §1 in fresh water (ρ 1000 kg/m³, appendage coefficient 1, subdivision level 2),
+floating at 1.0 m (Δ 40 t), G at mid-length on the centreline. The equilibrium from `heel::equilibrium` (always
+free to trim, large-angle, refined by bisection on the lever) is compared with the formula.
+
+| Case | Inputs | Formula | Tolerance |
+|---|---|---|---|
+| Off-centre weight | KG 1.6 m, + 2 t at (5, 1.0, 1.6): Δ 42 t, T 1.05 m, GM 0.195 m, TCG 0.0476 m | heel 12.021° | 0.05°; trim within 1e-4 m of 0 |
+| Mirror | the same weight at y = −1.0 | −(the starboard heel) | 1e-3° |
+| Centreline weight at LCB | + 2 t at (5, 0, 1.6) | heel 0, draft 1.05 m | 1e-6° and 1e-6 m |
+| Loll | KG 1.95 m, no weight: GM −0.117 m | ±22.7° (`tan φ` 0.418) | 0.05°; port = −starboard to 1e-3° |
+| Capsize | + 30 t at (5, 1.5, 6.0) | no stable root within ±90° | outcome `Capsizes` |
+| Cannot float | + 200 t (the box holds 120 t) | no floating state | outcome `CannotFloat` |
+
+The small-angle answer `tan φ = TCG / GM` would give 13.7° for the first case: the test tells the two apart.
+
+### Test locations
+- `crates/seacraft-core/tests/analytic.rs`: `a_weight_off_centre_heels_a_box_to_the_wall_sided_angle`,
+  `a_starboard_weight_heels_to_starboard`, `a_weight_at_the_centreline_and_lcb_changes_only_the_draft`,
+  `negative_gm_lolls_to_both_sides`, `a_small_loll_is_found_on_both_sides` (KG solved from the loll formula for
+  1.2°, inside the first sweep step), `a_very_small_loll_below_half_a_degree_is_found_on_both_sides` (0.4°, below
+  0.5°), `a_high_heavy_weight_capsizes_the_box`, `heavier_than_the_hull_cannot_float`.
+- `crates/seacraft-core/src/heel.rs`: `centreline_lever_is_the_cross_curve_gz` (same code path: with G on the
+  centreline the lever equals the cross curves' GZ to 1e-12 on the demo hull, the 10 m yacht and the 6.5 m runabout),
+  `off_centre_g_splits_into_gz_and_heeling_arm` (definition), `weights_combine_by_mass` (arithmetic),
+  `bare_condition_uses_the_dock_draft` (the dock's displacement to 1e-9 relative).
+
+### Provenance
+Derived for this test (2026-11-20); the cubic is solved in the test itself, so the reference is the formula, not a
+stored number. Bite check, 2026-11-20: the heeling arm scaled by 1.01 moves the first case to 12.113° and fails it.
+
+What this covers: the equilibrium search and the lever split on a wall-sided box inside the formula's range. It does
+not show that the heel of a real hull under a real weight is right; past the deck-edge or bilge limits only the
+same-code-path checks against the GZ curves apply.
