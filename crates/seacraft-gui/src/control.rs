@@ -3645,11 +3645,19 @@ mod tests {
             json!({ "path": inside.to_string_lossy(), "nest": "split", "gap_mm": 10 }),
         );
         let v = &r["result"];
-        assert_eq!(
-            v["stale_sheet_files"],
-            json!([extra.to_string_lossy()]),
-            "{v}"
-        );
+        // Compared canonical: the reply names the file under the canonical write root, which is
+        // `/private/var/…` on macOS and `\\?\C:\…` with long names on Windows.
+        let stale: Vec<std::path::PathBuf> = v["stale_sheet_files"]
+            .as_array()
+            .expect("stale_sheet_files")
+            .iter()
+            .map(|f| {
+                std::path::PathBuf::from(f.as_str().expect("string path"))
+                    .canonicalize()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(stale, vec![extra.canonicalize().unwrap()], "{v}");
         assert!(
             v["warnings"][0]
                 .as_str()

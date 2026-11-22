@@ -1289,7 +1289,7 @@ fn non_finite_mass_in_table_is_rejected() {
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: egui::Modifiers::CTRL,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
         }],
     );
     clock.frame(&ctx, &mut app, vec![egui::Event::Text("inf".into())]);
@@ -1310,7 +1310,7 @@ fn non_finite_mass_in_table_is_rejected() {
             physical_key: None,
             pressed: true,
             repeat: false,
-            modifiers: egui::Modifiers::CTRL,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::COMMAND,
         }],
     );
     clock.frame(&ctx, &mut app, vec![egui::Event::Text("2.5".into())]);
