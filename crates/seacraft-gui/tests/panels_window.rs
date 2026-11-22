@@ -30,10 +30,38 @@ fn pram_file(test: &str, bow_m: f64) -> std::path::PathBuf {
 fn skiff(test: &str) -> App {
     let dir = std::env::temp_dir().join(format!("seacraft-gui-panels-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(format!("{test}.fef"));
+    skiff_at(&dir.join(format!("{test}.fef")))
+}
+
+/// A folder of one test's own, removed when it drops, also when an assertion fails. Declare it
+/// before the [`Window`] so the window (and any export it started) is gone first.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(test: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-gui-panels-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn join(&self, name: &str) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The skiff-4m example written to `path` and opened at level 3.
+fn skiff_at(path: &std::path::Path) -> App {
     let (surface, _) =
         seacraft_core::examples::build(seacraft_core::examples::Example::Skiff4m).expect("skiff");
-    std::fs::write(&path, seacraft_core::fef::write(&surface)).unwrap();
+    std::fs::write(path, seacraft_core::fef::write(&surface)).unwrap();
     let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
     app.set_subdivision_level(3);
     app
@@ -844,7 +872,8 @@ fn export_writes_a_file_per_sheet() {
 #[test]
 fn export_asks_before_replacing_sheet_files_and_names_older_ones() {
     use seacraft_gui::messages::Level;
-    let mut w = Window::new(skiff("export_asks_before_replacing_sheet_files"));
+    let tmp = TempDir::new("export_asks_before_replacing_sheet_files");
+    let mut w = Window::new(skiff_at(&tmp.join("skiff.fef")));
     let mut params = w.app.panels_params().clone();
     params.choices.nest = "split".into();
     w.app.set_panels_params(params);
@@ -865,11 +894,7 @@ fn export_asks_before_replacing_sheet_files_and_names_older_ones() {
     assert!(n >= 1);
 
     // An earlier export left sheet 1 (now hand edited) and one sheet more than this layout has.
-    let svg = scratch("confirm-gui.svg");
-    let _ = std::fs::remove_file(&svg);
-    for i in 0..=n {
-        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&svg, i));
-    }
+    let svg = tmp.join("confirm-gui.svg");
     let first = seacraft_core::panels::sheet_file_name(&svg, 0);
     let extra = seacraft_core::panels::sheet_file_name(&svg, n);
     std::fs::write(&first, "old sheet").unwrap();
@@ -914,18 +939,15 @@ fn export_asks_before_replacing_sheet_files_and_names_older_ones() {
 
 #[test]
 fn changing_the_nesting_after_the_warning_asks_again() {
-    let mut w = Window::new(skiff("changing_the_nesting_after_the_warning_asks_again"));
+    let tmp = TempDir::new("changing_the_nesting_after_the_warning_asks_again");
+    let mut w = Window::new(skiff_at(&tmp.join("skiff.fef")));
     w.app.set_show_panels(true);
     w.until("the panels", |app| app.panels_preview().is_some());
     w.frame(vec![]);
     w.frame(vec![]);
 
     // Without nesting an earlier sheet 1 is only left in place, and the user agrees to that.
-    let svg = scratch("confirm-stale.svg");
-    let _ = std::fs::remove_file(&svg);
-    for i in 0..16 {
-        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&svg, i));
-    }
+    let svg = tmp.join("confirm-stale.svg");
     let first = seacraft_core::panels::sheet_file_name(&svg, 0);
     std::fs::write(&first, "hand edited").unwrap();
     w.click("Export…");
