@@ -1,10 +1,11 @@
-"""Tests for the pure parts of build.py: python3 -m unittest site/test_build.py
+"""Tests for the pure parts of build.py: python3 site/test_build.py
 
 They cover how build.py reads seacraft's output, never a number of its own: the numbers come from the
 program, and its own tests check them.
 """
 
 import importlib.util
+import json
 import re
 import tempfile
 import unittest
@@ -152,6 +153,54 @@ class TestRun(unittest.TestCase):
             self.assertIn("seacraft hydro wigley.fef", message)
             self.assertIn("no equilibrium: hull is open", message)
             self.assertFalse((Path(scratch) / "data.json").exists())
+
+
+def fake_waves(scratch, warnings):
+    """A stand-in for `seacraft waves` that logs each call, writes its -o file and prints a result."""
+    log = Path(scratch) / "calls.log"
+    result = json.dumps(
+        {"grid_points": [10, 5], "regime": {"sentence": "A regime."}, "max_abs_zeta_m": 0.1, "warnings": warnings}
+    )
+    fake = Path(scratch) / "seacraft"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"echo \"$*\" >> '{log}'\n"
+        'out=""\n'
+        'while [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done\n'
+        '[ -n "$out" ] && printf png > "$out"\n'
+        f"echo '{result}'\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake, log
+
+
+class TestWaveSteps(unittest.TestCase):
+    def setUp(self):
+        self.shrink = build.shrink_png
+        build.shrink_png = lambda path: None  # The fake's files are not PNGs.
+
+    def tearDown(self):
+        build.shrink_png = self.shrink
+
+    def test_a_fitting_hull_computes_each_speed_once(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            fake, log = fake_waves(scratch, [])
+            waves = build.wave_steps(fake, "wigley", Path(scratch), 10.0)
+            calls = log.read_text(encoding="utf-8").splitlines()
+            self.assertTrue(waves["fits"])
+            self.assertEqual(len(waves["steps"]), len(build.WAVE_FROUDES))
+            self.assertEqual(len(calls), len(build.WAVE_FROUDES))
+            self.assertTrue(all("--spacing" in c for c in calls))
+            self.assertTrue((Path(scratch) / "waves" / "fn-0.35.png").exists())
+
+    def test_a_hull_seacraft_warns_about_keeps_its_words_and_no_images(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            fake, log = fake_waves(scratch, ["beam/length 0.40 is not slender"])
+            waves = build.wave_steps(fake, "barge", Path(scratch), 10.0)
+            self.assertEqual(waves, {"fits": False, "steps": [], "reason": ["beam/length 0.40 is not slender"]})
+            self.assertFalse((Path(scratch) / "waves").exists())
+            self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)
 
 
 if __name__ == "__main__":

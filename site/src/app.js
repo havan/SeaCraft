@@ -509,9 +509,16 @@ function setWave(index) {
   const image = $("waves-image");
   // Hidden until this image has loaded, so the previous one never sits above these numbers.
   const src = `hulls/${hull.id}/${step.image}`;
+  const scale = `Seen from above, bow to the right. The colours run to ±${significant(step.clip_m, 2)} m, the largest elevation at this speed.`;
   image.style.visibility = "hidden";
   image.onload = () => {
-    if (image.getAttribute("src") === src) image.style.visibility = "";
+    if (image.getAttribute("src") !== src) return; // A later speed or hull has replaced this one.
+    image.style.visibility = "";
+    $("waves-scale").textContent = scale;
+  };
+  image.onerror = () => {
+    if (image.getAttribute("src") !== src) return;
+    $("waves-scale").textContent = `The pattern at Froude number ${fn} did not load. Reload the page to try again.`;
   };
   image.src = src;
   image.width = step.size[0];
@@ -521,7 +528,7 @@ function setWave(index) {
   $("waves-label").textContent = `Froude number ${fn}`;
   $("waves-fn").setAttribute("aria-valuetext", `Froude number ${fn}. ${step.regime}`);
   $("waves-regime").textContent = step.regime;
-  $("waves-scale").textContent = `Seen from above, bow to the right. The colours run to ±${significant(step.clip_m, 2)} m, the largest elevation at this speed.`;
+  $("waves-scale").textContent = scale;
   $("cmd-waves").textContent = step.command;
   state.waveFn = step.fn;
 }

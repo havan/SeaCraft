@@ -450,14 +450,11 @@ def wave_steps(seacraft, hull_id, hull_dir, length):
 
     Whether it is shown follows seacraft's own warnings, never a list kept here. Each image is the PNG
     seacraft wrote, made smaller with pngquant when it is installed.
+
+    Each speed is computed once. The first speed seacraft warns at stops the run and removes the images
+    already written: no pattern is shown for a hull the theory does not fit.
     """
     fef = f"{hull_id}.fef"
-    probe = [json.loads(run(seacraft, "waves", fef, "--fn", f, "--json", cwd=hull_dir)) for f in WAVE_FROUDES]
-    if not wave_fits(probe):
-        reason = []
-        for result in probe:
-            reason += [w for w in result.get("warnings") or [] if w not in reason]
-        return {"fits": False, "steps": [], "reason": reason}
     spacing = sig(length / WAVE_POINTS_PER_LENGTH, 3)
     folder = hull_dir / "waves"
     folder.mkdir()
@@ -468,6 +465,9 @@ def wave_steps(seacraft, hull_id, hull_dir, length):
         # Run inside the waves folder, so the command shown writes a plain file name, as a reader's would.
         args = ("--fn", f"{f:.2f}", "--spacing", f"{spacing:g}", "-o", name)
         result = json.loads(run(seacraft, "waves", f"../{fef}", *args, "--json", cwd=folder))
+        if not wave_fits([result]):
+            shutil.rmtree(folder)
+            return {"fits": False, "steps": [], "reason": list(dict.fromkeys(warning_text(result)))}
         shrink_png(hull_dir / image)
         steps.append(
             {
