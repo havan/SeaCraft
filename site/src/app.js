@@ -228,6 +228,7 @@ function bindDrag(grab) {
 }
 
 function setRow(index, animate) {
+  if (!state.hull) return; // Nothing loaded yet.
   state.row = index;
   const row = state.hull.table[index];
   $("draft").value = index;
@@ -321,6 +322,9 @@ function heeled([y, up], degrees, centre) {
 
 const heel = { hull: null, parts: null, angle: 0, centre: 0, raf: 0 };
 
+// A settled state the figure can draw: near ±90° the waterplane stands on edge and has no level line.
+const drawable = (step) => step.kind === "stable" && Math.abs(step.waterplane[2]) > 1e-6;
+
 // Turn the hull about the user-space origin with the SVG transform attribute: a CSS transform on an SVG
 // element turns about the viewBox corner in some browsers, which moved the hull out of its frame.
 function turnHull(groups, angle, centre) {
@@ -350,7 +354,7 @@ function buildHeel(hull) {
   const svg = $("heel-figure");
   svg.textContent = "";
   const data = hull.heel;
-  const stable = data.steps.filter((s) => s.kind === "stable");
+  const stable = data.steps.filter(drawable);
   const upright = stable.length ? waterAtCentre(stable[0], data.station.x) : hull.lines.z0 + hull.draft;
   const halves = polylines(data.station.body).map((line) => line.map(([y, up]) => [Math.abs(y), up]));
   // Only a part that reaches the centreline closes with its mirror into a section; a bulwark rail
@@ -413,10 +417,11 @@ function buildHeel(hull) {
 }
 
 function setHeel(index) {
+  if (!heel.parts) return; // Nothing loaded yet.
   const { svg, box, upright, hulls, pins, weight, centreG, action, lever, g, b, labels } = heel.parts;
   const data = heel.hull.heel;
   const step = data.steps[index];
-  const settled = step.kind === "stable";
+  const settled = drawable(step);
   const angle = settled ? step.heel_deg : 0;
   const centre = settled ? waterAtCentre(step, data.station.x) : upright;
   turnHull([...hulls, pins], angle, centre);
@@ -443,6 +448,9 @@ function setHeel(index) {
   const where = `${significant(data.mass_t, 2)} t on deck, ${niceNumber(step.y)} m off the centreline`;
   $("heel-label").textContent = `Trial weight: ${where}`;
   input.setAttribute("aria-valuetext", `${where}. ${step.summary}`);
+  const warnings = $("heel-warnings");
+  warnings.textContent = "";
+  solverWarnings(warnings, step.warnings);
   if (!settled) return;
 
   // B and G as seacraft placed them, and G moved to the centreline, where GZ is measured from.
@@ -473,6 +481,9 @@ function setHeel(index) {
   place(labels[0], bx + 11 * u * side, by + 5 * u);
   place(labels[1], gx + 11 * u * side, gy - 6 * u);
   place(labels[2], side > 0 ? Math.min(ox, bx) - 10 * u : Math.max(ox, bx) + 10 * u, oy + 5 * u);
+  const leverShown = Math.abs(bx - ox) >= 2 * u;
+  lever.style.display = leverShown ? "" : "none";
+  labels[2].style.display = leverShown ? "" : "none";
   labels[0].setAttribute("text-anchor", outboard);
   labels[1].setAttribute("text-anchor", outboard);
   labels[2].setAttribute("text-anchor", side > 0 ? "end" : "start");
@@ -492,10 +503,17 @@ function drawHeel(hull) {
 
 function setWave(index) {
   const hull = state.hull;
+  if (!hull || !hull.waves.fits) return; // Nothing loaded yet, or no pattern for this hull.
   const step = hull.waves.steps[index];
   const fn = step.fn.toFixed(2);
   const image = $("waves-image");
-  image.src = `hulls/${hull.id}/${step.image}`;
+  // Hidden until this image has loaded, so the previous one never sits above these numbers.
+  const src = `hulls/${hull.id}/${step.image}`;
+  image.style.visibility = "hidden";
+  image.onload = () => {
+    if (image.getAttribute("src") === src) image.style.visibility = "";
+  };
+  image.src = src;
   image.width = step.size[0];
   image.height = step.size[1];
   image.alt = `Far-field wave pattern behind the ${hull.name} at Froude number ${fn}, from seacraft waves.`;
@@ -513,6 +531,7 @@ function drawWaves(hull) {
   $("waves-shown").hidden = !waves.fits;
   $("waves-not").hidden = waves.fits;
   $("cmd-waves-wrap").hidden = !waves.fits;
+  if (!waves.fits) $("waves-image").removeAttribute("src");
   if (waves.fits) {
     $("waves-fn").max = waves.steps.length - 1;
     // Keep the speed the reader chose when they switch hulls.
@@ -531,10 +550,12 @@ function drawWaves(hull) {
   shown.forEach((other, i) => {
     if (i) names.append(i === shown.length - 1 ? " or " : ", ");
     const button = html("button", { type: "button", className: "link-button", textContent: other.label }, names);
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const radio = document.querySelector(`#picker input[value="${other.id}"]`);
       if (radio) radio.checked = true;
-      chooseHull(other.id, false);
+      await chooseHull(other.id, false);
+      // The note and its buttons are gone now: carry focus to the control that replaced them.
+      if (state.hull && state.hull.id === other.id && state.hull.waves.fits) $("waves-fn").focus({ preventScroll: true });
     });
   });
 }
@@ -795,10 +816,20 @@ async function drawBuild() {
   }
   const host = $("build-sheets");
   // Inlined rather than an <img>, so the lines, drawn 0.18 mm wide at full size, stay visible scaled down.
-  for (const [i, name] of index.sheets.entries()) {
-    const text = await (await fetch(`build/${name}`)).text();
-    const svg = new DOMParser().parseFromString(text, "image/svg+xml").documentElement;
-    if (svg.nodeName !== "svg") continue;
+  let sheets;
+  try {
+    sheets = await Promise.all(index.sheets.map(async (name) => {
+      const response = await fetch(`build/${name}`);
+      if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+      const svg = new DOMParser().parseFromString(await response.text(), "image/svg+xml").documentElement;
+      if (svg.nodeName !== "svg") throw new Error(`${name} is not an SVG`);
+      return svg;
+    }));
+  } catch (error) {
+    $("build-caption").textContent = `The sheet layout did not load (${error.message}). Reload the page to try again.`;
+    return;
+  }
+  for (const [i, svg] of sheets.entries()) {
     svg.removeAttribute("width");
     svg.removeAttribute("height");
     svg.setAttribute("role", "img");
@@ -877,7 +908,10 @@ async function chooseHull(id, firstLoad) {
   try {
     hull = await loadHull(id);
   } catch (error) {
+    if (request !== state.request) return; // A later choice has already replaced this one.
     $("hull-description").textContent = `This hull’s data did not load (${error.message}). Reload the page to try again.`;
+    const shown = state.hull && document.querySelector(`#picker input[value="${state.hull.id}"]`);
+    if (shown) shown.checked = true;
     return;
   }
   if (request !== state.request) return; // A later choice has already replaced this one.

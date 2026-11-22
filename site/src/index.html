@@ -165,6 +165,7 @@
           </div>
           <svg id="heel-figure" class="heel-figure" role="img" aria-labelledby="heel-summary"></svg>
           <output id="heel-summary" for="heel-weight" class="heel-summary"></output>
+          <div id="heel-warnings"></div>
           <dl class="heel-readout">
             <div><dt>Heel</dt><dd id="h-heel">–</dd></div>
             <div><dt>Righting lever GZ</dt><dd id="h-gz">–</dd></div>
@@ -191,10 +192,10 @@
           <h3>See the waves</h3>
           <p>Michell’s thin-ship theory gives the wave pattern a hull leaves behind it: the wedge of diverging waves and the transverse waves inside it, changing as the speed rises. These are the free waves far from the hull. The water right beside the hull is not its wave profile.</p>
           <p>Each speed is one run of <code>seacraft waves</code>. The theory fits slender hulls only, so the pattern is shown only for the hulls SeaCraft gives no warning about.</p>
-          <pre id="cmd-waves-wrap"><code id="cmd-waves"></code></pre>
+          <pre id="cmd-waves-wrap" hidden><code id="cmd-waves"></code></pre>
         </div>
         <figure class="step-figure waves" id="waves">
-          <div class="waves-shown" id="waves-shown">
+          <div class="waves-shown" id="waves-shown" hidden>
             <div class="waves-control">
               <label for="waves-fn" id="waves-label">Froude number</label>
               <input id="waves-fn" type="range" min="0" max="7" step="1" value="2">
@@ -325,9 +326,9 @@ cargo run --release -p seacraft-gui -- --open examples/trawler-22m.fef</code></p
         <!-- Every figure here is from docs/oracles.md: §39 Michell, §46 seakeeping, §42 Holtrop, §43 Savitsky,
              §44 and §45 Wigley hydrostatics and GZ, §47 heel. Change them there first. -->
         <ul>
-          <li>Tank tests of the Wigley hull. Michell’s wave resistance, against Kajitani et al. (1983), puts the hollow at the measured speed, but the hump comes about 0.02 early in Froude number and 18 to 54 % high. Strip-theory heave and pitch, against Journée (1992), gives heave added mass within 8 to 19 % at 4 to 12 rad/s, and places the pitch resonance at shorter waves than the tank.</li>
-          <li>Worked examples printed with the methods: Holtrop and Mennen’s two papers, and Savitsky as Molland et al. (2011) work it. These show the equations are typed in as printed, not that the methods predict any real boat.</li>
-          <li>The Wigley hull’s published equation. The example’s hydrostatics are within 0.6 % of the closed forms at the design draft, but its volume runs 5.5 % low at a quarter of it. Its righting levers to 80° are within 0.71 % of an independent integration.</li>
+          <li>Tank tests of the Wigley hull. Michell’s wave resistance, against Kajitani et al. (1983), puts the hollow at the measured speed, but the hump comes about 0.02 early in Froude number and 18 to 54 % high. Strip-theory motions, against Journée (1992): in waves at least 1.25 ship lengths long at Froude numbers 0.2 and 0.3, away from resonance, heave on both hulls and pitch on one come within 30 % and 30° of the tank. Shorter waves are further off, and the pitch resonance comes at shorter waves than the tank’s.</li>
+          <li>Worked examples printed with the methods: Holtrop and Mennen (1982) and Holtrop (1984), and Savitsky as Molland et al. (2011) work it. SeaCraft gives the 1984 example to the printed kilonewton and the 1982 one 1.2 % high, from the newer form factor it uses; Savitsky comes within 0.5 %. That checks the transcription of the equations, not that the methods predict any real boat.</li>
+          <li>The Wigley hull’s published equation. The example’s hydrostatics are within 0.6 % of the closed forms at the design draft, but its volume runs 5.5 % low at a quarter of it. Its cross-curve levers KN to 80° are within 0.71 % of an independent integration, at most 2.7 mm.</li>
           <li>Closed-form cases, such as box barges, including the heel under an off-centre weight.</li>
           <li>SeaCraft’s own earlier output. The demo hull’s numbers only catch unintended changes, and say nothing about whether they are right.</li>
         </ul>

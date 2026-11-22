@@ -379,7 +379,7 @@ def heel_step(result, y):
     """
     equilibrium = result["equilibrium"]
     state = equilibrium.get("state") if equilibrium["kind"] == "stable" else None
-    step = {"y": y, "kind": equilibrium["kind"], "summary": result["summary"]}
+    step = {"y": y, "kind": equilibrium["kind"], "summary": result["summary"], "warnings": warning_text(result)}
     if state is None:
         step.update(dict.fromkeys(("heel_deg", "b", "g", "gz_m", "heeling_arm_m", "draft", "trim_m", "waterplane")))
         return step
@@ -459,12 +459,15 @@ def wave_steps(seacraft, hull_id, hull_dir, length):
             reason += [w for w in result.get("warnings") or [] if w not in reason]
         return {"fits": False, "steps": [], "reason": reason}
     spacing = sig(length / WAVE_POINTS_PER_LENGTH, 3)
-    (hull_dir / "waves").mkdir()
+    folder = hull_dir / "waves"
+    folder.mkdir()
     steps = []
     for f in WAVE_FROUDES:
-        image = f"waves/fn-{f:.2f}.png"
-        args = ("waves", fef, "--fn", f"{f:.2f}", "--spacing", f"{spacing:g}", "-o", image)
-        result = json.loads(run(seacraft, *args, "--json", cwd=hull_dir))
+        name = f"fn-{f:.2f}.png"
+        image = f"waves/{name}"
+        # Run inside the waves folder, so the command shown writes a plain file name, as a reader's would.
+        args = ("--fn", f"{f:.2f}", "--spacing", f"{spacing:g}", "-o", name)
+        result = json.loads(run(seacraft, "waves", f"../{fef}", *args, "--json", cwd=folder))
         shrink_png(hull_dir / image)
         steps.append(
             {
@@ -476,7 +479,7 @@ def wave_steps(seacraft, hull_id, hull_dir, length):
                 "clip_m": round(result["max_abs_zeta_m"], 4),
                 "notes": result.get("notes") or [],
                 "warnings": warning_text(result),
-                "command": shown(hull_id, "waves", *args[2:]),
+                "command": shown(hull_id, "waves", *args),
             }
         )
     return {"fits": True, "steps": steps}
@@ -675,6 +678,19 @@ def builder_files(seacraft, out):
     print(f"  build: {len(sheets)} sheet files, {index['plywood_sheets']} plywood sheets")
 
 
+# The desktop screenshots the page shows, from docs/assets.
+SCREENSHOTS = ("gui.png", "gui-waves.png", "gui-heel.png")
+
+
+def copy_screenshots(source, out):
+    """Copy the page's screenshots, failing the build when one is missing rather than leaving a broken image."""
+    missing = [name for name in SCREENSHOTS if not (source / name).is_file()]
+    if missing:
+        sys.exit(f"missing screenshots in {source}: {', '.join(missing)}")
+    for name in SCREENSHOTS:
+        shutil.copy(source / name, out / name)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--seacraft", default=str(ROOT / "target/release/seacraft"))
@@ -747,8 +763,7 @@ def main():
                 (out / item.name).write_text(text, encoding="utf-8")
     assets = out / "assets"
     assets.mkdir()
-    for shot in sorted((ROOT / "docs" / "assets").glob("gui*.png")):
-        shutil.copy(shot, assets / shot.name)
+    copy_screenshots(ROOT / "docs" / "assets", assets)
     fonts = out / "fonts"
     fonts.mkdir()
     for item in FONTS.iterdir():

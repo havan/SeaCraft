@@ -79,6 +79,12 @@ class TestHeelStep(unittest.TestCase):
                 for key in ("heel_deg", "b", "g", "gz_m", "heeling_arm_m", "draft", "trim_m", "waterplane"):
                     self.assertIsNone(step[key], key)
 
+    def test_seacrafts_warnings_are_kept(self):
+        result = heel_result({"kind": "stable", "state": STATE}, "s")
+        result["warnings"] = ["the hull is open (no deck faces) and its open edge is below the waterline"]
+        self.assertEqual(build.heel_step(result, 0.0)["warnings"], result["warnings"])
+        self.assertEqual(build.heel_step(heel_result({"kind": "cannot_float"}, "s"), 0.0)["warnings"], [])
+
     def test_a_state_without_draft_keeps_the_gap(self):
         state = dict(STATE, draft=None, trim_m=None)
         step = build.heel_step(heel_result({"kind": "stable", "state": state}, "s"), 0.0)
@@ -110,6 +116,28 @@ class TestSectionTop(unittest.TestCase):
 
     def test_an_open_boat_is_topped_by_its_sheer(self):
         self.assertEqual(build.section_top("M-0.000,-0.001L-0.498,-0.001L-0.716,-0.420"), 0.42)
+
+
+class TestScreenshots(unittest.TestCase):
+    def test_a_missing_screenshot_stops_the_build(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source, out = Path(scratch) / "assets", Path(scratch) / "out"
+            source.mkdir()
+            out.mkdir()
+            (source / "gui.png").write_bytes(b"png")
+            with self.assertRaises(SystemExit) as stop:
+                build.copy_screenshots(source, out)
+            self.assertIn("gui-waves.png", str(stop.exception.code))
+
+    def test_every_screenshot_is_copied(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            source, out = Path(scratch) / "assets", Path(scratch) / "out"
+            source.mkdir()
+            out.mkdir()
+            for name in build.SCREENSHOTS:
+                (source / name).write_bytes(b"png")
+            build.copy_screenshots(source, out)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), sorted(build.SCREENSHOTS))
 
 
 class TestRun(unittest.TestCase):
