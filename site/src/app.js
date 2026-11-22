@@ -8,7 +8,7 @@ const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
 const cache = new Map();
 
-const state = { hull: null, row: 0, shown: 0, raf: 0, request: 0 };
+const state = { hull: null, row: 0, shown: 0, raf: 0, request: 0, manifest: null, waveFn: null };
 
 function el(name, attrs = {}, parent) {
   const node = document.createElementNS(NS, name);
@@ -228,6 +228,7 @@ function bindDrag(grab) {
 }
 
 function setRow(index, animate) {
+  if (!state.hull) return; // Nothing loaded yet.
   state.row = index;
   const row = state.hull.table[index];
   $("draft").value = index;
@@ -297,6 +298,273 @@ function drawLinesFigure(hull) {
 
   const body = el("g", { transform: `translate(${bodyCentre} 0)` }, svg);
   for (const s of g.stations) el("path", { d: s.body, class: "station" }, body);
+}
+
+/* --- Where it heels: one seacraft heel run per weight position ------------------------------------ */
+
+// The station's half section as polylines of [y, -z]; build.py cut it from the mesh.
+const polylines = (d) =>
+  d.split("M").filter(Boolean).map((part) => part.split("L").map((p) => p.split(",").map(Number)));
+
+// Where the solved waterplane (n . p + d = 0) crosses the centreline at the station: the point the
+// drawing turns the hull about, so the water stays level on screen.
+function waterAtCentre(step, x) {
+  const [nx, , nz, d] = step.waterplane;
+  return -(nx * x + d) / nz;
+}
+
+// A point of the hull, [y, -z] in the hull's own axes, on screen once heeled.
+function heeled([y, up], degrees, centre) {
+  const a = (degrees * Math.PI) / 180;
+  const v = up + centre;
+  return [y * Math.cos(a) - v * Math.sin(a), y * Math.sin(a) + v * Math.cos(a)];
+}
+
+const heel = { hull: null, parts: null, angle: 0, centre: 0, raf: 0 };
+
+// A settled state the figure can draw: near ±90° the waterplane stands on edge and has no level line.
+const drawable = (step) => step.kind === "stable" && Math.abs(step.waterplane[2]) > 1e-6;
+
+// Turn the hull about the user-space origin with the SVG transform attribute: a CSS transform on an SVG
+// element turns about the viewBox corner in some browsers, which moved the hull out of its frame.
+function turnHull(groups, angle, centre) {
+  cancelAnimationFrame(heel.raf);
+  const apply = (a, c) => {
+    for (const g of groups) g.setAttribute("transform", `rotate(${a}) translate(0 ${c})`);
+    heel.angle = a;
+    heel.centre = c;
+  };
+  const from = [heel.angle, heel.centre];
+  if (reducedMotion.matches || !heel.started) {
+    heel.started = true;
+    apply(angle, centre);
+    return;
+  }
+  const start = performance.now();
+  const frame = (now) => {
+    const t = Math.max(0, Math.min(1, (now - start) / 300));
+    const eased = 1 - (1 - t) ** 3;
+    apply(from[0] + (angle - from[0]) * eased, from[1] + (centre - from[1]) * eased);
+    if (t < 1) heel.raf = requestAnimationFrame(frame);
+  };
+  heel.raf = requestAnimationFrame(frame);
+}
+
+function buildHeel(hull) {
+  const svg = $("heel-figure");
+  svg.textContent = "";
+  const data = hull.heel;
+  const stable = data.steps.filter(drawable);
+  const upright = stable.length ? waterAtCentre(stable[0], data.station.x) : hull.lines.z0 + hull.draft;
+  const halves = polylines(data.station.body).map((line) => line.map(([y, up]) => [Math.abs(y), up]));
+  // Only a part that reaches the centreline closes with its mirror into a section; a bulwark rail
+  // standing on its own is drawn as a line.
+  const shapes = halves
+    .filter((line) => line.some(([y]) => y < 1e-3))
+    .map((line) => [...line, ...line.slice().reverse().map(([y, up]) => [-y, up])]);
+  const toPath = (points) => `M${points.map((p) => p.map((v) => v.toFixed(4)).join(",")).join("L")}`;
+
+  // Frame every pose the slider can show, so the figure never rescales between positions.
+  const marks = data.steps.flatMap((s) => [[s.y, -data.z]]);
+  const poses = [[0, upright], ...stable.map((s) => [s.heel_deg, waterAtCentre(s, data.station.x)])];
+  let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const [angle, centre] of poses) {
+    for (const point of [...halves.flat(), ...halves.flat().map(([y, up]) => [-y, up]), ...marks]) {
+      const [x, y] = heeled(point, angle, centre);
+      left = Math.min(left, x); right = Math.max(right, x);
+      top = Math.min(top, y); bottom = Math.max(bottom, y);
+    }
+  }
+  const pad = (right - left) * 0.08;
+  const box = { x: left - pad, y: top - pad, w: right - left + 2 * pad, h: bottom - top + 2 * pad };
+  svg.setAttribute("viewBox", `${box.x} ${box.y} ${box.w} ${box.h}`);
+
+  const defs = el("defs", {}, svg);
+  el("rect", { x: -1e4, y: -1e4, width: 2e4, height: 1e4 }, el("clipPath", { id: "heel-air" }, defs));
+  el("rect", { x: -1e4, y: 0, width: 2e4, height: 1e4 }, el("clipPath", { id: "heel-sea" }, defs));
+  const water = el("rect", { x: -1e4, y: 0, width: 2e4, height: 1e4, class: "heel-water" }, svg);
+  const hulls = ["air", "sea"].map((side) => {
+    const clip = el("g", { "clip-path": `url(#heel-${side})`, class: `heel-${side}` }, svg);
+    const body = el("g", { class: "heel-hull" }, clip);
+    for (const shape of shapes) el("path", { d: `${toPath(shape)}Z`, class: "heel-fill" }, body);
+    for (const half of halves) {
+      el("path", { d: toPath(half), class: "heel-line" }, body);
+      el("path", { d: toPath(half.map(([y, up]) => [-y, up])), class: "heel-line" }, body);
+    }
+    return body;
+  });
+  const waterline = el("line", { x1: -1e4, x2: 1e4, y1: 0, y2: 0, class: "heel-wl" }, svg);
+
+  // In the hull's axes, so they turn with it.
+  const pins = el("g", { class: "heel-hull heel-pins" }, svg);
+  const weight = el("rect", { class: "heel-weight" }, pins);
+  const centreG = el("circle", { class: "heel-g0" }, pins);
+  // On screen, level whatever the heel.
+  const over = el("g", { class: "heel-over" }, svg);
+  const action = el("line", { class: "heel-action" }, over);
+  const lever = el("line", { class: "heel-lever" }, over);
+  const g = el("circle", { class: "heel-g" }, over);
+  const b = el("circle", { class: "heel-b" }, over);
+  const labels = ["B", "G", "GZ"].map((text) => {
+    const label = el("text", { class: `heel-label heel-label-${text.toLowerCase()}` }, over);
+    label.textContent = text;
+    return label;
+  });
+
+  heel.hull = hull;
+  heel.started = false;
+  heel.parts = { svg, box, upright, water, hulls, waterline, pins, weight, centreG, over, action, lever, g, b, labels };
+}
+
+function setHeel(index) {
+  if (!heel.parts) return; // Nothing loaded yet.
+  const { svg, box, upright, hulls, pins, weight, centreG, action, lever, g, b, labels } = heel.parts;
+  const data = heel.hull.heel;
+  const step = data.steps[index];
+  const settled = drawable(step);
+  const angle = settled ? step.heel_deg : 0;
+  const centre = settled ? waterAtCentre(step, data.station.x) : upright;
+  turnHull([...hulls, pins], angle, centre);
+  svg.classList.toggle("unsettled", !settled);
+
+  // Sizes fixed on screen, whatever the hull's size.
+  // The figure is fitted inside its box, so whichever side fills decides the scale.
+  const fit = Math.min((svg.clientWidth || 600) / box.w, (svg.clientHeight || 400) / box.h);
+  const u = 1 / Math.max(1e-6, fit);
+  weight.setAttribute("x", step.y - 6 * u);
+  weight.setAttribute("y", -data.z - 12 * u);
+  weight.setAttribute("width", 12 * u);
+  weight.setAttribute("height", 12 * u);
+
+  $("heel-summary").textContent = `Weight ${step.y.toFixed(2)} m out: ${step.summary}.`;
+  $("cmd-heel").textContent = step.command;
+  const metres = (v, places) => (v === null ? "–" : `${niceNumber(v, places)} m`);
+  $("h-heel").textContent = settled ? `${niceNumber(step.heel_deg, 1)}°` : "–";
+  $("h-gz").textContent = metres(step.gz_m, 3);
+  $("h-arm").textContent = metres(step.heeling_arm_m, 3);
+  $("h-draft").textContent = metres(step.draft, 3);
+  const input = $("heel-weight");
+  input.value = index;
+  const where = `${significant(data.mass_t, 2)} t on deck, ${niceNumber(step.y)} m off the centreline`;
+  $("heel-label").textContent = `Trial weight: ${where}`;
+  input.setAttribute("aria-valuetext", `${where}. ${step.summary}`);
+  const warnings = $("heel-warnings");
+  warnings.textContent = "";
+  solverWarnings(warnings, step.warnings);
+  if (!settled) return;
+
+  // B and G as seacraft placed them, and G moved to the centreline, where GZ is measured from.
+  const [gx, gy] = heeled(step.g.map((v, i) => (i ? -v : v)), angle, centre);
+  const [bx, by] = heeled(step.b.map((v, i) => (i ? -v : v)), angle, centre);
+  const [ox, oy] = heeled([0, -step.g[1]], angle, centre);
+  centreG.setAttribute("cx", 0);
+  centreG.setAttribute("cy", -step.g[1]);
+  centreG.setAttribute("r", 5 * u);
+  for (const [dot, x, y] of [[g, gx, gy], [b, bx, by]]) {
+    dot.setAttribute("cx", x);
+    dot.setAttribute("cy", y);
+    dot.setAttribute("r", 6 * u);
+  }
+  action.setAttribute("x1", bx); action.setAttribute("x2", bx);
+  action.setAttribute("y1", by); action.setAttribute("y2", Math.min(gy, oy) - 30 * u);
+  lever.setAttribute("x1", ox); lever.setAttribute("x2", bx);
+  lever.setAttribute("y1", oy); lever.setAttribute("y2", oy);
+  const font = 14 * u;
+  const place = (label, x, y) => {
+    label.setAttribute("x", x);
+    label.setAttribute("y", y);
+    label.setAttribute("font-size", font);
+  };
+  // B and G sit on the line of action, outboard of it; GZ is named on the other side of the lever.
+  const side = bx >= ox ? 1 : -1;
+  const outboard = side > 0 ? "start" : "end";
+  place(labels[0], bx + 11 * u * side, by + 5 * u);
+  place(labels[1], gx + 11 * u * side, gy - 6 * u);
+  place(labels[2], side > 0 ? Math.min(ox, bx) - 10 * u : Math.max(ox, bx) + 10 * u, oy + 5 * u);
+  const leverShown = Math.abs(bx - ox) >= 2 * u;
+  lever.style.display = leverShown ? "" : "none";
+  labels[2].style.display = leverShown ? "" : "none";
+  labels[0].setAttribute("text-anchor", outboard);
+  labels[1].setAttribute("text-anchor", outboard);
+  labels[2].setAttribute("text-anchor", side > 0 ? "end" : "start");
+}
+
+function drawHeel(hull) {
+  buildHeel(hull);
+  const steps = hull.heel.steps;
+  $("heel-weight").max = steps.length - 1;
+  // Open on a heeled position that settles: the furthest stable one up to the middle of the deck.
+  let start = 0;
+  for (let i = 0; i <= Math.floor((steps.length - 1) / 2); i++) if (steps[i].kind === "stable") start = i;
+  setHeel(start);
+}
+
+/* --- The wave pattern: one seacraft waves image per Froude number --------------------------------- */
+
+function setWave(index) {
+  const hull = state.hull;
+  if (!hull || !hull.waves.fits) return; // Nothing loaded yet, or no pattern for this hull.
+  const step = hull.waves.steps[index];
+  const fn = step.fn.toFixed(2);
+  const image = $("waves-image");
+  // Hidden until this image has loaded, so the previous one never sits above these numbers.
+  const src = `hulls/${hull.id}/${step.image}`;
+  const scale = `Seen from above, bow to the right. The colours run to ±${significant(step.clip_m, 2)} m, the largest elevation at this speed.`;
+  image.style.visibility = "hidden";
+  image.onload = () => {
+    if (image.getAttribute("src") !== src) return; // A later speed or hull has replaced this one.
+    image.style.visibility = "";
+    $("waves-scale").textContent = scale;
+  };
+  image.onerror = () => {
+    if (image.getAttribute("src") !== src) return;
+    $("waves-scale").textContent = `The pattern at Froude number ${fn} did not load. Reload the page to try again.`;
+  };
+  image.src = src;
+  image.width = step.size[0];
+  image.height = step.size[1];
+  image.alt = `Far-field wave pattern behind the ${hull.name} at Froude number ${fn}, from seacraft waves.`;
+  $("waves-fn").value = index;
+  $("waves-label").textContent = `Froude number ${fn}`;
+  $("waves-fn").setAttribute("aria-valuetext", `Froude number ${fn}. ${step.regime}`);
+  $("waves-regime").textContent = step.regime;
+  $("waves-scale").textContent = scale;
+  $("cmd-waves").textContent = step.command;
+  state.waveFn = step.fn;
+}
+
+function drawWaves(hull) {
+  const waves = hull.waves;
+  $("waves-shown").hidden = !waves.fits;
+  $("waves-not").hidden = waves.fits;
+  $("cmd-waves-wrap").hidden = !waves.fits;
+  if (!waves.fits) $("waves-image").removeAttribute("src");
+  if (waves.fits) {
+    $("waves-fn").max = waves.steps.length - 1;
+    // Keep the speed the reader chose when they switch hulls.
+    const wanted = state.waveFn ?? 0.35;
+    let index = 0;
+    waves.steps.forEach((s, i) => {
+      if (Math.abs(s.fn - wanted) < Math.abs(waves.steps[index].fn - wanted)) index = i;
+    });
+    setWave(index);
+    return;
+  }
+  $("waves-reason").textContent = `Thin-ship theory does not fit the ${hull.name}, so the pattern is not shown. SeaCraft says: ${waves.reason.join("; ")}.`;
+  const names = $("waves-hulls");
+  names.textContent = "";
+  const shown = state.manifest.hulls.filter((h) => state.manifest.waves_hulls.includes(h.id));
+  shown.forEach((other, i) => {
+    if (i) names.append(i === shown.length - 1 ? " or " : ", ");
+    const button = html("button", { type: "button", className: "link-button", textContent: other.label }, names);
+    button.addEventListener("click", async () => {
+      const radio = document.querySelector(`#picker input[value="${other.id}"]`);
+      if (radio) radio.checked = true;
+      await chooseHull(other.id, false);
+      // The note and its buttons are gone now: carry focus to the control that replaced them.
+      if (state.hull && state.hull.id === other.id && state.hull.waves.fits) $("waves-fn").focus({ preventScroll: true });
+    });
+  });
 }
 
 /* --- Charts ---------------------------------------------------------------------------------------- */
@@ -541,6 +809,58 @@ function drawCharts(hull) {
   }
 }
 
+/* --- Build it: the skiff's sheets as seacraft wrote them ----------------------------------------- */
+
+async function drawBuild() {
+  let index;
+  try {
+    const response = await fetch("build/index.json");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    index = await response.json();
+  } catch (error) {
+    $("build-caption").textContent = `The sheet layout did not load (${error.message}). Reload the page to try again.`;
+    return;
+  }
+  const host = $("build-sheets");
+  // Inlined rather than an <img>, so the lines, drawn 0.18 mm wide at full size, stay visible scaled down.
+  let sheets;
+  try {
+    sheets = await Promise.all(index.sheets.map(async (name) => {
+      const response = await fetch(`build/${name}`);
+      if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+      const svg = new DOMParser().parseFromString(await response.text(), "image/svg+xml").documentElement;
+      if (svg.nodeName !== "svg") throw new Error(`${name} is not an SVG`);
+      return svg;
+    }));
+  } catch (error) {
+    $("build-caption").textContent = `The sheet layout did not load (${error.message}). Reload the page to try again.`;
+    return;
+  }
+  for (const [i, svg] of sheets.entries()) {
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    svg.setAttribute("role", "img");
+    const sheet = index.layout[i];
+    svg.setAttribute("aria-label", `${sheet.name}, ${niceNumber(sheet.length_m)} by ${niceNumber(sheet.width_m)} m, with the skiff's pieces nested on it.`);
+    host.appendChild(svg);
+  }
+  const size = (s) => `${niceNumber(s.length_m)} × ${niceNumber(s.width_m)} m`;
+  const sizes = [...new Set(index.layout.map(size))];
+  const blanks = sizes.length === 1
+    ? `${index.layout.length === 1 ? "one blank" : `${index.layout.length} blanks`} of ${sizes[0]}`
+    : index.layout.map((s) => `${s.name} (${size(s)})`).join(", ");
+  $("build-caption").textContent = `The plywood skiff’s bottom, sides and transom on ${index.plywood_sheets} plywood sheets, scarfed into ${blanks}, as seacraft panels wrote them.`;
+  const files = $("build-files");
+  const item = (href, title, detail) => {
+    const link = html("a", { href }, html("li", {}, files));
+    html("b", { textContent: title }, link);
+    html("span", { textContent: detail }, link);
+  };
+  item("build/panels.pdf", "Patterns and offsets, PDF", `${index.pdf_pages} pages, ${fileSize(index.sizes["panels.pdf"])}`);
+  item("build/panels.svg", "Patterns, SVG", fileSize(index.sizes["panels.svg"]));
+  index.sheets.forEach((name, i) => item(`build/${name}`, `${index.layout[i].name}, SVG`, fileSize(index.sizes[name])));
+}
+
 /* --- Applying a hull to the page ------------------------------------------------------------------- */
 
 function applyHull(hull) {
@@ -575,6 +895,8 @@ function applyHull(hull) {
   buildSea(hull);
   drawLinesFigure(hull);
   drawCharts(hull);
+  drawHeel(hull);
+  drawWaves(hull);
   return design;
 }
 
@@ -593,7 +915,10 @@ async function chooseHull(id, firstLoad) {
   try {
     hull = await loadHull(id);
   } catch (error) {
+    if (request !== state.request) return; // A later choice has already replaced this one.
     $("hull-description").textContent = `This hull’s data did not load (${error.message}). Reload the page to try again.`;
+    const shown = state.hull && document.querySelector(`#picker input[value="${state.hull.id}"]`);
+    if (shown) shown.checked = true;
     return;
   }
   if (request !== state.request) return; // A later choice has already replaced this one.
@@ -613,6 +938,7 @@ async function init() {
     $("hull-description").textContent = `The hull data did not load (${error.message}). Reload the page to try again.`;
     return;
   }
+  state.manifest = manifest;
   const picker = $("picker");
   manifest.hulls.forEach((hull, i) => {
     const label = html("label", {}, picker);
@@ -620,6 +946,8 @@ async function init() {
     html("span", { textContent: hull.label }, label);
     radio.addEventListener("change", () => chooseHull(hull.id, false));
   });
+  $("heel-weight").addEventListener("input", (event) => setHeel(+event.target.value));
+  $("waves-fn").addEventListener("input", (event) => setWave(+event.target.value));
   $("draft").addEventListener("input", (event) => {
     sea.svg.classList.add("touched");
     setRow(+event.target.value, false);
@@ -634,11 +962,13 @@ async function init() {
         placeWater(state.shown);
       }
       for (const redraw of chartRedraws.values()) redraw();
+      if (heel.parts) setHeel(+$("heel-weight").value);
     }, 80);
   }).observe(document.body);
   document.fonts.ready.then(sizeSea);
 
   chooseHull(manifest.hulls[0].id, true);
+  drawBuild();
 }
 
 init();

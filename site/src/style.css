@@ -36,6 +36,10 @@
   --series-2: #d1491c;
   --series-3: #5e3fa8;
   --grid: #bccac6;
+  /* The crest and trough colours of the PNGs `seacraft waves` writes (DIVERGING_STOPS in seacraft-core wave_pattern.rs),
+     used only for the key beside them. */
+  --wave-crest: #b2182b;
+  --wave-trough: #2166ac;
 
   --display: "Big Shoulders", "Arial Narrow", Impact, sans-serif;
   --body: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, sans-serif;
@@ -184,14 +188,16 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 
 /* The boot-top stripe carries the warning every reader must see. */
 
-.boot-top { background: var(--boot-top); color: #fff; }
+.boot-top { background: var(--sea-deep); color: var(--foam); border-top: 6px solid var(--boot-top); }
 .boot-top-inner {
-  display: grid; grid-template-columns: auto minmax(0, 46rem); gap: .5rem clamp(1.5rem, 4vw, 4rem);
-  align-items: baseline; padding-block: 1.15rem;
+  display: grid; grid-template-columns: auto minmax(0, 52rem); gap: .35rem clamp(1.5rem, 4vw, 3rem);
+  align-items: baseline; padding-block: .8rem .9rem;
+  font-size: .9375rem;
 }
-.boot-top-title { margin: 0; font: 800 clamp(1.625rem, 2.5vw, 2.25rem)/1.05 var(--display); white-space: nowrap; }
-.boot-top p:not(.boot-top-title) { margin: 0; line-height: 1.45; }
-.boot-top :focus-visible { outline-color: #fff; }
+.boot-top-title { margin: 0; font-weight: 700; white-space: nowrap; }
+.boot-top p:not(.boot-top-title) { margin: 0; line-height: 1.45; color: var(--foam-soft); }
+.boot-top a { color: var(--foam); }
+.boot-top :focus-visible { outline-color: var(--foam); }
 
 /* Sections */
 
@@ -200,6 +206,11 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 .screenshot { margin: clamp(2rem, 4vw, 3rem) 0 calc(-1 * clamp(1.5rem, 4vw, 3.5rem)); }
 .screenshot img { width: min(100%, 1600px); height: auto; margin-inline: auto; }
 .screenshot figcaption { margin-top: .75rem; color: var(--ink-soft); font-size: .9375rem; }
+
+.views { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: 1.5rem clamp(1.5rem, 3vw, 2.5rem); margin-top: clamp(3.5rem, 6vw, 5rem); }
+.views figure { margin: 0; }
+.views img { width: 100%; height: auto; }
+.views figcaption { margin-top: .6rem; color: var(--ink-soft); font-size: .9375rem; max-width: 40rem; }
 
 .section-loop { background: var(--hull-air); }
 .loop-head p { max-width: 42rem; margin-top: 1.5rem; }
@@ -236,6 +247,55 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 .lines-figure .waterline { stroke: var(--series-1); }
 .lines-figure .station { stroke: var(--ink); }
 .lines-figure .outline { stroke: var(--ink); stroke-width: 1.5; }
+
+/* Where it heels: the section on a level sea, turned by the heel seacraft found. */
+
+.heel-control { max-width: 34rem; }
+.heel-control label { display: block; font-weight: 600; font-variant-numeric: tabular-nums; }
+.heel-control input[type="range"]::-webkit-slider-runnable-track { background: var(--grid); }
+.heel-control input[type="range"]::-moz-range-track { background: var(--grid); }
+.heel-figure { width: 100%; height: auto; max-height: 26rem; margin-top: .75rem; background: var(--hull-air); }
+.heel-figure .heel-water { fill: var(--sea); }
+.heel-figure .heel-fill { stroke: none; }
+.heel-figure .heel-air .heel-fill { fill: var(--air-deep); }
+.heel-figure .heel-sea .heel-fill { fill: var(--hull-sea); }
+.heel-figure .heel-line { fill: none; stroke-width: 1.75; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.heel-figure .heel-air .heel-line { stroke: var(--ink); }
+.heel-figure .heel-sea .heel-line { stroke: var(--foam); }
+.heel-figure .heel-wl { stroke: var(--boot-top); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-weight { fill: var(--ink); }
+.heel-figure .heel-g0 { fill: var(--hull-air); stroke: var(--series-2); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-g { fill: var(--series-2); stroke: var(--hull-air); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-b { fill: var(--series-1); stroke: var(--foam); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-action { stroke: var(--ink-soft); stroke-width: 1.25; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-lever { stroke: var(--series-2); stroke-width: 3.5; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-label { font-family: var(--body); font-weight: 700; fill: var(--ink); paint-order: stroke; stroke: var(--hull-air); stroke-width: 3px; vector-effect: non-scaling-stroke; }
+.heel-figure .heel-label-b { fill: var(--foam); stroke: var(--sea); }
+.heel-figure .heel-label-gz { fill: var(--series-2); }
+.heel-figure.unsettled .heel-water, .heel-figure.unsettled .heel-wl, .heel-figure.unsettled .heel-over,
+.heel-figure.unsettled .heel-g0 { display: none; }
+.heel-figure.unsettled .heel-sea .heel-fill { fill: var(--air-deep); }
+.heel-figure.unsettled .heel-sea .heel-line { stroke: var(--ink); }
+.heel-figure.unsettled .heel-hull { opacity: .45; }
+.heel-summary { display: block; margin-top: .6rem; font-weight: 600; max-width: 40rem; }
+.heel-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .5rem 1.5rem; margin: .75rem 0 0; }
+.heel-readout dt { color: var(--ink-soft); font-size: .9375rem; }
+.heel-readout dd { margin: 0; font: 700 1.75rem/1.1 var(--display); font-variant-numeric: tabular-nums; }
+
+/* The wave pattern, as seacraft drew it. */
+
+.waves-control { max-width: 34rem; }
+.waves-control label { display: block; font-weight: 600; font-variant-numeric: tabular-nums; }
+.waves-control input[type="range"]::-webkit-slider-runnable-track { background: var(--grid); }
+.waves-control input[type="range"]::-moz-range-track { background: var(--grid); }
+.waves-image { width: 100%; height: auto; margin-top: .75rem; background: var(--foam); }
+.waves-regime { margin: .6rem 0 0; font-weight: 600; }
+.key-swatch { display: inline-block; width: 14px; height: 14px; }
+.key-crest { background: var(--wave-crest); }
+.key-trough { background: var(--wave-trough); }
+.waves-not { padding: 1.25rem 0; max-width: 34rem; color: var(--ink-soft); }
+.link-button { font: inherit; color: var(--ink); background: none; border: 0; padding: 0; text-decoration: underline; text-underline-offset: .18em; cursor: pointer; }
+.link-button:hover { text-decoration-thickness: 2px; }
 
 .files { list-style: none; margin: 1rem 0 0; padding: 0; border-top: 1px solid var(--grid); }
 .files li { border-bottom: 1px solid var(--grid); }
@@ -281,6 +341,19 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 .solver-note ul { margin: 0; padding-left: 1.1em; }
 .chart-empty { padding: 1.5rem 0; color: var(--ink-soft); max-width: 34rem; }
 
+/* Build it */
+
+.build { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 8fr); gap: 2rem clamp(2rem, 5vw, 5rem); align-items: start; margin-top: 2rem; }
+.build-text p { max-width: 34rem; }
+.build-limits { padding-left: .9rem; border-left: 3px solid var(--boot-top); }
+.build-text pre { margin-top: 1.25rem; }
+.build-figure { margin: 0; min-width: 0; }
+.build-sheets { display: grid; gap: 1rem; }
+.build-sheets svg { width: 100%; height: auto; background: var(--hull-air); }
+.build-sheets path { vector-effect: non-scaling-stroke; stroke-width: 1.1px; }
+.build-figure noscript img { width: 100%; height: auto; background: var(--hull-air); }
+.build-figure figcaption { margin-top: .75rem; color: var(--ink-soft); font-size: .9375rem; }
+
 /* Agents, on the sea */
 
 .section-agents { background: var(--sea); color: var(--foam); }
@@ -297,8 +370,8 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 .downloads li { display: grid; gap: .2rem; padding: .75rem 0; border-top: 1px solid var(--grid); }
 .downloads li:last-child { border-bottom: 1px solid var(--grid); }
 .downloads code { overflow-wrap: anywhere; }
-.untested { margin-top: 1.5rem; padding: .9rem 1.1rem; border-left: 4px solid var(--boot-top); background: var(--hull-air); max-width: 34rem; }
-.untested p { margin: 0; }
+.untested { color: var(--ink-soft); font-size: .9375rem; }
+.footer code { overflow-wrap: anywhere; }
 
 /* What has been checked */
 
@@ -320,7 +393,7 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 @media (max-width: 960px) {
   .hero-text { grid-template-columns: minmax(0, 1fr); }
   .readout { grid-template-columns: minmax(0, 1fr); }
-  .step, .agents, .install { grid-template-columns: minmax(0, 1fr); }
+  .step, .agents, .install, .build { grid-template-columns: minmax(0, 1fr); }
   .boot-top-inner { grid-template-columns: minmax(0, 1fr); }
   .footer-inner { grid-template-columns: minmax(0, 1fr); }
   .nav ul { font-size: .875rem; gap: .15rem 1rem; }

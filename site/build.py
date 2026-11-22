@@ -32,12 +32,13 @@ FONTS = Path(__file__).resolve().parent / "fonts"
 KEY_FILE = ".build-key"
 
 # Page order. `resistance` picks the method whose range of hulls this example falls in, and `motions`
-# is off for the planing hull, because strip theory does not describe a boat on the plane.
+# is off for the planing hulls, because strip theory does not describe a boat on the plane.
 HULLS = [
     {"id": "trawler-22m", "label": "Trawler, 22 m", "resistance": "holtrop", "motions": True},
     {"id": "yacht-10m", "label": "Yacht, 10 m", "resistance": "dsyhs", "motions": True},
     {"id": "kayik-9m", "label": "Kayık, 9 m", "resistance": "holtrop", "motions": True},
     {"id": "runabout-6m", "label": "Runabout, 6.5 m", "resistance": "savitsky", "motions": False},
+    {"id": "skiff-4m", "label": "Plywood skiff, 4.3 m", "resistance": "savitsky", "motions": False},
     {"id": "container-230m", "label": "Container ship, 230 m", "resistance": "holtrop", "motions": True},
     {"id": "wigley", "label": "Wigley hull, 10 m", "resistance": "holtrop", "motions": True},
 ]
@@ -54,6 +55,20 @@ def run(seacraft, *args, cwd=None):
     if done.returncode != 0:
         sys.exit(f"seacraft {' '.join(map(str, args))} failed:\n{done.stderr}")
     return done.stdout
+
+
+def release_version(cargo_toml):
+    """The version in `[workspace.package]`: what a release of this commit is called.
+
+    The Pages checkout has no tags, so `seacraft --version` names the commit there; the Download section
+    shows this plain version instead. A regex rather than `tomllib`, which needs Python 3.11.
+    """
+    text = Path(cargo_toml).read_text(encoding="utf-8")
+    section = re.search(r"^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    found = section and re.search(r'^version\s*=\s*"([^"]+)"', section.group(1), re.M)
+    if not found:
+        sys.exit(f"no [workspace.package] version in {cargo_toml}")
+    return found.group(1)
 
 
 def shown(hull_id, *args):
@@ -337,6 +352,153 @@ def motions(seacraft, hull_id, hull_dir, draft, kg):
     }
 
 
+def maybe(value, places):
+    return None if value is None else round(value, places)
+
+
+def section_top(body):
+    """The highest point of a station's section, from the SVG path `geometry` cut ([y, -z] points).
+
+    Only the parts that reach the centreline count, so a bulwark rail standing above the deck does
+    not; an open boat, which reaches the centreline only at its keel, is topped by its sheer.
+    """
+    parts = [
+        [tuple(map(float, point.split(","))) for point in part.split("L")]
+        for part in body.split("M")
+        if part
+    ]
+    hull = [part for part in parts if any(abs(y) < 1e-3 for y, _ in part)] or parts
+    return max(-up for part in hull for _, up in part)
+
+
+def heel_step(result, y):
+    """One `seacraft heel --json` result as one position of the trial weight.
+
+    Only a `stable` result has a state to draw. Every other kind (`loll`, `capsizes`, `cannot_float`,
+    `unresolved`) keeps its kind and seacraft's own `summary`, and nothing to draw.
+    """
+    equilibrium = result["equilibrium"]
+    state = equilibrium.get("state") if equilibrium["kind"] == "stable" else None
+    step = {"y": y, "kind": equilibrium["kind"], "summary": result["summary"], "warnings": warning_text(result)}
+    if state is None:
+        step.update(dict.fromkeys(("heel_deg", "b", "g", "gz_m", "heeling_arm_m", "draft", "trim_m", "waterplane")))
+        return step
+    plane = state["waterplane"]
+    step.update(
+        {
+            "heel_deg": round(state["heel_deg"], 2),
+            "b": [round(state["b"]["y"], 4), round(state["b"]["z"], 4)],
+            "g": [round(state["g"]["y"], 4), round(state["g"]["z"], 4)],
+            "gz_m": round(state["gz_m"], 4),
+            "heeling_arm_m": round(state["heeling_arm_m"], 4),
+            "draft": maybe(state["draft"], 3),
+            "trim_m": maybe(state["trim_m"], 3),
+            # n . p + d = 0 in model coordinates: the page draws its line across the drawn station.
+            "waterplane": [round(v, 6) for v in (plane["n"]["x"], plane["n"]["y"], plane["n"]["z"], plane["d"])],
+        }
+    )
+    return step
+
+
+# How many positions the trial weight takes across the deck, centreline first.
+HEEL_POSITIONS = 7
+
+
+def heel_steps(seacraft, hull_id, hull_dir, kg, beam, stations):
+    """A trial weight walked across the deck, each position one `seacraft heel` run.
+
+    The weight is 10 % of the design displacement, on the deck of the station nearest the upright LCB (where
+    the bare hull's LCG defaults to), from the centreline out to 0.4 of the beam. Nothing between positions is drawn.
+    """
+    fef = f"{hull_id}.fef"
+    hydro = json.loads(run(seacraft, "hydro", fef, "--kg", kg, "--json", cwd=hull_dir))
+    mass = sig(hydro["displacement_t"] * 0.10, 2)
+    x = round(hydro["lcb"]["x"], 3)
+    # The section the figure draws, and the weight on its deck.
+    station = min(stations, key=lambda s: abs(s["x"] - x))
+    z = round(section_top(station["body"]), 3)
+    steps = []
+    for k in range(HEEL_POSITIONS):
+        y = round(0.4 * beam * k / (HEEL_POSITIONS - 1), 3)
+        weight = f"{mass:g}@{nums(x, y, z, digits=3)}"
+        result = json.loads(run(seacraft, "heel", fef, "--kg", kg, "--weight", weight, "--json", cwd=hull_dir))
+        step = heel_step(result, y)
+        step["command"] = shown(hull_id, "heel", "--kg", f"{kg:g}", "--weight", weight)
+        steps.append(step)
+    return {
+        "mass_t": mass,
+        "x": x,
+        "z": z,
+        "steps": steps,
+        "station": {"x": station["x"], "body": station["body"]},
+    }
+
+
+# Froude numbers on the waterline length for the wave pattern, slow to past hull speed.
+WAVE_FROUDES = [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+# Grid points along the waterline length: the default domain is five lengths long, so about 900 px.
+WAVE_POINTS_PER_LENGTH = 180
+
+
+def wave_fits(results):
+    """Whether thin-ship theory fits this hull: `seacraft waves` warned at none of the speeds."""
+    return bool(results) and all(not r.get("warnings") for r in results)
+
+
+def wave_steps(seacraft, hull_id, hull_dir, length):
+    """The far-field wave pattern at each of `WAVE_FROUDES`, or why it is not shown.
+
+    Whether it is shown follows seacraft's own warnings, never a list kept here. Each image is the PNG
+    seacraft wrote, made smaller with pngquant when it is installed.
+
+    Each speed is computed once. The first speed seacraft warns at stops the run and removes the images
+    already written: no pattern is shown for a hull the theory does not fit.
+    """
+    fef = f"{hull_id}.fef"
+    spacing = sig(length / WAVE_POINTS_PER_LENGTH, 3)
+    folder = hull_dir / "waves"
+    folder.mkdir()
+    steps = []
+    for f in WAVE_FROUDES:
+        name = f"fn-{f:.2f}.png"
+        image = f"waves/{name}"
+        # Run inside the waves folder, so the command shown writes a plain file name, as a reader's would.
+        args = ("--fn", f"{f:.2f}", "--spacing", f"{spacing:g}", "-o", name)
+        result = json.loads(run(seacraft, "waves", f"../{fef}", *args, "--json", cwd=folder))
+        if not wave_fits([result]):
+            shutil.rmtree(folder)
+            return {"fits": False, "steps": [], "reason": list(dict.fromkeys(warning_text(result)))}
+        shrink_png(hull_dir / image)
+        steps.append(
+            {
+                "fn": f,
+                "image": image,
+                "size": list(result["grid_points"]),
+                "bytes": (hull_dir / image).stat().st_size,
+                "regime": result["regime"]["sentence"],
+                "clip_m": round(result["max_abs_zeta_m"], 4),
+                "notes": result.get("notes") or [],
+                "warnings": warning_text(result),
+                "command": shown(hull_id, "waves", *args),
+            }
+        )
+    return {"fits": True, "steps": steps}
+
+
+def shrink_png(path):
+    """Quantise a PNG in place with pngquant, when it is installed and the result is smaller."""
+    if not shutil.which("pngquant"):
+        return
+    done = subprocess.run(
+        ["pngquant", "--quality", "65-90", "--strip", "--skip-if-larger", "--force", "--ext", ".png", str(path)],
+        capture_output=True,
+        encoding="utf-8",
+    )
+    # 98: not smaller, 99: below the quality floor. Either way the original stays, which is fine.
+    if done.returncode not in (0, 98, 99):
+        sys.exit(f"pngquant {path} failed:\n{done.stderr}")
+
+
 def default_speeds(project, length):
     speeds = project.get("report", {}).get("speeds_kn") or []
     if len(speeds) >= 4:
@@ -380,6 +542,10 @@ def clear_output(out, keep_hulls):
     for item in (out / "hulls").iterdir():
         if item.is_dir() and item.name not in keep_hulls:
             shutil.rmtree(item)
+
+
+def hull_data(out, hull_id):
+    return json.loads((out / "hulls" / hull_id / "data.json").read_text(encoding="utf-8"))
 
 
 def build_hull(seacraft, hull, description, out):
@@ -457,6 +623,8 @@ def build_hull(seacraft, hull, description, out):
             seacraft, hull_id, hull_dir, hull["resistance"], default_speeds(project, length)
         ),
         "motions": motions(seacraft, hull_id, hull_dir, draft, kg) if hull["motions"] else None,
+        "waves": wave_steps(seacraft, hull_id, hull_dir, length),
+        "heel": heel_steps(seacraft, hull_id, hull_dir, kg, beam, lines["stations"]),
         "files": {
             "report": (hull_dir / "report.html").stat().st_size,
             "viewer": (hull_dir / "viewer.html").stat().st_size,
@@ -468,6 +636,59 @@ def build_hull(seacraft, hull, description, out):
         json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
     )
     print(f"  {hull_id}: {len(table)} drafts, {(hull_dir / 'data.json').stat().st_size // 1024} KiB data")
+
+
+# The example the "Build it" section shows, and how its pieces are nested.
+BUILDER_HULL = "skiff-4m"
+BUILDER_NEST = "blanks"
+
+
+def builder_files(seacraft, out):
+    """The skiff's plywood panels nested onto sheets, as seacraft writes them, into `out/build`.
+
+    Fails the build when a panel does not lie flat or no sheet file is written, since the section says both.
+    """
+    folder = out / "build"
+    folder.mkdir()
+    fef = folder / f"{BUILDER_HULL}.fef"
+    shutil.copy(ROOT / "examples" / fef.name, fef)
+    pdf = json.loads(run(seacraft, "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.pdf", "--json", cwd=folder))
+    svg = json.loads(run(seacraft, "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.svg", "--json", cwd=folder))
+    fef.unlink()
+    flat = [p["panel"] for p in svg["panels"] if not p["lies_flat"]]
+    if flat:
+        sys.exit(f"{BUILDER_HULL}: panels {', '.join(flat)} do not lie flat, and the site says they do")
+    sheets = [Path(f).name for f in svg["sheet_files"]]
+    if not sheets:
+        sys.exit(f"{BUILDER_HULL}: seacraft panels wrote no sheet files")
+    files = ["panels.pdf", "panels.svg", *sheets]
+    index = {
+        "command": " ".join(["seacraft", "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.svg"]),
+        "pdf_command": " ".join(["seacraft", "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.pdf"]),
+        "sheets": sheets,
+        "layout": [
+            {"name": s["name"], "length_m": s["length_m"], "width_m": s["width_m"]} for s in svg["layout"]["sheets"]
+        ],
+        "plywood_sheets": svg["layout"]["plywood_sheets"],
+        "panels": [{"panel": p["panel"], "copies": p["copies"], "lies_flat": p["lies_flat"]} for p in svg["panels"]],
+        "pdf_pages": pdf.get("pages"),
+        "sizes": {name: (folder / name).stat().st_size for name in files},
+    }
+    (folder / "index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    print(f"  build: {len(sheets)} sheet files, {index['plywood_sheets']} plywood sheets")
+
+
+# The desktop screenshots the page shows, from docs/assets.
+SCREENSHOTS = ("gui.png", "gui-waves.png", "gui-heel.png")
+
+
+def copy_screenshots(source, out):
+    """Copy the page's screenshots, failing the build when one is missing rather than leaving a broken image."""
+    missing = [name for name in SCREENSHOTS if not (source / name).is_file()]
+    if missing:
+        sys.exit(f"missing screenshots in {source}: {', '.join(missing)}")
+    for name in SCREENSHOTS:
+        shutil.copy(source / name, out / name)
 
 
 def main():
@@ -490,6 +711,7 @@ def main():
         sys.exit(f"refusing to delete {out}: it is not empty and is not a site this script built")
 
     version = run(seacraft, "--version").split()[-1]
+    release = release_version(ROOT / "Cargo.toml")
     listing = {}
     for line in run(seacraft, "example", "--list").splitlines():
         hull_id, _, rest = line.partition(" ")
@@ -514,6 +736,8 @@ def main():
         build_hull(seacraft, hull, listing[hull_id], out)
         (out / "hulls" / hull_id / KEY_FILE).write_text(keys[hull_id], encoding="utf-8")
 
+    builder_files(seacraft, out)
+
     commit = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], capture_output=True, encoding="utf-8", cwd=ROOT
     ).stdout.strip()
@@ -521,6 +745,8 @@ def main():
         "version": version,
         "commit": commit,
         "hulls": [{"id": h["id"], "label": h["label"]} for h in HULLS],
+        # The hulls whose wave pattern is shown, so the others can point to them.
+        "waves_hulls": [h["id"] for h in HULLS if hull_data(out, h["id"])["waves"]["fits"]],
     }
     index.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
@@ -530,13 +756,14 @@ def main():
             if item.suffix == ".html":
                 text = item.read_text(encoding="utf-8")
                 text = text.replace("{{version}}", version).replace("{{commit}}", commit)
+                text = text.replace("{{release}}", release)
             if text is None:
                 shutil.copy(item, out / item.name)
             else:
                 (out / item.name).write_text(text, encoding="utf-8")
     assets = out / "assets"
     assets.mkdir()
-    shutil.copy(ROOT / "docs" / "assets" / "gui.png", assets / "gui.png")
+    copy_screenshots(ROOT / "docs" / "assets", assets)
     fonts = out / "fonts"
     fonts.mkdir()
     for item in FONTS.iterdir():

@@ -6,12 +6,12 @@
 <meta name="color-scheme" content="light">
 <title>SeaCraft: hull design and naval architecture in Rust</title>
 <meta name="description" content="Free, open-source hull modeller: subdivision surfaces, hydrostatics, stability, resistance, motions and lines plans. Opens and saves FREE!ship .fef files. Results are not validated.">
-<link rel="canonical" href="https://havan.github.io/SeaCraft/">
+<link rel="canonical" href="https://seacraft.app/">
 <meta property="og:title" content="SeaCraft: hull design and naval architecture in Rust">
 <meta property="og:description" content="Model a hull, then measure it. Free software with a desktop app, a command line and an MCP server.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://havan.github.io/SeaCraft/">
-<meta property="og:image" content="https://havan.github.io/SeaCraft/assets/gui.png">
+<meta property="og:url" content="https://seacraft.app/">
+<meta property="og:image" content="https://seacraft.app/assets/gui.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preload" href="fonts/big-shoulders-latin-standard-normal.woff2" as="font" type="font/woff2" crossorigin>
@@ -26,6 +26,7 @@
     <ul>
       <li><a href="#modeller">Modeller</a></li>
       <li><a href="#loop">What it measures</a></li>
+      <li><a href="#build">Build it</a></li>
       <li><a href="#agents">AI agents</a></li>
       <li><a href="#install">Download</a></li>
       <li><a href="#checked">How far it’s checked</a></li>
@@ -36,7 +37,7 @@
   <div class="hero-text">
     <h1>SeaCraft</h1>
     <div class="hero-lede">
-      <p>Model a ship’s hull, then measure it: hydrostatics, stability, resistance, motions and lines plans. Free software in Rust, with a desktop app, a command line and an MCP server. It opens and saves FREE!ship <code>.fef</code> files.</p>
+      <p>Model a ship’s hull, then measure it: hydrostatics, stability, resistance, motions, lines plans and building patterns. Free software in Rust, with a desktop app, a command line and an MCP server. It opens and saves FREE!ship <code>.fef</code> files.</p>
       <p class="hero-actions">
         <a class="button" href="#install">Download</a>
         <a class="button button-quiet" href="https://github.com/havan/SeaCraft">View on GitHub</a>
@@ -87,14 +88,24 @@
   <div class="wrap">
     <h2 id="modeller-title">A hull is a control net. Pull one point and the surface follows.</h2>
     <div class="modeller-intro">
-      <p>SeaCraft models a hull the way FREE!ship does: a coarse net of points refined into a smooth subdivision surface, with creases where a chine or a stem needs a hard edge. There are no NURBS patches to keep in step.</p>
-      <p>You work in four linked views: perspective, profile, plan and body plan. Hydrostatics update when you let go of a point, and undo goes back 64 steps. Autosave can bring your work back after a crash.</p>
+      <p>SeaCraft models a hull the way FREE!ship does: a coarse net of points refined into a smooth subdivision surface, with creases where a chine or a stem needs a hard edge. There are no NURBS patches to keep in step. You work in four linked views, perspective, profile, plan and body plan, each labelled with the way it faces, and the hull is drawn on the graphics card so a large one still turns smoothly.</p>
+      <p>Pick points one by one, draw a rectangle round them, or take a whole station or lengthwise line, then drag them together. With connected editing on, a dragged point draws its neighbours along, fading with distance as a preset says. Hydrostatics update when you let go, undo goes back 64 steps, and autosave can bring your work back after a crash.</p>
     </div>
   </div>
   <figure class="screenshot">
     <img src="assets/gui.png" width="1600" height="1000" loading="lazy" alt="The SeaCraft desktop modeller: four linked viewports showing a 10 m yacht, with layers on the left and hydrostatics on the right.">
     <figcaption class="wrap">The desktop app with the 10 m yacht example open.</figcaption>
   </figure>
+  <div class="wrap views">
+    <figure>
+      <img src="assets/gui-waves.png" width="940" height="420" loading="lazy" alt="The Wave pattern view in SeaCraft 0.6.0 for the 230 m container ship at Froude number 0.30: the wave field behind the hull, with the regime, wave length, highest crest and wave drag beside it, and the wave drag coefficient against Froude number and the wash at 232.5 m on the right.">
+      <figcaption>Wave pattern: the container ship at Froude number 0.30, with the wave drag curve and the wash at a chosen distance.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/gui-heel.png" width="950" height="420" loading="lazy" alt="The Heel and righting arm view in SeaCraft 0.6.0 for the 22 m trawler: the section heeled 9.0° to starboard with B and G marked, and the readout of righting lever, GZ, heeling arm, draft and trim.">
+      <figcaption>Heel and righting arm: the trawler with 12 t added on deck to starboard, a loading condition made for this picture, settles at 9.0°.</figcaption>
+    </figure>
+  </div>
 </section>
 
 <section class="section section-loop" id="loop" aria-labelledby="loop-title">
@@ -142,11 +153,67 @@
 
       <li class="step">
         <div class="step-text">
+          <h3>Find where it heels</h3>
+          <p>Put a weight on deck and SeaCraft finds where the hull settles, with heel, trim and draft solved together at large angles. The weight pulls the centre of gravity G off the centreline, and the hull heels until the centre of buoyancy B is under it. There the righting lever GZ matches the heeling arm the weight gives.</p>
+          <p>Each position of the slider is one run of <code>seacraft heel</code>, with nothing interpolated between them.</p>
+          <pre><code id="cmd-heel"></code></pre>
+        </div>
+        <figure class="step-figure heel">
+          <div class="heel-control">
+            <label for="heel-weight" id="heel-label">Trial weight</label>
+            <input id="heel-weight" type="range" min="0" max="6" step="1" value="0">
+          </div>
+          <svg id="heel-figure" class="heel-figure" role="img" aria-labelledby="heel-summary"></svg>
+          <output id="heel-summary" for="heel-weight" class="heel-summary"></output>
+          <div id="heel-warnings"></div>
+          <dl class="heel-readout">
+            <div><dt>Heel</dt><dd id="h-heel">–</dd></div>
+            <div><dt>Righting lever GZ</dt><dd id="h-gz">–</dd></div>
+            <div><dt>Heeling arm</dt><dd id="h-arm">–</dd></div>
+            <div><dt>Draft</dt><dd id="h-draft">–</dd></div>
+          </dl>
+          <figcaption>
+            <span>The section nearest the weight, looking forward. Starboard is on the right.</span>
+          </figcaption>
+        </figure>
+      </li>
+
+      <li class="step">
+        <div class="step-text">
           <h3>Estimate the resistance</h3>
           <p>Holtrop and Mennen for displacement ships, Michell thin-ship theory, the Delft series for yachts and Savitsky for planing hulls. An optimiser can then adjust Cp, LCB and L/B for a target speed.</p>
           <pre><code id="cmd-resistance"></code></pre>
         </div>
         <figure class="step-figure" id="chart-resistance"></figure>
+      </li>
+
+      <li class="step">
+        <div class="step-text">
+          <h3>See the waves</h3>
+          <p>Michell’s thin-ship theory gives the wave pattern a hull leaves behind it: the wedge of diverging waves and the transverse waves inside it, changing as the speed rises. These are the free waves far from the hull. The water right beside the hull is not its wave profile.</p>
+          <p>Each speed is one run of <code>seacraft waves</code>. The theory fits slender hulls only, so the pattern is shown only for the hulls SeaCraft gives no warning about.</p>
+          <pre id="cmd-waves-wrap" hidden><code id="cmd-waves"></code></pre>
+        </div>
+        <figure class="step-figure waves" id="waves">
+          <div class="waves-shown" id="waves-shown" hidden>
+            <div class="waves-control">
+              <label for="waves-fn" id="waves-label">Froude number</label>
+              <input id="waves-fn" type="range" min="0" max="7" step="1" value="2">
+            </div>
+            <img id="waves-image" class="waves-image" width="900" height="541" alt="" decoding="async">
+            <p id="waves-regime" class="waves-regime"></p>
+            <figcaption>
+              <span class="key"><i class="key-swatch key-crest"></i>Crest</span>
+              <span class="key"><i class="key-swatch key-trough"></i>Trough</span>
+              <span id="waves-scale">Seen from above, bow to the right.</span>
+            </figcaption>
+          </div>
+          <div class="waves-not" id="waves-not" hidden>
+            <p id="waves-reason"></p>
+            <p class="waves-choose">Hulls it fits: <span id="waves-hulls"></span>.</p>
+          </div>
+          <noscript><img class="waves-image" src="hulls/wigley/waves/fn-0.35.png" width="900" height="541" alt="Far-field wave pattern behind the Wigley hull at Froude number 0.35, from seacraft waves: a wedge of crests and troughs spreading behind the hull."></noscript>
+        </figure>
       </li>
 
       <li class="step">
@@ -161,7 +228,7 @@
       <li class="step step-last">
         <div class="step-text">
           <h3>Hand it on</h3>
-          <p>A self-contained HTML report collects the measurements. Meshes and curves go out as OBJ, STL, 3MF, PLY, IGES and DXF for CAD and 3D printing, and developable plates unfold to SVG.</p>
+          <p>A self-contained HTML report collects the measurements. Meshes and curves go out as OBJ, STL, 3MF, PLY, IGES and DXF for CAD and 3D printing. For the workshop there are station moulds, plywood panels and an offsets table, described <a href="#build">below</a>.</p>
           <pre><code id="cmd-report"></code></pre>
         </div>
         <div class="step-figure handoff">
@@ -178,11 +245,32 @@
   </div>
 </section>
 
+<section class="section section-build" id="build" aria-labelledby="build-title">
+  <div class="wrap">
+    <h2 id="build-title">From the lines to the pieces you cut</h2>
+    <div class="build">
+      <div class="build-text">
+        <p>SeaCraft draws what goes on the workshop floor. Station moulds, the profile and the transom come out full size, with the thickness of the skin taken off. The table of offsets prints as a PDF. Plywood panels for stitch-and-glue are laid flat with their measurements written on: overall length and width, offsets from a baseline, and the length of each seam.</p>
+        <p>The panels can then be nested onto plywood sheets, either scarfed end to end into blanks long enough for the longest piece, or cut at butt joints with matching marks. Each sheet gets its own full-size cutting file.</p>
+        <p class="build-limits">A panel counts as lying flat when its seams drift less than 2 mm and the plywood stretches less than 0.1 %. Those limits are provisional, and have not yet been checked on a boat built from these patterns.</p>
+        <pre><code id="cmd-build">seacraft panels skiff-4m.fef --nest blanks -o panels.svg</code></pre>
+        <ul class="files build-files" id="build-files"></ul>
+      </div>
+      <figure class="build-figure">
+        <div id="build-sheets" class="build-sheets"></div>
+        <noscript><img src="build/panels-sheet-1.svg" alt="The plywood skiff's panels nested on a blank of two plywood sheets, as seacraft panels wrote it." width="4900" height="1280"></noscript>
+        <figcaption id="build-caption">The plywood skiff’s bottom, sides and transom nested onto plywood sheets, as <code>seacraft panels</code> wrote them.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
 <section class="section section-agents" id="agents" aria-labelledby="agents-title">
   <div class="wrap agents">
     <div>
       <h2 id="agents-title">Let an AI agent work on the hull</h2>
       <p><code>seacraft mcp</code> is a Model Context Protocol server. An agent can load a hull, move control points, measure, render a picture and save, using the same code the desktop app runs.</p>
+      <p>The same tools reach the newer analyses too: an agent can find where the hull heels under a weight, draw the wave pattern, or export the plywood panels nested onto sheets.</p>
       <p>Point it at a running modeller and you watch the edits happen. That connection stays on your own machine and needs a token by default, and you can limit which folders it reads and writes.</p>
       <p>The repository includes <a href="https://github.com/havan/SeaCraft/blob/main/skills/README.md">skills</a> that teach an agent to reach design targets, fair a hull and report stability. They tell it to re-measure after each change, and to look at a render instead of guessing from coordinates.</p>
     </div>
@@ -201,10 +289,8 @@ claude mcp add seacraft -- seacraft mcp --connect 127.0.0.1:7878</code></pre>
     <div>
       <h2 id="install-title">Download</h2>
       <p>Ready-made programs for Windows, macOS and Linux are on the <a href="https://github.com/havan/SeaCraft/releases/latest">latest release</a>. Each one holds the desktop app, the <code>seacraft</code> command and the example hulls. To begin, choose <b>Open an example</b> on the start screen.</p>
-      <p>The current version is {{version}}. Anything may change while it is <code>0.x</code>.</p>
-      <div class="untested">
-        <p><b>Windows and macOS are untested.</b> Those builds are compiled and tested automatically, but nobody has opened the app on them by hand yet. Feedback is welcome: <a href="https://github.com/havan/SeaCraft/issues/new">open an issue</a> and say what worked and what did not.</p>
-      </div>
+      <p>The current version is {{release}}. Anything may change while it is <code>0.x</code>.</p>
+      <p class="untested">The Windows and macOS builds are compiled and tested automatically; trying the app by hand has so far been done on Linux. Feedback from any platform is welcome: <a href="https://github.com/havan/SeaCraft/issues/new">open an issue</a> and say what worked and what did not.</p>
     </div>
     <div>
       <ul class="downloads">
@@ -237,16 +323,20 @@ cargo run --release -p seacraft-gui -- --open examples/trawler-22m.fef</code></p
     <div class="checked-columns">
       <div>
         <h3>Compared with</h3>
+        <!-- Every figure here is from docs/oracles.md: §39 Michell, §46 seakeeping, §42 Holtrop, §43 Savitsky,
+             §44 and §45 Wigley hydrostatics and GZ, §47 heel. Change them there first. -->
         <ul>
-          <li>Closed-form cases, such as box barges.</li>
-          <li>Separate scripts written for this project. Many of their reference numbers are not published values.</li>
+          <li>Tank tests of the Wigley hull. Michell’s wave resistance, against Kajitani et al. (1983), puts the hollow at the measured speed, but the hump comes about 0.02 early in Froude number and 18 to 54 % high. Strip-theory motions, against Journée (1992): in waves at least 1.25 ship lengths long at Froude numbers 0.2 and 0.3, away from resonance, heave on both hulls and pitch on one come within 30 % and 30° of the tank. Shorter waves are further off, and the pitch resonance comes at shorter waves than the tank’s.</li>
+          <li>Worked examples printed with the methods: Holtrop and Mennen (1982) and Holtrop (1984), and Savitsky as Molland et al. (2011) work it. SeaCraft gives the 1984 example to the printed kilonewton and the 1982 one 1.2 % high, from the newer form factor it uses; Savitsky comes within 0.5 %. That checks the transcription of the equations, not that the methods predict any real boat.</li>
+          <li>The Wigley hull’s published equation. The example’s hydrostatics are within 0.6 % of the closed forms at the design draft, but its volume runs 5.5 % low at a quarter of it. Its cross-curve levers KN to 80° are within 0.71 % of an independent integration, at most 2.7 mm.</li>
+          <li>Closed-form cases, such as box barges, including the heel under an off-centre weight.</li>
           <li>SeaCraft’s own earlier output. The demo hull’s numbers only catch unintended changes, and say nothing about whether they are right.</li>
         </ul>
       </div>
       <div>
         <h3>Not systematically compared with</h3>
         <ul>
-          <li>Tank tests.</li>
+          <li>Tank tests of any hull but the Wigley.</li>
           <li>Sea trials or other full-scale measurements.</li>
           <li>Approved naval-architecture software.</li>
         </ul>
@@ -264,8 +354,8 @@ cargo run --release -p seacraft-gui -- --open examples/trawler-22m.fef</code></p
 <footer class="footer">
   <div class="wrap footer-inner">
     <div>
-      <p class="footer-name">SeaCraft {{version}}</p>
-      <p>Licensed under <a href="https://github.com/havan/SeaCraft/blob/main/LICENSE">GPL-3.0-or-later</a>, with no warranty. See the <a href="https://github.com/havan/SeaCraft/blob/main/DISCLAIMER.md">disclaimer</a>. Page built from commit <a href="https://github.com/havan/SeaCraft/commit/{{commit}}"><code>{{commit}}</code></a>.</p>
+      <p class="footer-name">SeaCraft {{release}}</p>
+      <p>Licensed under <a href="https://github.com/havan/SeaCraft/blob/main/LICENSE">GPL-3.0-or-later</a>, with no warranty. See the <a href="https://github.com/havan/SeaCraft/blob/main/DISCLAIMER.md">disclaimer</a>. Page built with <code>seacraft {{version}}</code> from commit <a href="https://github.com/havan/SeaCraft/commit/{{commit}}"><code>{{commit}}</code></a>.</p>
     </div>
     <div>
       <p>An independent Rust reimplementation of <a href="https://sourceforge.net/projects/freeship/">FREE!ship</a>, written from its documented behaviour and GPL source. Not affiliated with or endorsed by the FREE!ship projects. <a href="https://github.com/havan/SeaCraft/blob/main/ATTRIBUTION.md">Attribution</a>.</p>

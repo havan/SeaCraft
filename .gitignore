@@ -1,5 +1,6 @@
 /target
 /site/_site/
+__pycache__/
 **/*.swp
 **/*.rs.bk
 /*.png
