@@ -4,6 +4,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- `seacraft heel --json` (and the MCP `heel_equilibrium` tool) now gives each settled state's solved
+  `waterplane` as `n . p + d = 0` in model coordinates, so a drawing can place the heeled waterline without
+  solving for it again.
+
 ## 0.6.0 (2026-11-22)
 
 From a hull to the pieces you cut, and the numbers set against published data. The builder's toolkit gains

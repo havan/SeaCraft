@@ -127,7 +127,7 @@ impl Neg for Vec3 {
 ///
 /// The normal points to the "positive" side (above the waterline when used for
 /// hydrostatics); points with a signed distance <= 0 are submerged.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Plane {
     pub n: Vec3,
     pub d: f64,

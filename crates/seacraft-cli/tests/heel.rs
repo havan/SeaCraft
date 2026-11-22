@@ -50,6 +50,29 @@ fn heel_json_on_the_demo_hull() {
     assert!((both - start - 0.5).abs() < 1e-9, "{start} + 0.5 vs {both}");
     assert_eq!(v["at_heel"]["heel_deg"], 20.0);
     assert_eq!(v["free_to_trim"], true);
+
+    // The solved waterplane, `n . p + d = 0` in model coordinates, so a drawing can place the
+    // waterline without solving for it again.
+    let state = &v["equilibrium"]["state"];
+    let plane = &state["waterplane"];
+    let n = |k: &str| plane["n"][k].as_f64().unwrap();
+    let side = |p: &serde_json::Value| {
+        n("x") * p["x"].as_f64().unwrap()
+            + n("y") * p["y"].as_f64().unwrap()
+            + n("z") * p["z"].as_f64().unwrap()
+            + plane["d"].as_f64().unwrap()
+    };
+    let length = (n("x").powi(2) + n("y").powi(2) + n("z").powi(2)).sqrt();
+    assert!((length - 1.0).abs() < 1e-9, "unit normal: {plane}");
+    assert!(
+        side(&state["b"]) < 0.0,
+        "B lies under the waterplane: {state}"
+    );
+    let tilt = (-n("y")).atan2(n("z")).to_degrees();
+    assert!(
+        (tilt - heel).abs() < 0.5,
+        "the waterplane tilts by the heel: {tilt} vs {heel}"
+    );
 }
 
 #[test]

@@ -111,8 +111,9 @@ pub struct HeelState {
     pub displacement_t: f64,
     /// Whether an open hull's artificial deck lid reaches below this waterplane.
     pub lid_submerged: bool,
-    /// The solved waterplane (`side <= 0` submerged).
-    #[serde(skip)]
+    /// The solved waterplane, `n . p + d = 0` in model coordinates (`side <= 0` submerged).
+    /// Serialised as `waterplane`, so a drawing can place the waterline without solving again.
+    #[serde(rename = "waterplane")]
     pub plane: Plane,
 }
 
