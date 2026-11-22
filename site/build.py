@@ -32,12 +32,13 @@ FONTS = Path(__file__).resolve().parent / "fonts"
 KEY_FILE = ".build-key"
 
 # Page order. `resistance` picks the method whose range of hulls this example falls in, and `motions`
-# is off for the planing hull, because strip theory does not describe a boat on the plane.
+# is off for the planing hulls, because strip theory does not describe a boat on the plane.
 HULLS = [
     {"id": "trawler-22m", "label": "Trawler, 22 m", "resistance": "holtrop", "motions": True},
     {"id": "yacht-10m", "label": "Yacht, 10 m", "resistance": "dsyhs", "motions": True},
     {"id": "kayik-9m", "label": "Kayık, 9 m", "resistance": "holtrop", "motions": True},
     {"id": "runabout-6m", "label": "Runabout, 6.5 m", "resistance": "savitsky", "motions": False},
+    {"id": "skiff-4m", "label": "Plywood skiff, 4.3 m", "resistance": "savitsky", "motions": False},
     {"id": "container-230m", "label": "Container ship, 230 m", "resistance": "holtrop", "motions": True},
     {"id": "wigley", "label": "Wigley hull, 10 m", "resistance": "holtrop", "motions": True},
 ]
@@ -54,6 +55,20 @@ def run(seacraft, *args, cwd=None):
     if done.returncode != 0:
         sys.exit(f"seacraft {' '.join(map(str, args))} failed:\n{done.stderr}")
     return done.stdout
+
+
+def release_version(cargo_toml):
+    """The version in `[workspace.package]`: what a release of this commit is called.
+
+    The Pages checkout has no tags, so `seacraft --version` names the commit there; the Download section
+    shows this plain version instead. A regex rather than `tomllib`, which needs Python 3.11.
+    """
+    text = Path(cargo_toml).read_text(encoding="utf-8")
+    section = re.search(r"^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    found = section and re.search(r'^version\s*=\s*"([^"]+)"', section.group(1), re.M)
+    if not found:
+        sys.exit(f"no [workspace.package] version in {cargo_toml}")
+    return found.group(1)
 
 
 def shown(hull_id, *args):
@@ -490,6 +505,7 @@ def main():
         sys.exit(f"refusing to delete {out}: it is not empty and is not a site this script built")
 
     version = run(seacraft, "--version").split()[-1]
+    release = release_version(ROOT / "Cargo.toml")
     listing = {}
     for line in run(seacraft, "example", "--list").splitlines():
         hull_id, _, rest = line.partition(" ")
@@ -530,6 +546,7 @@ def main():
             if item.suffix == ".html":
                 text = item.read_text(encoding="utf-8")
                 text = text.replace("{{version}}", version).replace("{{commit}}", commit)
+                text = text.replace("{{release}}", release)
             if text is None:
                 shutil.copy(item, out / item.name)
             else:

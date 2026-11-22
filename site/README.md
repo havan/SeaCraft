@@ -1,6 +1,6 @@
 # The SeaCraft website
 
-The source of <https://havan.github.io/SeaCraft/>. `.github/workflows/pages.yml` publishes it from `main`.
+The source of <https://seacraft.app/>. `.github/workflows/pages.yml` publishes it from `main`.
 
 `build.py` runs the `seacraft` binary on each hull in `examples/` and writes the results next to the page. No
 number is typed into the page, so it cannot drift from the program. The drawings are cut from the mesh
@@ -12,6 +12,7 @@ next to it (see `DISCLAIMER.md`).
 cargo build --release --bin seacraft
 python3 site/build.py
 python3 -m http.server --directory site/_site 8000
+python3 site/test_build.py    # how build.py reads seacraft's output
 ```
 
 Building every hull takes a minute or two, so `build.py` keeps a hull already in `_site/` when the `seacraft`
