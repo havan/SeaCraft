@@ -352,6 +352,133 @@ def motions(seacraft, hull_id, hull_dir, draft, kg):
     }
 
 
+def maybe(value, places):
+    return None if value is None else round(value, places)
+
+
+def heel_step(result, y):
+    """One `seacraft heel --json` result as one position of the trial weight.
+
+    Only a `stable` result has a state to draw. Every other kind (`loll`, `capsizes`, `cannot_float`,
+    `unresolved`) keeps its kind and seacraft's own `summary`, and nothing to draw.
+    """
+    equilibrium = result["equilibrium"]
+    state = equilibrium.get("state") if equilibrium["kind"] == "stable" else None
+    step = {"y": y, "kind": equilibrium["kind"], "summary": result["summary"]}
+    if state is None:
+        step.update(dict.fromkeys(("heel_deg", "b", "g", "gz_m", "heeling_arm_m", "draft", "trim_m", "waterplane")))
+        return step
+    plane = state["waterplane"]
+    step.update(
+        {
+            "heel_deg": round(state["heel_deg"], 2),
+            "b": [round(state["b"]["y"], 4), round(state["b"]["z"], 4)],
+            "g": [round(state["g"]["y"], 4), round(state["g"]["z"], 4)],
+            "gz_m": round(state["gz_m"], 4),
+            "heeling_arm_m": round(state["heeling_arm_m"], 4),
+            "draft": maybe(state["draft"], 3),
+            "trim_m": maybe(state["trim_m"], 3),
+            # n . p + d = 0 in model coordinates: the page draws its line across the drawn station.
+            "waterplane": [round(v, 6) for v in (plane["n"]["x"], plane["n"]["y"], plane["n"]["z"], plane["d"])],
+        }
+    )
+    return step
+
+
+# How many positions the trial weight takes across the deck, centreline first.
+HEEL_POSITIONS = 7
+
+
+def heel_steps(seacraft, hull_id, hull_dir, kg, beam, deck_z, stations):
+    """A trial weight walked across the deck, each position one `seacraft heel` run.
+
+    The weight is 10 % of the design displacement, on the deck above the upright LCB (where the bare hull's
+    LCG defaults to), from the centreline out to 0.4 of the beam. Nothing between positions is drawn.
+    """
+    fef = f"{hull_id}.fef"
+    hydro = json.loads(run(seacraft, "hydro", fef, "--kg", kg, "--json", cwd=hull_dir))
+    mass = sig(hydro["displacement_t"] * 0.10, 2)
+    x, z = round(hydro["lcb"]["x"], 3), round(deck_z, 3)
+    steps = []
+    for k in range(HEEL_POSITIONS):
+        y = round(0.4 * beam * k / (HEEL_POSITIONS - 1), 3)
+        weight = f"{mass:g}@{nums(x, y, z, digits=3)}"
+        result = json.loads(run(seacraft, "heel", fef, "--kg", kg, "--weight", weight, "--json", cwd=hull_dir))
+        step = heel_step(result, y)
+        step["command"] = shown(hull_id, "heel", "--kg", f"{kg:g}", "--weight", weight)
+        steps.append(step)
+    station = min(stations, key=lambda s: abs(s["x"] - x))
+    return {
+        "mass_t": mass,
+        "x": x,
+        "z": z,
+        "steps": steps,
+        "station": {"x": station["x"], "body": station["body"]},
+    }
+
+
+# Froude numbers on the waterline length for the wave pattern, slow to past hull speed.
+WAVE_FROUDES = [0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+# Grid points along the waterline length: the default domain is five lengths long, so about 900 px.
+WAVE_POINTS_PER_LENGTH = 180
+
+
+def wave_fits(results):
+    """Whether thin-ship theory fits this hull: `seacraft waves` warned at none of the speeds."""
+    return bool(results) and all(not r.get("warnings") for r in results)
+
+
+def wave_steps(seacraft, hull_id, hull_dir, length):
+    """The far-field wave pattern at each of `WAVE_FROUDES`, or why it is not shown.
+
+    Whether it is shown follows seacraft's own warnings, never a list kept here. Each image is the PNG
+    seacraft wrote, made smaller with pngquant when it is installed.
+    """
+    fef = f"{hull_id}.fef"
+    probe = [json.loads(run(seacraft, "waves", fef, "--fn", f, "--json", cwd=hull_dir)) for f in WAVE_FROUDES]
+    if not wave_fits(probe):
+        reason = []
+        for result in probe:
+            reason += [w for w in result.get("warnings") or [] if w not in reason]
+        return {"fits": False, "steps": [], "reason": reason}
+    spacing = sig(length / WAVE_POINTS_PER_LENGTH, 3)
+    (hull_dir / "waves").mkdir()
+    steps = []
+    for f in WAVE_FROUDES:
+        image = f"waves/fn-{f:.2f}.png"
+        args = ("waves", fef, "--fn", f"{f:.2f}", "--spacing", f"{spacing:g}", "-o", image)
+        result = json.loads(run(seacraft, *args, "--json", cwd=hull_dir))
+        shrink_png(hull_dir / image)
+        steps.append(
+            {
+                "fn": f,
+                "image": image,
+                "size": list(result["grid_points"]),
+                "bytes": (hull_dir / image).stat().st_size,
+                "regime": result["regime"]["sentence"],
+                "clip_m": round(result["max_abs_zeta_m"], 4),
+                "notes": result.get("notes") or [],
+                "warnings": warning_text(result),
+                "command": shown(hull_id, "waves", *args[2:]),
+            }
+        )
+    return {"fits": True, "steps": steps}
+
+
+def shrink_png(path):
+    """Quantise a PNG in place with pngquant, when it is installed and the result is smaller."""
+    if not shutil.which("pngquant"):
+        return
+    done = subprocess.run(
+        ["pngquant", "--quality", "65-90", "--strip", "--skip-if-larger", "--force", "--ext", ".png", str(path)],
+        capture_output=True,
+        encoding="utf-8",
+    )
+    # 98: not smaller, 99: below the quality floor. Either way the original stays, which is fine.
+    if done.returncode not in (0, 98, 99):
+        sys.exit(f"pngquant {path} failed:\n{done.stderr}")
+
+
 def default_speeds(project, length):
     speeds = project.get("report", {}).get("speeds_kn") or []
     if len(speeds) >= 4:
@@ -395,6 +522,10 @@ def clear_output(out, keep_hulls):
     for item in (out / "hulls").iterdir():
         if item.is_dir() and item.name not in keep_hulls:
             shutil.rmtree(item)
+
+
+def hull_data(out, hull_id):
+    return json.loads((out / "hulls" / hull_id / "data.json").read_text(encoding="utf-8"))
 
 
 def build_hull(seacraft, hull, description, out):
@@ -472,6 +603,8 @@ def build_hull(seacraft, hull, description, out):
             seacraft, hull_id, hull_dir, hull["resistance"], default_speeds(project, length)
         ),
         "motions": motions(seacraft, hull_id, hull_dir, draft, kg) if hull["motions"] else None,
+        "waves": wave_steps(seacraft, hull_id, hull_dir, length),
+        "heel": heel_steps(seacraft, hull_id, hull_dir, kg, beam, lines["z1"], lines["stations"]),
         "files": {
             "report": (hull_dir / "report.html").stat().st_size,
             "viewer": (hull_dir / "viewer.html").stat().st_size,
@@ -483,6 +616,46 @@ def build_hull(seacraft, hull, description, out):
         json.dumps(data, separators=(",", ":"), ensure_ascii=False), encoding="utf-8"
     )
     print(f"  {hull_id}: {len(table)} drafts, {(hull_dir / 'data.json').stat().st_size // 1024} KiB data")
+
+
+# The example the "Build it" section shows, and how its pieces are nested.
+BUILDER_HULL = "skiff-4m"
+BUILDER_NEST = "blanks"
+
+
+def builder_files(seacraft, out):
+    """The skiff's plywood panels nested onto sheets, as seacraft writes them, into `out/build`.
+
+    Fails the build when a panel does not lie flat or no sheet file is written, since the section says both.
+    """
+    folder = out / "build"
+    folder.mkdir()
+    fef = folder / f"{BUILDER_HULL}.fef"
+    shutil.copy(ROOT / "examples" / fef.name, fef)
+    pdf = json.loads(run(seacraft, "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.pdf", "--json", cwd=folder))
+    svg = json.loads(run(seacraft, "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.svg", "--json", cwd=folder))
+    fef.unlink()
+    flat = [p["panel"] for p in svg["panels"] if not p["lies_flat"]]
+    if flat:
+        sys.exit(f"{BUILDER_HULL}: panels {', '.join(flat)} do not lie flat, and the site says they do")
+    sheets = [Path(f).name for f in svg["sheet_files"]]
+    if not sheets:
+        sys.exit(f"{BUILDER_HULL}: seacraft panels wrote no sheet files")
+    files = ["panels.pdf", "panels.svg", *sheets]
+    index = {
+        "command": " ".join(["seacraft", "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.svg"]),
+        "pdf_command": " ".join(["seacraft", "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.pdf"]),
+        "sheets": sheets,
+        "layout": [
+            {"name": s["name"], "length_m": s["length_m"], "width_m": s["width_m"]} for s in svg["layout"]["sheets"]
+        ],
+        "plywood_sheets": svg["layout"]["plywood_sheets"],
+        "panels": [{"panel": p["panel"], "copies": p["copies"], "lies_flat": p["lies_flat"]} for p in svg["panels"]],
+        "pdf_pages": pdf.get("pages"),
+        "sizes": {name: (folder / name).stat().st_size for name in files},
+    }
+    (folder / "index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    print(f"  build: {len(sheets)} sheet files, {index['plywood_sheets']} plywood sheets")
 
 
 def main():
@@ -530,6 +703,8 @@ def main():
         build_hull(seacraft, hull, listing[hull_id], out)
         (out / "hulls" / hull_id / KEY_FILE).write_text(keys[hull_id], encoding="utf-8")
 
+    builder_files(seacraft, out)
+
     commit = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], capture_output=True, encoding="utf-8", cwd=ROOT
     ).stdout.strip()
@@ -537,6 +712,8 @@ def main():
         "version": version,
         "commit": commit,
         "hulls": [{"id": h["id"], "label": h["label"]} for h in HULLS],
+        # The hulls whose wave pattern is shown, so the others can point to them.
+        "waves_hulls": [h["id"] for h in HULLS if hull_data(out, h["id"])["waves"]["fits"]],
     }
     index.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
