@@ -4,6 +4,17 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+## 0.6.0 (2026-11-22)
+
+From a hull to the pieces you cut, and the numbers set against published data. The builder's toolkit gains
+plywood panels laid flat with their measurements and nested onto sheets, and a plywood skiff whose panels all lie
+flat within the default limits. Two new Analysis views show where the hull heels under trial weights and the
+far-field wave pattern behind it. Hydrostatics and GZ, Holtrop-Mennen and Savitsky, Michell and strip-theory
+seakeeping are each compared with published tank tests, worked examples or a published hull's equation
+(`docs/oracles.md` §39, §42–§46); fixes to Holtrop-Mennen and Savitsky came out of it, and the Holtrop ones move
+resistance results, as described below. The new views and dialogs are covered by headless tests and have been
+tried by hand on Linux, where they work as far as anyone has seen; that is not a check of their numbers.
+
 - Plywood panels can now be nested automatically onto plywood sheets across the CLI (`seacraft panels --nest blanks|split --gap-mm 10`), MCP (`export_panels`), the control channel (`build.panels`), and **File ▸ Builder panels…** (`nest` defaults to `none`, `gap_mm` to 10 mm). `blanks` joins stock sheets end to end with `--scarf-mm` into blanks long enough for the longest piece; `split` cuts long pieces at straight butt joints (moved away from multi-crossing notches) with matching lettered alignment marks (`A`, `B`, …). True-shape outline packing (`nest.rs`, `panel_layout.rs`) places pieces largest first, allowing 180° and mirror turns (never 90° across the grain); the layout is deterministic and repeatable, not the fewest possible sheets. With nesting on, SVG and DXF write one full-size per-sheet cutting file beside the main file (`NAME-sheet-1.svg`, …, listed as `sheet_files`, whatever scale the patterns are drawn at); older `NAME-sheet-N` files beyond the new layout are named in a warning and in `stale_sheet_files`, never deleted, and the desktop dialog names sheet files it would replace or leave before writing; an MCP `batch` refuses `export_panels` with both `nest` and `path`, since files cannot be rolled back; PDF puts scaled layout overview pages at the front before the full-size patterns and offsets tables (`layout_pages`), replies include `layout` (`null` without nesting) and the layout sheet count, and Builder panels adds **Nesting**, **Gap between pieces**, and a **Panels | Sheets** switch showing the full-size sheets (faded while out of date, with Export disabled until current) (`docs/oracles.md` §50).
 - Every plywood panel pattern now carries its measurements: the overall length and width as dimension lines, the
   offsets from the baseline written at each crossing on the same rows as the offsets tables, and each seam's

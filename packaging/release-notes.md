@@ -25,9 +25,11 @@ driver. If SeaCraft fails to open, run `flatpak update`, which normally installs
 
 ## Not validated
 
-Most calculations have not been checked against tank tests, sea trials or approved software, and results may
-be wrong. A `PASS` against a criterion is not approval. Do not rely on SeaCraft for design or safety decisions
-without independent checks by a qualified person. It is provided as is, with no warranty; see `DISCLAIMER.md`.
+Most results have not been compared with real vessels, sea trials or approved software, and they may be wrong.
+Some areas have been compared with published tank tests and worked examples; `docs/oracles.md` lists each
+comparison and the gaps it found. A `PASS` against a criterion is not approval. Do not rely on SeaCraft for
+design or safety decisions without independent checks by a qualified person. It is provided as is, with no
+warranty; see `DISCLAIMER.md`.
 
 ## Licence and source
 

@@ -1,6 +1,6 @@
 # SeaCraft — hull design and naval architecture in Rust
 
-Website: <https://havan.github.io/SeaCraft/>
+Website: <https://seacraft.app/>
 
 SeaCraft is an independent Rust reimplementation of the open-source
 [FREE!ship](https://sourceforge.net/projects/freeship/) hull-design program.
