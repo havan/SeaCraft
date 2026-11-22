@@ -289,9 +289,7 @@ claude mcp add seacraft -- seacraft mcp --connect 127.0.0.1:7878</code></pre>
       <h2 id="install-title">Download</h2>
       <p>Ready-made programs for Windows, macOS and Linux are on the <a href="https://github.com/havan/SeaCraft/releases/latest">latest release</a>. Each one holds the desktop app, the <code>seacraft</code> command and the example hulls. To begin, choose <b>Open an example</b> on the start screen.</p>
       <p>The current version is {{release}}. Anything may change while it is <code>0.x</code>.</p>
-      <div class="untested">
-        <p><b>Windows and macOS are untested.</b> Those builds are compiled and tested automatically, but nobody has opened the app on them by hand yet. Feedback is welcome: <a href="https://github.com/havan/SeaCraft/issues/new">open an issue</a> and say what worked and what did not.</p>
-      </div>
+      <p class="untested">The Windows and macOS builds are compiled and tested automatically; trying the app by hand has so far been done on Linux. Feedback from any platform is welcome: <a href="https://github.com/havan/SeaCraft/issues/new">open an issue</a> and say what worked and what did not.</p>
     </div>
     <div>
       <ul class="downloads">
@@ -355,8 +353,8 @@ cargo run --release -p seacraft-gui -- --open examples/trawler-22m.fef</code></p
 <footer class="footer">
   <div class="wrap footer-inner">
     <div>
-      <p class="footer-name">SeaCraft {{version}}</p>
-      <p>Licensed under <a href="https://github.com/havan/SeaCraft/blob/main/LICENSE">GPL-3.0-or-later</a>, with no warranty. See the <a href="https://github.com/havan/SeaCraft/blob/main/DISCLAIMER.md">disclaimer</a>. Page built from commit <a href="https://github.com/havan/SeaCraft/commit/{{commit}}"><code>{{commit}}</code></a>.</p>
+      <p class="footer-name">SeaCraft {{release}}</p>
+      <p>Licensed under <a href="https://github.com/havan/SeaCraft/blob/main/LICENSE">GPL-3.0-or-later</a>, with no warranty. See the <a href="https://github.com/havan/SeaCraft/blob/main/DISCLAIMER.md">disclaimer</a>. Page built with <code>seacraft {{version}}</code> from commit <a href="https://github.com/havan/SeaCraft/commit/{{commit}}"><code>{{commit}}</code></a>.</p>
     </div>
     <div>
       <p>An independent Rust reimplementation of <a href="https://sourceforge.net/projects/freeship/">FREE!ship</a>, written from its documented behaviour and GPL source. Not affiliated with or endorsed by the FREE!ship projects. <a href="https://github.com/havan/SeaCraft/blob/main/ATTRIBUTION.md">Attribution</a>.</p>
