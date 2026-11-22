@@ -207,6 +207,11 @@ input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 3px s
 .screenshot img { width: min(100%, 1600px); height: auto; margin-inline: auto; }
 .screenshot figcaption { margin-top: .75rem; color: var(--ink-soft); font-size: .9375rem; }
 
+.views { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: 1.5rem clamp(1.5rem, 3vw, 2.5rem); margin-top: clamp(3.5rem, 6vw, 5rem); }
+.views figure { margin: 0; }
+.views img { width: 100%; height: auto; }
+.views figcaption { margin-top: .6rem; color: var(--ink-soft); font-size: .9375rem; max-width: 40rem; }
+
 .section-loop { background: var(--hull-air); }
 .loop-head p { max-width: 42rem; margin-top: 1.5rem; }
 .steps { list-style: none; margin: clamp(2.5rem, 5vw, 4rem) 0 0; padding: 0; counter-reset: step; }

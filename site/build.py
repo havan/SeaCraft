@@ -747,7 +747,8 @@ def main():
                 (out / item.name).write_text(text, encoding="utf-8")
     assets = out / "assets"
     assets.mkdir()
-    shutil.copy(ROOT / "docs" / "assets" / "gui.png", assets / "gui.png")
+    for shot in sorted((ROOT / "docs" / "assets").glob("gui*.png")):
+        shutil.copy(shot, assets / shot.name)
     fonts = out / "fonts"
     fonts.mkdir()
     for item in FONTS.iterdir():
