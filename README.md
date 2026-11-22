@@ -379,6 +379,7 @@ waterline:
 | `yacht-10m` | 10 m fin-keel cruising yacht: canoe body with counter transom, closed deck, fin keel, spade rudder; GM 1.79 m, AVS 127° | 9.01 × 2.90 × 0.45 canoe body (1.85 total) | 4.95 | 0.401 | 0.547 | 0.732 | 0.712 | 46.5 | 1.76 above the keel tip | representative of production boats of this size; coefficients of the canoe body (appendage layers off, T = Tc), Δ with them on |
 | `kayik-9m` | 9 m Aegean piyade kayık: round bilge on a deep keel and deadwood, raked stem, small transom, inboard diesel, 7 kn; T to the keel bottom | 7.97 × 2.86 × 0.907 | 4.60 | 0.218 | 0.442 | 0.492 | 0.632 | 47.4 | 0.95 (estimated) | means of 12 surveyed piyade boats in B. İ. Turan, "Tırhandil ve Piyade Tipi Tekne Formlarının Tasarım ve Mühendislik Perspektifinden Karşılaştırılması", *Journal of Marine and Engineering Technology (JoINMET)* 2(2), 78–90, 2022; the lines are SeaCraft's own (entrance half-angle ≈ 27° against the survey's 49°) |
 | `runabout-6m` | 6.5 m hard-chine outboard runabout, true deep-V (23°), flat transom raked 12° | 5.64 × 2.00 × 0.425 | 1.92 | 0.390 | 0.798 | 0.489 | 0.807 | 39.5 | 0.65 (assumed) | representative of production boats of this size |
+| `skiff-4m` | 4.3 m flat-bottom plywood skiff for oars or a 6 hp outboard, open, flat transom raked 12°; bottom, sides and transom lie flat in plywood within the default panel limits (2 mm, 0.1 %); GM 0.58 m | 3.18 × 1.12 × 0.118 | 0.300 | 0.698 | 0.776 | 0.900 | 0.883 | 39.8 | 0.42 (estimated) | representative of home-built skiffs of this size; lines SeaCraft's own |
 | `container-230m` | 230 m container ship, bulbous bow, closed skeg, transom just above the DWL, Lpp 230 m, D 19 m | 232.63 × 32.20 × 10.80 | 53 349 | 0.643 | 0.655 | 0.982 | 0.831 | 49.1 (1.52 % Lpp aft of midship) | 14.05 (measured KM − 0.60) | KCS-like: particulars of the KRISO Container Ship benchmark (SIMMAN 2008), lines SeaCraft's own; Cb on LWL 0.644 |
 | `trawler-22m` | 22 m steel stern trawler, skeg over the aft third, immersed transom raked 25°, deck, 1 m bulwark (not in hydrostatics); GM 0.83 m, IMO A.749 passes in the Design condition | 19.50 × 6.41 × 2.60 | 173.9 | 0.522 | 0.621 | 0.840 | 0.813 | 47.2 | 2.50 (assumed) | representative of vessels of this size |
 | `wigley` (CLI and tests) | Wigley parabolic hull, L 10 m, B 1 m, D 1 m | 10.00 × 1.00 × 0.625 | 2.83 | 0.442 | 0.666 | 0.664 | 0.666 | 50.0 | 0.35 | closed form: Cb 4/9, Cp = Cm = Cwp 2/3, KB 0.625 T, BM 0.0857 B²/T |
@@ -662,14 +663,23 @@ guide.
 `seacraft panels` lays a hard-chine hull's plywood panels flat for
 stitch-and-glue. Panels come from the layers and creases of the refined half
 model; each is flattened with the least stretch (the as-rigid-as-possible
-method of Liu et al., 2008) and drawn full size with station lines, seam ticks
-and what each edge is stitched to. A panel whose seams drift over 2 mm or that
-must stretch over 0.1 % RMS does not lie flat, and then nothing is written
-unless `--allow-undevelopable` is given; the limits are provisional. Offsets
-from a baseline (`--offsets-csv`, `--offsets-pdf`) and a count of plywood
-sheets end to end come with it; the PDF carries the offsets tables after the
-patterns. The desktop app has the same under File ▸ Builder panels…, with a
-live list of the panels and a drawing of their patterns, and the MCP server as
+method of Liu et al., 2008) and drawn full size with station lines, seam ticks,
+what each edge is stitched to, overall length and width, baseline offsets, and
+seam lengths (reference lines and text, never cut lines). A panel whose seams
+drift over 2 mm or that must stretch over 0.1 % RMS does not lie flat, and then
+nothing is written unless `--allow-undevelopable` is given; the limits are
+provisional. Offsets from a baseline (`--offsets-csv`, `--offsets-pdf`) and a
+plywood sheet count come with it; the PDF carries the offsets tables after the
+patterns. Without `--nest`, sheets are counted end to end as an upper bound;
+`--nest blanks` joins sheets end to end into blanks with `--scarf-mm`, `--nest
+split` cuts long pieces at straight butt joints with matching alignment marks,
+and `--gap-mm` (default 10) keeps a gap between pieces and from sheet edges.
+With nesting, SVG and DXF also write one full-size cutting file per sheet
+(`NAME-sheet-1.svg`, …; older extra ones are named, never deleted) and PDF puts
+scaled layout overview pages first. The automatic layout is
+repeatable, not the fewest possible sheets. The desktop app has the same under
+File ▸ Builder panels…, with a live list of the panels, a **Panels | Sheets**
+switch for the patterns and full-size sheets, and the MCP server exposes
 `export_panels`, which can also measure without writing.
 
 ---
@@ -694,7 +704,8 @@ seacraft templates hull.fef -o moulds.pdf|.svg|.dxf [--stations N | --spacing M 
 seacraft panels    hull.fef -o panels.pdf|.svg|.dxf [--layer NAME]... [--stations N | --spacing M | --at x1,...]
                               [--max-seam-drift-mm 2] [--max-stretch-pct 0.1] [--allow-undevelopable]
                               [--offsets-csv out.csv] [--offsets-pdf out.pdf] [--offset-spacing-mm 250]
-                              [--stock-mm 2440x1220] [--scarf-mm MM] [--paper ...] [--single-page]
+                              [--no-offsets-pages] [--stock-mm 2440x1220] [--scarf-mm MM]
+                              [--nest none|blanks|split] [--gap-mm 10] [--paper ...] [--single-page]
                               [--margin-mm MM] [--overlap-mm MM] [--scale 1:N] [--imperial] [--json]
 seacraft transform hull.fef -o scaled.fef [--lwl L] [--bwl B] [--draft T]
                               [--scale sx,sy,sz] [--translate dx,dy,dz] [--mirror x|y|z] [--json]

@@ -2237,6 +2237,7 @@ pub fn panels_in(
         offset_spacing_m: checked.offset_spacing_m,
         stock: checked.stock,
         imperial: p.imperial,
+        nesting: checked.nesting,
     };
     Ok(PanelsPreview {
         set: std::sync::Arc::new(panel_set(surface, &opts)?),
@@ -2244,14 +2245,18 @@ pub fn panels_in(
     })
 }
 
-/// A panel pattern file.
+/// A panel pattern file and any per-sheet cutting files beside it.
 #[derive(Debug, Clone)]
 pub struct PanelsFile {
     pub bytes: Vec<u8>,
     pub format: seacraft_core::templates::Format,
     pub pages: Option<usize>,
+    /// How many of the pages are layout overview pages at the front.
+    pub layout_pages: usize,
     /// How many of the pages are the offsets tables.
     pub offsets_pages: usize,
+    /// Per-sheet cutting files for SVG or DXF with nesting, in layout order.
+    pub per_sheet: Vec<Vec<u8>>,
     pub missing: Vec<char>,
 }
 
@@ -2278,9 +2283,92 @@ pub fn panels_file(
         bytes: w.written.bytes,
         format,
         pages: w.written.pages,
+        layout_pages: w.layout_pages,
         offsets_pages: w.offsets_pages,
+        per_sheet: w.per_sheet.into_iter().map(|s| s.bytes).collect(),
         missing: w.written.missing,
     })
+}
+
+/// How many per-sheet cutting files writing `set` as `format` makes: one per layout sheet or
+/// blank for an SVG or DXF with nesting, none otherwise (as [`seacraft_core::panels::write`]).
+pub fn panels_sheet_count(
+    set: &seacraft_core::panels::PanelSet,
+    format: seacraft_core::templates::Format,
+) -> usize {
+    use seacraft_core::templates::Format;
+    match format {
+        Format::Svg | Format::Dxf => set.layout.as_ref().map_or(0, |l| l.drawings.len()),
+        _ => 0,
+    }
+}
+
+/// What to ask before writing `count` cutting files beside `path`: the sheet files that already
+/// exist and would be replaced, and older ones beyond `count` that would be left in place.
+/// `None` when the export touches no existing sheet file and leaves none behind.
+pub fn panels_sheet_clash(path: &std::path::Path, count: usize) -> Option<String> {
+    let replaced: Vec<String> = (0..count)
+        .map(|i| seacraft_core::panels::sheet_file_name(path, i))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .collect();
+    let stale: Vec<String> = seacraft_core::panels::stale_sheet_files(path, count)
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    let mut parts = Vec::new();
+    match replaced.len() {
+        0 => {}
+        1 => parts.push(format!("This replaces a sheet file: {}.", replaced[0])),
+        n => parts.push(format!(
+            "This replaces {n} sheet files: {}.",
+            replaced.join(", ")
+        )),
+    }
+    match stale.len() {
+        0 => {}
+        1 => parts.push(format!(
+            "1 older sheet file from an earlier export is not part of this layout; it will be \
+             left in place, so set it aside: {}.",
+            stale[0]
+        )),
+        n => parts.push(format!(
+            "{n} older sheet files from an earlier export are not part of this layout; they will \
+             be left in place, so set them aside: {}.",
+            stale.join(", ")
+        )),
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// Writes `file` to `path` and any per-sheet cutting files beside it, staged together atomically.
+/// Returns the per-sheet file paths written, in order.
+pub fn write_panels_file(
+    path: &std::path::Path,
+    file: &PanelsFile,
+) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let sheet_paths: Vec<std::path::PathBuf> = (0..file.per_sheet.len())
+        .map(|i| seacraft_core::panels::sheet_file_name(path, i))
+        .collect();
+    let mut writes: Vec<(&std::path::Path, &[u8])> = vec![(path, &file.bytes)];
+    for (p, bytes) in sheet_paths.iter().zip(&file.per_sheet) {
+        writes.push((p.as_path(), bytes.as_slice()));
+    }
+    let all_paths: Vec<&std::path::Path> = writes.iter().map(|(p, _)| *p).collect();
+    if all_paths.len() > 1 {
+        if let Some((i, j)) = seacraft_core::io::shared_output(&all_paths)? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "`{}` and `{}` resolve to the same file: each output needs a file of its own",
+                    all_paths[i].display(),
+                    all_paths[j].display()
+                ),
+            ));
+        }
+    }
+    seacraft_core::io::write_all_atomic(&writes)?;
+    Ok(sheet_paths)
 }
 
 #[cfg(test)]
@@ -2367,5 +2455,33 @@ mod panels_tests {
         let pv = preview(&pram, &p).expect("measured whatever the paper");
         let e = panels_file(&pv.set, &p, Format::PdfTiled).unwrap_err();
         assert!(e.contains("not a paper size"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_panels_file_rejects_aliased_sheet_symlink() {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-commands-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("out.svg");
+        let sheet1 = seacraft_core::panels::sheet_file_name(&main, 0);
+        std::os::unix::fs::symlink(&main, &sheet1).unwrap();
+        let file = PanelsFile {
+            bytes: b"<svg>main</svg>".to_vec(),
+            format: Format::Svg,
+            pages: None,
+            layout_pages: 0,
+            offsets_pages: 0,
+            per_sheet: vec![b"<svg>sheet1</svg>".to_vec()],
+            missing: Vec::new(),
+        };
+        let err = write_panels_file(&main, &file).unwrap_err();
+        assert!(
+            err.to_string().contains("same file"),
+            "expected shared_output refusal, got: {err}"
+        );
+        assert!(!main.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

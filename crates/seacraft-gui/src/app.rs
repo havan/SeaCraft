@@ -589,6 +589,19 @@ struct FileDialogState {
     /// What to do once a "Save as" opened from the unsaved-changes prompt
     /// has written the model (new, open or quit).
     then: Option<PendingAction>,
+    /// A Builder panels export that would replace sheet files or leave older ones: the path it
+    /// was asked for and what it would do. OK on that same path writes; another path asks again.
+    confirm: Option<(String, String)>,
+}
+
+/// What a finished Builder panels export wrote.
+struct PanelsWritten {
+    /// Pages of a PDF; 0 for an SVG or DXF.
+    pages: usize,
+    /// Per-sheet cutting files written beside it.
+    sheets: usize,
+    /// Older sheet files beyond this layout, left in place.
+    stale: Vec<PathBuf>,
 }
 
 /// Reference to a selected project tank or compartment.
@@ -1119,7 +1132,7 @@ pub struct App {
     show_panels: bool,
     panels_params: crate::commands::PanelsParams,
     /// Panel patterns being written on a worker thread, and the path.
-    panels_export_job: Option<(PathBuf, Job<usize>)>,
+    panels_export_job: Option<(PathBuf, Job<PanelsWritten>)>,
     /// Bumped when `panels_params` changes; part of the measurement's key.
     panels_rev: u64,
     /// The last panels measured, current or not ([`App::panels_key`] says).
@@ -1127,6 +1140,9 @@ pub struct App {
     panels_track: Track<crate::commands::PanelsPreview>,
     /// Where the window's drawing looks, and the panel picked in it or the list.
     panels_view: crate::sheet_view::SheetView,
+    /// Where the window's nested sheets drawing looks, and whether it is active.
+    panels_sheets_view: crate::sheet_view::SheetView,
+    panels_show_sheets: bool,
     panels_selected: Option<usize>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
@@ -1425,6 +1441,8 @@ impl App {
             panels_result: None,
             panels_track: Track::default(),
             panels_view: crate::sheet_view::SheetView::default(),
+            panels_sheets_view: crate::sheet_view::SheetView::default(),
+            panels_show_sheets: false,
             panels_selected: None,
             loading_selected: 0,
             loading_result: None,
@@ -1739,6 +1757,8 @@ impl App {
         self.panels_result = None;
         self.panels_track.reset();
         self.panels_view = crate::sheet_view::SheetView::default();
+        self.panels_sheets_view = crate::sheet_view::SheetView::default();
+        self.panels_show_sheets = false;
         self.panels_selected = None;
         // Keep the chosen panel layers the new model has; with none of them, go back to the
         // layers marked developable rather than fail on names the window cannot show.
@@ -3252,6 +3272,7 @@ impl App {
             path,
             error: None,
             then: None,
+            confirm: None,
         });
     }
 
@@ -3561,6 +3582,18 @@ impl App {
                 if let Some(err) = &dialog.error {
                     ui.colored_label(crate::theme::FAIL, err);
                 }
+                let confirming = dialog
+                    .confirm
+                    .as_ref()
+                    .filter(|(p, _)| p.trim() == dialog.path.trim());
+                if let Some((_, warning)) = confirming {
+                    ui.colored_label(crate::theme::WARN, warning);
+                }
+                let ok_label = if confirming.is_some() {
+                    "Write anyway"
+                } else {
+                    "OK"
+                };
                 ui.separator();
                 let wanted = match dialog.kind {
                     DialogKind::Open | DialogKind::SaveAs => ".fef".to_owned(),
@@ -3583,7 +3616,7 @@ impl App {
                     if ui.button("Cancel").clicked() {
                         cancel = true;
                     }
-                    if ui.button("OK").clicked() {
+                    if ui.button(ok_label).clicked() {
                         accept = true;
                     }
                 });
@@ -3597,6 +3630,24 @@ impl App {
             return;
         }
         let path = std::path::PathBuf::from(dialog.path.trim());
+        // Sheet files the user did not name: say which would be replaced or left behind, and
+        // write only on a second OK for the same path and the same warning. The warning is
+        // worked out again on every OK, so a change to the nesting or the files on disk since
+        // the user agreed asks again instead of acting on the old answer.
+        if dialog.kind == DialogKind::Panels {
+            if let Some(warning) = self.panels_export_clash(&path) {
+                let confirmed = dialog
+                    .confirm
+                    .as_ref()
+                    .is_some_and(|(p, w)| p.trim() == dialog.path.trim() && *w == warning);
+                if !confirmed {
+                    dialog.error = None;
+                    dialog.confirm = Some((dialog.path.clone(), warning));
+                    self.dialog = Some(dialog);
+                    return;
+                }
+            }
+        }
         // Each action's typed result decides: the dialog stays open on the
         // error it returned (also logged), and closes on success.
         let result = match dialog.kind {
@@ -6464,6 +6515,32 @@ impl App {
                 self.panels_view.fit_all();
                 self.panels_selected = None;
             }
+            let prev_layout_sheets = self.panels_result.as_ref().and_then(|r| {
+                r.set.layout.as_ref().map(|l| {
+                    l.sheets
+                        .iter()
+                        .map(|s| (s.length_m.to_bits(), s.width_m.to_bits()))
+                        .collect::<Vec<_>>()
+                })
+            });
+            let next_layout_sheets = result.set.layout.as_ref().map(|l| {
+                l.sheets
+                    .iter()
+                    .map(|s| (s.length_m.to_bits(), s.width_m.to_bits()))
+                    .collect::<Vec<_>>()
+            });
+            if let Some(layout) = &result.set.layout {
+                if prev_layout_sheets != next_layout_sheets {
+                    self.panels_sheets_view.fit_all();
+                }
+                if prev_layout_sheets.is_none() && !layout.drawings.is_empty() {
+                    self.panels_show_sheets = true;
+                } else if layout.drawings.is_empty() {
+                    self.panels_show_sheets = false;
+                }
+            } else {
+                self.panels_show_sheets = false;
+            }
             self.panels_result = Some(result);
         }
         let quiet = self
@@ -6524,8 +6601,11 @@ impl App {
         let mut params = self.panels_params.clone();
         let mut open = true;
         let mut action = None;
+        let mut switch_action = None;
         let selected = self.panels_selected;
         let mut view = std::mem::take(&mut self.panels_view);
+        let mut sheets_view = std::mem::take(&mut self.panels_sheets_view);
+        let show_sheets = self.panels_show_sheets;
         let mut clicked = None;
         let mut export = None;
         let block = self.panels_export_block();
@@ -6540,7 +6620,7 @@ impl App {
                 // Options on the left; the list and the drawing, which want the room, beside them.
                 egui::Panel::left("panels_options")
                     .resizable(false)
-                    .default_size(300.0)
+                    .default_size(320.0)
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("panels_options_scroll")
@@ -6563,24 +6643,42 @@ impl App {
                         });
                     ui.separator();
                     let set = status.set();
+                    let layout = set.and_then(|s| s.layout.as_ref());
+                    let showing_sheets = show_sheets && layout.is_some();
+                    if layout.is_some() {
+                        switch_action = builder_panels::panels_view_switch(ui, showing_sheets);
+                    }
                     for line in set.map(|s| s.failing()).unwrap_or_default() {
                         ui.colored_label(crate::theme::TEXT_PRIMARY, line);
                     }
-                    let sheets = set.map_or(&[][..], |s| &s.sheets[..]);
-                    let not_flat: Vec<bool> = set
-                        .map(|s| s.rows.iter().map(|r| !r.lies_flat).collect())
-                        .unwrap_or_default();
                     let stale = matches!(status, builder_panels::PanelsStatus::Stale(_));
                     ui.allocate_ui(
                         egui::vec2(ui.available_width(), ui.available_height().max(320.0)),
                         |ui| {
-                            clicked =
-                                crate::sheet_view::show(ui, sheets, &not_flat, stale, &mut view);
+                            if let Some(layout) = layout.filter(|_| showing_sheets) {
+                                let not_flat = vec![false; layout.drawings.len()];
+                                crate::sheet_view::show(
+                                    ui,
+                                    &layout.drawings,
+                                    &not_flat,
+                                    stale,
+                                    &mut sheets_view,
+                                );
+                            } else {
+                                let sheets = set.map_or(&[][..], |s| &s.sheets[..]);
+                                let not_flat: Vec<bool> = set
+                                    .map(|s| s.rows.iter().map(|r| !r.lies_flat).collect())
+                                    .unwrap_or_default();
+                                clicked = crate::sheet_view::show(
+                                    ui, sheets, &not_flat, stale, &mut view,
+                                );
+                            }
                         },
                     );
                 });
             });
         self.panels_view = view;
+        self.panels_sheets_view = sheets_view;
         if clicked.is_some() {
             self.panels_selected = clicked;
         }
@@ -6590,10 +6688,17 @@ impl App {
         if export == Some(builder_panels::PanelsAction::Export) {
             self.open_dialog(DialogKind::Panels);
         }
+        if let Some(builder_panels::PanelsAction::ShowSheets(show)) = switch_action {
+            self.panels_show_sheets = show;
+        }
         match action {
             Some(builder_panels::PanelsAction::Frame(i)) => {
                 self.panels_selected = Some(i);
+                self.panels_show_sheets = false;
                 self.panels_view.frame(i);
+            }
+            Some(builder_panels::PanelsAction::ShowSheets(show)) => {
+                self.panels_show_sheets = show;
             }
             Some(builder_panels::PanelsAction::Export) | None => {}
         }
@@ -6603,6 +6708,16 @@ impl App {
     /// Where the Builder panels drawing looks.
     pub fn panels_view(&self) -> &crate::sheet_view::SheetView {
         &self.panels_view
+    }
+
+    /// Where the Builder panels nested sheets drawing looks.
+    pub fn panels_sheets_view(&self) -> &crate::sheet_view::SheetView {
+        &self.panels_sheets_view
+    }
+
+    /// Whether the Builder panels drawing currently shows nested sheets rather than patterns.
+    pub fn panels_showing_sheets(&self) -> bool {
+        self.panels_show_sheets
     }
 
     /// The panel picked in the Builder panels list or drawing.
@@ -6677,13 +6792,50 @@ impl App {
         Ok((set.set.clone(), format))
     }
 
-    /// Write the measured panels' patterns to `path` on this thread, in the format its
-    /// extension names (tests and scripts; the window writes on a worker).
+    /// What exporting the measured panels to `path` would do to sheet files already there, for
+    /// the dialog to ask about first; `None` when nothing needs asking (or the export cannot run,
+    /// which the export itself then reports).
+    fn panels_export_clash(&self, path: &std::path::Path) -> Option<String> {
+        let (set, format) = self.panels_for_export(path).ok()?;
+        let count = crate::commands::panels_sheet_count(&set, format);
+        crate::commands::panels_sheet_clash(path, count)
+    }
+
+    /// Log the sheet files an earlier, larger layout left beside `path` (never deleted).
+    fn log_stale_sheets(&mut self, stale: &[PathBuf]) {
+        if let Some(note) = seacraft_core::panels::stale_sheet_note(stale) {
+            self.log(Level::Warning, note);
+        }
+    }
+
+    /// Write the measured panels' patterns (and any per-sheet cutting files) to `path` on this
+    /// thread, in the format its extension names (tests and scripts; the window writes on a
+    /// worker).
     pub fn export_panels_to(&mut self, path: &std::path::Path) -> Result<(), String> {
         let (set, format) = self.panels_for_export(path)?;
         let file = crate::commands::panels_file(&set, &self.panels_params, format)?;
-        let written = seacraft_core::io::write_atomic(path, &file.bytes);
-        self.log_export("Builder panels", path, written)
+        match crate::commands::write_panels_file(path, &file) {
+            Ok(sheet_paths) => {
+                let stale = seacraft_core::panels::stale_sheet_files(path, sheet_paths.len());
+                let result = if sheet_paths.is_empty() {
+                    self.log_export("Builder panels", path, Ok(()))
+                } else {
+                    let n = sheet_paths.len();
+                    let noun = if n == 1 { "file" } else { "files" };
+                    self.log(
+                        Level::Info,
+                        format!(
+                            "exported {} and {n} full-size sheet {noun} (Builder panels)",
+                            path.display()
+                        ),
+                    );
+                    Ok(())
+                };
+                self.log_stale_sheets(&stale);
+                result
+            }
+            Err(e) => self.log_export("Builder panels", path, Err(e)),
+        }
     }
 
     /// Start writing the measured panels' patterns to `path` on a worker.
@@ -6700,9 +6852,14 @@ impl App {
         self.set_status(format!("writing panel patterns {}…", path.display()));
         let job = Job::spawn(self.revision, move || {
             let file = crate::commands::panels_file(&set, &params, format)?;
-            seacraft_core::io::write_atomic(&target, &file.bytes)
+            let sheet_paths = crate::commands::write_panels_file(&target, &file)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
-            Ok(file.pages.unwrap_or(0))
+            let stale = seacraft_core::panels::stale_sheet_files(&target, sheet_paths.len());
+            Ok(PanelsWritten {
+                pages: file.pages.unwrap_or(0),
+                sheets: sheet_paths.len(),
+                stale,
+            })
         });
         self.panels_export_job = Some((path.to_path_buf(), job));
         Ok(())
@@ -6713,21 +6870,39 @@ impl App {
         let Some((path, job)) = &self.panels_export_job else {
             return;
         };
+        let mut stale = Vec::new();
         let (level, msg) = match job.poll() {
             crate::jobs::Poll::Running => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
                 return;
             }
-            crate::jobs::Poll::Done(pages) => (
-                Level::Info,
-                match pages {
-                    0 => format!("exported {} (Builder panels)", path.display()),
-                    n => format!("exported {} (Builder panels, {n} pages)", path.display()),
-                },
-            ),
+            crate::jobs::Poll::Done(PanelsWritten {
+                pages,
+                sheets,
+                stale: left,
+            }) => {
+                stale = left;
+                (
+                    Level::Info,
+                    match (pages, sheets) {
+                        (0, 0) => format!("exported {} (Builder panels)", path.display()),
+                        (0, n) => {
+                            let noun = if n == 1 { "file" } else { "files" };
+                            format!(
+                                "exported {} and {n} full-size sheet {noun} (Builder panels)",
+                                path.display()
+                            )
+                        }
+                        (n, _) => {
+                            format!("exported {} (Builder panels, {n} pages)", path.display())
+                        }
+                    },
+                )
+            }
             crate::jobs::Poll::Failed(e) => (Level::Error, format!("panel patterns failed: {e}")),
         };
         self.log(level, msg);
+        self.log_stale_sheets(&stale);
         self.panels_export_job = None;
     }
 
@@ -7796,6 +7971,13 @@ impl App {
 
     pub fn dialog_open(&self) -> bool {
         self.dialog.is_some()
+    }
+
+    /// Type `path` into the open file dialog, as a user would (tests and scripts).
+    pub fn set_dialog_path(&mut self, path: &str) {
+        if let Some(dialog) = &mut self.dialog {
+            dialog.path = path.to_owned();
+        }
     }
 
     /// Mutable access to the model, for panels and tests. Call

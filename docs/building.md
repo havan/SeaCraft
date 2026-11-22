@@ -130,9 +130,11 @@ panel that meets its mirror flat across the centreline, like a flat bottom, is o
 drawn on it; an edge that crosses the centreline, such as the bottom's edge to the transom, is measured whole. Any
 other, like the halves of a V bottom, is cut twice, one turned over.
 
-**Each pattern** has its cut line, the station lines, a tick wherever a station crosses an edge, and what each edge
-is stitched to. The ticks are where the two panels' edges meet, and they match from either end, so start stitching
-at the transom or the bow.
+**Each pattern** has its cut line, the station lines, a tick wherever a station crosses an edge, what each edge
+is stitched to, its overall length and width with dimension lines, the baseline offsets written at each row's crossings,
+and each seam's flat length along the edge. The measurements and sheet lines are reference lines and text, never cut
+lines. The ticks are where the two panels' edges meet, and they match from either end, so start stitching at the
+transom or the bow.
 
 **Does it lie flat?** Plywood bends one way at a time; a panel curved two ways must stretch to lie flat, and a
 sheet does not stretch. The program finds the flat shape with the least stretch and reports:
@@ -157,23 +159,39 @@ tables after the patterns, A4 landscape, and its first page says where they star
 them out. `--offsets-csv` and `--offsets-pdf` write them to files of their own as well. A spacing that gives more
 than 1000 rows across a panel is refused.
 
-**Plywood.** Each panel is laid along 2440 × 1220 mm sheets end to end (`--stock-mm 2440x1220`), with the sheet
-ends and joints drawn on the pattern; `--scarf-mm` sets the overlap of a scarf joint. The total is an upper bound:
-the program does not nest panels together. A panel wider than a sheet, or one that would need more than 100
-sheets end to end (a scarf nearly as long as the sheet), is reported, not split and not counted, and the count
-names it. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways) is named
-in the table and on every pattern of the set, and is not counted either.
+**Plywood.** Each panel fits 2440 × 1220 mm sheets (`--stock-mm 2440x1220`). By default (`--nest none`), sheets are
+counted end to end as an upper bound, with the sheet ends and scarf joints (`--scarf-mm`) drawn on each pattern.
+Optional automatic nesting lays the true piece outlines onto sheets, largest first, turning pieces 180° or over (never
+a quarter turn across the grain) while keeping `--gap-mm` (default 10 mm) between pieces and from the sheet edges:
+
+- `--nest blanks` joins sheets end to end (shortened by `--scarf-mm` at each joint) into blanks long enough for the
+  longest piece, then nests the pieces onto the blanks and draws the joints across each blank.
+- `--nest split` cuts pieces longer than a sheet at straight butt joints square to the baseline (into the fewest equal
+  parts, moving a joint off any notch with extra crossings), adds matching lettered alignment marks (`A`, `B`, …) on
+  both sides of each joint, and nests the parts onto single sheets.
+
+When nesting is on, the sheet count comes from the layout, SVG and DXF write one per-sheet cutting file beside the
+main patterns (`NAME-sheet-1.svg`, …), always full size whatever scale the patterns are drawn at, and the PDF puts one scaled layout overview page per sheet or blank first (for
+looking at, not full size) followed by the full-size patterns and offsets tables. The automatic layout is repeatable,
+not the fewest possible sheets, and any piece too wide or without a straight joint is left unplaced and named in the
+count. A later export with fewer sheets leaves the extra older `NAME-sheet-N` files where they are, since they may hold
+your edits, and names them in a warning so they are not cut by mistake. A panel that cannot be laid flat at all (a crease that stops inside it, faces wound both ways) is named in the
+table and on every pattern of the set, and is not counted either.
 
 The patterns allow no plywood thickness: they are the modelled surface.
 
 **In the desktop app**, **File ▸ Builder panels…** (or **Export patterns…** in the Plate development view) opens a
-window with the same choices. It lays the panels flat in the background and lists each one: copies, whether it
-lies flat, stretch, seam drift, area and sheets. Below the list is a drawing of the patterns as the PDF prints
-them; a panel that does not lie flat is tinted and named over it with the reason. Click a panel in the list to
-zoom to it; scroll to zoom, drag to move, double-click to see them all. When you change a choice the list is
-marked out of date until the panels are measured again. **Export…** writes PDF, SVG or DXF; it stays disabled,
-and says why when you hover over it, while a panel does not lie flat, unless you tick "Write patterns even when a
-panel does not lie flat".
+window with the same choices, including **Nesting** and **Gap between pieces**. It lays the panels flat (and nests
+them when chosen) in the background and lists each one: copies, whether it lies flat, stretch, seam drift, area and
+sheets. Below the list, a **Panels | Sheets** switch (shown when nesting is on) switches between the patterns and the
+full-size sheets or blanks with the nested pieces on them; a panel that does not lie flat is tinted and named over the
+patterns with the reason. Click a panel in the list to zoom to it; scroll to zoom, drag to move, double-click to see
+them all. When you change a choice the list and drawing are marked out of date and shown faded until measured again.
+**Export…** writes PDF, SVG (plus the per-sheet SVG files when nested) or DXF (plus the per-sheet DXF files). When
+that would replace sheet files already there, or leave older ones from a larger layout, the dialog names them first
+and writes only when you press **Write anyway**. It stays
+disabled, and says why when you hover over it, while the measurement is out of date or while a panel does not lie flat,
+unless you tick "Write patterns even when a panel does not lie flat".
 
 An AI agent uses `export_panels` over MCP: without a `path` it only measures, so it can check the panels before
 writing anything. The [`seacraft-boatbuilding`](../skills/seacraft-boatbuilding/SKILL.md) skill tells it how.

@@ -26,6 +26,47 @@ fn pram_file(test: &str, bow_m: f64) -> std::path::PathBuf {
     path
 }
 
+/// The skiff-4m example (bottom, sides and transom all lie flat) at level 3.
+fn skiff(test: &str) -> App {
+    let dir = std::env::temp_dir().join(format!("seacraft-gui-panels-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    skiff_at(&dir.join(format!("{test}.fef")))
+}
+
+/// A folder of one test's own, removed when it drops, also when an assertion fails. Declare it
+/// before the [`Window`] so the window (and any export it started) is gone first.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(test: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-gui-panels-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn join(&self, name: &str) -> std::path::PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The skiff-4m example written to `path` and opened at level 3.
+fn skiff_at(path: &std::path::Path) -> App {
+    let (surface, _) =
+        seacraft_core::examples::build(seacraft_core::examples::Example::Skiff4m).expect("skiff");
+    std::fs::write(path, seacraft_core::fef::write(&surface)).unwrap();
+    let mut app = App::headless_for_test(Some(path.to_str().unwrap()));
+    app.set_subdivision_level(3);
+    app
+}
+
 /// One headless window whose widgets are read from egui's AccessKit tree.
 struct Window {
     ctx: egui::Context,
@@ -34,6 +75,8 @@ struct Window {
     widgets: Vec<(Role, String, bool, egui::Rect)>,
     /// Every text painted in the last frame, egui's own warnings included.
     painted: Vec<String>,
+    /// Whether the stale-drawing veil was painted in the last frame.
+    has_stale_veil: bool,
 }
 
 impl Window {
@@ -45,6 +88,7 @@ impl Window {
             app,
             widgets: Vec::new(),
             painted: Vec::new(),
+            has_stale_veil: false,
         };
         w.frame(vec![]);
         w.frame(vec![]);
@@ -63,16 +107,20 @@ impl Window {
         let app = &mut self.app;
         let mut out = self.ctx.run_ui(input, |ui| app.draw(ui));
         out.textures_delta.clear();
-        fn walk(shape: &egui::Shape, texts: &mut Vec<String>) {
+        fn walk(shape: &egui::Shape, texts: &mut Vec<String>, stale_veil: &mut bool) {
             match shape {
-                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts, stale_veil)),
                 egui::Shape::Text(t) => texts.push(t.galley.text().to_string()),
+                egui::Shape::Rect(r) if r.fill == seacraft_gui::theme::PATTERN_STALE_VEIL => {
+                    *stale_veil = true;
+                }
                 _ => {}
             }
         }
         self.painted.clear();
+        self.has_stale_veil = false;
         for clipped in &out.shapes {
-            walk(&clipped.shape, &mut self.painted);
+            walk(&clipped.shape, &mut self.painted, &mut self.has_stale_veil);
         }
         self.widgets = out
             .platform_output
@@ -693,4 +741,305 @@ fn a_list_of_stations_can_be_switched_to_spacing() {
         "{:?}",
         w.app.panels_params().stations
     );
+}
+
+#[test]
+fn choosing_blanks_shows_the_sheets() {
+    let mut w = Window::new(skiff("choosing_blanks_shows_the_sheets"));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.shows("Nesting:"), "{:?}", w.painted);
+    assert!(w.shows("No nesting"), "{:?}", w.painted);
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.until("the nested blanks", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+
+    assert!(w.button("Panels").is_some(), "{:?}", w.widgets);
+    assert!(w.button("Sheets").is_some(), "{:?}", w.widgets);
+    assert!(w.app.panels_showing_sheets());
+    assert!(w.shows("Join sheets into blanks"), "{:?}", w.painted);
+    assert!(w.shows("Gap between pieces:"), "{:?}", w.painted);
+
+    let n = w
+        .app
+        .panels_preview()
+        .unwrap()
+        .set
+        .layout
+        .as_ref()
+        .unwrap()
+        .drawings
+        .len();
+    assert!(n >= 1);
+    assert!(w.shows(&format!("Drawing: {n} sheets")), "{:?}", w.widgets);
+    assert!(w.shows("nested"), "{:?}", w.painted);
+    assert!(w.app.panels_sheets_view().zoom > 0.0);
+
+    w.click("Panels");
+    assert!(!w.app.panels_showing_sheets());
+    assert!(w.shows("Drawing: 3 sheets"), "{:?}", w.widgets);
+
+    w.click("Sheets");
+    assert!(w.app.panels_showing_sheets());
+    assert!(w.shows(&format!("Drawing: {n} sheets")), "{:?}", w.widgets);
+}
+
+#[test]
+fn a_stale_layout_is_faded_and_export_waits() {
+    let mut w = Window::new(skiff("a_stale_layout_is_faded_and_export_waits"));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the nested layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.app.panels_showing_sheets());
+    assert!(!w.has_stale_veil);
+    assert!(!w.button("Export…").unwrap().0);
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.gap_mm = 20.0;
+    w.app.set_panels_params(params);
+    w.frame(vec![]);
+
+    assert!(w.app.panels_preview().is_none(), "stale at once");
+    assert!(w.shows("Out of date"), "{:?}", w.painted);
+    assert!(w.has_stale_veil, "sheet view drawn under the stale veil");
+    assert!(w.button("Export…").unwrap().0, "Export waits");
+    assert!(w.app.export_panels_to(&scratch("stale.svg")).is_err());
+
+    w.until("the new layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(!w.has_stale_veil);
+    assert!(!w.shows("Out of date"));
+    assert!(!w.button("Export…").unwrap().0);
+}
+
+#[test]
+fn export_writes_a_file_per_sheet() {
+    let mut w = Window::new(skiff("export_writes_a_file_per_sheet"));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the nested layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+
+    let n = w
+        .app
+        .panels_preview()
+        .unwrap()
+        .set
+        .layout
+        .as_ref()
+        .unwrap()
+        .sheets
+        .len();
+    assert!(n >= 1);
+
+    let svg = scratch("nested-gui.svg");
+    let _ = std::fs::remove_file(&svg);
+    for i in 0..n {
+        let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&svg, i));
+    }
+    w.app.export_panels_to(&svg).unwrap();
+    assert!(std::fs::read_to_string(&svg).unwrap().contains("<svg"));
+    for i in 0..n {
+        let p = seacraft_core::panels::sheet_file_name(&svg, i);
+        assert!(
+            std::fs::read_to_string(&p).unwrap().contains("<svg"),
+            "{p:?}"
+        );
+    }
+
+    let pdf = scratch("nested-gui.pdf");
+    let _ = std::fs::remove_file(&pdf);
+    let _ = std::fs::remove_file(seacraft_core::panels::sheet_file_name(&pdf, 0));
+    w.app.export_panels_to(&pdf).unwrap();
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF-"));
+    assert!(!seacraft_core::panels::sheet_file_name(&pdf, 0).exists());
+}
+
+#[test]
+fn export_asks_before_replacing_sheet_files_and_names_older_ones() {
+    use seacraft_gui::messages::Level;
+    let tmp = TempDir::new("export_asks_before_replacing_sheet_files");
+    let mut w = Window::new(skiff_at(&tmp.join("skiff.fef")));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the nested layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    let n = w
+        .app
+        .panels_preview()
+        .unwrap()
+        .set
+        .layout
+        .as_ref()
+        .unwrap()
+        .drawings
+        .len();
+    assert!(n >= 1);
+
+    // An earlier export left sheet 1 (now hand edited) and one sheet more than this layout has.
+    let svg = tmp.join("confirm-gui.svg");
+    let first = seacraft_core::panels::sheet_file_name(&svg, 0);
+    let extra = seacraft_core::panels::sheet_file_name(&svg, n);
+    std::fs::write(&first, "old sheet").unwrap();
+    std::fs::write(&extra, "hand edited").unwrap();
+
+    w.click("Export…");
+    assert!(w.app.dialog_open());
+    w.app.set_dialog_path(svg.to_str().unwrap());
+    w.frame(vec![]);
+    w.click("OK");
+    // The first OK only asks: it names both files and writes nothing.
+    assert!(w.app.dialog_open(), "the dialog stays open to ask");
+    assert!(w.button("Write anyway").is_some(), "{:?}", w.widgets);
+    assert!(w.shows("This replaces"), "{:?}", w.painted);
+    assert!(w.shows("1 older sheet file"), "{:?}", w.painted);
+    assert!(!svg.exists());
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "old sheet");
+
+    w.click("Write anyway");
+    w.until("the export", |_| {
+        std::fs::read_to_string(&first).is_ok_and(|t| t.contains("<svg"))
+    });
+    w.until("the export logged", |app| {
+        app.messages()
+            .entries()
+            .any(|m| m.level == Level::Warning && m.text.contains("older sheet file"))
+    });
+    assert!(!w.app.dialog_open());
+    assert_eq!(std::fs::read_to_string(&extra).unwrap(), "hand edited");
+    let warning = w
+        .app
+        .messages()
+        .entries()
+        .find(|m| m.level == Level::Warning)
+        .unwrap();
+    assert!(
+        warning.text.contains(&extra.display().to_string()),
+        "{}",
+        warning.text
+    );
+}
+
+#[test]
+fn changing_the_nesting_after_the_warning_asks_again() {
+    let tmp = TempDir::new("changing_the_nesting_after_the_warning_asks_again");
+    let mut w = Window::new(skiff_at(&tmp.join("skiff.fef")));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+
+    // Without nesting an earlier sheet 1 is only left in place, and the user agrees to that.
+    let svg = tmp.join("confirm-stale.svg");
+    let first = seacraft_core::panels::sheet_file_name(&svg, 0);
+    std::fs::write(&first, "hand edited").unwrap();
+    w.click("Export…");
+    w.app.set_dialog_path(svg.to_str().unwrap());
+    w.frame(vec![]);
+    w.click("OK");
+    assert!(w.shows("1 older sheet file"), "{:?}", w.painted);
+    assert!(w.button("Write anyway").is_some(), "{:?}", w.widgets);
+
+    // Splitting now writes sheet 1, so the earlier answer no longer covers it.
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "split".into();
+    w.app.set_panels_params(params);
+    w.until("the nested layout", |app| {
+        app.panels_preview().is_some_and(|p| p.set.layout.is_some())
+    });
+    w.frame(vec![]);
+    w.click("Write anyway");
+    assert!(w.app.dialog_open(), "the dialog asks again");
+    assert!(w.shows("This replaces"), "{:?}", w.painted);
+    assert!(!svg.exists());
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "hand edited");
+
+    // Agreeing to the new warning writes.
+    w.click("Write anyway");
+    w.until("the export", |_| {
+        std::fs::read_to_string(&first).is_ok_and(|t| t.contains("<svg"))
+    });
+    assert!(!w.app.dialog_open());
+}
+
+#[test]
+fn no_nesting_hides_the_switch() {
+    let mut w = Window::new(skiff("no_nesting_hides_the_switch"));
+    w.app.set_show_panels(true);
+    w.until("the panels", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.button("Panels").is_none());
+    assert!(w.button("Sheets").is_none());
+    assert!(!w.app.panels_showing_sheets());
+    assert!(!w.shows("Gap between pieces:"));
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.until("the blanks layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.button("Panels").is_some());
+    assert!(w.button("Sheets").is_some());
+
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "none".into();
+    w.app.set_panels_params(params);
+    w.until("no nesting", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.button("Panels").is_none());
+    assert!(w.button("Sheets").is_none());
+    assert!(!w.app.panels_showing_sheets());
+}
+
+#[test]
+fn clicking_a_panel_row_from_sheets_switches_back_to_panels() {
+    let mut w = Window::new(skiff(
+        "clicking_a_panel_row_from_sheets_switches_back_to_panels",
+    ));
+    let mut params = w.app.panels_params().clone();
+    params.choices.nest = "blanks".into();
+    w.app.set_panels_params(params);
+    w.app.set_show_panels(true);
+    w.until("the blanks layout", |app| app.panels_preview().is_some());
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.app.panels_showing_sheets());
+
+    let window = w
+        .widgets
+        .iter()
+        .find(|(_, l, _, _)| l.starts_with("Drawing:"))
+        .map(|(_, _, _, r)| *r)
+        .expect("the drawing");
+    let row = w
+        .widgets
+        .iter()
+        .filter(|(r, l, _, _)| *r == Role::Button && l == "Side")
+        .map(|(_, _, _, r)| *r)
+        .find(|r| r.min.x >= window.min.x - 1.0)
+        .expect("the Side row");
+    w.click_at(row.center());
+    w.frame(vec![]);
+    assert!(!w.app.panels_showing_sheets());
+    assert_eq!(w.app.panels_selected(), Some(1));
 }

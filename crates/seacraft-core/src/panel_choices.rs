@@ -4,6 +4,7 @@
 //! `stock_mm`, a field label), so a refusal carries the [`Field`] and the words that follow its
 //! name; each front end puts its own name in front.
 
+use crate::panel_layout::{NestMode, Nesting};
 use crate::panels::{Limits, Stock};
 
 /// Which choice a refusal is about.
@@ -14,6 +15,8 @@ pub enum Field {
     OffsetSpacing,
     Stock,
     Scarf,
+    Nest,
+    Gap,
 }
 
 impl Field {
@@ -25,6 +28,8 @@ impl Field {
             Field::OffsetSpacing => "offset_spacing_mm",
             Field::Stock => "stock_mm",
             Field::Scarf => "scarf_mm",
+            Field::Nest => "nest",
+            Field::Gap => "gap_mm",
         }
     }
 }
@@ -51,6 +56,10 @@ pub struct Choices {
     /// `LENGTHxWIDTH` in millimetres, such as `2440x1220`.
     pub stock_mm: String,
     pub scarf_mm: f64,
+    /// `none`, `blanks` or `split`.
+    pub nest: String,
+    /// The gap between nested pieces and from the sheet edges, millimetres.
+    pub gap_mm: f64,
 }
 
 impl Default for Choices {
@@ -61,6 +70,8 @@ impl Default for Choices {
             offset_spacing_mm: 250.0,
             stock_mm: "2440x1220".into(),
             scarf_mm: 0.0,
+            nest: "none".into(),
+            gap_mm: 10.0,
         }
     }
 }
@@ -71,6 +82,8 @@ pub struct Checked {
     pub limits: Limits,
     pub offset_spacing_m: f64,
     pub stock: Stock,
+    /// `None` without nesting.
+    pub nesting: Option<Nesting>,
 }
 
 /// Checks every choice, in the order the CLI lists them.
@@ -109,7 +122,27 @@ pub fn check(c: &Choices) -> Result<Checked, ChoiceError> {
             ),
         ));
     }
+    let mode = NestMode::parse(&c.nest).map_err(|m| refuse(Field::Nest, m))?;
+    let nesting = if mode == NestMode::None {
+        None
+    } else {
+        let half = stock.1 / 2.0;
+        if !(c.gap_mm.is_finite() && c.gap_mm > 0.0 && c.gap_mm < half) {
+            return Err(refuse(
+                Field::Gap,
+                format!(
+                    "must be more than zero and less than half the sheet's width ({} mm), not {}",
+                    half, c.gap_mm
+                ),
+            ));
+        }
+        Some(Nesting {
+            mode,
+            gap_m: c.gap_mm / 1000.0,
+        })
+    };
     Ok(Checked {
+        nesting,
         limits: Limits {
             seam_drift_m: drift / 1000.0,
             rms_stretch: stretch / 100.0,
@@ -251,5 +284,49 @@ mod tests {
             )
         );
         assert!(pdf_only("DXF", &["margin_mm"]).is_err());
+    }
+
+    #[test]
+    fn nest_and_gap_are_checked() {
+        use crate::panel_layout::{NestMode, Nesting};
+        assert_eq!(check(&Choices::default()).unwrap().nesting, None);
+        let c = check(&Choices {
+            nest: "blanks".into(),
+            gap_mm: 6.0,
+            ..Choices::default()
+        })
+        .unwrap();
+        assert_eq!(
+            c.nesting,
+            Some(Nesting {
+                mode: NestMode::Blanks,
+                gap_m: 0.006
+            })
+        );
+        let e = check(&Choices {
+            nest: "tetris".into(),
+            ..Choices::default()
+        })
+        .unwrap_err();
+        assert_eq!(e.field, Field::Nest);
+        assert_eq!(e.message, "takes none, blanks or split, not `tetris`");
+        for v in [0.0, -1.0, f64::NAN, 610.0, 1220.0] {
+            let e = check(&Choices {
+                nest: "split".into(),
+                gap_mm: v,
+                ..Choices::default()
+            })
+            .unwrap_err();
+            assert_eq!(e.field, Field::Gap, "{v}");
+            assert!(e.message.ends_with(&format!("not {v}")), "{}", e.message);
+        }
+        // Without nesting the gap is not used, so it is not checked.
+        assert!(check(&Choices {
+            gap_mm: 0.0,
+            ..Choices::default()
+        })
+        .is_ok());
+        assert_eq!(Field::Nest.key(), "nest");
+        assert_eq!(Field::Gap.key(), "gap_mm");
     }
 }

@@ -1018,7 +1018,12 @@ fn address(col: usize, row: usize) -> String {
 }
 
 /// The first page: how to print, the rules to measure, and where each sheet is.
-fn calibration_page(setup: &PageSetup, index: &[String]) -> Content {
+fn calibration_page(
+    setup: &PageSetup,
+    before: &[String],
+    sheets: &[String],
+    after: &[String],
+) -> Content {
     let (pw, ph) = (setup.paper.width_mm, setup.paper.height_mm);
     let m = setup.margin_mm;
     let width_pt = (pw - 2.0 * m) * PT_PER_MM;
@@ -1048,18 +1053,48 @@ fn calibration_page(setup: &PageSetup, index: &[String]) -> Content {
     say(&mut c, 10.0, &format!("Scale {}", scale_label(setup.scale)));
     say(&mut c, 8.0, crate::NOT_VALIDATED_NOTE);
     y_mm -= 4.0;
-    // The sheets, in as many columns as fit above the rules.
+    // The sheets, in as many columns as fit above the rules. When the list overflows, reserve room
+    // for leading (`before`) and trailing (`after`) named sections so their page ranges stay visible.
     let line_mm = SMALL_LINE_MM;
     let floor_mm = m + RULES_HEIGHT_MM + 4.0;
     let per_column = (((y_mm - floor_mm) / line_mm).floor().max(1.0)) as usize;
     let columns = ((pw - 2.0 * m) / 70.0).floor().max(1.0) as usize;
     let room = per_column * columns;
-    for (i, entry) in index.iter().enumerate().take(room) {
-        let text = if i + 1 == room && index.len() > room {
-            format!("… and {} more sheets", index.len() - room + 1)
+    let total_entries = before.len() + sheets.len() + after.len();
+    let visible: Vec<String> = if total_entries <= room {
+        before.iter().chain(sheets).chain(after).cloned().collect()
+    } else {
+        let reserved = before.len() + after.len();
+        if room > reserved {
+            let keep_sheets = room - reserved - 1;
+            let hidden = sheets.len() - keep_sheets;
+            let mut v = Vec::with_capacity(room);
+            v.extend(before.iter().cloned());
+            v.extend(sheets.iter().take(keep_sheets).cloned());
+            v.push(format!("… and {hidden} more sheets"));
+            v.extend(after.iter().cloned());
+            v
+        } else if room == reserved {
+            before.iter().chain(after).cloned().collect()
+        } else if room > after.len() {
+            let keep_before = room - after.len();
+            before
+                .iter()
+                .take(keep_before)
+                .chain(after)
+                .cloned()
+                .collect()
         } else {
-            entry.clone()
-        };
+            before
+                .iter()
+                .chain(sheets)
+                .chain(after)
+                .take(room)
+                .cloned()
+                .collect()
+        }
+    };
+    for (i, text) in visible.iter().enumerate() {
         let x_mm = m + (i / per_column) as f64 * (pw - 2.0 * m) / columns as f64;
         let line_y = y_mm - ((i % per_column) + 1) as f64 * line_mm;
         c.text(
@@ -1068,7 +1103,7 @@ fn calibration_page(setup: &PageSetup, index: &[String]) -> Content {
             0.0,
             Anchor::Start,
             0.0,
-            &text,
+            text,
         );
     }
     c
@@ -1197,17 +1232,77 @@ fn map_page(
 /// 100 mm rules, or when the document would have more than [`MAX_TILED_PAGES`] pages.
 pub fn pdf_tiled(sheets: &[Sheet], setup: &PageSetup) -> Result<Document, String> {
     let mut pdf = Pdf::new(&setup.title);
-    pdf_tiled_into(sheets, setup, &mut pdf, &[])?;
+    pdf_tiled_into(sheets, setup, &mut pdf, &[], &[])?;
     pdf.finish()
 }
 
-/// [`pdf_tiled`]'s pages, added to an empty `pdf`. `after` names the sections the caller adds
-/// next and how many pages each takes: the first page lists them, and every tile's "page n of
-/// m" counts them.
+/// Drawing scales an overview page tries, largest first, as the N of 1:N.
+pub const OVERVIEW_SCALES: [f64; 9] = [5.0, 10.0, 20.0, 25.0, 50.0, 100.0, 200.0, 500.0, 1000.0];
+
+/// One landscape page of `setup.paper` with `sheet` drawn whole at the largest of
+/// [`OVERVIEW_SCALES`] that fits, under `lines` of words and the sheet's notes. Returns the
+/// scale (paper over real size). For a layout to look at, not to cut from.
+pub fn pdf_overview_into(
+    sheet: &Sheet,
+    setup: &PageSetup,
+    lines: &[String],
+    pdf: &mut Pdf,
+) -> Result<f64, String> {
+    setup.check()?;
+    let (w, h) = (
+        setup.paper.width_mm.max(setup.paper.height_mm),
+        setup.paper.width_mm.min(setup.paper.height_mm),
+    );
+    let m = setup.margin_mm;
+    let width_pt = (w - 2.0 * m - 4.0) * PT_PER_MM;
+    let mut words: Vec<String> = Vec::new();
+    for line in lines.iter().chain(&sheet.notes) {
+        words.extend(wrap_text(line, SMALL_PT, width_pt));
+    }
+    let text_mm = (words.len() as f64 + 1.0) * SMALL_LINE_MM;
+    let room = (w - 2.0 * m, h - 2.0 * m - text_mm);
+    let fit = OVERVIEW_SCALES.iter().find_map(|n| {
+        let scale = 1.0 / n;
+        let e = extent_mm(sheet, scale)?;
+        (e[2] - e[0] <= room.0 && e[3] - e[1] <= room.1).then_some((scale, e))
+    });
+    let Some((scale, e)) = fit else {
+        return Err(format!(
+            "`{}` does not fit a {} x {} mm page even at 1:{}",
+            sheet.name,
+            setup.paper.width_mm,
+            setup.paper.height_mm,
+            OVERVIEW_SCALES[OVERVIEW_SCALES.len() - 1]
+        ));
+    };
+    let mut page = Content::new();
+    let top_mm = h - m;
+    for (i, line) in words.iter().enumerate() {
+        let y_mm = top_mm - (i + 1) as f64 * SMALL_LINE_MM;
+        page.text(
+            ((m + 2.0) * PT_PER_MM, y_mm * PT_PER_MM),
+            SMALL_PT,
+            0.0,
+            Anchor::Start,
+            0.0,
+            line,
+        );
+    }
+    let k = scale * 1000.0;
+    let origin = ((e[0] - m) / k, (e[1] - m) / k);
+    page.append(&draw(sheet, scale, origin));
+    pdf.add_page(w * PT_PER_MM, h * PT_PER_MM, page);
+    Ok(scale)
+}
+
+/// [`pdf_tiled`]'s pages, added to `pdf`. `before` names the sections already in `pdf` and how
+/// many pages each took, and `after` the sections the caller adds next: the calibration page
+/// lists them all, and every tile's "page n of m" counts them.
 pub fn pdf_tiled_into(
     sheets: &[Sheet],
     setup: &PageSetup,
     pdf: &mut Pdf,
+    before: &[(&str, usize)],
     after: &[(&str, usize)],
 ) -> Result<(), String> {
     setup.check()?;
@@ -1245,31 +1340,47 @@ pub fn pdf_tiled_into(
             _ => return Err(format!("sheet `{}` could not be laid out", sheet.name)),
         }
     }
-    // The page each sheet starts on, counting from 1 with the calibration page first.
-    let mut index = Vec::new();
-    let mut next = 2;
+    // The page each sheet starts on, counting from 1, the pages already in `pdf` first and then
+    // the calibration page.
+    let mut before_index = Vec::new();
+    let mut first = 1;
+    for (name, pages) in before.iter().filter(|(_, pages)| *pages > 0) {
+        before_index.push(match pages {
+            1 => format!("{name}: page {first}"),
+            _ => format!("{name}: pages {first} to {}", first + pages - 1),
+        });
+        first += pages;
+    }
+    let earlier = pdf.page_count();
+    let mut next = earlier + 2;
+    let mut sheet_index = Vec::new();
     for (sheet, t) in &tilings {
         let pages = t.grid.printed.len() + usize::from(has_map(sheet, &t.grid));
-        index.push(match pages {
+        sheet_index.push(match pages {
             1 => format!("{}: page {next}", sheet.name),
             _ => format!("{}: pages {next} to {}", sheet.name, next + pages - 1),
         });
         next += pages;
     }
+    let mut after_index = Vec::new();
     for (name, pages) in after.iter().filter(|(_, pages)| *pages > 0) {
-        index.push(match pages {
+        after_index.push(match pages {
             1 => format!("{name}: page {next}"),
             _ => format!("{name}: pages {next} to {}", next + pages - 1),
         });
         next += pages;
     }
-    let total = total + after.iter().map(|(_, pages)| pages).sum::<usize>();
+    let total = earlier + total + after.iter().map(|(_, pages)| pages).sum::<usize>();
 
     let upright = (
         setup.paper.width_mm * PT_PER_MM,
         setup.paper.height_mm * PT_PER_MM,
     );
-    pdf.add_page(upright.0, upright.1, calibration_page(setup, &index));
+    pdf.add_page(
+        upright.0,
+        upright.1,
+        calibration_page(setup, &before_index, &sheet_index, &after_index),
+    );
     let k = setup.scale * 1000.0;
     let margin_pt = m * PT_PER_MM;
     for (sheet, t) in &tilings {
@@ -2290,5 +2401,56 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn calibration_index_keeps_before_and_after_sections_when_overflowing() {
+        let setup = PageSetup::default();
+        // Enough small sheets to overflow the calibration index columns on A4.
+        let sheets: Vec<Sheet> = (0..120)
+            .map(|i| {
+                let mut s = rect(0.1, 0.1);
+                s.name = format!("Panel {i}");
+                s
+            })
+            .collect();
+        let mut pdf = Pdf::new(&setup.title);
+        pdf_tiled_into(
+            &sheets,
+            &setup,
+            &mut pdf,
+            &[("Layout", 2)],
+            &[("Offsets", 3)],
+        )
+        .unwrap();
+        let doc = pdf.finish().unwrap();
+        let cal = crate::pdf::page_text(&doc.bytes, 0).join("\n");
+        assert!(cal.contains("Layout: pages 1 to 2"), "{cal}");
+        assert!(cal.contains("Offsets: pages"), "{cal}");
+        assert!(cal.contains("more sheets"), "{cal}");
+
+        // With room == 2 (160 x 170 mm gives 2 columns x 1 row) and both Layout and Offsets
+        // present, both named ranges stay visible instead of replacing Layout with the omission line.
+        let tiny = PageSetup {
+            paper: Paper {
+                width_mm: 160.0,
+                height_mm: 170.0,
+            },
+            ..PageSetup::default()
+        };
+        let mut pdf2 = Pdf::new(&tiny.title);
+        pdf_tiled_into(
+            &sheets[..20],
+            &tiny,
+            &mut pdf2,
+            &[("Layout", 1)],
+            &[("Offsets", 2)],
+        )
+        .unwrap();
+        let doc2 = pdf2.finish().unwrap();
+        let cal2 = crate::pdf::page_text(&doc2.bytes, 0).join("\n");
+        assert!(cal2.contains("Layout: page 1"), "{cal2}");
+        assert!(cal2.contains("Offsets: pages"), "{cal2}");
+        assert!(!cal2.contains("more sheets"), "{cal2}");
     }
 }
