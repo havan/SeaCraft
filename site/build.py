@@ -356,6 +356,21 @@ def maybe(value, places):
     return None if value is None else round(value, places)
 
 
+def section_top(body):
+    """The highest point of a station's section, from the SVG path `geometry` cut ([y, -z] points).
+
+    Only the parts that reach the centreline count, so a bulwark rail standing above the deck does
+    not; an open boat, which reaches the centreline only at its keel, is topped by its sheer.
+    """
+    parts = [
+        [tuple(map(float, point.split(","))) for point in part.split("L")]
+        for part in body.split("M")
+        if part
+    ]
+    hull = [part for part in parts if any(abs(y) < 1e-3 for y, _ in part)] or parts
+    return max(-up for part in hull for _, up in part)
+
+
 def heel_step(result, y):
     """One `seacraft heel --json` result as one position of the trial weight.
 
@@ -389,16 +404,19 @@ def heel_step(result, y):
 HEEL_POSITIONS = 7
 
 
-def heel_steps(seacraft, hull_id, hull_dir, kg, beam, deck_z, stations):
+def heel_steps(seacraft, hull_id, hull_dir, kg, beam, stations):
     """A trial weight walked across the deck, each position one `seacraft heel` run.
 
-    The weight is 10 % of the design displacement, on the deck above the upright LCB (where the bare hull's
-    LCG defaults to), from the centreline out to 0.4 of the beam. Nothing between positions is drawn.
+    The weight is 10 % of the design displacement, on the deck of the station nearest the upright LCB (where
+    the bare hull's LCG defaults to), from the centreline out to 0.4 of the beam. Nothing between positions is drawn.
     """
     fef = f"{hull_id}.fef"
     hydro = json.loads(run(seacraft, "hydro", fef, "--kg", kg, "--json", cwd=hull_dir))
     mass = sig(hydro["displacement_t"] * 0.10, 2)
-    x, z = round(hydro["lcb"]["x"], 3), round(deck_z, 3)
+    x = round(hydro["lcb"]["x"], 3)
+    # The section the figure draws, and the weight on its deck.
+    station = min(stations, key=lambda s: abs(s["x"] - x))
+    z = round(section_top(station["body"]), 3)
     steps = []
     for k in range(HEEL_POSITIONS):
         y = round(0.4 * beam * k / (HEEL_POSITIONS - 1), 3)
@@ -407,7 +425,6 @@ def heel_steps(seacraft, hull_id, hull_dir, kg, beam, deck_z, stations):
         step = heel_step(result, y)
         step["command"] = shown(hull_id, "heel", "--kg", f"{kg:g}", "--weight", weight)
         steps.append(step)
-    station = min(stations, key=lambda s: abs(s["x"] - x))
     return {
         "mass_t": mass,
         "x": x,
@@ -604,7 +621,7 @@ def build_hull(seacraft, hull, description, out):
         ),
         "motions": motions(seacraft, hull_id, hull_dir, draft, kg) if hull["motions"] else None,
         "waves": wave_steps(seacraft, hull_id, hull_dir, length),
-        "heel": heel_steps(seacraft, hull_id, hull_dir, kg, beam, lines["z1"], lines["stations"]),
+        "heel": heel_steps(seacraft, hull_id, hull_dir, kg, beam, lines["stations"]),
         "files": {
             "report": (hull_dir / "report.html").stat().st_size,
             "viewer": (hull_dir / "viewer.html").stat().st_size,

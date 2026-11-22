@@ -100,6 +100,18 @@ class TestWaveFits(unittest.TestCase):
         self.assertFalse(build.wave_fits([]))
 
 
+class TestSectionTop(unittest.TestCase):
+    def test_the_top_of_the_part_that_reaches_the_centreline(self):
+        # A trawler's section: the hull from the deck at the centreline round to the keel, and a
+        # bulwark standing above the sheer as a separate line. The deck is the hull's top, not the rail's.
+        hull = "M0.000,-3.423L3.397,-3.425L3.2,-1.0L0.000,-0.000"
+        bulwark = "M3.400,-4.423L3.400,-3.423"
+        self.assertEqual(build.section_top(hull + bulwark), 3.425)
+
+    def test_an_open_boat_is_topped_by_its_sheer(self):
+        self.assertEqual(build.section_top("M-0.000,-0.001L-0.498,-0.001L-0.716,-0.420"), 0.42)
+
+
 class TestRun(unittest.TestCase):
     def test_a_failing_run_stops_the_build_naming_the_command(self):
         with tempfile.TemporaryDirectory() as scratch:
@@ -107,7 +119,7 @@ class TestRun(unittest.TestCase):
             fake.write_text("#!/bin/sh\necho 'no equilibrium: hull is open' >&2\nexit 2\n", encoding="utf-8")
             fake.chmod(0o755)
             with self.assertRaises(SystemExit) as stop:
-                build.heel_steps(fake, "wigley", scratch, 0.4, 1.0, 0.6, [{"x": 5.0, "body": "M0,0"}])
+                build.heel_steps(fake, "wigley", scratch, 0.4, 1.0, [{"x": 5.0, "body": "M0,0"}])
             message = str(stop.exception.code)
             self.assertIn("seacraft hydro wigley.fef", message)
             self.assertIn("no equilibrium: hull is open", message)
