@@ -322,3 +322,171 @@ fn viewports_orientation_model_menu_and_dialogs_render_in_turkish() {
         );
     }
 }
+
+#[test]
+fn docks_and_options_windows_render_in_turkish() {
+    use seacraft_core::i18n::Tr;
+    use seacraft_gui::panels;
+
+    let tr_tr = Tr::new(Locale::Tr);
+    assert_eq!(
+        panels::criteria_badge_style_tr(true, false, tr_tr).0,
+        "GEÇTİ"
+    );
+    assert_eq!(
+        panels::criteria_badge_style_tr(true, true, tr_tr).0,
+        "GEÇTİ · güncel değil"
+    );
+    assert_eq!(
+        panels::criteria_badge_style_tr(false, false, tr_tr).0,
+        "KALDI"
+    );
+    assert_eq!(
+        panels::criteria_badge_style_tr(false, true, tr_tr).0,
+        "KALDI · güncel değil"
+    );
+
+    let mut app = App::headless_for_test(None);
+    app.set_locale(Locale::Tr);
+    app.recompute_hydrostatics();
+    let mut w = Window::with_app(app, egui::vec2(1600.0, 1000.0));
+
+    // Left dock: Layers & empty Inspector.
+    for text in [
+        "Katmanlar",
+        "Ekle",
+        "Sil",
+        "Simetrik",
+        "Hidrostatik",
+        "Endaze resmi",
+        "Seçilen yüzeyi bu katmana taşı",
+        "Denetçi",
+        "Düzenlemek için bir noktaya tıklayın — Esc temizler",
+    ] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish left dock text `{text}`"
+        );
+    }
+
+    // Inspector with a selected point.
+    w.app.select_point(Some(0));
+    w.frame(vec![]);
+    assert!(
+        w.shows("Nokta 0"),
+        "expected Turkish selected point heading"
+    );
+    assert!(
+        w.shows_substring("keskin kenar"),
+        "expected Turkish vertex crease footer"
+    );
+
+    // Right Analysis dock tab bar + Hydrostatics tab.
+    for tab in ["Hidro", "Yükleme", "Yaralı", "Rüzgâr", "Performans"] {
+        assert!(w.shows(tab), "expected Turkish dock tab `{tab}`");
+    }
+    for text in [
+        "Hidrostatik",
+        "Su çekimi",
+        "Meyil",
+        "Serbest trim",
+        "GZ eğrileri",
+        "Hacim ve form",
+        "Stabilite (Denge)",
+    ] {
+        assert!(
+            w.shows(text) || w.paints(text),
+            "expected Turkish Hydrostatics text `{text}`"
+        );
+    }
+
+    // Loading tab.
+    w.click("Yükleme");
+    for text in ["Yükleme durumu", "Yeni"] {
+        assert!(w.shows(text), "expected Turkish Loading text `{text}`");
+    }
+    w.click("Yeni");
+    for text in ["Boş gemi", "Ölü ağırlık kalemleri", "Tanklar", "Hesapla"] {
+        assert!(w.shows(text), "expected Turkish Loading form text `{text}`");
+    }
+
+    // Damage tab.
+    w.click("Yaralı");
+    for text in ["Yaralı stabilite", "Bölmeler", "Yara durumları"] {
+        assert!(w.shows(text), "expected Turkish Damage text `{text}`");
+    }
+    w.click("Yeni");
+    for text in ["Hasarsız durum", "Yükleme durumu", "Elle"] {
+        assert!(w.shows(text), "expected Turkish Damage case text `{text}`");
+    }
+
+    // Windage tab.
+    w.click("Rüzgâr");
+    for text in [
+        "Üst yapı ve rüzgâr alanı",
+        "+ Rüzgâr öğesi ekle",
+        "Rüzgâr alanı toplamları",
+    ] {
+        assert!(w.shows(text), "expected Turkish Windage text `{text}`");
+    }
+
+    // Performance tab.
+    w.click("Performans");
+    for text in [
+        "Performans",
+        "Direnç tahmini",
+        "Dalga deseni",
+        "Denizcilik (baş dalgası RAO)",
+        "Deniz durumu (düzensiz baş dalgaları)",
+    ] {
+        assert!(w.shows(text), "expected Turkish Performance text `{text}`");
+    }
+
+    // Report options window.
+    w.click("Dosya");
+    w.click("Rapor seçenekleri…");
+    for text in [
+        "Rapor seçenekleri",
+        "Genel hidrostatik",
+        "Direnç ve güç",
+        "Yükleme durumları",
+        "Yara durumları",
+        "Denizcilik (Deniz tutma)",
+    ] {
+        assert!(
+            w.shows(text),
+            "expected Turkish Report options text `{text}`"
+        );
+    }
+    w.app.set_show_report_options(false);
+    w.frame(vec![]);
+
+    // Builder templates window.
+    w.click("Dosya");
+    w.click("İnşa şablonları…");
+    for text in [
+        "İnşa şablonları",
+        "Postalar:",
+        "Sayı",
+        "Aralık",
+        "Kâğıt:",
+        "Ölçek:",
+        "Dışa aktar…",
+    ] {
+        assert!(
+            w.shows(text),
+            "expected Turkish Builder templates text `{text}`"
+        );
+    }
+    w.app.set_show_templates(false);
+    w.frame(vec![]);
+
+    // Render all 5 dock tabs cleanly at the minimum supported window size (900x600).
+    let mut small = App::headless_for_test(None);
+    small.set_locale(Locale::Tr);
+    small.recompute_hydrostatics();
+    let mut w_small = Window::with_app(small, egui::vec2(900.0, 600.0));
+    for tab in ["Hidro", "Yükleme", "Yaralı", "Rüzgâr", "Performans"] {
+        w_small.click(tab);
+    }
+}

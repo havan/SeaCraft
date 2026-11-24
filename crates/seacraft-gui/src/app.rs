@@ -698,11 +698,18 @@ pub enum ResistanceMethod {
 
 impl ResistanceMethod {
     pub fn label(&self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn label_tr(&self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
             Self::Holtrop => "Holtrop & Mennen",
             Self::Dsyhs => "Delft (DSYHS)",
-            Self::Savitsky => "Savitsky (Planing)",
-            Self::Michell => "Michell (Thin ship)",
+            Self::Savitsky => tr.s(Key::PerfMethodSavitsky),
+            Self::Michell => tr.s(Key::PerfMethodMichell),
         }
     }
 }
@@ -1957,9 +1964,10 @@ impl App {
         let raos_stale = self.raos_stale();
         let busy_resistance = self.resistance_track.busy();
         let busy_raos = self.raos_track.busy();
-        let wave_regime = self.wave_current().map(|w| w.regime.sentence());
+        let tr = self.tr();
+        let wave_regime = self.wave_current().map(|w| w.regime.sentence_tr(tr));
         let default_kg = self.effective_performance_kg_default();
-        let kg_source = self.performance_kg_source();
+        let kg_source = self.performance_kg_source_tr(tr);
         let kg_estimate = self.kg_is_estimate();
         let limits = self.hydro_limits();
         let keel_z = self.keel_z();
@@ -1980,21 +1988,22 @@ impl App {
             return;
         }
         panel.show(ui, |ui| {
-            toggle_wide = panels::live_strip(
+            toggle_wide = panels::live_strip_tr(
                 ui,
                 self.hydro.result.as_ref(),
                 self.hydro.kg,
                 hydro_stale,
                 self.dock_wide,
+                tr,
             );
-            panels::target_strip(ui, &targets, hydro_stale);
+            panels::target_strip_tr(ui, &targets, hydro_stale, tr);
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 // Tight enough that the five tabs fit one row at 384 px.
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
                 for (i, t) in DesignDock::ALL.into_iter().enumerate() {
-                    let response = ui.selectable_label(tab == t, t.label());
+                    let response = ui.selectable_label(tab == t, t.label_tr(tr));
                     if tab_stale[i] {
                         panels::stale_dot(ui, response.rect);
                     }
@@ -2009,7 +2018,7 @@ impl App {
             }
             egui::ScrollArea::vertical().show(ui, |ui| match tab {
                 DesignDock::Hydrostatics => {
-                    action = DockAction::Hydro(panels::hydrostatics(
+                    action = DockAction::Hydro(panels::hydrostatics_tr(
                         ui,
                         panels::HydroPanel {
                             options: &mut self.hydro.options,
@@ -2024,10 +2033,11 @@ impl App {
                             curves: self.hydro.curves.as_deref(),
                             curves_stale,
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Loading => {
-                    action = DockAction::Loading(panels::loading(
+                    action = DockAction::Loading(panels::loading_tr(
                         ui,
                         panels::LoadingPanel {
                             project: &mut self.project,
@@ -2039,10 +2049,11 @@ impl App {
                             scroll_to: scroll_to_tank,
                             lightship: lightship.clone(),
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Damage => {
-                    action = DockAction::Damage(panels::damage(
+                    action = DockAction::Damage(panels::damage_tr(
                         ui,
                         panels::DamagePanel {
                             project: &mut self.project,
@@ -2053,10 +2064,11 @@ impl App {
                             highlight: comp_highlight,
                             scroll_to: scroll_to_comp,
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Windage => {
-                    action = DockAction::Windage(panels::windage(
+                    action = DockAction::Windage(panels::windage_tr(
                         ui,
                         panels::WindagePanel {
                             project: &mut self.project,
@@ -2068,10 +2080,11 @@ impl App {
                             selected: &mut self.selected_windage,
                             keel_z,
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Performance => {
-                    action = DockAction::Performance(panels::performance(
+                    action = DockAction::Performance(panels::performance_tr(
                         ui,
                         panels::PerformancePanel {
                             state: &mut self.perf_state,
@@ -2083,6 +2096,7 @@ impl App {
                             stale_raos: raos_stale,
                             wave_regime,
                         },
+                        tr,
                     ));
                 }
             });
@@ -2258,7 +2272,7 @@ impl App {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let top = ui.cursor().top();
                         if let Some(surface) = self.surface.as_ref() {
-                            layer_action = panels::layers(
+                            layer_action = panels::layers_tr(
                                 ui,
                                 panels::LayersPanel {
                                     surface,
@@ -2266,6 +2280,7 @@ impl App {
                                     picked_face: self.picked_face,
                                     state: &mut self.layer_panel,
                                 },
+                                tr,
                             );
                         }
                         self.layer_list_rect = egui::Rect::from_x_y_ranges(
@@ -2275,7 +2290,7 @@ impl App {
                         ui.add_space(4.0);
                         ui.separator();
                         let top = ui.cursor().top();
-                        inspector = panels::inspector(
+                        inspector = panels::inspector_tr(
                             ui,
                             panels::InspectorPanel {
                                 surface: self.surface.as_ref(),
@@ -2283,6 +2298,7 @@ impl App {
                                 station_caption: station_caption.clone(),
                                 pending: &mut self.inspector_pending,
                             },
+                            tr,
                         );
                         self.inspector_rect = egui::Rect::from_x_y_ranges(
                             ui.max_rect().x_range(),
@@ -6592,12 +6608,14 @@ impl App {
             return;
         }
         self.drive_templates_preview(ui.ctx());
+        let tr = self.tr();
         let key = self.templates_key();
         let mut params = self.templates_params.clone();
         let mut open = true;
         let mut action = None;
         let status = self.templates_status(key);
-        egui::Window::new("Builder templates")
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::DialogBuilderTemplates))
+            .id(egui::Id::unique("builder_templates_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -6609,7 +6627,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(640.0)
                     .show(ui, |ui| {
-                        action = panels::templates_options(ui, &mut params, &status);
+                        action = panels::templates_options_tr(ui, &mut params, &status, tr);
                     });
             });
         if params != self.templates_params {
@@ -7188,11 +7206,13 @@ impl App {
             .text_edit_focused()
             .then(|| ui.ctx().memory(|m| m.focused()))
             .flatten();
+        let tr = self.tr();
         let before = (
             self.project.clone(),
             (self.hydro.kg, self.hydro.kg_estimate),
         );
-        egui::Window::new("Report options")
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::ReportOptsTitle))
+            .id(egui::Id::unique("report_options_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -7201,11 +7221,12 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(560.0)
                     .show(ui, |ui| {
-                        let _ = panels::report_options(
+                        let _ = panels::report_options_tr(
                             ui,
                             &mut self.project.report,
                             &conditions,
                             &cases,
+                            tr,
                         );
                     });
             });
@@ -7655,12 +7676,19 @@ impl App {
     }
 
     pub fn performance_kg_source(&self) -> &'static str {
+        self.performance_kg_source_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn performance_kg_source_tr(&self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         if self.perf_state.kg.is_some() {
-            "Manual"
+            tr.s(Key::PerfKgSourceManual)
         } else if self.loading_current() {
-            "Loading (KG_fluid)"
+            tr.s(Key::PerfKgSourceLoading)
         } else {
-            "Hydro dock"
+            tr.s(Key::PerfKgSourceHydro)
         }
     }
 

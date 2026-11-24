@@ -801,17 +801,17 @@ impl Regime {
 
     /// One plain sentence for the views, the CLI and the report.
     pub fn sentence(self) -> &'static str {
+        self.sentence_tr(crate::i18n::Tr::new(crate::i18n::Locale::En))
+    }
+
+    /// Localized form of [`Self::sentence`].
+    pub fn sentence_tr(self, tr: crate::i18n::Tr) -> &'static str {
+        use crate::i18n::Key;
         match self {
-            Regime::Low => "Several waves along the hull; wave drag is small.",
-            Regime::Rising => "Wave drag rising: the waves lengthen towards the hull's length.",
-            Regime::HullSpeed => {
-                "Around hull speed: about one wave along the hull, the stern settling into its \
-                 trough. Wave drag climbs steeply."
-            }
-            Regime::PastHullSpeed => {
-                "Past hull speed: the hull climbs its own bow wave. Thin-ship theory loses accuracy \
-                 here; consider a planing analysis."
-            }
+            Regime::Low => tr.s(Key::WaveRegimeLow),
+            Regime::Rising => tr.s(Key::WaveRegimeRising),
+            Regime::HullSpeed => tr.s(Key::WaveRegimeHullSpeed),
+            Regime::PastHullSpeed => tr.s(Key::WaveRegimePastHullSpeed),
         }
     }
 }
