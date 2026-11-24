@@ -1238,4 +1238,16 @@ mod tests {
             "{up}"
         );
     }
+
+    #[test]
+    fn turkish_characters_embed_and_round_trip_without_missing_glyphs() {
+        let sample = "ÇçĞğİıÖöŞşÜü — Su çekimi (Draft), Boyuna kesitler (Bato hatları)";
+        let mut c = Content::new();
+        c.text((20.0, 20.0), 10.0, 0.0, Anchor::Start, 0.0, sample);
+        let mut pdf = Pdf::new("Türkçe Test");
+        pdf.add_page(400.0, 100.0, c);
+        let doc = pdf.finish().unwrap();
+        assert!(doc.missing.is_empty(), "missing glyphs: {:?}", doc.missing);
+        assert_eq!(page_text(&doc.bytes, 0), [sample]);
+    }
 }
