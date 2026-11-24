@@ -44,11 +44,18 @@ impl ViewKind {
     ];
 
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            ViewKind::Perspective => "Perspective",
-            ViewKind::Profile => "Profile",
-            ViewKind::Plan => "Plan",
-            ViewKind::Body => "Body plan",
+            ViewKind::Perspective => tr.s(Key::ViewPerspective),
+            ViewKind::Profile => tr.s(Key::ViewProfile),
+            ViewKind::Plan => tr.s(Key::ViewPlan),
+            ViewKind::Body => tr.s(Key::ViewBody),
         }
     }
 
@@ -61,20 +68,33 @@ impl ViewKind {
     }
 
     pub fn subtitle(self) -> &'static str {
+        self.subtitle_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn subtitle_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
             Self::Perspective => "",
-            Self::Profile => "from starboard",
-            Self::Plan => "half-breadths, starboard up",
-            Self::Body => "looking forward",
+            Self::Profile => tr.s(Key::ViewProfileSub),
+            Self::Plan => tr.s(Key::ViewPlanSub),
+            Self::Body => tr.s(Key::ViewBodySub),
         }
     }
 
     pub fn title(self) -> String {
-        let sub = self.subtitle();
+        self.title_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn title_tr(self, tr: seacraft_core::i18n::Tr) -> String {
+        let sub = self.subtitle_tr(tr);
         if sub.is_empty() {
-            self.label().to_owned()
+            self.label_tr(tr).to_owned()
         } else {
-            format!("{} · {sub}", self.label())
+            format!("{} · {sub}", self.label_tr(tr))
         }
     }
 }

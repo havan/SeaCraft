@@ -315,6 +315,22 @@ pub fn station_caption(
     lines: &seacraft_core::netlines::NetLines,
     point: usize,
 ) -> Option<String> {
+    station_caption_tr(
+        surface,
+        lines,
+        point,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Localized station caption for `point`.
+pub fn station_caption_tr(
+    surface: &Surface,
+    lines: &seacraft_core::netlines::NetLines,
+    point: usize,
+    tr: seacraft_core::i18n::Tr,
+) -> Option<String> {
+    use seacraft_core::i18n::Key;
     if lines
         .through(point, seacraft_core::netlines::LineKind::Transverse)
         .is_empty()
@@ -328,18 +344,16 @@ pub fn station_caption(
     let (x_min, x_max) = lines.station_x(surface, point)?;
     let (lo, hi) = surface.extents();
     let span = (hi.x - lo.x).max(0.0);
+    let count = pts.len().to_string();
     if x_max - x_min <= 0.005 * span {
-        Some(format!(
-            "Station at x ≈ {:.2} m · {} points",
-            0.5 * (x_min + x_max),
-            pts.len()
-        ))
+        let x = format!("{:.2}", 0.5 * (x_min + x_max));
+        Some(tr.fmt(Key::ViewStationAt, &[("x", &x), ("count", &count)]))
     } else {
-        Some(format!(
-            "Station at x {:.2}–{:.2} m · {} points",
-            x_min,
-            x_max,
-            pts.len()
+        let xmin = format!("{x_min:.2}");
+        let xmax = format!("{x_max:.2}");
+        Some(tr.fmt(
+            Key::ViewStationRange,
+            &[("xmin", &xmin), ("xmax", &xmax), ("count", &count)],
         ))
     }
 }
@@ -354,13 +368,37 @@ pub fn viewport(
     active: bool,
     selected: Option<usize>,
 ) {
+    viewport_tr(
+        ui,
+        rect,
+        camera,
+        scene,
+        opts,
+        active,
+        selected,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    );
+}
+
+/// Draw one viewport with localized captions.
+#[allow(clippy::too_many_arguments)]
+pub fn viewport_tr(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    camera: &Camera,
+    scene: Option<&Scene>,
+    opts: &DisplayOptions,
+    active: bool,
+    selected: Option<usize>,
+    tr: seacraft_core::i18n::Tr,
+) {
     let mut selection = crate::selection::Selection::default();
     if let Some(p) = selected {
         selection.set_only(p);
     }
     let lines =
         scene.and_then(|s| selected.map(|_| seacraft_core::netlines::NetLines::of(s.surface)));
-    viewport_with_texture(
+    viewport_with_texture_tr(
         ui,
         rect,
         camera,
@@ -377,6 +415,7 @@ pub fn viewport(
         None,
         None,
         None,
+        tr,
     )
 }
 
@@ -404,13 +443,55 @@ pub fn viewport_with_texture(
     gpu_hull: Option<egui::PaintCallback>,
     waterline: Option<Arc<egui::Mesh>>,
 ) {
+    viewport_with_texture_tr(
+        ui,
+        rect,
+        camera,
+        scene,
+        opts,
+        active,
+        selection,
+        lines,
+        focus_point,
+        hovered,
+        followers,
+        vis,
+        texture,
+        hull,
+        gpu_hull,
+        waterline,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Draw a viewport with localized HUD captions and orientation labels.
+#[allow(clippy::too_many_arguments)]
+pub fn viewport_with_texture_tr(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    camera: &Camera,
+    scene: Option<&Scene>,
+    opts: &DisplayOptions,
+    active: bool,
+    selection: &crate::selection::Selection,
+    lines: Option<&seacraft_core::netlines::NetLines>,
+    focus_point: Option<usize>,
+    hovered: Option<usize>,
+    followers: &[(usize, f64)],
+    vis: Option<&crate::visibility::NetVisibility>,
+    texture: Option<&egui::TextureHandle>,
+    hull: Option<Arc<egui::Mesh>>,
+    gpu_hull: Option<egui::PaintCallback>,
+    waterline: Option<Arc<egui::Mesh>>,
+    tr: seacraft_core::i18n::Tr,
+) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::CANVAS);
     let Some(scene) = scene else {
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
-            "No model loaded",
+            tr.s(seacraft_core::i18n::Key::ViewNoModel),
             FontId::proportional(14.0),
             theme::TEXT_SECONDARY,
         );
@@ -497,11 +578,11 @@ pub fn viewport_with_texture(
         &painter,
         title_pos(rect),
         Align2::LEFT_TOP,
-        camera.kind.title(),
+        camera.kind.title_tr(tr),
     );
     if camera.kind == crate::camera::ViewKind::Plan {
         let caption = match &scene.waves {
-            Some(waves) => Some(wave_caption(waves.result)),
+            Some(waves) => Some(wave_caption_tr(waves.result, tr)),
             None => scene.waves_status.map(str::to_owned),
         };
         if let Some(caption) = caption {
@@ -515,7 +596,7 @@ pub fn viewport_with_texture(
     }
     if camera.kind == crate::camera::ViewKind::Body {
         if let (Some(lines), Some(point)) = (lines, focus_point) {
-            if let Some(caption) = station_caption(scene.surface, lines, point) {
+            if let Some(caption) = station_caption_tr(scene.surface, lines, point, tr) {
                 hud_caption(
                     &painter,
                     rect.center_bottom() + egui::vec2(0.0, -8.0),
@@ -528,7 +609,7 @@ pub fn viewport_with_texture(
     // The scale in metres rather than m/px: the side of a grid square is
     // what the eye judges a length against.
     let (minor, major) = view_grid_steps(&view, rect, scene.min, scene.max);
-    if let Some(text) = grid_caption(view.perspective, opts.grid, minor, major) {
+    if let Some(text) = grid_caption_tr(view.perspective, opts.grid, minor, major, tr) {
         hud_caption(
             &painter,
             egui::pos2(view_buttons(rect)[0].left() - 8.0, rect.top() + 6.0),
@@ -543,7 +624,7 @@ pub fn viewport_with_texture(
         );
     }
     if opts.orientation {
-        crate::orientation::draw(&painter, rect, &view);
+        crate::orientation::draw_tr(&painter, rect, &view, tr);
     }
     painter.rect_stroke(
         rect,
@@ -579,8 +660,23 @@ fn title_pos(rect: Rect) -> Pos2 {
 /// The backing rectangle of the title caption of a viewport drawn in `rect`
 /// with `camera`: the caption a double-click maximises.
 pub fn title_rect(painter: &egui::Painter, rect: Rect, camera: &Camera) -> Rect {
+    title_rect_tr(
+        painter,
+        rect,
+        camera,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// The backing rectangle of a localized viewport title caption.
+pub fn title_rect_tr(
+    painter: &egui::Painter,
+    rect: Rect,
+    camera: &Camera,
+    tr: seacraft_core::i18n::Tr,
+) -> Rect {
     let galley = painter.layout_no_wrap(
-        camera.kind.title(),
+        camera.kind.title_tr(tr),
         theme::caption_font(),
         theme::TEXT_SECONDARY,
     );
@@ -633,13 +729,33 @@ pub fn view_grid_steps(view: &ViewTransform, rect: Rect, min: Vec3, max: Vec3) -
 /// view: `ground grid …`). Without the grid an orthographic view's scale bar
 /// carries the scale alone and the perspective view shows none: `None`.
 pub fn grid_caption(perspective: bool, grid: bool, minor: f64, major: f64) -> Option<String> {
+    grid_caption_tr(
+        perspective,
+        grid,
+        minor,
+        major,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Localized grid scale caption of a view.
+pub fn grid_caption_tr(
+    perspective: bool,
+    grid: bool,
+    minor: f64,
+    major: f64,
+    tr: seacraft_core::i18n::Tr,
+) -> Option<String> {
+    use seacraft_core::i18n::Key;
     grid.then(|| {
-        format!(
-            "{}grid {} · major {}",
-            if perspective { "ground " } else { "" },
-            format_length(minor),
-            format_length(major)
-        )
+        let minor_s = format_length(minor);
+        let major_s = format_length(major);
+        let key = if perspective {
+            Key::ViewGroundGridCaption
+        } else {
+            Key::ViewGridCaption
+        };
+        tr.fmt(key, &[("minor", &minor_s), ("major", &major_s)])
     })
 }
 
@@ -1152,15 +1268,26 @@ pub fn wave_mesh(
 
 /// Plan view's caption for a drawn pattern: its speed, its colour range and any catamaran spacing.
 pub fn wave_caption(w: &crate::waves::WaveResult) -> String {
+    wave_caption_tr(
+        w,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Localized Plan view caption for a drawn wave pattern.
+pub fn wave_caption_tr(w: &crate::waves::WaveResult, tr: seacraft_core::i18n::Tr) -> String {
+    use seacraft_core::i18n::Key;
     let f = &w.field;
-    let mut text = format!(
-        "Waves · Fn {:.3} · {:.2} kn · ±{:.3} m",
-        f.froude,
-        f.speed_m_s / seacraft_core::resistance::KNOT,
-        w.clip_m
+    let fn_str = format!("{:.3}", f.froude);
+    let speed = format!("{:.2}", f.speed_m_s / seacraft_core::resistance::KNOT);
+    let clip = format!("{:.3}", w.clip_m);
+    let mut text = tr.fmt(
+        Key::ViewWavesCaption,
+        &[("fn", &fn_str), ("speed", &speed), ("clip", &clip)],
     );
     if let Some(s) = w.cat_spacing_m {
-        text.push_str(&format!(" · catamaran s = {s:.2} m"));
+        let spacing = format!("{s:.2}");
+        text.push_str(&tr.fmt(Key::ViewWavesCatamaran, &[("spacing", &spacing)]));
     }
     text
 }

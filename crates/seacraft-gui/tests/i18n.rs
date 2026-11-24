@@ -11,6 +11,7 @@ struct Window {
     app: App,
     size: egui::Vec2,
     widgets: Vec<(String, egui::Rect)>,
+    painted_texts: Vec<String>,
 }
 
 impl Window {
@@ -26,6 +27,7 @@ impl Window {
             app,
             size,
             widgets: Vec::new(),
+            painted_texts: Vec::new(),
         };
         w.frame(vec![]);
         w.frame(vec![]);
@@ -33,6 +35,13 @@ impl Window {
     }
 
     fn frame(&mut self, events: Vec<egui::Event>) {
+        fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                _ => {}
+            }
+        }
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
             events,
@@ -41,6 +50,10 @@ impl Window {
         let app = &mut self.app;
         let mut out = self.ctx.run_ui(input, |ui| app.draw(ui));
         out.textures_delta.clear();
+        self.painted_texts.clear();
+        for clipped in &out.shapes {
+            collect_texts(&clipped.shape, &mut self.painted_texts);
+        }
         self.widgets = out
             .platform_output
             .accesskit_update
@@ -107,6 +120,14 @@ impl Window {
 
     fn shows_substring(&self, text: &str) -> bool {
         self.widgets.iter().any(|(t, _)| t.contains(text))
+    }
+
+    fn paints(&self, text: &str) -> bool {
+        self.painted_texts.iter().any(|t| t == text)
+    }
+
+    fn paints_substring(&self, text: &str) -> bool {
+        self.painted_texts.iter().any(|t| t.contains(text))
     }
 }
 
@@ -210,6 +231,94 @@ fn start_card_and_min_window_render_in_turkish() {
         assert!(
             w_loaded.shows(menu),
             "expected Turkish menu `{menu}` at 900x600"
+        );
+    }
+}
+
+#[test]
+fn viewports_orientation_model_menu_and_dialogs_render_in_turkish() {
+    let mut app = App::headless_for_test(None);
+    app.set_locale(Locale::Tr);
+    let mut w = Window::with_app(app, egui::vec2(1600.0, 1000.0));
+
+    for title in [
+        "Perspektif",
+        "Profil · sancaktan",
+        "Plan · yarı genişlikler, sancak yukarı",
+        "Posta planı · başa bakış",
+    ] {
+        assert!(
+            w.paints(title),
+            "expected Turkish viewport title `{title}` in {:?}",
+            w.painted_texts
+        );
+    }
+    for orient in ["Baş", "Kıç", "İsk.", "Snc.", "Yuk."] {
+        assert!(
+            w.paints(orient),
+            "expected Turkish orientation label `{orient}`"
+        );
+    }
+    assert!(
+        w.paints_substring("ızgara"),
+        "expected Turkish grid caption"
+    );
+
+    w.click("Model");
+    for item in [
+        "Dönüştür…",
+        "Eniyile…",
+        "Kenar ekle",
+        "Yüzeyi böl",
+        "Keskin kenar yap",
+        "Postayı seç",
+        "Boyuna hattı seç",
+    ] {
+        assert!(w.shows(item), "expected Turkish Model menu item `{item}`");
+    }
+
+    w.click("Dönüştür…");
+    for text in ["Tekneyi dönüştür", "Uygula", "İptal"] {
+        assert!(
+            w.shows(text),
+            "expected Turkish Transform dialog text `{text}`"
+        );
+    }
+    w.press_esc();
+
+    w.click("Model");
+    w.click("Eniyile…");
+    for text in ["Tekneyi eniyile", "Çalıştır", "Kapat"] {
+        assert!(
+            w.shows(text),
+            "expected Turkish Optimise dialog text `{text}`"
+        );
+    }
+    w.click("Kapat");
+
+    w.click("Dosya");
+    w.click("Proje ayarları…");
+    for text in ["Proje ayarları", "Tasarımcı", "Su yoğunluğu", "Uygula"] {
+        assert!(
+            w.shows(text),
+            "expected Turkish Project settings text `{text}`"
+        );
+    }
+    w.press_esc();
+
+    w.click("Dosya");
+    w.click("Yeni");
+    w.click("Tasarım… Ctrl+N");
+    assert!(w.shows("Kaydedilmemiş değişiklikler"));
+    w.click("Kaydetmeden devam et");
+    if let Some(d) = w.app.new_design_mut() {
+        d.inline_preview = true;
+    }
+    w.frame(vec![]);
+    for text in ["Yeni tasarım", "Parametrik", "Ana boyutlar", "Oluştur"] {
+        assert!(
+            w.shows(text),
+            "expected Turkish New design dialog text `{text}`"
         );
     }
 }

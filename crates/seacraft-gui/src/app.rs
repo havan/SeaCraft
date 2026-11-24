@@ -2237,7 +2237,7 @@ impl App {
                 self.cache.as_ref(),
                 self.selection.active(),
             ) {
-                (Some(s), Some(c), Some(p)) => render::station_caption(s, &c.net_lines, p),
+                (Some(s), Some(c), Some(p)) => render::station_caption_tr(s, &c.net_lines, p, tr),
                 _ => None,
             };
             let mut layer_action = panels::LayerAction::None;
@@ -3011,10 +3011,11 @@ impl App {
     }
 
     fn new_design_window(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let Some(state) = self.new_design.as_mut() else {
             return;
         };
-        match crate::new_design::new_design_dialog(ui.ctx(), state) {
+        match crate::new_design::new_design_dialog(ui.ctx(), state, tr) {
             crate::new_design::NewDesignAction::None => {}
             crate::new_design::NewDesignAction::Cancel => self.new_design = None,
             crate::new_design::NewDesignAction::Create(request) => {
@@ -3164,10 +3165,11 @@ impl App {
     }
 
     fn project_settings_window(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let Some(state) = self.project_settings.as_mut() else {
             return;
         };
-        match crate::new_design::project_settings_dialog(ui.ctx(), state) {
+        match crate::new_design::project_settings_dialog(ui.ctx(), state, tr) {
             crate::new_design::ProjectSettingsAction::None => {}
             crate::new_design::ProjectSettingsAction::Cancel => self.project_settings = None,
             crate::new_design::ProjectSettingsAction::Apply(edit) => {
@@ -4109,6 +4111,7 @@ impl App {
     }
 
     fn viewports(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let failure = self.gpu_hull.failure.lock().ok().and_then(|mut f| f.take());
         if let Some((key, message)) = failure {
             self.report_gpu_hull_failure(key, message);
@@ -4164,7 +4167,7 @@ impl App {
             self.viewport_rects[index] = cell;
             let response = ui.allocate_rect(cell, egui::Sense::click_and_drag());
             let view = self.cameras[index].transform();
-            let title = render::title_rect(ui.painter(), cell, &self.cameras[index]);
+            let title = render::title_rect_tr(ui.painter(), cell, &self.cameras[index], tr);
             self.title_rects[index] = title;
             if response.double_clicked()
                 && response
@@ -4577,7 +4580,7 @@ impl App {
                 let vis = self.net_visibility(index);
                 let focus_point = self.hovered_point.or_else(|| drawn_selection.active());
                 let net_lines = self.cache.as_ref().map(|c| &c.net_lines);
-                render::viewport_with_texture(
+                render::viewport_with_texture_tr(
                     ui,
                     cell,
                     &self.cameras[index],
@@ -4594,9 +4597,10 @@ impl App {
                     hull,
                     gpu_hull,
                     waterline,
+                    tr,
                 );
             } else {
-                render::viewport(
+                render::viewport_tr(
                     ui,
                     cell,
                     &self.cameras[index],
@@ -4604,6 +4608,7 @@ impl App {
                     &self.display,
                     self.active == index,
                     None,
+                    tr,
                 );
             }
             self.draw_pick_overlays(ui, cell, index);
@@ -4613,21 +4618,29 @@ impl App {
             self.view_button_rects[index] = [fit, maximise];
             let hud = crate::theme::IconStyle::Hud;
             if crate::theme::icon_button_at(ui, fit, crate::theme::Icon::Fit, hud, false)
-                .on_hover_text(format!(
-                    "Frame the model in this view ({fit_key} frames every view)"
+                .on_hover_text(tr.fmt(
+                    seacraft_core::i18n::Key::ViewBtnFrameTip,
+                    &[("key", &fit_key)],
                 ))
                 .clicked()
             {
                 self.refit_camera(index);
             }
             let (icon, tip) = if self.maximised.is_some() {
-                (crate::theme::Icon::Restore, "Restore the four views")
+                (
+                    crate::theme::Icon::Restore,
+                    tr.s(seacraft_core::i18n::Key::ViewBtnRestore),
+                )
             } else {
-                (crate::theme::Icon::Maximise, "Maximise this view")
+                (
+                    crate::theme::Icon::Maximise,
+                    tr.s(seacraft_core::i18n::Key::ViewBtnMaximise),
+                )
             };
             if crate::theme::icon_button_at(ui, maximise, icon, hud, false)
-                .on_hover_text(format!(
-                    "{tip} ({max_key}, or double-click the view's title)"
+                .on_hover_text(tr.fmt(
+                    seacraft_core::i18n::Key::ViewBtnMaximiseTip,
+                    &[("action", tip), ("key", &max_key)],
                 ))
                 .clicked()
             {
@@ -9354,22 +9367,29 @@ impl App {
     /// the menu has drawn.
     fn model_menu(&mut self, ui: &mut egui::Ui) {
         let mut action = crate::model_menu::ModelAction::None;
-        let label = self.tr().s(seacraft_core::i18n::Key::MenuModel);
-        ui.menu_button(label, |ui| {
-            let targets = self.model_targets();
-            action = crate::model_menu::menu_body(ui, &targets);
+        let tr = self.tr();
+        ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuModel), |ui| {
+            let targets = self.model_targets_tr(tr);
+            action = crate::model_menu::menu_body(ui, &targets, tr);
         });
         self.apply_model_action(action);
     }
 
     /// What each Model menu item would act on now, or why it is disabled.
     pub fn model_targets(&self) -> crate::model_menu::ModelTargets {
-        crate::model_menu::ModelTargets::compute(
+        self.model_targets_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    fn model_targets_tr(&self, tr: seacraft_core::i18n::Tr) -> crate::model_menu::ModelTargets {
+        crate::model_menu::ModelTargets::compute_tr(
             self.surface.as_ref(),
             self.picked_points(),
             self.picked_face(),
             self.optimise_job.is_some(),
             self.selected(),
+            tr,
         )
     }
 
@@ -9561,9 +9581,10 @@ impl App {
     /// here, after they have drawn.
     fn model_windows(&mut self, ui: &mut egui::Ui) {
         use crate::model_menu::{DialogAction, OptimiseAction};
+        let tr = self.tr();
         self.poll_optimise(ui.ctx());
         let transform = match self.transform_dialog.as_mut() {
-            Some(state) => crate::model_menu::transform_dialog(ui.ctx(), state),
+            Some(state) => crate::model_menu::transform_dialog(ui.ctx(), state, tr),
             None => DialogAction::None,
         };
         match transform {
@@ -9580,7 +9601,7 @@ impl App {
         }
         let running = self.optimise_job.is_some();
         let optimise = match self.optimise_dialog.as_mut() {
-            Some(state) => crate::model_menu::optimise_dialog(ui.ctx(), state, running),
+            Some(state) => crate::model_menu::optimise_dialog(ui.ctx(), state, running, tr),
             None => OptimiseAction::None,
         };
         match optimise {
@@ -9588,12 +9609,18 @@ impl App {
             OptimiseAction::Close => {
                 self.optimise_dialog = None;
                 if self.optimise_job.take().is_some() {
-                    self.set_status("optimisation stopped; the hull is unchanged".to_owned());
+                    self.set_status(
+                        tr.s(seacraft_core::i18n::Key::ModelOptimiseStopped)
+                            .to_owned(),
+                    );
                 }
             }
             OptimiseAction::Stop => {
                 self.optimise_job = None;
-                self.set_status("optimisation stopped; the hull is unchanged".to_owned());
+                self.set_status(
+                    tr.s(seacraft_core::i18n::Key::ModelOptimiseStopped)
+                        .to_owned(),
+                );
             }
             OptimiseAction::Run(spec, level) => self.start_optimise(*spec, level),
         }
@@ -9664,9 +9691,9 @@ impl App {
             &painter,
             cell.center_bottom() + egui::vec2(0.0, -8.0),
             egui::Align2::CENTER_BOTTOM,
-            format!(
-                "Locked to {} — release the key to drag freely",
-                crate::model_menu::axis_name(axis)
+            self.tr().fmt(
+                seacraft_core::i18n::Key::ViewAxisLocked,
+                &[("axis", crate::model_menu::axis_name(axis))],
             ),
         );
     }

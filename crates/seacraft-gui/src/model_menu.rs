@@ -11,6 +11,7 @@
 //! click.
 
 use eframe::egui;
+use seacraft_core::i18n::{Key, Locale, Tr};
 use seacraft_core::math::Vec3;
 use seacraft_core::optimize::{DesignVar, Method, OptimizeSpec, VarSpec};
 use seacraft_core::transform::{Axis, MainDimensions, TransformRequest};
@@ -22,10 +23,6 @@ use crate::theme;
 /// What one menu item would act on, or why it cannot (the disabled item's
 /// hover text).
 pub type Target<T> = Result<T, String>;
-
-const NO_MODEL: &str = "No model loaded: start a new design or open a .fef first.";
-const PICK_TWO: &str =
-    "Pick two control points: click one in a viewport, then Shift+click the other.";
 
 /// The Model menu's items and what each would do now.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,33 +51,50 @@ impl ModelTargets {
         optimising: bool,
         active: Option<usize>,
     ) -> Self {
+        Self::compute_tr(
+            surface,
+            picked,
+            face,
+            optimising,
+            active,
+            Tr::new(Locale::En),
+        )
+    }
+
+    /// Localized variant of [`ModelTargets::compute`].
+    pub fn compute_tr(
+        surface: Option<&Surface>,
+        picked: Option<[usize; 2]>,
+        face: Option<usize>,
+        optimising: bool,
+        active: Option<usize>,
+        tr: Tr,
+    ) -> Self {
         let Some(surface) = surface else {
-            fn none<T>() -> Target<T> {
-                Err(NO_MODEL.to_owned())
-            }
+            let no_model = tr.s(Key::ModelErrNoModel);
             return Self {
-                transform: none(),
-                optimise: none(),
-                insert_edge: none(),
-                split_face: none(),
-                crease: none(),
-                smooth: none(),
-                select_station: none(),
-                select_lengthwise: none(),
+                transform: Err(no_model.to_owned()),
+                optimise: Err(no_model.to_owned()),
+                insert_edge: Err(no_model.to_owned()),
+                split_face: Err(no_model.to_owned()),
+                crease: Err(no_model.to_owned()),
+                smooth: Err(no_model.to_owned()),
+                select_station: Err(no_model.to_owned()),
+                select_lengthwise: Err(no_model.to_owned()),
             };
         };
-        let select_target = active.ok_or_else(|| "Select a control point first.".to_owned());
+        let select_target = active.ok_or_else(|| tr.s(Key::ModelErrPickPoint).to_owned());
         Self {
             transform: Ok(()),
             optimise: if optimising {
-                Err("An optimisation is running: wait for it or stop it in its window.".into())
+                Err(tr.s(Key::ModelErrOptimising).to_owned())
             } else {
                 Ok(())
             },
-            insert_edge: insert_edge_target(surface, picked, face),
-            split_face: split_face_target(surface, face),
-            crease: edge_target(surface, picked, true),
-            smooth: edge_target(surface, picked, false),
+            insert_edge: insert_edge_target_tr(surface, picked, face, tr),
+            split_face: split_face_target_tr(surface, face, tr),
+            crease: edge_target_tr(surface, picked, true, tr),
+            smooth: edge_target_tr(surface, picked, false, tr),
             select_station: select_target.clone(),
             select_lengthwise: select_target,
         }
@@ -95,12 +109,21 @@ pub fn insert_edge_target(
     picked: Option<[usize; 2]>,
     face: Option<usize>,
 ) -> Target<(usize, usize, usize)> {
-    let [a, b] = picked.ok_or(PICK_TWO)?;
+    insert_edge_target_tr(surface, picked, face, Tr::new(Locale::En))
+}
+
+pub fn insert_edge_target_tr(
+    surface: &Surface,
+    picked: Option<[usize; 2]>,
+    face: Option<usize>,
+    tr: Tr,
+) -> Target<(usize, usize, usize)> {
+    let [a, b] = picked.ok_or_else(|| tr.s(Key::ModelErrPickTwo).to_owned())?;
+    let a_s = a.to_string();
+    let b_s = b.to_string();
     let key = seacraft_core::mesh::ordered(a, b);
     if surface.edges.iter().any(|e| e.key() == key) {
-        return Err(format!(
-            "Points {a} and {b} already share an edge: pick two corners of a face that are not neighbours."
-        ));
+        return Err(tr.fmt(Key::ModelErrAlreadyEdge, &[("a", &a_s), ("b", &b_s)]));
     }
     let splits = |f: &Vec<usize>| {
         let n = f.len();
@@ -117,16 +140,23 @@ pub fn insert_edge_target(
     picked_face
         .or_else(|| surface.faces.iter().position(splits))
         .map(|f| (f, a, b))
-        .ok_or_else(|| format!("Points {a} and {b} are not corners of one face."))
+        .ok_or_else(|| tr.fmt(Key::ModelErrNotCorners, &[("a", &a_s), ("b", &b_s)]))
 }
 
 /// The picked face, if it can be split.
 pub fn split_face_target(surface: &Surface, face: Option<usize>) -> Target<usize> {
-    let face = face.ok_or("Click a face of the hull in a viewport first.")?;
+    split_face_target_tr(surface, face, Tr::new(Locale::En))
+}
+
+pub fn split_face_target_tr(surface: &Surface, face: Option<usize>, tr: Tr) -> Target<usize> {
+    let face = face.ok_or_else(|| tr.s(Key::ModelErrClickFace).to_owned())?;
     match surface.faces.get(face) {
         Some(f) if f.len() >= 3 => Ok(face),
-        Some(_) => Err(format!("Face {face} has fewer than three points.")),
-        None => Err("The picked face is gone: click a face again.".into()),
+        Some(_) => {
+            let f_s = face.to_string();
+            Err(tr.fmt(Key::ModelErrFaceFewPoints, &[("face", &f_s)]))
+        }
+        None => Err(tr.s(Key::ModelErrFaceGone).to_owned()),
     }
 }
 
@@ -137,16 +167,27 @@ pub fn edge_target(
     picked: Option<[usize; 2]>,
     crease: bool,
 ) -> Target<[usize; 2]> {
-    let [a, b] = picked.ok_or(PICK_TWO)?;
+    edge_target_tr(surface, picked, crease, Tr::new(Locale::En))
+}
+
+pub fn edge_target_tr(
+    surface: &Surface,
+    picked: Option<[usize; 2]>,
+    crease: bool,
+    tr: Tr,
+) -> Target<[usize; 2]> {
+    let [a, b] = picked.ok_or_else(|| tr.s(Key::ModelErrPickTwo).to_owned())?;
+    let a_s = a.to_string();
+    let b_s = b.to_string();
     let key = seacraft_core::mesh::ordered(a, b);
     let edge = surface
         .edges
         .iter()
         .find(|e| e.key() == key)
-        .ok_or_else(|| format!("Points {a} and {b} are not joined by a control edge."))?;
+        .ok_or_else(|| tr.fmt(Key::ModelErrNotJoined, &[("a", &a_s), ("b", &b_s)]))?;
     match (edge.crease, crease) {
-        (true, true) => Err(format!("Edge {a}–{b} is already a crease.")),
-        (false, false) => Err(format!("Edge {a}–{b} is not a crease.")),
+        (true, true) => Err(tr.fmt(Key::ModelErrAlreadyCrease, &[("a", &a_s), ("b", &b_s)])),
+        (false, false) => Err(tr.fmt(Key::ModelErrNotCrease, &[("a", &a_s), ("b", &b_s)])),
         _ => Ok([a, b]),
     }
 }
@@ -190,42 +231,54 @@ fn item<T>(
 }
 
 /// The Model menu's contents.
-pub fn menu_body(ui: &mut egui::Ui, t: &ModelTargets) -> ModelAction {
+pub fn menu_body(ui: &mut egui::Ui, t: &ModelTargets, tr: Tr) -> ModelAction {
     let mut action = ModelAction::None;
-    if item(ui, "Transform…", &t.transform, |_| {
-        "Fit to target dimensions, scale, move or mirror the hull.".into()
+    if item(ui, tr.s(Key::ModelMenuTransform), &t.transform, |_| {
+        tr.s(Key::ModelMenuTransformTip).to_owned()
     }) {
         action = ModelAction::Transform;
     }
-    if item(ui, "Optimise…", &t.optimise, |_| {
-        "Reshape the hull for least resistance at a speed, displacement held.".into()
+    if item(ui, tr.s(Key::ModelMenuOptimise), &t.optimise, |_| {
+        tr.s(Key::ModelMenuOptimiseTip).to_owned()
     }) {
         action = ModelAction::Optimise;
     }
     ui.separator();
-    if item(ui, "Insert edge", &t.insert_edge, |&(f, a, b)| {
-        format!("Split face {f} along a new edge from point {a} to point {b}.")
-    }) {
+    if item(
+        ui,
+        tr.s(Key::ModelMenuInsertEdge),
+        &t.insert_edge,
+        |&(f, a, b)| {
+            let (f_s, a_s, b_s) = (f.to_string(), a.to_string(), b.to_string());
+            tr.fmt(
+                Key::ModelMenuInsertEdgeTip,
+                &[("face", &f_s), ("a", &a_s), ("b", &b_s)],
+            )
+        },
+    ) {
         if let Ok((face, a, b)) = t.insert_edge {
             action = ModelAction::InsertEdge { face, a, b };
         }
     }
-    if item(ui, "Split face", &t.split_face, |f| {
-        format!("Fan face {f} into triangles about a new centre point.")
+    if item(ui, tr.s(Key::ModelMenuSplitFace), &t.split_face, |f| {
+        let f_s = f.to_string();
+        tr.fmt(Key::ModelMenuSplitFaceTip, &[("face", &f_s)])
     }) {
         if let Ok(face) = t.split_face {
             action = ModelAction::SplitFace(face);
         }
     }
-    if item(ui, "Crease edge", &t.crease, |[a, b]| {
-        format!("Make edge {a}–{b} a sharp crease (a chine or knuckle).")
+    if item(ui, tr.s(Key::ModelMenuCrease), &t.crease, |[a, b]| {
+        let (a_s, b_s) = (a.to_string(), b.to_string());
+        tr.fmt(Key::ModelMenuCreaseTip, &[("a", &a_s), ("b", &b_s)])
     }) {
         if let Ok(edge) = t.crease {
             action = ModelAction::Crease { edge, crease: true };
         }
     }
-    if item(ui, "Remove crease", &t.smooth, |[a, b]| {
-        format!("Make edge {a}–{b} smooth again.")
+    if item(ui, tr.s(Key::ModelMenuRemoveCrease), &t.smooth, |[a, b]| {
+        let (a_s, b_s) = (a.to_string(), b.to_string());
+        tr.fmt(Key::ModelMenuRemoveCreaseTip, &[("a", &a_s), ("b", &b_s)])
     }) {
         if let Ok(edge) = t.smooth {
             action = ModelAction::Crease {
@@ -235,30 +288,40 @@ pub fn menu_body(ui: &mut egui::Ui, t: &ModelTargets) -> ModelAction {
         }
     }
     ui.separator();
-    if item(ui, "Select station", &t.select_station, |p| {
-        format!("Select every control point on point {p}'s station.")
-    }) {
+    if item(
+        ui,
+        tr.s(Key::ModelMenuSelectStation),
+        &t.select_station,
+        |p| {
+            let p_s = p.to_string();
+            tr.fmt(Key::ModelMenuSelectStationTip, &[("point", &p_s)])
+        },
+    ) {
         action = ModelAction::SelectLine(seacraft_core::netlines::LineKind::Transverse);
     }
-    if item(ui, "Select lengthwise line", &t.select_lengthwise, |p| {
-        format!("Select every control point on the lengthwise line through point {p}.")
-    }) {
+    if item(
+        ui,
+        tr.s(Key::ModelMenuSelectLengthwise),
+        &t.select_lengthwise,
+        |p| {
+            let p_s = p.to_string();
+            tr.fmt(Key::ModelMenuSelectLengthwiseTip, &[("point", &p_s)])
+        },
+    ) {
         action = ModelAction::SelectLine(seacraft_core::netlines::LineKind::Lengthwise);
     }
     ui.separator();
     if ui
-        .button("Reload presets")
-        .on_hover_text("Re-read connected-edit.json from disk.")
+        .button(tr.s(Key::ModelMenuReloadPresets))
+        .on_hover_text(tr.s(Key::ModelMenuReloadPresetsTip))
         .clicked()
     {
         action = ModelAction::ReloadPresets;
         ui.close();
     }
     if ui
-        .button("Create example presets file")
-        .on_hover_text(
-            "Write a starter connected-edit.json beside seacraft-gui.json (never overwrites).",
-        )
+        .button(tr.s(Key::ModelMenuCreatePresets))
+        .on_hover_text(tr.s(Key::ModelMenuCreatePresetsTip))
         .clicked()
     {
         action = ModelAction::CreateExamplePresets;
@@ -266,11 +329,9 @@ pub fn menu_body(ui: &mut egui::Ui, t: &ModelTargets) -> ModelAction {
     }
     ui.separator();
     ui.label(
-        egui::RichText::new(
-            "Shift+click picks a second point.\nHold X, Y or Z while dragging to lock an axis.",
-        )
-        .small()
-        .color(theme::TEXT_MUTED),
+        egui::RichText::new(tr.s(Key::ModelMenuHint))
+            .small()
+            .color(theme::TEXT_MUTED),
     );
     action
 }
@@ -387,18 +448,23 @@ impl TransformDialog {
 
     /// Why the fields cannot be applied yet.
     pub fn problem(&self) -> Option<String> {
+        self.problem_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized validation error for the Transform dialog.
+    pub fn problem_tr(&self, tr: Tr) -> Option<String> {
         let positive = |v: Option<f64>| v.is_none_or(|v| v > 0.0 && v.is_finite());
         if !(positive(self.lwl) && positive(self.bwl) && positive(self.draft)) {
-            return Some("target dimensions must be positive".into());
+            return Some(tr.s(Key::ModelTransformErrDimsPositive).to_owned());
         }
         if self
             .scale
             .is_some_and(|s| s.iter().any(|v| !(*v > 0.0 && v.is_finite())))
         {
-            return Some("scale factors must be positive".into());
+            return Some(tr.s(Key::ModelTransformErrScalePositive).to_owned());
         }
         if self.request().is_empty() {
-            return Some("nothing to do: set a target, a scale, a move or a mirror".into());
+            return Some(tr.s(Key::ModelTransformErrEmpty).to_owned());
         }
         None
     }
@@ -408,22 +474,20 @@ impl TransformDialog {
 pub fn transform_dialog(
     ctx: &egui::Context,
     state: &mut TransformDialog,
+    tr: Tr,
 ) -> DialogAction<TransformRequest> {
     let mut action = DialogAction::None;
     let modal = egui::Modal::new(egui::Id::unique("transform_dialog")).show(ctx, |ui| {
         ui.set_width(440.0);
         ui.label(
-            egui::RichText::new("Transform hull")
+            egui::RichText::new(tr.s(Key::ModelTransformTitle))
                 .heading()
                 .color(theme::TEXT_PRIMARY),
         );
         ui.label(
-            egui::RichText::new(
-                "In this order: fit to targets, scale, move, mirror. \
-                 x scales about the transom, y about the centreline, z about the keel.",
-            )
-            .small()
-            .color(theme::TEXT_MUTED),
+            egui::RichText::new(tr.s(Key::ModelTransformSubtitle))
+                .small()
+                .color(theme::TEXT_MUTED),
         );
         ui.add_space(4.0);
         let cur = state.current;
@@ -433,40 +497,46 @@ pub fn transform_dialog(
             .show(ui, |ui| {
                 optional(
                     ui,
-                    "Fit LWL",
+                    tr.s(Key::ModelTransformFitLwl),
                     &mut state.lwl,
                     cur.map_or(10.0, |c| c.lwl),
                     0.01,
                     3,
                     "m",
+                    tr,
                 );
                 ui.end_row();
                 optional(
                     ui,
-                    "Fit BWL",
+                    tr.s(Key::ModelTransformFitBwl),
                     &mut state.bwl,
                     cur.map_or(3.0, |c| c.bwl),
                     0.01,
                     3,
                     "m",
+                    tr,
                 );
                 ui.end_row();
                 optional(
                     ui,
-                    "Fit draft",
+                    tr.s(Key::ModelTransformFitDraft),
                     &mut state.draft,
                     cur.map_or(0.5, |c| c.draft),
                     0.005,
                     3,
                     "m",
+                    tr,
                 );
                 ui.end_row();
             });
         if let Some(c) = cur {
+            let lwl = format!("{:.3}", c.lwl);
+            let bwl = format!("{:.3}", c.bwl);
+            let draft = format!("{:.3}", c.draft);
             ui.label(
-                egui::RichText::new(format!(
-                    "Now: LWL {:.3} m, BWL {:.3} m, draft {:.3} m",
-                    c.lwl, c.bwl, c.draft
+                egui::RichText::new(tr.fmt(
+                    Key::ModelTransformNow,
+                    &[("lwl", &lwl), ("bwl", &bwl), ("draft", &draft)],
                 ))
                 .small()
                 .color(theme::TEXT_SECONDARY),
@@ -481,7 +551,8 @@ pub fn transform_dialog(
                 if ui
                     .checkbox(
                         &mut on,
-                        egui::RichText::new("Scale").color(theme::TEXT_SECONDARY),
+                        egui::RichText::new(tr.s(Key::ModelTransformScale))
+                            .color(theme::TEXT_SECONDARY),
                     )
                     .changed()
                 {
@@ -505,7 +576,9 @@ pub fn transform_dialog(
                     }
                 }
                 ui.end_row();
-                ui.label(egui::RichText::new("Move (m)").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::ModelTransformMove)).color(theme::TEXT_SECONDARY),
+                );
                 for v in state.translate.iter_mut() {
                     ui.add(theme::num(v).speed(0.01).fixed_decimals(3));
                 }
@@ -517,26 +590,32 @@ pub fn transform_dialog(
                 ui.end_row();
             });
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Mirror").color(theme::TEXT_SECONDARY));
-            ui.radio_value(&mut state.mirror, None, "none");
-            ui.radio_value(&mut state.mirror, Some(Axis::X), "x (bow ↔ stern)");
+            ui.label(
+                egui::RichText::new(tr.s(Key::ModelTransformMirror)).color(theme::TEXT_SECONDARY),
+            );
+            ui.radio_value(&mut state.mirror, None, tr.s(Key::CommonNone));
+            ui.radio_value(
+                &mut state.mirror,
+                Some(Axis::X),
+                tr.s(Key::ModelTransformMirrorX),
+            );
             ui.radio_value(&mut state.mirror, Some(Axis::Y), "y");
             ui.radio_value(&mut state.mirror, Some(Axis::Z), "z");
         });
         ui.separator();
         ui.horizontal(|ui| {
-            let problem = state.problem();
+            let problem = state.problem_tr(tr);
             if let Some(e) = state.error.as_ref().or(problem.as_ref()) {
                 ui.colored_label(theme::FAIL, format!("⚠ {e}"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(problem.is_none(), egui::Button::new("Apply"))
+                    .add_enabled(problem.is_none(), egui::Button::new(tr.s(Key::CommonApply)))
                     .clicked()
                 {
                     action = DialogAction::Apply(state.request());
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(tr.s(Key::CommonCancel)).clicked() {
                     action = DialogAction::Cancel;
                 }
             });
@@ -592,8 +671,13 @@ impl OptimiseDialog {
 
     /// The spec the fields describe, or why they do not make one.
     pub fn spec(&self) -> Result<OptimizeSpec, String> {
+        self.spec_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized validation of the Optimise dialog specification.
+    pub fn spec_tr(&self, tr: Tr) -> Result<OptimizeSpec, String> {
         if !(self.speed_kn > 0.0 && self.speed_kn.is_finite()) {
-            return Err("the speed must be positive".into());
+            return Err(tr.s(Key::ModelOptimiseErrSpeedPositive).to_owned());
         }
         let vars: Vec<VarSpec> = DesignVar::ALL
             .iter()
@@ -602,10 +686,10 @@ impl OptimiseDialog {
             .map(|(v, _)| VarSpec::new(*v))
             .collect();
         if vars.is_empty() {
-            return Err("choose at least one variable".into());
+            return Err(tr.s(Key::ModelOptimiseErrChooseVar).to_owned());
         }
         if self.min_gm.is_some() && self.kg.is_none() {
-            return Err("a minimum GM needs a KG".into());
+            return Err(tr.s(Key::ModelOptimiseErrGmNeedsKg).to_owned());
         }
         let mut spec = OptimizeSpec::new(self.speed_kn);
         spec.vars = vars;
@@ -636,22 +720,21 @@ pub fn optimise_dialog(
     ctx: &egui::Context,
     state: &mut OptimiseDialog,
     running: bool,
+    tr: Tr,
 ) -> OptimiseAction {
     let mut action = OptimiseAction::None;
     let mut open = true;
-    egui::Window::new("Optimise hull")
+    egui::Window::new(tr.s(Key::ModelOptimiseTitle))
+        .id(egui::Id::unique("optimise_dialog"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
         .default_width(400.0)
         .show(ctx, |ui| {
             ui.label(
-                egui::RichText::new(
-                    "Reshapes the hull for the least total resistance at the speed, \
-                     holding its displacement. The result replaces the hull as one undo step.",
-                )
-                .small()
-                .color(theme::TEXT_MUTED),
+                egui::RichText::new(tr.s(Key::ModelOptimiseSubtitle))
+                    .small()
+                    .color(theme::TEXT_MUTED),
             );
             ui.add_enabled_ui(!running, |ui| {
                 egui::Grid::new("optimise_fields")
@@ -660,7 +743,7 @@ pub fn optimise_dialog(
                     .show(ui, |ui| {
                         field(
                             ui,
-                            "Speed",
+                            tr.s(Key::ModelOptimiseSpeed),
                             theme::num(&mut state.speed_kn)
                                 .speed(0.1)
                                 .range(0.1..=80.0)
@@ -668,7 +751,10 @@ pub fn optimise_dialog(
                             "kn",
                         );
                         ui.end_row();
-                        ui.label(egui::RichText::new("Vary").color(theme::TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new(tr.s(Key::ModelOptimiseVary))
+                                .color(theme::TEXT_SECONDARY),
+                        );
                         ui.horizontal(|ui| {
                             ui.checkbox(&mut state.vars[0], "Cp");
                             ui.checkbox(&mut state.vars[1], "LCB");
@@ -676,9 +762,12 @@ pub fn optimise_dialog(
                         });
                         ui.label("");
                         ui.end_row();
-                        ui.label(egui::RichText::new("Method").color(theme::TEXT_SECONDARY));
+                        ui.label(
+                            egui::RichText::new(tr.s(Key::ModelOptimiseMethod))
+                                .color(theme::TEXT_SECONDARY),
+                        );
                         ui.horizontal(|ui| {
-                            ui.radio_value(&mut state.method, Method::Auto, "auto");
+                            ui.radio_value(&mut state.method, Method::Auto, tr.s(Key::CommonAuto));
                             ui.radio_value(&mut state.method, Method::Holtrop, "Holtrop");
                             ui.radio_value(&mut state.method, Method::Savitsky, "Savitsky");
                         });
@@ -686,7 +775,7 @@ pub fn optimise_dialog(
                         ui.end_row();
                         field(
                             ui,
-                            "Displacement within",
+                            tr.s(Key::ModelOptimiseDisplacementWithin),
                             theme::num(&mut state.tolerance_pct)
                                 .speed(0.05)
                                 .range(0.05..=10.0)
@@ -696,23 +785,32 @@ pub fn optimise_dialog(
                         ui.end_row();
                         field(
                             ui,
-                            "Evaluations",
+                            tr.s(Key::ModelOptimiseEvaluations),
                             theme::num(&mut state.max_evaluations)
                                 .speed(1.0)
                                 .range(1..=500),
-                            "max",
+                            tr.s(Key::ModelOptimiseMax),
                         );
                         ui.end_row();
                         field(
                             ui,
-                            "Measure at level",
+                            tr.s(Key::ModelOptimiseMeasureLevel),
                             theme::num(&mut state.level).speed(0.05).range(0..=4),
                             "",
                         );
                         ui.end_row();
-                        optional(ui, "KG", &mut state.kg, 1.0, 0.01, 2, "m");
+                        optional(ui, "KG", &mut state.kg, 1.0, 0.01, 2, "m", tr);
                         ui.end_row();
-                        optional(ui, "Minimum GM", &mut state.min_gm, 0.35, 0.01, 2, "m");
+                        optional(
+                            ui,
+                            tr.s(Key::ModelOptimiseMinGm),
+                            &mut state.min_gm,
+                            0.35,
+                            0.01,
+                            2,
+                            "m",
+                            tr,
+                        );
                         ui.end_row();
                     });
             });
@@ -720,7 +818,7 @@ pub fn optimise_dialog(
             if let Some(r) = &state.result {
                 ui.colored_label(theme::OK, r);
             }
-            let problem = state.spec().err();
+            let problem = state.spec_tr(tr).err();
             if let Some(e) = state.error.as_ref().or(problem.as_ref()) {
                 ui.colored_label(theme::FAIL, format!("⚠ {e}"));
             }
@@ -728,23 +826,23 @@ pub fn optimise_dialog(
                 if running {
                     ui.spinner();
                     ui.label(
-                        egui::RichText::new("Optimising… editing the model discards the result.")
+                        egui::RichText::new(tr.s(Key::ModelOptimiseRunning))
                             .color(theme::TEXT_SECONDARY),
                     );
-                    if ui.button("Stop").clicked() {
+                    if ui.button(tr.s(Key::CommonStop)).clicked() {
                         action = OptimiseAction::Stop;
                     }
                 } else {
-                    let spec = state.spec();
+                    let spec = state.spec_tr(tr);
                     if ui
-                        .add_enabled(spec.is_ok(), egui::Button::new("Run"))
+                        .add_enabled(spec.is_ok(), egui::Button::new(tr.s(Key::CommonRun)))
                         .clicked()
                     {
                         if let Ok(spec) = spec {
                             action = OptimiseAction::Run(Box::new(spec), state.level);
                         }
                     }
-                    if ui.button("Close").clicked() {
+                    if ui.button(tr.s(Key::CommonClose)).clicked() {
                         action = OptimiseAction::Close;
                     }
                 }

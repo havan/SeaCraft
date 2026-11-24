@@ -37,10 +37,19 @@ const RING_RADIUS_PX: f32 = 4.5;
 
 /// Project the three world axes onto `view` to describe the corner triad.
 pub fn triad(view: &ViewTransform) -> [AxisGlyph; 3] {
+    triad_tr(
+        view,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Project the three world axes onto `view` with localized axis labels.
+pub fn triad_tr(view: &ViewTransform, tr: seacraft_core::i18n::Tr) -> [AxisGlyph; 3] {
+    use seacraft_core::i18n::Key;
     [
-        (Vec3::new(1.0, 0.0, 0.0), "Fwd"),
-        (Vec3::new(0.0, 1.0, 0.0), "Stbd"),
-        (Vec3::new(0.0, 0.0, 1.0), "Up"),
+        (Vec3::new(1.0, 0.0, 0.0), tr.s(Key::ViewOrientFwd)),
+        (Vec3::new(0.0, 1.0, 0.0), tr.s(Key::ViewOrientStbd)),
+        (Vec3::new(0.0, 0.0, 1.0), tr.s(Key::ViewOrientUp)),
     ]
     .map(|(axis, label)| {
         let sx = axis.dot(view.right);
@@ -70,13 +79,33 @@ pub fn triad(view: &ViewTransform) -> [AxisGlyph; 3] {
 
 /// Return the margin labels (`Aft`/`Fwd`, `Port`/`Stbd`) aligned with a flat view's edges.
 pub fn edge_labels(view: &ViewTransform) -> Vec<(Side, &'static str)> {
+    edge_labels_tr(
+        view,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Return localized margin labels aligned with a flat view's edges.
+pub fn edge_labels_tr(
+    view: &ViewTransform,
+    tr: seacraft_core::i18n::Tr,
+) -> Vec<(Side, &'static str)> {
+    use seacraft_core::i18n::Key;
     if view.perspective {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(4);
     for (axis, neg, pos) in [
-        (Vec3::new(1.0, 0.0, 0.0), "Aft", "Fwd"),
-        (Vec3::new(0.0, 1.0, 0.0), "Port", "Stbd"),
+        (
+            Vec3::new(1.0, 0.0, 0.0),
+            tr.s(Key::ViewOrientAft),
+            tr.s(Key::ViewOrientFwd),
+        ),
+        (
+            Vec3::new(0.0, 1.0, 0.0),
+            tr.s(Key::ViewOrientPort),
+            tr.s(Key::ViewOrientStbd),
+        ),
     ] {
         let rx = axis.dot(view.right);
         if rx.abs() > 0.999 {
@@ -96,8 +125,23 @@ pub fn edge_labels(view: &ViewTransform) -> Vec<(Side, &'static str)> {
 
 /// Paint the axis triad and margin edge labels inside `cell`.
 pub fn draw(painter: &egui::Painter, cell: Rect, view: &ViewTransform) {
-    draw_triad(painter, cell, view);
-    for (side, text) in edge_labels(view) {
+    draw_tr(
+        painter,
+        cell,
+        view,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    );
+}
+
+/// Paint the localized axis triad and margin edge labels inside `cell`.
+pub fn draw_tr(
+    painter: &egui::Painter,
+    cell: Rect,
+    view: &ViewTransform,
+    tr: seacraft_core::i18n::Tr,
+) {
+    draw_triad(painter, cell, view, tr);
+    for (side, text) in edge_labels_tr(view, tr) {
         let (pos, align) = match side {
             Side::Left => (
                 egui::pos2(cell.left() + 8.0, cell.center().y),
@@ -122,11 +166,16 @@ pub fn draw(painter: &egui::Painter, cell: Rect, view: &ViewTransform) {
     }
 }
 
-fn draw_triad(painter: &egui::Painter, cell: Rect, view: &ViewTransform) {
+fn draw_triad(
+    painter: &egui::Painter,
+    cell: Rect,
+    view: &ViewTransform,
+    tr: seacraft_core::i18n::Tr,
+) {
     // Shifted slightly inward from (-38, -34) so a 20 px arm + label stays inside `cell`.
     let origin = cell.right_bottom() + egui::vec2(-46.0, -40.0);
     let colours = [theme::AXIS_X, theme::AXIS_Y, theme::AXIS_Z];
-    let glyphs = triad(view);
+    let glyphs = triad_tr(view, tr);
 
     let mut bounds = Rect::from_center_size(origin, egui::Vec2::splat(RING_RADIUS_PX * 2.0));
     let mut labels = Vec::with_capacity(3);
