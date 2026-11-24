@@ -171,25 +171,34 @@ impl HydrostaticTable {
 
     /// A standalone HTML page, the way a lines plan would carry it.
     pub fn html(&self) -> String {
+        self.html_tr(crate::i18n::Tr::new(crate::i18n::Locale::En))
+    }
+
+    /// A standalone HTML page localized with `tr`.
+    pub fn html_tr(&self, tr: crate::i18n::Tr) -> String {
+        use crate::i18n::Key;
+        let title = esc(&tr.fmt(Key::TableHtmlTitle, &[("name", &self.name)]));
+        let heading = esc(&tr.fmt(Key::TableHtmlHeading, &[("name", &self.name)]));
+        let dens = format!("{:.1}", self.water_density);
+        let caption = esc(&tr.fmt(Key::TableHtmlCaption, &[("dens", &dens)]));
+        let lang = tr.locale().code();
+
         let mut out = String::with_capacity(2048 + 96 * self.rows.len());
         let _ = write!(
             out,
-            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-             <title>Hydrostatics - {name}</title>\n<style>\n\
+            "<!DOCTYPE html>\n<html lang=\"{lang}\">\n<head>\n<meta charset=\"utf-8\">\n\
+             <title>{title}</title>\n<style>\n\
              body {{ font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }}\n\
              h1 {{ font-size: 1.2rem; }}\n\
              table {{ border-collapse: collapse; font-variant-numeric: tabular-nums; }}\n\
              th, td {{ padding: 0.25rem 0.6rem; text-align: right; border-bottom: 1px solid #ddd; }}\n\
              th {{ background: #f4f4f4; font-weight: 600; }}\n\
              caption {{ text-align: left; padding-bottom: 0.5rem; font-size: 0.85rem; color: #555; }}\n\
-             </style>\n</head>\n<body>\n<h1>{name} - hydrostatics</h1>\n<table>\n\
-             <caption>Density {dens:.1} kg/m3. Lengths in metres, displacement in tonnes, \
-             TPC in t/cm, MTC in t&middot;m/cm.</caption>\n\
+             </style>\n</head>\n<body>\n<h1>{heading}</h1>\n<table>\n\
+             <caption>{caption}</caption>\n\
              <thead><tr><th>T</th><th>&nabla;</th><th>&Delta;</th><th>KB</th><th>BM</th>\
              <th>KM</th><th>LCB</th><th>LCF</th><th>Cb</th><th>Cp</th><th>Cw</th>\
              <th>Aw</th><th>TPC</th><th>MTC</th></tr></thead>\n<tbody>\n",
-            name = esc(&self.name),
-            dens = self.water_density
         );
         for r in &self.rows {
             let _ = writeln!(
@@ -355,5 +364,16 @@ mod tests {
         let t = table(&s, &opts(&s), &[0.0, -1.0, 0.3]);
         assert_eq!(t.rows.len(), 1);
         assert!((t.rows[0].draft - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn html_tr_renders_turkish() {
+        let s = demo::demo_hull(false);
+        let t = table(&s, &opts(&s), &[0.2, 0.62]);
+        let html = t.html_tr(crate::i18n::Tr::new(crate::i18n::Locale::Tr));
+        assert!(html.contains("<html lang=\"tr\">"), "{html}");
+        assert!(html.contains("Hidrostatik - "), "{html}");
+        assert!(html.contains("Yoğunluk "), "{html}");
+        assert!(html.contains("deplasman ton"), "{html}");
     }
 }

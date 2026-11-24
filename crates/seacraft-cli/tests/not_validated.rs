@@ -11,6 +11,7 @@ fn example(name: &str) -> String {
 
 fn stdout(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_seacraft"))
+        .env("SEACRAFT_LANG", "en")
         .args(args)
         .output()
         .expect("run seacraft");

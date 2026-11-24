@@ -6,9 +6,10 @@ description: Use when writing or running SeaCraft tests, adding a numeric oracle
 # Tests
 
 `cargo xtask ci` is the gate. Run it before every commit. It runs fmt, clippy with warnings denied, the tests, the
-version check, demo reference numbers and the repository checks. The dev profile is optimised, and it keeps debug
-assertions and overflow checks on. `cargo xtask ci --full` also runs the release build's tests: use it before a
-release. CI runs it weekly.
+version check, demo reference numbers, `cargo xtask i18n`, and the repository checks. The dev profile is optimised,
+and it keeps debug assertions and overflow checks on. When writing CLI integration tests asserting English text,
+pin `SEACRAFT_LANG=en` in the child environment so host OS locales do not break them. `cargo xtask ci --full` also
+runs the release build's tests: use it before a release. CI runs it weekly.
 
 * **New test**: prefer analytic or invariant checks (box displacement, barge
   waterplane, GZ ≈ 0 at zero heel, creased box volume preserved, mirror

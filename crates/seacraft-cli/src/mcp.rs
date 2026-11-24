@@ -49,7 +49,9 @@ use seacraft_core::stability::{
 };
 use seacraft_core::subdiv::{SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
-    curves, demo, develop, export, fef, linesplan, loading, michell, offsets, optimize,
+    curves, demo, develop, export, fef,
+    i18n::{Key, Locale, Tr},
+    linesplan, loading, michell, offsets, optimize,
     parametric::{self, HullKind, HullSpec},
     planing, raster, resistance, table, topology, transform, trimopt,
 };
@@ -2127,6 +2129,7 @@ impl McpServer {
     }
 
     fn unfold_plate(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let locale = opt_locale(a)?;
         let level = match a.get("level") {
             None | Some(Value::Null) => self.opts.subdivision.level,
             Some(_) => level_arg(a)?,
@@ -2171,11 +2174,17 @@ impl McpServer {
         let unfolded = develop::unfold(&hull.verts, &faces);
         let mut written = None;
         if let Some(path) = str_arg(a, "path").filter(|s| !s.trim().is_empty()) {
-            let title = format!(
-                "{} - plate on {:?} {:.2}..{:.2} m",
-                self.surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
+            let tr = Tr::new(locale);
+            let title = tr.fmt(
+                Key::CliUnfoldSvgTitle,
+                &[
+                    ("name", &self.surface.settings.name),
+                    ("lo", &format!("{:.2}", selection.slabs[0].1)),
+                    ("hi", &format!("{:.2}", selection.slabs[0].2)),
+                    ("axis", &format!("{axis:?}")),
+                ],
             );
-            seacraft_core::io::write_atomic(path, develop::svg(&unfolded, &title))
+            seacraft_core::io::write_atomic(path, develop::svg_tr(&unfolded, &title, tr))
                 .map_err(|e| format!("unfold_plate: cannot write {path}: {e}"))?;
             written = Some(path.to_string());
         }
@@ -2189,6 +2198,7 @@ impl McpServer {
     }
 
     fn export_linesplan(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        let locale = opt_locale(a)?;
         let path = str_arg(a, "path")
             .filter(|p| !p.trim().is_empty())
             .ok_or("export_linesplan: give `path` (.svg, .dxf or .igs)")?;
@@ -2201,7 +2211,7 @@ impl McpServer {
             mode: SubdivisionMode::Loop,
             combs: bool_arg(a, "combs").unwrap_or(false),
             comb_scale: number_arg(a, "comb_scale").unwrap_or(0.6),
-            ..Default::default()
+            locale,
         };
         let extension = path
             .extension()
@@ -2321,8 +2331,12 @@ impl McpServer {
         let waterlines = offsets::default_waterlines(&hull, req.waterline_steps);
         let buttocks = offsets::default_buttocks(&hull, req.buttock_steps);
         let table = offsets::table_of_offsets(&hull, req.stations, &waterlines, &buttocks);
-        let title = format!("{} - table of offsets", self.surface.settings.name);
-        let doc = offsets::pdf(&table, &title, req.imperial)
+        let tr = Tr::new(req.locale);
+        let title = tr.fmt(
+            Key::OffsetsPdfDocTitle,
+            &[("name", &self.surface.settings.name)],
+        );
+        let doc = offsets::pdf_tr(&table, &title, req.imperial, tr)
             .map_err(|e| format!("export_offsets_pdf: {e}"))?;
         seacraft_core::io::write_atomic(&req.path, &doc.bytes)
             .map_err(|e| format!("{}: {e}", req.path.display()))?;
@@ -2416,6 +2430,7 @@ impl McpServer {
 
         let mut opts = seacraft_core::report::ReportOptions::from_surface(&self.surface);
         opts = self.project.report.apply(opts);
+        opts.locale = opt_locale(a)?;
         if let Some(d) = number_arg(a, "draft") {
             if d <= 0.0 {
                 return Err("design_report: `draft` must be positive".into());
@@ -2675,6 +2690,14 @@ fn opt_str<'a>(a: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, 
     }
 }
 
+fn opt_locale(a: &Map<String, Value>) -> Result<Locale, String> {
+    match opt_str(a, "locale")? {
+        None => Ok(Locale::En),
+        Some(s) => Locale::parse(s)
+            .ok_or_else(|| format!("`locale` must be one of \"en\", \"tr\" (got `{s}`)")),
+    }
+}
+
 /// What `export_templates` was asked for, checked.
 struct TemplatesArgs {
     path: PathBuf,
@@ -2748,6 +2771,7 @@ fn templates_args(
         None => 1.0,
     };
     let imperial = opt_bool(a, "imperial")?.unwrap_or(false);
+    let locale = opt_locale(a)?;
     let defaults = PageSetup::default();
     let setup = PageSetup {
         paper,
@@ -2756,7 +2780,7 @@ fn templates_args(
         scale,
         imperial,
         title: String::new(),
-        locale: seacraft_core::i18n::Locale::En,
+        locale,
     };
     setup.check().map_err(err)?;
     let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
@@ -2781,7 +2805,7 @@ fn templates_args(
         profile: opt_bool(a, "profile")?.unwrap_or(false),
         transom,
         imperial,
-        locale: seacraft_core::i18n::Locale::En,
+        locale,
     };
     Ok(TemplatesArgs {
         path,
@@ -2894,6 +2918,7 @@ fn panels_args(
         None => 1.0,
     };
     let imperial = opt_bool(a, "imperial")?.unwrap_or(false);
+    let locale = opt_locale(a)?;
     let defaults = PageSetup::default();
     let setup = PageSetup {
         paper,
@@ -2902,7 +2927,7 @@ fn panels_args(
         scale,
         imperial,
         title: String::new(),
-        locale: seacraft_core::i18n::Locale::En,
+        locale,
     };
     let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
     let target = match str_arg(a, "path").filter(|p| !p.trim().is_empty()) {
@@ -2943,7 +2968,7 @@ fn panels_args(
             stock: checked.stock,
             imperial,
             nesting: checked.nesting,
-            locale: seacraft_core::i18n::Locale::En,
+            locale,
         },
         setup,
         offsets_pages: opt_bool(a, "offsets_pages")?.unwrap_or(true),
@@ -2959,6 +2984,7 @@ struct OffsetsPdfArgs {
     buttock_steps: usize,
     level: Option<u8>,
     imperial: bool,
+    locale: Locale,
 }
 
 fn offsets_pdf_args(a: &Map<String, Value>) -> Result<OffsetsPdfArgs, String> {
@@ -2984,6 +3010,7 @@ fn offsets_pdf_args(a: &Map<String, Value>) -> Result<OffsetsPdfArgs, String> {
             Some(_) => Some(level_arg(a)?),
         },
         imperial: opt_bool(a, "imperial")?.unwrap_or(false),
+        locale: opt_locale(a)?,
         path,
     })
 }
@@ -2992,6 +3019,14 @@ fn offsets_pdf_args(a: &Map<String, Value>) -> Result<OffsetsPdfArgs, String> {
 
 fn string(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
+}
+
+fn locale_prop() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["en", "tr"],
+        "description": "Language for text inside written documents (default: \"en\")",
+    })
 }
 
 fn number(desc: &str) -> Value {
@@ -3575,6 +3610,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "svg_path": string("Write the SVG contour map here"),
                     "vti_path": string("Write VTK image data (.vti) here"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
+                    "locale": locale_prop(),
                 }),
                 &[],
             ),
@@ -3620,6 +3656,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "both_sides": boolean("Include the port side too (default false: one plate)"),
                     "path": string("Write the flat pattern SVG here"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
+                    "locale": locale_prop(),
                 }),
                 &[],
             ),
@@ -3714,6 +3751,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "combs": boolean("Draw porcupine curvature combs (SVG and DXF)"),
                     "comb_scale": number("Comb gain: metres drawn per 1/m of curvature (default 0.6)"),
                     "level": integer("Subdivision level 0-6 (default 3)"),
+                    "locale": locale_prop(),
                 }),
                 &["path"],
             ),
@@ -3750,6 +3788,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "scale": string("Drawing scale, as 1:N or one number (default 1:1)"),
                     "imperial": boolean("Add feet and inches beside the metric readings"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
+                    "locale": locale_prop(),
                 }),
                 &["path"],
             ),
@@ -3798,6 +3837,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "overlap_mm": number("How much neighbouring tiles share, mm (default 10)"),
                     "scale": string("Drawing scale, as 1:N or one number (default 1:1)"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
+                    "locale": locale_prop(),
                 }),
                 &[],
             ),
@@ -3817,6 +3857,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "buttock_steps": integer("Buttocks spread over the half-breadth (default 4)"),
                     "imperial": boolean("Add the tables in feet, inches and eighths"),
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
+                    "locale": locale_prop(),
                 }),
                 &["path"],
             ),
@@ -3854,6 +3895,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "kg": number("Vertical centre of gravity above keel in metres"),
                     "lcg": number("Longitudinal centre of gravity in model x"),
                     "speeds_kn": {"type": "array", "items": {"type": "number"}, "description": "Speeds in knots for resistance evaluation"},
+                    "locale": locale_prop(),
                 }),
                 &["path"],
             ),
@@ -4310,7 +4352,10 @@ impl Remote {
             "planing_curve" => self.request("planing.compute", Value::Object(a.clone())),
             "wave_pattern" => self.request("waves.compute", Value::Object(a.clone())),
             "transform_hull" => self.request("model.transform", Value::Object(a.clone())),
-            "unfold_plate" => self.request("curves.unfold", Value::Object(a.clone())),
+            "unfold_plate" => {
+                opt_locale(a)?;
+                self.request("curves.unfold", Value::Object(a.clone()))
+            }
             "hydro_table" => self.request("hydro.table", Value::Object(a.clone())),
             "trim_scan" => self.request("hydro.trim", Value::Object(a.clone())),
             "optimize_hull" => self.request("model.optimize", Value::Object(a.clone())),
@@ -4358,6 +4403,10 @@ impl Remote {
                         .ok_or("`comb_scale` must be a finite number")?;
                     p["comb_scale"] = json!(scale);
                 }
+                opt_locale(a)?;
+                if let Some(loc) = str_arg(a, "locale") {
+                    p["locale"] = json!(loc);
+                }
                 self.request("model.export", p)
             }
             "export_templates" => {
@@ -4382,6 +4431,7 @@ impl Remote {
                     "buttock_steps",
                     "level",
                     "imperial",
+                    "locale",
                 ] {
                     if let Some(v) = a.get(key).filter(|v| !v.is_null()) {
                         p[key] = v.clone();
@@ -4445,6 +4495,10 @@ impl Remote {
                 }
                 if a.get("level").is_some() {
                     p["level"] = json!(level_arg(a)?);
+                }
+                opt_locale(a)?;
+                if let Some(loc) = str_arg(a, "locale") {
+                    p["locale"] = json!(loc);
                 }
                 self.request("report.design", p)
             }
@@ -6779,6 +6833,7 @@ mod tests {
             "scale",
             "imperial",
             "level",
+            "locale",
         ];
         want.sort_unstable();
         assert_eq!(keys, want);
@@ -7704,5 +7759,114 @@ mod tests {
             json!({"level": 1, "condition": "no such condition"}),
         );
         assert!(e.contains("heel_equilibrium"), "{e}");
+    }
+
+    #[test]
+    fn document_export_tools_honour_optional_locale() {
+        let dir = std::env::temp_dir().join(format!("seacraft-mcp-i18n-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut s = McpServer::new();
+        let report_path = dir.join("report.html");
+        let rep = ok(
+            &mut s,
+            1,
+            "design_report",
+            json!({"path": report_path, "kg": 2.2, "locale": "tr"}),
+        );
+        assert!(rep.get("sections").is_some(), "{rep}");
+        let html = std::fs::read_to_string(&report_path).unwrap();
+        assert!(html.contains("<html lang=\"tr\">"), "{html}");
+        assert!(html.contains("Ana Boyutlar ve Özellikler"), "{html}");
+
+        let lines_path = dir.join("lines.svg");
+        let lines = ok(
+            &mut s,
+            2,
+            "export_linesplan",
+            json!({"path": lines_path, "level": 1, "locale": "tr"}),
+        );
+        assert_eq!(lines["format"], "svg");
+        let lines_svg = std::fs::read_to_string(&lines_path).unwrap();
+        assert!(lines_svg.contains("Posta planı - postalar"), "{lines_svg}");
+
+        let tpl_path = dir.join("templates.svg");
+        let tpl = ok(
+            &mut s,
+            3,
+            "export_templates",
+            json!({"path": tpl_path, "level": 1, "scale": "1:10", "locale": "tr"}),
+        );
+        assert_eq!(tpl["format"], "svg");
+        let tpl_svg = std::fs::read_to_string(&tpl_path).unwrap();
+        assert!(tpl_svg.contains("Posta 1"), "{tpl_svg}");
+
+        let offsets_path = dir.join("offsets.pdf");
+        let off = ok(
+            &mut s,
+            4,
+            "export_offsets_pdf",
+            json!({"path": offsets_path, "level": 1, "locale": "tr"}),
+        );
+        assert_eq!(off["format"], "offsets_pdf");
+        assert!(std::fs::read(&offsets_path).unwrap().starts_with(b"%PDF-"));
+
+        let wave_path = dir.join("waves.svg");
+        let waves = ok(
+            &mut s,
+            5,
+            "wave_pattern",
+            json!({"fn": 0.45, "level": 1, "svg_path": wave_path, "locale": "tr"}),
+        );
+        assert_eq!(waves["regime"]["key"], "hull_speed");
+        let wave_svg = std::fs::read_to_string(&wave_path).unwrap();
+        assert!(wave_svg.contains("hızda dalga deseni"), "{wave_svg}");
+
+        let unfold_path = dir.join("unfold.svg");
+        let _unfold = ok(
+            &mut s,
+            6,
+            "unfold_plate",
+            json!({"axis": "z", "from": 0.0, "to": 0.6, "path": unfold_path, "level": 1, "locale": "tr"}),
+        );
+        let unfold_svg = std::fs::read_to_string(&unfold_path).unwrap();
+        assert!(unfold_svg.contains("boşluk "), "{unfold_svg}");
+
+        let mut pram = pram_server(0.0);
+        let panels_path = dir.join("panels.svg");
+        let panels = ok(
+            &mut pram,
+            7,
+            "export_panels",
+            json!({"path": panels_path, "level": 1, "scale": "1:10", "locale": "tr"}),
+        );
+        assert_eq!(panels["written"], true);
+        let panels_svg = std::fs::read_to_string(&panels_path).unwrap();
+        assert!(
+            panels_svg.contains("Modellenen yüzey üzerinde açındırılmıştır"),
+            "{panels_svg}"
+        );
+
+        // Invalid locale is rejected by schema check and direct call.
+        for tool in [
+            "design_report",
+            "export_linesplan",
+            "export_templates",
+            "export_offsets_pdf",
+        ] {
+            let bad = request(
+                &mut s,
+                100,
+                "tools/call",
+                json!({"name": tool, "arguments": {"path": report_path, "locale": "xx"}}),
+            );
+            assert_eq!(bad["error"]["code"], INVALID_PARAMS, "{tool}: {bad}");
+        }
+        let bad_args = json!({"locale": "xx"});
+        let bad_msg = opt_locale(bad_args.as_object().unwrap()).unwrap_err();
+        assert!(bad_msg.contains("locale"), "{bad_msg}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -10,7 +10,9 @@ use seacraft_core::stability::{
 use seacraft_core::subdiv::{evaluate, SubdivisionMode, SubdivisionOptions};
 use seacraft_core::{
     analysis::AnalysisMode,
-    curves, damage, demo, develop, export, fef, lackenby, linesplan, loading,
+    curves, damage, demo, develop, export, fef,
+    i18n::{resolve_locale, Key, LanguagePref, Locale, Tr},
+    lackenby, linesplan, loading,
     math::Vec3,
     mesh::Surface,
     michell, offsets,
@@ -32,6 +34,9 @@ use std::path::{Path, PathBuf};
                   It is free software under GPL-3.0-or-later; see LICENSE and DISCLAIMER.md."
 )]
 struct Cli {
+    /// Display language for human-readable output and generated documents (en, tr)
+    #[arg(long, global = true, value_name = "CODE")]
+    lang: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -480,7 +485,7 @@ struct TrimArgs {
     json: bool,
 }
 
-fn cmd_trim(a: TrimArgs) -> Result<()> {
+fn cmd_trim(a: TrimArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.level,
@@ -497,17 +502,27 @@ fn cmd_trim(a: TrimArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&scan)?);
         return Ok(());
     }
+    let not_held = if a.no_hold_volume {
+        tr.s(Key::CliTrimNotHeld)
+    } else {
+        ""
+    };
     println!(
-        "trim scan at {:.2} kn, displacement held at {:.3} m3{}",
-        scan.speed_kn,
-        scan.target_volume_m3,
-        if a.no_hold_volume {
-            " (NOT held: draft fixed)"
-        } else {
-            ""
-        }
+        "{}",
+        tr.fmt(
+            Key::CliTrimHeading,
+            &[
+                ("speed", &format!("{:.2}", scan.speed_kn)),
+                ("volume", &format!("{:.3}", scan.target_volume_m3)),
+                ("not_held", not_held),
+            ]
+        )
     );
-    println!("   trim    draft     LWL      Fn     RT [kN]   PE [kW]");
+    println!(
+        "   {:>4}  {:>7}     LWL      Fn     RT [kN]   PE [kW]",
+        tr.s(Key::CliTrimColTrim),
+        tr.s(Key::CliTrimColDraft)
+    );
     for p in &scan.points {
         println!(
             "{:+7.3} {:7.3} {:8.3} {:6.3} {:10.3} {:10.2}",
@@ -520,21 +535,27 @@ fn cmd_trim(a: TrimArgs) -> Result<()> {
         );
     }
     if let Some(b) = scan.best {
+        let boundary = if scan.at_boundary {
+            tr.s(Key::CliTrimAtBoundary)
+        } else {
+            ""
+        };
         println!(
-            "cheapest: trim {:+.3} m at draft {:.3} m - RT {:.3} kN, PE {:.2} kW{}",
-            b.trim_m,
-            b.draft_m,
-            b.rt_n / 1000.0,
-            b.pe_kw,
-            if scan.at_boundary {
-                " (at the edge of the range)"
-            } else {
-                ""
-            }
+            "{}",
+            tr.fmt(
+                Key::CliTrimCheapest,
+                &[
+                    ("trim", &format!("{:+.3}", b.trim_m)),
+                    ("draft", &format!("{:.3}", b.draft_m)),
+                    ("rt", &format!("{:.3}", b.rt_n / 1000.0)),
+                    ("pe", &format!("{:.2}", b.pe_kw)),
+                    ("boundary", boundary),
+                ]
+            )
         );
     }
     for w in &scan.warnings {
-        println!("  warning: {w}");
+        println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
     }
     Ok(())
 }
@@ -593,7 +614,7 @@ struct OptimizeArgs {
     json: bool,
 }
 
-fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
+fn cmd_optimize(a: OptimizeArgs, tr: Tr) -> Result<()> {
     use seacraft_core::optimize::{self, Method, OptimizeSpec};
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
@@ -631,12 +652,23 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     }
     let (b, o) = (&report.baseline, &report.optimised);
     println!(
-        "{}  -  resistance optimisation at {:.2} kn ({:?}, Fn {:.3})",
-        s.settings.name, report.speed_kn, report.method, b.froude
+        "{}",
+        tr.fmt(
+            Key::CliOptimizeHeading,
+            &[
+                ("name", &s.settings.name),
+                ("speed", &format!("{:.2}", report.speed_kn)),
+                ("method", &format!("{:?}", report.method)),
+                ("fn", &format!("{:.3}", b.froude)),
+            ]
+        )
     );
     println!(
         "  {:<14} {:>12} {:>12} {:>10}",
-        "", "baseline", "optimised", "change"
+        "",
+        tr.s(Key::CliOptimizeColBaseline),
+        tr.s(Key::CliOptimizeColOptimised),
+        tr.s(Key::CliOptimizeColChange)
     );
     let row = |name: &str, x: f64, y: f64, prec: usize| {
         println!(
@@ -650,9 +682,14 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     };
     row("RT [kN]", b.rt_kn, o.rt_kn, 3);
     row("PE [kW]", b.pe_kw, o.pe_kw, 2);
-    row("displ. [t]", b.displacement_t, o.displacement_t, 3);
-    row("volume [m3]", b.volume_m3, o.volume_m3, 3);
-    row("draft [m]", b.draft_m, o.draft_m, 4);
+    row(
+        tr.s(Key::CliOptimizeRowDispl),
+        b.displacement_t,
+        o.displacement_t,
+        3,
+    );
+    row(tr.s(Key::CliOptimizeRowVolume), b.volume_m3, o.volume_m3, 3);
+    row(tr.s(Key::CliOptimizeRowDraft), b.draft_m, o.draft_m, 4);
     row("Cp", b.cp, o.cp, 4);
     row("Cb", b.cb, o.cb, 4);
     row("LCB [% LWL]", b.lcb_pct, o.lcb_pct, 2);
@@ -664,17 +701,23 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
     if let (Some(gb), Some(go)) = (b.gm_m, o.gm_m) {
         row("GM [m]", gb, go, 3);
     }
+    let status = if report.constraints_met {
+        tr.s(Key::CliOptimizeMet)
+    } else {
+        tr.s(Key::CliOptimizeNotMet)
+    };
     println!(
-        "  RT {:+.2} %   displacement error {:.3} %   constraints {}",
-        report.rt_change_pct,
-        report.displacement_error_pct,
-        if report.constraints_met {
-            "met"
-        } else {
-            "NOT met"
-        }
+        "{}",
+        tr.fmt(
+            Key::CliOptimizeSummary,
+            &[
+                ("rt_pct", &format!("{:+.2}", report.rt_change_pct)),
+                ("disp_err", &format!("{:.3}", report.displacement_error_pct)),
+                ("status", status),
+            ]
+        )
     );
-    println!("  variables:");
+    println!("{}", tr.s(Key::CliOptimizeVariables));
     for v in &report.variables {
         println!(
             "    {:<16} {:>9.5}  (range {:.4} .. {:.4}{})",
@@ -682,17 +725,33 @@ fn cmd_optimize(a: OptimizeArgs) -> Result<()> {
             v.value,
             v.lo,
             v.hi,
-            if v.at_bound { ", on a bound" } else { "" }
+            if v.at_bound {
+                tr.s(Key::CliOptimizeAtBound)
+            } else {
+                ""
+            }
         );
     }
     println!(
-        "  {} iterations, {} evaluations ({} distinct); {}",
-        report.iterations, report.evaluations, report.unique_evaluations, report.convergence_reason
+        "{}",
+        tr.fmt(
+            Key::CliOptimizeEvals,
+            &[
+                ("iters", &report.iterations.to_string()),
+                ("evals", &report.evaluations.to_string()),
+                ("unique", &report.unique_evaluations.to_string()),
+                ("reason", &report.convergence_reason),
+            ]
+        )
     );
     for w in &report.warnings {
-        println!("  warning: {w}");
+        println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
     }
-    println!("  wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!(
+        "{}",
+        tr.fmt(Key::CliCommonWroteIndent, &[("path", &out_str)])
+    );
     Ok(())
 }
 
@@ -723,7 +782,7 @@ struct TableArgs {
     json: bool,
 }
 
-fn cmd_table(a: TableArgs) -> Result<()> {
+fn cmd_table(a: TableArgs, tr: Tr) -> Result<()> {
     let text = std::fs::read_to_string(&a.file)
         .with_context(|| format!("cannot read {}", a.file.display()))?;
     let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
@@ -751,7 +810,7 @@ fn cmd_table(a: TableArgs) -> Result<()> {
             .with_context(|| format!("cannot write {}", path.display()))?;
     }
     if let Some(path) = &a.html {
-        seacraft_core::io::write_atomic(path, t.html())
+        seacraft_core::io::write_atomic(path, t.html_tr(tr))
             .with_context(|| format!("cannot write {}", path.display()))?;
     }
     if a.json {
@@ -759,8 +818,15 @@ fn cmd_table(a: TableArgs) -> Result<()> {
         return Ok(());
     }
     println!(
-        "hydrostatics for {} (rho {:.1} kg/m3, level {})",
-        t.name, t.water_density, a.level
+        "{}",
+        tr.fmt(
+            Key::CliTableHeading,
+            &[
+                ("name", &t.name),
+                ("density", &format!("{:.1}", t.water_density)),
+                ("level", &a.level.to_string()),
+            ]
+        )
     );
     println!(
         "   T     nabla      Delta     KB      BM     KMT     LCB     LCF     Cb     Cp      TPC    MTC"
@@ -784,10 +850,18 @@ fn cmd_table(a: TableArgs) -> Result<()> {
         );
     }
     if let Some(p) = &a.csv {
-        println!("  wrote {}", p.display());
+        let path_str = p.display().to_string();
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWroteIndent, &[("path", &path_str)])
+        );
     }
     if let Some(p) = &a.html {
-        println!("  wrote {}", p.display());
+        let path_str = p.display().to_string();
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWroteIndent, &[("path", &path_str)])
+        );
     }
     Ok(())
 }
@@ -817,7 +891,7 @@ struct LackenbyArgs {
     json: bool,
 }
 
-fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
+fn cmd_lackenby(a: LackenbyArgs, tr: Tr) -> Result<()> {
     let text = std::fs::read_to_string(&a.file)
         .with_context(|| format!("cannot read {}", a.file.display()))?;
     let s = fef::parse(&text).map_err(|e| anyhow::anyhow!("{}: {e}", a.file.display()))?;
@@ -830,31 +904,71 @@ fn cmd_lackenby(a: LackenbyArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
-    println!("station shift (Lackenby-style, ends pinned)");
+    println!("{}", tr.s(Key::CliLackenbyHeading));
     println!(
-        "  before  Cp {:.4}  LCB {:+.2} %  V {:.3} m3  LWL {:.3} m",
-        report.before.cp, report.before.lcb_pct, report.before.volume_m3, report.before.lwl
+        "{}",
+        tr.fmt(
+            Key::CliLackenbyBefore,
+            &[
+                ("cp", &format!("{:.4}", report.before.cp)),
+                ("lcb", &format!("{:+.2}", report.before.lcb_pct)),
+                ("v", &format!("{:.3}", report.before.volume_m3)),
+                ("lwl", &format!("{:.3}", report.before.lwl)),
+            ]
+        )
     );
     println!(
-        "  target  Cp {:.4}  LCB {:+.2} %",
-        target.cp, target.lcb_pct
+        "{}",
+        tr.fmt(
+            Key::CliLackenbyTarget,
+            &[
+                ("cp", &format!("{:.4}", target.cp)),
+                ("lcb", &format!("{:+.2}", target.lcb_pct)),
+            ]
+        )
     );
     println!(
-        "  after   Cp {:.4}  LCB {:+.2} %  V {:.3} m3  LWL {:.3} m",
-        report.after.cp, report.after.lcb_pct, report.after.volume_m3, report.after.lwl
+        "{}",
+        tr.fmt(
+            Key::CliLackenbyAfter,
+            &[
+                ("cp", &format!("{:.4}", report.after.cp)),
+                ("lcb", &format!("{:+.2}", report.after.lcb_pct)),
+                ("v", &format!("{:.3}", report.after.volume_m3)),
+                ("lwl", &format!("{:.3}", report.after.lwl)),
+            ]
+        )
     );
     println!(
-        "  error   dCp {:+.5}  dLCB {:+.4} %  ({} iterations)",
-        report.cp_error, report.lcb_error, report.iterations
+        "{}",
+        tr.fmt(
+            Key::CliLackenbyError,
+            &[
+                ("dcp", &format!("{:+.5}", report.cp_error)),
+                ("dlcb", &format!("{:+.4}", report.lcb_error)),
+                ("iters", &report.iterations.to_string()),
+            ]
+        )
     );
     println!(
-        "  shift   a {:+.4}  b {:+.4}  midships {:.3} m",
-        report.coefficients.0, report.coefficients.1, report.midship_shift_m
+        "{}",
+        tr.fmt(
+            Key::CliLackenbyShift,
+            &[
+                ("a", &format!("{:+.4}", report.coefficients.0)),
+                ("b", &format!("{:+.4}", report.coefficients.1)),
+                ("mid", &format!("{:.3}", report.midship_shift_m)),
+            ]
+        )
     );
     if !report.converged {
-        println!("  ! outside this method's authority: the file holds the closest hull found");
+        println!("{}", tr.s(Key::CliLackenbyNotConverged));
     }
-    println!("  wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!(
+        "{}",
+        tr.fmt(Key::CliCommonWroteIndent, &[("path", &out_str)])
+    );
     Ok(())
 }
 
@@ -1586,37 +1700,52 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    match Cli::parse().command {
-        Command::Demo(a) => cmd_demo(a),
-        Command::Example(a) => cmd_example(a),
-        Command::Generate(a) => cmd_generate(a),
-        Command::Info(a) => cmd_info(a),
-        Command::Hydro(a) => cmd_hydro(a),
-        Command::Export(a) => cmd_export(a),
-        Command::Subdiv(a) => cmd_subdiv(a),
-        Command::Sac(a) => cmd_sac(a),
-        Command::Bonjean(a) => cmd_bonjean(a),
-        Command::Offsets(a) => cmd_offsets(a),
-        Command::Transform(a) => cmd_transform(a),
-        Command::Lackenby(a) => cmd_lackenby(a),
-        Command::Table(a) => cmd_table(a),
-        Command::Trim(a) => cmd_trim(a),
-        Command::Optimize(a) => cmd_optimize(a),
-        Command::Resistance(a) => cmd_resistance(a),
-        Command::Waves(a) => cmd_waves(a),
-        Command::Unfold(a) => cmd_unfold(a),
-        Command::Edit(a) => cmd_edit(a),
-        Command::Planing(a) => cmd_planing(a),
-        Command::Stability(a) => cmd_stability(a),
-        Command::Loadcase(a) => cmd_loadcase(a),
-        Command::Heel(a) => cmd_heel(a),
-        Command::Damage(a) => cmd_damage(a),
-        Command::Seakeeping(a) => cmd_seakeeping(a),
-        Command::Linesplan(a) => cmd_linesplan(a),
-        Command::Templates(a) => cmd_templates(a),
-        Command::Panels(a) => cmd_panels(a),
-        Command::Report(a) => cmd_report(a),
-        Command::Render(a) => cmd_render(a),
+    let cli = Cli::parse();
+    let cli_locale = match cli.lang.as_deref() {
+        Some(code) => Some(
+            Locale::parse(code)
+                .ok_or_else(|| anyhow::anyhow!("unknown language: {code} (en, tr)"))?,
+        ),
+        None => None,
+    };
+    let locale = resolve_locale(
+        cli_locale,
+        Locale::from_env(),
+        LanguagePref::Auto,
+        Locale::detect_system(),
+    );
+    let tr = Tr::new(locale);
+    match cli.command {
+        Command::Demo(a) => cmd_demo(a, tr),
+        Command::Example(a) => cmd_example(a, tr),
+        Command::Generate(a) => cmd_generate(a, tr),
+        Command::Info(a) => cmd_info(a, tr),
+        Command::Hydro(a) => cmd_hydro(a, tr),
+        Command::Export(a) => cmd_export(a, tr),
+        Command::Subdiv(a) => cmd_subdiv(a, tr),
+        Command::Sac(a) => cmd_sac(a, tr),
+        Command::Bonjean(a) => cmd_bonjean(a, tr),
+        Command::Offsets(a) => cmd_offsets(a, tr),
+        Command::Transform(a) => cmd_transform(a, tr),
+        Command::Lackenby(a) => cmd_lackenby(a, tr),
+        Command::Table(a) => cmd_table(a, tr),
+        Command::Trim(a) => cmd_trim(a, tr),
+        Command::Optimize(a) => cmd_optimize(a, tr),
+        Command::Resistance(a) => cmd_resistance(a, tr),
+        Command::Waves(a) => cmd_waves(a, tr),
+        Command::Unfold(a) => cmd_unfold(a, tr),
+        Command::Edit(a) => cmd_edit(a, tr),
+        Command::Planing(a) => cmd_planing(a, tr),
+        Command::Stability(a) => cmd_stability(a, tr),
+        Command::Loadcase(a) => cmd_loadcase(a, tr),
+        Command::Heel(a) => cmd_heel(a, tr),
+        Command::Damage(a) => cmd_damage(a, tr),
+        Command::Seakeeping(a) => cmd_seakeeping(a, tr),
+        Command::Linesplan(a) => cmd_linesplan(a, tr),
+        Command::Templates(a) => cmd_templates(a, tr),
+        Command::Panels(a) => cmd_panels(a, tr),
+        Command::Report(a) => cmd_report(a, tr),
+        Command::Render(a) => cmd_render(a, tr),
         Command::Mcp(a) => cmd_mcp(a),
     }
 }
@@ -1628,7 +1757,7 @@ fn load(path: &Path) -> Result<Surface> {
     Ok(surface)
 }
 
-fn cmd_demo(a: DemoArgs) -> Result<()> {
+fn cmd_demo(a: DemoArgs, tr: Tr) -> Result<()> {
     let surface = demo::demo_hull(a.symmetric);
     seacraft_core::io::write_atomic(&a.output, fef::write(&surface))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
@@ -1638,19 +1767,28 @@ fn cmd_demo(a: DemoArgs) -> Result<()> {
     demo::demo_project()
         .save(&sidecar)
         .map_err(|e| anyhow::anyhow!(e))?;
+    let key = if surface.layers.len() == 1 {
+        Key::CliDemoWroteOne
+    } else {
+        Key::CliDemoWroteOther
+    };
     println!(
-        "wrote {} and {} ({} control points, {} faces, {} layer{})",
-        a.output.display(),
-        sidecar.display(),
-        surface.points.len(),
-        surface.faces.len(),
-        surface.layers.len(),
-        if surface.layers.len() == 1 { "" } else { "s" }
+        "{}",
+        tr.fmt(
+            key,
+            &[
+                ("fef", &a.output.display().to_string()),
+                ("sidecar", &sidecar.display().to_string()),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+                ("layers", &surface.layers.len().to_string()),
+            ]
+        )
     );
     Ok(())
 }
 
-fn cmd_example(a: ExampleArgs) -> Result<()> {
+fn cmd_example(a: ExampleArgs, tr: Tr) -> Result<()> {
     use seacraft_core::examples::Example;
     if a.list {
         let list = Example::with_benchmarks();
@@ -1670,7 +1808,12 @@ fn cmd_example(a: ExampleArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&rows)?);
         } else {
             for e in list {
-                println!("{:<16} {}: {}", e.slug(), e.title(), e.description());
+                println!(
+                    "{:<16} {}: {}",
+                    e.slug(),
+                    e.title_tr(tr),
+                    e.description_tr(tr)
+                );
             }
         }
         return Ok(());
@@ -1682,7 +1825,7 @@ fn cmd_example(a: ExampleArgs) -> Result<()> {
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("cannot create {}", dir.display()))?;
         for e in Example::with_benchmarks() {
-            write_example(e, &dir.join(format!("{}.fef", e.slug())))?;
+            write_example(e, &dir.join(format!("{}.fef", e.slug())), tr)?;
         }
         return Ok(());
     }
@@ -1693,11 +1836,11 @@ fn cmd_example(a: ExampleArgs) -> Result<()> {
     let out = a
         .output
         .unwrap_or_else(|| PathBuf::from(format!("{}.fef", kind.slug())));
-    write_example(kind, &out)
+    write_example(kind, &out, tr)
 }
 
 /// Write an example's `.fef` and its sidecar next to it.
-fn write_example(kind: seacraft_core::examples::Example, out: &Path) -> Result<()> {
+fn write_example(kind: seacraft_core::examples::Example, out: &Path, tr: Tr) -> Result<()> {
     let (surface, project) =
         seacraft_core::examples::build(kind).map_err(|e| anyhow::anyhow!(e))?;
     seacraft_core::io::write_atomic(out, fef::write(&surface))
@@ -1705,18 +1848,23 @@ fn write_example(kind: seacraft_core::examples::Example, out: &Path) -> Result<(
     let sidecar = project::sidecar_path(out);
     project.save(&sidecar).map_err(|e| anyhow::anyhow!(e))?;
     println!(
-        "wrote {} and {} ({}: {} control points, {} faces, {} layers)",
-        out.display(),
-        sidecar.display(),
-        kind.title(),
-        surface.points.len(),
-        surface.faces.len(),
-        surface.layers.len()
+        "{}",
+        tr.fmt(
+            Key::CliExampleWrote,
+            &[
+                ("fef", &out.display().to_string()),
+                ("sidecar", &sidecar.display().to_string()),
+                ("title", kind.title_tr(tr)),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+                ("layers", &surface.layers.len().to_string()),
+            ]
+        )
     );
     Ok(())
 }
 
-fn cmd_generate(a: GenerateArgs) -> Result<()> {
+fn cmd_generate(a: GenerateArgs, tr: Tr) -> Result<()> {
     let kind: HullKind = a.kind.into();
     let mut spec = HullSpec::default_for(kind);
     if let Some(lwl) = a.lwl {
@@ -1759,30 +1907,86 @@ fn cmd_generate(a: GenerateArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("parametric hull ({}) -> {}", rep.kind, a.output.display());
-    println!("  parameter       target     achieved");
-    println!("  LWL (m)       {:8.3}     {:8.3}", rep.target_lwl, rep.lwl);
-    println!("  BWL (m)       {:8.3}     {:8.3}", rep.target_bwl, rep.bwl);
-    println!("  draft T (m)   {:8.3}     {:8.3}", rep.target_draft, rep.t);
     println!(
-        "  depth D (m)   {:8.3}     {:8.3}",
-        rep.target_depth, rep.target_depth
+        "{}",
+        tr.fmt(
+            Key::CliGenerateHeading,
+            &[
+                ("kind", &rep.kind.to_string()),
+                ("path", &a.output.display().to_string()),
+            ]
+        )
+    );
+    println!("{}", tr.s(Key::CliGenerateCols));
+    println!(
+        "  {:<14}{:8.3}     {:8.3}",
+        tr.s(Key::CliGenerateLwl),
+        rep.target_lwl,
+        rep.lwl
+    );
+    println!(
+        "  {:<14}{:8.3}     {:8.3}",
+        tr.s(Key::CliGenerateBwl),
+        rep.target_bwl,
+        rep.bwl
+    );
+    println!(
+        "  {:<14}{:8.3}     {:8.3}",
+        tr.s(Key::CliGenerateDraft),
+        rep.target_draft,
+        rep.t
+    );
+    println!(
+        "  {:<14}{:8.3}     {:8.3}",
+        tr.s(Key::CliGenerateDepth),
+        rep.target_depth,
+        rep.target_depth
     );
     match rep.target_cb {
-        Some(tcb) => println!("  Cb            {:8.4}     {:8.4}", tcb, rep.cb),
-        None => println!("  Cb                   -     {:8.4}", rep.cb),
+        Some(tcb) => println!(
+            "  {:<14}{:8.4}     {:8.4}",
+            tr.s(Key::CliGenerateCb),
+            tcb,
+            rep.cb
+        ),
+        None => println!(
+            "  {:<14}       -     {:8.4}",
+            tr.s(Key::CliGenerateCb),
+            rep.cb
+        ),
     }
     match rep.target_lcb_frac {
-        Some(tlcb) => println!("  LCB / LWL     {:8.4}     {:8.4}", tlcb, rep.lcb_frac),
-        None => println!("  LCB / LWL            -     {:8.4}", rep.lcb_frac),
+        Some(tlcb) => println!(
+            "  {:<14}{:8.4}     {:8.4}",
+            tr.s(Key::CliGenerateLcbLwl),
+            tlcb,
+            rep.lcb_frac
+        ),
+        None => println!(
+            "  {:<14}       -     {:8.4}",
+            tr.s(Key::CliGenerateLcbLwl),
+            rep.lcb_frac
+        ),
     }
-    println!("  volume (m3)          -     {:8.3}", rep.volume);
-    println!("  disp (t)             -     {:8.3}", rep.displacement_t);
-    println!("  iterations           -     {:8}", rep.iterations);
+    println!(
+        "  {:<14}       -     {:8.3}",
+        tr.s(Key::CliGenerateVolume),
+        rep.volume
+    );
+    println!(
+        "  {:<14}       -     {:8.3}",
+        tr.s(Key::CliGenerateDisp),
+        rep.displacement_t
+    );
+    println!(
+        "  {:<14}       -     {:8}",
+        tr.s(Key::CliGenerateIterations),
+        rep.iterations
+    );
     Ok(())
 }
 
-fn cmd_info(a: InfoArgs) -> Result<()> {
+fn cmd_info(a: InfoArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let (min, max) = s.extents();
     let counts = s.edge_face_counts();
@@ -1795,44 +1999,91 @@ fn cmd_info(a: InfoArgs) -> Result<()> {
 
     println!("{}", s.settings.name);
     if !s.settings.designer.is_empty() {
-        println!("  designer      {}", s.settings.designer);
+        println!(
+            "{}",
+            tr.fmt(Key::CliInfoDesigner, &[("designer", &s.settings.designer)])
+        );
     }
     println!(
-        "  principal      L {:.3}  B {:.3}  T {:.3} m   rho {:.0} kg/m3  appendage {:.3}",
-        s.settings.length,
-        s.settings.beam,
-        s.settings.draft,
-        s.settings.water_density,
-        s.settings.appendage_coefficient
+        "{}",
+        tr.fmt(
+            Key::CliInfoPrincipal,
+            &[
+                ("l", &format!("{:.3}", s.settings.length)),
+                ("b", &format!("{:.3}", s.settings.beam)),
+                ("t", &format!("{:.3}", s.settings.draft)),
+                ("rho", &format!("{:.0}", s.settings.water_density)),
+                ("app", &format!("{:.3}", s.settings.appendage_coefficient)),
+            ]
+        )
     );
     println!(
-        "  extent         x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}",
-        min.x, max.x, min.y, max.y, min.z, max.z
+        "{}",
+        tr.fmt(
+            Key::CliInfoExtent,
+            &[
+                ("xmin", &format!("{:.3}", min.x)),
+                ("xmax", &format!("{:.3}", max.x)),
+                ("ymin", &format!("{:.3}", min.y)),
+                ("ymax", &format!("{:.3}", max.y)),
+                ("zmin", &format!("{:.3}", min.z)),
+                ("zmax", &format!("{:.3}", max.z)),
+            ]
+        )
     );
     println!(
-        "  control net    {} points, {} edges ({} crease, {} boundary, {} non-manifold), {} faces",
-        s.points.len(),
-        s.edges.len(),
-        creases,
-        boundary_edges,
-        non_manifold,
-        s.faces.len()
+        "{}",
+        tr.fmt(
+            Key::CliInfoControlNet,
+            &[
+                ("points", &s.points.len().to_string()),
+                ("edges", &s.edges.len().to_string()),
+                ("creases", &creases.to_string()),
+                ("boundary", &boundary_edges.to_string()),
+                ("non_manifold", &non_manifold.to_string()),
+                ("faces", &s.faces.len().to_string()),
+            ]
+        )
     );
-    println!("  face mix       {quads} quads, {tris} triangles, {other} n-gons");
-    println!("  control area   {:.3} m2", s.control_area());
-    println!("  layers");
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliInfoFaceMix,
+            &[
+                ("quads", &quads.to_string()),
+                ("tris", &tris.to_string()),
+                ("other", &other.to_string()),
+            ]
+        )
+    );
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliInfoControlArea,
+            &[("area", &format!("{:.3}", s.control_area()))]
+        )
+    );
+    println!("{}", tr.s(Key::CliInfoLayers));
     for l in &s.layers {
         println!(
             "    {:<16} id {:<3} {}{}{} rho {:.0} t {:.3}",
             l.name,
             l.id,
-            if l.visible { "visible " } else { "hidden  " },
-            if l.symmetric {
-                "symmetric "
+            if l.visible {
+                tr.s(Key::CliInfoVisible)
             } else {
-                "asymmetric "
+                tr.s(Key::CliInfoHidden)
             },
-            if l.use_in_hydrostatics { "hydro" } else { "-" },
+            if l.symmetric {
+                tr.s(Key::CliInfoSymmetric)
+            } else {
+                tr.s(Key::CliInfoAsymmetric)
+            },
+            if l.use_in_hydrostatics {
+                tr.s(Key::CliInfoHydro)
+            } else {
+                "-"
+            },
             l.density,
             l.thickness
         );
@@ -1866,7 +2117,7 @@ fn hydro_options(a: &HydroArgs, s: &Surface) -> HydroOptions {
     o
 }
 
-fn cmd_hydro(a: HydroArgs) -> Result<()> {
+fn cmd_hydro(a: HydroArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let opts = hydro_options(&a, &s);
     if opts.draft <= 0.0 {
@@ -1885,40 +2136,59 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
     }
     if free {
         println!(
-            "{}  -  hydrostatics at T {:.3} m, trim {:+.3} m (free to trim)",
-            s.settings.name, result.draft, result.trim_m
+            "{}",
+            tr.fmt(
+                Key::CliHydroHeadingFree,
+                &[
+                    ("name", &s.settings.name),
+                    ("draft", &format!("{:.3}", result.draft)),
+                    ("trim", &format!("{:+.3}", result.trim_m)),
+                ]
+            )
         );
     } else {
         println!(
-            "{}  -  hydrostatics at T {:.3} m",
-            s.settings.name, result.draft
+            "{}",
+            tr.fmt(
+                Key::CliHydroHeading,
+                &[
+                    ("name", &s.settings.name),
+                    ("draft", &format!("{:.3}", result.draft)),
+                ]
+            )
         );
     }
     println!();
     let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
-    row("volume", format!("{:.3} m3", result.volume_m3));
     row(
-        "displacement",
+        tr.s(Key::CliHydroVolume),
+        format!("{:.3} m3", result.volume_m3),
+    );
+    row(
+        tr.s(Key::CliHydroDisplacement),
         format!(
             "{:.0} kg  ({:.3} t)",
             result.displacement_kg, result.displacement_t
         ),
     );
     row(
-        "block coefficient Cb",
+        tr.s(Key::CliHydroCb),
         format!("{:.4}", result.block_coefficient),
     );
     row(
-        "prismatic Cp",
+        tr.s(Key::CliHydroCp),
         format!("{:.4}", result.prismatic_coefficient),
     );
-    row("midship Cm", format!("{:.4}", result.midship_coefficient));
     row(
-        "waterplane Cwp",
+        tr.s(Key::CliHydroCm),
+        format!("{:.4}", result.midship_coefficient),
+    );
+    row(
+        tr.s(Key::CliHydroCwp),
         format!("{:.4}", result.waterplane_coefficient),
     );
     row(
-        "vertical prismatic Cvp",
+        tr.s(Key::CliHydroCvp),
         format!("{:.4}", result.vertical_prismatic_coefficient),
     );
     println!();
@@ -1929,59 +2199,83 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
             result.lcb.x, result.lcb.y, result.lcb.z
         ),
     );
-    row("KB", format!("{:.3} m above keel", result.kb));
+    row(
+        "KB",
+        tr.fmt(
+            Key::CliHydroKbAboveKeel,
+            &[("kb", &format!("{:.3}", result.kb))],
+        ),
+    );
     row(
         "LCF",
         format!("x {:.3}  y {:.3}", result.lcf.x, result.lcf.y),
     );
     println!();
     row(
-        "LWL x BWL",
+        tr.s(Key::CliHydroLwlXBwl),
         format!("{:.3} x {:.3} m", result.lwl, result.bwl),
     );
     row(
-        "wetted surface",
+        tr.s(Key::CliHydroWettedSurface),
         format!("{:.3} m2", result.wetted_surface_m2),
     );
     row(
-        "waterplane area",
+        tr.s(Key::CliHydroWaterplaneArea),
         format!("{:.3} m2", result.waterplane_area_m2),
     );
     row(
-        "waterplane I_T / I_L",
+        tr.s(Key::CliHydroWaterplaneInertia),
         format!(
             "{:.1} / {:.1} m4",
             result.waterplane_inertia_transverse, result.waterplane_inertia_longitudinal
         ),
     );
-    row("BM transverse", format!("{:.3} m", result.bm_transverse));
     row(
-        "BM longitudinal",
+        tr.s(Key::CliHydroBmTransverse),
+        format!("{:.3} m", result.bm_transverse),
+    );
+    row(
+        tr.s(Key::CliHydroBmLongitudinal),
         format!("{:.3} m", result.bm_longitudinal),
     );
-    row("KM transverse", format!("{:.3} m", result.km_transverse));
     row(
-        "KM longitudinal",
+        tr.s(Key::CliHydroKmTransverse),
+        format!("{:.3} m", result.km_transverse),
+    );
+    row(
+        tr.s(Key::CliHydroKmLongitudinal),
         format!("{:.3} m", result.km_longitudinal),
     );
     if let Some(kg) = a.kg {
         row(
-            &format!("GM (KG {:.3})", kg),
+            &tr.fmt(Key::CliHydroGmLabel, &[("kg", &format!("{:.3}", kg))]),
             format!("{:.3} m", result.gm(kg)),
         );
     }
     println!();
     row(
-        "midship section area",
-        format!(
-            "{:.4} m2 at x {:.3}",
-            result.mainframe_area_m2, result.mainframe_x
+        tr.s(Key::CliHydroMidshipArea),
+        tr.fmt(
+            Key::CliHydroMidshipVal,
+            &[
+                ("area", &format!("{:.4}", result.mainframe_area_m2)),
+                ("x", &format!("{:.3}", result.mainframe_x)),
+            ],
         ),
     );
-    row("lateral area", format!("{:.3} m2", result.lateral_area_m2));
+    row(
+        tr.s(Key::CliHydroLateralArea),
+        format!("{:.3} m2", result.lateral_area_m2),
+    );
     if !result.sac.is_empty() {
         println!();
-        println!("  section area curve ({} stations)", result.sac.len());
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliHydroSacHeading,
+                &[("count", &result.sac.len().to_string())]
+            )
+        );
         for p in &result.sac {
             let bar = (p.area / result.mainframe_area_m2.max(1e-9) * 40.0).round() as usize;
             println!(
@@ -1995,7 +2289,13 @@ fn cmd_hydro(a: HydroArgs) -> Result<()> {
     if !result.warnings.is_empty() {
         println!();
         for w in &result.warnings {
-            println!("  warning [{}] {}", w.code, w.message);
+            println!(
+                "{}",
+                tr.fmt(
+                    Key::CliHydroWarning,
+                    &[("code", w.code), ("message", &w.message)]
+                )
+            );
         }
     }
     Ok(())
@@ -2039,7 +2339,7 @@ fn export_flags_error(
     ))
 }
 
-fn cmd_export(a: ExportArgs) -> Result<()> {
+fn cmd_export(a: ExportArgs, tr: Tr) -> Result<()> {
     let ext = a
         .output
         .extension()
@@ -2080,9 +2380,14 @@ fn cmd_export(a: ExportArgs) -> Result<()> {
     seacraft_core::io::write_atomic(&a.output, &data)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
-        "wrote {} ({:.1} KiB)",
-        a.output.display(),
-        data.len() as f64 / 1024.0
+        "{}",
+        tr.fmt(
+            Key::CliCommonWroteKib,
+            &[
+                ("path", &a.output.display().to_string()),
+                ("kib", &format!("{:.1}", data.len() as f64 / 1024.0)),
+            ]
+        )
     );
     Ok(())
 }
@@ -2114,7 +2419,7 @@ fn obj_from_unmirrored(
     out
 }
 
-fn cmd_subdiv(a: SubdivArgs) -> Result<()> {
+fn cmd_subdiv(a: SubdivArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let mut mesh = evaluate(
         &s,
@@ -2147,15 +2452,20 @@ fn cmd_subdiv(a: SubdivArgs) -> Result<()> {
     seacraft_core::io::write_atomic(&a.output, fef::write(&baked))
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
-        "wrote {} ({} points, {} faces)",
-        a.output.display(),
-        baked.points.len(),
-        baked.faces.len()
+        "{}",
+        tr.fmt(
+            Key::CliSubdivWrote,
+            &[
+                ("path", &a.output.display().to_string()),
+                ("points", &baked.points.len().to_string()),
+                ("faces", &baked.faces.len().to_string()),
+            ]
+        )
     );
     Ok(())
 }
 
-fn cmd_sac(a: SacArgs) -> Result<()> {
+fn cmd_sac(a: SacArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let mut opts = HydroOptions::from_surface(
         &s,
@@ -2173,13 +2483,17 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
     }
     let result = hydro::compute(&s, &opts);
     if let Some(path) = &a.svg {
-        let title = format!(
-            "{} - sectional area curve, T = {:.3} m",
-            s.settings.name, opts.draft
+        let title = tr.fmt(
+            Key::CliSacSvgTitle,
+            &[
+                ("name", &s.settings.name),
+                ("draft", &format!("{:.3}", opts.draft)),
+            ],
         );
-        seacraft_core::io::write_atomic(path, curves::sac_svg(&result.sac, &title))
+        seacraft_core::io::write_atomic(path, curves::sac_svg_tr(&result.sac, &title, tr))
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {}", path.display());
+        let path_str = path.display().to_string();
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
     if a.json {
         let cp = curves::prismatic_from_sac(&result.sac);
@@ -2207,7 +2521,16 @@ fn cmd_sac(a: SacArgs) -> Result<()> {
             }
             seacraft_core::io::write_atomic(&path, text)
                 .with_context(|| format!("cannot write {}", path.display()))?;
-            println!("wrote {} ({} stations)", path.display(), result.sac.len());
+            println!(
+                "{}",
+                tr.fmt(
+                    Key::CliCommonWroteStations,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("count", &result.sac.len().to_string()),
+                    ]
+                )
+            );
         }
         None => {
             println!("x,area_m2");
@@ -2237,7 +2560,7 @@ fn parse_drafts(text: &str) -> Result<Vec<f64>> {
     Ok(drafts)
 }
 
-fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
+fn cmd_bonjean(a: BonjeanArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let mut opts = HydroOptions::from_surface(
         &s,
@@ -2263,15 +2586,18 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
     let bonjean = curves::bonjean(&hull, a.stations, &drafts);
 
     if let Some(path) = &a.svg {
-        let title = format!(
-            "{} - Bonjean curves ({} stations, design draft {:.3} m)",
-            s.settings.name,
-            bonjean.sections.len(),
-            opts.draft
+        let title = tr.fmt(
+            Key::CliBonjeanSvgTitle,
+            &[
+                ("name", &s.settings.name),
+                ("count", &bonjean.sections.len().to_string()),
+                ("draft", &format!("{:.3}", opts.draft)),
+            ],
         );
-        seacraft_core::io::write_atomic(path, curves::bonjean_svg(&bonjean, &title))
+        seacraft_core::io::write_atomic(path, curves::bonjean_svg_tr(&bonjean, &title, tr))
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {}", path.display());
+        let path_str = path.display().to_string();
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
     if let Some(path) = &a.csv {
         let mut text = String::from("x,draft_m,area_m2\n");
@@ -2283,9 +2609,14 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
         seacraft_core::io::write_atomic(path, text)
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!(
-            "wrote {} ({} stations)",
-            path.display(),
-            bonjean.sections.len()
+            "{}",
+            tr.fmt(
+                Key::CliCommonWroteStations,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("count", &bonjean.sections.len().to_string()),
+                ]
+            )
         );
     }
     if a.json {
@@ -2295,11 +2626,16 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
     if a.csv.is_some() || a.svg.is_some() {
         // Files were requested: a short confirmation is enough.
         println!(
-            "{} stations x {} drafts, max area {:.3} m², hull depth {:.3} m",
-            bonjean.sections.len(),
-            bonjean.drafts_m.len(),
-            bonjean.max_area(),
-            depth
+            "{}",
+            tr.fmt(
+                Key::CliBonjeanSummary,
+                &[
+                    ("stations", &bonjean.sections.len().to_string()),
+                    ("drafts", &bonjean.drafts_m.len().to_string()),
+                    ("max_area", &format!("{:.3}", bonjean.max_area())),
+                    ("depth", &format!("{:.3}", depth)),
+                ]
+            )
         );
         return Ok(());
     }
@@ -2318,8 +2654,11 @@ fn cmd_bonjean(a: BonjeanArgs) -> Result<()> {
         println!();
     }
     println!(
-        "draft [m] across the columns; max area {:.3} m² at the deepest draft",
-        bonjean.max_area()
+        "{}",
+        tr.fmt(
+            Key::CliBonjeanCaption,
+            &[("max_area", &format!("{:.3}", bonjean.max_area()))]
+        )
     );
     Ok(())
 }
@@ -2342,7 +2681,7 @@ fn parse_ordinates(text: &str, key: &str) -> Result<Vec<f64>> {
     Ok(out)
 }
 
-fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
+fn cmd_offsets(a: OffsetsArgs, tr: Tr) -> Result<()> {
     if a.imperial && a.pdf.is_none() {
         bail!("--imperial applies to --pdf: the other outputs are in metres");
     }
@@ -2364,7 +2703,7 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         None => offsets::default_buttocks(&hull, a.buttock_steps),
     };
     let table = offsets::table_of_offsets(&hull, a.stations, &waterlines, &buttocks);
-    let title = format!("{} - table of offsets", s.settings.name);
+    let title = tr.fmt(Key::OffsetsPdfDocTitle, &[("name", &s.settings.name)]);
     // With --json the standard output is the table alone: what was written goes to stderr.
     let written = |line: String| {
         if a.json {
@@ -2375,16 +2714,18 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
     };
 
     if let Some(path) = &a.pdf {
-        let doc = offsets::pdf(&table, &title, a.imperial).map_err(anyhow::Error::msg)?;
+        let doc = offsets::pdf_tr(&table, &title, a.imperial, tr).map_err(anyhow::Error::msg)?;
         seacraft_core::io::write_atomic(path, doc.bytes)
             .with_context(|| format!("cannot write {}", path.display()))?;
-        written(format!("wrote {}", path.display()));
+        let path_str = path.display().to_string();
+        written(tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
 
     if let Some(path) = &a.html {
-        seacraft_core::io::write_atomic(path, offsets::html(&table, &title))
+        seacraft_core::io::write_atomic(path, offsets::html_tr(&table, &title, tr))
             .with_context(|| format!("cannot write {}", path.display()))?;
-        written(format!("wrote {}", path.display()));
+        let path_str = path.display().to_string();
+        written(tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
     if let Some(path) = &a.csv {
         // Long format: one row per (station, waterline, buttock) reading would
@@ -2405,8 +2746,11 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         seacraft_core::io::write_atomic(path, text)
             .with_context(|| format!("cannot write {}", path.display()))?;
         written(format!(
-            "wrote {} ({} stations x {} waterlines)",
-            path.display(),
+            "{} ({} x {})",
+            tr.fmt(
+                Key::CliCommonWrote,
+                &[("path", &path.display().to_string())]
+            ),
             table.stations.len(),
             table.waterlines_m.len()
         ));
@@ -2417,21 +2761,31 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
     }
     if (a.html.is_some() || a.pdf.is_some()) && a.csv.is_none() {
         println!(
-            "{} stations x {} waterlines, widest half-breadth {:.3} m",
-            table.stations.len(),
-            table.waterlines_m.len(),
-            table.max_half_breadth()
+            "{}",
+            tr.fmt(
+                Key::CliOffsetsMaxHbSummary,
+                &[
+                    ("stations", &table.stations.len().to_string()),
+                    ("waterlines", &table.waterlines_m.len().to_string()),
+                    ("max_hb", &format!("{:.3}", table.max_half_breadth())),
+                ]
+            )
         );
         return Ok(());
     }
 
     println!("{}", title);
-    println!("  half-breadths [m], waterlines above the keel\n");
+    println!("{}", tr.s(Key::CliOffsetsHalfBreadthsSub));
     print!("{:>8}", "x [m]");
     for wl in &table.waterlines_m {
         print!("{:>8}", format!("WL{wl:.2}"));
     }
-    println!("{:>8}{:>8}{:>8}", "keel", "sheer", "B/2");
+    println!(
+        "{:>8}{:>8}{:>8}",
+        tr.s(Key::CliOffsetsColKeel),
+        tr.s(Key::CliOffsetsColSheer),
+        "B/2"
+    );
     for st in &table.stations {
         print!("{:>8.3}", st.x);
         for v in &st.waterline_half_breadths {
@@ -2442,7 +2796,7 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         }
         println!("{:>8.3}{:>8.3}{:>8.3}", st.keel_z, st.deck_z, st.half_beam);
     }
-    println!("\n  buttock heights [m, model z]\n");
+    println!("{}", tr.s(Key::CliOffsetsButtocksSub));
     print!("{:>8}", "x [m]");
     for b in &table.buttocks_m {
         print!("{:>8}", format!("B{b:.2}"));
@@ -2459,8 +2813,11 @@ fn cmd_offsets(a: OffsetsArgs) -> Result<()> {
         println!();
     }
     println!(
-        "- means the section does not reach that ordinate; widest half-breadth {:.3} m",
-        table.max_half_breadth()
+        "{}",
+        tr.fmt(
+            Key::CliOffsetsFooter,
+            &[("max_hb", &format!("{:.3}", table.max_half_breadth()))]
+        )
     );
     Ok(())
 }
@@ -2482,7 +2839,7 @@ fn parse_triple(text: &str, key: &str) -> Result<Vec3> {
     Ok(Vec3::new(parts[0], parts[1], parts[2]))
 }
 
-fn cmd_transform(a: TransformArgs) -> Result<()> {
+fn cmd_transform(a: TransformArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.level,
@@ -2552,26 +2909,32 @@ fn cmd_transform(a: TransformArgs) -> Result<()> {
             "  {label:<7} LWL {:7.3}  BWL {:6.3}  T {:5.3}  V {:8.3} m3",
             d.lwl, d.bwl, d.draft, d.volume_m3
         ),
-        None => println!("  {label:<7} (no waterline: draft is zero)"),
+        None => println!("  {label:<7} {}", tr.s(Key::CliTransformNoWaterline)),
     };
     println!("{}", s.settings.name);
-    line("before", before);
-    line("after", after);
+    line(tr.s(Key::CliTransformBefore), before);
+    line(tr.s(Key::CliTransformAfter), after);
     if let Some(f) = &fit {
         println!(
-            "  fit      {} iteration(s), scale {:.4} x {:.4} x {:.4}, residual {:.3} %",
-            f.iterations,
-            f.scale.x,
-            f.scale.y,
-            f.scale.z,
-            f.max_error * 100.0
+            "{}",
+            tr.fmt(
+                Key::CliTransformFit,
+                &[
+                    ("iters", &f.iterations.to_string()),
+                    ("sx", &format!("{:.4}", f.scale.x)),
+                    ("sy", &format!("{:.4}", f.scale.y)),
+                    ("sz", &format!("{:.4}", f.scale.z)),
+                    ("err", &format!("{:.3}", f.max_error * 100.0)),
+                ]
+            )
         );
     }
-    println!("wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &out_str)]));
     Ok(())
 }
 
-fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
+fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.subdiv.level,
@@ -2650,7 +3013,16 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             }
             seacraft_core::io::write_atomic(path, text)
                 .with_context(|| format!("cannot write {}", path.display()))?;
-            println!("wrote {} ({} speeds)", path.display(), rows.len());
+            println!(
+                "{}",
+                tr.fmt(
+                    Key::CliCommonWroteSpeeds,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("count", &rows.len().to_string()),
+                    ]
+                )
+            );
         }
 
         if a.json {
@@ -2672,20 +3044,29 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         if a.csv.is_some() {
             // The CSV has no place for warnings; say them on stderr.
             for w in &warnings {
-                eprintln!("warning: {w}");
+                eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", w)]));
             }
             return Ok(());
         }
 
+        let cat_note = if let Some(sp) = a.cat_spacing {
+            tr.fmt(
+                Key::CliResistanceCatSpacing,
+                &[("spacing", &format!("{sp:.2}"))],
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "{}  -  Michell wave resistance (thin-ship theory), T {:.3} m{}",
-            s.settings.name,
-            grid.draft,
-            if let Some(sp) = a.cat_spacing {
-                format!("  [Catamaran spacing: {sp:.2} m]")
-            } else {
-                String::new()
-            }
+            "{}",
+            tr.fmt(
+                Key::CliResistanceMichellHeading,
+                &[
+                    ("name", &s.settings.name),
+                    ("draft", &format!("{:.3}", grid.draft)),
+                    ("cat", &cat_note),
+                ]
+            )
         );
         println!(
             "  LWL {:.3}  BWL {:.3}  S {:.2} m2  L/B {:.2}  1+k {:.3}",
@@ -2696,7 +3077,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             form_factor
         );
         for w in &warnings {
-            println!("  warning: {w}");
+            println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
         }
         println!();
         let cat = a.cat_spacing.is_some();
@@ -2710,7 +3091,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             "RF [kN]",
             "RW [kN]",
             if cat {
-                format!("  {:>7}", "interf.")
+                format!("  {:>7}", tr.s(Key::CliResistanceColInterf))
             } else {
                 String::new()
             }
@@ -2734,9 +3115,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             );
         }
         if cat {
-            println!(
-                "  interf.: the pair's wave resistance over twice one demihull's (below 1: favourable)"
-            );
+            println!("{}", tr.s(Key::CliResistanceInterfNote));
         }
         return Ok(());
     }
@@ -2750,9 +3129,12 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         let mut warnings = dsyhs_in.warnings();
         for r in &rows {
             if !(0.15..=0.75).contains(&r.fn_) {
-                warnings.push(format!(
-                    "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
-                    r.fn_, r.speed_kn
+                warnings.push(tr.fmt(
+                    Key::CliResistanceDsyhsFnWarn,
+                    &[
+                        ("fn", &format!("{:.3}", r.fn_)),
+                        ("speed", &format!("{:.2}", r.speed_kn)),
+                    ],
                 ));
             }
         }
@@ -2770,7 +3152,16 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             }
             seacraft_core::io::write_atomic(path, text)
                 .with_context(|| format!("cannot write {}", path.display()))?;
-            println!("wrote {} ({} speeds)", path.display(), rows.len());
+            println!(
+                "{}",
+                tr.fmt(
+                    Key::CliCommonWroteSpeeds,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("count", &rows.len().to_string()),
+                    ]
+                )
+            );
         }
 
         if a.json {
@@ -2786,14 +3177,20 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         if a.csv.is_some() {
             // The CSV has no place for warnings; say them on stderr.
             for w in &warnings {
-                eprintln!("warning: {w}");
+                eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", w)]));
             }
             return Ok(());
         }
 
         println!(
-            "{}  -  Delft Systematic Yacht Hull Series (DSYHS), T {:.3} m",
-            s.settings.name, dsyhs_in.draft_canoe
+            "{}",
+            tr.fmt(
+                Key::CliResistanceDsyhsHeading,
+                &[
+                    ("name", &s.settings.name),
+                    ("draft", &format!("{:.3}", dsyhs_in.draft_canoe)),
+                ]
+            )
         );
         println!(
             "  LWL {:.3}  BWL {:.3}  Tc {:.3}  Vol {:.3} m3  Aw {:.2} m2  Cp {:.3}  Cm {:.3}  LCB/LWL {:.3}",
@@ -2807,7 +3204,7 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             dsyhs_in.lcb_fpp_ratio
         );
         for w in &warnings {
-            println!("  warning: {w}");
+            println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
         }
         println!();
         println!(
@@ -2891,7 +3288,16 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         }
         seacraft_core::io::write_atomic(path, text)
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {} ({} speeds)", path.display(), rows.len());
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliCommonWroteSpeeds,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("count", &rows.len().to_string()),
+                ]
+            )
+        );
     }
     if a.json {
         let body = serde_json::json!({
@@ -2908,14 +3314,21 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
     if a.csv.is_some() {
         // The CSV has no place for warnings; say them on stderr.
         for w in &warnings {
-            eprintln!("warning: {w} (outside the method's fitted range)");
+            let msg = tr.fmt(Key::CliResistanceWarningRange, &[("message", w)]);
+            eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", &msg)]));
         }
         return Ok(());
     }
 
     println!(
-        "{}  -  Holtrop-Mennen resistance, T {:.3} m",
-        s.settings.name, input.draft
+        "{}",
+        tr.fmt(
+            Key::CliResistanceHoltropHeading,
+            &[
+                ("name", &s.settings.name),
+                ("draft", &format!("{:.3}", input.draft)),
+            ]
+        )
     );
     println!(
         "  LWL {:.3}  BWL {:.3}  S {:.2} m2  nabla {:.2} m3  Cb {:.4}  Cp {:.4}  Cm {:.4}",
@@ -2936,7 +3349,11 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
         input.c_stern
     );
     for w in &warnings {
-        println!("  warning: {w} (outside the method's fitted range)");
+        let msg = tr.fmt(Key::CliResistanceWarningRange, &[("message", w)]);
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWarningIndent, &[("message", &msg)])
+        );
     }
     println!();
     if with_propeller {
@@ -2961,19 +3378,30 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
             );
         }
         println!(
-            "  propeller D {:.2} m, AE/A0 {:.2}, etaO {:.2}, etaR {:.4}, etaH {:.4}, shaft {:.2}",
-            a.propeller_diameter,
-            a.expanded_area,
-            a.eta_o,
-            propulsion[0].relative_rotative,
-            propulsion[0].hull_efficiency,
-            a.shaft_efficiency
+            "{}",
+            tr.fmt(
+                Key::CliResistancePropellerLine,
+                &[
+                    ("d", &format!("{:.2}", a.propeller_diameter)),
+                    ("aea0", &format!("{:.2}", a.expanded_area)),
+                    ("eta_o", &format!("{:.2}", a.eta_o)),
+                    ("eta_r", &format!("{:.4}", propulsion[0].relative_rotative)),
+                    ("eta_h", &format!("{:.4}", propulsion[0].hull_efficiency)),
+                    ("shaft", &format!("{:.2}", a.shaft_efficiency)),
+                ]
+            )
         );
         if !propulsion[0].plausible {
             println!(
-                "  warning: w {:.3}, t {:.3} and LCB {:+.2} %L are outside the regressions' \
-                 fitted range, so the shaft power is indicative only",
-                propulsion[0].wake_fraction, propulsion[0].thrust_deduction, input.lcb_pct
+                "{}",
+                tr.fmt(
+                    Key::CliResistancePropulsionWarn,
+                    &[
+                        ("w", &format!("{:.3}", propulsion[0].wake_fraction)),
+                        ("t", &format!("{:.3}", propulsion[0].thrust_deduction)),
+                        ("lcb", &format!("{:+.2}", input.lcb_pct)),
+                    ]
+                )
             );
         }
     } else {
@@ -2996,25 +3424,39 @@ fn cmd_resistance(a: ResistanceArgs) -> Result<()> {
     }
     if rows.iter().any(|r| r.fn_ > 0.40) {
         println!(
-            "  Fn above 0.40: the wave term switches to Holtrop's c17/m3 high-speed fit at 0.55, \
-             interpolated between (this run: {} low, {} interpolated, {} high).",
-            rows.iter().filter(|r| r.fn_ <= 0.40).count(),
-            rows.iter().filter(|r| r.fn_ > 0.40 && r.fn_ < 0.55).count(),
-            rows.iter().filter(|r| r.fn_ >= 0.55).count()
+            "{}",
+            tr.fmt(
+                Key::CliResistanceHighFnNote,
+                &[
+                    (
+                        "low",
+                        &rows.iter().filter(|r| r.fn_ <= 0.40).count().to_string()
+                    ),
+                    (
+                        "mid",
+                        &rows
+                            .iter()
+                            .filter(|r| r.fn_ > 0.40 && r.fn_ < 0.55)
+                            .count()
+                            .to_string()
+                    ),
+                    (
+                        "high",
+                        &rows.iter().filter(|r| r.fn_ >= 0.55).count().to_string()
+                    ),
+                ]
+            )
         );
     }
     if with_propeller {
-        println!(
-            "\n  PE is the hull's effective power; PD = PE/etaD and PS = PD/etaS. etaO is an input, \
-             not a prediction."
-        );
+        println!("{}", tr.s(Key::CliResistancePowerChainNote));
     } else {
-        println!("\n  effective power only: give --propeller-diameter for the power chain.");
+        println!("{}", tr.s(Key::CliResistancePeOnlyNote));
     }
     Ok(())
 }
 
-fn cmd_waves(a: WavesArgs) -> Result<()> {
+fn cmd_waves(a: WavesArgs, tr: Tr) -> Result<()> {
     use seacraft_core::wave_pattern::{self, CutLine, WavePatternOptions};
     // Refuse a bad output before any work, so that nothing is half written.
     let formats = a
@@ -3090,7 +3532,7 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
             WaveFormat::Png => {
                 wave_pattern::wave_png(&field, a.clip).context("empty wave field")?
             }
-            WaveFormat::Svg => wave_pattern::wave_svg(&field, a.clip).into_bytes(),
+            WaveFormat::Svg => wave_pattern::wave_svg_tr(&field, a.clip, tr).into_bytes(),
             WaveFormat::Vti => wave_pattern::wave_vti(&field).into_bytes(),
         };
         writes.push((path, bytes));
@@ -3109,7 +3551,7 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         .collect();
 
     for w in &field.warnings {
-        eprintln!("warning: {w}");
+        eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", w)]));
     }
     if a.json {
         let mut body = wave_pattern::summary_json(&field);
@@ -3124,46 +3566,79 @@ fn cmd_waves(a: WavesArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&body)?);
         return Ok(());
     }
+    let cat_note = a
+        .cat_spacing
+        .map(|sp| tr.fmt(Key::CliWavesCatSpacing, &[("spacing", &format!("{sp:.2}"))]))
+        .unwrap_or_default();
     println!(
-        "{}  -  far-field wave pattern (thin-ship, Michell), T {:.3} m{}",
-        s.settings.name,
-        grid.draft,
-        a.cat_spacing
-            .map(|sp| format!("  [catamaran spacing {sp:.2} m]"))
-            .unwrap_or_default()
+        "{}",
+        tr.fmt(
+            Key::CliWavesHeading,
+            &[
+                ("name", &s.settings.name),
+                ("draft", &format!("{:.3}", grid.draft)),
+                ("cat", &cat_note),
+            ]
+        )
     );
     println!(
-        "  U {:.3} m/s ({:.2} kn)  Fn {:.3}  k0 {:.4} 1/m  transverse wavelength {:.3} m",
-        field.speed_m_s,
-        field.speed_m_s / resistance::KNOT,
-        field.froude,
-        field.k0,
-        field.transverse_wavelength_m
+        "{}",
+        tr.fmt(
+            Key::CliWavesStatsLine,
+            &[
+                ("u", &format!("{:.3}", field.speed_m_s)),
+                ("kn", &format!("{:.2}", field.speed_m_s / resistance::KNOT)),
+                ("froude", &format!("{:.3}", field.froude)),
+                ("k0", &format!("{:.4}", field.k0)),
+                ("lambda_t", &format!("{:.3}", field.transverse_wavelength_m)),
+            ]
+        )
     );
-    println!("  {}", wave_pattern::regime(field.froude).sentence());
+    println!("  {}", wave_pattern::regime(field.froude).sentence_tr(tr));
     println!(
-        "  wave angles to {:.1}° (shortest wave {:.3} m), {} samples; grid {} x {} points",
-        field.theta_cut_deg,
-        field.shortest_wavelength_m,
-        field.theta_samples,
-        field.xs.len(),
-        field.ys.len()
+        "{}",
+        tr.fmt(
+            Key::CliWavesAnglesLine,
+            &[
+                ("theta", &format!("{:.1}", field.theta_cut_deg)),
+                ("shortest", &format!("{:.3}", field.shortest_wavelength_m)),
+                ("samples", &field.theta_samples.to_string()),
+                ("nx", &field.xs.len().to_string()),
+                ("ny", &field.ys.len().to_string()),
+            ]
+        )
     );
-    println!("  max |elevation| {:.4} m", field.max_abs_zeta_m);
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliWavesMaxElev,
+            &[("val", &format!("{:.4}", field.max_abs_zeta_m))]
+        )
+    );
     if let Some(d) = a.wash_distance {
         match wash {
             Some(w) => println!(
-                "  wash height at {d:.2} m: {:.3} m (x {:.2} m), a thin-ship estimate in deep water",
-                w.height_m, w.x_m
+                "{}",
+                tr.fmt(
+                    Key::CliWavesWashLine,
+                    &[
+                        ("d", &format!("{d:.2}")),
+                        ("h", &format!("{:.3}", w.height_m)),
+                        ("x", &format!("{:.2}", w.x_m)),
+                    ]
+                )
             ),
-            None => println!("  wash height at {d:.2} m: calm"),
+            None => println!(
+                "{}",
+                tr.fmt(Key::CliWavesWashCalm, &[("d", &format!("{d:.2}"))])
+            ),
         }
     }
     for n in &field.notes {
-        println!("  note: {n}");
+        println!("{}", tr.fmt(Key::CliWavesNoteLine, &[("note", n)]));
     }
     for f in &files {
-        println!("wrote {f}");
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", f)]));
     }
     Ok(())
 }
@@ -3195,7 +3670,7 @@ fn parse_triple_indices(text: &str, key: &str) -> Result<(usize, usize, usize)> 
     Ok((out[0], out[1], out[2]))
 }
 
-fn cmd_edit(a: EditArgs) -> Result<()> {
+fn cmd_edit(a: EditArgs, tr: Tr) -> Result<()> {
     let mut s = load(&a.file)?;
     let faces_before = s.faces.len();
     let points_before = s.points.len();
@@ -3256,25 +3731,38 @@ fn cmd_edit(a: EditArgs) -> Result<()> {
     }
     for r in &splits {
         println!(
-            "  split face {} into {} triangles around new point {}",
-            r.face, r.pieces, r.point
+            "{}",
+            tr.fmt(
+                Key::CliEditSplitLine,
+                &[
+                    ("face", &r.face.to_string()),
+                    ("pieces", &r.pieces.to_string()),
+                    ("point", &r.point.to_string()),
+                ]
+            )
         );
     }
     println!(
-        "  faces {} -> {}, points {} -> {}, creases {} -> {}",
-        faces_before,
-        s.faces.len(),
-        points_before,
-        s.points.len(),
-        creases_before,
-        creases_after
+        "{}",
+        tr.fmt(
+            Key::CliEditSummaryLine,
+            &[
+                ("fb", &faces_before.to_string()),
+                ("fa", &s.faces.len().to_string()),
+                ("pb", &points_before.to_string()),
+                ("pa", &s.points.len().to_string()),
+                ("cb", &creases_before.to_string()),
+                ("ca", &creases_after.to_string()),
+            ]
+        )
     );
-    println!("  validates: closed and manifold");
-    println!("wrote {}", a.output.display());
+    println!("{}", tr.s(Key::CliEditValidates));
+    let out_str = a.output.display().to_string();
+    println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &out_str)]));
     Ok(())
 }
 
-fn cmd_planing(a: PlaningArgs) -> Result<()> {
+fn cmd_planing(a: PlaningArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.subdiv.level,
@@ -3328,7 +3816,16 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
         }
         seacraft_core::io::write_atomic(path, text)
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {} ({} speeds)", path.display(), curve.len());
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliCommonWroteSpeeds,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("count", &curve.len().to_string()),
+                ]
+            )
+        );
     }
     if a.json {
         let body = serde_json::json!({
@@ -3344,22 +3841,46 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{}  -  Savitsky planing, T {:.3} m",
-        s.settings.name, opts.draft
+        "{}",
+        tr.fmt(
+            Key::CliPlaningHeading,
+            &[
+                ("name", &s.settings.name),
+                ("draft", &format!("{:.3}", opts.draft)),
+            ]
+        )
     );
+    let measured_tag = if a.deadrise.is_none() && measured.is_some() {
+        tr.s(Key::CliPlaningMeasuredTag)
+    } else {
+        ""
+    };
     println!(
-        "  weight {:.2} kN, beam {:.3} m, LCG {:.3} m from the transom ({:.3} b), deadrise {:.1} deg{}",
-        weight_n / 1000.0,
-        beam,
-        lcg_from_transom,
-        lcg_from_transom / beam,
-        deadrise,
-        if a.deadrise.is_none() && measured.is_some() { " (measured)" } else { "" }
+        "{}",
+        tr.fmt(
+            Key::CliPlaningSetupLine,
+            &[
+                ("weight", &format!("{:.2}", weight_n / 1000.0)),
+                ("beam", &format!("{:.3}", beam)),
+                ("lcg", &format!("{:.3}", lcg_from_transom)),
+                ("lcg_b", &format!("{:.3}", lcg_from_transom / beam)),
+                ("deadrise", &format!("{:.1}", deadrise)),
+                ("measured", measured_tag),
+            ]
+        )
     );
     println!();
     println!(
         "  {:>6}  {:>6}  {:>7}  {:>7}  {:>10}  {:>10}  {:>7}  {:>10}  {:>10}",
-        "kn", "CV", "trim", "lambda", "wetted [m]", "area [m2]", "LCP/b", "RT [kN]", "PE [kW]"
+        "kn",
+        "CV",
+        tr.s(Key::CliPlaningColTrim),
+        "lambda",
+        tr.s(Key::CliPlaningColWetted),
+        tr.s(Key::CliPlaningColArea),
+        "LCP/b",
+        "RT [kN]",
+        "PE [kW]"
     );
     for p in &curve {
         println!(
@@ -3382,17 +3903,15 @@ fn cmd_planing(a: PlaningArgs) -> Result<()> {
         .collect();
     if !missed.is_empty() {
         println!(
-            "  no planing equilibrium at {:?} kn (outside the hull's planing range)",
-            missed
+            "{}",
+            tr.fmt(Key::CliPlaningMissed, &[("speeds", &format!("{missed:?}"))])
         );
     }
-    println!(
-        "\n  effective power only; add --propeller-diameter to `resistance` for the shaft power."
-    );
+    println!("{}", tr.s(Key::CliPlaningPeOnlyNote));
     Ok(())
 }
 
-fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
+fn cmd_unfold(a: UnfoldArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let subdiv = SubdivisionOptions {
         level: a.level,
@@ -3431,45 +3950,78 @@ fn cmd_unfold(a: UnfoldArgs) -> Result<()> {
     let unfolded = develop::unfold(&hull.verts, &faces);
 
     if let Some(path) = &a.output {
-        let title = format!(
-            "{} - plate between {:.2} and {:.2} m on {:?}",
-            s.settings.name, lo, hi, axis
+        let title = tr.fmt(
+            Key::CliUnfoldSvgTitle,
+            &[
+                ("name", &s.settings.name),
+                ("lo", &format!("{lo:.2}")),
+                ("hi", &format!("{hi:.2}")),
+                ("axis", &format!("{axis:?}")),
+            ],
         );
-        seacraft_core::io::write_atomic(path, develop::svg(&unfolded, &title))
+        seacraft_core::io::write_atomic(path, develop::svg_tr(&unfolded, &title, tr))
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {}", path.display());
+        let path_str = path.display().to_string();
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
     if a.json {
         println!("{}", serde_json::to_string_pretty(&unfolded)?);
         return Ok(());
     }
+    let axis_str = format!("{axis:?}");
     println!(
-        "{}  -  plate expansion across a {:?} band",
-        s.settings.name, axis
+        "{}",
+        tr.fmt(
+            Key::CliUnfoldHeading,
+            &[("name", &s.settings.name), ("axis", &axis_str)]
+        )
     );
     println!(
-        "  band {lo:.3} .. {hi:.3} m on {axis:?}, stations {x_lo:.3} .. {x_hi:.3}, {} of {} faces",
-        faces.len(),
-        hull.tris.len()
+        "{}",
+        tr.fmt(
+            Key::CliUnfoldBandLine,
+            &[
+                ("lo", &format!("{lo:.3}")),
+                ("hi", &format!("{hi:.3}")),
+                ("axis", &axis_str),
+                ("x_lo", &format!("{x_lo:.3}")),
+                ("x_hi", &format!("{x_hi:.3}")),
+                ("picked", &faces.len().to_string()),
+                ("total", &hull.tris.len().to_string()),
+            ]
+        )
     );
     println!(
-        "  flat pattern {:.3} x {:.3} m, area {:.4} m2 (3D {:.4} m2)",
-        unfolded.width_m, unfolded.height_m, unfolded.area_2d_m2, unfolded.area_3d_m2
+        "{}",
+        tr.fmt(
+            Key::CliUnfoldPatternLine,
+            &[
+                ("w", &format!("{:.3}", unfolded.width_m)),
+                ("h", &format!("{:.3}", unfolded.height_m)),
+                ("a2d", &format!("{:.4}", unfolded.area_2d_m2)),
+                ("a3d", &format!("{:.4}", unfolded.area_3d_m2)),
+            ]
+        )
     );
     println!(
-        "  seam gap max {:.2} mm, rms {:.2} mm, {:.3} % of the diagonal",
-        unfolded.max_gap_m * 1000.0,
-        unfolded.rms_gap_m * 1000.0,
-        unfolded.gap_ratio * 100.0
+        "{}",
+        tr.fmt(
+            Key::CliUnfoldGapLine,
+            &[
+                ("max_mm", &format!("{:.2}", unfolded.max_gap_m * 1000.0)),
+                ("rms_mm", &format!("{:.2}", unfolded.rms_gap_m * 1000.0)),
+                ("pct", &format!("{:.3}", unfolded.gap_ratio * 100.0)),
+            ]
+        )
     );
+    let verdict = if unfolded.developable {
+        tr.s(Key::CliUnfoldDevelopableVerdict)
+    } else {
+        tr.s(Key::CliUnfoldNotDevelopableVerdict)
+    };
     println!(
         "  mean |K| {:.4} 1/m2  ->  {}",
-        unfolded.mean_abs_gaussian,
-        if unfolded.developable {
-            "developable (within 0.5 % of the diagonal)"
-        } else {
-            "not developable: the plate needs a joint, a press or a different cut"
-        }
+        unfolded.mean_abs_gaussian, verdict
     );
     Ok(())
 }
@@ -3485,7 +4037,7 @@ fn paper_name(paper: seacraft_core::sheet::Paper) -> String {
     }
 }
 
-fn cmd_templates(a: TemplatesArgs) -> Result<()> {
+fn cmd_templates(a: TemplatesArgs, tr: Tr) -> Result<()> {
     use seacraft_core::sheet::{PageSetup, Paper};
     use seacraft_core::templates::{self, Format, MouldFace, SetOptions, StationChoice, Transom};
     use seacraft_core::units;
@@ -3531,7 +4083,7 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
         scale,
         imperial: a.imperial,
         title: String::new(),
-        locale: seacraft_core::i18n::Locale::En,
+        locale: tr.locale(),
     };
     setup.check().map_err(anyhow::Error::msg)?;
     let stations = match (&a.stations, &a.spacing, &a.at) {
@@ -3568,7 +4120,7 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
         profile: a.profile,
         transom,
         imperial: a.imperial,
-        locale: seacraft_core::i18n::Locale::En,
+        locale: tr.locale(),
     };
     let set = templates::template_set(&s, &opts).map_err(anyhow::Error::msg)?;
     let written = templates::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
@@ -3593,14 +4145,18 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
 
     println!(
         "{:<12} {:>8} {:>18} {:>8} {:>11}",
-        "sheet", "x [m]", "half-breadth [mm]", "face", "bevel [deg]"
+        tr.s(Key::CliTemplatesColSheet),
+        "x [m]",
+        tr.s(Key::CliTemplatesColHb),
+        tr.s(Key::CliTemplatesColFace),
+        tr.s(Key::CliTemplatesColBevel)
     );
     for row in &set.rows {
         let x = row.x.map_or_else(|| "-".to_owned(), |x| format!("{x:.3}"));
         let face = match row.face {
-            Some(MouldFace::Forward) => "forward",
-            Some(MouldFace::Aft) => "aft",
-            Some(MouldFace::Either) => "either",
+            Some(MouldFace::Forward) => tr.s(Key::CliTemplatesFaceForward),
+            Some(MouldFace::Aft) => tr.s(Key::CliTemplatesFaceAft),
+            Some(MouldFace::Either) => tr.s(Key::CliTemplatesFaceEither),
             None => "-",
         };
         println!(
@@ -3614,31 +4170,58 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
     }
     let scale_label = units::scale_label(scale);
     match (format, written.pages) {
-        (Format::PdfTiled, Some(pages)) => {
-            println!("{pages} pages, {}, scale {scale_label}", paper_name(paper))
-        }
-        (_, Some(pages)) => println!("{pages} pages, one a pattern, scale {scale_label}"),
-        (_, None) => println!("one drawing, scale {scale_label}"),
+        (Format::PdfTiled, Some(pages)) => println!(
+            "{}",
+            tr.fmt(
+                Key::CliTemplatesPagesTiled,
+                &[
+                    ("pages", &pages.to_string()),
+                    ("paper", &paper_name(paper)),
+                    ("scale", &scale_label),
+                ]
+            )
+        ),
+        (_, Some(pages)) => println!(
+            "{}",
+            tr.fmt(
+                Key::CliTemplatesPagesSingle,
+                &[("pages", &pages.to_string()), ("scale", &scale_label)]
+            )
+        ),
+        (_, None) => println!(
+            "{}",
+            tr.fmt(Key::CliTemplatesOneDrawing, &[("scale", &scale_label)])
+        ),
     }
     if a.skin_mm > 0.0 {
-        println!("skin {} mm deducted", a.skin_mm);
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliTemplatesSkinDeducted,
+                &[("mm", &a.skin_mm.to_string())]
+            )
+        );
     } else {
-        println!("no skin deducted: the cut line is the hull surface");
+        println!("{}", tr.s(Key::CliTemplatesNoSkin));
     }
     for warning in &set.warnings {
-        eprintln!("warning: {warning}");
+        eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", warning)]));
     }
     if !missing.is_empty() {
         println!(
-            "the font has no letter for {}: each is printed as ?",
-            missing.join(" ")
+            "{}",
+            tr.fmt(
+                Key::CliTemplatesMissingChars,
+                &[("chars", &missing.join(" "))]
+            )
         );
     }
-    println!("wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &out_str)]));
     Ok(())
 }
 
-fn cmd_panels(a: PanelsArgs) -> Result<()> {
+fn cmd_panels(a: PanelsArgs, tr: Tr) -> Result<()> {
     use seacraft_core::panel_choices;
     use seacraft_core::panels::{self, PanelOptions};
     use seacraft_core::sheet::{PageSetup, Paper};
@@ -3722,7 +4305,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         scale,
         imperial: a.imperial,
         title: String::new(),
-        locale: seacraft_core::i18n::Locale::En,
+        locale: tr.locale(),
     };
     setup.check().map_err(anyhow::Error::msg)?;
     let stations = match (&a.stations, &a.spacing, &a.at) {
@@ -3744,13 +4327,13 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         stock: checked.stock,
         imperial: a.imperial,
         nesting: checked.nesting,
-        locale: seacraft_core::i18n::Locale::En,
+        locale: tr.locale(),
     };
     let set = panels::panel_set(&s, &opts).map_err(anyhow::Error::msg)?;
 
     // A panel that does not lie flat stops the export unless the user asked for it anyway.
-    if let (Some(summary), false) = (set.not_flat_summary(), a.allow_undevelopable) {
-        for f in set.failing() {
+    if let (Some(summary), false) = (set.not_flat_summary_tr(tr), a.allow_undevelopable) {
+        for f in set.failing_tr(tr) {
             eprintln!("{f}");
         }
         bail!("{summary}; nothing written. Pass --allow-undevelopable to write the others anyway");
@@ -3778,7 +4361,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     }
     if let Some(path) = &a.offsets_pdf {
         named_outputs.push(("--offsets-pdf".to_owned(), path.as_path()));
-        let doc = panels::offsets_pdf(&set.offsets, &set.title, a.imperial)
+        let doc = panels::offsets_pdf_tr(&set.offsets, &set.title, a.imperial, tr)
             .map_err(anyhow::Error::msg)?;
         writes.push((path, doc.bytes));
     }
@@ -3794,8 +4377,8 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     seacraft_core::io::write_all_atomic(&writes).context("cannot write the outputs")?;
     // Sheet files an earlier, larger layout left beside these: named, never deleted.
     let stale = panels::stale_sheet_files(&a.output, sheet_paths.len());
-    if let Some(note) = panels::stale_sheet_note(&stale) {
-        eprintln!("warning: {note}");
+    if let Some(note) = panels::stale_sheet_note_tr(&stale, tr) {
+        eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", &note)]));
     }
 
     let missing: Vec<String> = written.missing.iter().map(char::to_string).collect();
@@ -3827,14 +4410,23 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
 
     println!(
         "{:<16} {:>6} {:>10} {:>7} {:>9} {:>7}",
-        "panel", "copies", "lies flat", "rms %", "drift mm", "sheets"
+        tr.s(Key::CliPanelsColPanel),
+        tr.s(Key::CliPanelsColCopies),
+        tr.s(Key::CliPanelsColLiesFlat),
+        tr.s(Key::CliPanelsColRms),
+        tr.s(Key::CliPanelsColDrift),
+        tr.s(Key::CliPanelsColSheets)
     );
     for r in &set.rows {
         println!(
             "{:<16} {:>6} {:>10} {:>7.3} {:>9.1} {:>7}",
             r.panel,
             r.copies,
-            if r.lies_flat { "yes" } else { "no" },
+            if r.lies_flat {
+                tr.s(Key::CliCommonYes)
+            } else {
+                tr.s(Key::CliCommonNo)
+            },
             r.rms_stretch_pct,
             r.max_seam_drift_mm,
             r.sheets_each
@@ -3846,22 +4438,36 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
             println!(
                 "{}: {}",
                 r.panel,
-                panels::unsettled_note(mm / 1000.0).to_lowercase()
+                panels::unsettled_note_tr(mm / 1000.0, tr)
             );
         }
     }
     for r in &set.refused {
-        println!("{:<16} refused: {}", r.panel, r.reason);
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliPanelsRefusedLine,
+                &[
+                    ("panel", &format!("{:<16}", r.panel)),
+                    ("reason", &r.reason),
+                ]
+            )
+        );
     }
     for m in &set.mismatches {
         println!(
-            "{} against {}: stitched edges differ by up to {:.1} mm at the ticks",
-            m.a,
-            m.b,
-            m.max_m * 1000.0
+            "{}",
+            tr.fmt(
+                Key::CliPanelsMismatchLine,
+                &[
+                    ("a", &m.a),
+                    ("b", &m.b),
+                    ("mm", &format!("{:.1}", m.max_m * 1000.0)),
+                ]
+            )
         );
     }
-    println!("{}", set.sheet_count_line());
+    println!("{}", set.sheet_count_line_tr(tr));
     for row in &set.stock {
         if let Some(note) = &row.note {
             println!("{}: {note}", row.panel);
@@ -3870,32 +4476,38 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
     let headed = set.rows.iter().filter(|r| !r.lies_flat).count();
     match headed {
         0 => {}
-        1 => println!("1 panel does not lie flat within the limits: its pattern is headed so"),
-        n => println!("{n} panels do not lie flat within the limits: their patterns are headed so"),
+        1 => println!("{}", tr.s(Key::CliPanelsHeadedOne)),
+        n => println!(
+            "{}",
+            tr.fmt(Key::CliPanelsHeadedOther, &[("count", &n.to_string())])
+        ),
     }
     let refused: Vec<&str> = set.refused.iter().map(|r| r.panel.as_str()).collect();
     match refused.len() {
         0 => {}
         1 => println!(
-            "1 panel could not be laid flat and is not in the file: {}",
-            refused[0]
+            "{}",
+            tr.fmt(Key::CliPanelsNotLaidOne, &[("names", refused[0])])
         ),
         n => println!(
-            "{n} panels could not be laid flat and are not in the file: {}",
-            refused.join(", ")
+            "{}",
+            tr.fmt(
+                Key::CliPanelsNotLaidOther,
+                &[("count", &n.to_string()), ("names", &refused.join(", ")),]
+            )
         ),
     }
     let scale_label = units::scale_label(scale);
     let mut page_parts = Vec::new();
     match layout_pages {
         0 => {}
-        1 => page_parts.push("the first page is the layout".to_owned()),
-        n => page_parts.push(format!("the first {n} pages are the layout")),
+        1 => page_parts.push(tr.s(Key::CliPanelsLayoutOne).to_owned()),
+        n => page_parts.push(tr.fmt(Key::CliPanelsLayoutOther, &[("count", &n.to_string())])),
     }
     match offsets_pages {
         0 => {}
-        1 => page_parts.push("the last page is the offsets tables".to_owned()),
-        n => page_parts.push(format!("the last {n} pages are the offsets tables")),
+        1 => page_parts.push(tr.s(Key::CliPanelsOffsetsOne).to_owned()),
+        n => page_parts.push(tr.fmt(Key::CliPanelsOffsetsOther, &[("count", &n.to_string())])),
     }
     let tables = if page_parts.is_empty() {
         String::new()
@@ -3903,45 +4515,74 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         format!(" ({})", page_parts.join(", "))
     };
     match (format, written.pages) {
-        (Format::PdfTiled, Some(pages)) => {
-            println!(
-                "{pages} pages{tables}, {}, scale {scale_label}",
-                paper_name(paper)
+        (Format::PdfTiled, Some(pages)) => println!(
+            "{}",
+            tr.fmt(
+                Key::CliPanelsPagesTiled,
+                &[
+                    ("pages", &pages.to_string()),
+                    ("tables", &tables),
+                    ("paper", &paper_name(paper)),
+                    ("scale", &scale_label),
+                ]
             )
-        }
-        (_, Some(pages)) => {
-            println!("{pages} pages, one a panel{tables}, scale {scale_label}")
-        }
-        (_, None) if sheet_paths.is_empty() => println!("one drawing, scale {scale_label}"),
+        ),
+        (_, Some(pages)) => println!(
+            "{}",
+            tr.fmt(
+                Key::CliPanelsPagesSingle,
+                &[
+                    ("pages", &pages.to_string()),
+                    ("tables", &tables),
+                    ("scale", &scale_label),
+                ]
+            )
+        ),
+        (_, None) if sheet_paths.is_empty() => println!(
+            "{}",
+            tr.fmt(Key::CliPanelsOneDrawing, &[("scale", &scale_label)])
+        ),
         (_, None) => {
-            let noun = if sheet_paths.len() == 1 {
-                "sheet file"
+            let key = if sheet_paths.len() == 1 {
+                Key::CliPanelsOneDrawingSheetsOne
             } else {
-                "sheet files"
+                Key::CliPanelsOneDrawingSheetsOther
             };
             println!(
-                "one drawing, scale {scale_label}, plus {} full-size {noun}",
-                sheet_paths.len()
+                "{}",
+                tr.fmt(
+                    key,
+                    &[
+                        ("scale", &scale_label),
+                        ("count", &sheet_paths.len().to_string()),
+                    ]
+                )
             );
         }
     }
     if !missing.is_empty() {
         println!(
-            "the font has no letter for {}: each is printed as ?",
-            missing.join(" ")
+            "{}",
+            tr.fmt(
+                Key::CliTemplatesMissingChars,
+                &[("chars", &missing.join(" "))]
+            )
         );
     }
-    println!("wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &out_str)]));
     for path in &sheet_paths {
-        println!("wrote {}", path.display());
+        let path_str = path.display().to_string();
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
     for path in [&a.offsets_csv, &a.offsets_pdf].into_iter().flatten() {
-        println!("wrote {}", path.display());
+        let path_str = path.display().to_string();
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
     }
     Ok(())
 }
 
-fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
+fn cmd_linesplan(a: LinesplanArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let opts = linesplan::LinesplanOptions {
         stations: a.stations,
@@ -3951,7 +4592,7 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         mode: a.subdiv.mode.into(),
         combs: a.combs,
         comb_scale: a.comb_scale,
-        ..Default::default()
+        locale: tr.locale(),
     };
     // The extension picks the format: `.dxf` gives the three views on named
     // layers plus 3D copies of every curve, `.svg` (or none) the standalone
@@ -3971,11 +4612,12 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
     };
     seacraft_core::io::write_atomic(&a.output, text)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
-    println!("wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &out_str)]));
     Ok(())
 }
 
-fn cmd_report(a: ReportArgs) -> Result<()> {
+fn cmd_report(a: ReportArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let project = if a.no_project {
         seacraft_core::project::Project::default()
@@ -3988,6 +4630,7 @@ fn cmd_report(a: ReportArgs) -> Result<()> {
     opts = project.report.apply(opts);
     opts.level = a.subdiv.level;
     opts.mode = a.subdiv.mode.into();
+    opts.locale = tr.locale();
     if let Some(d) = a.draft {
         if d <= 0.0 {
             bail!("draft must be positive");
@@ -4016,11 +4659,12 @@ fn cmd_report(a: ReportArgs) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     seacraft_core::io::write_atomic(&a.output, html)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
-    println!("wrote {}", a.output.display());
+    let out_str = a.output.display().to_string();
+    println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &out_str)]));
     Ok(())
 }
 
-fn cmd_render(a: RenderArgs) -> Result<()> {
+fn cmd_render(a: RenderArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let mode = if a.catmull_clark {
         SubdivisionMode::CatmullClark
@@ -4059,12 +4703,17 @@ fn cmd_render(a: RenderArgs) -> Result<()> {
     seacraft_core::io::write_atomic(&a.output, bytes)
         .with_context(|| format!("cannot write {}", a.output.display()))?;
     println!(
-        "wrote {} ({}x{}, {} mode, {} faces)",
-        a.output.display(),
-        width,
-        height,
-        mode.label(),
-        mesh.faces.len()
+        "{}",
+        tr.fmt(
+            Key::CliRenderWrote,
+            &[
+                ("path", &a.output.display().to_string()),
+                ("w", &width.to_string()),
+                ("h", &height.to_string()),
+                ("mode", mode.label()),
+                ("faces", &mesh.faces.len().to_string()),
+            ]
+        )
     );
     Ok(())
 }
@@ -4094,7 +4743,7 @@ fn parse_list(text: &str) -> Result<Vec<f64>> {
         .collect()
 }
 
-fn cmd_stability(a: StabilityArgs) -> Result<()> {
+fn cmd_stability(a: StabilityArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let mode: SubdivisionMode = a.subdiv.mode.into();
     let hull = hydro::Hull::new(
@@ -4162,19 +4811,32 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         }
         seacraft_core::io::write_atomic(&path, text)
             .with_context(|| format!("cannot write {}", path.display()))?;
-        println!("wrote {}", path.display());
+        let path_str = path.display().to_string();
+        println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", &path_str)]));
         return Ok(());
     }
 
     println!(
-        "{}  -  cross curves, KG {:.3} m above keel",
-        s.settings.name, a.kg
+        "{}",
+        tr.fmt(
+            Key::CliStabilityHeading,
+            &[("name", &s.settings.name), ("kg", &format!("{:.3}", a.kg))]
+        )
     );
     match lcg {
-        Some(x) => println!("  free to trim about LCG x = {:.3} m", x),
-        None => println!("  trim held at {:+.3} m", a.trim),
+        Some(x) => println!(
+            "{}",
+            tr.fmt(Key::CliStabilityFreeTrim, &[("lcg", &format!("{:.3}", x))])
+        ),
+        None => println!(
+            "{}",
+            tr.fmt(
+                Key::CliStabilityFixedTrim,
+                &[("trim", &format!("{:+.3}", a.trim))]
+            )
+        ),
     }
-    print!("  heel |");
+    print!("  {:>4} |", tr.s(Key::CliStabilityColHeel));
     for d in &displacements {
         print!("  {:>8.1} t", d);
     }
@@ -4190,7 +4852,8 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
         }
         println!();
     }
-    println!("\n  GZ in metres. Solved draft / trim per displacement:");
+    println!("{}", tr.s(Key::CliStabilitySolvedHeading));
+    let deg_unit = tr.s(Key::CliStabilityDeg);
     for c in &curves {
         let solved: Vec<String> = c
             .points
@@ -4200,21 +4863,39 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
                 _ => "—".to_string(),
             })
             .collect();
-        println!("    {:>4.0} deg: {}", c.heel_deg, solved.join(", "));
+        println!(
+            "    {:>4.0} {}: {}",
+            c.heel_deg,
+            deg_unit,
+            solved.join(", ")
+        );
     }
     let criteria: Vec<_> = (0..displacements.len())
         .filter_map(|i| evaluate_imo_criteria(&curves, i))
         .collect();
     if !criteria.is_empty() {
-        println!("\n  IMO A.749 / 2008 IS Code Part A intact stability criteria:");
-        println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
+        println!("{}", tr.s(Key::CliStabilityImoHeading));
+        println!("  {}", seacraft_core::not_validated_note(tr.locale()));
         println!(
-            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
-            "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
+            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  {}",
+            tr.s(Key::CliStabilityColDisp),
+            "A(0-30)",
+            "A(0-40)",
+            "A(30-40)",
+            "GZ(>=30)",
+            "phi_max",
+            "GM0",
+            tr.s(Key::CliStabilityColStatus)
         );
         println!(
             "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  ------",
-            "min req.", ">=0.055", ">=0.090", ">=0.030", ">=0.200 m", ">=25 deg", ">=0.15"
+            tr.s(Key::CliStabilityMinReq),
+            ">=0.055",
+            ">=0.090",
+            ">=0.030",
+            ">=0.200 m",
+            ">=25 deg",
+            ">=0.15"
         );
         for c in &criteria {
             println!(
@@ -4226,7 +4907,11 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
                 c.max_gz_30_plus_m,
                 c.angle_of_max_gz_deg,
                 c.gm0_m,
-                if c.passed { "PASS" } else { "FAIL" }
+                if c.passed {
+                    tr.s(Key::ReportBadgePass)
+                } else {
+                    tr.s(Key::ReportBadgeFail)
+                }
             );
         }
     }
@@ -4245,8 +4930,14 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
             {
                 if !p.windage.is_empty() {
                     println!(
-                        "  windage items from {}",
-                        project::sidecar_path(&a.file).display()
+                        "{}",
+                        tr.fmt(
+                            Key::CliStabilityWindageFrom,
+                            &[(
+                                "path",
+                                &project::sidecar_path(&a.file).display().to_string()
+                            )]
+                        )
                     );
                     windage_extra = p.windage;
                 }
@@ -4264,7 +4955,7 @@ fn cmd_stability(a: StabilityArgs) -> Result<()> {
             ..Default::default()
         };
         let w = seacraft_core::weather::evaluate_hull_weather(&hull, &base, &cond, &w_input);
-        print_weather_summary(&w);
+        print_weather_summary(&w, tr);
     }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;
@@ -4355,7 +5046,7 @@ fn read_loading_condition(
     read_loading_condition_with_mode(model, case, name, false)
 }
 
-fn cmd_heel(a: HeelArgs) -> Result<()> {
+fn cmd_heel(a: HeelArgs, tr: Tr) -> Result<()> {
     use seacraft_core::heel;
     let s = load(&a.file)?;
     let mut opts = HydroOptions::from_surface(
@@ -4371,7 +5062,7 @@ fn cmd_heel(a: HeelArgs) -> Result<()> {
         .enumerate()
         .map(|(i, w)| {
             heel::parse_weight(w).map(|mut w| {
-                w.name = format!("Weight {}", i + 1);
+                w.name = tr.fmt(Key::CliHeelWeightName, &[("n", &(i + 1).to_string())]);
                 w
             })
         })
@@ -4425,63 +5116,89 @@ fn cmd_heel(a: HeelArgs) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{}  -  heel under trial weights (free to trim)",
-        s.settings.name
+        "{}",
+        tr.fmt(Key::CliHeelHeading, &[("name", &s.settings.name)])
     );
     for w in &r.warnings {
-        println!("  WARNING: {w}");
+        println!("{}", tr.fmt(Key::CliHeelWarning, &[("warning", w)]));
     }
     let cond = |c: &heel::ConditionSummary| {
-        format!(
-            "displacement {:.3} t, KG {:.3} m, LCG {:.3} m, TCG {:+.3} m",
-            c.displacement_t, c.kg_m, c.lcg_m, c.tcg_m
+        tr.fmt(
+            Key::CliHeelCondFmt,
+            &[
+                ("disp", &format!("{:.3}", c.displacement_t)),
+                ("kg", &format!("{:.3}", c.kg_m)),
+                ("lcg", &format!("{:.3}", c.lcg_m)),
+                ("tcg", &format!("{:+.3}", c.tcg_m)),
+            ],
         )
     };
     let row = |label: &str, value: String| println!("  {label:<14} {value}");
-    row("start", cond(&r.start));
+    row(tr.s(Key::CliHeelRowStart), cond(&r.start));
     for w in &r.weights {
         row(
-            "weight",
-            format!(
-                "{}: {:.3} t at x {:.3}, y {:+.3}, z {:.3} m",
-                w.name, w.mass_t, w.x, w.y, w.z
+            tr.s(Key::CliHeelRowWeight),
+            tr.fmt(
+                Key::CliHeelWeightVal,
+                &[
+                    ("name", &w.name),
+                    ("mass", &format!("{:.3}", w.mass_t)),
+                    ("x", &format!("{:.3}", w.x)),
+                    ("y", &format!("{:+.3}", w.y)),
+                    ("z", &format!("{:.3}", w.z)),
+                ],
             ),
         );
     }
     if !r.weights.is_empty() {
-        row("with weights", cond(&r.condition));
+        row(tr.s(Key::CliHeelRowWithWeights), cond(&r.condition));
     }
-    row("settles", r.summary.clone());
+    row(
+        tr.s(Key::CliHeelRowSettles),
+        r.equilibrium.describe_tr(r.condition.displacement_t, tr),
+    );
     if let heel::Equilibrium::Loll { port, starboard } = &r.equilibrium {
         row(
             "",
-            format!(
-                "(negative upright GM: {:+.1}° and {:+.1}°)",
-                port.heel_deg, starboard.heel_deg
+            tr.fmt(
+                Key::CliHeelLollNegGm,
+                &[
+                    ("port", &format!("{:+.1}", port.heel_deg)),
+                    ("stbd", &format!("{:+.1}", starboard.heel_deg)),
+                ],
             ),
         );
     }
     if let Some(h) = a.heel {
+        let label = tr.fmt(Key::CliHeelAtHeelLabel, &[("deg", &format!("{h:+.1}"))]);
         match &r.at_heel {
-            Some(st) => row(
-                &format!("at {h:+.1}°"),
-                format!(
-                    "lever {:+.3} m = GZ {:+.3} m - heeling arm {:+.3} m{}",
-                    st.lever_m,
-                    st.gz_m,
-                    st.heeling_arm_m,
-                    match (st.draft, st.trim_m) {
-                        (Some(d), Some(t)) => format!(", draft {d:.3} m, trim {t:+.3} m"),
-                        _ => String::new(),
-                    }
-                ),
-            ),
+            Some(st) => {
+                let extra = match (st.draft, st.trim_m) {
+                    (Some(d), Some(t)) => tr.fmt(
+                        Key::CliHeelAtHeelDraftTrim,
+                        &[("draft", &format!("{d:.3}")), ("trim", &format!("{t:+.3}"))],
+                    ),
+                    _ => String::new(),
+                };
+                row(
+                    &label,
+                    tr.fmt(
+                        Key::CliHeelAtHeelLever,
+                        &[
+                            ("lever", &format!("{:+.3}", st.lever_m)),
+                            ("gz", &format!("{:+.3}", st.gz_m)),
+                            ("ha", &format!("{:+.3}", st.heeling_arm_m)),
+                            ("extra", &extra),
+                        ],
+                    ),
+                );
+            }
             None => row(
-                &format!("at {h:+.1}°"),
+                &label,
                 if matches!(r.equilibrium, heel::Equilibrium::CannotFloat) {
-                    "does not float".into()
+                    tr.s(Key::CliHeelDoesNotFloat).into()
                 } else {
-                    "no free-trim solution found at this heel".into()
+                    tr.s(Key::CliHeelNoFreeTrim).into()
                 },
             ),
         }
@@ -4489,7 +5206,7 @@ fn cmd_heel(a: HeelArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
+fn cmd_loadcase(a: LoadcaseArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let cond = read_loading_condition(&a.file, a.case.as_deref(), a.name.as_deref())?;
 
@@ -4507,14 +5224,26 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}  -  loading condition: {}", s.settings.name, res.name);
-    for line in loading_equilibrium_lines(&res) {
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliLoadcaseHeading,
+            &[("name", &s.settings.name), ("cond", &res.name)]
+        )
+    );
+    for line in loading_equilibrium_lines_tr(&res, tr) {
         println!("  {line}");
     }
     println!();
     println!(
         "  {:<34} {:<10} {:>9} {:>9} {:>9} {:>9} {:>10}",
-        "item", "kind", "mass [t]", "x [m]", "y [m]", "z [m]", "FSM [t*m]"
+        tr.s(Key::CliLoadcaseColItem),
+        tr.s(Key::CliLoadcaseColKind),
+        tr.s(Key::CliLoadcaseColMass),
+        "x [m]",
+        "y [m]",
+        "z [m]",
+        "FSM [t*m]"
     );
     println!("  {}", "-".repeat(96));
     for r in &res.breakdown {
@@ -4526,26 +5255,48 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
     println!("  {}", "-".repeat(96));
     println!(
         "  {:<34} {:<10} {:>9.3} {:>9.3} {:>+9.3} {:>9.3} {:>10.3}",
-        "TOTAL / CG", "", res.displacement_t, res.lcg, res.tcg, res.vcg_z, res.fsm_t_m
+        tr.s(Key::CliLoadcaseTotalCg),
+        "",
+        res.displacement_t,
+        res.lcg,
+        res.tcg,
+        res.vcg_z,
+        res.fsm_t_m
     );
     println!();
     let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
     row(
-        "displacement",
+        tr.s(Key::CliLoadcaseDisplacement),
         format!("{:.3} t  ({:.3} m3)", res.displacement_t, res.volume_m3),
     );
     row("LCG / TCG", format!("{:.3} m / {:+.3} m", res.lcg, res.tcg));
-    row("KG (solid)", format!("{:.3} m above keel", res.kg_solid));
+    row(
+        tr.s(Key::CliLoadcaseKgSolid),
+        tr.fmt(
+            Key::CliLoadcaseAboveKeel,
+            &[("kg", &format!("{:.3}", res.kg_solid))],
+        ),
+    );
     row(
         "FSM / FSC",
         format!("{:.3} t*m  ->  {:+.3} m", res.fsm_t_m, res.fsc_m),
     );
-    row("KG (fluid)", format!("{:.3} m above keel", res.kg_fluid));
     row(
-        "floating condition",
-        format!(
-            "draft {:.3} m, trim {:+.3} m, list {:+.2} deg",
-            res.draft, res.trim_m, res.list_deg
+        tr.s(Key::CliLoadcaseKgFluid),
+        tr.fmt(
+            Key::CliLoadcaseAboveKeel,
+            &[("kg", &format!("{:.3}", res.kg_fluid))],
+        ),
+    );
+    row(
+        tr.s(Key::CliLoadcaseFloating),
+        tr.fmt(
+            Key::CliLoadcaseFloatingVal,
+            &[
+                ("draft", &format!("{:.3}", res.draft)),
+                ("trim", &format!("{:+.3}", res.trim_m)),
+                ("list", &format!("{:+.2}", res.list_deg)),
+            ],
         ),
     );
     row(
@@ -4563,23 +5314,39 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
         ),
     );
     row(
-        "GM (solid / fluid)",
+        tr.s(Key::CliLoadcaseGmSolidFluid),
         format!("{:.3} m / {:.3} m", res.gm_solid, res.gm_fluid),
     );
 
     if let Some(c) = &res.imo_criteria {
         println!(
-            "\n  IMO A.749 / 2008 IS Code Part A intact stability criteria (KG_fluid {:.3} m):",
-            res.kg_fluid
+            "{}",
+            tr.fmt(
+                Key::CliLoadcaseImoHeading,
+                &[("kg", &format!("{:.3}", res.kg_fluid))]
+            )
         );
-        println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
+        println!("  {}", seacraft_core::not_validated_note(tr.locale()));
         println!(
-            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  status",
-            "disp (t)", "A(0-30)", "A(0-40)", "A(30-40)", "GZ(>=30)", "phi_max", "GM0"
+            "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  {}",
+            tr.s(Key::CliStabilityColDisp),
+            "A(0-30)",
+            "A(0-40)",
+            "A(30-40)",
+            "GZ(>=30)",
+            "phi_max",
+            "GM0",
+            tr.s(Key::CliStabilityColStatus)
         );
         println!(
             "    {:>8}  {:>9}  {:>9}  {:>10}  {:>10}  {:>9}  {:>7}  ------",
-            "min req.", ">=0.055", ">=0.090", ">=0.030", ">=0.200 m", ">=25 deg", ">=0.15"
+            tr.s(Key::CliStabilityMinReq),
+            ">=0.055",
+            ">=0.090",
+            ">=0.030",
+            ">=0.200 m",
+            ">=25 deg",
+            ">=0.15"
         );
         println!(
             "    {:>8.2}  {:>9.4}  {:>9.4}  {:>10.4}  {:>10.3}  {:>9.1}  {:>7.3}  {}",
@@ -4590,11 +5357,15 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
             c.max_gz_30_plus_m,
             c.angle_of_max_gz_deg,
             c.gm0_m,
-            if c.passed { "PASS" } else { "FAIL" }
+            if c.passed {
+                tr.s(Key::ReportBadgePass)
+            } else {
+                tr.s(Key::ReportBadgeFail)
+            }
         );
     }
     if let Some(w) = &res.weather {
-        print_weather_summary(w);
+        print_weather_summary(w, tr);
     }
     Ok(())
 }
@@ -4602,16 +5373,24 @@ fn cmd_loadcase(a: LoadcaseArgs) -> Result<()> {
 /// The warning lines a loading table opens with when no equilibrium was
 /// found (none when it was): its figures are the hull at the input
 /// draft/trim. `--json` carries the same as `equilibrium_found`/`warnings`.
+#[cfg(test)]
 fn loading_equilibrium_lines(res: &loading::LoadingResult) -> Vec<String> {
+    loading_equilibrium_lines_tr(res, Tr::new(Locale::En))
+}
+
+fn loading_equilibrium_lines_tr(res: &loading::LoadingResult, tr: Tr) -> Vec<String> {
     if res.equilibrium_found {
         return Vec::new();
     }
-    std::iter::once(format!("WARNING: {}", loading::NO_EQUILIBRIUM_NOTE))
-        .chain(res.warnings.iter().map(|w| format!("  {w}")))
-        .collect()
+    std::iter::once(tr.fmt(
+        Key::CliLoadcaseWarningNoEq,
+        &[("note", loading::NO_EQUILIBRIUM_NOTE)],
+    ))
+    .chain(res.warnings.iter().map(|w| format!("  {w}")))
+    .collect()
 }
 
-fn cmd_damage(a: DamageArgs) -> Result<()> {
+fn cmd_damage(a: DamageArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let (case, from) = match read_case_or_project(&a.file, a.case.as_deref())? {
         (CaseSource::Bare(text), path) => (
@@ -4645,65 +5424,98 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}  -  damage case: {}", s.settings.name, res.case_name);
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliDamageHeading,
+            &[("name", &s.settings.name), ("case", &res.case_name)]
+        )
+    );
     println!();
     let row = |label: &str, value: String| println!("  {:<26} {}", label, value);
     row(
-        "displacement",
-        format!(
-            "{:.3} t  (net {:.3} m3, rho {:.3} t/m3)",
-            res.displacement_t, res.net_volume_m3, res.water_density
+        tr.s(Key::CliDamageDisplacement),
+        tr.fmt(
+            Key::CliDamageDispVal,
+            &[
+                ("disp", &format!("{:.3}", res.displacement_t)),
+                ("vol", &format!("{:.3}", res.net_volume_m3)),
+                ("rho", &format!("{:.3}", res.water_density)),
+            ],
         ),
     );
     row(
         "LCG / TCG / KG",
         format!(
-            "{:.3} m / {:+.3} m / {:.3} m above keel",
-            res.lcg, res.tcg, res.kg
+            "{:.3} m / {:+.3} m / {}",
+            res.lcg,
+            res.tcg,
+            tr.fmt(
+                Key::CliLoadcaseAboveKeel,
+                &[("kg", &format!("{:.3}", res.kg))]
+            )
         ),
     );
     row(
-        "intact equilibrium",
-        format!(
-            "draft {:.3} m, trim {:+.3} m",
-            res.intact_draft, res.intact_trim_m
+        tr.s(Key::CliDamageIntactEq),
+        tr.fmt(
+            Key::CliDamageIntactVal,
+            &[
+                ("draft", &format!("{:.3}", res.intact_draft)),
+                ("trim", &format!("{:+.3}", res.intact_trim_m)),
+            ],
         ),
     );
     row(
-        "damaged equilibrium",
-        format!(
-            "draft {:.3} m, trim {:+.3} m, heel {:+.2} deg{}",
-            res.draft,
-            res.trim_m,
-            res.heel_deg,
-            if res.equilibrium_found {
-                " [FOUND]"
-            } else {
-                " [UNREACHED]"
-            }
+        tr.s(Key::CliDamageDamagedEq),
+        tr.fmt(
+            Key::CliDamageDamagedVal,
+            &[
+                ("draft", &format!("{:.3}", res.draft)),
+                ("trim", &format!("{:+.3}", res.trim_m)),
+                ("heel", &format!("{:+.2}", res.heel_deg)),
+                (
+                    "status",
+                    if res.equilibrium_found {
+                        tr.s(Key::CliDamageFoundBadge)
+                    } else {
+                        tr.s(Key::CliDamageUnreachedBadge)
+                    },
+                ),
+            ],
         ),
     );
-    row("sinkage", format!("{:+.3} m", res.sinkage_m));
     row(
-        "freeboard to deck edge",
+        tr.s(Key::CliDamageSinkage),
+        format!("{:+.3} m", res.sinkage_m),
+    );
+    row(
+        tr.s(Key::CliDamageFreeboard),
         match res.freeboard_m {
-            Some(fb) if fb < 0.0 => format!("{:+.3} m  [IMMERSED]", fb),
+            Some(fb) if fb < 0.0 => tr.fmt(
+                Key::CliDamageImmersedBadge,
+                &[("fb", &format!("{:+.3}", fb))],
+            ),
             Some(fb) => format!("{:.3} m", fb),
             None => "—".to_string(),
         },
     );
     row(
-        "net buoyancy centroid",
+        tr.s(Key::CliDamageNetCentroid),
         format!(
             "LCB {:.3} m, TCB {:+.3} m, KB {:.3} m",
             res.lcb_x, res.tcb_y, res.kb
         ),
     );
     println!();
-    println!("  flooded compartments:");
+    println!("{}", tr.s(Key::CliDamageCompHeading));
     println!(
         "    {:<30} {:>6} {:>8} {:>10} {:>10}",
-        "name", "perm", "clipped", "subm [m3]", "lost [m3]"
+        tr.s(Key::CliDamageColName),
+        tr.s(Key::CliDamageColPerm),
+        tr.s(Key::CliDamageColClipped),
+        tr.s(Key::CliDamageColSubm),
+        tr.s(Key::CliDamageColLost)
     );
     println!("    {}", "-".repeat(68));
     for c in &res.compartments {
@@ -4711,7 +5523,11 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
             "    {:<30} {:>6.2} {:>8} {:>10.3} {:>10.3}",
             c.name,
             c.permeability,
-            if c.clip_to_hull { "yes" } else { "no" },
+            if c.clip_to_hull {
+                tr.s(Key::CliCommonYes)
+            } else {
+                tr.s(Key::CliCommonNo)
+            },
             c.submerged_volume_m3,
             c.lost_volume_m3
         );
@@ -4719,13 +5535,21 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
     println!("    {}", "-".repeat(68));
     println!(
         "    {:<30} {:>6} {:>8} {:>10} {:>10.3}",
-        "TOTAL LOST BUOYANCY", "", "", "", res.lost_volume_m3
+        tr.s(Key::CliDamageTotalLost),
+        "",
+        "",
+        "",
+        res.lost_volume_m3
     );
     println!();
-    println!("  residual GZ curve from damaged equilibrium (free trim):");
+    println!("{}", tr.s(Key::CliDamageResidualHeading));
     println!(
         "    {:>8}  {:>8}  {:>10}  {:>10}  {:>10}",
-        "rel deg", "abs deg", "draft [m]", "trim [m]", "GZ [m]"
+        tr.s(Key::CliDamageColRelDeg),
+        tr.s(Key::CliDamageColAbsDeg),
+        tr.s(Key::CliDamageColDraft),
+        tr.s(Key::CliDamageColTrim),
+        "GZ [m]"
     );
     for p in &res.residual_gz {
         let rel_int = (p.relative_heel_deg.round()) as i64;
@@ -4747,11 +5571,14 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
     }
     if let Some(c) = &res.criteria {
         println!();
-        println!("  residual stability criteria (indicative, SOLAS-style):");
-        println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
+        println!("{}", tr.s(Key::CliDamageCriteriaHeading));
+        println!("  {}", seacraft_core::not_validated_note(tr.locale()));
         println!(
-            "    {:>12}  {:>10}  {:>12}  status",
-            "pos range", "max GZ", "area(range)"
+            "    {:>12}  {:>10}  {:>12}  {}",
+            tr.s(Key::CliDamageColPosRange),
+            tr.s(Key::CliDamageColMaxGz),
+            tr.s(Key::CliDamageColAreaRange),
+            tr.s(Key::CliStabilityColStatus)
         );
         println!(
             "    {:>12}  {:>10}  {:>12}  ------",
@@ -4762,17 +5589,21 @@ fn cmd_damage(a: DamageArgs) -> Result<()> {
             c.positive_range_deg,
             c.max_gz_m,
             c.area_m_rad,
-            if c.passed { "PASS" } else { "FAIL" }
+            if c.passed {
+                tr.s(Key::ReportBadgePass)
+            } else {
+                tr.s(Key::ReportBadgeFail)
+            }
         );
-        println!("    note: {}", c.label);
+        println!("{}", tr.fmt(Key::CliDamageNoteLine, &[("note", &c.label)]));
     }
     for w in &res.warnings {
-        println!("  warning: {w}");
+        println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
     }
     Ok(())
 }
 
-fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
+fn cmd_seakeeping(a: SeakeepingArgs, tr: Tr) -> Result<()> {
     let s = load(&a.file)?;
     let draft = if let Some(d) = a.draft {
         d
@@ -4837,34 +5668,52 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
             seacraft_core::io::write_atomic(csv_path, text)
                 .with_context(|| format!("cannot write {}", csv_path.display()))?;
             println!(
-                "wrote {} ({} frequencies)",
-                csv_path.display(),
-                rep.frequencies.len()
+                "{}",
+                tr.fmt(
+                    Key::CliCommonWroteStations,
+                    &[
+                        ("path", &csv_path.display().to_string()),
+                        ("count", &rep.frequencies.len().to_string()),
+                    ]
+                )
             );
         }
         return Ok(());
     }
 
     println!(
-        "{}  -  Seakeeping RAOs in regular head seas (Salvesen, Tuck & Faltinsen 1970)",
-        s.settings.name
+        "{}",
+        tr.fmt(Key::CliSeakeepingHeading, &[("name", &s.settings.name)])
+    );
+    let kyy_str = if let Some(kyy) = spec.kyy {
+        format!(", kyy: {:.3} m", kyy)
+    } else {
+        String::new()
+    };
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliSeakeepingParams,
+            &[
+                ("draft", &format!("{:.3}", spec.draft)),
+                ("speed", &format!("{:.1}", spec.speed_kn)),
+                ("kg", &format!("{:.3}", spec.kg)),
+                ("kyy", &kyy_str),
+            ]
+        )
     );
     println!(
-        "  draft: {:.3} m, speed: {:.1} kn, KG: {:.3} m{}",
-        spec.draft,
-        spec.speed_kn,
-        spec.kg,
-        if let Some(kyy) = spec.kyy {
-            format!(", kyy: {:.3} m", kyy)
-        } else {
-            String::new()
-        }
-    );
-    println!(
-        "  natural frequencies: heave w_n = {:.3} rad/s, pitch w_n = {:.3} rad/s",
-        rep.natural_heave_omega, rep.natural_pitch_omega
+        "{}",
+        tr.fmt(
+            Key::CliSeakeepingNatFreq,
+            &[
+                ("heave", &format!("{:.3}", rep.natural_heave_omega)),
+                ("pitch", &format!("{:.3}", rep.natural_pitch_omega)),
+            ]
+        )
     );
     println!();
+    let phase = tr.s(Key::CliSeakeepingColPhase);
     println!(
         "  {:>8}   {:>10}   {:>13}   {:>15}   {:>10}   {:>11}   {:>18}   {:>11}",
         "lambda/L",
@@ -4872,9 +5721,9 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
         "omega (rad/s)",
         "omega_e (rad/s)",
         "z_a/zeta_a",
-        "phase (deg)",
+        phase,
         "theta_a/(k*zeta_a)",
-        "phase (deg)"
+        phase
     );
     for pt in &rep.frequencies {
         println!(
@@ -4891,11 +5740,11 @@ fn cmd_seakeeping(a: SeakeepingArgs) -> Result<()> {
     }
     if let Some(irr) = &irregular {
         println!();
-        print_irregular_sea(irr);
+        print_irregular_sea(irr, tr);
     }
     if !rep.warnings.is_empty() {
         println!();
-        println!("warnings:");
+        println!("{}", tr.s(Key::CliSeakeepingWarnings));
         for w in &rep.warnings {
             println!("  [{}] {}", w.code, w.message);
         }
@@ -4948,34 +5797,60 @@ fn irregular_sea_for(
         .map_err(|e| anyhow::anyhow!("seakeeping (irregular): {e}"))
 }
 
-fn print_irregular_sea(r: &seacraft_core::seastate::IrregularReport) {
+fn print_irregular_sea(r: &seacraft_core::seastate::IrregularReport, tr: Tr) {
     use seacraft_core::seastate::WaveSpectrum;
-    println!("Irregular head seas");
+    println!("{}", tr.s(Key::CliSeakeepingIrrHeading));
     match r.sea {
-        WaveSpectrum::Bretschneider { hs, tp } => {
-            println!("  Bretschneider spectrum: Hs {hs:.2} m, Tp {tp:.2} s")
-        }
-        WaveSpectrum::Jonswap { hs, tp, gamma } => {
-            println!("  JONSWAP spectrum: Hs {hs:.2} m, Tp {tp:.2} s, gamma {gamma:.2}")
-        }
+        WaveSpectrum::Bretschneider { hs, tp } => println!(
+            "{}",
+            tr.fmt(
+                Key::CliSeakeepingBretschneider,
+                &[("hs", &format!("{hs:.2}")), ("tp", &format!("{tp:.2}"))]
+            )
+        ),
+        WaveSpectrum::Jonswap { hs, tp, gamma } => println!(
+            "{}",
+            tr.fmt(
+                Key::CliSeakeepingJonswap,
+                &[
+                    ("hs", &format!("{hs:.2}")),
+                    ("tp", &format!("{tp:.2}")),
+                    ("gamma", &format!("{gamma:.2}")),
+                ]
+            )
+        ),
     }
     println!(
-        "  spectrum check: Hs = 4*sqrt(m0) = {:.3} m, T1 = {:.2} s, Tz = {:.2} s  ({} frequencies, {:.3}..{:.3} rad/s)",
-        r.spectrum.hs_check,
-        r.spectrum.t1_s,
-        r.spectrum.tz_s,
-        r.omega_count,
-        r.omega_min,
-        r.omega_max
+        "{}",
+        tr.fmt(
+            Key::CliSeakeepingSpectrumCheck,
+            &[
+                ("hs", &format!("{:.3}", r.spectrum.hs_check)),
+                ("t1", &format!("{:.2}", r.spectrum.t1_s)),
+                ("tz", &format!("{:.2}", r.spectrum.tz_s)),
+                ("count", &r.omega_count.to_string()),
+                ("wmin", &format!("{:.3}", r.omega_min)),
+                ("wmax", &format!("{:.3}", r.omega_max)),
+            ]
+        )
     );
     println!(
-        "  speed: {:.1} kn; motion origin LCG at x = {:.3} m",
-        r.speed_kn, r.x_lcg
+        "{}",
+        tr.fmt(
+            Key::CliSeakeepingSpeedLcg,
+            &[
+                ("speed", &format!("{:.1}", r.speed_kn)),
+                ("lcg", &format!("{:.3}", r.x_lcg)),
+            ]
+        )
     );
     println!();
     println!(
         "  {:<22} {:>10} {:>10} {:>10}",
-        "response", "sig. ampl.", "RMS", "Tz (s)"
+        tr.s(Key::CliSeakeepingColResponse),
+        tr.s(Key::CliSeakeepingColSigAmpl),
+        "RMS",
+        "Tz (s)"
     );
     let row = |name: String, st: &seacraft_core::seastate::ResponseStats, unit: &str| {
         println!(
@@ -4983,18 +5858,33 @@ fn print_irregular_sea(r: &seacraft_core::seastate::IrregularReport) {
             name, st.significant, st.rms, st.tz_s
         );
     };
-    row("heave".into(), &r.heave, "m");
-    row("pitch".into(), &r.pitch_deg, "deg");
+    row(tr.s(Key::CliSeakeepingHeave).into(), &r.heave, "m");
+    row(tr.s(Key::CliSeakeepingPitch).into(), &r.pitch_deg, "deg");
     for p in &r.points {
         let tag = format!("{} (x {:.2})", p.name, p.x);
-        row(format!("{tag} motion"), &p.vertical_motion, "m");
-        row(format!("{tag} relative"), &p.relative_motion, "m");
-        row(format!("{tag} accel."), &p.vertical_acceleration, "m/s2");
+        row(
+            tr.fmt(Key::CliSeakeepingMotionSuffix, &[("tag", &tag)]),
+            &p.vertical_motion,
+            "m",
+        );
+        row(
+            tr.fmt(Key::CliSeakeepingRelativeSuffix, &[("tag", &tag)]),
+            &p.relative_motion,
+            "m",
+        );
+        row(
+            tr.fmt(Key::CliSeakeepingAccelSuffix, &[("tag", &tag)]),
+            &p.vertical_acceleration,
+            "m/s2",
+        );
     }
     println!();
     println!(
         "  {:<22} {:>10} {:>12} {:>9}",
-        "point", "acc RMS g", "acc sig. g", "MSI %"
+        tr.s(Key::CliSeakeepingColPoint),
+        tr.s(Key::CliSeakeepingColAccRms),
+        tr.s(Key::CliSeakeepingColAccSig),
+        "MSI %"
     );
     for p in &r.points {
         println!(
@@ -5002,47 +5892,100 @@ fn print_irregular_sea(r: &seacraft_core::seastate::IrregularReport) {
             p.name, p.acceleration_rms_g, p.acceleration_significant_g, p.msi_percent
         );
     }
-    println!("  {}", r.msi_note);
+    println!("  {}", seacraft_core::seastate::msi_note(tr));
     for w in &r.warnings {
-        println!("  warning [{}]: {}", w.code, w.message);
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliCommonWarningIndent,
+                &[("message", &format!("[{}]: {}", w.code, w.message))]
+            )
+        );
     }
 }
 
-fn print_weather_summary(w: &seacraft_core::weather::WeatherResult) {
+fn print_weather_summary(w: &seacraft_core::weather::WeatherResult, tr: Tr) {
     let opt_deg = |v: Option<f64>| match v {
         Some(x) if x.is_finite() => format!("{x:.2} deg"),
         _ => "—".to_string(),
     };
-    println!("\n  IMO 2008 IS Code Part A §2.3 weather criterion:");
-    println!("  {}", seacraft_core::NOT_VALIDATED_NOTE);
+    let badge = |passed: bool| {
+        if passed {
+            tr.s(Key::ReportBadgePass)
+        } else {
+            tr.s(Key::ReportBadgeFail)
+        }
+    };
+    println!("{}", tr.s(Key::CliWeatherHeading));
+    println!("  {}", seacraft_core::not_validated_note(tr.locale()));
     println!(
-        "    windage   A {:.3} m2 (hull {:.3}, extra {:.3})  Z {:.3} m  P {:.0} Pa",
-        w.area_m2, w.hull_windage_area_m2, w.extra_windage_area_m2, w.z_m, w.wind_pressure_pa
+        "{}",
+        tr.fmt(
+            Key::CliWeatherWindage,
+            &[
+                ("a", &format!("{:.3}", w.area_m2)),
+                ("hull", &format!("{:.3}", w.hull_windage_area_m2)),
+                ("extra", &format!("{:.3}", w.extra_windage_area_m2)),
+                ("z", &format!("{:.3}", w.z_m)),
+                ("p", &format!("{:.0}", w.wind_pressure_pa)),
+            ]
+        )
     );
-    println!("    levers    lw1 {:.4} m   lw2 {:.4} m", w.lw1_m, w.lw2_m);
     println!(
-        "    rolling   X1 {:.3}  X2 {:.3}  k {:.3}  r {:.3}  C {:.4}  T {:.2} s  s {:.4}  ->  phi1 {:.2} deg",
-        w.x1, w.x2, w.k, w.r, w.c, w.roll_period_s, w.s, w.phi1_deg
+        "{}",
+        tr.fmt(
+            Key::CliWeatherLevers,
+            &[
+                ("lw1", &format!("{:.4}", w.lw1_m)),
+                ("lw2", &format!("{:.4}", w.lw2_m)),
+            ]
+        )
     );
     println!(
-        "    angles    phi0 {} (limit <= {:.1} deg: {})   phi0-phi1 {}   phic {}   phi2 {}",
-        opt_deg(w.phi0_deg),
-        w.phi0_limit_deg,
-        if w.phi0_passed { "PASS" } else { "FAIL" },
-        opt_deg(w.phi_roll_deg),
-        opt_deg(w.phic_deg),
-        opt_deg(w.phi2_deg)
+        "{}",
+        tr.fmt(
+            Key::CliWeatherRolling,
+            &[
+                ("x1", &format!("{:.3}", w.x1)),
+                ("x2", &format!("{:.3}", w.x2)),
+                ("k", &format!("{:.3}", w.k)),
+                ("r", &format!("{:.3}", w.r)),
+                ("c", &format!("{:.4}", w.c)),
+                ("t", &format!("{:.2}", w.roll_period_s)),
+                ("s", &format!("{:.4}", w.s)),
+                ("phi1", &format!("{:.2}", w.phi1_deg)),
+            ]
+        )
     );
     println!(
-        "    areas     a {:.4} m*rad   b {:.4} m*rad   b/a {:.2} (req b >= a: {})   status {}",
-        w.area_a_m_rad,
-        w.area_b_m_rad,
-        w.area_ratio,
-        if w.area_passed { "PASS" } else { "FAIL" },
-        if w.passed { "PASS" } else { "FAIL" }
+        "{}",
+        tr.fmt(
+            Key::CliWeatherAngles,
+            &[
+                ("phi0", &opt_deg(w.phi0_deg)),
+                ("lim", &format!("{:.1}", w.phi0_limit_deg)),
+                ("phi0_st", badge(w.phi0_passed)),
+                ("phi_roll", &opt_deg(w.phi_roll_deg)),
+                ("phic", &opt_deg(w.phic_deg)),
+                ("phi2", &opt_deg(w.phi2_deg)),
+            ]
+        )
+    );
+    println!(
+        "{}",
+        tr.fmt(
+            Key::CliWeatherAreas,
+            &[
+                ("a", &format!("{:.4}", w.area_a_m_rad)),
+                ("b", &format!("{:.4}", w.area_b_m_rad)),
+                ("ratio", &format!("{:.2}", w.area_ratio)),
+                ("area_st", badge(w.area_passed)),
+                ("status", badge(w.passed)),
+            ]
+        )
     );
     for note in &w.notes {
-        println!("    note      {note}");
+        println!("{}", tr.fmt(Key::CliWeatherNote, &[("note", note)]));
     }
 }
 
@@ -5186,7 +6129,8 @@ mod tests {
             ] {
                 let mut args = vec![fef_text.as_str(), "-o", out_text.as_str()];
                 args.extend_from_slice(flags);
-                let err = cmd_export(parse_export(&args)).expect_err("refused");
+                let err =
+                    cmd_export(parse_export(&args), Tr::new(Locale::En)).expect_err("refused");
                 let msg = format!("{err}");
                 assert!(msg.contains(named), "{ext} {flags:?}: {msg}");
                 assert!(msg.contains(".obj"), "{msg}");
@@ -5197,26 +6141,37 @@ mod tests {
         // `--up z` is what the other formats are anyway; OBJ takes them all.
         let stl = dir.join("hull.stl");
         let stl_text = stl.to_string_lossy().into_owned();
-        cmd_export(parse_export(&[&fef_text, "-o", &stl_text, "--up", "z"])).expect("z-up STL");
+        cmd_export(
+            parse_export(&[&fef_text, "-o", &stl_text, "--up", "z"]),
+            Tr::new(Locale::En),
+        )
+        .expect("z-up STL");
         assert!(stl.exists());
         let obj = dir.join("hull.obj");
         let obj_text = obj.to_string_lossy().into_owned();
-        cmd_export(parse_export(&[
-            &fef_text,
-            "-o",
-            &obj_text,
-            "--control",
-            "--no-mirror",
-            "--up",
-            "y",
-        ]))
+        cmd_export(
+            parse_export(&[
+                &fef_text,
+                "-o",
+                &obj_text,
+                "--control",
+                "--no-mirror",
+                "--up",
+                "y",
+            ]),
+            Tr::new(Locale::En),
+        )
         .expect("OBJ honours every flag");
         assert!(std::fs::read_to_string(&obj)
             .unwrap()
             .contains("unmirrored"));
         // An unknown format still names the format, not a flag.
         let tiff = dir.join("hull.tiff").to_string_lossy().into_owned();
-        let err = cmd_export(parse_export(&[&fef_text, "-o", &tiff, "--control"])).unwrap_err();
+        let err = cmd_export(
+            parse_export(&[&fef_text, "-o", &tiff, "--control"]),
+            Tr::new(Locale::En),
+        )
+        .unwrap_err();
         assert!(
             format!("{err}").contains("unsupported output format"),
             "{err}"

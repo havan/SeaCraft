@@ -461,6 +461,16 @@ fn parent_face_centroid(f: &FlatFace) -> (f64, f64) {
 /// The flat pattern as a standalone SVG: every face drawn, the patch outline
 /// stroked, and the seam gap and Gaussian curvature in the caption.
 pub fn svg(unfolded: &Unfolded, title: &str) -> String {
+    svg_tr(
+        unfolded,
+        title,
+        crate::i18n::Tr::new(crate::i18n::Locale::En),
+    )
+}
+
+/// Draw `unfolded` as a standalone SVG localized with `tr`.
+pub fn svg_tr(unfolded: &Unfolded, title: &str, tr: crate::i18n::Tr) -> String {
+    use crate::i18n::Key;
     let mut out = String::with_capacity(4096);
     let pad = 40.0;
     let scale = {
@@ -551,16 +561,32 @@ pub fn svg(unfolded: &Unfolded, title: &str) -> String {
         "<text class=\"label\" x=\"{pad:.0}\" y=\"24\">{}</text>",
         esc(title)
     );
+    let w_s = format!("{:.3}", unfolded.width_m);
+    let h_s = format!("{:.3}", unfolded.height_m);
+    let gap_mm_s = format!("{:.1}", unfolded.max_gap_m * 1000.0);
+    let gap_pct_s = format!("{:.3}", unfolded.gap_ratio * 100.0);
+    let k_s = format!("{:.4}", unfolded.mean_abs_gaussian);
+    let verdict = if unfolded.developable {
+        tr.s(Key::DevelopVerdictDevelopable)
+    } else {
+        tr.s(Key::DevelopVerdictNotDevelopable)
+    };
+    let caption = tr.fmt(
+        Key::DevelopSvgCaption,
+        &[
+            ("w", &w_s),
+            ("h", &h_s),
+            ("gap_mm", &gap_mm_s),
+            ("gap_pct", &gap_pct_s),
+            ("k", &k_s),
+            ("verdict", verdict),
+        ],
+    );
     let _ = writeln!(
         out,
-        "<text class=\"label\" x=\"{pad:.0}\" y=\"{:.0}\">{:.3} x {:.3} m   gap {:.1} mm ({:.3} %)   |K| {:.4} 1/m2   {}</text>",
+        "<text class=\"label\" x=\"{pad:.0}\" y=\"{:.0}\">{}</text>",
         h - 12.0,
-        unfolded.width_m,
-        unfolded.height_m,
-        unfolded.max_gap_m * 1000.0,
-        unfolded.gap_ratio * 100.0,
-        unfolded.mean_abs_gaussian,
-        if unfolded.developable { "developable" } else { "not developable" }
+        esc(&caption)
     );
     out.push_str("</svg>\n");
     out
@@ -776,5 +802,17 @@ mod tests {
         assert!(page.matches("<polygon").count() >= 1);
         assert!(page.matches("<line").count() >= 4, "the patch outline");
         assert!(page.contains("developable"));
+    }
+
+    #[test]
+    fn svg_tr_renders_turkish() {
+        let (v, f) = plate();
+        let page = svg_tr(
+            &unfold(&v, &f),
+            "plate <A>",
+            crate::i18n::Tr::new(crate::i18n::Locale::Tr),
+        );
+        assert!(page.contains("boşluk "), "{page}");
+        assert!(page.contains("açılabilir"), "{page}");
     }
 }

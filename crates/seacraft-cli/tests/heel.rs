@@ -8,6 +8,7 @@ fn example(name: &str) -> String {
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_seacraft"))
+        .env("SEACRAFT_LANG", "en")
         .args(args)
         .output()
         .expect("run seacraft")

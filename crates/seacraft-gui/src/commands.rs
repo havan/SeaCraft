@@ -859,6 +859,8 @@ pub struct UnfoldParams {
     /// Where to write the plate as SVG. The caller has already checked the
     /// path (the control channel against its write roots).
     pub path: Option<PathBuf>,
+    /// Display language for text inside written SVG files.
+    pub locale: seacraft_core::i18n::Locale,
 }
 
 impl Default for UnfoldParams {
@@ -873,6 +875,7 @@ impl Default for UnfoldParams {
             both_sides: false,
             layer: None,
             path: None,
+            locale: seacraft_core::i18n::Locale::En,
         }
     }
 }
@@ -952,11 +955,17 @@ pub fn unfold_in(model: ModelView<'_>, params: &UnfoldParams) -> Result<UnfoldRe
     let plate = seacraft_core::develop::unfold(&hull.verts, &faces);
     let mut written = None;
     if let Some(path) = &params.path {
-        let title = format!(
-            "{} - plate on {:?} {:.2}..{:.2} m",
-            surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
+        let tr = seacraft_core::i18n::Tr::new(params.locale);
+        let title = tr.fmt(
+            seacraft_core::i18n::Key::CliUnfoldSvgTitle,
+            &[
+                ("name", &surface.settings.name),
+                ("lo", &format!("{:.2}", selection.slabs[0].1)),
+                ("hi", &format!("{:.2}", selection.slabs[0].2)),
+                ("axis", &format!("{axis:?}")),
+            ],
         );
-        seacraft_core::io::write_atomic(path, seacraft_core::develop::svg(&plate, &title))
+        seacraft_core::io::write_atomic(path, seacraft_core::develop::svg_tr(&plate, &title, tr))
             .map_err(|e| format!("curves.unfold: cannot write {}: {e}", path.display()))?;
         written = Some(path.to_string_lossy().to_string());
     }

@@ -3628,8 +3628,19 @@ impl App {
         params: &crate::commands::OffsetsParams,
         imperial: bool,
     ) -> Result<usize, String> {
+        let locale = self.locale;
+        self.write_offsets_pdf_locale(path, params, imperial, locale)
+    }
+
+    pub fn write_offsets_pdf_locale(
+        &mut self,
+        path: &std::path::Path,
+        params: &crate::commands::OffsetsParams,
+        imperial: bool,
+        locale: seacraft_core::i18n::Locale,
+    ) -> Result<usize, String> {
         let label = ExportKind::OffsetsPdf.label();
-        let tr = self.tr();
+        let tr = seacraft_core::i18n::Tr::new(locale);
         let name = self
             .surface
             .as_ref()

@@ -22,6 +22,7 @@ fn workdir(test: &str) -> PathBuf {
 
 fn run(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_seacraft"))
+        .env("SEACRAFT_LANG", "en")
         .current_dir(dir)
         .args(args)
         .output()

@@ -9,6 +9,7 @@ fn a_csv_only_michell_run_still_gives_its_warnings() {
     std::fs::create_dir_all(&dir).expect("make the test directory");
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_seacraft"))
+            .env("SEACRAFT_LANG", "en")
             .current_dir(&dir)
             .args(args)
             .output()
@@ -43,6 +44,7 @@ fn a_catamaran_michell_run_gives_interference() {
     std::fs::create_dir_all(&dir).expect("make the test directory");
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_seacraft"))
+            .env("SEACRAFT_LANG", "en")
             .current_dir(&dir)
             .args(args)
             .output()

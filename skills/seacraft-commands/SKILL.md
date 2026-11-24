@@ -64,5 +64,9 @@ MCP. See `docs/architecture.md`.
   `connected_preset`, `connected_reach_m`), which changes what a person's drag does and nothing about an agent's
   moves.
 
-New MCP tools go in `tool_definitions()` in `crates/seacraft-cli/src/mcp.rs`. If a skill describes the area,
+New MCP tools go in `tool_definitions()` in `crates/seacraft-cli/src/mcp.rs`. Document-exporting MCP
+tools (`design_report`, `export_linesplan`, `export_templates`, `export_panels`, `export_offsets_pdf`,
+`wave_pattern`, `unfold_plate`) accept optional `locale` (`"en"` | `"tr"`); keep schemas and JSON replies in
+English. New user-facing GUI, CLI or builder-document strings belong in `locales/en.json` and
+`locales/tr.json` via `seacraft_core::i18n::Tr` / `Key` (`docs/i18n.md`). If a skill describes the area,
 update it: `skills_name_only_real_tools` checks that each tool it names exists.

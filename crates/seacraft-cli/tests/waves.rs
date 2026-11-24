@@ -17,6 +17,7 @@ impl Dir {
 
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_seacraft"))
+            .env("SEACRAFT_LANG", "en")
             .current_dir(&self.0)
             .args(args)
             .output()

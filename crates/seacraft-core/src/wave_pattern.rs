@@ -1433,6 +1433,12 @@ pub fn wave_tool(
     let cat_spacing = positive("cat_spacing")?;
     let clip = positive("clip")?;
     let wash_distance = positive("wash_distance")?;
+    let locale = match args.get("locale") {
+        None | Some(Value::Null) => crate::i18n::Locale::En,
+        Some(Value::String(s)) => crate::i18n::Locale::parse(s)
+            .ok_or_else(|| format!("`locale` must be one of \"en\", \"tr\" (got `{s}`)"))?,
+        Some(_) => return Err("`locale` must be a string (\"en\" or \"tr\")".into()),
+    };
     let mut outputs = Vec::new();
     for key in ["png_path", "svg_path", "vti_path"] {
         match args.get(key) {
@@ -1484,7 +1490,7 @@ pub fn wave_tool(
     for (key, path) in outputs {
         let bytes = match key {
             "png_path" => wave_png(&field, clip).ok_or("the wave field is empty")?,
-            "svg_path" => wave_svg(&field, clip).into_bytes(),
+            "svg_path" => wave_svg_tr(&field, clip, crate::i18n::Tr::new(locale)).into_bytes(),
             _ => wave_vti(&field).into_bytes(),
         };
         writes.push((path, bytes));
