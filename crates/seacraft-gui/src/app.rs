@@ -3629,6 +3629,7 @@ impl App {
         imperial: bool,
     ) -> Result<usize, String> {
         let label = ExportKind::OffsetsPdf.label();
+        let tr = self.tr();
         let name = self
             .surface
             .as_ref()
@@ -3644,8 +3645,11 @@ impl App {
                     buttocks_m: r.buttocks_m,
                     stations: r.stations,
                 };
-                let title = format!("{name} - table of offsets");
-                seacraft_core::offsets::pdf(&table, &title, imperial)
+                let title = tr.fmt(
+                    seacraft_core::i18n::Key::OffsetsPdfDocTitle,
+                    &[("name", &name)],
+                );
+                seacraft_core::offsets::pdf_tr(&table, &title, imperial, tr)
             });
         match made {
             Ok(doc) => {
@@ -6553,7 +6557,13 @@ impl App {
             s.settings.name.hash(&mut h);
             (h.finish(), s.settings.draft.to_bits())
         });
-        revision_key(&[self.revision, self.templates_rev, name, draft])
+        revision_key(&[
+            self.revision,
+            self.templates_rev,
+            name,
+            draft,
+            self.locale as u64,
+        ])
     }
 
     /// Collect the preview job and start the next one when it is due: never while a point is
@@ -6570,11 +6580,13 @@ impl App {
             match (&self.surface, quiet) {
                 (Some(surface), true) => {
                     let surface = surface.clone();
-                    let (level, mode) = (self.level, self.mode);
+                    let (level, mode, locale) = (self.level, self.mode, self.locale);
                     let params = self.templates_params.clone();
                     let format = params.pdf_format();
                     self.templates_track.start(key, move || {
-                        crate::commands::templates_in(&surface, level, mode, &params, format)
+                        crate::commands::templates_in_locale(
+                            &surface, level, mode, &params, format, locale,
+                        )
                     });
                 }
                 (Some(_), false) => {
@@ -6654,7 +6666,7 @@ impl App {
             s.settings.name.hash(&mut h);
             h.finish()
         });
-        revision_key(&[self.revision, self.panels_rev, name])
+        revision_key(&[self.revision, self.panels_rev, name, self.locale as u64])
     }
 
     /// Collect the measurement and start the next when it is due: one job at a time (laying
@@ -6705,10 +6717,13 @@ impl App {
             match (&self.surface, quiet) {
                 (Some(surface), true) => {
                     let surface = surface.clone();
-                    let (level, mode, revision) = (self.level, self.mode, self.revision);
+                    let (level, mode, revision, locale) =
+                        (self.level, self.mode, self.revision, self.locale);
                     let params = self.panels_params.clone();
                     self.panels_track.start(key, move || {
-                        crate::commands::panels_in(&surface, level, mode, &params, revision)
+                        crate::commands::panels_in_locale(
+                            &surface, level, mode, &params, revision, locale,
+                        )
                     });
                 }
                 (Some(_), false) => {
@@ -6807,7 +6822,7 @@ impl App {
                         switch_action =
                             builder_panels::panels_view_switch_tr(ui, showing_sheets, tr);
                     }
-                    for line in set.map(|s| s.failing()).unwrap_or_default() {
+                    for line in set.map(|s| s.failing_tr(tr)).unwrap_or_default() {
                         ui.colored_label(crate::theme::TEXT_PRIMARY, line);
                     }
                     let stale = matches!(status, builder_panels::PanelsStatus::Stale(_));
@@ -6928,7 +6943,7 @@ impl App {
                     .to_owned(),
             ),
             builder_panels::PanelsStatus::Ready(set) => {
-                crate::commands::panels_refusal(set, &self.panels_params)
+                crate::commands::panels_refusal_tr(set, &self.panels_params, tr)
             }
         }
     }
@@ -6960,12 +6975,12 @@ impl App {
     fn panels_export_clash(&self, path: &std::path::Path) -> Option<String> {
         let (set, format) = self.panels_for_export(path).ok()?;
         let count = crate::commands::panels_sheet_count(&set, format);
-        crate::commands::panels_sheet_clash(path, count)
+        crate::commands::panels_sheet_clash_tr(path, count, self.tr())
     }
 
     /// Log the sheet files an earlier, larger layout left beside `path` (never deleted).
     fn log_stale_sheets(&mut self, stale: &[PathBuf]) {
-        if let Some(note) = seacraft_core::panels::stale_sheet_note(stale) {
+        if let Some(note) = seacraft_core::panels::stale_sheet_note_tr(stale, self.tr()) {
             self.log(Level::Warning, note);
         }
     }
@@ -6975,7 +6990,8 @@ impl App {
     /// worker).
     pub fn export_panels_to(&mut self, path: &std::path::Path) -> Result<(), String> {
         let (set, format) = self.panels_for_export(path)?;
-        let file = crate::commands::panels_file(&set, &self.panels_params, format)?;
+        let file =
+            crate::commands::panels_file_locale(&set, &self.panels_params, format, self.locale)?;
         match crate::commands::write_panels_file(path, &file) {
             Ok(sheet_paths) => {
                 let stale = seacraft_core::panels::stale_sheet_files(path, sheet_paths.len());
@@ -7010,10 +7026,11 @@ impl App {
             }
         };
         let params = self.panels_params.clone();
+        let locale = self.locale;
         let target = path.to_path_buf();
         self.set_status(format!("writing panel patterns {}…", path.display()));
         let job = Job::spawn(self.revision, move || {
-            let file = crate::commands::panels_file(&set, &params, format)?;
+            let file = crate::commands::panels_file_locale(&set, &params, format, locale)?;
             let sheet_paths = crate::commands::write_panels_file(&target, &file)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
             let stale = seacraft_core::panels::stale_sheet_files(&target, sheet_paths.len());
@@ -7131,12 +7148,13 @@ impl App {
             Some(bytes) => bytes.to_vec(),
             None => {
                 let surface = self.surface.as_ref().ok_or("No model loaded.")?;
-                crate::commands::templates_in(
+                crate::commands::templates_in_locale(
                     surface,
                     self.level,
                     self.mode,
                     &self.templates_params,
                     format,
+                    self.locale,
                 )?
                 .bytes
             }
@@ -7162,12 +7180,14 @@ impl App {
         let Some(surface) = self.surface.clone() else {
             return Err("No model loaded.".to_owned());
         };
-        let (level, mode) = (self.level, self.mode);
+        let (level, mode, locale) = (self.level, self.mode, self.locale);
         let params = self.templates_params.clone();
         let target = path.to_path_buf();
         self.set_status(format!("writing templates {}…", path.display()));
         let job = Job::spawn(self.revision, move || {
-            let r = crate::commands::templates_in(&surface, level, mode, &params, format)?;
+            let r = crate::commands::templates_in_locale(
+                &surface, level, mode, &params, format, locale,
+            )?;
             seacraft_core::io::write_atomic(&target, r.bytes)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))
         });

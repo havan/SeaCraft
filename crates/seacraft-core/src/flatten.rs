@@ -360,33 +360,30 @@ pub enum FlattenError {
     Unsolvable,
 }
 
+impl FlattenError {
+    /// Localized explanation of why a mesh could not be flattened.
+    pub fn describe_tr(&self, tr: crate::i18n::Tr) -> String {
+        use crate::i18n::Key;
+        match self {
+            FlattenError::Empty => tr.s(Key::PanelsFlattenEmpty).into(),
+            FlattenError::NotADisc { loops: 0 } => tr.s(Key::PanelsFlattenClosed).into(),
+            FlattenError::NotADisc { loops } => {
+                let loops_s = loops.to_string();
+                tr.fmt(Key::PanelsFlattenLoops, &[("loops", &loops_s)])
+            }
+            FlattenError::Fold { triangle } => {
+                let tri_s = triangle.to_string();
+                tr.fmt(Key::PanelsFlattenFold, &[("triangle", &tri_s)])
+            }
+            FlattenError::SelfCrossing => tr.s(Key::PanelsFlattenSelfCrossing).into(),
+            FlattenError::Unsolvable => tr.s(Key::PanelsFlattenUnsolvable).into(),
+        }
+    }
+}
+
 impl std::fmt::Display for FlattenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FlattenError::Empty => write!(f, "it has no surface"),
-            FlattenError::NotADisc { loops: 0 } => {
-                write!(
-                    f,
-                    "it is closed all round, so it cannot be cut from one flat sheet"
-                )
-            }
-            FlattenError::NotADisc { loops } => write!(
-                f,
-                "its edge makes {loops} separate loops; one flat sheet has one (split it where it \
-                 wraps round, or join its pieces)"
-            ),
-            FlattenError::Fold { triangle } => write!(
-                f,
-                "laid flat it folds over itself (at triangle {triangle}): it is too far from a \
-                 shape that lies flat"
-            ),
-            FlattenError::SelfCrossing => {
-                write!(f, "laid flat its outline crosses itself")
-            }
-            FlattenError::Unsolvable => {
-                write!(f, "its flattening equations have no single answer")
-            }
-        }
+        f.write_str(&self.describe_tr(crate::i18n::Tr::new(crate::i18n::Locale::En)))
     }
 }
 

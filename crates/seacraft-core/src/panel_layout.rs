@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::flatten::boundary_loops;
-use crate::nest::{bbox, inside, pack, signed_area, Bin, Item, Pose, Pt};
+use crate::i18n::{Key, Locale, PluralCategory, Tr};
+use crate::nest::{bbox, inside, pack_tr, signed_area, Bin, Item, Pose, Pt};
 use crate::panel_dims::is_offset_label;
 use crate::panels::{FlatPanel, Stock, MAX_SHEETS_EACH};
 use crate::pdf::Anchor;
@@ -47,11 +48,11 @@ impl NestMode {
     }
 
     /// How a count line names the layout.
-    fn words(self) -> &'static str {
+    pub(crate) fn words_tr(self, tr: Tr) -> &'static str {
         match self {
-            NestMode::None => "no nesting",
-            NestMode::Blanks => "joined blanks",
-            NestMode::Split => "split parts",
+            NestMode::None => tr.s(Key::PanelsLayoutModeNone),
+            NestMode::Blanks => tr.s(Key::PanelsLayoutModeBlanks),
+            NestMode::Split => tr.s(Key::PanelsLayoutModeSplit),
         }
     }
 }
@@ -113,16 +114,21 @@ pub struct Layout {
 impl Layout {
     /// The plywood count in words.
     pub fn count_line(&self) -> String {
-        let sheets = if self.plywood_sheets == 1 {
-            "sheet"
-        } else {
-            "sheets"
+        self.count_line_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized form of [`Layout::count_line`].
+    pub fn count_line_tr(&self, tr: Tr) -> String {
+        let count_s = self.plywood_sheets.to_string();
+        let mode_s = self.mode.words_tr(tr);
+        let gap_s = millimetres(self.gap_m);
+        let key = match tr.locale().plural_category(self.plywood_sheets) {
+            PluralCategory::One => Key::PanelsLayoutCountOne,
+            PluralCategory::Other => Key::PanelsLayoutCountOther,
         };
-        let mut line = format!(
-            "{} plywood {sheets}, nested ({}), gap {} mm",
-            self.plywood_sheets,
-            self.mode.words(),
-            millimetres(self.gap_m)
+        let mut line = tr.fmt(
+            key,
+            &[("count", &count_s), ("mode", mode_s), ("gap", &gap_s)],
         );
         if !self.not_placed.is_empty() {
             let names: Vec<String> = self
@@ -130,7 +136,8 @@ impl Layout {
                 .iter()
                 .map(|n| format!("{} ({})", n.piece, n.reason))
                 .collect();
-            line.push_str(&format!("; not placed: {}", names.join(", ")));
+            let joined = names.join(", ");
+            line.push_str(&tr.fmt(Key::PanelsLayoutNotPlacedSuffix, &[("names", &joined)]));
         }
         line
     }
@@ -186,7 +193,16 @@ fn outline(panel: &FlatPanel) -> Vec<Pt> {
 /// aft, then forward, in 10 mm steps to the nearest place it is crossed twice. Empty when the
 /// panel fits whole.
 pub fn split_points(panel: &FlatPanel, usable_m: f64) -> Result<Vec<f64>, String> {
-    split_outline(&outline(panel), usable_m)
+    split_points_tr(panel, usable_m, Tr::new(Locale::En))
+}
+
+/// Localized form of [`split_points`].
+pub(crate) fn split_points_tr(
+    panel: &FlatPanel,
+    usable_m: f64,
+    tr: Tr,
+) -> Result<Vec<f64>, String> {
+    split_outline_tr(&outline(panel), usable_m, tr)
 }
 
 /// Closed sub-intervals of `[x0, x1]` where the vertical line crosses `outline` exactly twice and
@@ -246,9 +262,9 @@ fn intersect_intervals(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
     out
 }
 
-fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
+fn split_outline_tr(outline: &[Pt], usable: f64, tr: Tr) -> Result<Vec<f64>, String> {
     if !(usable.is_finite() && usable > 0.0) {
-        return Err("the sheet leaves no room inside the gaps".into());
+        return Err(tr.s(Key::PanelsLayoutErrNoRoom).into());
     }
     let b = bbox(outline);
     let (x0, x1) = (b[0], b[2]);
@@ -258,9 +274,8 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
     }
     let n = (length / usable - 1e-12).ceil() as usize;
     if n > MAX_SHEETS_EACH {
-        return Err(format!(
-            "would take more than {MAX_SHEETS_EACH} parts: not split"
-        ));
+        let max_s = MAX_SHEETS_EACH.to_string();
+        return Err(tr.fmt(Key::PanelsLayoutErrTooManyParts, &[("max", &max_s)]));
     }
     // Precompute backward-reachable valid intervals for each joint k in 1..n so committing to an
     // earlier joint never leaves a later joint infeasible when a valid sequence exists.
@@ -281,7 +296,7 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
     let mut prev = x0;
     for (k, feasible) in reach.iter().enumerate().skip(1) {
         if feasible.is_empty() {
-            return Err("no straight joint found".into());
+            return Err(tr.s(Key::PanelsLayoutErrNoStraightJoint).into());
         }
         let ideal = x0 + length * k as f64 / n as f64;
         let span = (length / n as f64).max(JOINT_STEP_M);
@@ -319,12 +334,17 @@ fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
                 candidates.into_iter().next()
             });
         let Some(x) = found else {
-            return Err("no straight joint found".into());
+            return Err(tr.s(Key::PanelsLayoutErrNoStraightJoint).into());
         };
         joints.push(x);
         prev = x;
     }
     Ok(joints)
+}
+
+#[cfg(test)]
+fn split_outline(outline: &[Pt], usable: f64) -> Result<Vec<f64>, String> {
+    split_outline_tr(outline, usable, Tr::new(Locale::En))
 }
 
 /// Sutherland–Hodgman: the part of a closed outline with `x ≥ a` (`keep_above`) or `x ≤ a`.
@@ -436,6 +456,7 @@ fn piece_drawing(
     a: f64,
     b: f64,
     label: &str,
+    tr: Tr,
 ) -> Sheet {
     let mut s = Sheet::new(label);
     s.paths.push(SheetPath {
@@ -455,9 +476,14 @@ fn piece_drawing(
             });
         }
     }
+    let cut_one = tr.s(Key::PanelsCutOne);
+    let cut_two = tr.s(Key::PanelsCutTwo);
     for l in &pattern.labels {
-        let own_name =
-            l.text == panel || l.text.starts_with("Cut 1") || l.text.starts_with("Cut 2");
+        let own_name = l.text == panel
+            || l.text == cut_one
+            || l.text == cut_two
+            || l.text.starts_with("Cut 1")
+            || l.text.starts_with("Cut 2");
         if !own_name && !is_offset_label(l) && l.at.0 >= a && l.at.0 <= b && inside(l.at, outline) {
             s.labels.push(l.clone());
         }
@@ -542,11 +568,22 @@ fn joint_letter(n: usize) -> u8 {
 /// The pieces to cut from every panel: each copy, a mirrored pair's second copy turned over,
 /// and with [`NestMode::Split`] a piece longer than `usable_m` cut into parts. A panel that
 /// cannot be split is returned with why.
+#[cfg(test)]
 pub(crate) fn pieces(
     panels: &[FlatPanel],
     patterns: &[Sheet],
     mode: NestMode,
     usable_m: f64,
+) -> (Vec<Piece>, Vec<NotPlaced>) {
+    pieces_tr(panels, patterns, mode, usable_m, Tr::new(Locale::En))
+}
+
+pub(crate) fn pieces_tr(
+    panels: &[FlatPanel],
+    patterns: &[Sheet],
+    mode: NestMode,
+    usable_m: f64,
+    tr: Tr,
 ) -> (Vec<Piece>, Vec<NotPlaced>) {
     let mut out = Vec::new();
     let mut refused = Vec::new();
@@ -557,7 +594,7 @@ pub(crate) fn pieces(
         if base.len() < 3 {
             refused.push(NotPlaced {
                 piece: name,
-                reason: "its outline could not be followed".into(),
+                reason: tr.s(Key::PanelsLayoutErrOutline).into(),
             });
             continue;
         }
@@ -581,11 +618,11 @@ pub(crate) fn pieces(
                 (
                     base.iter().map(|q| (q.0, -q.1)).collect::<Vec<Pt>>(),
                     &mirrored_pattern,
-                    format!("{name}, turned over"),
+                    tr.fmt(Key::PanelsLayoutTurnedOver, &[("name", &name)]),
                 )
             };
             let joints = if mode == NestMode::Split {
-                match split_outline(&outline, usable_m) {
+                match split_outline_tr(&outline, usable_m, tr) {
                     Ok(j) => j,
                     Err(why) => {
                         refused.push(NotPlaced {
@@ -599,7 +636,8 @@ pub(crate) fn pieces(
                 Vec::new()
             };
             if joints.is_empty() {
-                let drawing = piece_drawing(pattern, &name, &outline, f64::MIN, f64::MAX, &label);
+                let drawing =
+                    piece_drawing(pattern, &name, &outline, f64::MIN, f64::MAX, &label, tr);
                 out.push(Piece {
                     label,
                     panel: name.clone(),
@@ -614,13 +652,18 @@ pub(crate) fn pieces(
             edges.extend(&joints);
             edges.push(b[2]);
             let n = edges.len() - 1;
+            let n_s = n.to_string();
             let first_pair = joint_pairs;
             joint_pairs += joints.len();
             for i in 0..n {
                 let (a, z) = (edges[i], edges[i + 1]);
                 let part = clip_slab(&outline, a, z);
-                let part_label = format!("{label} {} of {n}", i + 1);
-                let mut drawing = piece_drawing(pattern, &name, &part, a, z, &part_label);
+                let idx_s = (i + 1).to_string();
+                let part_label = tr.fmt(
+                    Key::PanelsLayoutPartOf,
+                    &[("label", &label), ("index", &idx_s), ("total", &n_s)],
+                );
+                let mut drawing = piece_drawing(pattern, &name, &part, a, z, &part_label, tr);
                 if i > 0 {
                     let (p, l) = joint_marks(&outline, a, joint_letter(first_pair + i - 1), true);
                     drawing.paths.extend(p);
@@ -717,9 +760,20 @@ pub fn nest_panels(
     stock: Stock,
     nesting: Nesting,
 ) -> Layout {
+    nest_panels_tr(panels, patterns, stock, nesting, Tr::new(Locale::En))
+}
+
+/// Localized form of [`nest_panels`].
+pub fn nest_panels_tr(
+    panels: &[FlatPanel],
+    patterns: &[Sheet],
+    stock: Stock,
+    nesting: Nesting,
+    tr: Tr,
+) -> Layout {
     let gap = nesting.gap_m;
     let usable = stock.length_m - 2.0 * gap;
-    let (pieces, mut not_placed) = pieces(panels, patterns, nesting.mode, usable);
+    let (pieces, mut not_placed) = pieces_tr(panels, patterns, nesting.mode, usable, tr);
     let items: Vec<Item> = pieces
         .iter()
         .map(|p| Item {
@@ -737,7 +791,7 @@ pub fn nest_panels(
             width: stock.width_m,
         })
     };
-    let packing = pack(&items, &new_bin, gap);
+    let packing = pack_tr(&items, &new_bin, gap, tr);
     let mut layout = Layout {
         mode: nesting.mode,
         gap_m: gap,
@@ -754,10 +808,15 @@ pub fn nest_panels(
         } else {
             1
         };
+        let b_idx = (b + 1).to_string();
+        let k_s = k.to_string();
         let name = if k == 1 {
-            format!("Sheet {}", b + 1)
+            tr.fmt(Key::PanelsLayoutSheetName, &[("index", &b_idx)])
         } else {
-            format!("Blank {} ({k} sheets)", b + 1)
+            tr.fmt(
+                Key::PanelsLayoutBlankName,
+                &[("index", &b_idx), ("sheets", &k_s)],
+            )
         };
         let joints_m: Vec<f64> = (1..k)
             .map(|m| stock.length_m + (m - 1) as f64 * reach)
@@ -788,30 +847,31 @@ pub fn nest_panels(
         );
         if k > 1 {
             let at: Vec<String> = joints_m.iter().map(|j| millimetres(*j)).collect();
-            what.push_str(&format!(
-                ", {k} sheets of {} × {} mm joined",
-                millimetres(stock.length_m),
-                millimetres(stock.width_m)
+            let stock_l = millimetres(stock.length_m);
+            let stock_w = millimetres(stock.width_m);
+            what.push_str(&tr.fmt(
+                Key::PanelsLayoutBlankJoined,
+                &[("sheets", &k_s), ("length", &stock_l), ("width", &stock_w)],
             ));
             if stock.scarf_m > 0.0 {
-                what.push_str(&format!(" with {} mm scarfs", millimetres(stock.scarf_m)));
+                let scarf_s = millimetres(stock.scarf_m);
+                what.push_str(&tr.fmt(Key::PanelsLayoutBlankScarfs, &[("scarf", &scarf_s)]));
             }
-            what.push_str(&format!(
-                ", joints at {} mm from the aft end",
-                at.join(", ")
-            ));
+            let joined_at = at.join(", ");
+            what.push_str(&tr.fmt(Key::PanelsLayoutBlankJoints, &[("joints", &joined_at)]));
         }
         drawing.notes.push(what);
-        drawing.notes.push(format!(
-            "Pieces nested automatically, {} mm apart and from the edges: a good layout, not the \
-             fewest possible sheets",
-            millimetres(gap)
-        ));
+        let gap_s = millimetres(gap);
         drawing
             .notes
-            .push("Check every piece against its full-size pattern before cutting".into());
-        drawing.notes.push(crate::panels::THICKNESS_NOTE.into());
-        drawing.notes.push(crate::NOT_VALIDATED_NOTE.into());
+            .push(tr.fmt(Key::PanelsLayoutNoteNested, &[("gap", &gap_s)]));
+        drawing.notes.push(tr.s(Key::PanelsLayoutNoteCheck).into());
+        drawing
+            .notes
+            .push(crate::panels::thickness_note(tr.locale()).into());
+        drawing
+            .notes
+            .push(crate::not_validated_note(tr.locale()).into());
         layout.drawings.push(drawing);
         layout.sheets.push(LayoutSheet {
             name,
@@ -846,6 +906,11 @@ pub fn nest_panels(
     layout.not_placed = not_placed;
     // Carry each failing panel's flatness warning onto every sheet holding one of its pieces,
     // matched by originating panel index rather than display name.
+    let fail_prefix = tr
+        .s(Key::PanelsNoteFailing)
+        .split('{')
+        .next()
+        .unwrap_or("Does not lie flat");
     let failing_notes: Vec<(usize, &str, &str)> = panels
         .iter()
         .zip(patterns)
@@ -854,7 +919,7 @@ pub fn nest_panels(
         .filter_map(|(idx, (p, pat))| {
             pat.notes
                 .iter()
-                .find(|n| n.starts_with("Does not lie flat"))
+                .find(|n| n.starts_with(fail_prefix) || n.starts_with("Does not lie flat"))
                 .map(|n| (idx, p.found.name.as_str(), n.as_str()))
         })
         .collect();
@@ -1508,5 +1573,84 @@ mod tests {
         for &j in &joints {
             assert_eq!(crossings(&outline, j).len(), 2, "joint at {j}");
         }
+    }
+
+    #[test]
+    fn turkish_nested_layout_and_non_flat_warning_localize_correctly() {
+        let tr = Tr::new(Locale::Tr);
+        let (panels, _) = skiff();
+        let patterns: Vec<Sheet> = panels
+            .iter()
+            .map(|p| {
+                crate::panels::panel_sheet_tr(
+                    p,
+                    &crate::panels::panel_offsets(p, 0.25),
+                    &[],
+                    Limits::default(),
+                    false,
+                    tr,
+                )
+            })
+            .collect();
+        let layout = nest_panels_tr(
+            &panels,
+            &patterns,
+            stock(3.0, 1.5, 0.0),
+            nested(NestMode::Blanks),
+            tr,
+        );
+        assert!(layout
+            .pieces
+            .iter()
+            .any(|p| p.label == "Side, ters çevrilmiş"));
+        assert!(
+            layout.sheets[0].name.starts_with("Plaka 1")
+                || layout.sheets[0].name.starts_with("Birleşik plaka 1")
+        );
+        assert!(layout.count_line_tr(tr).contains("yerleşimli"));
+        for d in &layout.drawings {
+            assert!(
+                !d.labels
+                    .iter()
+                    .any(|l| l.text == "1 adet kes" || l.text == "2 adet kes"),
+                "stray copy label in {:?}",
+                d.labels
+            );
+        }
+
+        let mut bad = test_flat(
+            "Warped",
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)],
+            vec![[0, 1, 2], [0, 2, 3]],
+        );
+        bad.lies_flat = false;
+        let bad_pat = crate::panels::panel_sheet_tr(
+            &bad,
+            &crate::panels::panel_offsets(&bad, 0.25),
+            &[],
+            Limits::default(),
+            false,
+            tr,
+        );
+        assert!(
+            bad_pat.notes[0].starts_with("Düz açılmıyor"),
+            "{:?}",
+            bad_pat.notes
+        );
+        let bad_layout = nest_panels_tr(
+            &[bad],
+            &[bad_pat],
+            stock(2.44, 1.22, 0.0),
+            nested(NestMode::Split),
+            tr,
+        );
+        assert!(
+            bad_layout.drawings[0]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Warped: Düz açılmıyor")),
+            "{:?}",
+            bad_layout.drawings[0].notes
+        );
     }
 }

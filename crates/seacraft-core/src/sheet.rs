@@ -10,6 +10,7 @@
 use std::fmt::Write as _;
 
 use crate::dxf::{write_dxf_in, DxfEntity, DxfLayer, DxfShape, DxfUnits, Vec2};
+use crate::i18n::{Key, Locale, Tr};
 pub use crate::pdf::Anchor;
 use crate::pdf::{
     text_width_pt, wrap_text, Content, Document, Pdf, Stroke, MAX_PAGE_PT, PT_PER_MM,
@@ -165,6 +166,8 @@ pub struct PageSetup {
     pub imperial: bool,
     /// The design's name, for captions.
     pub title: String,
+    /// Display locale for calibration notes, captions, and page headers.
+    pub locale: Locale,
 }
 
 impl Default for PageSetup {
@@ -176,6 +179,7 @@ impl Default for PageSetup {
             scale: 1.0,
             imperial: false,
             title: String::new(),
+            locale: Locale::En,
         }
     }
 }
@@ -212,11 +216,20 @@ impl PageSetup {
 }
 
 /// The three instructions every printed pattern carries beside its rules.
+#[cfg(test)]
 pub(crate) const CALIBRATION_LINES: [&str; 3] = [
     "Print at 100 % (actual size). Do not use \"fit to page\".",
     "Measure both rules. If either is not 100 mm, do not cut.",
     "Cut on the centre of the heavy line.",
 ];
+
+fn calibration_lines(tr: Tr) -> [&'static str; 3] {
+    [
+        tr.s(Key::SheetCalPrintActual),
+        tr.s(Key::SheetCalMeasureRules),
+        tr.s(Key::SheetCalCutCentre),
+    ]
+}
 
 /// The width of the column a single page keeps for the rules, in millimetres.
 pub(crate) const CALIBRATION_COLUMN_MM: f64 = 120.0;
@@ -332,6 +345,7 @@ pub(crate) fn calibration_rules(content: &mut Content, at_pt: (f64, f64), imperi
 
 /// The words a single page carries in its calibration column, top line first.
 fn column_lines(sheet: &Sheet, setup: &PageSetup) -> Vec<String> {
+    let tr = Tr::new(setup.locale);
     let width_pt = (CALIBRATION_COLUMN_MM - 4.0) * PT_PER_MM;
     let mut lines = Vec::new();
     let heading = if setup.title.trim().is_empty() {
@@ -344,9 +358,14 @@ fn column_lines(sheet: &Sheet, setup: &PageSetup) -> Vec<String> {
         lines.extend(wrap_text(note, SMALL_PT, width_pt));
     }
     lines.push(String::new());
-    lines.extend(CALIBRATION_LINES.map(str::to_owned));
-    lines.push(format!("Scale {}", scale_label(setup.scale)));
-    lines.extend(wrap_text(crate::NOT_VALIDATED_NOTE, SMALL_PT, width_pt));
+    lines.extend(calibration_lines(tr).map(str::to_owned));
+    let scale = scale_label(setup.scale);
+    lines.push(tr.fmt(Key::SheetScaleLabel, &[("scale", &scale)]));
+    lines.extend(wrap_text(
+        crate::not_validated_note(setup.locale),
+        SMALL_PT,
+        width_pt,
+    ));
     lines
 }
 
@@ -1024,6 +1043,7 @@ fn calibration_page(
     sheets: &[String],
     after: &[String],
 ) -> Content {
+    let tr = Tr::new(setup.locale);
     let (pw, ph) = (setup.paper.width_mm, setup.paper.height_mm);
     let m = setup.margin_mm;
     let width_pt = (pw - 2.0 * m) * PT_PER_MM;
@@ -1047,11 +1067,16 @@ fn calibration_page(
     if !setup.title.trim().is_empty() {
         say(&mut c, 14.0, setup.title.trim());
     }
-    for line in CALIBRATION_LINES {
+    for line in calibration_lines(tr) {
         say(&mut c, 10.0, line);
     }
-    say(&mut c, 10.0, &format!("Scale {}", scale_label(setup.scale)));
-    say(&mut c, 8.0, crate::NOT_VALIDATED_NOTE);
+    let scale = scale_label(setup.scale);
+    say(
+        &mut c,
+        10.0,
+        &tr.fmt(Key::SheetScaleLabel, &[("scale", &scale)]),
+    );
+    say(&mut c, 8.0, crate::not_validated_note(setup.locale));
     y_mm -= 4.0;
     // The sheets, in as many columns as fit above the rules. When the list overflows, reserve room
     // for leading (`before`) and trailing (`after`) named sections so their page ranges stay visible.
@@ -1071,7 +1096,8 @@ fn calibration_page(
             let mut v = Vec::with_capacity(room);
             v.extend(before.iter().cloned());
             v.extend(sheets.iter().take(keep_sheets).cloned());
-            v.push(format!("… and {hidden} more sheets"));
+            let hidden_s = hidden.to_string();
+            v.push(tr.fmt(Key::SheetMoreSheets, &[("count", &hidden_s)]));
             v.extend(after.iter().cloned());
             v
         } else if room == reserved {
@@ -1118,6 +1144,7 @@ fn map_page(
     pattern: crate::pdf::FormId,
     first_tile_page: usize,
 ) -> Content {
+    let tr = Tr::new(setup.locale);
     let (pw, ph) = (setup.paper.width_mm, setup.paper.height_mm);
     let m = setup.margin_mm;
     let width_pt = (pw - 2.0 * m) * PT_PER_MM;
@@ -1138,16 +1165,23 @@ fn map_page(
     };
     say(&mut c, 14.0, &sheet.name);
     let pages = if grid.landscape {
-        "pages on their side"
+        tr.s(Key::SheetMapPagesLandscape)
     } else {
-        "upright pages"
+        tr.s(Key::SheetMapPagesPortrait)
     };
-    let layout = format!(
-        "Scale {} · {} x {} tiles, {} printed, {pages}",
-        scale_label(setup.scale),
-        grid.cols,
-        grid.rows,
-        grid.printed.len()
+    let scale = scale_label(setup.scale);
+    let cols_s = grid.cols.to_string();
+    let rows_s = grid.rows.to_string();
+    let printed_s = grid.printed.len().to_string();
+    let layout = tr.fmt(
+        Key::SheetMapSummary,
+        &[
+            ("scale", &scale),
+            ("cols", &cols_s),
+            ("rows", &rows_s),
+            ("printed", &printed_s),
+            ("orientation", pages),
+        ],
     );
     say(&mut c, 9.0, &layout);
     for note in &sheet.notes {
@@ -1209,7 +1243,8 @@ fn map_page(
             0.35,
             &address(*col, *row),
         );
-        let page = format!("page {}", first_tile_page + i);
+        let page_s = (first_tile_page + i).to_string();
+        let page = tr.fmt(Key::SheetPageSingle, &[("page", &page_s)]);
         c.text(
             (at.0, at.1 - size_pt),
             size_pt,
@@ -1342,13 +1377,25 @@ pub fn pdf_tiled_into(
     }
     // The page each sheet starts on, counting from 1, the pages already in `pdf` first and then
     // the calibration page.
+    let tr = Tr::new(setup.locale);
+    let index_entry = |name: &str, first: usize, pages: usize| match pages {
+        1 => {
+            let p = first.to_string();
+            tr.fmt(Key::SheetIndexOnePage, &[("name", name), ("page", &p)])
+        }
+        _ => {
+            let first_s = first.to_string();
+            let last_s = (first + pages - 1).to_string();
+            tr.fmt(
+                Key::SheetIndexPageRange,
+                &[("name", name), ("first", &first_s), ("last", &last_s)],
+            )
+        }
+    };
     let mut before_index = Vec::new();
     let mut first = 1;
     for (name, pages) in before.iter().filter(|(_, pages)| *pages > 0) {
-        before_index.push(match pages {
-            1 => format!("{name}: page {first}"),
-            _ => format!("{name}: pages {first} to {}", first + pages - 1),
-        });
+        before_index.push(index_entry(name, first, *pages));
         first += pages;
     }
     let earlier = pdf.page_count();
@@ -1356,18 +1403,12 @@ pub fn pdf_tiled_into(
     let mut sheet_index = Vec::new();
     for (sheet, t) in &tilings {
         let pages = t.grid.printed.len() + usize::from(has_map(sheet, &t.grid));
-        sheet_index.push(match pages {
-            1 => format!("{}: page {next}", sheet.name),
-            _ => format!("{}: pages {next} to {}", sheet.name, next + pages - 1),
-        });
+        sheet_index.push(index_entry(&sheet.name, next, pages));
         next += pages;
     }
     let mut after_index = Vec::new();
     for (name, pages) in after.iter().filter(|(_, pages)| *pages > 0) {
-        after_index.push(match pages {
-            1 => format!("{name}: page {next}"),
-            _ => format!("{name}: pages {next} to {}", next + pages - 1),
-        });
+        after_index.push(index_entry(name, next, *pages));
         next += pages;
     }
     let total = earlier + total + after.iter().map(|(_, pages)| pages).sum::<usize>();
@@ -1418,10 +1459,12 @@ pub fn pdf_tiled_into(
             c.restore();
             let (x0, y0, x1, y1) = (margin_pt, margin_pt, margin_pt + pw, margin_pt + ph);
             c.polyline(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)], true, FAINT);
+            let page_s = (pdf.page_count() + 1).to_string();
+            let total_s = total.to_string();
             let mut caption = vec![
                 sheet.name.clone(),
                 address(*col, *row),
-                format!("page {} of {total}", pdf.page_count() + 1),
+                tr.fmt(Key::SheetPageOf, &[("page", &page_s), ("total", &total_s)]),
             ];
             if !setup.title.trim().is_empty() {
                 caption.push(setup.title.trim().to_owned());
@@ -2452,5 +2495,59 @@ mod tests {
         assert!(cal2.contains("Layout: page 1"), "{cal2}");
         assert!(cal2.contains("Offsets: pages"), "{cal2}");
         assert!(!cal2.contains("more sheets"), "{cal2}");
+    }
+
+    #[test]
+    fn turkish_tiled_and_single_pdfs_localize_chrome_with_zero_missing_glyphs() {
+        let mut s = rect(0.4, 0.25);
+        s.name = "Posta 1".into();
+        s.notes = vec!["Kalıp çizgisi tekne yüzeyinin 6.0 mm içinde".into()];
+        let setup = PageSetup {
+            title: "Tekne".into(),
+            locale: Locale::Tr,
+            ..PageSetup::default()
+        };
+
+        let single = pdf_single(&[s.clone()], &setup).unwrap();
+        assert!(single.missing.is_empty(), "{:?}", single.missing);
+        let single_text = page_text(&single.bytes, 0);
+        let single_joined = single_text.join(" ");
+        for want in [
+            "%100 (gerçek boyut) ile yazdırın. \"Sayfaya sığdır\" seçeneğini kullanmayın.",
+            "Ölçek 1:1",
+            crate::not_validated_note(Locale::Tr),
+        ] {
+            assert!(
+                single_text.iter().any(|t| t == want) || single_joined.contains(want),
+                "{want} in {single_text:?}"
+            );
+        }
+
+        let tiled = pdf_tiled(&[s], &setup).unwrap();
+        assert!(tiled.missing.is_empty(), "{:?}", tiled.missing);
+        let cal = page_text(&tiled.bytes, 0);
+        assert!(cal.iter().any(|t| t == "Ölçek 1:1"), "{cal:?}");
+        assert!(
+            cal.iter()
+                .any(|t| t == crate::not_validated_note(Locale::Tr)),
+            "{cal:?}"
+        );
+        assert!(
+            cal.iter().any(|t| t.starts_with("Posta 1: sayfa 2–")),
+            "{cal:?}"
+        );
+        let map = page_text(&tiled.bytes, 1);
+        assert!(
+            map.iter()
+                .any(|t| t.contains("Ölçek 1:1") && t.contains("yazdırılan")),
+            "{map:?}"
+        );
+        assert!(map.iter().any(|t| t == "sayfa 3"), "{map:?}");
+        let tile = page_text(&tiled.bytes, 2);
+        assert!(
+            tile.iter()
+                .any(|t| t.starts_with("Posta 1 · A1 · sayfa 3 /")),
+            "{tile:?}"
+        );
     }
 }

@@ -364,7 +364,7 @@ pub fn panels_list_tr(
             &[("panel", &r.panel), ("reason", &r.reason)],
         )));
     }
-    ui.label(text(set.sheet_count_line()));
+    ui.label(text(set.sheet_count_line_tr(tr)));
     ui.label(egui::RichText::new(tr.s(Key::PanelsFooterNote)).color(theme::TEXT_MUTED));
     action
 }

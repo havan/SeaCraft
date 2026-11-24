@@ -3531,6 +3531,7 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
         scale,
         imperial: a.imperial,
         title: String::new(),
+        locale: seacraft_core::i18n::Locale::En,
     };
     setup.check().map_err(anyhow::Error::msg)?;
     let stations = match (&a.stations, &a.spacing, &a.at) {
@@ -3567,6 +3568,7 @@ fn cmd_templates(a: TemplatesArgs) -> Result<()> {
         profile: a.profile,
         transom,
         imperial: a.imperial,
+        locale: seacraft_core::i18n::Locale::En,
     };
     let set = templates::template_set(&s, &opts).map_err(anyhow::Error::msg)?;
     let written = templates::write(&set, format, &setup).map_err(anyhow::Error::msg)?;
@@ -3720,6 +3722,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         scale,
         imperial: a.imperial,
         title: String::new(),
+        locale: seacraft_core::i18n::Locale::En,
     };
     setup.check().map_err(anyhow::Error::msg)?;
     let stations = match (&a.stations, &a.spacing, &a.at) {
@@ -3741,6 +3744,7 @@ fn cmd_panels(a: PanelsArgs) -> Result<()> {
         stock: checked.stock,
         imperial: a.imperial,
         nesting: checked.nesting,
+        locale: seacraft_core::i18n::Locale::En,
     };
     let set = panels::panel_set(&s, &opts).map_err(anyhow::Error::msg)?;
 

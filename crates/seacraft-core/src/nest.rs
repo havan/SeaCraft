@@ -5,6 +5,7 @@
 //! its length), never a quarter turn, so a plywood piece keeps its grain along the sheet. The
 //! search is deterministic and good, not optimal.
 
+use crate::i18n::{Key, Locale, Tr};
 use serde::Serialize;
 
 /// A point, metres.
@@ -471,15 +472,15 @@ fn lowest_spot(shape: &Shape, bin: Bin, placed: &[Placed], gap: f64, search_gap:
 /// of that length (its turned box's) that fits no open bin, or `None` when no bin is long
 /// enough. `gap` is kept between items and from every bin edge.
 pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> Packing {
+    pack_tr(items, new_bin, gap, Tr::new(Locale::En))
+}
+
+/// Localized form of [`pack`].
+pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, tr: Tr) -> Packing {
     let mut out = Packing::default();
     if !gap.is_finite() || gap < 0.0 {
         out.unplaced = (0..items.len())
-            .map(|i| {
-                (
-                    i,
-                    "the gap between pieces must be a length of 0 or more".to_string(),
-                )
-            })
+            .map(|i| (i, tr.s(Key::PanelsNestErrGap).into()))
             .collect();
         return out;
     }
@@ -495,7 +496,8 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                 .iter()
                 .any(|p| !p.0.is_finite() || !p.1.is_finite())
         {
-            out.unplaced.push((i, "its outline is not a shape".into()));
+            out.unplaced
+                .push((i, tr.s(Key::PanelsNestErrNotShape).into()));
             continue;
         }
         let shapes = shapes(item);
@@ -533,12 +535,10 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
             let length = shapes[0].length;
             let width = shapes[0].width;
             let Some(bin) = new_bin(length) else {
+                let len_mm = crate::units::millimetres(length);
                 out.unplaced.push((
                     i,
-                    format!(
-                        "longer than the longest sheet or blank ({} mm)",
-                        crate::units::millimetres(length)
-                    ),
+                    tr.fmt(Key::PanelsNestErrLongerMax, &[("length", &len_mm)]),
                 ));
                 continue;
             };
@@ -548,16 +548,17 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                 || bin.width <= 0.0
             {
                 out.unplaced
-                    .push((i, "the sheet or blank has no usable size".into()));
+                    .push((i, tr.s(Key::PanelsNestErrNoSize).into()));
                 continue;
             }
             if bin.width - 2.0 * gap <= 0.0 || width > bin.width - 2.0 * gap + 1e-9 {
+                let w_mm = crate::units::millimetres(width);
+                let u_mm = crate::units::millimetres((bin.width - 2.0 * gap).max(0.0));
                 out.unplaced.push((
                     i,
-                    format!(
-                        "wider than the sheet less the gaps ({} mm > {} mm)",
-                        crate::units::millimetres(width),
-                        crate::units::millimetres((bin.width - 2.0 * gap).max(0.0))
+                    tr.fmt(
+                        Key::PanelsNestErrWider,
+                        &[("width", &w_mm), ("usable", &u_mm)],
                     ),
                 ));
                 continue;
@@ -569,22 +570,20 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                     spot = Some((out.bins.len() - 1, found));
                 }
                 Ok(None) => {
+                    let len_mm = crate::units::millimetres(length);
+                    let u_mm = crate::units::millimetres((bin.length - 2.0 * gap).max(0.0));
                     out.unplaced.push((
                         i,
-                        format!(
-                            "longer than the sheet or blank less the gaps ({} mm > {} mm)",
-                            crate::units::millimetres(length),
-                            crate::units::millimetres((bin.length - 2.0 * gap).max(0.0))
+                        tr.fmt(
+                            Key::PanelsNestErrLongerBin,
+                            &[("length", &len_mm), ("usable", &u_mm)],
                         ),
                     ));
                     continue;
                 }
                 Err(()) => {
-                    out.unplaced.push((
-                        i,
-                        "the sheet or blank is too large to search (exceeds nesting search limit)"
-                            .into(),
-                    ));
+                    out.unplaced
+                        .push((i, tr.s(Key::PanelsNestErrTooLarge).into()));
                     continue;
                 }
             }

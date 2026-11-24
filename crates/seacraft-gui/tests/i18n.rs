@@ -763,3 +763,197 @@ fn turkish_example_picker_and_design_report_export() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Decode every `Tj` string written by `seacraft_core::pdf` using the PDF's own ToUnicode CMap.
+fn pdf_shown_text(bytes: &[u8]) -> Vec<String> {
+    fn object_bytes(bytes: &[u8], n: usize) -> &[u8] {
+        let s = String::from_utf8_lossy(bytes);
+        let at = s.rfind("startxref\n").expect("startxref") + 10;
+        let xref: usize = s[at..].lines().next().unwrap().parse().unwrap();
+        let entries = bytes[xref + 5..].iter().position(|&b| b == b'\n').unwrap() + xref + 6;
+        let offset: usize = std::str::from_utf8(&bytes[entries + 20 * n..entries + 20 * n + 10])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let start = bytes[offset..]
+            .windows(4)
+            .position(|w| w == b"obj\n")
+            .unwrap()
+            + offset
+            + 4;
+        let end = bytes[start..]
+            .windows(6)
+            .position(|w| w == b"endobj")
+            .unwrap()
+            + start;
+        &bytes[start..end]
+    }
+    fn stream_slice(obj: &[u8]) -> Option<&[u8]> {
+        let rest = obj.strip_prefix(b"<< /Length ")?;
+        let sp = rest.iter().position(|&b| b == b' ')?;
+        let len: usize = std::str::from_utf8(&rest[..sp]).ok()?.trim().parse().ok()?;
+        let start = obj.windows(10).position(|w| w == b">>\nstream\n")? + 10;
+        obj.get(start..start + len)
+    }
+
+    let s = String::from_utf8_lossy(bytes);
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(at) = s.find("/ToUnicode ") {
+        let n: usize = s[at + 11..]
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        if let Some(cmap) = stream_slice(object_bytes(bytes, n)) {
+            for line in String::from_utf8_lossy(cmap).lines() {
+                let Some((glyph, text)) = line
+                    .strip_prefix('<')
+                    .and_then(|l| l.split_once("> <"))
+                    .and_then(|(g, t)| Some((g, t.strip_suffix('>')?)))
+                else {
+                    continue;
+                };
+                if glyph.len() != 4 || text.len() % 4 != 0 || (glyph == "0000" && text == "FFFF") {
+                    continue;
+                }
+                let units: Vec<u16> = (0..text.len())
+                    .step_by(4)
+                    .map(|i| u16::from_str_radix(&text[i..i + 4], 16).unwrap())
+                    .collect();
+                map.insert(
+                    u16::from_str_radix(glyph, 16).unwrap(),
+                    String::from_utf16(&units).unwrap(),
+                );
+            }
+        }
+    }
+
+    let size: usize = s[s.rfind("/Size ").unwrap() + 6..]
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut out = Vec::new();
+    for n in 1..size {
+        let obj = object_bytes(bytes, n);
+        if String::from_utf8_lossy(&obj[..obj.len().min(200)]).contains("/Length1") {
+            continue;
+        }
+        let Some(stream) = stream_slice(obj) else {
+            continue;
+        };
+        for line in String::from_utf8_lossy(stream).lines() {
+            if let (Some(a), Some(b)) = (line.find('<'), line.find("> Tj")) {
+                let hex = &line[a + 1..b];
+                let decoded: String = (0..hex.len())
+                    .step_by(4)
+                    .map(|i| map[&u16::from_str_radix(&hex[i..i + 4], 16).unwrap()].as_str())
+                    .collect();
+                out.push(decoded);
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn turkish_builder_exports_localize_offsets_templates_and_panels() {
+    let dir =
+        std::env::temp_dir().join(format!("seacraft-gui-builder-i18n-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Offsets PDF & Templates PDF/SVG on demo hull in Turkish.
+    let mut app = App::headless_for_test(None);
+    app.set_subdivision_level(2);
+    app.set_locale(Locale::Tr);
+
+    let offsets_path = dir.join("offsets-tr.pdf");
+    app.write_offsets_pdf(
+        &offsets_path,
+        &seacraft_gui::commands::OffsetsParams::default(),
+        false,
+    )
+    .unwrap();
+    let offsets_bytes = std::fs::read(&offsets_path).unwrap();
+    let offsets_text = pdf_shown_text(&offsets_bytes);
+    let offsets_joined = offsets_text.join(" ");
+    for want in [
+        "ofset tablosu",
+        "Posta",
+        seacraft_core::not_validated_note(Locale::Tr),
+    ] {
+        assert!(
+            offsets_text.iter().any(|t| t.contains(want)) || offsets_joined.contains(want),
+            "missing `{want}` in offsets PDF: {offsets_text:?}"
+        );
+    }
+
+    let mut tp = app.templates_params().clone();
+    tp.scale = 0.1;
+    app.set_templates_params(tp);
+
+    let tpl_pdf_path = dir.join("templates-tr.pdf");
+    app.export_templates_to(&tpl_pdf_path).unwrap();
+    let tpl_pdf_bytes = std::fs::read(&tpl_pdf_path).unwrap();
+    let tpl_pdf_text = pdf_shown_text(&tpl_pdf_bytes);
+    let tpl_joined = tpl_pdf_text.join(" ");
+    for want in ["Posta 1", "Ölçek 1:10"] {
+        assert!(
+            tpl_pdf_text.iter().any(|t| t.contains(want)) || tpl_joined.contains(want),
+            "missing `{want}` in templates PDF"
+        );
+    }
+
+    let tpl_svg_path = dir.join("templates-tr.svg");
+    app.export_templates_to(&tpl_svg_path).unwrap();
+    let tpl_svg = std::fs::read_to_string(&tpl_svg_path).unwrap();
+    assert!(tpl_svg.contains("Posta 1"), "{tpl_svg}");
+
+    // Builder panels window & export on Skiff4m in Turkish.
+    let (skiff_surface, _) =
+        seacraft_core::examples::build(seacraft_core::examples::Example::Skiff4m).expect("skiff");
+    let skiff_path = dir.join("skiff.fef");
+    std::fs::write(&skiff_path, seacraft_core::fef::write(&skiff_surface)).unwrap();
+    let mut skiff_app = App::headless_for_test(Some(skiff_path.to_str().unwrap()));
+    skiff_app.set_subdivision_level(2);
+    skiff_app.set_locale(Locale::Tr);
+    let mut w = Window::with_app(skiff_app, egui::vec2(1400.0, 900.0));
+    w.app.open_builder_panels();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while w.app.panels_preview().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for Builder panels preview (failure={:?})",
+            w.app.panels_failure()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        w.frame(vec![]);
+    }
+    w.frame(vec![]);
+    assert!(
+        w.shows_substring("kontrplak plaka") || w.paints_substring("kontrplak plaka"),
+        "expected Turkish plywood summary in Builder panels window"
+    );
+
+    let panels_pdf_path = dir.join("panels-tr.pdf");
+    w.app.export_panels_to(&panels_pdf_path).unwrap();
+    let panels_pdf_bytes = std::fs::read(&panels_pdf_path).unwrap();
+    let panels_text = pdf_shown_text(&panels_pdf_bytes);
+    let panels_joined = panels_text.join(" ");
+    for want in [
+        seacraft_core::panels::thickness_note(Locale::Tr),
+        seacraft_core::not_validated_note(Locale::Tr),
+        "Boyunca",
+        "Ofsetler",
+    ] {
+        assert!(
+            panels_text.iter().any(|t| t.contains(want)) || panels_joined.contains(want),
+            "missing `{want}` in panels PDF"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -2756,6 +2756,7 @@ fn templates_args(
         scale,
         imperial,
         title: String::new(),
+        locale: seacraft_core::i18n::Locale::En,
     };
     setup.check().map_err(err)?;
     let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
@@ -2780,6 +2781,7 @@ fn templates_args(
         profile: opt_bool(a, "profile")?.unwrap_or(false),
         transom,
         imperial,
+        locale: seacraft_core::i18n::Locale::En,
     };
     Ok(TemplatesArgs {
         path,
@@ -2900,6 +2902,7 @@ fn panels_args(
         scale,
         imperial,
         title: String::new(),
+        locale: seacraft_core::i18n::Locale::En,
     };
     let single_page = opt_bool(a, "single_page")?.unwrap_or(false);
     let target = match str_arg(a, "path").filter(|p| !p.trim().is_empty()) {
@@ -2940,6 +2943,7 @@ fn panels_args(
             stock: checked.stock,
             imperial,
             nesting: checked.nesting,
+            locale: seacraft_core::i18n::Locale::En,
         },
         setup,
         offsets_pages: opt_bool(a, "offsets_pages")?.unwrap_or(true),
