@@ -106,7 +106,9 @@ impl Default for StartRects {
 pub fn start_card(
     ui: &mut egui::Ui,
     recent: &[crate::recent::RecentEntry],
+    tr: seacraft_core::i18n::Tr,
 ) -> (StartAction, StartRects) {
+    use seacraft_core::i18n::Key;
     let mut action = StartAction::None;
     let mut rects = StartRects::default();
     let full = ui.available_rect_before_wrap();
@@ -143,7 +145,9 @@ pub fn start_card(
                         .heading()
                         .color(theme::TEXT_PRIMARY),
                 );
-                ui.label(egui::RichText::new("Start a hull design").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::StartSubtitle)).color(theme::TEXT_SECONDARY),
+                );
                 ui.add_space(12.0);
                 let button = |ui: &mut egui::Ui, text: &str, shortcut: Option<String>| {
                     let mut b = egui::Button::new(text).min_size(egui::vec2(size.x - 40.0, 30.0));
@@ -152,31 +156,33 @@ pub fn start_card(
                     }
                     ui.add(b)
                 };
-                let r = button(ui, "New design…", Some(keys(egui::Key::N)));
+                let r = button(ui, tr.s(Key::StartNewDesign), Some(keys(egui::Key::N)));
                 rects.new_design = r.rect;
                 if r.clicked() {
                     action = StartAction::NewDesign;
                 }
                 if !Example::all().is_empty() {
-                    let r = button(ui, "Open an example…", None);
+                    let r = button(ui, tr.s(Key::StartExample), None);
                     rects.example = r.rect;
                     if r.clicked() {
                         action = StartAction::Example;
                     }
                 }
-                let r = button(ui, "Open…", Some(keys(egui::Key::O)));
+                let r = button(ui, tr.s(Key::StartOpen), Some(keys(egui::Key::O)));
                 rects.open = r.rect;
                 if r.clicked() {
                     action = StartAction::Open;
                 }
-                let r = button(ui, "Open demo hull", None);
+                let r = button(ui, tr.s(Key::StartDemo), None);
                 rects.demo = r.rect;
                 if r.clicked() {
                     action = StartAction::Demo;
                 }
                 if shown > 0 {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Recent").color(theme::TEXT_SECONDARY));
+                    ui.label(
+                        egui::RichText::new(tr.s(Key::StartRecent)).color(theme::TEXT_SECONDARY),
+                    );
                     for (i, entry) in recent.iter().take(shown).enumerate() {
                         let full_path = entry.path.display().to_string();
                         // The folder beside the name: two files of one
@@ -199,7 +205,9 @@ pub fn start_card(
                                 action = StartAction::OpenRecent(i);
                             }
                         } else {
-                            r.on_disabled_hover_text(format!("{full_path}\nThe file is missing."));
+                            r.on_disabled_hover_text(
+                                tr.fmt(Key::RecentMissingFile, &[("path", &full_path)]),
+                            );
                         }
                     }
                 }

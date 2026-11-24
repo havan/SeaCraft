@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::time::SystemTime;
 
 use eframe::egui;
+use seacraft_core::i18n::{Key, Locale, Tr};
 
 use crate::theme;
 
@@ -23,10 +24,14 @@ pub enum Level {
 
 impl Level {
     pub fn label(self) -> &'static str {
+        self.label_tr(Tr::new(Locale::En))
+    }
+
+    pub fn label_tr(self, tr: Tr) -> &'static str {
         match self {
-            Level::Info => "info",
-            Level::Warning => "warning",
-            Level::Error => "error",
+            Level::Info => tr.s(Key::MessagesLevelInfo),
+            Level::Warning => tr.s(Key::MessagesLevelWarning),
+            Level::Error => tr.s(Key::MessagesLevelError),
         }
     }
 
@@ -127,10 +132,11 @@ pub enum MessagesAction {
 }
 
 /// The Messages window: every logged message, newest first, with Clear.
-pub fn messages_window(ctx: &egui::Context, log: &MessageLog) -> MessagesAction {
+pub fn messages_window(ctx: &egui::Context, log: &MessageLog, tr: Tr) -> MessagesAction {
     let mut action = MessagesAction::None;
     let mut open = true;
-    egui::Window::new("Messages")
+    egui::Window::new(tr.s(Key::MessagesTitle))
+        .id(egui::Id::unique("messages_window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
@@ -138,18 +144,23 @@ pub fn messages_window(ctx: &egui::Context, log: &MessageLog) -> MessagesAction 
         .default_height(260.0)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
+                let total = log.len().to_string();
+                let errors = log.count(Level::Error).to_string();
+                let warnings = log.count(Level::Warning).to_string();
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{} messages · {} errors · {} warnings (times UTC)",
-                        log.len(),
-                        log.count(Level::Error),
-                        log.count(Level::Warning)
+                    egui::RichText::new(tr.fmt(
+                        Key::MessagesSummary,
+                        &[
+                            ("total", &total),
+                            ("errors", &errors),
+                            ("warnings", &warnings),
+                        ],
                     ))
                     .color(theme::TEXT_SECONDARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(!log.is_empty(), egui::Button::new("Clear"))
+                        .add_enabled(!log.is_empty(), egui::Button::new(tr.s(Key::CommonClear)))
                         .clicked()
                     {
                         action = MessagesAction::Clear;
@@ -158,7 +169,7 @@ pub fn messages_window(ctx: &egui::Context, log: &MessageLog) -> MessagesAction 
             });
             ui.separator();
             if log.is_empty() {
-                ui.label(egui::RichText::new("No messages.").color(theme::TEXT_MUTED));
+                ui.label(egui::RichText::new(tr.s(Key::MessagesEmpty)).color(theme::TEXT_MUTED));
                 return;
             }
             egui::ScrollArea::vertical()
@@ -170,7 +181,7 @@ pub fn messages_window(ctx: &egui::Context, log: &MessageLog) -> MessagesAction 
                         .show(ui, |ui| {
                             for m in log.entries().rev() {
                                 ui.monospace(m.clock());
-                                ui.colored_label(m.level.colour(), m.level.label());
+                                ui.colored_label(m.level.colour(), m.level.label_tr(tr));
                                 ui.add(egui::Label::new(&m.text).wrap());
                                 ui.end_row();
                             }

@@ -452,17 +452,24 @@ impl ExportKind {
     ];
 
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            ExportKind::Obj => "Wavefront OBJ…",
-            ExportKind::Stl => "STL (binary)…",
-            ExportKind::ThreeMf => "3MF (welded mesh)…",
-            ExportKind::Ply => "PLY (ASCII)…",
-            ExportKind::HullIges => "Hull IGES (surfaces)…",
-            ExportKind::Html => "HTML viewer…",
-            ExportKind::Linesplan => "Linesplan SVG…",
-            ExportKind::LinesplanDxf => "Linesplan DXF…",
-            ExportKind::LinesplanIges => "Linesplan IGES…",
-            ExportKind::OffsetsPdf => "Offsets table PDF…",
+            ExportKind::Obj => tr.s(Key::ExportObj),
+            ExportKind::Stl => tr.s(Key::ExportStl),
+            ExportKind::ThreeMf => tr.s(Key::ExportThreemf),
+            ExportKind::Ply => tr.s(Key::ExportPly),
+            ExportKind::HullIges => tr.s(Key::ExportHullIges),
+            ExportKind::Html => tr.s(Key::ExportHtml),
+            ExportKind::Linesplan => tr.s(Key::ExportLinesplanSvg),
+            ExportKind::LinesplanDxf => tr.s(Key::ExportLinesplanDxf),
+            ExportKind::LinesplanIges => tr.s(Key::ExportLinesplanIges),
+            ExportKind::OffsetsPdf => tr.s(Key::ExportOffsetsPdf),
         }
     }
 
@@ -635,12 +642,20 @@ impl DesignDock {
 
     /// The tab-bar label.
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized tab-bar label.
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            DesignDock::Hydrostatics => "Hydro",
-            DesignDock::Loading => "Loading",
-            DesignDock::Damage => "Damage",
-            DesignDock::Windage => "Windage",
-            DesignDock::Performance => "Performance",
+            DesignDock::Hydrostatics => tr.s(Key::DockTabHydro),
+            DesignDock::Loading => tr.s(Key::DockTabLoading),
+            DesignDock::Damage => tr.s(Key::DockTabDamage),
+            DesignDock::Windage => tr.s(Key::DockTabWindage),
+            DesignDock::Performance => tr.s(Key::DockTabPerformance),
         }
     }
 
@@ -1274,6 +1289,16 @@ pub struct App {
     clipped_volumes_cache: std::sync::Mutex<Vec<ClippedMeshEntry>>,
     /// Periodic autosave state machine and startup orphan recovery queue.
     autosave: crate::autosave::AutosaveState,
+    /// Persisted language preference (`Auto` or fixed locale).
+    language_pref: seacraft_core::i18n::LanguagePref,
+    /// Explicit `--lang` CLI override, if any.
+    cli_locale: Option<seacraft_core::i18n::Locale>,
+    /// `SEACRAFT_LANG` environment override, if any.
+    env_locale: Option<seacraft_core::i18n::Locale>,
+    /// Detected OS locale (`Locale::En` in deterministic headless tests).
+    system_locale: seacraft_core::i18n::Locale,
+    /// Effective active locale, resolved from the fields above.
+    locale: seacraft_core::i18n::Locale,
 }
 
 /// Build a [`MovePlan`] for `seeds`: rigid when `connected` is `None`, or
@@ -1320,8 +1345,13 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::new_detached();
-        app.status =
-            "No model loaded — start a new design (Ctrl+N) or open a .fef (Ctrl+O).".to_owned();
+        app.system_locale = seacraft_core::i18n::Locale::detect_system();
+        app.env_locale = seacraft_core::i18n::Locale::from_env();
+        app.refresh_locale();
+        app.status = app
+            .tr()
+            .s(seacraft_core::i18n::Key::StatusNoModel)
+            .to_owned();
         app.preset_store =
             crate::connected_presets::PresetStore::load(crate::recent::data_dir().as_deref());
         // The recent list lives in the user's data directory. eframe's own
@@ -1509,6 +1539,11 @@ impl App {
             hover_followers: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
             autosave: crate::autosave::AutosaveState::new(),
+            language_pref: seacraft_core::i18n::LanguagePref::Auto,
+            cli_locale: None,
+            env_locale: None,
+            system_locale: seacraft_core::i18n::Locale::En,
+            locale: seacraft_core::i18n::Locale::En,
         }
     }
 
@@ -2107,22 +2142,27 @@ impl App {
         // `App::new` themes the window's context; a headless test's context
         // gets the same type scale on its first frame.
         crate::theme::ensure(ui);
+        let tr = self.tr();
         self.shortcuts(ui);
         self.read_connected_flip(ui);
         self.menu(ui);
-        egui::Window::new("About SeaCraft")
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::AboutTitle))
+            .id(egui::Id::unique("about_window"))
             .open(&mut self.about_open)
             .collapsible(false)
             .default_width(520.0)
             .default_height(480.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), panels::about);
+            .show(ui.ctx(), |ui| panels::about(ui, tr));
         self.toolbar(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.dirty {
-                    ui.colored_label(crate::theme::WARN, "● unsaved")
-                        .on_hover_text(self.autosave.hover_text());
+                    ui.colored_label(
+                        crate::theme::WARN,
+                        tr.s(seacraft_core::i18n::Key::StatusUnsaved),
+                    )
+                    .on_hover_text(self.autosave.hover_text_tr(tr));
                 }
                 // The latest message, coloured by its level; a click lists
                 // them all (View > Messages).
@@ -2134,35 +2174,40 @@ impl App {
                         .truncate()
                         .sense(egui::Sense::click()),
                     )
-                    .on_hover_text("Click for the message log");
+                    .on_hover_text(tr.s(seacraft_core::i18n::Key::StatusClickLogTip));
                 self.status_rect = status.rect;
                 if status.clicked() {
                     self.show_messages = !self.show_messages;
                 }
                 let errors = self.messages.count(Level::Error);
-                if errors > 0 {
-                    let word = if errors == 1 { "error" } else { "errors" };
-                    if ui
+                if errors > 0
+                    && ui
                         .add(
                             egui::Label::new(
-                                egui::RichText::new(format!("{errors} {word}"))
-                                    .color(crate::theme::FAIL),
+                                egui::RichText::new(tr.plural(
+                                    seacraft_core::i18n::Key::StatusErrorsOne,
+                                    seacraft_core::i18n::Key::StatusErrorsOther,
+                                    errors,
+                                ))
+                                .color(crate::theme::FAIL),
                             )
                             .sense(egui::Sense::click()),
                         )
-                        .on_hover_text("Open the message log")
+                        .on_hover_text(tr.s(seacraft_core::i18n::Key::StatusOpenLogTip))
                         .clicked()
-                    {
-                        self.show_messages = true;
-                    }
+                {
+                    self.show_messages = true;
                 }
                 let stale = self.stale_count();
                 if stale > 0 {
                     ui.separator();
-                    let word = if stale == 1 { "result" } else { "results" };
                     ui.colored_label(
                         crate::theme::STALE,
-                        format!("{stale} {word} out of date · F5"),
+                        tr.plural(
+                            seacraft_core::i18n::Key::StatusResultsStaleOne,
+                            seacraft_core::i18n::Key::StatusResultsStaleOther,
+                            stale,
+                        ),
                     );
                 }
                 ui.separator();
@@ -2486,6 +2531,8 @@ impl App {
     }
 
     fn menu(&mut self, ui: &mut egui::Ui) {
+        use seacraft_core::i18n::Key;
+        let tr = self.tr();
         // "Ctrl+S" here, "⌘S" on a Mac: the same text egui uses elsewhere.
         let ctx = ui.ctx().clone();
         let keys = |modifiers: egui::Modifiers, key: egui::Key| {
@@ -2494,15 +2541,15 @@ impl App {
         let command_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
+                ui.menu_button(tr.s(Key::MenuFile), |ui| {
                     // One entry for the three ways to start a model.
-                    ui.menu_button("New", |ui| {
+                    ui.menu_button(tr.s(Key::MenuFileNew), |ui| {
                         if ui
                             .add(
-                                egui::Button::new("Design…")
+                                egui::Button::new(tr.s(Key::MenuFileNewDesign))
                                     .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
                             )
-                            .on_hover_text("A hull from the main dimensions and a hull type")
+                            .on_hover_text(tr.s(Key::MenuFileNewDesignTip))
                             .clicked()
                         {
                             self.request(PendingAction::NewDesign);
@@ -2510,16 +2557,16 @@ impl App {
                         }
                         if !seacraft_core::examples::Example::all().is_empty()
                             && ui
-                                .button("From an example…")
-                                .on_hover_text("One of the example hulls, as a starting point")
+                                .button(tr.s(Key::MenuFileNewExample))
+                                .on_hover_text(tr.s(Key::MenuFileNewExampleTip))
                                 .clicked()
                         {
                             self.request(PendingAction::NewExample);
                             ui.close();
                         }
                         if ui
-                            .button("Demo hull")
-                            .on_hover_text("The small demo hull, to try things on")
+                            .button(tr.s(Key::MenuFileNewDemo))
+                            .on_hover_text(tr.s(Key::MenuFileNewDemoTip))
                             .clicked()
                         {
                             self.request(PendingAction::NewDemo);
@@ -2528,7 +2575,7 @@ impl App {
                     });
                     if ui
                         .add(
-                            egui::Button::new("Open .fef…")
+                            egui::Button::new(tr.s(Key::MenuFileOpen))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::O)),
                         )
                         .clicked()
@@ -2538,8 +2585,8 @@ impl App {
                     }
                     let entries = self.recent.entries();
                     let mut recent = RecentAction::None;
-                    ui.menu_button("Open recent", |ui| {
-                        recent = crate::recent::recent_menu(ui, &entries);
+                    ui.menu_button(tr.s(Key::MenuFileOpenRecent), |ui| {
+                        recent = crate::recent::recent_menu(ui, &entries, tr);
                         if recent != RecentAction::None {
                             ui.close();
                         }
@@ -2552,7 +2599,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Save")
+                            egui::Button::new(tr.s(Key::MenuFileSave))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::S)),
                         )
                         .clicked()
@@ -2563,7 +2610,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Save as…")
+                            egui::Button::new(tr.s(Key::MenuFileSaveAs))
                                 .shortcut_text(keys(command_shift, egui::Key::S)),
                         )
                         .clicked()
@@ -2575,21 +2622,21 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some() && self.report_job.is_none(),
-                            egui::Button::new("Design report…"),
+                            egui::Button::new(tr.s(Key::MenuFileDesignReport)),
                         )
                         .clicked()
                     {
                         self.open_dialog(DialogKind::Report);
                         ui.close();
                     }
-                    if ui.button("Report options…").clicked() {
+                    if ui.button(tr.s(Key::MenuFileReportOptions)).clicked() {
                         self.show_report_options = true;
                         ui.close();
                     }
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Builder templates…"),
+                            egui::Button::new(tr.s(Key::MenuFileBuilderTemplates)),
                         )
                         .clicked()
                     {
@@ -2597,7 +2644,10 @@ impl App {
                         ui.close();
                     }
                     if ui
-                        .add_enabled(self.surface.is_some(), egui::Button::new("Builder panels…"))
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new(tr.s(Key::MenuFileBuilderPanels)),
+                        )
                         .clicked()
                     {
                         self.open_builder_panels();
@@ -2606,7 +2656,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Project settings…"),
+                            egui::Button::new(tr.s(Key::MenuFileProjectSettings)),
                         )
                         .clicked()
                     {
@@ -2614,9 +2664,9 @@ impl App {
                         ui.close();
                     }
                     ui.add_enabled_ui(self.surface.is_some(), |ui| {
-                        ui.menu_button("Export", |ui| {
+                        ui.menu_button(tr.s(Key::MenuFileExport), |ui| {
                             for kind in ExportKind::ALL {
-                                if ui.button(kind.label()).clicked() {
+                                if ui.button(kind.label_tr(tr)).clicked() {
                                     self.open_dialog(DialogKind::Export(kind));
                                     ui.close();
                                 }
@@ -2624,16 +2674,16 @@ impl App {
                         });
                     });
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(tr.s(Key::MenuFileQuit)).clicked() {
                         self.request(PendingAction::Quit);
                         ui.close();
                     }
                 });
-                ui.menu_button("Edit", |ui| {
+                ui.menu_button(tr.s(Key::MenuEdit), |ui| {
                     if ui
                         .add_enabled(
                             self.history.can_undo(),
-                            egui::Button::new("Undo")
+                            egui::Button::new(tr.s(Key::MenuEditUndo))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Z)),
                         )
                         .clicked()
@@ -2644,7 +2694,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.history.can_redo(),
-                            egui::Button::new("Redo")
+                            egui::Button::new(tr.s(Key::MenuEditRedo))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Y)),
                         )
                         .clicked()
@@ -2653,16 +2703,16 @@ impl App {
                         ui.close();
                     }
                 });
-                ui.menu_button("View", |ui| {
-                    panels::menu_heading(ui, "Show");
-                    ui.checkbox(&mut self.display.shaded, "Shaded hull");
-                    ui.checkbox(&mut self.display.wireframe, "Wireframe");
-                    ui.checkbox(&mut self.display.control_net, "Control net");
-                    ui.checkbox(&mut self.display.points, "Control points");
-                    ui.menu_button("Hidden net", |ui| {
+                ui.menu_button(tr.s(Key::MenuView), |ui| {
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingShow));
+                    ui.checkbox(&mut self.display.shaded, tr.s(Key::MenuViewShadedHull));
+                    ui.checkbox(&mut self.display.wireframe, tr.s(Key::MenuViewWireframe));
+                    ui.checkbox(&mut self.display.control_net, tr.s(Key::MenuViewControlNet));
+                    ui.checkbox(&mut self.display.points, tr.s(Key::MenuViewControlPoints));
+                    ui.menu_button(tr.s(Key::MenuViewHiddenNet), |ui| {
                         for mode in render::HiddenNet::ALL {
                             if ui
-                                .radio(self.display.hidden_net == mode, mode.label())
+                                .radio(self.display.hidden_net == mode, mode.label_tr(tr))
                                 .clicked()
                             {
                                 self.display.hidden_net = mode;
@@ -2670,37 +2720,49 @@ impl App {
                             }
                         }
                     });
-                    ui.checkbox(&mut self.display.station_focus, "Station focus");
-                    ui.checkbox(&mut self.display.waterplane, "Waterplane");
-                    ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
-                    ui.checkbox(&mut self.display.windage, "Windage outlines");
-                    ui.checkbox(&mut self.display.grid, "Grid");
-                    ui.checkbox(&mut self.display.orientation, "Orientation");
-                    ui.checkbox(&mut self.display.curves, "Intersection curves");
-                    ui.checkbox(&mut self.display.combs, "Curvature combs");
-                    ui.menu_button("Curves and combs", |ui| {
+                    ui.checkbox(
+                        &mut self.display.station_focus,
+                        tr.s(Key::MenuViewStationFocus),
+                    );
+                    ui.checkbox(&mut self.display.waterplane, tr.s(Key::MenuViewWaterplane));
+                    ui.checkbox(&mut self.display.volumes, tr.s(Key::MenuViewVolumes));
+                    ui.checkbox(&mut self.display.windage, tr.s(Key::MenuViewWindage));
+                    ui.checkbox(&mut self.display.grid, tr.s(Key::MenuViewGrid));
+                    ui.checkbox(
+                        &mut self.display.orientation,
+                        tr.s(Key::MenuViewOrientation),
+                    );
+                    ui.checkbox(&mut self.display.curves, tr.s(Key::MenuViewCurves));
+                    ui.checkbox(&mut self.display.combs, tr.s(Key::MenuViewCombs));
+                    ui.menu_button(tr.s(Key::MenuViewCurvesAndCombs), |ui| {
                         let mut display = self.display.clone();
-                        if panels::section_settings(ui, &mut display) {
+                        if panels::section_settings(ui, &mut display, tr) {
                             self.display = display;
                         }
                     });
                     ui.separator();
-                    panels::menu_heading(ui, "Shading");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingShading));
                     crate::theme::segmented(ui, |ui| {
                         let current = self.display.analysis;
                         // Each mode with its remembered parameter (the
                         // toolbar edits it; 14 stripes, 1 m, 3° by default).
                         let params = self.analysis_params;
                         for (kind, label) in [
-                            (seacraft_core::AnalysisMode::Shaded, "Shaded"),
-                            (seacraft_core::AnalysisMode::Zebra { stripes: 0.0 }, "Zebra"),
+                            (
+                                seacraft_core::AnalysisMode::Shaded,
+                                tr.s(Key::MenuViewShadingShaded),
+                            ),
+                            (
+                                seacraft_core::AnalysisMode::Zebra { stripes: 0.0 },
+                                tr.s(Key::MenuViewShadingZebra),
+                            ),
                             (
                                 seacraft_core::AnalysisMode::Curvature { radius: 0.0 },
-                                "Curvature",
+                                tr.s(Key::MenuViewShadingCurvature),
                             ),
                             (
                                 seacraft_core::AnalysisMode::Draft { angle_deg: 0.0 },
-                                "Draft",
+                                tr.s(Key::MenuViewShadingDraft),
                             ),
                         ] {
                             let on = panels::same_analysis_kind(current, kind);
@@ -2710,18 +2772,18 @@ impl App {
                         }
                     });
                     ui.separator();
-                    panels::menu_heading(ui, "Panels");
-                    ui.checkbox(&mut self.show_layers, "Layer panel");
-                    ui.checkbox(&mut self.show_messages, "Messages");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingPanels));
+                    ui.checkbox(&mut self.show_layers, tr.s(Key::MenuViewLayerPanel));
+                    ui.checkbox(&mut self.show_messages, tr.s(Key::MenuViewMessages));
                     // One right-hand dock with tabs: several right-hand panels
                     // leave no room for the viewports.
-                    ui.checkbox(&mut self.show_analysis, "Analysis dock");
+                    ui.checkbox(&mut self.show_analysis, tr.s(Key::MenuViewAnalysisDock));
                     // The dock's tabs, indented under the dock they belong to.
                     ui.indent("dock_tabs", |ui| {
                         for tab in DesignDock::ALL {
                             let name = match tab {
-                                DesignDock::Hydrostatics => "Hydrostatics",
-                                other => other.label(),
+                                DesignDock::Hydrostatics => tr.s(Key::DockTabHydrostatics),
+                                other => other.label_tr(tr),
                             };
                             if ui
                                 .radio(self.show_analysis && self.dock_tab == tab, name)
@@ -2732,10 +2794,13 @@ impl App {
                         }
                     });
                     ui.separator();
-                    panels::menu_heading(ui, "Precision");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingPrecision));
                     let mut level = self.level as u32;
-                    if crate::theme::slider(ui, egui::Slider::new(&mut level, 0..=5).text("level"))
-                        .changed()
+                    if crate::theme::slider(
+                        ui,
+                        egui::Slider::new(&mut level, 0..=5).text(tr.s(Key::MenuViewLevel)),
+                    )
+                    .changed()
                     {
                         // Through the setters: shading caches and the
                         // hydrostatics key on the revision.
@@ -2746,7 +2811,7 @@ impl App {
                     // a mode could be chosen.
                     let mut mode = self.mode;
                     ui.horizontal(|ui| {
-                        ui.label("Scheme");
+                        ui.label(tr.s(Key::MenuViewScheme));
                         ui.radio_value(&mut mode, SubdivisionMode::Loop, "Loop");
                         ui.radio_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
                     });
@@ -2754,9 +2819,9 @@ impl App {
                         self.set_subdivision_mode(mode);
                     }
                     ui.separator();
-                    panels::menu_heading(ui, "Views");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingViews));
                     if ui
-                        .add(egui::Button::new("Frame the model in every view").shortcut_text("F"))
+                        .add(egui::Button::new(tr.s(Key::MenuViewFrameAll)).shortcut_text("F"))
                         .clicked()
                     {
                         self.reset_cameras();
@@ -2766,7 +2831,7 @@ impl App {
                         .add(
                             egui::Button::selectable(
                                 self.maximised.is_some(),
-                                "Maximise active view",
+                                tr.s(Key::MenuViewMaximiseActive),
                             )
                             .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Space)),
                         )
@@ -2778,20 +2843,63 @@ impl App {
                 });
                 self.model_menu(ui);
                 self.analysis_menu(ui);
-                ui.menu_button("Help", |ui| {
-                    ui.menu_button("Keyboard and mouse", |ui| {
-                        panels::shortcut_list(ui, &panels::shortcuts(&keys));
+                ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuHelp), |ui| {
+                    ui.menu_button(
+                        tr.s(seacraft_core::i18n::Key::MenuHelpKeyboardAndMouse),
+                        |ui| {
+                            panels::shortcut_list(ui, &panels::shortcuts(&keys, tr));
+                        },
+                    );
+                    ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuHelpLanguage), |ui| {
+                        let override_loc = self.cli_locale.or((self.language_pref
+                            == seacraft_core::i18n::LanguagePref::Auto)
+                            .then_some(self.env_locale)
+                            .flatten());
+                        let auto_selected = override_loc.is_none()
+                            && self.language_pref == seacraft_core::i18n::LanguagePref::Auto;
+                        if ui
+                            .add(egui::Button::selectable(
+                                auto_selected,
+                                tr.fmt(
+                                    seacraft_core::i18n::Key::LangSystemDefault,
+                                    &[("lang", self.system_locale.native_name())],
+                                ),
+                            ))
+                            .clicked()
+                        {
+                            self.set_language_pref(seacraft_core::i18n::LanguagePref::Auto);
+                            ui.close();
+                        }
+                        ui.separator();
+                        for &loc in seacraft_core::i18n::Locale::ALL {
+                            let selected = override_loc == Some(loc)
+                                || (override_loc.is_none()
+                                    && self.language_pref
+                                        == seacraft_core::i18n::LanguagePref::Fixed(loc));
+                            if ui
+                                .add(egui::Button::selectable(selected, loc.native_name()))
+                                .clicked()
+                            {
+                                self.set_language_pref(seacraft_core::i18n::LanguagePref::Fixed(
+                                    loc,
+                                ));
+                                ui.close();
+                            }
+                        }
                     });
-                    if ui.button("About SeaCraft…").clicked() {
+                    if ui
+                        .button(tr.s(seacraft_core::i18n::Key::MenuHelpAbout))
+                        .clicked()
+                    {
                         self.about_open = true;
                         ui.close();
                     }
                     ui.separator();
                     panels::menu_heading(
                         ui,
-                        &format!(
-                            "SeaCraft {} · hull design after FREE!ship",
-                            seacraft_core::VERSION
+                        &tr.fmt(
+                            seacraft_core::i18n::Key::MenuHelpFooter,
+                            &[("version", seacraft_core::VERSION)],
                         ),
                     );
                 });
@@ -2819,6 +2927,7 @@ impl App {
             presets: &self.preset_store.presets,
             default_reach_m,
             preset_error: self.preset_store.error.as_deref(),
+            tr: self.tr(),
         };
         let out = egui::Panel::top("toolbar")
             .frame(
@@ -2856,11 +2965,12 @@ impl App {
 
     /// The central area with no model: the start card.
     fn start_screen(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let recent = self.recent.entries();
         let (action, rects) = egui::CentralPanel::default()
             .show(ui, |ui| {
                 self.central_rect = ui.available_rect_before_wrap();
-                crate::new_design::start_card(ui, &recent)
+                crate::new_design::start_card(ui, &recent, tr)
             })
             .inner;
         self.start_rects = Some(rects);
@@ -3555,17 +3665,19 @@ impl App {
     }
 
     fn dialog_window(&mut self, ui: &mut egui::Ui) {
+        use seacraft_core::i18n::Key;
         let Some(mut dialog) = self.dialog.take() else {
             return;
         };
+        let tr = self.tr();
         let title = match dialog.kind {
-            DialogKind::Open => "Open .fef",
-            DialogKind::SaveAs => "Save as",
-            DialogKind::Export(k) => k.label(),
-            DialogKind::Report => "Design report",
-            DialogKind::Templates => "Builder templates",
-            DialogKind::Panels => "Builder panels",
-            DialogKind::WaveImage => "Wave pattern image",
+            DialogKind::Open => tr.s(Key::DialogOpenFef),
+            DialogKind::SaveAs => tr.s(Key::DialogSaveAs),
+            DialogKind::Export(k) => k.label_tr(tr),
+            DialogKind::Report => tr.s(Key::DialogDesignReport),
+            DialogKind::Templates => tr.s(Key::DialogBuilderTemplates),
+            DialogKind::Panels => tr.s(Key::DialogBuilderPanels),
+            DialogKind::WaveImage => tr.s(Key::DialogWaveImage),
         };
         let mut accept = false;
         let mut cancel = false;
@@ -3577,7 +3689,7 @@ impl App {
             .default_width(520.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ui.ctx(), |ui| {
-                ui.label("Path");
+                ui.label(tr.s(Key::CommonPath));
                 ui.add(egui::TextEdit::singleline(&mut dialog.path).desired_width(f32::INFINITY));
                 if let Some(err) = &dialog.error {
                     ui.colored_label(crate::theme::FAIL, err);
@@ -3590,9 +3702,9 @@ impl App {
                     ui.colored_label(crate::theme::WARN, warning);
                 }
                 let ok_label = if confirming.is_some() {
-                    "Write anyway"
+                    tr.s(Key::CommonWriteAnyway)
                 } else {
-                    "OK"
+                    tr.s(Key::CommonOk)
                 };
                 ui.separator();
                 let wanted = match dialog.kind {
@@ -3613,7 +3725,7 @@ impl App {
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr.s(Key::CommonCancel)).clicked() {
                         cancel = true;
                     }
                     if ui.button(ok_label).clicked() {
@@ -3675,24 +3787,30 @@ impl App {
     }
 
     fn pending_window(&mut self, ui: &mut egui::Ui) {
+        use seacraft_core::i18n::Key;
         let Some(action) = self.pending else { return };
+        let tr = self.tr();
         let mut choice: Option<Option<PendingAction>> = None; // Some(None) = cancel
-        egui::Window::new("Unsaved changes")
+        egui::Window::new(tr.s(Key::DialogUnsavedTitle))
+            .id(egui::Id::unique("unsaved_changes_window"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ui.ctx(), |ui| {
-                ui.label("There are unsaved changes. Save them first?");
+                ui.label(tr.s(Key::DialogUnsavedPrompt));
                 ui.horizontal(|ui| {
-                    if ui.add(crate::theme::primary_button("Save")).clicked() {
+                    if ui
+                        .add(crate::theme::primary_button(tr.s(Key::CommonSave)))
+                        .clicked()
+                    {
                         choice = Some(Some(action));
                     }
-                    if ui.button("Discard").clicked() {
+                    if ui.button(tr.s(Key::CommonDiscard)).clicked() {
                         choice = Some(None);
                         self.pending = None;
                         self.perform(action);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr.s(Key::CommonCancel)).clicked() {
                         choice = Some(None);
                     }
                 });
@@ -6382,7 +6500,7 @@ impl App {
         if !self.show_messages {
             return;
         }
-        match crate::messages::messages_window(ui.ctx(), &self.messages) {
+        match crate::messages::messages_window(ui.ctx(), &self.messages, self.tr()) {
             MessagesAction::None => {}
             MessagesAction::Clear => self.messages.clear(),
             MessagesAction::Close => self.show_messages = false,
@@ -8660,6 +8778,8 @@ impl App {
     /// already stored there. Headless apps have none until a test gives one.
     pub fn set_storage(&mut self, storage: Box<dyn eframe::Storage>) {
         self.recent = RecentFiles::load(storage.as_ref());
+        self.language_pref = crate::recent::load_language_pref(storage.as_ref());
+        self.refresh_locale();
         let choice = crate::recent::ConnectedChoice::load(storage.as_ref());
         self.connected = ConnectedState {
             on: choice.on,
@@ -8669,6 +8789,50 @@ impl App {
         self.storage = Some(storage);
         self.persisted_choice = Some(self.connected_choice());
         self.reconcile_connected_preset();
+    }
+
+    /// Active display locale.
+    pub fn locale(&self) -> seacraft_core::i18n::Locale {
+        self.locale
+    }
+
+    /// Lightweight translator for the active locale.
+    pub fn tr(&self) -> seacraft_core::i18n::Tr {
+        seacraft_core::i18n::Tr::new(self.locale)
+    }
+
+    /// Saved language preference (`Auto` or a fixed locale).
+    pub fn language_pref(&self) -> seacraft_core::i18n::LanguagePref {
+        self.language_pref
+    }
+
+    fn refresh_locale(&mut self) {
+        self.locale = seacraft_core::i18n::resolve_locale(
+            self.cli_locale,
+            self.env_locale,
+            self.language_pref,
+            self.system_locale,
+        );
+    }
+
+    /// Choose a language preference (`Auto` or a fixed locale), persist it, and switch live.
+    pub fn set_language_pref(&mut self, pref: seacraft_core::i18n::LanguagePref) {
+        self.language_pref = pref;
+        self.cli_locale = None;
+        self.env_locale = None;
+        self.refresh_locale();
+        self.persist_recent();
+    }
+
+    /// Switch immediately to `locale` and persist it as the user's preference.
+    pub fn set_locale(&mut self, locale: seacraft_core::i18n::Locale) {
+        self.set_language_pref(seacraft_core::i18n::LanguagePref::Fixed(locale));
+    }
+
+    /// Apply an explicit `--lang` CLI override for this session without overwriting saved prefs.
+    pub fn set_cli_locale(&mut self, locale: seacraft_core::i18n::Locale) {
+        self.cli_locale = Some(locale);
+        self.refresh_locale();
     }
 
     /// Take the storage back (tests: to read what was written).
@@ -8842,6 +9006,7 @@ impl App {
         };
         self.recent.save(storage.as_mut());
         choice.save(storage.as_mut());
+        crate::recent::save_language_pref(self.language_pref, storage.as_mut());
         storage.flush();
         self.persisted_choice = Some(choice);
         let failure = storage.get_string(crate::recent::FLUSH_ERROR_KEY);
@@ -9189,7 +9354,8 @@ impl App {
     /// the menu has drawn.
     fn model_menu(&mut self, ui: &mut egui::Ui) {
         let mut action = crate::model_menu::ModelAction::None;
-        ui.menu_button("Model", |ui| {
+        let label = self.tr().s(seacraft_core::i18n::Key::MenuModel);
+        ui.menu_button(label, |ui| {
             let targets = self.model_targets();
             action = crate::model_menu::menu_body(ui, &targets);
         });
@@ -9512,6 +9678,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.recent.save(storage);
         self.connected_choice().save(storage);
+        crate::recent::save_language_pref(self.language_pref, storage);
         self.persist_recent();
     }
 
@@ -9780,7 +9947,7 @@ impl App {
             return;
         };
         let remaining = self.autosave.orphans.len();
-        let action = crate::autosave::recovery_modal(ctx, orphan, remaining);
+        let action = crate::autosave::recovery_modal(ctx, orphan, remaining, self.tr());
         match action {
             crate::autosave::RecoveryAction::None => {}
             crate::autosave::RecoveryAction::Recover => self.recover_orphan(),
@@ -9802,13 +9969,15 @@ impl App {
     /// The Analysis menu: one item per view.
     fn analysis_menu(&mut self, ui: &mut egui::Ui) {
         use crate::analysis_views::AnalysisView;
-        ui.menu_button("Analysis", |ui| {
+        let tr = self.tr();
+        ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuAnalysis), |ui| {
             for view in AnalysisView::ALL {
                 // Tables and curves of the hull, then the studies.
                 if view == AnalysisView::TrimScan {
                     ui.separator();
                 }
-                let item = egui::Button::selectable(self.analysis.open == Some(view), view.label());
+                let item =
+                    egui::Button::selectable(self.analysis.open == Some(view), view.label_tr(tr));
                 if ui.add_enabled(self.surface.is_some(), item).clicked() {
                     self.open_analysis_view(view);
                     ui.close();

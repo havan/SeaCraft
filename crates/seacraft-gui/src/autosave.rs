@@ -512,12 +512,23 @@ impl AutosaveState {
 
     /// Hover text for the status bar's `● unsaved` indicator.
     pub fn hover_text(&self) -> String {
+        self.hover_text_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized hover text for the status bar's `● unsaved` indicator.
+    pub fn hover_text_tr(&self, tr: seacraft_core::i18n::Tr) -> String {
         match self.last_saved_at {
             Some(secs) => {
                 let time = UNIX_EPOCH + Duration::from_secs(secs);
-                format!("Last autosave at {} UTC", clock(time))
+                let clock_str = clock(time);
+                tr.fmt(
+                    seacraft_core::i18n::Key::AutosaveHoverLast,
+                    &[("time", &clock_str)],
+                )
             }
-            None => "No autosave has happened yet".to_owned(),
+            None => tr.s(seacraft_core::i18n::Key::AutosaveHoverNone).to_owned(),
         }
     }
 
@@ -815,14 +826,21 @@ pub enum RecoveryAction {
 
 /// Draw the crash-recovery modal for `orphan` (`remaining` is the total count
 /// of orphans still queued, including `orphan`).
-pub fn recovery_modal(ctx: &egui::Context, orphan: &Orphan, remaining: usize) -> RecoveryAction {
+pub fn recovery_modal(
+    ctx: &egui::Context,
+    orphan: &Orphan,
+    remaining: usize,
+    tr: seacraft_core::i18n::Tr,
+) -> RecoveryAction {
+    use seacraft_core::i18n::Key;
     let mut action = RecoveryAction::None;
     egui::Modal::new(egui::Id::unique("autosave_recovery_modal")).show(ctx, |ui| {
         ui.set_width(460.0);
         let title = if remaining > 1 {
-            format!("Recover unsaved work? (1 of {remaining})")
+            let rem = remaining.to_string();
+            tr.fmt(Key::AutosaveRecoveryTitleMulti, &[("remaining", &rem)])
         } else {
-            "Recover unsaved work?".to_owned()
+            tr.s(Key::AutosaveRecoveryTitle).to_owned()
         };
         ui.label(
             egui::RichText::new(title)
@@ -834,46 +852,52 @@ pub fn recovery_modal(ctx: &egui::Context, orphan: &Orphan, remaining: usize) ->
             .num_columns(2)
             .spacing(egui::vec2(12.0, 4.0))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("Model").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::AutosaveRecoveryModel))
+                        .color(theme::TEXT_SECONDARY),
+                );
                 ui.label(egui::RichText::new(&orphan.model_name).color(theme::TEXT_PRIMARY));
                 ui.end_row();
 
-                ui.label(egui::RichText::new("Original file").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::AutosaveRecoveryOriginalFile))
+                        .color(theme::TEXT_SECONDARY),
+                );
                 let path_text = orphan
                     .original_path
                     .as_ref()
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "untitled".to_owned());
+                    .unwrap_or_else(|| tr.s(Key::AutosaveRecoveryUntitled).to_owned());
                 ui.label(egui::RichText::new(path_text).color(theme::TEXT_PRIMARY));
                 ui.end_row();
 
-                ui.label(egui::RichText::new("Autosaved at").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::AutosaveRecoveryAutosavedAt))
+                        .color(theme::TEXT_SECONDARY),
+                );
                 let saved_time = UNIX_EPOCH + Duration::from_secs(orphan.saved_at_unix);
                 ui.monospace(format!("{} UTC", clock(saved_time)));
                 ui.end_row();
             });
         if orphan.original_newer {
             ui.add_space(4.0);
-            ui.colored_label(
-                theme::WARN,
-                "⚠ The file on disk is newer than this autosave.",
-            );
+            ui.colored_label(theme::WARN, tr.s(Key::AutosaveRecoveryNewerWarning));
         }
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new("Undo history is not recovered.")
+            egui::RichText::new(tr.s(Key::AutosaveRecoveryNoUndo))
                 .small()
                 .color(theme::TEXT_MUTED),
         );
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.button("Recover").clicked() {
+            if ui.button(tr.s(Key::AutosaveRecoveryRecover)).clicked() {
                 action = RecoveryAction::Recover;
             }
-            if ui.button("Discard").clicked() {
+            if ui.button(tr.s(Key::AutosaveRecoveryDiscard)).clicked() {
                 action = RecoveryAction::Discard;
             }
-            if ui.button("Decide later").clicked() {
+            if ui.button(tr.s(Key::AutosaveRecoveryDecideLater)).clicked() {
                 action = RecoveryAction::Defer;
             }
         });

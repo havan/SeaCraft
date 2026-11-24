@@ -791,29 +791,20 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readou
 
 /// The About window: the legal notices GPLv3 section 5(d) asks an interactive program to show,
 /// the disclaimer, where the source is, and the licence texts of what is embedded.
-pub fn about(ui: &mut egui::Ui) {
+pub fn about(ui: &mut egui::Ui, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     theme::heading(ui, format!("SeaCraft {}", seacraft_core::VERSION));
-    ui.label("Copyright (c) 2026 SeaCraft contributors.");
-    ui.label(
-        "SeaCraft comes with ABSOLUTELY NO WARRANTY. It is free software: you may redistribute it \
-         under the terms of the GNU General Public License, version 3 or any later version.",
-    );
-    ui.colored_label(
-        theme::WARN,
-        "Results are not validated and may be wrong. Do not rely on them for design or safety \
-         decisions without independent checks by a qualified person.",
-    );
-    ui.hyperlink_to("Source code of this version", seacraft_core::source_url());
+    ui.label(tr.s(Key::AboutCopyright));
+    ui.label(tr.s(Key::AboutWarranty));
+    ui.colored_label(theme::WARN, tr.s(Key::AboutDisclaimer));
+    ui.hyperlink_to(tr.s(Key::AboutSourceCode), seacraft_core::source_url());
     ui.separator();
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (title, text) in [
-            ("Notices", include_str!("../../../NOTICE")),
+            (tr.s(Key::AboutNotices), include_str!("../../../NOTICE")),
+            (tr.s(Key::AboutGpl), include_str!("../../../LICENSE")),
             (
-                "GNU General Public License",
-                include_str!("../../../LICENSE"),
-            ),
-            (
-                "Font licence (DejaVu)",
+                tr.s(Key::AboutFontLicence),
                 seacraft_core::fonts::DEJAVU_LICENCE,
             ),
         ] {
@@ -5000,6 +4991,22 @@ pub struct ToolbarState<'a> {
     pub presets: &'a [seacraft_core::connected::ConnectedPreset],
     pub default_reach_m: f64,
     pub preset_error: Option<&'a str>,
+    pub tr: seacraft_core::i18n::Tr,
+}
+
+/// Localized display label for built-in connected-editing preset names (custom names pass through).
+pub fn connected_preset_label(tr: seacraft_core::i18n::Tr, name: &str) -> &str {
+    use seacraft_core::i18n::Key;
+    match name {
+        "Blend both ways" => tr.s(Key::ConnectedPresetBlendBothWays),
+        "Blend lengthwise" => tr.s(Key::ConnectedPresetBlendLengthwise),
+        "Blend around station" => tr.s(Key::ConnectedPresetBlendAroundStation),
+        "Nudge" => tr.s(Key::ConnectedPresetNudge),
+        "Move station" => tr.s(Key::ConnectedPresetMoveStation),
+        "Beam only" => tr.s(Key::ConnectedPresetBeamOnly),
+        "Height only" => tr.s(Key::ConnectedPresetHeightOnly),
+        _ => name,
+    }
 }
 
 /// A dock with no model loaded: empty, at its full width. The status bar
@@ -5018,57 +5025,71 @@ pub fn menu_heading(ui: &mut egui::Ui, text: &str) {
 /// Help > Keyboard and mouse. `keys` formats a shortcut for this platform.
 pub fn shortcuts(
     keys: &dyn Fn(egui::Modifiers, egui::Key) -> String,
+    tr: seacraft_core::i18n::Tr,
 ) -> Vec<(String, &'static str)> {
+    use seacraft_core::i18n::Key;
     let command = egui::Modifiers::COMMAND;
-    let plain = |text: &str| text.to_owned();
+    let plain = |k: Key| tr.s(k).to_owned();
     vec![
-        (plain("Click"), "Select a control point"),
+        (plain(Key::ShortcutsClickKey), tr.s(Key::ShortcutsClickDesc)),
         (
-            plain("Shift+click"),
-            "Add a point to the selection, or take it out",
+            plain(Key::ShortcutsShiftClickKey),
+            tr.s(Key::ShortcutsShiftClickDesc),
         ),
         (
-            plain("Shift+drag empty space"),
-            "Select the points in a rectangle",
-        ),
-        (plain("Drag a point"), "Move it in the view's plane"),
-        (
-            plain("X, Y or Z while dragging"),
-            "Keep the point on that axis",
+            plain(Key::ShortcutsShiftDragKey),
+            tr.s(Key::ShortcutsShiftDragDesc),
         ),
         (
-            plain("Alt+Left / Alt+Right"),
-            "Select the previous or next station along the line",
+            plain(Key::ShortcutsDragPointKey),
+            tr.s(Key::ShortcutsDragPointDesc),
+        ),
+        (
+            plain(Key::ShortcutsAxisLockKey),
+            tr.s(Key::ShortcutsAxisLockDesc),
+        ),
+        (
+            plain(Key::ShortcutsAltArrowsKey),
+            tr.s(Key::ShortcutsAltArrowsDesc),
         ),
         (
             plain(if cfg!(target_os = "macos") {
-                "Hold Cmd while dragging"
+                Key::ShortcutsConnectedFlipKeyMac
             } else {
-                "Hold Ctrl while dragging"
+                Key::ShortcutsConnectedFlipKeyCtrl
             }),
-            "Connected editing the other way from the switch, for that drag",
+            tr.s(Key::ShortcutsConnectedFlipDesc),
+        ),
+        (plain(Key::ShortcutsEscKey), tr.s(Key::ShortcutsEscDesc)),
+        (plain(Key::ShortcutsPanKey), tr.s(Key::ShortcutsPanDesc)),
+        (plain(Key::ShortcutsOrbitKey), tr.s(Key::ShortcutsOrbitDesc)),
+        (plain(Key::ShortcutsZoomKey), tr.s(Key::ShortcutsZoomDesc)),
+        (
+            plain(Key::ShortcutsConnectedReachKey),
+            tr.s(Key::ShortcutsConnectedReachDesc),
         ),
         (
-            plain("Esc"),
-            "Cancel a point drag or a selection rectangle, or clear the selection",
+            plain(Key::ShortcutsFrameAllKey),
+            tr.s(Key::ShortcutsFrameAllDesc),
         ),
-        (plain("Drag empty space, or middle drag"), "Pan"),
-        (plain("Right drag in Perspective"), "Orbit"),
-        (plain("Wheel, Ctrl+wheel or pinch"), "Zoom at the pointer"),
         (
-            plain("Wheel during connected drag"),
-            "Change connected-editing reach",
+            plain(Key::ShortcutsActiveViewKey),
+            tr.s(Key::ShortcutsActiveViewDesc),
         ),
-        (plain("F"), "Frame the model in every view"),
-        (plain("1 – 4"), "Make a view the active one"),
         (
             keys(command, egui::Key::Space),
-            "Maximise the active view, or restore the four",
+            tr.s(Key::ShortcutsMaximiseDesc),
         ),
-        (plain("Space"), "Shaded hull on or off"),
-        (plain("F5"), "Recompute the results that are out of date"),
-        (keys(command, egui::Key::Z), "Undo"),
-        (keys(command, egui::Key::Y), "Redo"),
+        (
+            plain(Key::ShortcutsShadedToggleKey),
+            tr.s(Key::ShortcutsShadedToggleDesc),
+        ),
+        (
+            plain(Key::ShortcutsRecomputeKey),
+            tr.s(Key::ShortcutsRecomputeDesc),
+        ),
+        (keys(command, egui::Key::Z), tr.s(Key::ShortcutsUndoDesc)),
+        (keys(command, egui::Key::Y), tr.s(Key::ShortcutsRedoDesc)),
     ]
 }
 
@@ -5089,33 +5110,38 @@ pub fn shortcut_list(ui: &mut egui::Ui, rows: &[(String, &'static str)]) {
 /// The intersection-curve counts and the comb settings, for the toolbar's
 /// "…" menu and View > Curves and combs. Edits `display` and returns whether
 /// anything changed; the caller applies it.
-pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool {
+pub fn section_settings(
+    ui: &mut egui::Ui,
+    display: &mut DisplayOptions,
+    tr: seacraft_core::i18n::Tr,
+) -> bool {
     use crate::render::{
         BUTTOCKS_RANGE, COMB_SCALE_RANGE, COMB_STRIDE_RANGE, STATIONS_RANGE, WATERLINES_RANGE,
     };
+    use seacraft_core::i18n::Key;
     let mut changed = false;
-    ui.label(egui::RichText::new("Intersection curves").color(theme::TEXT_SECONDARY));
+    ui.label(egui::RichText::new(tr.s(Key::SectionsCurvesHeading)).color(theme::TEXT_SECONDARY));
     egui::Grid::new("section_counts")
         .num_columns(2)
         .show(ui, |ui| {
             for (label, value, range, tip) in [
                 (
-                    "stations",
+                    tr.s(Key::SectionsStations),
                     &mut display.stations,
                     STATIONS_RANGE,
-                    "Stations (x = const) from stern to bow, ends included",
+                    tr.s(Key::SectionsStationsTip),
                 ),
                 (
-                    "waterlines",
+                    tr.s(Key::SectionsWaterlines),
                     &mut display.waterlines,
                     WATERLINES_RANGE,
-                    "Waterlines (z = const) from keel to top, both included",
+                    tr.s(Key::SectionsWaterlinesTip),
                 ),
                 (
-                    "buttocks",
+                    tr.s(Key::SectionsButtocks),
                     &mut display.buttocks,
                     BUTTOCKS_RANGE,
-                    "Buttocks (y = const) across the beam, sides included",
+                    tr.s(Key::SectionsButtocksTip),
                 ),
             ] {
                 ui.label(label);
@@ -5127,11 +5153,11 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
             }
         });
     ui.separator();
-    ui.label(egui::RichText::new("Curvature combs").color(theme::TEXT_SECONDARY));
+    ui.label(egui::RichText::new(tr.s(Key::SectionsCombsHeading)).color(theme::TEXT_SECONDARY));
     egui::Grid::new("comb_settings")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("scale");
+            ui.label(tr.s(Key::SectionsScale));
             changed |= ui
                 .add(
                     theme::num(&mut display.comb_scale)
@@ -5139,10 +5165,10 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
                         .speed(0.01)
                         .max_decimals(2),
                 )
-                .on_hover_text("Comb gain: metres of spike for a curvature of 1/m")
+                .on_hover_text(tr.s(Key::SectionsScaleTip))
                 .changed();
             ui.end_row();
-            ui.label("density");
+            ui.label(tr.s(Key::SectionsDensity));
             changed |= ui
                 .add(
                     theme::num(&mut display.comb_stride)
@@ -5150,7 +5176,7 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
                         .speed(0.05)
                         .prefix("1/"),
                 )
-                .on_hover_text("Draw every n-th comb spike: 1/1 draws them all")
+                .on_hover_text(tr.s(Key::SectionsDensityTip))
                 .changed();
             ui.end_row();
         });
@@ -5192,6 +5218,8 @@ const LEVEL_ITEMS: [&str; 6] = [
 /// display toggles, subdivision level and scheme. One row
 /// at 1600 px; it wraps on a narrower window.
 pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
+    use seacraft_core::i18n::Key;
+    let tr = state.tr;
     let mut out = ToolbarOutput::default();
     ui.horizontal_wrapped(|ui| {
         // Analysis mode: a segmented control.
@@ -5204,26 +5232,26 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 (
                     "shaded",
                     AnalysisMode::Shaded,
-                    "Shaded",
-                    "Lit, flat-shaded hull",
+                    tr.s(Key::MenuViewShadingShaded),
+                    tr.s(Key::ToolbarShadedTip),
                 ),
                 (
                     "zebra",
                     AnalysisMode::Zebra { stripes: 0.0 },
-                    "Zebra",
-                    "Reflection stripes: an unfair surface breaks them",
+                    tr.s(Key::MenuViewShadingZebra),
+                    tr.s(Key::ToolbarZebraTip),
                 ),
                 (
                     "curvature",
                     AnalysisMode::Curvature { radius: 0.0 },
-                    "Curvature",
-                    "Mean curvature map",
+                    tr.s(Key::MenuViewShadingCurvature),
+                    tr.s(Key::ToolbarCurvatureTip),
                 ),
                 (
                     "draft",
                     AnalysisMode::Draft { angle_deg: 0.0 },
-                    "Draft",
-                    "Draft angle of each face against the vertical",
+                    tr.s(Key::MenuViewShadingDraft),
+                    tr.s(Key::ToolbarDraftTip),
                 ),
             ] {
                 let response = ui
@@ -5251,28 +5279,28 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 let param = match current {
                     AnalysisMode::Shaded => None,
                     AnalysisMode::Zebra { stripes } => Some((
-                        "stripes",
+                        tr.s(Key::ToolbarStripes),
                         stripes,
                         2.0..=64.0,
                         0.25,
                         "",
-                        "Number of reflection stripes across the view",
+                        tr.s(Key::ToolbarStripesTip),
                     )),
                     AnalysisMode::Curvature { radius } => Some((
-                        "radius",
+                        tr.s(Key::ToolbarRadius),
                         radius,
                         0.05..=100.0,
                         0.01,
                         " m",
-                        "Radius at which the curvature colour scale saturates",
+                        tr.s(Key::ToolbarRadiusTip),
                     )),
                     AnalysisMode::Draft { angle_deg } => Some((
-                        "angle",
+                        tr.s(Key::ToolbarAngle),
                         angle_deg,
                         0.0..=45.0,
                         0.1,
                         "°",
-                        "Draft angle that separates pullable, borderline and undercut faces",
+                        tr.s(Key::ToolbarAngleTip),
                     )),
                 };
                 if let Some((name, mut value, range, speed, suffix, tip)) = param {
@@ -5331,31 +5359,33 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 ui,
                 &mut out.rects,
                 "net",
-                "Net",
-                "Control net",
+                tr.s(Key::ToolbarNet),
+                tr.s(Key::ToolbarNetTip),
                 &mut display.control_net,
             );
             toggled |= switch(
                 ui,
                 &mut out.rects,
                 "points",
-                "Points",
-                "Control points (hidden points cannot be picked)",
+                tr.s(Key::ToolbarPoints),
+                tr.s(Key::ToolbarPointsTip),
                 &mut display.points,
             );
             // How the net and its points behind the shaded hull are drawn:
             // beside the two switches it qualifies, each choice its own label.
             let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
-                .selected_text(display.hidden_net.toolbar_label())
+                .selected_text(display.hidden_net.toolbar_label_tr(tr))
                 .width(82.0)
                 .show_ui(ui, |ui| {
                     for mode in crate::render::HiddenNet::ALL {
-                        ui.selectable_value(&mut display.hidden_net, mode, mode.toolbar_label());
+                        ui.selectable_value(
+                            &mut display.hidden_net,
+                            mode,
+                            mode.toolbar_label_tr(tr),
+                        );
                     }
                 });
-            let combo = combo
-                .response
-                .on_hover_text("How control-net edges and points behind the shaded hull are drawn");
+            let combo = combo.response.on_hover_text(tr.s(Key::ToolbarHiddenNetTip));
             out.rects.push(("hidden_net", combo.rect));
             if display.hidden_net != state.display.hidden_net {
                 toggled = true;
@@ -5363,32 +5393,32 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             for (name, label, tip, flag) in [
                 (
                     "waterplane",
-                    "Waterplane",
-                    "Waterplane at the current draft",
+                    tr.s(Key::ToolbarWaterplane),
+                    tr.s(Key::ToolbarWaterplaneTip),
                     &mut display.waterplane as &mut bool,
                 ),
                 (
                     "curves",
-                    "Curves",
-                    "Station, buttock and waterline intersection curves",
+                    tr.s(Key::ToolbarCurves),
+                    tr.s(Key::ToolbarCurvesTip),
                     &mut display.curves,
                 ),
                 (
                     "combs",
-                    "Combs",
-                    "Curvature combs along the stations, buttocks and waterlines",
+                    tr.s(Key::ToolbarCombs),
+                    tr.s(Key::ToolbarCombsTip),
                     &mut display.combs,
                 ),
                 (
                     "wireframe",
-                    "Wire",
-                    "Wireframe of the refined mesh",
+                    tr.s(Key::ToolbarWire),
+                    tr.s(Key::ToolbarWireTip),
                     &mut display.wireframe,
                 ),
                 (
                     "orientation",
-                    "Orient",
-                    "Orientation triad and edge labels",
+                    tr.s(Key::ToolbarOrient),
+                    tr.s(Key::ToolbarOrientTip),
                     &mut display.orientation,
                 ),
             ] {
@@ -5397,14 +5427,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             // The curve counts and comb settings, in a small menu.
             let menu = ui
                 .menu_button("…", |ui| {
-                    if section_settings(ui, &mut display) {
+                    if section_settings(ui, &mut display, tr) {
                         toggled = true;
                     }
                 })
                 .response
-                .on_hover_text(
-                    "Section counts (stations, waterlines, buttocks) and comb scale and density",
-                );
+                .on_hover_text(tr.s(Key::ToolbarSectionsTip));
             out.rects.push(("sections", menu.rect));
         });
         if toggled {
@@ -5416,12 +5444,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let toggle = theme::as_switch(ui, |ui| {
-                ui.selectable_label(state.connected.on != state.connected_flipped, "Connected")
+                ui.selectable_label(
+                    state.connected.on != state.connected_flipped,
+                    tr.s(Key::ToolbarConnected),
+                )
             })
-            .on_hover_text(
-                "Connected editing: drag neighbours along with the moved points. \
-                 Hold Ctrl (Cmd on macOS) to flip it for one drag",
-            );
+            .on_hover_text(tr.s(Key::ToolbarConnectedTip));
             if toggle.clicked() {
                 out.connected = Some(ToolbarConnectedAction::Toggle(!state.connected.on));
             }
@@ -5429,16 +5457,20 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
 
             let mut selected_preset = state.connected.preset.clone();
             let combo = egui::ComboBox::from_id_salt("toolbar_connected_preset")
-                .selected_text(&selected_preset)
+                .selected_text(connected_preset_label(tr, &selected_preset))
                 .width(114.0)
                 .show_ui(ui, |ui| {
                     for p in state.presets {
-                        ui.selectable_value(&mut selected_preset, p.name.clone(), &p.name);
+                        ui.selectable_value(
+                            &mut selected_preset,
+                            p.name.clone(),
+                            connected_preset_label(tr, &p.name),
+                        );
                     }
                 });
             let combo_resp = combo
                 .response
-                .on_hover_text("Connected-editing preset (spread, falloff and axes)");
+                .on_hover_text(tr.s(Key::ToolbarConnectedPresetTip));
             out.rects.push(("connected_preset", combo_resp.rect));
             if selected_preset != state.connected.preset {
                 out.connected = Some(ToolbarConnectedAction::SelectPreset(selected_preset));
@@ -5466,7 +5498,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                         .fixed_decimals(2)
                         .suffix(" m"),
                 )
-                .on_hover_text("Reach in metres (scroll during a connected drag to adjust)");
+                .on_hover_text(tr.s(Key::ToolbarConnectedReachTip));
             out.rects.push(("connected_reach", reach_resp.rect));
             if reach_resp.changed() {
                 out.connected = Some(ToolbarConnectedAction::SetReach(Some(
@@ -5477,9 +5509,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             let reset_resp = ui
                 .add_enabled(
                     state.connected.reach_m.is_some(),
-                    egui::Button::new(egui::RichText::new("reset").small()),
+                    egui::Button::new(egui::RichText::new(tr.s(Key::CommonReset)).small()),
                 )
-                .on_hover_text("Reset reach to the preset's own value");
+                .on_hover_text(tr.s(Key::ToolbarConnectedResetTip));
             out.rects.push(("connected_reset", reset_resp.rect));
             if reset_resp.clicked() {
                 out.connected = Some(ToolbarConnectedAction::SetReach(None));
@@ -5491,20 +5523,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let mut level = state.level;
+            let level_str = level.to_string();
             let combo = egui::ComboBox::from_id_salt("toolbar_level")
-                .selected_text(format!("Level {level}"))
+                .selected_text(tr.fmt(Key::ToolbarLevel, &[("n", &level_str)]))
                 .width(62.0)
                 .show_ui(ui, |ui| {
                     for (n, name) in LEVEL_ITEMS.iter().enumerate() {
-                        let response =
-                            ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
+                        let n_str = n.to_string();
+                        let response = ui.selectable_value(
+                            &mut level,
+                            n as u8,
+                            tr.fmt(Key::ToolbarLevel, &[("n", &n_str)]),
+                        );
                         out.rects.push((name, response.rect));
                     }
                 });
-            let combo = combo.response.on_hover_text(
-                "How finely the hull is subdivided, for display and for measurement: \
-                     a higher level is smoother and slower (0–5)",
-            );
+            let combo = combo.response.on_hover_text(tr.s(Key::ToolbarLevelTip));
             out.rects.push(("level", combo.rect));
             if level != state.level {
                 out.level = Some(level);
@@ -5520,9 +5554,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
                     ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
                 });
-            let combo = combo
-                .response
-                .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
+            let combo = combo.response.on_hover_text(tr.s(Key::ToolbarModeTip));
             out.rects.push(("mode", combo.rect));
             if mode != state.mode {
                 out.mode = Some(mode);

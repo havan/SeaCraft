@@ -52,23 +52,39 @@ impl AnalysisView {
 
     /// The menu item and the view's heading.
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized menu item and view heading.
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            AnalysisView::HydroTable => "Hydrostatic table",
-            AnalysisView::Bonjean => "Bonjean curves",
-            AnalysisView::Offsets => "Offsets",
-            AnalysisView::TrimScan => "Trim scan",
-            AnalysisView::Heel => "Heel and righting arm",
-            AnalysisView::Waves => "Wave pattern",
-            AnalysisView::Plates => "Plate development",
+            AnalysisView::HydroTable => tr.s(Key::AnalysisViewHydroTable),
+            AnalysisView::Bonjean => tr.s(Key::AnalysisViewBonjean),
+            AnalysisView::Offsets => tr.s(Key::AnalysisViewOffsets),
+            AnalysisView::TrimScan => tr.s(Key::AnalysisViewTrimScan),
+            AnalysisView::Heel => tr.s(Key::AnalysisViewHeel),
+            AnalysisView::Waves => tr.s(Key::AnalysisViewWaves),
+            AnalysisView::Plates => tr.s(Key::AnalysisViewPlates),
         }
     }
 
     /// The view's tab in the drawer's header: its label when it is the view shown, else a short
     /// name, so the row of tabs still leaves room for the header's buttons.
     pub fn tab_label(self, shown: bool) -> &'static str {
+        self.tab_label_tr(
+            shown,
+            seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+        )
+    }
+
+    /// Localized view tab label.
+    pub fn tab_label_tr(self, shown: bool, tr: seacraft_core::i18n::Tr) -> &'static str {
         match self {
-            AnalysisView::Heel if !shown => "Heel",
-            _ => self.label(),
+            AnalysisView::Heel if !shown => tr.s(seacraft_core::i18n::Key::AnalysisViewHeelShort),
+            _ => self.label_tr(tr),
         }
     }
 

@@ -9,11 +9,12 @@ use seacraft_gui::App;
 fn usage() {
     println!(
         "seacraft-gui {}\n\n\
-         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs] [--no-autosave] [--no-gpu-hull] [--control HOST:PORT]\n\n\
+         Usage: seacraft-gui [--open FILE.fef] [--analysis MODE] [--combs] [--lang CODE] [--no-autosave] [--no-gpu-hull] [--control HOST:PORT]\n\n\
          Options:\n  \
          --open FILE             Load a FREE!ship .fef model at startup\n  \
          --analysis MODE         Shading: shaded, zebra, curvature or draft\n  \
          --combs                 Overlay station/buttock/waterline curvature combs\n  \
+         --lang CODE             Display language (en, tr)\n  \
          --no-autosave           Disable periodic autosave and startup crash recovery\n  \
          --no-gpu-hull           Draw the viewport hull on the CPU, as a way out of a GPU problem\n  \
          --control ADDR          Serve the JSON-lines control socket on ADDR\n                          \
@@ -43,6 +44,7 @@ fn main() -> eframe::Result {
     let mut open: Option<PathBuf> = None;
     let mut analysis = seacraft_core::AnalysisMode::Shaded;
     let mut combs = false;
+    let mut lang: Option<seacraft_core::i18n::Locale> = None;
     let mut no_autosave = false;
     let mut no_gpu_hull = false;
     let mut control_addr: Option<String> = None;
@@ -55,6 +57,19 @@ fn main() -> eframe::Result {
         match arg.as_str() {
             "--open" => open = args.next().map(PathBuf::from),
             "--combs" => combs = true,
+            "--lang" => match args.next() {
+                Some(code) => match seacraft_core::i18n::Locale::parse(&code) {
+                    Some(loc) => lang = Some(loc),
+                    None => {
+                        eprintln!("unknown language: {code} (en, tr)");
+                        std::process::exit(2);
+                    }
+                },
+                None => {
+                    eprintln!("--lang needs a language code (en, tr)");
+                    std::process::exit(2);
+                }
+            },
             "--no-autosave" => no_autosave = true,
             "--no-gpu-hull" => no_gpu_hull = true,
             "--control" => match args.next() {
@@ -161,6 +176,9 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut app = App::new(cc, open.clone());
+            if let Some(loc) = lang {
+                app.set_cli_locale(loc);
+            }
             if !no_autosave {
                 app.enable_autosave();
             }

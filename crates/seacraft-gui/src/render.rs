@@ -33,20 +33,36 @@ impl HiddenNet {
 
     /// The menu and toolbar label.
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized menu label.
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            Self::Dimmed => "Dimmed",
-            Self::Hidden => "Hidden",
-            Self::Same => "As drawn",
+            Self::Dimmed => tr.s(Key::HiddenNetDimmed),
+            Self::Hidden => tr.s(Key::HiddenNetHidden),
+            Self::Same => tr.s(Key::HiddenNetSame),
         }
     }
 
     /// The toolbar label: the combo sits beside Net and Points with no label
     /// of its own, so each choice says the whole thing.
     pub fn toolbar_label(self) -> &'static str {
+        self.toolbar_label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized toolbar label.
+    pub fn toolbar_label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            Self::Dimmed => "Dim behind",
-            Self::Hidden => "Hide behind",
-            Self::Same => "Show behind",
+            Self::Dimmed => tr.s(Key::HiddenNetToolbarDimmed),
+            Self::Hidden => tr.s(Key::HiddenNetToolbarHidden),
+            Self::Same => tr.s(Key::HiddenNetToolbarSame),
         }
     }
 
