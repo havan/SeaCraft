@@ -70,6 +70,21 @@ pub const FAR_FIELD_NOTE: &str =
     "Far-field thin-ship (Michell) waves: free waves only, without the local \
     disturbance, so the elevation near the hull is not the hull wave profile.";
 
+const CATAMARAN_SYMMETRY_NOTE: &str =
+    "catamaran: each demihull is taken as symmetric about its own centreplane, as in Michell's resistance";
+
+/// Localize known static notes on a `WaveField` while passing through dynamic notes unchanged.
+pub(crate) fn localize_note(note: &str, tr: crate::i18n::Tr) -> &str {
+    use crate::i18n::Key;
+    if note == FAR_FIELD_NOTE {
+        tr.s(Key::WaveNoteFarField)
+    } else if note == CATAMARAN_SYMMETRY_NOTE {
+        tr.s(Key::WaveNoteCatamaran)
+    } else {
+        note
+    }
+}
+
 /// Wave-angle samples beyond which [`wave_spectrum`] refuses rather than run for minutes.
 pub const MAX_THETA_SAMPLES: usize = 1_000_000;
 
@@ -703,11 +718,7 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
         cut_off_note(&sp, opts.spectrum_floor),
     ];
     if opts.catamaran_spacing.is_some() {
-        notes.push(
-            "catamaran: each demihull is taken as symmetric about its own centreplane, as in \
-             Michell's resistance"
-                .to_string(),
-        );
+        notes.push(CATAMARAN_SYMMETRY_NOTE.to_string());
     }
     if let Some((from, to, cap)) = lay.coarsened {
         let cap = if cap == DEFAULT_FIELD_POINTS {
@@ -1137,6 +1148,12 @@ pub fn wave_png(field: &WaveField, clip_m: Option<f64>) -> Option<Vec<u8>> {
 /// The field as an SVG contour map in metres (bow to the right, starboard up): crests solid,
 /// troughs dashed, the hull filled, with the speed, Froude number, clip and notes.
 pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
+    wave_svg_tr(field, clip_m, crate::i18n::Tr::new(crate::i18n::Locale::En))
+}
+
+/// Localized form of [`wave_svg`].
+pub fn wave_svg_tr(field: &WaveField, clip_m: Option<f64>, tr: crate::i18n::Tr) -> String {
+    use crate::i18n::Key;
     use std::fmt::Write;
     let (nx, ny) = (field.xs.len(), field.ys.len());
     let mut out = String::new();
@@ -1151,16 +1168,26 @@ pub fn wave_svg(field: &WaveField, clip_m: Option<f64>) -> String {
     let stroke = 0.0015 * w.max(h);
     let font = 0.018 * w;
     let rgb = |c: [u8; 3]| format!("rgb({},{},{})", c[0], c[1], c[2]);
-    let title = format!(
-        "Wave pattern at {:.3} m/s ({:.2} kn), Fn {:.3}, colour clip ±{:.4} m",
-        field.speed_m_s,
-        field.speed_m_s / crate::resistance::KNOT,
-        field.froude,
-        clip
+    let title = tr.fmt(
+        Key::WaveSvgTitle,
+        &[
+            ("ms", &format!("{:.3}", field.speed_m_s)),
+            (
+                "kn",
+                &format!("{:.2}", field.speed_m_s / crate::resistance::KNOT),
+            ),
+            ("fn", &format!("{:.3}", field.froude)),
+            ("clip", &format!("{clip:.4}")),
+        ],
     );
-    let notes: Vec<&String> = field.notes.iter().chain(&field.warnings).collect();
+    let notes: Vec<&str> = field
+        .notes
+        .iter()
+        .map(|n| localize_note(n, tr))
+        .chain(field.warnings.iter().map(String::as_str))
+        .collect();
     let max_chars = ((w / (0.6 * font)) as usize).saturating_sub(2).max(20);
-    let lines: Vec<String> = std::iter::once(&title)
+    let lines: Vec<String> = std::iter::once(title.as_str())
         .chain(notes.iter().copied())
         .flat_map(|t| wrap(t, max_chars))
         .collect();
@@ -2338,5 +2365,18 @@ mod tests {
             let err = demo_tool(serde_json::json!({"fn": 0.45, "wash_distance": bad})).unwrap_err();
             assert!(err.contains("wash_distance"), "{err}");
         }
+    }
+
+    #[test]
+    fn turkish_wave_svg_localizes_title_and_far_field_note() {
+        let f = wave_field(&wigley(), &opts_at_fn(0.30)).unwrap();
+        let tr = crate::i18n::Tr::new(crate::i18n::Locale::Tr);
+        let svg_tr = wave_svg_tr(&f, None, tr);
+        assert!(svg_tr.contains("hızda dalga deseni"), "{svg_tr}");
+        assert!(svg_tr.contains("renk kırpması"), "{svg_tr}");
+        assert!(
+            svg_tr.contains(tr.s(crate::i18n::Key::WaveNoteFarField)),
+            "{svg_tr}"
+        );
     }
 }

@@ -194,6 +194,7 @@ impl DisplayOptions {
             mode,
             combs: self.combs,
             comb_scale: self.comb_scale,
+            locale: seacraft_core::i18n::Locale::En,
         }
     }
 

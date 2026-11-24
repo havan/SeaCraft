@@ -2201,6 +2201,7 @@ impl McpServer {
             mode: SubdivisionMode::Loop,
             combs: bool_arg(a, "combs").unwrap_or(false),
             comb_scale: number_arg(a, "comb_scale").unwrap_or(0.6),
+            ..Default::default()
         };
         let extension = path
             .extension()

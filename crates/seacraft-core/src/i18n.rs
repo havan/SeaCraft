@@ -203,7 +203,7 @@ impl Tr {
     }
 
     /// Look up a static string by compile-time checked `Key`.
-    pub const fn s(self, key: Key) -> &'static str {
+    pub fn s(self, key: Key) -> &'static str {
         let idx = key as usize;
         match self.0 {
             Locale::En => STRINGS_EN[idx],

@@ -218,13 +218,13 @@ fn generate_i18n(workspace: &Path) {
     }
     code.push_str("        }\n    }\n}\n\n");
 
-    code.push_str("const STRINGS_EN: [&str; Key::COUNT] = [\n");
+    code.push_str("static STRINGS_EN: [&str; Key::COUNT] = [\n");
     for value in en.values() {
         code.push_str(&format!("    {value:?},\n"));
     }
     code.push_str("];\n\n");
 
-    code.push_str("const STRINGS_TR: [&str; Key::COUNT] = [\n");
+    code.push_str("static STRINGS_TR: [&str; Key::COUNT] = [\n");
     for (key, en_value) in &en {
         let val = tr.get(key).unwrap_or(en_value);
         code.push_str(&format!("    {val:?},\n"));

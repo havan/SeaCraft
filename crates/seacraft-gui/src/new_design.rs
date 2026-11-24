@@ -874,13 +874,13 @@ fn start_from(ui: &mut egui::Ui, state: &mut NewDesignState, tr: seacraft_core::
                     );
                     ui.add_enabled_ui(state.start == StartFrom::Example, |ui| {
                         egui::ComboBox::from_id_salt("new_design_example")
-                            .selected_text(state.example.title())
+                            .selected_text(state.example.title_tr(tr))
                             .width(260.0)
                             .show_ui(ui, |ui| {
                                 for e in examples {
                                     let r = ui
-                                        .selectable_label(state.example == e, e.title())
-                                        .on_hover_text(e.description());
+                                        .selectable_label(state.example == e, e.title_tr(tr))
+                                        .on_hover_text(e.description_tr(tr));
                                     if r.clicked() && state.example != e {
                                         state.set_example(e);
                                     }
@@ -1260,10 +1260,10 @@ pub fn example_rows_tr(project: &Project, tr: seacraft_core::i18n::Tr) -> Vec<Ex
 fn example_preview(ui: &mut egui::Ui, state: &NewDesignState, tr: seacraft_core::i18n::Tr) {
     use seacraft_core::i18n::Key;
     let e = state.example;
-    ui.label(egui::RichText::new(e.title()).color(theme::TEXT_PRIMARY));
-    ui.label(egui::RichText::new(e.description()).color(theme::TEXT_SECONDARY));
+    ui.label(egui::RichText::new(e.title_tr(tr)).color(theme::TEXT_PRIMARY));
+    ui.label(egui::RichText::new(e.description_tr(tr)).color(theme::TEXT_SECONDARY));
     ui.label(
-        egui::RichText::new(tr.fmt(Key::NewDesignParticulars, &[("source", e.source())]))
+        egui::RichText::new(tr.fmt(Key::NewDesignParticulars, &[("source", e.source_tr(tr))]))
             .small()
             .color(theme::TEXT_MUTED),
     );

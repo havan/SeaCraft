@@ -719,3 +719,47 @@ fn analysis_views_and_builder_panels_render_in_turkish() {
     w_small.app.compute_waves_blocking().unwrap();
     w_small.frame(vec![]);
 }
+
+#[test]
+fn turkish_example_picker_and_design_report_export() {
+    use seacraft_gui::app::ExportKind;
+
+    let mut empty = App::headless_empty();
+    empty.set_locale(Locale::Tr);
+    let mut w_empty = Window::with_app(empty, egui::vec2(1600.0, 1000.0));
+    w_empty.click("Yeni tasarım… Ctrl+N");
+    w_empty.click("Örnek");
+    for expected in [
+        "10 m gezi yatı",
+        "Fin salmalı, pala dümenli ve güverteli gezi yatı",
+        "bu boydaki seri üretim tekneleri temsil eder",
+    ] {
+        assert!(
+            w_empty.shows_substring(expected) || w_empty.paints_substring(expected),
+            "expected Turkish example picker text `{expected}`"
+        );
+    }
+
+    let dir = std::env::temp_dir().join(format!("seacraft-gui-report-i18n-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let mut app = App::headless_for_test(None);
+    app.set_subdivision_level(2);
+    app.set_locale(Locale::Tr);
+
+    let html_path = dir.join("report-tr.html");
+    app.write_report_blocking(&html_path).unwrap();
+    let html = std::fs::read_to_string(&html_path).unwrap();
+    assert!(html.contains("<html lang=\"tr\">"));
+    assert!(html.contains(seacraft_core::not_validated_note(Locale::Tr)));
+    assert!(html.contains("Ana Boyutlar ve Özellikler"));
+    assert!(html.contains("Posta planı - postalar"));
+
+    let svg_path = dir.join("lines-tr.svg");
+    app.write_export(ExportKind::Linesplan, &svg_path).unwrap();
+    let svg = std::fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains("Posta planı - postalar"), "{svg}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

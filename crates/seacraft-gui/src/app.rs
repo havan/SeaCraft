@@ -1691,9 +1691,10 @@ impl App {
         surface: Surface,
         project: Project,
     ) {
+        let title = kind.title_tr(self.tr());
         self.set_status(format!(
             "{} — example `{}` ({} points, {} faces, {} layers) + project",
-            kind.title(),
+            title,
             kind.slug(),
             surface.points.len(),
             surface.faces.len(),
@@ -3483,7 +3484,7 @@ impl App {
     /// checks answer at once; the encoding (a quarter of a second for SVG or VTI at a million
     /// points) and the write run in a job, which logs "Saved wave pattern to …" when done.
     pub fn write_wave_image(&mut self, path: &std::path::Path) -> Result<(), String> {
-        use seacraft_core::wave_pattern::{wave_png, wave_svg, wave_vti};
+        use seacraft_core::wave_pattern::{wave_png, wave_svg_tr, wave_vti};
         #[derive(Clone, Copy)]
         enum Format {
             Png,
@@ -3508,11 +3509,12 @@ impl App {
             return Err("a wave pattern image is still being written".to_owned());
         }
         let clip = self.perf_state.waves.clip_m;
+        let tr = self.tr();
         let target = path.to_path_buf();
         let job = Job::spawn(self.revision, move || {
             let bytes = match format {
                 Format::Png => wave_png(&field, clip).ok_or("the wave field is empty")?,
-                Format::Svg => wave_svg(&field, clip).into_bytes(),
+                Format::Svg => wave_svg_tr(&field, clip, tr).into_bytes(),
                 Format::Vti => wave_vti(&field).into_bytes(),
             };
             seacraft_core::io::write_atomic(&target, bytes)
@@ -3578,8 +3580,11 @@ impl App {
         };
         // By default the drawing shows what the viewports show: their
         // refinement, section counts and combs, as the CLI does with its flags.
-        let linesplan_opts =
-            linesplan.unwrap_or_else(|| self.display.section_options(self.level, self.mode));
+        let linesplan_opts = linesplan.unwrap_or_else(|| {
+            let mut opts = self.display.section_options(self.level, self.mode);
+            opts.locale = self.locale;
+            opts
+        });
         let written = match kind {
             ExportKind::Obj => write_atomic(
                 path,
@@ -6433,6 +6438,7 @@ impl App {
             .apply(seacraft_core::report::ReportOptions::from_surface(surface));
         opts.level = self.level;
         opts.mode = self.mode;
+        opts.locale = self.locale;
         // The wave pattern goes in while it is shown, with the view's settings, at the report's
         // draft. Its domain and wash line in metres need the waterline at that draft: a current
         // pattern's or hydrostatics' when either is at that draft (a stale one may be of another

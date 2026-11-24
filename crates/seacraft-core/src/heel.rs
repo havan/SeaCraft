@@ -122,6 +122,11 @@ pub const LID_SUBMERGED_WARNING: &str =
     "the hull is open (no deck faces) and its open edge is below the \
     waterline; it is measured closed by a lid, as if the deck were watertight";
 
+/// Localized form of [`LID_SUBMERGED_WARNING`].
+pub fn lid_submerged_warning(tr: crate::i18n::Tr) -> &'static str {
+    tr.s(crate::i18n::Key::HeelCoreLidSubmergedWarning)
+}
+
 /// Hull volume required to float `mass` at `base`'s water density and appendage coefficient.
 fn target_volume(mass: &MassCondition, base: &HydroOptions) -> f64 {
     mass.displacement_t * 1000.0 / (base.water_density * base.appendage_coefficient.max(1e-6))
@@ -241,14 +246,27 @@ impl Equilibrium {
     /// to either side", "capsizes: …" or "cannot float 1200.0 t" (`displacement_t`
     /// is only used by `CannotFloat`).
     pub fn describe(&self, displacement_t: f64) -> String {
+        self.describe_tr(
+            displacement_t,
+            crate::i18n::Tr::new(crate::i18n::Locale::En),
+        )
+    }
+
+    /// Localized form of [`Equilibrium::describe`].
+    pub fn describe_tr(&self, displacement_t: f64, tr: crate::i18n::Tr) -> String {
+        use crate::i18n::Key;
         match self {
             Self::Stable { state } => {
-                let mut words = heel_words(state.heel_deg);
+                let mut words = heel_words_tr(state.heel_deg, tr);
                 if let Some(t) = state.trim_m {
-                    words.push_str(&format!(", trim {t:+.3} m"));
+                    words.push_str(
+                        &tr.fmt(Key::HeelCoreTrimSuffix, &[("trim", &format!("{t:+.3}"))]),
+                    );
                 }
                 if let Some(d) = state.draft {
-                    words.push_str(&format!(", draft {d:.3} m"));
+                    words.push_str(
+                        &tr.fmt(Key::HeelCoreDraftSuffix, &[("draft", &format!("{d:.3}"))]),
+                    );
                 }
                 words
             }
@@ -256,13 +274,16 @@ impl Equilibrium {
                 let p = format!("{:.1}", port.heel_deg.abs());
                 let s = format!("{:.1}", starboard.heel_deg.abs());
                 if p == s {
-                    format!("lolls {s}° to either side")
+                    tr.fmt(Key::HeelCoreLollSym, &[("deg", &s)])
                 } else {
-                    format!("lolls {p}° to port or {s}° to starboard")
+                    tr.fmt(Key::HeelCoreLollAsym, &[("port", &p), ("stbd", &s)])
                 }
             }
-            Self::Capsizes { .. } => "capsizes: no stable equilibrium within ±90°".to_string(),
-            Self::CannotFloat => format!("cannot float {displacement_t:.1} t"),
+            Self::Capsizes { .. } => tr.s(Key::HeelCoreCapsizes).to_string(),
+            Self::CannotFloat => tr.fmt(
+                Key::HeelCoreCannotFloat,
+                &[("disp", &format!("{displacement_t:.1}"))],
+            ),
             Self::Unresolved { reason } => reason.clone(),
         }
     }
@@ -271,11 +292,21 @@ impl Equilibrium {
 /// "heels 12.0° to starboard", "heels 3.0° to port" or "floats upright" (to
 /// the printed tenth of a degree).
 pub fn heel_words(heel_deg: f64) -> String {
+    heel_words_tr(heel_deg, crate::i18n::Tr::new(crate::i18n::Locale::En))
+}
+
+/// Localized form of [`heel_words`].
+pub fn heel_words_tr(heel_deg: f64, tr: crate::i18n::Tr) -> String {
+    use crate::i18n::Key;
     if heel_deg.abs() < 0.05 {
-        "floats upright".to_string()
+        tr.s(Key::HeelCoreFloatsUpright).to_string()
     } else {
-        let side = if heel_deg > 0.0 { "starboard" } else { "port" };
-        format!("heels {:.1}° to {side}", heel_deg.abs())
+        let deg = format!("{:.1}", heel_deg.abs());
+        if heel_deg > 0.0 {
+            tr.fmt(Key::HeelCoreHeelsStarboard, &[("deg", &deg)])
+        } else {
+            tr.fmt(Key::HeelCoreHeelsPort, &[("deg", &deg)])
+        }
     }
 }
 
@@ -1329,5 +1360,87 @@ mod tests {
             (gm - expected).abs() < 1e-3,
             "free-trim GM {gm} vs {expected}"
         );
+    }
+
+    #[test]
+    fn equilibrium_describe_tr_supports_english_and_turkish() {
+        let tr = crate::i18n::Tr::new(crate::i18n::Locale::Tr);
+        let en = crate::i18n::Tr::new(crate::i18n::Locale::En);
+        assert_eq!(heel_words(0.0), "floats upright");
+        assert_eq!(heel_words(12.0), "heels 12.0° to starboard");
+        assert_eq!(heel_words(-3.0), "heels 3.0° to port");
+        assert_eq!(heel_words_tr(0.0, tr), "dik yüzer");
+        assert_eq!(heel_words_tr(12.0, tr), "sancağa 12.0° meyleder");
+        assert_eq!(heel_words_tr(-3.0, tr), "iskeleye 3.0° meyleder");
+
+        let state_at = |heel_deg: f64| HeelState {
+            heel_deg,
+            b: Vec3::ZERO,
+            g: Vec3::ZERO,
+            lever_m: 0.0,
+            gz_m: 0.0,
+            heeling_arm_m: 0.0,
+            draft: Some(1.05),
+            trim_m: Some(0.003),
+            displacement_t: 10.0,
+            lid_submerged: false,
+            plane: crate::math::Plane::new(Vec3::new(0.0, 0.0, 1.0), 0.0),
+        };
+        let stable = Equilibrium::Stable {
+            state: state_at(12.0),
+        };
+        assert_eq!(
+            stable.describe(10.0),
+            "heels 12.0° to starboard, trim +0.003 m, draft 1.050 m"
+        );
+        assert_eq!(stable.describe_tr(10.0, en), stable.describe(10.0));
+        assert_eq!(
+            stable.describe_tr(10.0, tr),
+            "sancağa 12.0° meyleder, trim +0.003 m, su çekimi 1.050 m"
+        );
+
+        let loll_sym = Equilibrium::Loll {
+            port: state_at(-14.2),
+            starboard: state_at(14.2),
+        };
+        assert_eq!(loll_sym.describe(10.0), "lolls 14.2° to either side");
+        assert_eq!(
+            loll_sym.describe_tr(10.0, tr),
+            "her iki yana 14.2° yatık dengede durur"
+        );
+
+        let loll_asym = Equilibrium::Loll {
+            port: state_at(-8.0),
+            starboard: state_at(10.5),
+        };
+        assert_eq!(
+            loll_asym.describe(10.0),
+            "lolls 8.0° to port or 10.5° to starboard"
+        );
+        assert_eq!(
+            loll_asym.describe_tr(10.0, tr),
+            "iskeleye 8.0° veya sancağa 10.5° yatık dengede durur"
+        );
+
+        assert_eq!(
+            Equilibrium::Capsizes {
+                last_heel_deg: 90.0
+            }
+            .describe_tr(10.0, tr),
+            "alabora olur: ±90° içinde kararlı denge yok"
+        );
+        assert_eq!(
+            Equilibrium::CannotFloat.describe_tr(1200.0, tr),
+            "1200.0 t yüzemez"
+        );
+        assert_eq!(
+            Equilibrium::Unresolved {
+                reason: "custom".into()
+            }
+            .describe_tr(10.0, tr),
+            "custom"
+        );
+        assert!(!lid_submerged_warning(tr).is_empty());
+        assert_eq!(lid_submerged_warning(en), LID_SUBMERGED_WARNING);
     }
 }

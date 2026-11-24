@@ -528,6 +528,11 @@ pub struct IrregularReport {
 pub const MSI_NOTE: &str =
     "MSI: share of unadapted subjects expected to vomit within a 2-hour exposure (O'Hanlon & McCauley 1974)";
 
+/// Localized form of [`MSI_NOTE`].
+pub fn msi_note(tr: crate::i18n::Tr) -> &'static str {
+    tr.s(crate::i18n::Key::SeastateMsiNote)
+}
+
 /// Default evaluation points: the LCG and the forward end of the design waterline.
 pub fn default_points(x_lcg: f64, x_bow: f64) -> Vec<MotionPoint> {
     vec![

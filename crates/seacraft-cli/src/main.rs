@@ -3947,6 +3947,7 @@ fn cmd_linesplan(a: LinesplanArgs) -> Result<()> {
         mode: a.subdiv.mode.into(),
         combs: a.combs,
         comb_scale: a.comb_scale,
+        ..Default::default()
     };
     // The extension picks the format: `.dxf` gives the three views on named
     // layers plus 3D copies of every curve, `.svg` (or none) the standalone
