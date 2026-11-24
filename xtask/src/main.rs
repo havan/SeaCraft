@@ -75,8 +75,10 @@ const DEMO_REFERENCE_TABLE: &[DemoReferenceMetric] = &[
 ];
 
 const USAGE: &str =
-    "Usage: cargo xtask ci [--skip-tests] [--full] | private | skills | colours | licences [--check] | dist --target TRIPLE";
-const COMMANDS: &[&str] = &["ci", "private", "skills", "colours", "licences", "dist"];
+    "Usage: cargo xtask ci [--skip-tests] [--full] | private | skills | colours | i18n | licences [--check] | dist --target TRIPLE";
+const COMMANDS: &[&str] = &[
+    "ci", "private", "skills", "colours", "i18n", "licences", "dist",
+];
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -94,6 +96,7 @@ fn main() {
         "private" => step_private(&workspace_root()),
         "skills" => step_skills(&workspace_root()),
         "colours" => step_colours(&workspace_root()),
+        "i18n" => step_i18n(&workspace_root()),
         "licences" => {
             let check = args.iter().any(|a| a == "--check");
             step_licences(&workspace_root(), check);
@@ -145,6 +148,7 @@ fn run_ci(skip_tests: bool, full: bool) {
     // Step e: repository checks that need no build
     step_licences(&root, true);
     step_colours(&root);
+    step_i18n(&root);
     step_private(&root);
     step_skills(&root);
 
@@ -571,6 +575,43 @@ fn step_colours(root: &Path) {
         }
     }
     report("colours", bad, "colour literals only in theme.rs");
+}
+
+fn step_i18n(root: &Path) {
+    let locales_dir = root.join("locales");
+    let en_path = locales_dir.join("en.json");
+    let en = fs::read_to_string(&en_path)
+        .unwrap_or_else(|e| fail("i18n", &format!("cannot read {}: {e}", en_path.display())));
+    let mut others: Vec<(String, String)> = Vec::new();
+    let entries = fs::read_dir(&locales_dir)
+        .unwrap_or_else(|e| fail("i18n", &format!("cannot read locales/: {e}")));
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem == "en" {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|e| fail("i18n", &format!("cannot read {}: {e}", path.display())));
+        others.push((stem.to_owned(), text));
+    }
+    others.sort_by(|a, b| a.0.cmp(&b.0));
+    let refs: Vec<(&str, &str)> = others
+        .iter()
+        .map(|(code, text)| (code.as_str(), text.as_str()))
+        .collect();
+    let bad = gates::i18n_violations(&en, &refs, &["tr"]);
+    let count = others.len() + 1;
+    report(
+        "i18n",
+        bad,
+        &format!("{count} locale catalogs valid and aligned"),
+    );
 }
 
 fn step_licences(root: &Path, check: bool) {

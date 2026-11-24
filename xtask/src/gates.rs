@@ -224,6 +224,155 @@ pub fn colour_violations(path: &str, text: &str) -> Vec<String> {
     out
 }
 
+/// Extract `{name}` placeholders from a translation string.
+fn placeholders(text: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find('}') {
+            let name = &after[..close];
+            if !name.is_empty() && !name.contains('{') {
+                out.insert(name.to_owned());
+            }
+            rest = &after[close + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn valid_i18n_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.split(['.', '_']).all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+struct ParsedCatalog {
+    entries: Vec<(String, String)>,
+    duplicates: Vec<String>,
+}
+
+fn parse_catalog_ordered(text: &str) -> Result<ParsedCatalog, String> {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+    use std::fmt;
+
+    struct CatalogVisitor;
+
+    impl<'de> Visitor<'de> for CatalogVisitor {
+        type Value = ParsedCatalog;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON object mapping translation keys to strings")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut entries = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut duplicates = Vec::new();
+            while let Some((k, v)) = map.next_entry::<String, String>()? {
+                if !seen.insert(k.clone()) {
+                    duplicates.push(k.clone());
+                }
+                entries.push((k, v));
+            }
+            Ok(ParsedCatalog {
+                entries,
+                duplicates,
+            })
+        }
+    }
+
+    let mut de = serde_json::Deserializer::from_str(text);
+    let parsed = de
+        .deserialize_map(CatalogVisitor)
+        .map_err(|e| e.to_string())?;
+    de.end().map_err(|e| e.to_string())?;
+    Ok(parsed)
+}
+
+fn validate_catalog(
+    file: &str,
+    text: &str,
+    out: &mut Vec<String>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let parsed = match parse_catalog_ordered(text) {
+        Ok(p) => p,
+        Err(e) => {
+            out.push(format!("{file}: invalid JSON: {e}"));
+            return None;
+        }
+    };
+    for dup in &parsed.duplicates {
+        out.push(format!("{file}: duplicate key `{dup}`"));
+    }
+    let mut prev: Option<&str> = None;
+    let mut map = std::collections::BTreeMap::new();
+    for (k, v) in &parsed.entries {
+        if !valid_i18n_key(k) {
+            out.push(format!("{file}: invalid key `{k}` (use [a-z0-9._])"));
+        }
+        if v.trim().is_empty() {
+            out.push(format!("{file}: empty value for `{k}`"));
+        }
+        if let Some(p) = prev {
+            if p > k.as_str() {
+                out.push(format!("{file}: key `{k}` is out of order (after `{p}`)"));
+            }
+        }
+        prev = Some(k.as_str());
+        map.insert(k.clone(), v.clone());
+    }
+    Some(map)
+}
+
+/// Validate `locales/en.json` and every translation catalog `others` (`(code, text)`).
+/// Checks JSON validity, duplicate keys, alphabetical key sorting, valid key syntax, non-empty
+/// values, orphan keys, required completeness for `required_complete`, and `{placeholder}` parity.
+pub fn i18n_violations(
+    en_text: &str,
+    others: &[(&str, &str)],
+    required_complete: &[&str],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(en) = validate_catalog("locales/en.json", en_text, &mut out) else {
+        return out;
+    };
+    for &(code, text) in others {
+        let file = format!("locales/{code}.json");
+        let Some(tr) = validate_catalog(&file, text, &mut out) else {
+            continue;
+        };
+        for (k, v) in &tr {
+            match en.get(k) {
+                None => out.push(format!("{file}: orphan key `{k}` (not in locales/en.json)")),
+                Some(en_val) => {
+                    let expected = placeholders(en_val);
+                    let got = placeholders(v);
+                    if expected != got {
+                        out.push(format!(
+                            "{file}: placeholder mismatch for `{k}`: expected {expected:?}, got {got:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        if required_complete.contains(&code) {
+            for k in en.keys() {
+                if !tr.contains_key(k) {
+                    out.push(format!("{file}: missing key `{k}`"));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +562,43 @@ mod tests {
             1
         );
         assert!(colour_violations("crates/seacraft-gui/src/theme.rs", text).is_empty());
+    }
+
+    #[test]
+    fn i18n_passes_valid_catalogs_and_allows_partial_optional_locale() {
+        let en = "{\n  \"a.one\": \"Hello {name}\",\n  \"b.two\": \"World\"\n}\n";
+        let tr = "{\n  \"a.one\": \"Merhaba {name}\",\n  \"b.two\": \"Dünya\"\n}\n";
+        let de = "{\n  \"a.one\": \"Hallo {name}\"\n}\n";
+        assert!(i18n_violations(en, &[("tr", tr), ("de", de)], &["tr"]).is_empty());
+    }
+
+    #[test]
+    fn i18n_flags_duplicates_unsorted_orphans_missing_empty_and_placeholders() {
+        let en = "{\n  \"a.one\": \"Hello {name}\",\n  \"b.two\": \"World\"\n}\n";
+        let bad_dup = "{\n  \"a.one\": \"A\",\n  \"a.one\": \"B\"\n}\n";
+        let bad_order = "{\n  \"b.two\": \"B\",\n  \"a.one\": \"A {name}\"\n}\n";
+        let bad_orphan =
+            "{\n  \"a.one\": \"A {name}\",\n  \"b.two\": \"B\",\n  \"c.extra\": \"X\"\n}\n";
+        let bad_missing = "{\n  \"a.one\": \"A {name}\"\n}\n";
+        let bad_placeholder = "{\n  \"a.one\": \"Merhaba {who}\",\n  \"b.two\": \" \"\n}\n";
+
+        assert!(i18n_violations(bad_dup, &[], &[])
+            .iter()
+            .any(|e| e.contains("duplicate")));
+        assert!(i18n_violations(en, &[("tr", bad_order)], &[])
+            .iter()
+            .any(|e| e.contains("out of order")));
+        assert!(i18n_violations(en, &[("tr", bad_orphan)], &["tr"])
+            .iter()
+            .any(|e| e.contains("orphan")));
+        assert!(i18n_violations(en, &[("tr", bad_missing)], &["tr"])
+            .iter()
+            .any(|e| e.contains("missing key `b.two`")));
+        let errs = i18n_violations(en, &[("tr", bad_placeholder)], &["tr"]);
+        assert!(
+            errs.iter().any(|e| e.contains("placeholder mismatch")),
+            "{errs:?}"
+        );
+        assert!(errs.iter().any(|e| e.contains("empty value")), "{errs:?}");
     }
 }
