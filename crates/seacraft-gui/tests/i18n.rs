@@ -490,3 +490,232 @@ fn docks_and_options_windows_render_in_turkish() {
         w_small.click(tab);
     }
 }
+
+#[test]
+fn analysis_views_and_builder_panels_render_in_turkish() {
+    use seacraft_core::heel::Equilibrium;
+    use seacraft_core::i18n::Tr;
+    use seacraft_gui::analysis_views::{self, AnalysisView, TableColumn, ViewTable};
+    use seacraft_gui::panels::{ColumnKind, EngCell};
+    use seacraft_gui::{heel_view, wave_view};
+
+    let tr_tr = Tr::new(Locale::Tr);
+
+    // Pure helper localization checks.
+    let sample_table = ViewTable {
+        columns: vec![
+            TableColumn {
+                title: "Katman".into(),
+                unit: String::new(),
+                kind: ColumnKind::Text,
+            },
+            TableColumn {
+                title: "Alan".into(),
+                unit: "m²".into(),
+                kind: ColumnKind::Number,
+            },
+            TableColumn {
+                title: "Cb".into(),
+                unit: String::new(),
+                kind: ColumnKind::Number,
+            },
+        ],
+        rows: vec![vec![
+            "Dip".into(),
+            "1.250".into(),
+            EngCell::Badge(true, false),
+        ]],
+    };
+    let csv = analysis_views::to_csv_tr(&sample_table, tr_tr);
+    assert_eq!(csv, "Katman,Alan (m²),Cb\nDip,1.250,GEÇTİ\n");
+
+    assert_eq!(
+        wave_view::interference_words_tr(0.88, tr_tr),
+        "olumlu (−12 %)"
+    );
+    assert_eq!(
+        wave_view::interference_words_tr(1.004, tr_tr),
+        "nötr (±1 %)"
+    );
+    assert_eq!(
+        heel_view::equilibrium_line_tr(
+            &Equilibrium::Capsizes {
+                last_heel_deg: 90.0
+            },
+            10.0,
+            tr_tr
+        ),
+        "Alabora olur: ±90° içinde kararlı denge yok"
+    );
+
+    let mut app = App::headless_for_test(None);
+    app.set_subdivision_level(1);
+    app.set_locale(Locale::Tr);
+    app.recompute_hydrostatics();
+    let mut w = Window::with_app(app, egui::vec2(1600.0, 1000.0));
+
+    // Hydrostatic table.
+    w.click("Analiz");
+    w.click("Hidrostatik tablo");
+    w.app.wait_analysis_view(AnalysisView::HydroTable);
+    w.frame(vec![]);
+    for text in ["Hesapla", "CSV kopyala", "Üst su çekimi", "Hacim"] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Hydrostatic table text `{text}`"
+        );
+    }
+
+    // Bonjean curves.
+    w.app.open_analysis_view(AnalysisView::Bonjean);
+    w.app.wait_analysis_view(AnalysisView::Bonjean);
+    w.frame(vec![]);
+    for text in ["Bonjean eğrileri", "posta:", "su çekimi:"] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Bonjean text `{text}`"
+        );
+    }
+
+    // Offsets table.
+    w.app.open_analysis_view(AnalysisView::Offsets);
+    w.app.wait_analysis_view(AnalysisView::Offsets);
+    w.frame(vec![]);
+    for text in ["Ofset tablosu", "Omurga z", "Güverte z", "Yarı genişlik"] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Offsets text `{text}`"
+        );
+    }
+
+    // Trim scan.
+    w.app.open_analysis_view(AnalysisView::TrimScan);
+    w.app.wait_analysis_view(AnalysisView::TrimScan);
+    w.frame(vec![]);
+    for text in ["Trim taraması", "deplasmanı sabit tut"] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Trim scan text `{text}`"
+        );
+    }
+
+    // Plate development.
+    w.app.open_analysis_view(AnalysisView::Plates);
+    w.app.wait_analysis_view(AnalysisView::Plates);
+    w.frame(vec![]);
+    for text in [
+        "Şablonları dışa aktar…",
+        "iki taraf",
+        "Katman",
+        "Açınabilir",
+    ] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Plates text `{text}`"
+        );
+    }
+
+    // Wave pattern view.
+    w.app.open_analysis_view(AnalysisView::Waves);
+    w.app.compute_waves_blocking().unwrap();
+    w.app.compute_wave_drag_blocking().unwrap();
+    w.frame(vec![]);
+    w.frame(vec![]);
+    for text in [
+        "İnce gemi kuramı (Michell)",
+        "Hız",
+        "Katamaran",
+        "Harita ▾",
+        "Renkler ▾",
+        "Görüntüyü kaydet…",
+        "Dalga boyu",
+        "Gövde hızı",
+        "Baş →",
+    ] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Wave view text `{text}`"
+        );
+    }
+
+    // Heel and righting arm view: with KG set.
+    w.app.open_analysis_view(AnalysisView::Heel);
+    w.app.set_kg(2.2);
+    w.app.compute_heel_blocking().unwrap();
+    w.frame(vec![]);
+    for text in [
+        "Başlangıç",
+        "Çıplak gövde (panel)",
+        "Meyli tut",
+        "Otomatik yeniden hesapla",
+        "Deneme ağırlıkları (0)",
+        "Doğrultucu kol",
+        "Yüzme durumu",
+        "Döndürme çifti",
+        "Başa bakış",
+    ] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Heel view text `{text}`"
+        );
+    }
+    w.app.set_heel_view_open(false);
+    w.frame(vec![]);
+
+    // Heel view without KG (copy demo-hull.fef without sidecar): shows Turkish missing-KG hint.
+    let no_kg_dir =
+        std::env::temp_dir().join(format!("seacraft-gui-i18n-no-kg-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&no_kg_dir);
+    std::fs::create_dir_all(&no_kg_dir).unwrap();
+    let no_kg_path = no_kg_dir.join("hull.fef");
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/demo-hull.fef"),
+        &no_kg_path,
+    )
+    .unwrap();
+    let mut no_kg_app = App::headless_for_test(Some(no_kg_path.to_str().unwrap()));
+    no_kg_app.set_subdivision_level(1);
+    no_kg_app.set_locale(Locale::Tr);
+    no_kg_app.set_heel_view_open(true);
+    let mut w_no_kg = Window::with_app(no_kg_app, egui::vec2(1600.0, 1000.0));
+    assert_eq!(w_no_kg.app.kg(), None);
+    w_no_kg.frame(vec![]);
+    assert!(
+        w_no_kg.paints_substring("Hidrostatik panelinde KG değerini girin")
+            || w_no_kg.shows_substring("Hidrostatik panelinde KG değerini girin"),
+        "expected Turkish missing-KG hint"
+    );
+    let _ = std::fs::remove_dir_all(&no_kg_dir);
+
+    // Builder panels window via File menu.
+    w.click("Dosya");
+    w.click("Kontrplak paneller…");
+    w.frame(vec![]);
+    for text in [
+        "Kontrplak paneller",
+        "Katmanlar:",
+        "Açınabilir işaretli katmanlar",
+        "Yerleşim (Nesting):",
+        "Kontrplak plaka:",
+        "Dışa aktar…",
+    ] {
+        assert!(
+            w.shows_substring(text) || w.paints_substring(text),
+            "expected Turkish Builder panels text `{text}`"
+        );
+    }
+    w.app.set_show_panels(false);
+    w.frame(vec![]);
+
+    // Minimum supported window size check with open Analysis views.
+    let mut small = App::headless_for_test(None);
+    small.set_subdivision_level(1);
+    small.set_locale(Locale::Tr);
+    small.set_kg(2.2);
+    small.open_analysis_view(AnalysisView::Heel);
+    small.compute_heel_blocking().unwrap();
+    let mut w_small = Window::with_app(small, egui::vec2(900.0, 600.0));
+    w_small.app.open_analysis_view(AnalysisView::Waves);
+    w_small.app.compute_waves_blocking().unwrap();
+    w_small.frame(vec![]);
+}

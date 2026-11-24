@@ -3,6 +3,7 @@
 //! Nothing is recomputed here: what is drawn is what is printed.
 
 use eframe::egui;
+use seacraft_core::i18n::{Key, Locale, Tr};
 use seacraft_core::pdf::Anchor;
 use seacraft_core::sheet::{PathKind, Sheet, DRAW_ORDER};
 
@@ -272,6 +273,18 @@ pub fn show(
     faded: bool,
     view: &mut SheetView,
 ) -> Option<usize> {
+    show_tr(ui, sheets, not_flat, faded, view, Tr::new(Locale::En))
+}
+
+/// Localized form of [`show`].
+pub fn show_tr(
+    ui: &mut egui::Ui,
+    sheets: &[Sheet],
+    not_flat: &[bool],
+    faded: bool,
+    view: &mut SheetView,
+    tr: Tr,
+) -> Option<usize> {
     let size = ui.available_size().max(egui::vec2(120.0, 80.0));
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
@@ -279,14 +292,15 @@ pub fn show(
     let stacked = stack(sheets);
     let bounds: Vec<Option<[f64; 4]>> = stacked.iter().map(|s| s.map(|(_, b)| b)).collect();
     let drawn = bounds.iter().flatten().count();
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Canvas, true, format!("Drawing: {drawn} sheets"))
-    });
+    let count_s = drawn.to_string();
+    let canvas_label = tr.fmt(Key::SheetDrawingLabel, &[("count", &count_s)]);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, canvas_label.clone()));
     if union(&bounds).is_none() {
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "Nothing to draw",
+            tr.s(Key::SheetEmpty),
             egui::FontId::proportional(14.0),
             theme::TEXT_MUTED,
         );

@@ -6759,7 +6759,9 @@ impl App {
         let mut export = None;
         let block = self.panels_export_block();
         let status = self.panels_status();
-        egui::Window::new("Builder panels")
+        let tr = self.tr();
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::DialogBuilderPanels))
+            .id(egui::Id::unique("builder_panels_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -6774,12 +6776,13 @@ impl App {
                         egui::ScrollArea::vertical()
                             .id_salt("panels_options_scroll")
                             .show(ui, |ui| {
-                                builder_panels::panels_options(ui, &mut params, &layers);
+                                builder_panels::panels_options_tr(ui, &mut params, &layers, tr);
                                 ui.separator();
-                                export = builder_panels::panels_export(
+                                export = builder_panels::panels_export_tr(
                                     ui,
                                     &mut params,
                                     block.as_deref(),
+                                    tr,
                                 );
                             });
                     });
@@ -6788,14 +6791,15 @@ impl App {
                         .id_salt("panels_list_scroll")
                         .max_height(240.0)
                         .show(ui, |ui| {
-                            action = builder_panels::panels_list(ui, &status, selected);
+                            action = builder_panels::panels_list_tr(ui, &status, selected, tr);
                         });
                     ui.separator();
                     let set = status.set();
                     let layout = set.and_then(|s| s.layout.as_ref());
                     let showing_sheets = show_sheets && layout.is_some();
                     if layout.is_some() {
-                        switch_action = builder_panels::panels_view_switch(ui, showing_sheets);
+                        switch_action =
+                            builder_panels::panels_view_switch_tr(ui, showing_sheets, tr);
                     }
                     for line in set.map(|s| s.failing()).unwrap_or_default() {
                         ui.colored_label(crate::theme::TEXT_PRIMARY, line);
@@ -6806,20 +6810,21 @@ impl App {
                         |ui| {
                             if let Some(layout) = layout.filter(|_| showing_sheets) {
                                 let not_flat = vec![false; layout.drawings.len()];
-                                crate::sheet_view::show(
+                                crate::sheet_view::show_tr(
                                     ui,
                                     &layout.drawings,
                                     &not_flat,
                                     stale,
                                     &mut sheets_view,
+                                    tr,
                                 );
                             } else {
                                 let sheets = set.map_or(&[][..], |s| &s.sheets[..]);
                                 let not_flat: Vec<bool> = set
                                     .map(|s| s.rows.iter().map(|r| !r.lies_flat).collect())
                                     .unwrap_or_default();
-                                clicked = crate::sheet_view::show(
-                                    ui, sheets, &not_flat, stale, &mut view,
+                                clicked = crate::sheet_view::show_tr(
+                                    ui, sheets, &not_flat, stale, &mut view, tr,
                                 );
                             }
                         },
@@ -6906,14 +6911,16 @@ impl App {
     /// Why the patterns cannot be exported now, if they cannot: the panels for the current
     /// options are not measured yet or could not be, or a panel does not lie flat.
     pub fn panels_export_block(&self) -> Option<String> {
+        let tr = self.tr();
         match self.panels_status() {
             builder_panels::PanelsStatus::Working | builder_panels::PanelsStatus::Stale(_) => {
-                Some("Wait for the panels to be measured for these options".to_owned())
+                Some(tr.s(seacraft_core::i18n::Key::PanelsBlockWait).to_owned())
             }
             builder_panels::PanelsStatus::Failed(reason) => Some(reason.to_owned()),
-            builder_panels::PanelsStatus::Ready(set) if set.sheets.is_empty() => {
-                Some("No panel could be drawn".to_owned())
-            }
+            builder_panels::PanelsStatus::Ready(set) if set.sheets.is_empty() => Some(
+                tr.s(seacraft_core::i18n::Key::PanelsBlockNoPanel)
+                    .to_owned(),
+            ),
             builder_panels::PanelsStatus::Ready(set) => {
                 crate::commands::panels_refusal(set, &self.panels_params)
             }
@@ -10061,6 +10068,7 @@ impl App {
             return;
         }
         let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
+        let tr = self.tr();
         let window = ui.ctx().content_rect().height();
         let mut action = crate::analysis_views::ViewAction::None;
         egui::Panel::bottom("analysis_drawer")
@@ -10071,7 +10079,7 @@ impl App {
                 // Keep the drawer's height while a view has little to show
                 // (computing, or no result yet), so it does not jump.
                 ui.set_min_height(ui.available_height());
-                action = crate::analysis_views::panel(
+                action = crate::analysis_views::panel_tr(
                     ui,
                     crate::analysis_views::ViewPanel {
                         view,
@@ -10082,6 +10090,7 @@ impl App {
                         layers,
                         design_draft,
                     },
+                    tr,
                 );
             });
         self.apply_view_action(action, ui.ctx());
@@ -10118,6 +10127,7 @@ impl App {
         let before = self.perf_state.waves.clone();
         let mut settings = before.clone();
         let mut map = self.wave_map;
+        let tr = self.tr();
         let mut action = WaveViewAction::None;
         egui::Panel::bottom("analysis_drawer")
             .resizable(true)
@@ -10126,7 +10136,7 @@ impl App {
             .show(ui, |ui| {
                 // Keep the drawer's height while there is little to show.
                 ui.set_min_height(ui.available_height());
-                action = crate::wave_view::panel(
+                action = crate::wave_view::panel_tr(
                     ui,
                     WaveViewPanel {
                         settings: &mut settings,
@@ -10142,6 +10152,7 @@ impl App {
                         texture,
                         map: &mut map,
                     },
+                    tr,
                 );
             });
         self.wave_map = map;
@@ -10223,6 +10234,7 @@ impl App {
         let failure = self.heel_failure().map(str::to_owned);
         let busy = self.heel_busy();
         let mut state = self.heel.clone();
+        let tr = self.tr();
         let mut action = HeelViewAction::None;
         let mut drawn = None;
         egui::Panel::bottom("analysis_drawer")
@@ -10231,7 +10243,7 @@ impl App {
             .size_range(160.0..=(window * 0.8).round())
             .show(ui, |ui| {
                 ui.set_min_height(ui.available_height());
-                action = crate::heel_view::panel(
+                action = crate::heel_view::panel_tr(
                     ui,
                     HeelViewPanel {
                         state: &mut state,
@@ -10248,6 +10260,7 @@ impl App {
                         kg_note,
                         conditions: &conditions,
                     },
+                    tr,
                 );
             });
         self.heel_drawn = drawn;
@@ -10352,7 +10365,11 @@ impl App {
         let key = self.analysis_key(view);
         let model = crate::commands::ModelSnapshot::of(self);
         let inputs = self.analysis.inputs.clone();
-        self.set_status(format!("computing {}…", view.label().to_lowercase()));
+        let tr = self.tr();
+        self.set_status(tr.fmt(
+            seacraft_core::i18n::Key::AnalysisStatusComputing,
+            &[("view", view.label_tr(tr))],
+        ));
         self.analysis.slot_mut(view).track.start(key, move || {
             crate::analysis_views::compute(view, &inputs, &model)
         });
@@ -10361,11 +10378,18 @@ impl App {
     /// Take finished view jobs; a failure goes to the status line and stays
     /// on the view until its inputs change.
     fn poll_analysis_views(&mut self) {
+        let tr = self.tr();
         for view in crate::analysis_views::AnalysisView::ALL {
             let key = self.analysis_key(view);
             match self.analysis.slot_mut(view).track.poll(key) {
                 Some(Ok(r)) => self.install_analysis_view(view, r),
-                Some(Err(e)) => self.log(Level::Error, format!("{} failed: {e}", view.label())),
+                Some(Err(e)) => self.log(
+                    Level::Error,
+                    tr.fmt(
+                        seacraft_core::i18n::Key::AnalysisStatusFailed,
+                        &[("view", view.label_tr(tr)), ("error", &e)],
+                    ),
+                ),
                 None => {}
             }
         }
@@ -10376,17 +10400,29 @@ impl App {
         view: crate::analysis_views::AnalysisView,
         result: crate::analysis_views::ViewResult,
     ) {
-        let rows = crate::analysis_views::table(&result).rows.len();
+        let tr = self.tr();
+        let rows = crate::analysis_views::table_tr(&result, tr).rows.len();
         self.analysis.slot_mut(view).result = Some(result);
-        self.set_status(format!("{}: {rows} rows", view.label()));
+        let rows_s = rows.to_string();
+        self.set_status(tr.fmt(
+            seacraft_core::i18n::Key::AnalysisStatusRows,
+            &[("view", view.label_tr(tr)), ("rows", &rows_s)],
+        ));
     }
 
     /// Block until a view's job ends and take its result (tests).
     pub fn wait_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        let tr = self.tr();
         let key = self.analysis_key(view);
         match self.analysis.slot_mut(view).track.wait(key) {
             Some(Ok(r)) => self.install_analysis_view(view, r),
-            Some(Err(e)) => self.log(Level::Error, format!("{} failed: {e}", view.label())),
+            Some(Err(e)) => self.log(
+                Level::Error,
+                tr.fmt(
+                    seacraft_core::i18n::Key::AnalysisStatusFailed,
+                    &[("view", view.label_tr(tr)), ("error", &e)],
+                ),
+            ),
             None => {}
         }
     }
@@ -10404,14 +10440,16 @@ impl App {
         &self,
         view: crate::analysis_views::AnalysisView,
     ) -> Option<crate::analysis_views::ViewTable> {
+        let tr = self.tr();
         self.analysis_view_result(view)
-            .map(crate::analysis_views::table)
+            .map(|r| crate::analysis_views::table_tr(r, tr))
     }
 
     /// A view's table as the CSV *Copy CSV* puts on the clipboard.
     pub fn analysis_view_csv(&self, view: crate::analysis_views::AnalysisView) -> Option<String> {
+        let tr = self.tr();
         self.analysis_view_table(view)
-            .map(|t| crate::analysis_views::to_csv(&t))
+            .map(|t| crate::analysis_views::to_csv_tr(&t, tr))
     }
 
     /// A view shows a result computed for other inputs.
@@ -10477,9 +10515,14 @@ impl App {
             ViewAction::Compute => self.start_analysis_view(view),
             ViewAction::CopyCsv => {
                 if let Some(csv) = self.analysis_view_csv(view) {
+                    let tr = self.tr();
                     let rows = csv.lines().count().saturating_sub(1);
+                    let rows_s = rows.to_string();
                     ctx.copy_text(csv);
-                    self.set_status(format!("{}: {rows} rows copied as CSV", view.label()));
+                    self.set_status(tr.fmt(
+                        seacraft_core::i18n::Key::AnalysisStatusCopiedCsv,
+                        &[("view", view.label_tr(tr)), ("rows", &rows_s)],
+                    ));
                 }
             }
             ViewAction::Close => self.close_analysis_view(),

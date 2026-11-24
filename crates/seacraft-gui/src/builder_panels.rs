@@ -3,6 +3,7 @@
 //! `App` applies it.
 
 use eframe::egui;
+use seacraft_core::i18n::{Key, Locale, Tr};
 use seacraft_core::panels::PanelSet;
 use seacraft_core::templates::StationChoice;
 
@@ -20,10 +21,10 @@ pub enum PanelsAction {
     ShowSheets(bool),
 }
 
-const NEST_MODES: [(&str, &str); 3] = [
-    ("none", "No nesting"),
-    ("blanks", "Join sheets into blanks"),
-    ("split", "Split pieces to fit sheets"),
+const NEST_MODES: [(&str, Key); 3] = [
+    ("none", Key::PanelsNestNone),
+    ("blanks", Key::PanelsNestBlanks),
+    ("split", Key::PanelsNestSplit),
 ];
 
 /// Where the measured panels stand for the current options and model.
@@ -51,14 +52,19 @@ impl<'a> PanelsStatus<'a> {
 
 /// The options that change what is measured. `layers` are the model's layer names.
 pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[String]) {
+    panels_options_tr(ui, params, layers, Tr::new(Locale::En));
+}
+
+/// Localized form of [`panels_options`].
+pub fn panels_options_tr(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[String], tr: Tr) {
     egui::Grid::new("panels_grid")
         .num_columns(2)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
-            ui.label("Layers:");
+            ui.label(tr.s(Key::PanelsLayersColon));
             let mut marked = params.layers.is_none();
             if ui
-                .checkbox(&mut marked, "The layers marked developable")
+                .checkbox(&mut marked, tr.s(Key::PanelsLayersMarked))
                 .changed()
             {
                 params.layers = if marked { None } else { Some(Vec::new()) };
@@ -88,7 +94,7 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     ui.label("");
                     let mut on = true;
                     if ui
-                        .checkbox(&mut on, format!("{name} (not in the model)"))
+                        .checkbox(&mut on, tr.fmt(Key::PanelsLayerMissing, &[("name", &name)]))
                         .changed()
                         && !on
                     {
@@ -98,14 +104,14 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                 }
             }
 
-            ui.label("Stations:");
+            ui.label(tr.s(Key::TemplatesStationsColon));
             ui.horizontal(|ui| {
                 let count = matches!(params.stations, StationChoice::Count(_));
                 let spacing = matches!(params.stations, StationChoice::Spacing(_));
-                if ui.radio(count, "Count").clicked() && !count {
+                if ui.radio(count, tr.s(Key::TemplatesCount)).clicked() && !count {
                     params.stations = StationChoice::Count(11);
                 }
-                if ui.radio(spacing, "Spacing").clicked() && !spacing {
+                if ui.radio(spacing, tr.s(Key::TemplatesSpacing)).clicked() && !spacing {
                     params.stations = StationChoice::Spacing(0.5);
                 }
                 match &mut params.stations {
@@ -116,14 +122,14 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                         ui.add(theme::num(s).speed(0.01).range(0.05..=10.0).suffix(" m"));
                     }
                     StationChoice::At(_) => {
-                        ui.label("at a list of positions");
+                        ui.label(tr.s(Key::PanelsStationsList));
                     }
                 }
             });
             ui.end_row();
 
             let c = &mut params.choices;
-            ui.label("Seam drift limit:");
+            ui.label(tr.s(Key::PanelsSeamDriftColon));
             ui.add(
                 theme::num(&mut c.max_seam_drift_mm)
                     .speed(0.1)
@@ -131,7 +137,7 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     .suffix(" mm"),
             );
             ui.end_row();
-            ui.label("Stretch limit:");
+            ui.label(tr.s(Key::PanelsStretchColon));
             ui.add(
                 theme::num(&mut c.max_stretch_pct)
                     .speed(0.01)
@@ -139,7 +145,7 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     .suffix(" % RMS"),
             );
             ui.end_row();
-            ui.label("Offsets every:");
+            ui.label(tr.s(Key::PanelsOffsetsEveryColon));
             ui.add(
                 theme::num(&mut c.offset_spacing_mm)
                     .speed(5.0)
@@ -147,13 +153,13 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     .suffix(" mm"),
             );
             ui.end_row();
-            ui.label("Plywood sheet:");
+            ui.label(tr.s(Key::PanelsPlywoodSheetColon));
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut c.stock_mm).desired_width(90.0));
-                ui.label("mm, length x width");
+                ui.label(tr.s(Key::PanelsPlywoodHint));
             });
             ui.end_row();
-            ui.label("Scarf overlap:");
+            ui.label(tr.s(Key::PanelsScarfColon));
             ui.add(
                 theme::num(&mut c.scarf_mm)
                     .speed(1.0)
@@ -161,21 +167,21 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                     .suffix(" mm"),
             );
             ui.end_row();
-            ui.label("Nesting:");
+            ui.label(tr.s(Key::PanelsNestingColon));
             let current_nest = NEST_MODES
                 .iter()
                 .find(|(k, _)| c.nest.trim().eq_ignore_ascii_case(k))
-                .map_or(c.nest.as_str(), |(_, label)| *label);
+                .map_or(c.nest.as_str(), |(_, key)| tr.s(*key));
             egui::ComboBox::from_id_salt("panels_nest")
                 .selected_text(current_nest)
                 .show_ui(ui, |ui| {
-                    for (key, label) in NEST_MODES {
-                        ui.selectable_value(&mut c.nest, key.to_owned(), label);
+                    for (key, label_key) in NEST_MODES {
+                        ui.selectable_value(&mut c.nest, key.to_owned(), tr.s(label_key));
                     }
                 });
             ui.end_row();
             if !c.nest.trim().eq_ignore_ascii_case("none") {
-                ui.label("Gap between pieces:");
+                ui.label(tr.s(Key::PanelsGapColon));
                 ui.add(
                     theme::num(&mut c.gap_mm)
                         .speed(1.0)
@@ -184,18 +190,23 @@ pub fn panels_options(ui: &mut egui::Ui, params: &mut PanelsParams, layers: &[St
                 );
                 ui.end_row();
             }
-            ui.label("Units:");
-            ui.checkbox(&mut params.imperial, "Imperial beside metric");
+            ui.label(tr.s(Key::PanelsUnitsColon));
+            ui.checkbox(&mut params.imperial, tr.s(Key::PanelsImperialCheck));
             ui.end_row();
         });
 }
 
 /// The `Panels | Sheets` switch above the drawing, shown when a layout exists.
 pub fn panels_view_switch(ui: &mut egui::Ui, show_sheets: bool) -> Option<PanelsAction> {
+    panels_view_switch_tr(ui, show_sheets, Tr::new(Locale::En))
+}
+
+/// Localized form of [`panels_view_switch`].
+pub fn panels_view_switch_tr(ui: &mut egui::Ui, show_sheets: bool, tr: Tr) -> Option<PanelsAction> {
     let mut next = show_sheets;
     theme::segmented(ui, |ui| {
-        ui.selectable_value(&mut next, false, "Panels");
-        ui.selectable_value(&mut next, true, "Sheets");
+        ui.selectable_value(&mut next, false, tr.s(Key::PanelsSwitchPanels));
+        ui.selectable_value(&mut next, true, tr.s(Key::PanelsSwitchSheets));
     });
     (next != show_sheets).then_some(PanelsAction::ShowSheets(next))
 }
@@ -207,43 +218,53 @@ pub fn panels_export(
     params: &mut PanelsParams,
     block: Option<&str>,
 ) -> Option<PanelsAction> {
+    panels_export_tr(ui, params, block, Tr::new(Locale::En))
+}
+
+/// Localized form of [`panels_export`].
+pub fn panels_export_tr(
+    ui: &mut egui::Ui,
+    params: &mut PanelsParams,
+    block: Option<&str>,
+    tr: Tr,
+) -> Option<PanelsAction> {
     egui::Grid::new("panels_export_grid")
         .num_columns(2)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
-            ui.label("Paper:");
+            ui.label(tr.s(Key::TemplatesPaperColon));
             egui::ComboBox::from_id_salt("panels_paper")
-                .selected_text(params.paper.to_uppercase())
+                .selected_text(params.paper.to_ascii_uppercase())
                 .show_ui(ui, |ui| {
                     for paper in ["a4", "a3", "letter"] {
                         ui.selectable_value(
                             &mut params.paper,
                             paper.to_owned(),
-                            paper.to_uppercase(),
+                            paper.to_ascii_uppercase(),
                         );
                     }
                 });
             ui.end_row();
             ui.label("");
-            ui.checkbox(&mut params.single_page, "One page a panel (PDF)");
+            ui.checkbox(&mut params.single_page, tr.s(Key::PanelsSinglePage));
             ui.end_row();
             ui.label("");
-            ui.checkbox(
-                &mut params.offsets_pages,
-                "Offsets tables after the patterns (PDF)",
-            );
+            ui.checkbox(&mut params.offsets_pages, tr.s(Key::PanelsOffsetsPages));
             ui.end_row();
             ui.label("");
             ui.checkbox(
                 &mut params.allow_undevelopable,
-                "Write patterns even when a panel does not lie flat",
+                tr.s(Key::PanelsAllowUndevelopable),
             );
             ui.end_row();
         });
-    let button = ui.add_enabled(block.is_none(), egui::Button::new("Export…"));
+    let button = ui.add_enabled(
+        block.is_none(),
+        egui::Button::new(tr.s(Key::CommonExportEllipsis)),
+    );
     let button = match block {
         Some(reason) => button.on_disabled_hover_text(reason),
-        None => button.on_hover_text("Write the patterns as PDF, SVG or DXF"),
+        None => button.on_hover_text(tr.s(Key::PanelsExportTip)),
     };
     button.clicked().then_some(PanelsAction::Export)
 }
@@ -256,11 +277,21 @@ pub fn panels_list(
     status: &PanelsStatus<'_>,
     selected: Option<usize>,
 ) -> Option<PanelsAction> {
+    panels_list_tr(ui, status, selected, Tr::new(Locale::En))
+}
+
+/// Localized form of [`panels_list`].
+pub fn panels_list_tr(
+    ui: &mut egui::Ui,
+    status: &PanelsStatus<'_>,
+    selected: Option<usize>,
+    tr: Tr,
+) -> Option<PanelsAction> {
     let set = match status {
         PanelsStatus::Working => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Laying the panels flat…");
+                ui.label(tr.s(Key::PanelsWorking));
             });
             return None;
         }
@@ -274,7 +305,7 @@ pub fn panels_list(
     if stale {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.colored_label(theme::TEXT_MUTED, "Out of date: measuring again…");
+            ui.colored_label(theme::TEXT_MUTED, tr.s(Key::PanelsStale));
         });
     }
     let text = |s: String| {
@@ -291,14 +322,14 @@ pub fn panels_list(
         .spacing([10.0, 3.0])
         .show(ui, |ui| {
             for h in [
-                "Panel",
-                "Copies",
-                "Lies flat",
-                "RMS stretch",
-                "Max stretch",
-                "Seam drift",
-                "Area",
-                "Sheets each",
+                tr.s(Key::PanelsColPanel),
+                tr.s(Key::PanelsColCopies),
+                tr.s(Key::PanelsColLiesFlat),
+                tr.s(Key::PanelsColRmsStretch),
+                tr.s(Key::PanelsColMaxStretch),
+                tr.s(Key::PanelsColSeamDrift),
+                tr.s(Key::PanelsColArea),
+                tr.s(Key::PanelsColSheetsEach),
             ] {
                 ui.label(egui::RichText::new(h).color(theme::TEXT_LABEL));
             }
@@ -314,7 +345,7 @@ pub fn panels_list(
                 ui.label(text(if r.lies_flat {
                     "✓".to_owned()
                 } else {
-                    "does not lie flat".to_owned()
+                    tr.s(Key::PanelsDoesNotLieFlat).to_owned()
                 }));
                 ui.label(text(format!("{:.3} %", r.rms_stretch_pct)));
                 ui.label(text(format!("{:.3} %", r.max_stretch_pct)));
@@ -328,17 +359,12 @@ pub fn panels_list(
             }
         });
     for r in &set.refused {
-        ui.label(text(format!(
-            "{} cannot be laid flat: {}",
-            r.panel, r.reason
+        ui.label(text(tr.fmt(
+            Key::PanelsRefusedLine,
+            &[("panel", &r.panel), ("reason", &r.reason)],
         )));
     }
     ui.label(text(set.sheet_count_line()));
-    ui.label(
-        egui::RichText::new(
-            "Measured against the model, with provisional limits; not a bending test of plywood.",
-        )
-        .color(theme::TEXT_MUTED),
-    );
+    ui.label(egui::RichText::new(tr.s(Key::PanelsFooterNote)).color(theme::TEXT_MUTED));
     action
 }
