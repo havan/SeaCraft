@@ -611,7 +611,7 @@ pub struct TrimScanResult {
     pub target_volume_m3: f64,
     pub at_boundary: bool,
     pub best: Option<TrimPoint>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     pub points: Vec<TrimPoint>,
 }
 

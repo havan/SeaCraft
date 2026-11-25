@@ -224,6 +224,15 @@ fn generate_i18n(workspace: &Path) {
     }
     code.push_str("];\n\n");
 
+    // A missing or orphan Turkish key fails the build here, not only in `cargo xtask i18n`.
+    if !tr.is_empty() {
+        let missing: Vec<&String> = en.keys().filter(|k| !tr.contains_key(*k)).collect();
+        let orphan: Vec<&String> = tr.keys().filter(|k| !en.contains_key(*k)).collect();
+        assert!(
+            missing.is_empty() && orphan.is_empty(),
+            "locales/tr.json is out of step with locales/en.json: missing {missing:?}, orphan {orphan:?}"
+        );
+    }
     code.push_str("static STRINGS_TR: [&str; Key::COUNT] = [\n");
     for (key, en_value) in &en {
         let val = tr.get(key).unwrap_or(en_value);

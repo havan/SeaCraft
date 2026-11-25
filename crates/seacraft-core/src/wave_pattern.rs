@@ -60,30 +60,16 @@
 //! hull wave profile. Thin-ship theory, deep water, no sinkage or trim, no nonlinearity. Michell's
 //! own limits apply (`michell_warnings`): slender hulls, Fn 0.2 to 1.0, a hull closing at the stern.
 
+use crate::i18n::{Key, Msg};
 use crate::michell::{column_z_envelope, column_z_integrals, x_integral, MichellGrid};
 use crate::par::par_map;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
-/// Printed with every wave-pattern output.
+/// Printed with every wave-pattern output: the English text of [`Key::WaveNoteFarField`].
 pub const FAR_FIELD_NOTE: &str =
     "Far-field thin-ship (Michell) waves: free waves only, without the local \
     disturbance, so the elevation near the hull is not the hull wave profile.";
-
-const CATAMARAN_SYMMETRY_NOTE: &str =
-    "catamaran: each demihull is taken as symmetric about its own centreplane, as in Michell's resistance";
-
-/// Localize known static notes on a `WaveField` while passing through dynamic notes unchanged.
-pub(crate) fn localize_note(note: &str, tr: crate::i18n::Tr) -> &str {
-    use crate::i18n::Key;
-    if note == FAR_FIELD_NOTE {
-        tr.s(Key::WaveNoteFarField)
-    } else if note == CATAMARAN_SYMMETRY_NOTE {
-        tr.s(Key::WaveNoteCatamaran)
-    } else {
-        note
-    }
-}
 
 /// Wave-angle samples beyond which [`wave_spectrum`] refuses rather than run for minutes.
 pub const MAX_THETA_SAMPLES: usize = 1_000_000;
@@ -532,9 +518,9 @@ pub struct WaveField {
     /// Largest |ζ| over wet points (m).
     pub max_abs_zeta_m: f64,
     /// What the field is and what was left out; the first is [`FAR_FIELD_NOTE`].
-    pub notes: Vec<String>,
+    pub notes: Vec<Msg>,
     /// Where the hull or speed is outside thin-ship theory.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
 }
 
 /// Where a field is computed: its axes, and the reach and spacing its spectrum is built for.
@@ -648,24 +634,19 @@ fn shortest_wavelength(k0: f64, theta_cut: f64) -> f64 {
 }
 
 /// What the wave-angle cut of `sp` left out, and why.
-fn cut_off_note(sp: &WaveSpectrum, floor: f64) -> String {
+fn cut_off_note(sp: &WaveSpectrum, floor: f64) -> Msg {
     cut_off_note_for(sp.k0, sp.theta_cut, sp.theta_nyquist, floor)
 }
 
-fn cut_off_note_for(k0: f64, theta: f64, theta_nyquist: f64, floor: f64) -> String {
+fn cut_off_note_for(k0: f64, theta: f64, theta_nyquist: f64, floor: f64) -> Msg {
     let shortest = shortest_wavelength(k0, theta);
-    if theta < theta_nyquist - 1e-9 {
-        format!(
-            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the hull makes almost none \
-             (below {floor:e} of its spectrum's peak)",
-            theta.to_degrees()
-        )
+    let msg = if theta < theta_nyquist - 1e-9 {
+        Msg::new(Key::WaveNoteCutOffSmall).arg("floor", format!("{floor:e}"))
     } else {
-        format!(
-            "waves shorter than {shortest:.3} m (θ > {:.1}°) are left out: the grid cannot show them",
-            theta.to_degrees()
-        )
-    }
+        Msg::new(Key::WaveNoteCutOffGrid)
+    };
+    msg.arg("length", format!("{shortest:.3}"))
+        .arg("theta", format!("{:.1}", theta.to_degrees()))
 }
 
 /// Whether `y` is inside a waterline of the given half-breadth: one hull on the centreline, or
@@ -714,11 +695,11 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
     let theta_cut = sp.theta_cut();
     let shortest = shortest_wavelength(k0, theta_cut);
     let mut notes = vec![
-        FAR_FIELD_NOTE.to_string(),
+        Msg::new(Key::WaveNoteFarField),
         cut_off_note(&sp, opts.spectrum_floor),
     ];
     if opts.catamaran_spacing.is_some() {
-        notes.push(CATAMARAN_SYMMETRY_NOTE.to_string());
+        notes.push(Msg::new(Key::WaveNoteCatamaran));
     }
     if let Some((from, to, cap)) = lay.coarsened {
         let cap = if cap == DEFAULT_FIELD_POINTS {
@@ -726,16 +707,19 @@ pub fn wave_field(grid: &MichellGrid, opts: &WavePatternOptions) -> Result<WaveF
         } else {
             "1 000 000"
         };
-        notes.push(format!(
-            "spacing coarsened from {from:.4} m to {to:.4} m to stay within {cap} points"
-        ));
+        notes.push(
+            Msg::new(Key::WaveNoteCoarsened)
+                .arg("from", format!("{from:.4}"))
+                .arg("to", format!("{to:.4}"))
+                .arg("cap", cap),
+        );
     }
     let froude = opts.speed_m_s / (opts.g * grid.length_wl).sqrt();
     let mut warnings = crate::michell::michell_warnings(grid, &[]);
     if !(0.20..=1.0).contains(&froude) {
-        warnings.push(format!(
-            "Fn {froude:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
-            opts.speed_m_s / crate::resistance::KNOT
+        warnings.push(crate::michell::fn_warning(
+            froude,
+            opts.speed_m_s / crate::resistance::KNOT,
         ));
     }
     Ok(WaveField {
@@ -777,7 +761,7 @@ pub struct WaveCut {
     /// Largest wave angle kept (degrees).
     pub theta_cut_deg: f64,
     /// What the cut is and what was left out; the first is [`FAR_FIELD_NOTE`].
-    pub notes: Vec<String>,
+    pub notes: Vec<Msg>,
 }
 
 /// The Froude number on the waterline length called hull speed in the views: a rule of thumb, where
@@ -1016,7 +1000,7 @@ pub fn wave_cut(
         s,
         zeta,
         theta_cut_deg: theta_cut.to_degrees(),
-        notes: vec![FAR_FIELD_NOTE.to_string(), note],
+        notes: vec![Msg::new(Key::WaveNoteFarField), note],
     })
 }
 
@@ -1180,15 +1164,15 @@ pub fn wave_svg_tr(field: &WaveField, clip_m: Option<f64>, tr: crate::i18n::Tr) 
             ("clip", &format!("{clip:.4}")),
         ],
     );
-    let notes: Vec<&str> = field
+    let notes: Vec<String> = field
         .notes
         .iter()
-        .map(|n| localize_note(n, tr))
-        .chain(field.warnings.iter().map(String::as_str))
+        .chain(&field.warnings)
+        .map(|n| n.render(tr))
         .collect();
     let max_chars = ((w / (0.6 * font)) as usize).saturating_sub(2).max(20);
     let lines: Vec<String> = std::iter::once(title.as_str())
-        .chain(notes.iter().copied())
+        .chain(notes.iter().map(String::as_str))
         .flat_map(|t| wrap(t, max_chars))
         .collect();
     let caption = font * 1.5 * (lines.len() + 1) as f64;
@@ -1333,8 +1317,8 @@ pub fn summary_json(field: &WaveField) -> serde_json::Value {
         shortest_wavelength_m: f64,
         theta_samples: usize,
         max_abs_zeta_m: f64,
-        notes: &'a [String],
-        warnings: &'a [String],
+        notes: &'a [Msg],
+        warnings: &'a [Msg],
         grid_points: [usize; 2],
         regime: RegimeJson,
     }
@@ -1435,7 +1419,7 @@ pub fn wave_tool(
     let wash_distance = positive("wash_distance")?;
     let locale = match args.get("locale") {
         None | Some(Value::Null) => crate::i18n::Locale::En,
-        Some(Value::String(s)) => crate::i18n::Locale::parse(s)
+        Some(Value::String(s)) => crate::i18n::Locale::from_code(s)
             .ok_or_else(|| format!("`locale` must be one of \"en\", \"tr\" (got `{s}`)"))?,
         Some(_) => return Err("`locale` must be a string (\"en\" or \"tr\")".into()),
     };
@@ -1515,6 +1499,12 @@ pub fn wave_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn far_field_note_is_the_english_catalog_text() {
+        let en = crate::i18n::Tr::new(crate::i18n::Locale::En);
+        assert_eq!(FAR_FIELD_NOTE, en.s(Key::WaveNoteFarField));
+    }
     use crate::michell::wigley_grid;
 
     /// The ITTC Wigley hull at 10 m (B 1 m, T 0.625 m) on Michell's default 65 x 25 grid.
@@ -1752,7 +1742,7 @@ mod tests {
                 assert_eq!(*z, 0.0, "ζ ahead of the bow at x {}", f.xs[k % nx]);
             }
         }
-        assert!(f.notes[0] == FAR_FIELD_NOTE);
+        assert!(f.notes[0].to_string() == FAR_FIELD_NOTE);
         assert!((f.froude - 0.3).abs() < 1e-12);
     }
 
@@ -1815,12 +1805,14 @@ mod tests {
         let f = wave_field(&wigley(), &opts_at_fn(0.10)).unwrap();
         assert!(f.xs.len() * f.ys.len() <= MAX_FIELD_POINTS);
         assert!(
-            f.notes.iter().any(|n| n.contains("coarsened")),
+            f.notes.iter().any(|n| n.to_string().contains("coarsened")),
             "{:?}",
             f.notes
         );
         assert!(
-            f.warnings.iter().any(|w| w.contains("Fn 0.100")),
+            f.warnings
+                .iter()
+                .any(|w| w.to_string().contains("Fn 0.100")),
             "{:?}",
             f.warnings
         );
@@ -1884,7 +1876,9 @@ mod tests {
             assert_eq!(f.wet[nearest(&f.ys, y) * nx + i0], wet, "wet at (0, {y})");
         }
         assert!(
-            f.notes.iter().any(|n| n.starts_with("catamaran:")),
+            f.notes
+                .iter()
+                .any(|n| n.to_string().starts_with("catamaran:")),
             "{:?}",
             f.notes
         );
@@ -1967,7 +1961,7 @@ mod tests {
                 "longitudinal at x {x}"
             );
         }
-        assert_eq!(l.notes[0], FAR_FIELD_NOTE);
+        assert_eq!(l.notes[0].to_string(), FAR_FIELD_NOTE);
     }
 
     #[test]
@@ -2155,7 +2149,7 @@ mod tests {
             },
         )
         .unwrap();
-        f.warnings.push("a warning".into());
+        f.warnings.push(Msg::Raw("a warning".into()));
         let mut want = serde_json::to_value(&f).unwrap();
         let map = want.as_object_mut().unwrap();
         for key in ["xs", "ys", "zeta", "wet", "waterlines"] {
@@ -2289,7 +2283,9 @@ mod tests {
         let f = wave_field(&wigley(), &opts_at_fn(0.05)).unwrap();
         assert!(f.xs.len() * f.ys.len() <= DEFAULT_FIELD_POINTS);
         assert!(
-            f.notes.iter().any(|n| n.contains("250 000 points")),
+            f.notes
+                .iter()
+                .any(|n| n.to_string().contains("250 000 points")),
             "{:?}",
             f.notes
         );

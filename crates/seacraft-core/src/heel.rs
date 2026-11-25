@@ -414,7 +414,7 @@ pub struct HeelReport {
     /// The state at the requested heel, when one was asked for and floats.
     pub at_heel: Option<HeelState>,
     /// Why the start is doubtful (a loading condition's warnings).
-    pub warnings: Vec<String>,
+    pub warnings: Vec<crate::i18n::Msg>,
 }
 
 /// The equilibrium of `start` plus `weights`, and the state at `at_heel`.
@@ -437,7 +437,9 @@ pub fn report(
     };
     let at_lid = at_heel.as_ref().is_some_and(|s| s.lid_submerged);
     let warnings = if eq_lid || at_lid {
-        vec![LID_SUBMERGED_WARNING.to_string()]
+        vec![crate::i18n::Msg::new(
+            crate::i18n::Key::HeelCoreLidSubmergedWarning,
+        )]
     } else {
         Vec::new()
     };
@@ -1112,7 +1114,7 @@ mod tests {
             r_open_90
                 .warnings
                 .iter()
-                .any(|w| w == LID_SUBMERGED_WARNING),
+                .any(|w| w.to_string() == LID_SUBMERGED_WARNING),
             "{:?}",
             r_open_90.warnings
         );

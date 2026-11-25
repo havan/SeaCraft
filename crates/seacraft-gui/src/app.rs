@@ -12,6 +12,7 @@ use eframe::egui;
 use seacraft_core::damage::DamageResult;
 use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
+use seacraft_core::i18n::Tr;
 use seacraft_core::loading::LoadingResult;
 use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::project::{self, Project};
@@ -729,7 +730,7 @@ pub struct ResistanceRow {
 pub struct ResistanceResult {
     pub method: String,
     pub rows: Vec<ResistanceRow>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     pub rt_label: String,
 }
 
@@ -737,7 +738,7 @@ impl ResistanceResult {
     pub fn from_core(
         method: &str,
         rows: &[seacraft_core::resistance::Resistance],
-        warnings: Vec<String>,
+        warnings: Vec<seacraft_core::i18n::Msg>,
         rt_label: &str,
     ) -> Self {
         Self {
@@ -954,16 +955,27 @@ pub enum OpenError {
     Parse { path: PathBuf, reason: String },
 }
 
-impl std::fmt::Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+impl OpenError {
+    /// The message in `tr`'s language; `Display` gives English.
+    pub fn render(&self, tr: Tr) -> String {
+        let (key, path, reason) = match self {
             OpenError::Read { path, reason } => {
-                write!(f, "Cannot read {}: {reason}", path.display())
+                (seacraft_core::i18n::Key::LogOpenCannotRead, path, reason)
             }
             OpenError::Parse { path, reason } => {
-                write!(f, "Parse error in {}: {reason}", path.display())
+                (seacraft_core::i18n::Key::LogOpenParseError, path, reason)
             }
-        }
+        };
+        tr.fmt(
+            key,
+            &[("path", &path.display().to_string()), ("reason", reason)],
+        )
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.render(Tr::new(seacraft_core::i18n::Locale::En)))
     }
 }
 
@@ -1348,17 +1360,63 @@ struct OptimiseJob {
     kg: Option<f64>,
 }
 
+/// The status line while a control point is dragged without connected editing.
+/// "exported <path> and <n> full-size sheet files (Builder panels)".
+fn exported_sheets(tr: Tr, path: &std::path::Path, n: usize) -> String {
+    let key = match tr.locale().plural_category(n) {
+        seacraft_core::i18n::PluralCategory::One => seacraft_core::i18n::Key::LogExportedSheetsOne,
+        seacraft_core::i18n::PluralCategory::Other => {
+            seacraft_core::i18n::Key::LogExportedSheetsOther
+        }
+    };
+    tr.fmt(
+        key,
+        &[
+            ("path", &path.display().to_string()),
+            ("count", &n.to_string()),
+        ],
+    )
+}
+
+fn drag_hint(tr: Tr, point: usize) -> String {
+    tr.fmt(
+        seacraft_core::i18n::Key::StatusDragHint,
+        &[("point", &point.to_string())],
+    )
+}
+
+/// The status line while connected editing moves `count` points within `reach_m`.
+fn reach_status(tr: Tr, preset: &str, reach_m: f64, count: usize) -> String {
+    tr.fmt(
+        seacraft_core::i18n::Key::StatusConnectedReach,
+        &[
+            ("preset", crate::panels::connected_preset_label(tr, preset)),
+            ("reach", &format!("{reach_m:.2}")),
+            ("count", &count.to_string()),
+        ],
+    )
+}
+
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
+    /// The window app. `cli_locale` is `--lang`: it, `SEACRAFT_LANG` and the saved preference
+    /// are all in force before the first status line or a `--open` load says anything.
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        open: Option<PathBuf>,
+        cli_locale: Option<seacraft_core::i18n::Locale>,
+    ) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::new_detached();
         app.system_locale = seacraft_core::i18n::Locale::detect_system();
-        app.env_locale = seacraft_core::i18n::Locale::from_env();
+        let bad_env = match seacraft_core::i18n::Locale::from_env_checked() {
+            Ok(loc) => {
+                app.env_locale = loc;
+                None
+            }
+            Err(bad) => Some(bad),
+        };
+        app.cli_locale = cli_locale;
         app.refresh_locale();
-        app.status = app
-            .tr()
-            .s(seacraft_core::i18n::Key::StatusNoModel)
-            .to_owned();
         app.preset_store =
             crate::connected_presets::PresetStore::load(crate::recent::data_dir().as_deref());
         // The recent list lives in the user's data directory. eframe's own
@@ -1371,6 +1429,17 @@ impl App {
             if let Some(storage) = cc.storage {
                 app.recent = RecentFiles::load(storage);
             }
+        }
+        app.status = app
+            .tr()
+            .s(seacraft_core::i18n::Key::StatusNoModel)
+            .to_owned();
+        if let Some(bad) = bad_env {
+            let msg = app.tr().fmt(
+                seacraft_core::i18n::Key::LogBadSeacraftLang,
+                &[("value", &bad)],
+            );
+            app.log(Level::Warning, msg);
         }
         if let Some(p) = open {
             app.load(p);
@@ -1579,7 +1648,7 @@ impl App {
         let surface = match parsed {
             Ok(surface) => surface,
             Err(err) => {
-                self.log(Level::Error, err.to_string());
+                self.log(Level::Error, err.render(self.tr()));
                 return Err(err);
             }
         };
@@ -1587,29 +1656,44 @@ impl App {
             Ok(p) => (p.unwrap_or_default(), None),
             Err(e) => (Project::default(), Some(e)),
         };
-        let layers_word = if surface.layers.len() == 1 {
-            "layer"
-        } else {
-            "layers"
+        let tr = self.tr();
+        let layers = surface.layers.len();
+        let summary_key = match tr.locale().plural_category(layers) {
+            seacraft_core::i18n::PluralCategory::One => {
+                seacraft_core::i18n::Key::StatusOpenSummaryOne
+            }
+            seacraft_core::i18n::PluralCategory::Other => {
+                seacraft_core::i18n::Key::StatusOpenSummaryOther
+            }
         };
-        let mut summary = format!(
-            "{} — {} points, {} faces, {} {}",
-            surface.settings.name,
-            surface.points.len(),
-            surface.faces.len(),
-            surface.layers.len(),
-            layers_word
+        let mut summary = tr.fmt(
+            summary_key,
+            &[
+                ("name", &surface.settings.name),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+                ("count", &layers.to_string()),
+            ],
         );
         let level = if let Some(e) = &project_error {
-            summary = format!("{summary} — project file not loaded: {e}");
+            summary = tr.fmt(
+                seacraft_core::i18n::Key::StatusOpenProjectNotLoaded,
+                &[("summary", &summary), ("error", &e.to_string())],
+            );
             Level::Warning
         } else {
             if !project.is_empty() {
-                summary.push_str(" + project");
+                summary.push_str(tr.s(seacraft_core::i18n::Key::StatusOpenPlusProject));
             }
             Level::Info
         };
-        self.log(level, format!("opened {}: {summary}", path.display()));
+        self.log(
+            level,
+            tr.fmt(
+                seacraft_core::i18n::Key::LogOpened,
+                &[("path", &path.display().to_string()), ("summary", &summary)],
+            ),
+        );
         // The status line keeps the model summary it always showed.
         self.status = summary;
         self.saved_state = Some((fef::write(&surface), project.clone()));
@@ -1634,12 +1718,18 @@ impl App {
     /// `y >= 0` modelled, mirrored on evaluation).
     pub fn load_demo_shape(&mut self, symmetric: bool) {
         let surface = demo::demo_hull(symmetric);
-        let half = if symmetric { " (symmetric)" } else { "" };
-        self.set_status(format!(
-            "{} — built-in demo hull{half} ({} points, {} faces)",
-            surface.settings.name,
-            surface.points.len(),
-            surface.faces.len()
+        let key = if symmetric {
+            seacraft_core::i18n::Key::StatusDemoLoadedHalf
+        } else {
+            seacraft_core::i18n::Key::StatusDemoLoaded
+        };
+        self.set_status(self.tr().fmt(
+            key,
+            &[
+                ("name", &surface.settings.name),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+            ],
         ));
         self.surface = Some(surface);
         self.path = None;
@@ -1656,11 +1746,13 @@ impl App {
 
     /// Replace the current model with a newly generated parametric hull.
     pub fn load_generated(&mut self, surface: Surface) {
-        self.set_status(format!(
-            "{} — parametric hull ({} points, {} faces)",
-            surface.settings.name,
-            surface.points.len(),
-            surface.faces.len()
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusGeneratedLoaded,
+            &[
+                ("name", &surface.settings.name),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+            ],
         ));
         self.surface = Some(surface);
         self.path = None;
@@ -1692,13 +1784,15 @@ impl App {
         project: Project,
     ) {
         let title = kind.title_tr(self.tr());
-        self.set_status(format!(
-            "{} — example `{}` ({} points, {} faces, {} layers) + project",
-            title,
-            kind.slug(),
-            surface.points.len(),
-            surface.faces.len(),
-            surface.layers.len()
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusExampleLoaded,
+            &[
+                ("title", title),
+                ("slug", kind.slug()),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+                ("layers", &surface.layers.len().to_string()),
+            ],
         ));
         self.surface = Some(surface);
         self.path = None;
@@ -2868,12 +2962,8 @@ impl App {
                         },
                     );
                     ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuHelpLanguage), |ui| {
-                        let override_loc = self.cli_locale.or((self.language_pref
-                            == seacraft_core::i18n::LanguagePref::Auto)
-                            .then_some(self.env_locale)
-                            .flatten());
-                        let auto_selected = override_loc.is_none()
-                            && self.language_pref == seacraft_core::i18n::LanguagePref::Auto;
+                        let ticked = self.language_menu_ticked();
+                        let auto_selected = ticked == seacraft_core::i18n::LanguagePref::Auto;
                         if ui
                             .add(egui::Button::selectable(
                                 auto_selected,
@@ -2889,10 +2979,7 @@ impl App {
                         }
                         ui.separator();
                         for &loc in seacraft_core::i18n::Locale::ALL {
-                            let selected = override_loc == Some(loc)
-                                || (override_loc.is_none()
-                                    && self.language_pref
-                                        == seacraft_core::i18n::LanguagePref::Fixed(loc));
+                            let selected = ticked == seacraft_core::i18n::LanguagePref::Fixed(loc);
                             if ui
                                 .add(egui::Button::selectable(selected, loc.native_name()))
                                 .clicked()
@@ -3078,7 +3165,11 @@ impl App {
                         Ok(r) => r,
                         Err(e) => {
                             self.history = history;
-                            self.log(Level::Error, format!("New design failed: {e}"));
+                            let msg = self.tr().fmt(
+                                seacraft_core::i18n::Key::LogNewDesignFailed,
+                                &[("error", &e.to_string())],
+                            );
+                            self.log(Level::Error, msg);
                             return;
                         }
                     },
@@ -3097,9 +3188,14 @@ impl App {
                 self.apply_requirement_defaults();
                 self.reset_cameras();
                 self.history.snapshot(&before);
-                self.set_status(format!(
-                    "{name} — new {} design ({} points, {} faces)",
-                    spec.kind, result.points, result.faces
+                self.set_status(self.tr().fmt(
+                    seacraft_core::i18n::Key::StatusNewDesign,
+                    &[
+                        ("name", &name.to_string()),
+                        ("kind", &spec.kind.to_string()),
+                        ("points", &result.points.to_string()),
+                        ("faces", &result.faces.to_string()),
+                    ],
                 ));
             }
         }
@@ -3238,7 +3334,11 @@ impl App {
         if requirements_changed {
             self.set_requirements(requirements);
         }
-        self.set_status("project settings applied".to_owned());
+        self.set_status(
+            self.tr()
+                .s(seacraft_core::i18n::Key::StatusProjectSettingsApplied)
+                .to_owned(),
+        );
     }
 
     /// Replace the design requirements (Project settings, or its undo): the
@@ -3430,7 +3530,13 @@ impl App {
         };
         let text = fef::write(surface);
         if let Err(err) = seacraft_core::io::write_atomic(path, &text) {
-            let msg = format!("cannot write {}: {err}", path.display());
+            let msg = self.tr().fmt(
+                seacraft_core::i18n::Key::LogCannotWrite,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("error", &err.to_string()),
+                ],
+            );
             self.log(Level::Error, msg.clone());
             return Err(msg);
         }
@@ -3438,16 +3544,19 @@ impl App {
         self.remember_recent(path);
         let sidecar = project::sidecar_path(path);
         if let Some(e) = &self.project_error {
-            let mut msg = format!(
-                "saved {}; project file left as it was ({e})",
-                path.display()
+            let mut msg = self.tr().fmt(
+                seacraft_core::i18n::Key::LogSavedProjectLeft,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("error", &e.to_string()),
+                ],
             );
             // The sidecar on disk could not be read, so it is not
             // overwritten; design data entered since stays unsaved.
             self.saved_state = Some((text, Project::default()));
             self.refresh_dirty();
             if self.dirty {
-                msg.push_str(" — design data NOT saved: fix or remove the project file");
+                msg.push_str(self.tr().s(seacraft_core::i18n::Key::LogDesignDataNotSaved));
             }
             self.log(Level::Warning, msg);
             return Ok(());
@@ -3520,7 +3629,10 @@ impl App {
             seacraft_core::io::write_atomic(&target, bytes)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))
         });
-        self.set_status(format!("writing wave pattern {}…", path.display()));
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusWaveImageWriting,
+            &[("path", &path.display().to_string())],
+        ));
         self.wave_image_job = Some((path.to_path_buf(), job));
         Ok(())
     }
@@ -3553,11 +3665,20 @@ impl App {
 
     fn finish_wave_image(&mut self, path: &std::path::Path, out: Result<(), String>) {
         match out {
-            Ok(()) => self.log(
-                Level::Info,
-                format!("Saved wave pattern to {}", path.display()),
-            ),
-            Err(e) => self.log(Level::Error, format!("Wave pattern image failed: {e}")),
+            Ok(()) => {
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogWaveImageSaved,
+                    &[("path", &path.display().to_string())],
+                );
+                self.log(Level::Info, msg)
+            }
+            Err(e) => {
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogWaveImageFailed,
+                    &[("error", &e)],
+                );
+                self.log(Level::Error, msg)
+            }
         }
     }
 
@@ -3616,7 +3737,7 @@ impl App {
                 return self.write_offsets_pdf(path, &defaults, false).map(|_| ());
             }
         };
-        self.log_export(kind.label(), path, written)
+        self.log_export(kind.label_tr(self.tr()), path, written)
     }
 
     /// Write the table of offsets `params` asks for as a PDF, with `imperial` tables after the
@@ -3639,7 +3760,7 @@ impl App {
         imperial: bool,
         locale: seacraft_core::i18n::Locale,
     ) -> Result<usize, String> {
-        let label = ExportKind::OffsetsPdf.label();
+        let label = ExportKind::OffsetsPdf.label_tr(self.tr());
         let tr = seacraft_core::i18n::Tr::new(locale);
         let name = self
             .surface
@@ -3668,7 +3789,13 @@ impl App {
                 self.log_export(label, path, written).map(|()| doc.pages)
             }
             Err(err) => {
-                let msg = format!("cannot export {}: {err}", path.display());
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogCannotExport,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("error", &err.to_string()),
+                    ],
+                );
                 self.log(Level::Error, msg.clone());
                 Err(msg)
             }
@@ -3684,18 +3811,24 @@ impl App {
     ) -> Result<(), String> {
         match written {
             Ok(()) => {
-                self.log(
-                    Level::Info,
-                    format!(
-                        "exported {} ({})",
-                        path.display(),
-                        label.trim_end_matches('…')
-                    ),
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogExported,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("what", label.trim_end_matches('…')),
+                    ],
                 );
+                self.log(Level::Info, msg);
                 Ok(())
             }
             Err(err) => {
-                let msg = format!("cannot write {}: {err}", path.display());
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogCannotWrite,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("error", &err.to_string()),
+                    ],
+                );
                 self.log(Level::Error, msg.clone());
                 Err(msg)
             }
@@ -4083,10 +4216,14 @@ impl App {
         if let Some(previous) = self.history.undo(&current) {
             let moved = previous.surface.as_ref().map_or(0, |s| s.points.len());
             self.restore_snapshot(previous);
+            let tr = self.tr();
             self.set_status(if whole {
-                "undo — previous model restored".to_owned()
+                tr.s(seacraft_core::i18n::Key::StatusUndoModel).to_owned()
             } else {
-                format!("undo — {moved} control points restored")
+                tr.fmt(
+                    seacraft_core::i18n::Key::StatusUndoPoints,
+                    &[("count", &moved.to_string())],
+                )
             });
         }
     }
@@ -4135,7 +4272,10 @@ impl App {
         self.selection.retain_valid(n);
         self.mark_geometry_changed();
         self.refresh_dirty();
-        self.set_status(format!("restored to mark {id}"));
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusRestoredMark,
+            &[("id", &id.to_string())],
+        ));
         Ok(())
     }
 
@@ -4347,11 +4487,11 @@ impl App {
                             self.bump_revision();
                             self.touch_geometry();
                             let count = drag.plan.weights().len();
-                            if count > 1 {
-                                self.set_status(format!("{count} control points moved"));
-                            } else {
-                                self.set_status("control point moved".to_owned());
-                            }
+                            self.set_status(self.tr().plural(
+                                seacraft_core::i18n::Key::StatusPointsMovedOne,
+                                seacraft_core::i18n::Key::StatusPointsMovedOther,
+                                count,
+                            ));
                             if drag.connected
                                 && self.persisted_choice.as_ref() != Some(&self.connected_choice())
                             {
@@ -4743,9 +4883,15 @@ impl App {
         if !self.perf_state.waves.plan_contours || self.wave_current().is_some() {
             None
         } else if self.wave_failure().is_some() {
-            Some("Wave contours failed: see the Wave pattern view")
+            Some(
+                self.tr()
+                    .s(seacraft_core::i18n::Key::StatusWaveContoursFailed),
+            )
         } else {
-            Some("Wave contours: computing…")
+            Some(
+                self.tr()
+                    .s(seacraft_core::i18n::Key::StatusWaveContoursComputing),
+            )
         }
     }
 
@@ -4980,16 +5126,14 @@ impl App {
         self.active = index;
         if let Some((preset, reach_m)) = &connected {
             let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
-            self.set_status(format!(
-                "{} · reach {:.2} m · {} points",
-                preset.name,
+            self.set_status(reach_status(
+                Tr::new(self.locale),
+                &preset.name,
                 reach,
-                plan.weights().len()
+                plan.weights().len(),
             ));
         } else {
-            self.set_status(format!(
-                "dragging control point {point} · hold X, Y or Z to lock an axis"
-            ));
+            self.set_status(drag_hint(Tr::new(self.locale), point));
         }
         self.drag = Some(DragState {
             point,
@@ -5031,14 +5175,14 @@ impl App {
         let point = drag.point;
         if now {
             let reach = self.effective_connected_reach_m();
-            self.set_status(format!(
-                "{} · reach {reach:.2} m · {count} points",
-                preset.name
+            self.set_status(reach_status(
+                Tr::new(self.locale),
+                &preset.name,
+                reach,
+                count,
             ));
         } else {
-            self.set_status(format!(
-                "dragging control point {point} · hold X, Y or Z to lock an axis"
-            ));
+            self.set_status(drag_hint(Tr::new(self.locale), point));
         }
         self.bump_revision();
         self.touch_geometry();
@@ -5092,23 +5236,25 @@ impl App {
             let connected_status = if lock.is_none() && drag.connected {
                 let preset = self.active_connected_preset();
                 let reach = self.effective_connected_reach_m();
-                Some(format!(
-                    "{} · reach {:.2} m · {} points",
-                    preset.name,
+                Some(reach_status(
+                    Tr::new(self.locale),
+                    &preset.name,
                     reach,
-                    drag.plan.weights().len()
+                    drag.plan.weights().len(),
                 ))
             } else {
                 None
             };
+            let tr = Tr::new(self.locale);
             self.set_status(match lock {
-                Some(axis) => format!(
-                    "dragging control point {point} along {} (locked)",
-                    crate::model_menu::axis_name(axis)
+                Some(axis) => tr.fmt(
+                    seacraft_core::i18n::Key::StatusDragLocked,
+                    &[
+                        ("point", &point.to_string()),
+                        ("axis", crate::model_menu::axis_name(axis)),
+                    ],
                 ),
-                None => connected_status.unwrap_or_else(|| {
-                    format!("dragging control point {point} · hold X, Y or Z to lock an axis")
-                }),
+                None => connected_status.unwrap_or_else(|| drag_hint(tr, point)),
             });
         }
         self.axis_lock = lock;
@@ -5139,9 +5285,11 @@ impl App {
         self.connected.reach_m = Some(next);
         rebuild_drag_plan(drag, surface, Some((&preset, Some(next))));
         let count = drag.plan.weights().len();
-        self.set_status(format!(
-            "{} · reach {next:.2} m · {count} points",
-            preset.name
+        self.set_status(reach_status(
+            Tr::new(self.locale),
+            &preset.name,
+            next,
+            count,
         ));
         self.dirty = true;
         self.autosave.note_dirty();
@@ -5473,9 +5621,18 @@ impl App {
         self.heel.start = crate::heel_view::HeelStart::Condition(i);
         self.project_changed();
         self.refresh_dirty();
-        self.set_status(format!(
-            "Added {n} trial weight{} to {name}",
-            if n == 1 { "" } else { "s" }
+        let tr = self.tr();
+        let key = match tr.locale().plural_category(n) {
+            seacraft_core::i18n::PluralCategory::One => {
+                seacraft_core::i18n::Key::StatusTrialWeightsOne
+            }
+            seacraft_core::i18n::PluralCategory::Other => {
+                seacraft_core::i18n::Key::StatusTrialWeightsOther
+            }
+        };
+        self.set_status(tr.fmt(
+            key,
+            &[("count", &n.to_string()), ("name", &name.to_string())],
         ));
     }
 
@@ -5519,7 +5676,10 @@ impl App {
             }
             None => {
                 self.heel.start = HeelStart::Dock;
-                self.set_status("Heel view: that loading condition is gone; showing the bare hull");
+                self.set_status(
+                    self.tr()
+                        .s(seacraft_core::i18n::Key::StatusHeelConditionGone),
+                );
             }
         }
     }
@@ -5528,14 +5688,21 @@ impl App {
     /// no KG for the bare hull).
     fn heel_sweep_input(&self) -> Result<crate::heel_view::SweepInput, String> {
         use crate::heel_view::{HeelStart, StartInput};
-        let surface = self.surface.clone().ok_or("no model loaded")?;
+        let tr = self.tr();
+        let surface = self
+            .surface
+            .clone()
+            .ok_or(tr.s(seacraft_core::i18n::Key::StatusNoModelLower))?;
         let subdivision = seacraft_core::subdiv::SubdivisionOptions {
             level: self.level,
             mode: self.mode,
         };
         let start = match self.heel.start {
             HeelStart::Dock => StartInput::Dock {
-                kg: self.hydro.kg.ok_or("Set KG in the Hydrostatics dock")?,
+                kg: self
+                    .hydro
+                    .kg
+                    .ok_or(tr.s(seacraft_core::i18n::Key::HeelNoKgHint))?,
                 kg_estimate: self.kg_is_estimate(),
                 lcg: if self.hydro.free_trim {
                     self.hydro.lcg
@@ -5548,7 +5715,7 @@ impl App {
                     .project
                     .loading_conditions
                     .get(i)
-                    .ok_or("that loading condition is gone")?;
+                    .ok_or(tr.s(seacraft_core::i18n::Key::StatusLoadingConditionGone))?;
                 StartInput::Condition(Box::new(self.project.with_windage(c)))
             }
         };
@@ -5565,6 +5732,7 @@ impl App {
             opts,
             start,
             weights: self.heel.weights.clone(),
+            tr,
         })
     }
 
@@ -6018,22 +6186,22 @@ impl App {
         }
         match self.hydro.curves_track.poll(key) {
             Some(Ok(out)) => self.install_curves(out, key),
-            Some(Err(e)) => self.log(Level::Error, format!("GZ curves failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobGzCurves, &e),
             None => {}
         }
         match self.loading_track.poll(self.loading_key()) {
             Some(Ok(r)) => self.install_loading(r),
-            Some(Err(e)) => self.log(Level::Error, format!("Loading compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobLoading, &e),
             None => {}
         }
         match self.damage_track.poll(self.damage_key()) {
             Some(Ok(r)) => self.damage_result = Some(r),
-            Some(Err(e)) => self.log(Level::Error, format!("Damage compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobDamage, &e),
             None => {}
         }
         match self.resistance_track.poll(self.resistance_key()) {
             Some(Ok(r)) => self.perf_state.resistance = Some(r),
-            Some(Err(e)) => self.log(Level::Error, format!("Resistance compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobResistance, &e),
             None => {}
         }
         match self.waves_track.poll(self.waves_key()) {
@@ -6041,17 +6209,17 @@ impl App {
                 self.perf_state.wave_result = Some(w);
                 self.wave_result_rev += 1;
             }
-            Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobWavePattern, &e),
             None => {}
         }
         match self.heel_sweep_track.poll(self.heel_key()) {
             Some(Ok(out)) => self.heel_sweep = Some(out),
-            Some(Err(e)) => self.log(Level::Error, format!("Heel view failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobHeel, &e),
             None => {}
         }
         match self.heel_hull_track.poll(self.heel_hull_key()) {
             Some(Ok(h)) => self.heel_hull = Some(h),
-            Some(Err(e)) => self.log(Level::Error, format!("Heel view hull failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobHeelHull, &e),
             None => {}
         }
         // A failed exact solve leaves the drawing on the nearest sweep sample: nothing to report.
@@ -6060,7 +6228,7 @@ impl App {
         }
         match self.wave_drag_track.poll(self.wave_drag_key()) {
             Some(Ok(d)) => self.perf_state.wave_drag = Some(d),
-            Some(Err(e)) => self.log(Level::Error, format!("Wave drag curve failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobWaveDrag, &e),
             None => {}
         }
         match self.raos_track.poll(self.raos_key()) {
@@ -6068,7 +6236,7 @@ impl App {
                 self.perf_state.raos = Some(r);
                 self.perf_state.sea_result = irr;
             }
-            Some(Err(e)) => self.log(Level::Error, format!("Seakeeping compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobSeakeeping, &e),
             None => {}
         }
         self.poll_analysis_views();
@@ -6125,7 +6293,11 @@ impl App {
             return;
         };
         let key = self.hydro_key();
-        self.set_status("computing GZ cross curves…".to_owned());
+        self.set_status(
+            self.tr()
+                .s(seacraft_core::i18n::Key::StatusGzComputing)
+                .to_owned(),
+        );
         self.hydro
             .curves_track
             .start(key, move || Ok(compute_cross_curves_for(inputs)));
@@ -6135,7 +6307,12 @@ impl App {
     /// Returns true when the curves were refused.
     fn refuse_curves_without_kg(&mut self) -> bool {
         if self.surface.is_some() && self.hydro.kg.is_none() {
-            self.set_status(format!("GZ curves: {KG_UNSET_HINT}"));
+            let tr = self.tr();
+            self.set_status(format!(
+                "{}: {}",
+                tr.s(seacraft_core::i18n::Key::JobGzCurves),
+                tr.s(seacraft_core::i18n::Key::StatusKgUnset)
+            ));
             return true;
         }
         false
@@ -6151,16 +6328,21 @@ impl App {
         }
         let free = self.hydro.free_trim;
         self.hydro.curves = out.curves;
+        let tr = self.tr();
+        let mass = format!("{:.2}", out.displacement_t);
         self.set_status(if self.hydro.curves.is_none() {
-            "GZ curves: nothing is submerged at this draft".to_owned()
+            tr.s(seacraft_core::i18n::Key::StatusGzNothingSubmerged)
+                .to_owned()
         } else if free {
-            format!(
-                "GZ cross curves for {:.2} t and ±30 %, free to trim about {:.3} m",
-                out.displacement_t,
-                out.lcg.unwrap_or_default()
+            tr.fmt(
+                seacraft_core::i18n::Key::StatusGzDoneFree,
+                &[
+                    ("mass", &mass),
+                    ("lcg", &format!("{:.3}", out.lcg.unwrap_or_default())),
+                ],
             )
         } else {
-            format!("GZ cross curves for {:.2} t and ±30 %", out.displacement_t)
+            tr.fmt(seacraft_core::i18n::Key::StatusGzDone, &[("mass", &mass)])
         });
     }
 
@@ -6328,38 +6510,38 @@ impl App {
     /// Why a tab's computation failed for the current inputs, if it did.
     pub fn tab_failure(&self, tab: DesignDock) -> Option<String> {
         let key = self.hydro_key();
-        let failures: Vec<(&str, Option<&str>)> = match tab {
+        use seacraft_core::i18n::Key;
+        let failures: Vec<(Key, Option<&str>)> = match tab {
             DesignDock::Hydrostatics => vec![
-                ("Hydrostatics", self.hydro.track.failure(key)),
-                ("GZ curves", self.hydro.curves_track.failure(key)),
+                (Key::JobHydrostatics, self.hydro.track.failure(key)),
+                (Key::JobGzCurves, self.hydro.curves_track.failure(key)),
             ],
             DesignDock::Loading | DesignDock::Windage => vec![(
-                "Loading compute",
+                Key::JobLoading,
                 self.loading_track.failure(self.loading_key()),
             )],
-            DesignDock::Damage => vec![(
-                "Damage compute",
-                self.damage_track.failure(self.damage_key()),
-            )],
+            DesignDock::Damage => {
+                vec![(Key::JobDamage, self.damage_track.failure(self.damage_key()))]
+            }
             DesignDock::Performance => vec![
                 (
-                    "Resistance compute",
+                    Key::JobResistance,
                     self.resistance_track.failure(self.resistance_key()),
                 ),
+                (Key::JobSeakeeping, self.raos_track.failure(self.raos_key())),
                 (
-                    "Seakeeping compute",
-                    self.raos_track.failure(self.raos_key()),
+                    Key::JobWavePattern,
+                    self.waves_track.failure(self.waves_key()),
                 ),
-                ("Wave pattern", self.waves_track.failure(self.waves_key())),
                 (
-                    "Wave drag curve",
+                    Key::JobWaveDrag,
                     self.wave_drag_track.failure(self.wave_drag_key()),
                 ),
             ],
         };
         failures
             .into_iter()
-            .find_map(|(what, e)| e.map(|e| format!("{what} failed: {e}")))
+            .find_map(|(what, e)| e.map(|e| self.job_failure(what, e)))
     }
 
     /// Whether a hydrostatics job is running (test hook).
@@ -6504,7 +6686,10 @@ impl App {
         let (Some((mut opts, waves)), Some(surface)) =
             (self.report_options(), self.surface.clone())
         else {
-            let msg = "No model loaded.".to_owned();
+            let msg = self
+                .tr()
+                .s(seacraft_core::i18n::Key::StatusNoModel)
+                .to_owned();
             self.log(Level::Error, msg.clone());
             return Err(msg);
         };
@@ -6974,9 +7159,11 @@ impl App {
         if let Some(reason) = self.panels_export_block() {
             return Err(reason);
         }
-        let set = self
-            .panels_preview()
-            .ok_or("Wait for the panels to be measured")?;
+        let set = self.panels_preview().ok_or_else(|| {
+            self.tr()
+                .s(seacraft_core::i18n::Key::StatusPanelsNotMeasured)
+                .to_owned()
+        })?;
         Ok((set.set.clone(), format))
     }
 
@@ -7007,23 +7194,24 @@ impl App {
             Ok(sheet_paths) => {
                 let stale = seacraft_core::panels::stale_sheet_files(path, sheet_paths.len());
                 let result = if sheet_paths.is_empty() {
-                    self.log_export("Builder panels", path, Ok(()))
+                    self.log_export(
+                        self.tr().s(seacraft_core::i18n::Key::WhatBuilderPanels),
+                        path,
+                        Ok(()),
+                    )
                 } else {
-                    let n = sheet_paths.len();
-                    let noun = if n == 1 { "file" } else { "files" };
-                    self.log(
-                        Level::Info,
-                        format!(
-                            "exported {} and {n} full-size sheet {noun} (Builder panels)",
-                            path.display()
-                        ),
-                    );
+                    let msg = exported_sheets(self.tr(), path, sheet_paths.len());
+                    self.log(Level::Info, msg);
                     Ok(())
                 };
                 self.log_stale_sheets(&stale);
                 result
             }
-            Err(e) => self.log_export("Builder panels", path, Err(e)),
+            Err(e) => self.log_export(
+                self.tr().s(seacraft_core::i18n::Key::WhatBuilderPanels),
+                path,
+                Err(e),
+            ),
         }
     }
 
@@ -7039,7 +7227,10 @@ impl App {
         let params = self.panels_params.clone();
         let locale = self.locale;
         let target = path.to_path_buf();
-        self.set_status(format!("writing panel patterns {}…", path.display()));
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusPanelsWriting,
+            &[("path", &path.display().to_string())],
+        ));
         let job = Job::spawn(self.revision, move || {
             let file = crate::commands::panels_file_locale(&set, &params, format, locale)?;
             let sheet_paths = crate::commands::write_panels_file(&target, &file)
@@ -7072,24 +7263,31 @@ impl App {
                 stale: left,
             }) => {
                 stale = left;
+                let tr = self.tr();
+                let shown = path.display().to_string();
                 (
                     Level::Info,
                     match (pages, sheets) {
-                        (0, 0) => format!("exported {} (Builder panels)", path.display()),
-                        (0, n) => {
-                            let noun = if n == 1 { "file" } else { "files" };
-                            format!(
-                                "exported {} and {n} full-size sheet {noun} (Builder panels)",
-                                path.display()
-                            )
-                        }
-                        (n, _) => {
-                            format!("exported {} (Builder panels, {n} pages)", path.display())
-                        }
+                        (0, 0) => tr.fmt(
+                            seacraft_core::i18n::Key::LogExported,
+                            &[
+                                ("path", &shown),
+                                ("what", tr.s(seacraft_core::i18n::Key::WhatBuilderPanels)),
+                            ],
+                        ),
+                        (0, n) => exported_sheets(tr, path, n),
+                        (n, _) => tr.fmt(
+                            seacraft_core::i18n::Key::LogExportedPages,
+                            &[("path", &shown), ("count", &n.to_string())],
+                        ),
                     },
                 )
             }
-            crate::jobs::Poll::Failed(e) => (Level::Error, format!("panel patterns failed: {e}")),
+            crate::jobs::Poll::Failed(e) => (
+                Level::Error,
+                self.tr()
+                    .fmt(seacraft_core::i18n::Key::LogPanelsFailed, &[("error", &e)]),
+            ),
         };
         self.log(level, msg);
         self.log_stale_sheets(&stale);
@@ -7171,7 +7369,11 @@ impl App {
             }
         };
         let written = seacraft_core::io::write_atomic(path, bytes);
-        self.log_export("Builder templates", path, written)
+        self.log_export(
+            self.tr().s(seacraft_core::i18n::Key::WhatBuilderTemplates),
+            path,
+            written,
+        )
     }
 
     /// The Export dialog's OK: write the previewed PDF at once, or cut another format on a
@@ -7186,7 +7388,11 @@ impl App {
         };
         if let Some(bytes) = self.templates_preview_in(format) {
             let written = seacraft_core::io::write_atomic(path, bytes);
-            return self.log_export("Builder templates", path, written);
+            return self.log_export(
+                self.tr().s(seacraft_core::i18n::Key::WhatBuilderTemplates),
+                path,
+                written,
+            );
         }
         let Some(surface) = self.surface.clone() else {
             return Err("No model loaded.".to_owned());
@@ -7218,9 +7424,24 @@ impl App {
             }
             crate::jobs::Poll::Done(()) => (
                 Level::Info,
-                format!("exported {} (Builder templates)", path.display()),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogExported,
+                    &[
+                        ("path", &path.display().to_string()),
+                        (
+                            "what",
+                            self.tr().s(seacraft_core::i18n::Key::WhatBuilderTemplates),
+                        ),
+                    ],
+                ),
             ),
-            crate::jobs::Poll::Failed(e) => (Level::Error, format!("templates failed: {e}")),
+            crate::jobs::Poll::Failed(e) => (
+                Level::Error,
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogTemplatesFailed,
+                    &[("error", &e)],
+                ),
+            ),
         };
         self.log(level, msg);
         self.templates_export_job = None;
@@ -7533,11 +7754,14 @@ impl App {
 
     pub fn start_loading_compute(&mut self) {
         let Some(surface) = self.surface.clone() else {
-            self.set_status("No model loaded.");
+            self.set_status(self.tr().s(seacraft_core::i18n::Key::StatusNoModel));
             return;
         };
         if self.project.loading_conditions.is_empty() {
-            self.set_status("No loading condition in project.");
+            self.set_status(
+                self.tr()
+                    .s(seacraft_core::i18n::Key::StatusNoLoadingCondition),
+            );
             return;
         }
         let sel = self
@@ -7547,7 +7771,10 @@ impl App {
         let with_windage = self.project.with_windage(cond);
         let key = self.loading_key();
         if let Err(e) = seacraft_core::loading::validate(&with_windage) {
-            let msg = format!("Loading condition invalid: {e}");
+            let msg = self.tr().fmt(
+                seacraft_core::i18n::Key::LogLoadingInvalid,
+                &[("error", &e.to_string())],
+            );
             self.log(Level::Error, msg.clone());
             // Remembered, so the automatic recompute does not retry it.
             self.loading_track.fail(key, msg);
@@ -7604,16 +7831,20 @@ impl App {
             let why = if res.warnings.is_empty() {
                 String::new()
             } else {
-                format!(" ({})", res.warnings.join("; "))
+                let tr = seacraft_core::i18n::Tr::new(self.locale);
+                let all: Vec<String> = res.warnings.iter().map(|w| w.render(tr)).collect();
+                format!(" ({})", all.join("; "))
             };
-            self.log(
-                Level::Warning,
-                format!(
-                    "Loading condition \"{}\": {}{why}",
-                    res.name,
-                    seacraft_core::loading::NO_EQUILIBRIUM_NOTE
-                ),
+            let tr = self.tr();
+            let msg = tr.fmt(
+                seacraft_core::i18n::Key::LogLoadingNoEq,
+                &[
+                    ("name", &res.name),
+                    ("note", tr.s(seacraft_core::i18n::Key::LoadingNoEquilibrium)),
+                    ("why", &why),
+                ],
             );
+            self.log(Level::Warning, msg);
         }
         self.loading_result = Some(res);
     }
@@ -7624,11 +7855,11 @@ impl App {
 
     pub fn start_damage_compute(&mut self) {
         let Some(surface) = self.surface.clone() else {
-            self.set_status("No model loaded.");
+            self.set_status(self.tr().s(seacraft_core::i18n::Key::StatusNoModel));
             return;
         };
         if self.project.damage_cases.is_empty() {
-            self.set_status("No damage case in project.");
+            self.set_status(self.tr().s(seacraft_core::i18n::Key::StatusNoDamageCase));
             return;
         }
         let sel = self
@@ -7905,7 +8136,10 @@ impl App {
             }
             Err(message) => self.log(
                 Level::Warning,
-                format!("The viewport keeps the slower drawing: the GPU hull failed ({message})."),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogGpuHullFailed,
+                    &[("message", &message.to_string())],
+                ),
             ),
         }
     }
@@ -7943,7 +8177,10 @@ impl App {
         if self.gpu_hull.logged.insert(message.clone()) {
             self.log(
                 Level::Warning,
-                format!("The viewport falls back to the slower drawing for this mesh: {message}"),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogGpuHullFallback,
+                    &[("message", &message.to_string())],
+                ),
             );
         }
     }
@@ -8679,11 +8916,19 @@ impl App {
         }
         self.select_point(Some(index));
         self.mark_geometry_changed();
-        if moved.len() > 1 {
-            self.status_note(format!("{} control points moved", moved.len()));
+        let tr = self.tr();
+        self.status_note(if moved.len() > 1 {
+            tr.plural(
+                seacraft_core::i18n::Key::StatusPointsMovedOne,
+                seacraft_core::i18n::Key::StatusPointsMovedOther,
+                moved.len(),
+            )
         } else {
-            self.status_note(format!("control point {index} moved"));
-        }
+            tr.fmt(
+                seacraft_core::i18n::Key::StatusPointMoved,
+                &[("index", &index.to_string())],
+            )
+        });
         Ok((to, symmetric && to.y == 0.0, moved))
     }
 
@@ -8743,10 +8988,11 @@ impl App {
         self.selection.clear();
         self.selection.add_all(seeds.iter().copied());
         self.mark_geometry_changed();
-        self.status_note(format!(
-            "{} control point{} moved",
+        let tr = self.tr();
+        self.status_note(tr.plural(
+            seacraft_core::i18n::Key::StatusPointsMovedCountOne,
+            seacraft_core::i18n::Key::StatusPointsMovedOther,
             moved.len(),
-            if moved.len() == 1 { "" } else { "s" }
         ));
         Ok(moved)
     }
@@ -8891,6 +9137,20 @@ impl App {
         self.language_pref
     }
 
+    /// "<job> failed: <error>" in the window's language.
+    fn job_failure(&self, what: seacraft_core::i18n::Key, error: &str) -> String {
+        let tr = self.tr();
+        tr.fmt(
+            seacraft_core::i18n::Key::LogJobFailed,
+            &[("what", tr.s(what)), ("error", error)],
+        )
+    }
+
+    fn log_job_failure(&mut self, what: seacraft_core::i18n::Key, error: &str) {
+        let msg = self.job_failure(what, error);
+        self.log(Level::Error, msg);
+    }
+
     fn refresh_locale(&mut self) {
         self.locale = seacraft_core::i18n::resolve_locale(
             self.cli_locale,
@@ -8912,6 +9172,16 @@ impl App {
     /// Switch immediately to `locale` and persist it as the user's preference.
     pub fn set_locale(&mut self, locale: seacraft_core::i18n::Locale) {
         self.set_language_pref(seacraft_core::i18n::LanguagePref::Fixed(locale));
+    }
+
+    /// The entry `Help ▸ Language` ticks: the language actually in force when `--lang` or
+    /// `SEACRAFT_LANG` overrides the saved preference (they outrank it, as in
+    /// [`seacraft_core::i18n::resolve_locale`]), otherwise the saved preference.
+    pub fn language_menu_ticked(&self) -> seacraft_core::i18n::LanguagePref {
+        match self.cli_locale.or(self.env_locale) {
+            Some(loc) => seacraft_core::i18n::LanguagePref::Fixed(loc),
+            None => self.language_pref,
+        }
     }
 
     /// Apply an explicit `--lang` CLI override for this session without overwriting saved prefs.
@@ -8981,9 +9251,17 @@ impl App {
             self.log(Level::Warning, err);
         } else if !fell_back {
             let n = self.preset_store.presets.len();
+            let tr = self.tr();
+            let count = n.to_string();
             let msg = match &self.preset_store.path {
-                Some(p) => format!("loaded {n} connected presets from {}", p.display()),
-                None => format!("loaded {n} built-in connected presets"),
+                Some(p) => tr.fmt(
+                    seacraft_core::i18n::Key::StatusPresetsLoadedFrom,
+                    &[("count", &count), ("path", &p.display().to_string())],
+                ),
+                None => tr.fmt(
+                    seacraft_core::i18n::Key::StatusPresetsLoadedBuiltin,
+                    &[("count", &count)],
+                ),
             };
             self.set_status(msg);
         }
@@ -9000,7 +9278,10 @@ impl App {
                 self.preset_store.reload();
                 self.hover_followers = None;
                 self.reconcile_connected_preset();
-                self.set_status(format!("wrote example presets to {}", path.display()));
+                self.set_status(self.tr().fmt(
+                    seacraft_core::i18n::Key::StatusPresetsWritten,
+                    &[("path", &path.display().to_string())],
+                ));
             }
             Err(err) => {
                 self.log(Level::Warning, err);
@@ -9058,9 +9339,12 @@ impl App {
         self.hover_followers = None;
         self.log(
             Level::Warning,
-            format!(
-                "connected preset \"{missing}\" is no longer available; using \"{}\"",
-                self.connected.preset
+            self.tr().fmt(
+                seacraft_core::i18n::Key::LogPresetGone,
+                &[
+                    ("missing", &missing.to_string()),
+                    ("using", &self.connected.preset),
+                ],
             ),
         );
         true
@@ -9100,7 +9384,10 @@ impl App {
             let e = failure.clone().unwrap_or_default();
             self.log(
                 Level::Warning,
-                format!("the recent files list is kept for this session only: {e}"),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogRecentSessionOnly,
+                    &[("error", &e)],
+                ),
             );
         }
         self.recent_failure = failure;
@@ -9310,10 +9597,7 @@ fn compute_resistance_impl(
             let core_rows = resistance::dsyhs_curve(&dsyhs_in, speeds);
             for r in &core_rows {
                 if !(0.15..=0.75).contains(&r.fn_) {
-                    warnings.push(format!(
-                        "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
-                        r.fn_, r.speed_kn
-                    ));
+                    warnings.push(resistance::dsyhs_fn_warning(r.fn_, r.speed_kn));
                 }
             }
             let rows = core_rows
@@ -9340,7 +9624,9 @@ fn compute_resistance_impl(
             let core_rows = seacraft_core::planing::planing_curve(&setup.hull, speeds);
             let mut warnings = Vec::new();
             if core_rows.is_empty() {
-                warnings.push("No planing equilibrium found at these speeds".to_string());
+                warnings.push(seacraft_core::i18n::Msg::new(
+                    seacraft_core::i18n::Key::WarnPlaningNoEquilibrium,
+                ));
             }
             let rows = core_rows
                 .into_iter()
@@ -9587,7 +9873,11 @@ impl App {
                     d.error = None;
                     d.result = None;
                 }
-                self.set_status("optimising the hull…".to_owned());
+                self.set_status(
+                    self.tr()
+                        .s(seacraft_core::i18n::Key::StatusOptimising)
+                        .to_owned(),
+                );
             }
             Err(e) => {
                 if let Some(d) = self.optimise_dialog.as_mut() {
@@ -9618,20 +9908,29 @@ impl App {
         let message = match outcome {
             Ok((surface, report)) if job.revision() == self.revision => {
                 let r = crate::commands::install_optimized(self, surface, report, level, kg);
-                Ok(format!(
-                    "R_T {:+.1} % at {:.1} kn after {} evaluations{}; draft now {:.3} m",
-                    r.report.rt_change_pct,
-                    r.report.speed_kn,
-                    r.report.evaluations,
-                    if r.report.converged {
-                        ""
-                    } else {
-                        " (not converged)"
-                    },
-                    r.draft
+                let tr = self.tr();
+                Ok(tr.fmt(
+                    seacraft_core::i18n::Key::StatusOptimised,
+                    &[
+                        ("change", &format!("{:+.1}", r.report.rt_change_pct)),
+                        ("speed", &format!("{:.1}", r.report.speed_kn)),
+                        ("evaluations", &r.report.evaluations.to_string()),
+                        (
+                            "note",
+                            if r.report.converged {
+                                ""
+                            } else {
+                                tr.s(seacraft_core::i18n::Key::StatusOptimisedNotConverged)
+                            },
+                        ),
+                        ("draft", &format!("{:.3}", r.draft)),
+                    ],
                 ))
             }
-            Ok(_) => Err("the model changed while optimising; the result was discarded".to_owned()),
+            Ok(_) => Err(self
+                .tr()
+                .s(seacraft_core::i18n::Key::StatusOptimiseDiscarded)
+                .to_owned()),
             Err(e) => Err(e),
         };
         match message {
@@ -9853,6 +10152,7 @@ impl App {
         let dirty = self.dirty && self.surface.is_some();
         let dragging = self.drag.is_some();
         let revs = (self.revision, self.project_rev);
+        self.autosave.tr = self.tr();
         let surface = &self.surface;
         let project = &self.project;
         let path = &self.path;
@@ -9896,7 +10196,9 @@ impl App {
         if self.dirty {
             self.log(
                 Level::Warning,
-                "cannot recover autosave while the current model has unsaved changes; save or discard first".to_owned(),
+                self.tr()
+                    .s(seacraft_core::i18n::Key::LogRecoverUnsaved)
+                    .to_owned(),
             );
             return;
         }
@@ -9906,9 +10208,12 @@ impl App {
             Err(err) => {
                 self.log(
                     Level::Warning,
-                    format!(
-                        "cannot recover autosave {}: invalid .fef ({err}); keeping file on disk",
-                        orphan.json_path.display()
+                    self.tr().fmt(
+                        seacraft_core::i18n::Key::LogRecoverInvalidFef,
+                        &[
+                            ("path", &orphan.json_path.display().to_string()),
+                            ("error", &err.to_string()),
+                        ],
                     ),
                 );
                 return;
@@ -9956,18 +10261,24 @@ impl App {
         if let Some(proj_err) = project_bad {
             self.log(
                 Level::Warning,
-                format!(
-                    "recovered geometry `{}` from autosave, but project could not be parsed ({proj_err}); using default project and keeping {} on disk",
-                    orphan.model_name,
-                    orphan.json_path.display()
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogRecoverProjectBad,
+                    &[
+                        ("name", &orphan.model_name),
+                        ("error", &proj_err.to_string()),
+                        ("path", &orphan.json_path.display().to_string()),
+                    ],
                 ),
             );
             if let Err(err) = write_res {
                 self.log(
                     Level::Warning,
-                    format!(
-                        "could not write fresh autosave snapshot ({err}); keeping {}",
-                        orphan.json_path.display()
+                    self.tr().fmt(
+                        seacraft_core::i18n::Key::LogRecoverWriteFailed,
+                        &[
+                            ("error", &err.to_string()),
+                            ("path", &orphan.json_path.display().to_string()),
+                        ],
                     ),
                 );
             }
@@ -9976,22 +10287,32 @@ impl App {
                 .original_path
                 .as_ref()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "untitled".to_owned());
+                .unwrap_or_else(|| {
+                    self.tr()
+                        .s(seacraft_core::i18n::Key::LogRecoverUntitled)
+                        .to_owned()
+                });
             self.log(
                 Level::Info,
-                format!(
-                    "recovered `{}` ({target_desc}) from autosave {}",
-                    orphan.model_name,
-                    orphan.json_path.display()
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogRecoverDone,
+                    &[
+                        ("name", &orphan.model_name),
+                        ("target", &target_desc),
+                        ("path", &orphan.json_path.display().to_string()),
+                    ],
                 ),
             );
             match write_res {
                 Ok(()) => orphan.remove_files(),
                 Err(err) => self.log(
                     Level::Warning,
-                    format!(
-                        "could not write fresh autosave snapshot ({err}); keeping orphan {}",
-                        orphan.json_path.display()
+                    self.tr().fmt(
+                        seacraft_core::i18n::Key::LogRecoverWriteFailedOrphan,
+                        &[
+                            ("error", &err.to_string()),
+                            ("path", &orphan.json_path.display().to_string()),
+                        ],
                     ),
                 ),
             }
@@ -10000,15 +10321,12 @@ impl App {
         if !self.autosave.orphans.is_empty() {
             let remaining = self.autosave.orphans.len();
             self.autosave.orphans.clear();
-            let word = if remaining == 1 {
-                "autosave"
-            } else {
-                "autosaves"
-            };
-            self.log(
-                Level::Info,
-                format!("{remaining} other {word} kept on disk for the next start"),
+            let msg = self.tr().plural(
+                seacraft_core::i18n::Key::LogRecoverOthersKeptOne,
+                seacraft_core::i18n::Key::LogRecoverOthersKeptOther,
+                remaining,
             );
+            self.log(Level::Info, msg);
         }
     }
 
@@ -10034,11 +10352,12 @@ impl App {
         }
         let count = self.autosave.orphans.len();
         self.autosave.orphans.clear();
-        let word = if count == 1 { "autosave" } else { "autosaves" };
-        self.log(
-            Level::Info,
-            format!("deferred {count} {word} to the next start"),
+        let msg = self.tr().plural(
+            seacraft_core::i18n::Key::LogRecoverDeferredOne,
+            seacraft_core::i18n::Key::LogRecoverDeferredOther,
+            count,
         );
+        self.log(Level::Info, msg);
     }
 
     fn recovery_window(&mut self, ctx: &egui::Context) {
@@ -10408,7 +10727,7 @@ impl App {
             &[("view", view.label_tr(tr))],
         ));
         self.analysis.slot_mut(view).track.start(key, move || {
-            crate::analysis_views::compute(view, &inputs, &model)
+            crate::analysis_views::compute(view, &inputs, &model, tr)
         });
     }
 

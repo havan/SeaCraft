@@ -813,6 +813,6 @@ mod tests {
             crate::i18n::Tr::new(crate::i18n::Locale::Tr),
         );
         assert!(page.contains("boşluk "), "{page}");
-        assert!(page.contains("açılabilir"), "{page}");
+        assert!(page.contains("açınabilir"), "{page}");
     }
 }

@@ -555,7 +555,10 @@ fn cmd_trim(a: TrimArgs, tr: Tr) -> Result<()> {
         );
     }
     for w in &scan.warnings {
-        println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWarningIndent, &[("message", &w.render(tr))])
+        );
     }
     Ok(())
 }
@@ -745,7 +748,10 @@ fn cmd_optimize(a: OptimizeArgs, tr: Tr) -> Result<()> {
         )
     );
     for w in &report.warnings {
-        println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWarningIndent, &[("message", &w.render(tr))])
+        );
     }
     let out_str = a.output.display().to_string();
     println!(
@@ -1703,14 +1709,18 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let cli_locale = match cli.lang.as_deref() {
         Some(code) => Some(
-            Locale::parse(code)
+            Locale::from_code(code)
                 .ok_or_else(|| anyhow::anyhow!("unknown language: {code} (en, tr)"))?,
         ),
         None => None,
     };
+    let env_locale = Locale::from_env_checked().unwrap_or_else(|bad| {
+        eprintln!("warning: SEACRAFT_LANG={bad} is not a supported language (en, tr); ignored");
+        None
+    });
     let locale = resolve_locale(
         cli_locale,
-        Locale::from_env(),
+        env_locale,
         LanguagePref::Auto,
         Locale::detect_system(),
     );
@@ -2293,7 +2303,7 @@ fn cmd_hydro(a: HydroArgs, tr: Tr) -> Result<()> {
                 "{}",
                 tr.fmt(
                     Key::CliHydroWarning,
-                    &[("code", w.code), ("message", &w.message)]
+                    &[("code", w.code), ("message", &w.message.render(tr))]
                 )
             );
         }
@@ -3044,7 +3054,10 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
         if a.csv.is_some() {
             // The CSV has no place for warnings; say them on stderr.
             for w in &warnings {
-                eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", w)]));
+                eprintln!(
+                    "{}",
+                    tr.fmt(Key::CliCommonWarning, &[("message", &w.render(tr))])
+                );
             }
             return Ok(());
         }
@@ -3077,7 +3090,10 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
             form_factor
         );
         for w in &warnings {
-            println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
+            println!(
+                "{}",
+                tr.fmt(Key::CliCommonWarningIndent, &[("message", &w.render(tr))])
+            );
         }
         println!();
         let cat = a.cat_spacing.is_some();
@@ -3129,13 +3145,7 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
         let mut warnings = dsyhs_in.warnings();
         for r in &rows {
             if !(0.15..=0.75).contains(&r.fn_) {
-                warnings.push(tr.fmt(
-                    Key::CliResistanceDsyhsFnWarn,
-                    &[
-                        ("fn", &format!("{:.3}", r.fn_)),
-                        ("speed", &format!("{:.2}", r.speed_kn)),
-                    ],
-                ));
+                warnings.push(resistance::dsyhs_fn_warning(r.fn_, r.speed_kn));
             }
         }
 
@@ -3177,7 +3187,10 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
         if a.csv.is_some() {
             // The CSV has no place for warnings; say them on stderr.
             for w in &warnings {
-                eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", w)]));
+                eprintln!(
+                    "{}",
+                    tr.fmt(Key::CliCommonWarning, &[("message", &w.render(tr))])
+                );
             }
             return Ok(());
         }
@@ -3204,7 +3217,10 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
             dsyhs_in.lcb_fpp_ratio
         );
         for w in &warnings {
-            println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
+            println!(
+                "{}",
+                tr.fmt(Key::CliCommonWarningIndent, &[("message", &w.render(tr))])
+            );
         }
         println!();
         println!(
@@ -3314,7 +3330,10 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
     if a.csv.is_some() {
         // The CSV has no place for warnings; say them on stderr.
         for w in &warnings {
-            let msg = tr.fmt(Key::CliResistanceWarningRange, &[("message", w)]);
+            let msg = tr.fmt(
+                Key::CliResistanceWarningRange,
+                &[("message", &w.render(tr))],
+            );
             eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", &msg)]));
         }
         return Ok(());
@@ -3349,7 +3368,10 @@ fn cmd_resistance(a: ResistanceArgs, tr: Tr) -> Result<()> {
         input.c_stern
     );
     for w in &warnings {
-        let msg = tr.fmt(Key::CliResistanceWarningRange, &[("message", w)]);
+        let msg = tr.fmt(
+            Key::CliResistanceWarningRange,
+            &[("message", &w.render(tr))],
+        );
         println!(
             "{}",
             tr.fmt(Key::CliCommonWarningIndent, &[("message", &msg)])
@@ -3551,7 +3573,10 @@ fn cmd_waves(a: WavesArgs, tr: Tr) -> Result<()> {
         .collect();
 
     for w in &field.warnings {
-        eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", w)]));
+        eprintln!(
+            "{}",
+            tr.fmt(Key::CliCommonWarning, &[("message", &w.render(tr))])
+        );
     }
     if a.json {
         let mut body = wave_pattern::summary_json(&field);
@@ -3635,7 +3660,10 @@ fn cmd_waves(a: WavesArgs, tr: Tr) -> Result<()> {
         }
     }
     for n in &field.notes {
-        println!("{}", tr.fmt(Key::CliWavesNoteLine, &[("note", n)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliWavesNoteLine, &[("note", &n.render(tr))])
+        );
     }
     for f in &files {
         println!("{}", tr.fmt(Key::CliCommonWrote, &[("path", f)]));
@@ -4020,8 +4048,14 @@ fn cmd_unfold(a: UnfoldArgs, tr: Tr) -> Result<()> {
         tr.s(Key::CliUnfoldNotDevelopableVerdict)
     };
     println!(
-        "  mean |K| {:.4} 1/m2  ->  {}",
-        unfolded.mean_abs_gaussian, verdict
+        "{}",
+        tr.fmt(
+            Key::CliUnfoldMeanKLine,
+            &[
+                ("k", &format!("{:.4}", unfolded.mean_abs_gaussian)),
+                ("verdict", verdict),
+            ],
+        )
     );
     Ok(())
 }
@@ -5120,7 +5154,10 @@ fn cmd_heel(a: HeelArgs, tr: Tr) -> Result<()> {
         tr.fmt(Key::CliHeelHeading, &[("name", &s.settings.name)])
     );
     for w in &r.warnings {
-        println!("{}", tr.fmt(Key::CliHeelWarning, &[("warning", w)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliHeelWarning, &[("warning", &w.render(tr))])
+        );
     }
     let cond = |c: &heel::ConditionSummary| {
         tr.fmt(
@@ -5384,9 +5421,9 @@ fn loading_equilibrium_lines_tr(res: &loading::LoadingResult, tr: Tr) -> Vec<Str
     }
     std::iter::once(tr.fmt(
         Key::CliLoadcaseWarningNoEq,
-        &[("note", loading::NO_EQUILIBRIUM_NOTE)],
+        &[("note", tr.s(Key::LoadingNoEquilibrium))],
     ))
-    .chain(res.warnings.iter().map(|w| format!("  {w}")))
+    .chain(res.warnings.iter().map(|w| format!("  {}", w.render(tr))))
     .collect()
 }
 
@@ -5595,10 +5632,16 @@ fn cmd_damage(a: DamageArgs, tr: Tr) -> Result<()> {
                 tr.s(Key::ReportBadgeFail)
             }
         );
-        println!("{}", tr.fmt(Key::CliDamageNoteLine, &[("note", &c.label)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliDamageNoteLine, &[("note", &c.label.render(tr))])
+        );
     }
     for w in &res.warnings {
-        println!("{}", tr.fmt(Key::CliCommonWarningIndent, &[("message", w)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWarningIndent, &[("message", &w.render(tr))])
+        );
     }
     Ok(())
 }
@@ -5746,7 +5789,7 @@ fn cmd_seakeeping(a: SeakeepingArgs, tr: Tr) -> Result<()> {
         println!();
         println!("{}", tr.s(Key::CliSeakeepingWarnings));
         for w in &rep.warnings {
-            println!("  [{}] {}", w.code, w.message);
+            println!("  [{}] {}", w.code, w.message.render(tr));
         }
     }
     Ok(())
@@ -5898,7 +5941,10 @@ fn print_irregular_sea(r: &seacraft_core::seastate::IrregularReport, tr: Tr) {
             "{}",
             tr.fmt(
                 Key::CliCommonWarningIndent,
-                &[("message", &format!("[{}]: {}", w.code, w.message))]
+                &[(
+                    "message",
+                    &format!("[{}]: {}", w.code, w.message.render(tr))
+                )]
             )
         );
     }
@@ -5985,7 +6031,10 @@ fn print_weather_summary(w: &seacraft_core::weather::WeatherResult, tr: Tr) {
         )
     );
     for note in &w.notes {
-        println!("{}", tr.fmt(Key::CliWeatherNote, &[("note", note)]));
+        println!(
+            "{}",
+            tr.fmt(Key::CliWeatherNote, &[("note", &note.render(tr))])
+        );
     }
 }
 

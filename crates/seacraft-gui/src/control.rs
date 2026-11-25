@@ -770,7 +770,7 @@ fn strings(p: &Value, key: &str, what: &str) -> Result<Option<Vec<String>>, Stri
 fn opt_locale(p: &Value) -> Result<Option<seacraft_core::i18n::Locale>, String> {
     match p.get("locale") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => seacraft_core::i18n::Locale::parse(s)
+        Some(Value::String(s)) => seacraft_core::i18n::Locale::from_code(s)
             .map(Some)
             .ok_or_else(|| format!("`locale` must be one of \"en\", \"tr\" (got `{s}`)")),
         Some(_) => Err("`locale` must be a string (\"en\" or \"tr\")".to_string()),
@@ -1804,7 +1804,9 @@ fn handle_inner(
                      apply to the linesplan formats (svg, dxf, igs), not `{format}`"
                 ));
             }
-            let linesplan = given.then(|| {
+            // A linesplan always gets explicit options, so an omitted `locale` means English
+            // here as in every other document tool, not the window's language.
+            let linesplan = (given || kind.is_linesplan()).then(|| {
                 let mut o = app
                     .display()
                     .section_options(app.subdivision_level(), app.subdivision_mode());
@@ -2702,9 +2704,8 @@ fn handle_inner(
                 let rows = seacraft_core::resistance::dsyhs_curve(&dsyhs_in, &speeds);
                 for r in &rows {
                     if !(0.15..=0.75).contains(&r.fn_) {
-                        warnings.push(format!(
-                            "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
-                            r.fn_, r.speed_kn
+                        warnings.push(seacraft_core::resistance::dsyhs_fn_warning(
+                            r.fn_, r.speed_kn,
                         ));
                     }
                 }
@@ -6738,6 +6739,43 @@ mod tests {
             json!({ "path": path.to_string_lossy(), "locale": "xx" }),
         );
         assert_eq!(bad["ok"], false, "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An omitted `locale` means English for a connected linesplan export, whatever the window's
+    /// language and whatever other options are passed, as for the headless MCP tools.
+    #[test]
+    fn model_export_linesplan_defaults_to_english_whatever_the_window_language() {
+        let (mut app, ctx) = demo();
+        app.set_locale(seacraft_core::i18n::Locale::Tr);
+        let dir = std::env::temp_dir().join(format!(
+            "seacraft-control-linesplan-locale-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        let cases = [
+            ("bare.svg", json!({}), false),
+            ("stations.svg", json!({ "stations": 10 }), false),
+            ("tr.svg", json!({ "locale": "tr" }), true),
+            ("en.svg", json!({ "locale": "en", "stations": 10 }), false),
+        ];
+        for (name, extra, turkish) in cases {
+            let path = dir.join(name);
+            let mut params = json!({ "path": path.to_string_lossy(), "format": "svg" });
+            for (k, v) in extra.as_object().unwrap() {
+                params[k] = v.clone();
+            }
+            let r = call(&mut app, &ctx, "model.export", params);
+            assert_eq!(r["ok"], true, "{name}: {r}");
+            let svg = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(svg.contains("Posta planı"), turkish, "{name}");
+            assert_eq!(svg.contains("Body plan"), !turkish, "{name}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

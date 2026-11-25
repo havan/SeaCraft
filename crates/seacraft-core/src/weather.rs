@@ -7,6 +7,7 @@
 //! measured above the keel datum (`hull.keel`).
 
 use crate::hydro::{waterplane_for, Hull, HydroOptions, Hydrostatics};
+use crate::i18n::{Key, Msg};
 use crate::math::deg_to_rad;
 use crate::mesh::Surface;
 use crate::stability::{cross_curves, hydrostatics_free_trim, StabilityCondition};
@@ -365,7 +366,7 @@ pub struct WeatherResult {
     /// Whether the complete weather criterion is satisfied (`phi0_passed && area_passed`, and GM > 0).
     pub passed: bool,
     /// Explanatory notes when φ0, φc, or φ2 cannot be found or inputs are degenerate.
-    pub notes: Vec<String>,
+    pub notes: Vec<Msg>,
 }
 
 const TABLE_X1: [(f64, f64); 11] = [
@@ -763,7 +764,7 @@ pub fn evaluate_weather(
     let lw1_m = if hydro.displacement_t > 1e-12 {
         wind_pressure_pa * area_m2 * z_m / (1000.0 * GRAVITY_M_S2 * hydro.displacement_t)
     } else {
-        notes.push("displacement is zero or negative; lw1 set to 0".into());
+        notes.push(Msg::new(Key::WarnWeatherNoDisplacement));
         0.0
     };
     let lw2_m = 1.5 * lw1_m;
@@ -784,7 +785,7 @@ pub fn evaluate_weather(
     };
     let (c, roll_period_s) = roll_period(hydro.beam_m, hydro.draft_m, hydro.lwl_m, hydro.gm_m);
     if hydro.gm_m <= 0.0 {
-        notes.push("GM <= 0: the roll period is undefined and the criterion fails".into());
+        notes.push(Msg::new(Key::WarnWeatherGmNonpositive));
     }
     let s = s_factor(roll_period_s);
     let phi1_deg = rollback_angle_deg(k, x1, x2, r, s);
@@ -810,14 +811,12 @@ pub fn evaluate_weather(
 
     let phi0_limit_deg = DEFAULT_PHI0_LIMIT_DEG;
     let phi0_deg = if pts.len() < 2 {
-        notes.push("insufficient GZ samples to evaluate weather criterion".into());
+        notes.push(Msg::new(Key::WarnWeatherFewGz));
         None
     } else {
         let p0 = find_upward_intercept(&pts, lw1_m, 0.0);
         if p0.is_none() {
-            notes.push(format!(
-                "steady wind lever lw1 ({lw1_m:.4} m) exceeds maximum GZ; phi0 not found"
-            ));
+            notes.push(Msg::new(Key::WarnWeatherLw1Exceeds).arg("lw1", format!("{lw1_m:.4}")));
         }
         p0
     };
@@ -847,9 +846,7 @@ pub fn evaluate_weather(
             let search_from = phi_roll_deg.unwrap_or(0.0).min(p0);
             let pc = find_upward_intercept(&pts, lw2_m, search_from);
             if pc.is_none() {
-                notes.push(format!(
-                    "gust lever lw2 ({lw2_m:.4} m) exceeds maximum GZ; first intercept phi_c not found"
-                ));
+                notes.push(Msg::new(Key::WarnWeatherLw2Exceeds).arg("lw2", format!("{lw2_m:.4}")));
             }
             pc
         }
@@ -868,17 +865,21 @@ pub fn evaluate_weather(
         }
         let max_curve_heel = pts.last().map(|&(h, _)| h).unwrap_or(0.0);
         if max_curve_heel < limit && phic2_deg.is_none() {
-            notes.push(format!(
-                "GZ curve ends at {max_curve_heel:.1} deg before reaching {limit:.1} deg or second lw2 intercept; clamping phi2"
-            ));
+            notes.push(
+                Msg::new(Key::WarnWeatherGzEnds)
+                    .arg("end", format!("{max_curve_heel:.1}"))
+                    .arg("limit", format!("{limit:.1}")),
+            );
             limit = limit.min(max_curve_heel);
         }
         if limit > pc {
             Some(limit)
         } else {
-            notes.push(format!(
-                "upper limit phi2 ({limit:.2} deg) is not above phi_c ({pc:.2} deg)"
-            ));
+            notes.push(
+                Msg::new(Key::WarnWeatherPhi2NotAbove)
+                    .arg("limit", format!("{limit:.2}"))
+                    .arg("pc", format!("{pc:.2}")),
+            );
             None
         }
     });

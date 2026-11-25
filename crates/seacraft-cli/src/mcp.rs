@@ -1803,6 +1803,7 @@ impl McpServer {
             None => vec![6.0, 8.0, 10.0, 12.0, 14.0],
         };
 
+        // i18n-casing: not translated (a tool argument)
         let method = str_arg(a, "method").unwrap_or("holtrop").to_lowercase();
         let cat_spacing = number_arg(a, "cat_spacing");
         if method == "michell" {
@@ -1861,10 +1862,7 @@ impl McpServer {
             let rows = resistance::dsyhs_curve(&dsyhs_in, &speeds);
             for r in &rows {
                 if !(0.15..=0.75).contains(&r.fn_) {
-                    warnings.push(format!(
-                        "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
-                        r.fn_, r.speed_kn
-                    ));
+                    warnings.push(resistance::dsyhs_fn_warning(r.fn_, r.speed_kn));
                 }
             }
             return Ok(json!({
@@ -2693,7 +2691,7 @@ fn opt_str<'a>(a: &'a Map<String, Value>, key: &str) -> Result<Option<&'a str>, 
 fn opt_locale(a: &Map<String, Value>) -> Result<Locale, String> {
     match opt_str(a, "locale")? {
         None => Ok(Locale::En),
-        Some(s) => Locale::parse(s)
+        Some(s) => Locale::from_code(s)
             .ok_or_else(|| format!("`locale` must be one of \"en\", \"tr\" (got `{s}`)")),
     }
 }

@@ -18,6 +18,7 @@
 //! model's own warnings; a minimum at the edge of the range is reported as such
 //! and not as an optimum.
 
+use crate::i18n::{Key, Msg};
 use serde::Serialize;
 
 use crate::hydro::{Hull, HydroOptions};
@@ -51,7 +52,7 @@ pub struct TrimScan {
     /// True when the best point is an end of the range, i.e. not an interior
     /// minimum.
     pub at_boundary: bool,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
 }
 
 /// Drafts from `lo` to `hi` in `steps` equal steps, always including zero.
@@ -126,15 +127,15 @@ pub fn scan(
             match draft_for_volume(&hull, &base, trim, target) {
                 Some(d) => o.draft = d,
                 None => {
-                    errors.push(format!(
-                        "trim {trim:+.3} m: the hull cannot carry the displacement"
-                    ));
+                    errors.push(
+                        Msg::new(Key::WarnTrimCannotCarry).arg("trim", format!("{trim:+.3}")),
+                    );
                     continue;
                 }
             }
         }
         let Some(input) = HoltropInput::measure(&hull, &o) else {
-            errors.push(format!("trim {trim:+.3} m: no waterline to measure"));
+            errors.push(Msg::new(Key::WarnTrimNoWaterline).arg("trim", format!("{trim:+.3}")));
             continue;
         };
         let r = resistance::holtrop(&input, speed_m_s);
@@ -151,7 +152,11 @@ pub fn scan(
     if points.is_empty() {
         return Err(format!(
             "trim: nothing could be measured ({})",
-            errors.join("; ")
+            errors
+                .iter()
+                .map(Msg::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
         ));
     }
     let mut best = points[0];
@@ -165,16 +170,10 @@ pub fn scan(
             || best.trim_m >= points[points.len() - 1].trim_m - 1e-9);
     let mut warnings = Vec::new();
     if at_boundary {
-        warnings.push(format!(
-            "the cheapest trim ({:+.3} m) is at the edge of the range; widen it with --from/--to",
-            best.trim_m
-        ));
+        warnings.push(Msg::new(Key::WarnTrimAtEdge).arg("trim", format!("{:+.3}", best.trim_m)));
     }
     if points.iter().any(|p| p.trim_m.abs() > 0.5) {
-        warnings.push(
-            "Holtrop-Mennen was fitted to even-keel hulls; a trim beyond 0.5 m is an extrapolation"
-                .to_string(),
-        );
+        warnings.push(Msg::new(Key::WarnTrimExtrapolation));
     }
     warnings.extend(errors);
     Ok(TrimScan {
@@ -303,7 +302,7 @@ mod tests {
         assert!(edge
             .warnings
             .iter()
-            .any(|w| w.contains("edge of the range")));
+            .any(|w| w.to_string().contains("edge of the range")));
         assert!(scan(&s, o.subdivision, &o, 0.0, &[-0.1, 0.1], true).is_err());
         assert!(scan(&s, o.subdivision, &o, 10.0, &[0.0], true).is_err());
     }

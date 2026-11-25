@@ -184,6 +184,8 @@ pub struct SweepInput {
     pub opts: HydroOptions,
     pub start: StartInput,
     pub weights: Vec<WeightItem>,
+    /// The language a failure is reported in.
+    pub tr: Tr,
 }
 
 /// One computed condition: the sweep the curve and the drag preview use, and the equilibrium.
@@ -200,7 +202,7 @@ pub struct HeelSweepOut {
     /// `I_TL`), when it floats upright.
     pub upright_gm: Option<f64>,
     /// Why the start is doubtful (a loading condition not in equilibrium).
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     /// The hull it was measured on.
     pub hull: Arc<Hull>,
     pub opts: HydroOptions,
@@ -391,6 +393,7 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
         opts,
         start,
         weights,
+        tr,
     } = input;
     let hull = hull.unwrap_or_else(|| Arc::new(Hull::new(&surface, subdivision)));
     let mut warnings = Vec::new();
@@ -401,9 +404,9 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
             lcg,
         } => {
             let mut m = MassCondition::bare(&hull, &opts, kg, lcg).ok_or_else(|| {
-                format!(
-                    "the hull displaces nothing at the dock draft {:.3} m",
-                    opts.draft
+                tr.fmt(
+                    Key::HeelErrDockNothing,
+                    &[("draft", &format!("{:.3}", opts.draft))],
                 )
             })?;
             m.kg_estimate = kg_estimate;
@@ -411,7 +414,7 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
         }
         StartInput::Condition(cond) => {
             seacraft_core::loading::validate(&cond)
-                .map_err(|e| format!("loading condition invalid: {e}"))?;
+                .map_err(|e| tr.fmt(Key::HeelErrLoadingInvalid, &[("error", &e.to_string())]))?;
             let r = seacraft_core::loading::evaluate(&surface, &opts, &cond);
             if !r.equilibrium_found {
                 warnings.extend(r.warnings.iter().cloned());
@@ -1095,7 +1098,8 @@ pub fn panel_tr(ui: &mut egui::Ui, p: HeelViewPanel<'_>, tr: Tr) -> HeelViewActi
                     for w in &out.warnings {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(format!("⚠ {w}")).color(theme::WARN),
+                                egui::RichText::new(format!("⚠ {}", w.render(tr)))
+                                    .color(theme::WARN),
                             )
                             .wrap(),
                         );
@@ -2700,6 +2704,7 @@ mod tests {
         };
         let opts = HydroOptions::from_surface(&s, sub);
         let out = compute_sweep(SweepInput {
+            tr: Tr::new(Locale::En),
             surface: s,
             hull: None,
             subdivision: sub,

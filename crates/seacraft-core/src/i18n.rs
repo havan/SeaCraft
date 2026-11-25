@@ -64,6 +64,16 @@ impl Locale {
         }
     }
 
+    /// Parse a language code given by a user (`--lang`, MCP `locale`): exactly `"en"` or `"tr"`,
+    /// ignoring ASCII case. Region and encoding suffixes are refused, unlike [`Locale::parse`],
+    /// which reads operating-system tags.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|loc| code.trim().eq_ignore_ascii_case(loc.code()))
+    }
+
     /// Detect the user's preferred locale from the operating system, falling back to `En`.
     pub fn detect_system() -> Self {
         #[cfg(windows)]
@@ -77,33 +87,47 @@ impl Locale {
         }
         #[cfg(not(windows))]
         {
-            for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-                if let Ok(val) = std::env::var(var) {
-                    let trimmed = val.trim();
-                    if trimmed.is_empty()
-                        || trimmed.eq_ignore_ascii_case("C")
-                        || trimmed.eq_ignore_ascii_case("POSIX")
-                        || trimmed.starts_with("C.")
-                    {
-                        continue;
-                    }
-                    if let Some(loc) = Self::parse(trimmed) {
-                        return loc;
-                    }
-                    // A valid non-empty LC_ALL/LC_MESSAGES naming an unsupported locale
-                    // (e.g. de_DE) stops fallback to lower-precedence env vars.
-                    return Locale::En;
-                }
-            }
-            Locale::En
+            Self::detect_from_env(|var| std::env::var(var).ok())
         }
     }
 
-    /// Read `SEACRAFT_LANG`, if set and valid.
+    /// The POSIX message locale from `LC_ALL`, `LC_MESSAGES` and `LANG`, read through `get`.
+    ///
+    /// The first set, non-empty variable decides, as POSIX says: `C`, `C.*` and `POSIX` mean
+    /// English, and so does a language SeaCraft does not have. GNU `LANGUAGE` is not consulted.
+    pub fn detect_from_env(get: impl Fn(&str) -> Option<String>) -> Self {
+        for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+            let Some(val) = get(var) else { continue };
+            let trimmed = val.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed == "C" || trimmed == "POSIX" || trimmed.starts_with("C.") {
+                return Locale::En;
+            }
+            return Self::parse(trimmed).unwrap_or(Locale::En);
+        }
+        Locale::En
+    }
+
+    /// Read `SEACRAFT_LANG`, if set and valid. [`Locale::from_env_checked`] also reports a value
+    /// that names no supported language, so callers can warn about it.
     pub fn from_env() -> Option<Self> {
-        std::env::var("SEACRAFT_LANG")
-            .ok()
-            .and_then(|v| Self::parse(&v))
+        Self::from_env_checked().ok().flatten()
+    }
+
+    /// `SEACRAFT_LANG`: `Ok(None)` when unset or empty, `Err(value)` when it names no supported
+    /// language. It takes a code (`tr`) or an operating-system tag (`tr_TR.UTF-8`).
+    pub fn from_env_checked() -> Result<Option<Self>, String> {
+        Self::check_env_value(std::env::var("SEACRAFT_LANG").ok())
+    }
+
+    fn check_env_value(value: Option<String>) -> Result<Option<Self>, String> {
+        match value {
+            None => Ok(None),
+            Some(v) if v.trim().is_empty() => Ok(None),
+            Some(v) => Self::parse(&v).map(Some).ok_or(v),
+        }
     }
 
     /// Plural category for `count` in this locale.
@@ -224,6 +248,12 @@ impl Tr {
                 if let Some((_, val)) = args.iter().find(|(k, _)| *k == name) {
                     out.push_str(val);
                 } else {
+                    debug_assert!(
+                        false,
+                        "i18n key '{}' ({}): no value for placeholder '{{{name}}}'",
+                        key.id(),
+                        self.0.code()
+                    );
                     out.push('{');
                     out.push_str(name);
                     out.push('}');
@@ -238,6 +268,11 @@ impl Tr {
         out
     }
 
+    /// Render a structured [`Msg`] in this locale.
+    pub fn msg(self, msg: &Msg) -> String {
+        msg.render(self)
+    }
+
     /// Format a pluralized message using `{count}` and this locale's plural rule.
     pub fn plural(self, one: Key, other: Key, count: usize) -> String {
         let key = match self.0.plural_category(count) {
@@ -249,9 +284,102 @@ impl Tr {
     }
 }
 
+/// A user-facing message kept as a catalog key and its already formatted arguments, so the
+/// computation that raises it does not have to know the reader's language.
+///
+/// Core results (method-validity warnings, wave notes, loading and damage warnings) carry `Msg`
+/// and every human-readable output renders it with its own [`Tr`]. `Display` and `Serialize`
+/// render English, so `--json`, MCP replies and saved files stay invariant across locales.
+/// A message read back from JSON has lost its key and is kept as [`Msg::Raw`] text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Msg {
+    /// A catalog key and its `{placeholder}` values.
+    Keyed {
+        key: Key,
+        args: Vec<(&'static str, String)>,
+    },
+    /// Text that is shown as it is in every locale.
+    Raw(String),
+}
+
+impl Msg {
+    /// A message with no arguments yet.
+    pub fn new(key: Key) -> Self {
+        Msg::Keyed {
+            key,
+            args: Vec::new(),
+        }
+    }
+
+    /// Add the value of `{name}`. Numbers are formatted by the caller, with `.` as the decimal
+    /// separator in every locale.
+    pub fn arg(mut self, name: &'static str, value: impl std::fmt::Display) -> Self {
+        if let Msg::Keyed { args, .. } = &mut self {
+            args.push((name, value.to_string()));
+        }
+        self
+    }
+
+    /// The catalog key, when the message has one.
+    pub fn key(&self) -> Option<Key> {
+        match self {
+            Msg::Keyed { key, .. } => Some(*key),
+            Msg::Raw(_) => None,
+        }
+    }
+
+    /// The message in `tr`'s language.
+    pub fn render(&self, tr: Tr) -> String {
+        match self {
+            Msg::Keyed { key, args } => {
+                let args: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                tr.fmt(*key, &args)
+            }
+            Msg::Raw(text) => text.clone(),
+        }
+    }
+}
+
+impl From<String> for Msg {
+    fn from(text: String) -> Self {
+        Msg::Raw(text)
+    }
+}
+
+impl std::fmt::Display for Msg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.render(Tr::new(Locale::En)))
+    }
+}
+
+impl serde::Serialize for Msg {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Msg {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Msg::Raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn msg_renders_per_locale_and_serializes_english() {
+        let m = Msg::new(Key::LangSystemDefault).arg("lang", "X");
+        assert_eq!(m.render(Tr::new(Locale::En)), "System default (X)");
+        assert_eq!(m.render(Tr::new(Locale::Tr)), "Sistem varsayılanı (X)");
+        assert_eq!(m.to_string(), "System default (X)");
+        let json = serde_json::to_string(&m).unwrap();
+        assert_eq!(json, "\"System default (X)\"");
+        let back: Msg = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Msg::Raw("System default (X)".into()));
+        assert_eq!(back.render(Tr::new(Locale::Tr)), "System default (X)");
+    }
 
     #[test]
     fn locale_parse_handles_bcp47_and_posix_tags() {
@@ -266,6 +394,83 @@ mod tests {
         assert_eq!(Locale::parse("POSIX"), None);
         assert_eq!(Locale::parse(""), None);
         assert_eq!(Locale::parse("de"), None);
+    }
+
+    #[test]
+    fn from_code_accepts_only_supported_codes() {
+        assert_eq!(Locale::from_code("en"), Some(Locale::En));
+        assert_eq!(Locale::from_code("TR"), Some(Locale::Tr));
+        assert_eq!(Locale::from_code(" tr "), Some(Locale::Tr));
+        assert_eq!(Locale::from_code("tr_TR.UTF-8"), None);
+        assert_eq!(Locale::from_code("EN-zz"), None);
+        assert_eq!(Locale::from_code("tr-XX"), None);
+        assert_eq!(Locale::from_code("de"), None);
+        assert_eq!(Locale::from_code(""), None);
+    }
+
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |var| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == var)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
+    #[test]
+    fn detect_from_env_follows_posix_precedence() {
+        let d = Locale::detect_from_env;
+        assert_eq!(d(env(&[])), Locale::En);
+        assert_eq!(d(env(&[("LANG", "tr_TR.UTF-8")])), Locale::Tr);
+        // A set LC_ALL overrides everything, and C or POSIX there means English.
+        assert_eq!(
+            d(env(&[("LC_ALL", "C"), ("LANG", "tr_TR.UTF-8")])),
+            Locale::En
+        );
+        assert_eq!(
+            d(env(&[("LC_ALL", "POSIX"), ("LC_MESSAGES", "tr_TR.UTF-8")])),
+            Locale::En
+        );
+        assert_eq!(
+            d(env(&[("LC_ALL", "C.UTF-8"), ("LANG", "tr_TR.UTF-8")])),
+            Locale::En
+        );
+        assert_eq!(
+            d(env(&[("LC_MESSAGES", "C"), ("LANG", "tr_TR.UTF-8")])),
+            Locale::En
+        );
+        // Empty variables are skipped.
+        assert_eq!(
+            d(env(&[("LC_ALL", ""), ("LANG", "tr_TR.UTF-8")])),
+            Locale::Tr
+        );
+        assert_eq!(
+            d(env(&[("LC_ALL", "tr_TR.UTF-8"), ("LANG", "en_US.UTF-8")])),
+            Locale::Tr
+        );
+        // An unsupported language decides too: English, not the next variable.
+        assert_eq!(
+            d(env(&[
+                ("LC_MESSAGES", "de_DE.UTF-8"),
+                ("LANG", "tr_TR.UTF-8")
+            ])),
+            Locale::En
+        );
+    }
+
+    #[test]
+    fn seacraft_lang_value_is_checked() {
+        assert_eq!(Locale::check_env_value(None), Ok(None));
+        assert_eq!(Locale::check_env_value(Some(" ".into())), Ok(None));
+        assert_eq!(
+            Locale::check_env_value(Some("tr".into())),
+            Ok(Some(Locale::Tr))
+        );
+        assert_eq!(
+            Locale::check_env_value(Some("tr_TR.UTF-8".into())),
+            Ok(Some(Locale::Tr))
+        );
+        assert_eq!(Locale::check_env_value(Some("de".into())), Err("de".into()));
     }
 
     #[test]

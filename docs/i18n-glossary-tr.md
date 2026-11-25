@@ -50,3 +50,12 @@ Terminology conventions for SeaCraft's Turkish (`tr`) translation.
 | Table of offsets | Ofset tablosu | Ofset tablosu | |
 | Design report | Tasarım raporu | Tasarım raporu | |
 | PASS / FAIL / WARN | GEÇTİ / KALDI / UYARI | GEÇTİ / KALDI / UYARI | |
+| Developable / Not developable | Açınabilir / Açınamaz | Açınabilir / Açınamaz | Never *açılabilir* (that is "can be opened") |
+| Deadrise | Kalkıntı açısı (deadrise) | Kalkıntı açısı | Not *karina* (the underwater body) or *dip açısı* |
+| IS Code Part A | IS Kodu Bölüm A | IS Kodu Bölüm A | |
+| Loll | Yatık denge (loll) | Yatık denge | |
+| Seam (plywood, stitch-and-glue) | Dikiş | Dikiş | *Seam drift*: dikiş sapması |
+| Thin-ship theory | İnce gemi (thin-ship) kuramı | İnce gemi | |
+| Lies flat / does not lie flat | Düz açılır / Düz açılmaz | Düz açılır / Düz açılmaz | |
+| Degrees | ° | ° | Never *der* (rule 2) |
+| Percent of a number | %{value} | %{value} | Never put a suffix on a placeholder (`%{pct}'i`): the right vowel-harmony suffix depends on the number |

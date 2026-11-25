@@ -1304,10 +1304,10 @@ fn solve_on_hull(
                     h_res = heave_2d(&form, w_e, spec.rho, spec.g);
                     warnings.push(Warning {
                         code: "station_lewis_fallback",
-                        message: format!(
-                            "station at x = {:.3} m could not be converted to polygon contour; fell back to Lewis form",
-                            cut_x
-                        ),
+                        message: crate::i18n::Msg::new(
+                            crate::i18n::Key::WarnSeakeepingLewisFallback,
+                        )
+                        .arg("x", format!("{cut_x:.3}")),
                     });
                 }
             }

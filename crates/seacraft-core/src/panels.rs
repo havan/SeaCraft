@@ -2303,11 +2303,13 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         stations: stations.clone(),
         layout: None,
     };
+    // The seam-drift note's fixed opening, to find it among the notes; `None` if a translation
+    // ever opens with a placeholder, so it can never match every note.
     let drift_prefix = tr
         .s(Key::PanelsNoteSeamDrift)
         .split('{')
         .next()
-        .unwrap_or("Seam drift");
+        .filter(|p| !p.is_empty());
     let stock_len = crate::units::millimetres(st.length_m);
     let stock_wid = crate::units::millimetres(st.width_m);
     let split_nesting = opts
@@ -2413,7 +2415,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             let at = sheet
                 .notes
                 .iter()
-                .position(|n| n.starts_with(drift_prefix) || n.starts_with("Seam drift"))
+                .position(|n| drift_prefix.is_some_and(|p| n.starts_with(p)))
                 .map_or(0, |i| i + 1);
             sheet.notes.insert(at, note);
         }
@@ -2538,11 +2540,14 @@ pub fn stale_sheet_note_tr(stale: &[std::path::PathBuf], tr: Tr) -> Option<Strin
 /// case as [`crate::io::shared_output`] does: on a case-insensitive filesystem `skiff-sheet-3.SVG`
 /// is the file an export to `skiff.svg` would write as its third sheet.
 fn sheet_number(path: &std::path::Path, name: &str) -> Option<usize> {
+    // i18n-casing: not translated (file names)
     let name = name.to_lowercase();
+    // i18n-casing: not translated (file names)
     let stem = path.file_stem()?.to_str()?.to_lowercase();
     let rest = name.strip_prefix(&stem)?.strip_prefix("-sheet-")?;
     let digits = match path.extension() {
         Some(ext) => rest
+            // i18n-casing: not translated (file names)
             .strip_suffix(&ext.to_str()?.to_lowercase())?
             .strip_suffix('.')?,
         None => rest,
@@ -2552,6 +2557,7 @@ fn sheet_number(path: &std::path::Path, name: &str) -> Option<usize> {
     }
     let n: usize = digits.parse().ok()?;
     let expected = sheet_file_name(path, n - 1);
+    // i18n-casing: not translated (file names)
     (expected.file_name()?.to_str()?.to_lowercase() == name).then_some(n)
 }
 
@@ -4550,7 +4556,7 @@ mod tests {
         assert!(!set.all_lie_flat());
         let failing = set.failing_tr(tr);
         assert!(
-            failing.iter().any(|l| l.contains("Düz açılmıyor")),
+            failing.iter().any(|l| l.contains("Düz açılmaz")),
             "{failing:?}"
         );
         let summary = set.not_flat_summary_tr(tr).unwrap();

@@ -186,7 +186,7 @@ pub struct WaveResult {
     /// The catamaran spacing it was computed for (m).
     pub cat_spacing_m: Option<f64>,
     /// The field's warnings, each once.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
 }
 
 /// The fewest samples along the wash line (more at a slow speed: `wash_samples`).
@@ -283,7 +283,7 @@ pub fn compute_waves(
             (ratio(drag_here.rw_n), scan)
         }
     };
-    let mut warnings: Vec<String> = Vec::new();
+    let mut warnings: Vec<seacraft_core::i18n::Msg> = Vec::new();
     for w in &field.warnings {
         if !warnings.contains(w) {
             warnings.push(w.clone());
@@ -324,7 +324,7 @@ pub struct WaveDrag {
     pub cat_spacing_m: Option<f64>,
     pub length_wl: f64,
     /// Michell's warnings for the hull (L/B, wetted transom).
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
 }
 
 /// The wave-drag curve at `draft`, upright, in water of density `rho` (kg/m³).
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(w.wash_cut.s.len(), 401);
         assert_eq!(w.wash_cut.s[0], f.xs[0]);
         assert!((w.wash_cut.s[400] - f.xs[nx - 1]).abs() < 1e-9);
-        assert_eq!(f.notes[0], FAR_FIELD_NOTE);
+        assert_eq!(f.notes[0].to_string(), FAR_FIELD_NOTE);
         assert!((w.clip_m - f.max_abs_zeta_m).abs() < 1e-15);
         assert!((w.draft - draft).abs() < 1e-12);
     }
@@ -733,7 +733,7 @@ mod tests {
             w.wash_distance_m,
             wash_distance(&settings, w.length_wl, w.beam_wl)
         );
-        let mut sorted = w.warnings.clone();
+        let mut sorted: Vec<String> = w.warnings.iter().map(|m| m.to_string()).collect();
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), w.warnings.len(), "deduplicated");
@@ -788,7 +788,9 @@ mod tests {
         assert!(mono.cat.is_none());
         assert!(mono.length_wl > 0.0);
         assert!(
-            mono.warnings.iter().any(|w| w.contains("transom")),
+            mono.warnings
+                .iter()
+                .any(|w| w.to_string().contains("transom")),
             "{:?}",
             mono.warnings
         );

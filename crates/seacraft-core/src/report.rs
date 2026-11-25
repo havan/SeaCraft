@@ -870,7 +870,7 @@ pub fn design_report_with_project(
                         html_escape(tr.s(Key::ReportResWarningsHeading))
                     );
                     for w in &warnings {
-                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(&w.render(tr)));
                     }
                     out.push_str("    </ul>\n");
                     out.push_str("  </div>\n");
@@ -1038,7 +1038,7 @@ pub fn design_report_with_project(
                 if !res.warnings.is_empty() {
                     out.push_str("    <ul>\n");
                     for w in &res.warnings {
-                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(&w.render(tr)));
                     }
                     out.push_str("    </ul>\n");
                 }
@@ -1160,7 +1160,11 @@ pub fn design_report_with_project(
             };
 
             for w in &res.warnings {
-                let _ = writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(w));
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"warn-box\">{}</div>",
+                    html_escape(&w.render(tr))
+                );
             }
 
             // Intact vs damaged draft/trim/heel, sinkage, freeboard
@@ -1297,17 +1301,13 @@ pub fn design_report_with_project(
                     fmt_num(crit.area_m_rad, 4),
                     badge_html(p_area, tr)
                 );
-                let label = if crit.label == "indicative, SOLAS-style (not class-approved)" {
-                    tr.s(Key::ReportDmgIndicativeLabel)
-                } else {
-                    crit.label.as_str()
-                };
+                let label = crit.label.render(tr);
                 let _ = writeln!(
                     out,
                     "      <tr class=\"active-row\"><td class=\"text-left\"><strong>{}</strong></td><td>{}</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
                     html_escape(tr.s(Key::ReportDmgOverallResidual)),
                     html_escape(tr.s(Key::ReportStabAllCriteriaMet)),
-                    html_escape(label),
+                    html_escape(&label),
                     badge_html(crit.passed, tr)
                 );
             } else {
@@ -1575,7 +1575,7 @@ pub fn design_report_with_project(
                 if !field.warnings.is_empty() {
                     out.push_str("  <div class=\"warn-box\">\n    <ul>\n");
                     for w in &field.warnings {
-                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(&w.render(tr)));
                     }
                     out.push_str("    </ul>\n  </div>\n");
                 }
@@ -1615,8 +1615,7 @@ pub fn design_report_with_project(
                 out.push_str("  </div>\n");
                 out.push_str("  <div class=\"note-box\">\n");
                 for note in &field.notes {
-                    let localized = crate::wave_pattern::localize_note(note, tr);
-                    let _ = writeln!(out, "    <p>{}</p>", html_escape(localized));
+                    let _ = writeln!(out, "    <p>{}</p>", html_escape(&note.render(tr)));
                 }
                 out.push_str("  </div>\n");
             }
@@ -2974,5 +2973,37 @@ mod tests {
         let tr = Tr::new(Locale::Tr);
         assert!(html.contains(crate::wave_pattern::Regime::HullSpeed.sentence_tr(tr)));
         assert!(html.contains(tr.s(Key::WaveNoteFarField)));
+    }
+
+    /// The method-validity caveats are the text a reader most needs to understand, so a Turkish
+    /// dossier must not fall back to English for them (demo hull: L/B about 3, a wide transom,
+    /// and Fn 0.15 is below Michell's range).
+    #[test]
+    fn turkish_design_report_localizes_method_warnings_and_wave_notes() {
+        let (surface, mut opts, project) = demo_hull_project();
+        opts.locale = Locale::Tr;
+        opts.waves = Some(waves_at_fn(0.15));
+        let html = design_report_with_project(&surface, &opts, &project).expect("Turkish report");
+        for english in [
+            "is outside",
+            "wetted transom",
+            "waves shorter than",
+            "spacing coarsened",
+            "Far-field thin-ship",
+            "applicability range",
+        ] {
+            assert!(
+                !html.contains(english),
+                "English `{english}` in a Turkish report"
+            );
+        }
+        assert!(html.contains("aralığının dışında"), "Turkish range warning");
+        assert!(html.contains("ıslak ayna alanı"), "Turkish transom warning");
+        assert!(html.contains("kısa dalgalar"), "Turkish cut-off note");
+
+        opts.locale = Locale::En;
+        let en = design_report_with_project(&surface, &opts, &project).expect("English report");
+        assert!(en.contains("is outside 3.9-14.9"));
+        assert!(en.contains("wetted transom"));
     }
 }

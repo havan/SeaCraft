@@ -58,7 +58,7 @@ fn main() -> eframe::Result {
             "--open" => open = args.next().map(PathBuf::from),
             "--combs" => combs = true,
             "--lang" => match args.next() {
-                Some(code) => match seacraft_core::i18n::Locale::parse(&code) {
+                Some(code) => match seacraft_core::i18n::Locale::from_code(&code) {
                     Some(loc) => lang = Some(loc),
                     None => {
                         eprintln!("unknown language: {code} (en, tr)");
@@ -175,10 +175,7 @@ fn main() -> eframe::Result {
         "SeaCraft",
         options,
         Box::new(move |cc| {
-            let mut app = App::new(cc, open.clone());
-            if let Some(loc) = lang {
-                app.set_cli_locale(loc);
-            }
+            let mut app = App::new(cc, open.clone(), lang);
             if !no_autosave {
                 app.enable_autosave();
             }

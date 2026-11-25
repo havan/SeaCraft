@@ -212,6 +212,20 @@ fn language_preference_persists_across_storage_reload() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--lang` outranks a saved fixed preference, so `Help ▸ Language` ticks the language in force,
+/// not the saved one; choosing an entry drops the override.
+#[test]
+fn language_menu_ticks_the_override_in_force() {
+    let mut app = App::headless_for_test(None);
+    app.set_language_pref(LanguagePref::Fixed(Locale::En));
+    assert_eq!(app.language_menu_ticked(), LanguagePref::Fixed(Locale::En));
+    app.set_cli_locale(Locale::Tr);
+    assert_eq!(app.locale(), Locale::Tr);
+    assert_eq!(app.language_menu_ticked(), LanguagePref::Fixed(Locale::Tr));
+    app.set_language_pref(LanguagePref::Auto);
+    assert_eq!(app.language_menu_ticked(), LanguagePref::Auto);
+}
+
 #[test]
 fn start_card_and_min_window_render_in_turkish() {
     let mut empty = App::headless_empty();

@@ -18,6 +18,7 @@
 
 use crate::curves::station_polygons;
 use crate::hydro::{Hull, HydroOptions};
+use crate::i18n::{Key, Msg};
 use crate::math::Vec3;
 use crate::mesh::Surface;
 use crate::stability::{
@@ -172,7 +173,7 @@ pub struct LoadingResult {
     /// figure measured at it describes a hull that is not in equilibrium.
     pub equilibrium_found: bool,
     /// Why the condition is not in equilibrium, when it is not.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
     /// Solved draft above the keel, metres.
     pub draft: f64,
     /// Solved trim, metres (positive bow-up).
@@ -661,20 +662,22 @@ pub fn evaluate(surface: &Surface, opts: &HydroOptions, cond: &LoadingCondition)
             fc
         } else if let Some(draft) = solve_draft(&hull, target_volume, opts.trim, 0.0) {
             equilibrium_found = false;
-            warnings.push(format!(
-                "no trim puts the LCB on the LCG ({lcg:.3} m): floated at the held trim {:.3} m",
-                opts.trim
-            ));
+            warnings.push(
+                Msg::new(Key::WarnLoadingNoTrimEq)
+                    .arg("lcg", format!("{lcg:.3}"))
+                    .arg("trim", format!("{:.3}", opts.trim)),
+            );
             FloatingCondition {
                 draft,
                 trim: opts.trim,
             }
         } else {
             equilibrium_found = false;
-            warnings.push(format!(
-                "the hull cannot float {total_mass:.3} t: measured at the given draft {:.3} m",
-                opts.draft
-            ));
+            warnings.push(
+                Msg::new(Key::WarnLoadingCannotFloat)
+                    .arg("mass", format!("{total_mass:.3}"))
+                    .arg("draft", format!("{:.3}", opts.draft)),
+            );
             FloatingCondition {
                 draft: opts.draft,
                 trim: opts.trim,
@@ -1074,7 +1077,7 @@ mod tests {
         assert!(!res.equilibrium_found);
         assert_eq!(res.warnings.len(), 1, "{:?}", res.warnings);
         assert!(
-            res.warnings[0].contains("cannot float"),
+            res.warnings[0].to_string().contains("cannot float"),
             "{:?}",
             res.warnings
         );
@@ -1103,7 +1106,9 @@ mod tests {
         let res = evaluate(&surface, &opts, &cond);
         assert!(!res.equilibrium_found, "draft {}", res.draft);
         assert!(
-            res.warnings.iter().any(|w| w.contains("cannot float")),
+            res.warnings
+                .iter()
+                .any(|w| w.to_string().contains("cannot float")),
             "{:?}",
             res.warnings
         );

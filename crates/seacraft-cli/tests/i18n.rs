@@ -401,3 +401,90 @@ fn cli_lang_tr_localizes_stability_examples_waves_and_documents() {
         "{panels_svg_s}"
     );
 }
+
+/// The method-validity warnings and wave notes, the caveats a reader most needs, are Turkish
+/// under `--lang tr` on the terminal and in the wave SVG (demo hull: L/B about 3, a wide transom,
+/// Fn 0.15 below Michell's range).
+#[test]
+fn cli_lang_tr_localizes_method_warnings_and_wave_notes() {
+    let dir = Dir::new("warnings");
+    let hull = example("demo-hull.fef");
+    let svg = dir.path("w.svg");
+    let out = run(
+        &dir.0,
+        &[],
+        &[
+            "--lang",
+            "tr",
+            "waves",
+            &hull,
+            "--fn",
+            "0.15",
+            "-o",
+            svg.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = format!(
+        "{}{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+        std::fs::read_to_string(&svg).unwrap()
+    );
+    for english in [
+        "is outside",
+        "wetted transom",
+        "waves shorter than",
+        "Far-field thin-ship",
+        "applicability range",
+    ] {
+        assert!(
+            !text.contains(english),
+            "English `{english}` under --lang tr:\n{text}"
+        );
+    }
+    assert!(text.contains("ıslak ayna alanı"), "{text}");
+    assert!(text.contains("kısa dalgalar"), "{text}");
+
+    let res = ok(&dir.0, &[], &["--lang", "tr", "resistance", &hull]);
+    assert!(!res.contains("is outside"), "{res}");
+    assert!(res.contains("aralığının dışında"), "{res}");
+}
+
+/// `--lang` takes exactly a supported code; a bad `SEACRAFT_LANG` is reported, not silently
+/// ignored; `LC_ALL=C` forces English over a Turkish `LANG`.
+#[test]
+fn cli_locale_inputs_are_checked() {
+    let dir = Dir::new("locale-inputs");
+    let hull = example("demo-hull.fef");
+    for bad in ["tr_TR.UTF-8", "EN-zz", "de"] {
+        let out = run(&dir.0, &[], &["--lang", bad, "info", &hull]);
+        assert!(!out.status.success(), "--lang {bad} accepted");
+    }
+    let out = run(
+        &dir.0,
+        &[("SEACRAFT_LANG", "de"), ("LC_ALL", "C")],
+        &["info", &hull],
+    );
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("SEACRAFT_LANG=de"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let c = ok(
+        &dir.0,
+        &[("LC_ALL", "C"), ("LANG", "tr_TR.UTF-8")],
+        &["hydro", &hull, "--draft", "0.62"],
+    );
+    let en = ok(
+        &dir.0,
+        &[("LC_ALL", "C"), ("LANG", "en_US.UTF-8")],
+        &["hydro", &hull, "--draft", "0.62"],
+    );
+    assert_eq!(c, en, "LC_ALL=C must give English");
+}

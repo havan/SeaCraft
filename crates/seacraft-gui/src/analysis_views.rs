@@ -246,6 +246,7 @@ pub fn compute(
     view: AnalysisView,
     inputs: &ViewInputs,
     model: &ModelSnapshot,
+    tr: Tr,
 ) -> Result<ViewResult, String> {
     let m = model.view();
     Ok(match view {
@@ -255,7 +256,7 @@ pub fn compute(
         AnalysisView::Bonjean => ViewResult::Bonjean(commands::bonjean_in(m, &inputs.bonjean)?),
         AnalysisView::Offsets => ViewResult::Offsets(commands::offsets_in(m, &inputs.offsets)?),
         AnalysisView::TrimScan => ViewResult::TrimScan(commands::trim_scan_in(m, &inputs.trim)?),
-        AnalysisView::Plates => ViewResult::Plates(plates(model, &inputs.plates)?),
+        AnalysisView::Plates => ViewResult::Plates(plates(model, &inputs.plates, tr)?),
         AnalysisView::Waves => {
             return Err("the wave pattern is computed by the window's wave job".into())
         }
@@ -266,23 +267,23 @@ pub fn compute(
 }
 
 /// Develop each chosen layer flat, one row per layer.
-fn plates(model: &ModelSnapshot, params: &PlateParams) -> Result<Vec<PlateRow>, String> {
+fn plates(model: &ModelSnapshot, params: &PlateParams, tr: Tr) -> Result<Vec<PlateRow>, String> {
     let surface = model
         .surface
         .as_ref()
-        .ok_or_else(|| "plate development: no model is loaded".to_string())?;
+        .ok_or_else(|| tr.s(Key::AnalysisErrNoModel).to_string())?;
     let chosen: Vec<usize> = match params.layers {
         PlateLayers::All => (0..surface.layers.len()).collect(),
         PlateLayers::Marked => (0..surface.layers.len())
             .filter(|&i| surface.layers[i].developable)
             .collect(),
         PlateLayers::One(i) if i < surface.layers.len() => vec![i],
-        PlateLayers::One(i) => return Err(format!("plate development: no layer {i}")),
+        PlateLayers::One(i) => {
+            return Err(tr.fmt(Key::AnalysisErrNoLayer, &[("index", &i.to_string())]))
+        }
     };
     if chosen.is_empty() {
-        return Err(
-            "plate development: no layer is marked developable (Layer properties)".to_owned(),
-        );
+        return Err(tr.s(Key::AnalysisErrNoneMarked).to_owned());
     }
     Ok(chosen
         .into_iter()
@@ -644,7 +645,7 @@ pub fn caption_tr(result: &ViewResult, tr: Tr) -> Vec<String> {
             if s.at_boundary {
                 lines.push(tr.s(Key::AnalysisTrimBoundaryWarn).to_owned());
             }
-            lines.extend(s.warnings.iter().cloned());
+            lines.extend(s.warnings.iter().map(|w| w.render(tr)));
             lines
         }
         ViewResult::Plates(_) => vec![tr.s(Key::AnalysisPlatesCaption).to_owned()],

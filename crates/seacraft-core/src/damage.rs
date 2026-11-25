@@ -16,6 +16,7 @@
 
 use crate::curves::station_polygons;
 use crate::hydro::{waterplane_at_offset, waterplane_for, Hull, HydroOptions};
+use crate::i18n::{Key, Msg};
 use crate::loading::LoadingCondition;
 use crate::math::{deg_to_rad, Plane, Vec3};
 use crate::mesh::Surface;
@@ -125,8 +126,8 @@ pub struct ResidualCriteria {
     pub area_m_rad: f64,
     /// Whether all three criteria pass.
     pub passed: bool,
-    /// Explanatory status label.
-    pub label: String,
+    /// Explanatory status label; English in JSON.
+    pub label: Msg,
 }
 
 /// Full damage stability evaluation result.
@@ -176,7 +177,7 @@ pub struct DamageResult {
     /// Indicative SOLAS-style residual criteria summary.
     pub criteria: Option<ResidualCriteria>,
     /// Non-fatal warnings emitted during evaluation.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
 }
 
 /// Validate a [`DamageCase`] before evaluation.
@@ -1041,7 +1042,7 @@ pub fn evaluate(
     }
 
     if !equilibrium_found {
-        warnings.push("damaged equilibrium not found within -60..+60 deg heel".into());
+        warnings.push(Msg::new(Key::WarnDamageNoEq));
     }
 
     // 4. Per-compartment submerged volume & centroid at damaged equilibrium.
@@ -1090,10 +1091,8 @@ pub fn evaluate(
 
     if let Some(fb) = freeboard_m {
         if fb < 0.0 {
-            warnings.push(format!(
-                "deck edge is immersed at damaged equilibrium (freeboard {:.3} m)",
-                fb
-            ));
+            warnings
+                .push(Msg::new(Key::WarnDamageDeckImmersed).arg("freeboard", format!("{fb:.3}")));
         }
     }
 
@@ -1242,7 +1241,7 @@ fn evaluate_residual_criteria(
         angle_of_max_gz_deg: angle_of_max,
         area_m_rad,
         passed,
-        label: "indicative, SOLAS-style (not class-approved)".to_string(),
+        label: Msg::new(Key::ReportDmgIndicativeLabel),
     })
 }
 

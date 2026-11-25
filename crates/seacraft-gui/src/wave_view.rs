@@ -142,8 +142,13 @@ pub fn panel_tr(ui: &mut egui::Ui, p: WaveViewPanel<'_>, tr: Tr) -> WaveViewActi
             action = WaveViewAction::Changed;
         }
         if let Some(r) = result {
-            let mut notes: Vec<&str> = r.field.notes.iter().map(String::as_str).collect();
-            notes.extend(r.warnings.iter().map(String::as_str));
+            let notes: Vec<String> = r
+                .field
+                .notes
+                .iter()
+                .chain(&r.warnings)
+                .map(|n| n.render(tr))
+                .collect();
             ui.label(egui::RichText::new(tr.s(Key::WaveNotes)).color(theme::TEXT_SECONDARY))
                 .on_hover_text(notes.join("\n\n"));
         }
@@ -296,7 +301,10 @@ pub fn fit_reasons_tr(r: &WaveResult, tr: Tr) -> Vec<String> {
         let lb_s = format!("{:.1}", r.length_wl / r.beam_wl);
         reasons.push(tr.fmt(Key::WaveFitLb, &[("lb", &lb_s)]));
     }
-    if r.warnings.iter().any(|w| w.starts_with("wetted transom")) {
+    if r.warnings
+        .iter()
+        .any(|w| w.key() == Some(Key::WarnMichellTransom))
+    {
         reasons.push(tr.s(Key::WaveFitWideTransom).to_string());
     }
     let f = r.field.froude;

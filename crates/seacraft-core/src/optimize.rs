@@ -61,6 +61,7 @@
 //! Mennen is a regression, so a minimum it finds is a minimum of the
 //! regression; the report lists the validity warnings of the final hull.
 
+use crate::i18n::{Key, Msg};
 use std::collections::HashMap;
 
 use serde::Serialize;
@@ -741,7 +742,7 @@ pub struct OptimizeReport {
     pub displacement_error_pct: f64,
     /// The hard constraints (displacement, `GM`, `LCB` band) hold.
     pub constraints_met: bool,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
     /// Every evaluation: index, design vector (in `variables` order), objective.
     pub trajectory: Vec<TrajectoryPoint>,
 }
@@ -774,7 +775,7 @@ struct Ctx<'a> {
 
 struct Measured {
     state: DesignState,
-    warnings: Vec<String>,
+    warnings: Vec<Msg>,
 }
 
 fn measure(
@@ -811,9 +812,7 @@ fn measure(
         Method::Savitsky => {
             let setup = planing::setup(cand, base_ctx.subdiv, &o, None, None, None)?;
             if setup.deadrise_measured.is_none() {
-                warnings.push(
-                    "deadrise could not be measured at the transom; 12 degrees assumed".into(),
-                );
+                warnings.push(Msg::new(Key::WarnOptDeadriseAssumed));
             }
             let p = planing::planing_point(&setup.hull, v)
                 .ok_or_else(|| "the hull does not plane at this speed".to_string())?;
@@ -827,10 +826,7 @@ fn measure(
         _ => {
             let r = resistance::holtrop(&input, v);
             if r.fn_ > 0.55 {
-                warnings.push(format!(
-                    "Fn {:.2} is above the 0.55 Holtrop-Mennen was fitted to",
-                    r.fn_
-                ));
+                warnings.push(Msg::new(Key::WarnOptFnAbove).arg("fn", format!("{:.2}", r.fn_)));
             }
             (r.rt_n, r.pe_w, r.fn_, None)
         }
@@ -1123,31 +1119,22 @@ pub fn optimize_hull(
     out.settings.draft = finish.state.draft_m;
 
     let disp_err = (finish.state.volume_m3 - ctx.base_volume_m3).abs() / ctx.base_volume_m3;
-    let mut warnings: Vec<String> = finish.warnings.clone();
+    let mut warnings: Vec<Msg> = finish.warnings.clone();
     if spec.min_gm.is_none() {
-        warnings.push(
-            "no stability constraint: give kg and min_gm to hold GM while the hull is reshaped"
-                .into(),
-        );
+        warnings.push(Msg::new(Key::WarnOptNoStability));
     }
     if !judged.feasible {
-        warnings.push(
-            "no evaluated hull met every constraint; this is the least-bad one, check displacement, GM and LCB"
-                .into(),
-        );
+        warnings.push(Msg::new(Key::WarnOptInfeasible));
     }
     if built.shift_converged == Some(false) {
-        warnings.push(
-            "the station shift did not reach its Cp/LCB targets (outside its authority); the numbers are for the hull that was built"
-                .into(),
-        );
+        warnings.push(Msg::new(Key::WarnOptShiftUnconverged));
     }
     if baseline.warnings.len() > finish.warnings.len() {
-        warnings.push(format!(
-            "the baseline had {} validity warning(s); the optimised hull has {}",
-            baseline.warnings.len(),
-            finish.warnings.len()
-        ));
+        warnings.push(
+            Msg::new(Key::WarnOptBaselineMore)
+                .arg("before", baseline.warnings.len())
+                .arg("after", finish.warnings.len()),
+        );
     }
     let variables: Vec<VariableReport> = spec
         .vars
@@ -1171,10 +1158,7 @@ pub fn optimize_hull(
             .filter(|v| v.at_bound)
             .map(|v| v.name)
             .collect();
-        warnings.push(format!(
-            "{} ended on a bound; a wider range may find a lower resistance",
-            names.join(", ")
-        ));
+        warnings.push(Msg::new(Key::WarnOptAtBound).arg("names", names.join(", ")));
     }
     let converged = result.stop == NmStop::Converged;
     let report = OptimizeReport {
@@ -1409,7 +1393,7 @@ mod tests {
         assert!(rep
             .warnings
             .iter()
-            .any(|w| w.contains("no stability constraint")));
+            .any(|w| w.to_string().contains("no stability constraint")));
     }
 
     #[test]

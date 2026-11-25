@@ -224,6 +224,50 @@ pub fn colour_violations(path: &str, text: &str) -> Vec<String> {
     out
 }
 
+/// The marker that allows a `.to_uppercase()` or `.to_lowercase()` call on the same or the next
+/// line: the text it changes is not translated (a file name, a tool argument, a paper size).
+pub const CASING_ALLOW: &str = "i18n-casing: not translated";
+
+/// `.to_uppercase()` and `.to_lowercase()` calls in non-test Rust source, which map Turkish `i`
+/// to `I` instead of `İ` and `I` to `i` instead of `ı`. A top-level `#[cfg(test)] mod` (up to its
+/// closing `}` in column 0) is skipped, and so is a line marked with [`CASING_ALLOW`] on it or
+/// on the line before.
+pub fn casing_violations(path: &str, text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut in_test_mod = false;
+    for (i, line) in lines.iter().enumerate() {
+        if in_test_mod {
+            if *line == "}" {
+                in_test_mod = false;
+            }
+            continue;
+        }
+        if *line == "#[cfg(test)]" {
+            let next = lines[i + 1..].iter().find(|l| !l.trim().is_empty());
+            if next.is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{')) {
+                in_test_mod = true;
+                continue;
+            }
+        }
+        let code = line.split("//").next().unwrap_or("");
+        if !(code.contains(".to_uppercase()") || code.contains(".to_lowercase()")) {
+            continue;
+        }
+        let allowed = line.contains(CASING_ALLOW)
+            || i.checked_sub(1)
+                .is_some_and(|prev| lines[prev].contains(CASING_ALLOW));
+        if !allowed {
+            out.push(format!(
+                "{path}:{}: case change breaks Turkish text; store the casing in locales/*.json, \
+                 or mark text that is never translated with `// {CASING_ALLOW}`",
+                i + 1
+            ));
+        }
+    }
+    out
+}
+
 /// Extract `{name}` placeholders from a translation string.
 fn placeholders(text: &str) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
@@ -241,6 +285,22 @@ fn placeholders(text: &str) -> std::collections::BTreeSet<String> {
         }
     }
     out
+}
+
+/// Whether every `{` in `text` closes with a `}` before the next `{`, and no `}` stands alone,
+/// so `Tr::fmt` substitutes every placeholder instead of printing braces.
+fn balanced_braces(text: &str) -> bool {
+    let mut open = false;
+    for c in text.chars() {
+        match c {
+            '{' if open => return false,
+            '{' => open = true,
+            '}' if !open => return false,
+            '}' => open = false,
+            _ => {}
+        }
+    }
+    !open
 }
 
 fn valid_i18n_key(key: &str) -> bool {
@@ -320,6 +380,9 @@ fn validate_catalog(
         if v.trim().is_empty() {
             out.push(format!("{file}: empty value for `{k}`"));
         }
+        if !balanced_braces(v) {
+            out.push(format!("{file}: unbalanced `{{` or `}}` in `{k}`"));
+        }
         if let Some(p) = prev {
             if p > k.as_str() {
                 out.push(format!("{file}: key `{k}` is out of order (after `{p}`)"));
@@ -376,6 +439,33 @@ pub fn i18n_violations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unbalanced_braces_are_flagged() {
+        assert!(balanced_braces("no braces"));
+        assert!(balanced_braces("{a} and {b}"));
+        assert!(!balanced_braces("lone { here"));
+        assert!(!balanced_braces("lone } here"));
+        assert!(!balanced_braces("{a {b}"));
+        assert!(!balanced_braces("{a}}"));
+        let en = "{\n  \"k\": \"x {a\"\n}\n";
+        let bad = i18n_violations(en, &[], &[]);
+        assert!(bad.iter().any(|b| b.contains("unbalanced")), "{bad:?}");
+    }
+
+    #[test]
+    fn casing_calls_are_flagged_outside_tests_unless_marked() {
+        let src = "fn a(t: &str) -> String {\n    t.to_uppercase()\n}\n\
+                   fn b(t: &str) -> String {\n    // i18n-casing: not translated (file name)\n    t.to_lowercase()\n}\n\
+                   fn c(t: &str) -> String {\n    t.to_lowercase() // i18n-casing: not translated\n}\n\
+                   // a comment about .to_uppercase() is fine\n\
+                   #[cfg(test)]\nmod tests {\n    fn t() { \"x\".to_uppercase(); }\n}\n\
+                   fn d(t: &str) -> String {\n    t.to_lowercase()\n}\n";
+        let bad = casing_violations("x.rs", src);
+        assert_eq!(bad.len(), 2, "{bad:?}");
+        assert!(bad[0].starts_with("x.rs:2:"), "{bad:?}");
+        assert!(bad[1].starts_with("x.rs:17:"), "{bad:?}");
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()

@@ -605,12 +605,19 @@ fn step_i18n(root: &Path) {
         .iter()
         .map(|(code, text)| (code.as_str(), text.as_str()))
         .collect();
-    let bad = gates::i18n_violations(&en, &refs, &["tr"]);
+    let mut bad = gates::i18n_violations(&en, &refs, &["tr"]);
+    for file in tracked_files(root) {
+        if file.starts_with("crates/") && file.contains("/src/") && file.ends_with(".rs") {
+            if let Some(text) = read_text(root, &file) {
+                bad.extend(gates::casing_violations(&file, &text));
+            }
+        }
+    }
     let count = others.len() + 1;
     report(
         "i18n",
         bad,
-        &format!("{count} locale catalogs valid and aligned"),
+        &format!("{count} locale catalogs valid and aligned, no case changes on translated text"),
     );
 }
 

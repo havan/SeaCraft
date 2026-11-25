@@ -479,11 +479,7 @@ fn piece_drawing(
     let cut_one = tr.s(Key::PanelsCutOne);
     let cut_two = tr.s(Key::PanelsCutTwo);
     for l in &pattern.labels {
-        let own_name = l.text == panel
-            || l.text == cut_one
-            || l.text == cut_two
-            || l.text.starts_with("Cut 1")
-            || l.text.starts_with("Cut 2");
+        let own_name = l.text == panel || l.text == cut_one || l.text == cut_two;
         if !own_name && !is_offset_label(l) && l.at.0 >= a && l.at.0 <= b && inside(l.at, outline) {
             s.labels.push(l.clone());
         }
@@ -906,11 +902,8 @@ pub fn nest_panels_tr(
     layout.not_placed = not_placed;
     // Carry each failing panel's flatness warning onto every sheet holding one of its pieces,
     // matched by originating panel index rather than display name.
-    let fail_prefix = tr
-        .s(Key::PanelsNoteFailing)
-        .split('{')
-        .next()
-        .unwrap_or("Does not lie flat");
+    // A panel that does not lie flat has its failing heading as its pattern's first note
+    // (`panels::panel_sheet_tr`), in whatever language the pattern was drawn in.
     let failing_notes: Vec<(usize, &str, &str)> = panels
         .iter()
         .zip(patterns)
@@ -918,8 +911,7 @@ pub fn nest_panels_tr(
         .filter(|(_, (p, _))| !p.lies_flat)
         .filter_map(|(idx, (p, pat))| {
             pat.notes
-                .iter()
-                .find(|n| n.starts_with(fail_prefix) || n.starts_with("Does not lie flat"))
+                .first()
                 .map(|n| (idx, p.found.name.as_str(), n.as_str()))
         })
         .collect();
@@ -1633,7 +1625,7 @@ mod tests {
             tr,
         );
         assert!(
-            bad_pat.notes[0].starts_with("Düz açılmıyor"),
+            bad_pat.notes[0].starts_with("Düz açılmaz"),
             "{:?}",
             bad_pat.notes
         );
@@ -1648,7 +1640,7 @@ mod tests {
             bad_layout.drawings[0]
                 .notes
                 .iter()
-                .any(|n| n.starts_with("Warped: Düz açılmıyor")),
+                .any(|n| n.starts_with("Warped: Düz açılmaz")),
             "{:?}",
             bad_layout.drawings[0].notes
         );

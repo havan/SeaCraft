@@ -414,6 +414,8 @@ pub struct AutosaveState {
     obsolete_snapshot: bool,
     /// Orphans waiting for the user's decision at startup, newest first.
     pub orphans: Vec<Orphan>,
+    /// The language of the messages a tick logs; the app keeps it current.
+    pub tr: seacraft_core::i18n::Tr,
 }
 
 impl Default for AutosaveState {
@@ -439,6 +441,7 @@ impl AutosaveState {
             model_gen: 0,
             obsolete_snapshot: false,
             orphans: Vec::new(),
+            tr: seacraft_core::i18n::Tr::default(),
         }
     }
 
@@ -564,7 +567,9 @@ impl AutosaveState {
                     self.write_failed = false;
                     logs.push((
                         crate::messages::Level::Info,
-                        "autosave is working again".to_owned(),
+                        self.tr
+                            .s(seacraft_core::i18n::Key::LogAutosaveWorkingAgain)
+                            .to_owned(),
                     ));
                 }
             }
@@ -573,7 +578,10 @@ impl AutosaveState {
                     self.write_failed = true;
                     logs.push((
                         crate::messages::Level::Warning,
-                        format!("autosave failed: {err}"),
+                        self.tr.fmt(
+                            seacraft_core::i18n::Key::LogAutosaveFailed,
+                            &[("error", &err)],
+                        ),
                     ));
                 }
             }
@@ -582,7 +590,9 @@ impl AutosaveState {
                     self.write_failed = true;
                     logs.push((
                         crate::messages::Level::Warning,
-                        "autosave worker panicked".to_owned(),
+                        self.tr
+                            .s(seacraft_core::i18n::Key::LogAutosavePanicked)
+                            .to_owned(),
                     ));
                 }
             }

@@ -1884,7 +1884,7 @@ pub fn hydrostatics_tr(ui: &mut egui::Ui, panel: HydroPanel<'_>, tr: Tr) -> Hydr
                 ui.add_space(2.0);
                 plot_sac(ui, h, tr);
                 for warning in &h.warnings {
-                    ui.colored_label(theme::FAIL, &warning.message);
+                    ui.colored_label(theme::FAIL, warning.message.render(tr));
                 }
                 if kg.is_some_and(|kg| h.gm(kg) < 0.0) {
                     ui.colored_label(theme::FAIL, tr.s(Key::HydroErrNegativeGm));
@@ -2474,7 +2474,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
 /// The resistance curve and its table.
 fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr: Tr) {
     for w in &res.warnings {
-        ui.colored_label(theme::WARN, format!("⚠ {w}"));
+        ui.colored_label(theme::WARN, format!("⚠ {}", w.render(tr)));
     }
 
     let series = vec![(
@@ -2529,7 +2529,7 @@ fn rao_results(ui: &mut egui::Ui, rep: &seacraft_core::seakeeping::SeakeepingRep
     ));
 
     for w in &rep.warnings {
-        ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
+        ui.colored_label(theme::WARN, format!("⚠ {}", w.message.render(tr)));
     }
 
     // A sea-state run puts the RAOs on the spectrum's ω grid, which can reach
@@ -2724,7 +2724,7 @@ fn sea_state_results(ui: &mut egui::Ui, r: &seacraft_core::seastate::IrregularRe
             ],
         ));
         for w in &r.warnings {
-            ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
+            ui.colored_label(theme::WARN, format!("⚠ {}", w.message.render(tr)));
         }
         let global: Vec<Vec<EngCell>> = [
             (tr.s(Key::PerfSeaHeave), "m", &r.heave),
@@ -3391,7 +3391,10 @@ pub fn damage_tr(ui: &mut egui::Ui, panel: DamagePanel<'_>, tr: Tr) -> DamageAct
         if !r.warnings.is_empty() {
             ui.add_space(4.0);
             for w in &r.warnings {
-                ui.colored_label(theme::WARN, tr.fmt(Key::CommonWarningPrefix, &[("msg", w)]));
+                ui.colored_label(
+                    theme::WARN,
+                    tr.fmt(Key::CommonWarningPrefix, &[("msg", &w.render(tr))]),
+                );
             }
         }
     }
@@ -4879,7 +4882,7 @@ pub fn loading_tr(ui: &mut egui::Ui, panel: LoadingPanel<'_>, tr: Tr) -> Loading
                 format!("⚠ {}", tr.s(Key::LoadingNoEquilibrium)),
             );
             for w in &r.warnings {
-                ui.colored_label(theme::WARN, w);
+                ui.colored_label(theme::WARN, w.render(tr));
             }
         }
         readouts_tr(ui, "loading_readouts", &loading_rows_tr(r, tr), tr);
@@ -7601,12 +7604,14 @@ pub fn templates_options_tr(
 
             ui.label(tr.s(Key::TemplatesPaperColon));
             egui::ComboBox::from_id_salt("templates_paper")
+                // i18n-casing: not translated (paper size names)
                 .selected_text(params.paper.to_uppercase())
                 .show_ui(ui, |ui| {
                     for paper in ["a4", "a3", "letter"] {
                         ui.selectable_value(
                             &mut params.paper,
                             paper.to_owned(),
+                            // i18n-casing: not translated (paper size names)
                             paper.to_uppercase(),
                         );
                     }
