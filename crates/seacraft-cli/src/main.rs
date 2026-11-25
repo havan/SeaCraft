@@ -4507,7 +4507,7 @@ fn cmd_panels(a: PanelsArgs, tr: Tr) -> Result<()> {
     println!("{}", set.sheet_count_line_tr(tr));
     for row in &set.stock {
         if let Some(note) = &row.note {
-            println!("{}: {note}", row.panel);
+            println!("{}: {}", row.panel, note.render(tr));
         }
     }
     let headed = set.rows.iter().filter(|r| !r.lies_flat).count();

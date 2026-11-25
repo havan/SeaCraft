@@ -1864,7 +1864,8 @@ pub struct StockRow {
     pub sheets_each: Option<usize>,
     /// Where each sheet's reach ends along the panel, from its aft end, metres.
     pub joints_m: Vec<f64>,
-    pub note: Option<String>,
+    /// Why the panel was not laid out; serialized in English, rendered in the reader's language.
+    pub note: Option<Msg>,
 }
 
 /// The pattern's extent: `(min x, min y, length, width)`.
@@ -1881,11 +1882,6 @@ pub(crate) fn extent(panel: &FlatPanel) -> (f64, f64, f64, f64) {
 /// Lays one panel along sheets of `stock` joined end to end, with no nesting: an upper bound
 /// on what it takes.
 pub fn lay_out(panel: &FlatPanel, stock: Stock) -> StockRow {
-    lay_out_tr(panel, stock, Tr::new(Locale::En))
-}
-
-/// Localized form of [`lay_out`].
-pub fn lay_out_tr(panel: &FlatPanel, stock: Stock, tr: Tr) -> StockRow {
     let (_, _, length, width) = extent(panel);
     let mut row = StockRow {
         panel: panel.found.name.clone(),
@@ -1898,25 +1894,25 @@ pub fn lay_out_tr(panel: &FlatPanel, stock: Stock, tr: Tr) -> StockRow {
     if width > stock.width_m + 1e-9 {
         let w = crate::units::millimetres(width);
         let sw = crate::units::millimetres(stock.width_m);
-        row.note = Some(tr.fmt(
-            Key::PanelsStockWider,
-            &[("width", &w), ("stock_width", &sw)],
-        ));
+        row.note = Some(
+            Msg::new(Key::PanelsStockWider)
+                .arg("width", w)
+                .arg("stock_width", sw),
+        );
         return row;
     }
     if reach <= 0.0 || !reach.is_finite() {
-        row.note = Some(tr.s(Key::PanelsStockScarfTooLong).into());
+        row.note = Some(Msg::new(Key::PanelsStockScarfTooLong));
         return row;
     }
     // Counted before any joint is placed, so a reach of almost nothing cannot run away.
     let further = ((length - 1e-9 - stock.length_m) / reach).ceil().max(0.0);
     if !further.is_finite() || further + 1.0 > MAX_SHEETS_EACH as f64 {
-        let max_s = MAX_SHEETS_EACH.to_string();
-        let reach_s = crate::units::millimetres(reach);
-        row.note = Some(tr.fmt(
-            Key::PanelsStockTooManySheets,
-            &[("max", &max_s), ("reach", &reach_s)],
-        ));
+        row.note = Some(
+            Msg::new(Key::PanelsStockTooManySheets)
+                .arg("max", MAX_SHEETS_EACH)
+                .arg("reach", crate::units::millimetres(reach)),
+        );
         return row;
     }
     let mut end = stock.length_m;
@@ -2139,7 +2135,8 @@ impl PanelSet {
             .iter()
             .filter(|r| r.sheets_each.is_none())
             .map(|r| {
-                let why = r.note.as_deref().unwrap_or(fallback_why);
+                let note = r.note.as_ref().map(|m| m.render(tr));
+                let why = note.as_deref().unwrap_or(fallback_why);
                 let why = why.split(" (").next().unwrap_or(why);
                 let why = why
                     .strip_suffix(tr_suffix)
@@ -2295,7 +2292,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
     for p in &panels {
         let offsets = panel_offsets(p, opts.offset_spacing_m);
         let mut sheet = panel_sheet_tr(p, &offsets, &stations, opts.limits, opts.imperial, tr);
-        let row = lay_out_tr(p, st, tr);
+        let row = lay_out(p, st);
         let plywood = if let Some(n) = split_nesting {
             let usable = st.length_m - 2.0 * n.gap_m;
             let usable_w = st.width_m - 2.0 * n.gap_m;
@@ -2354,7 +2351,9 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         } else {
             sheet.paths.extend(stock_paths(&row, p, st));
             match (&row.note, row.sheets_each) {
-                (Some(note), _) => tr.fmt(Key::PanelsNotePlywoodNote, &[("note", note)]),
+                (Some(note), _) => {
+                    tr.fmt(Key::PanelsNotePlywoodNote, &[("note", &note.render(tr))])
+                }
                 (None, Some(n)) => {
                     let joints: Vec<String> = row
                         .joints_m
@@ -3716,7 +3715,7 @@ mod tests {
         let rows = [lay_out(&plank(2.0, 1.3, Copies::One), Stock::default())];
         assert_eq!(rows[0].sheets_each, None);
         assert_eq!(
-            rows[0].note.as_deref(),
+            rows[0].note.as_ref().map(ToString::to_string).as_deref(),
             Some("wider than the stock (1300 mm > 1220 mm): not laid out")
         );
         assert_eq!(total_sheets(&rows), 0);
@@ -3746,7 +3745,11 @@ mod tests {
         let row = lay_out(&plank5, short_reach);
         assert_eq!(row.sheets_each, None);
         assert!(row.joints_m.is_empty());
-        let note = row.note.as_deref().unwrap_or_default();
+        let note = row
+            .note
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         assert!(
             note.contains(&format!("more than {MAX_SHEETS_EACH} sheets"))
                 && note.contains("not laid out"),
@@ -3993,6 +3996,48 @@ mod tests {
             assert!(flat.failing().is_empty() && flat.not_flat_summary().is_none());
             assert!(flat.not_flat_reason().is_none());
         }
+    }
+
+    /// A panel wider than the stock is not laid out: the reason reads Turkish in a Turkish
+    /// drawing, and the JSON `plywood` line and stock rows stay English.
+    #[test]
+    fn a_turkish_set_keeps_its_stock_refusals_english_in_json() {
+        let s = pram_fixture(0.0, 0.0);
+        let narrow = PanelOptions {
+            stock: Stock {
+                width_m: 0.01,
+                ..Stock::default()
+            },
+            ..PanelOptions::default()
+        };
+        let english = panel_set(&s, &narrow).expect("a set");
+        let turkish = panel_set(
+            &s,
+            &PanelOptions {
+                locale: Locale::Tr,
+                ..narrow.clone()
+            },
+        )
+        .expect("a set");
+        assert!(english.stock.iter().all(|r| r.sheets_each.is_none()));
+        let plywood = english.sheet_count_line();
+        assert!(plywood.contains("wider than the stock"), "{plywood}");
+        assert_eq!(turkish.sheet_count_line(), plywood);
+        assert_eq!(
+            serde_json::to_string(&turkish.summary()).unwrap(),
+            serde_json::to_string(&english.summary()).unwrap()
+        );
+        let tr = Tr::new(Locale::Tr);
+        let tr_line = turkish.sheet_count_line_tr(tr);
+        assert!(tr_line.contains("plakadan geniş"), "{tr_line}");
+        assert!(
+            turkish.sheets[0]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Kontrplak: plakadan geniş")),
+            "{:?}",
+            turkish.sheets[0].notes
+        );
     }
 
     #[test]
