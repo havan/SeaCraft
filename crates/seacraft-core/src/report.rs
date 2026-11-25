@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use crate::curves;
 use crate::damage;
 use crate::hydro::{Hull, HydroOptions};
+use crate::i18n::{Key, Locale, Tr};
 use crate::linesplan::{self, LinesplanOptions};
 use crate::loading;
 use crate::mesh::Surface;
@@ -18,7 +19,7 @@ use crate::project::Project;
 use crate::resistance::{self, HoltropInput, Resistance};
 use crate::seakeeping::{self, SeakeepingSpec};
 use crate::seastate::{self, IrregularSpec, WaveSpectrum};
-use crate::stability::{self, upright_lcb, ImoCriteria, StabilityCondition};
+use crate::stability::{self, upright_lcb, ImoCriteria, StabilityCondition, WeatherResult};
 use crate::subdiv::{SubdivisionMode, SubdivisionOptions};
 use crate::table;
 
@@ -48,6 +49,8 @@ pub struct ReportOptions {
     pub include_planing: bool,
     /// The far-field wave pattern section, when set. Defaults to `None`.
     pub waves: Option<WaveReport>,
+    /// Language used for headings, labels, tables, charts, and disclaimers. Defaults to `Locale::En`.
+    pub locale: Locale,
 }
 
 /// What the report's wave-pattern section computes: the pattern upright at the report's draft,
@@ -98,6 +101,7 @@ impl ReportOptions {
             include_resistance: true,
             include_planing: false,
             waves: None,
+            locale: Locale::En,
         }
     }
 }
@@ -116,6 +120,7 @@ impl Default for ReportOptions {
             include_resistance: true,
             include_planing: false,
             waves: None,
+            locale: Locale::En,
         }
     }
 }
@@ -243,17 +248,22 @@ pub fn design_report_with_project(
         hull.hydrostatics(&h_opts)
     };
 
+    let tr = Tr::new(opts.locale);
     let esc_name = html_escape(&surface.settings.name);
-    let esc_designer = html_escape(&surface.settings.designer);
     let esc_created = html_escape(&surface.settings.created_by);
     let esc_comment = html_escape(&surface.settings.comment);
 
     let mut out = String::with_capacity(65536);
 
-    out.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
+    let _ = writeln!(
+        out,
+        "<!DOCTYPE html>\n<html lang=\"{}\">\n<head>",
+        opts.locale.code()
+    );
     out.push_str("<meta charset=\"utf-8\">\n");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n");
-    let _ = writeln!(out, "<title>{} - Design Dossier</title>", esc_name);
+    let doc_title = tr.fmt(Key::ReportDocTitle, &[("name", &surface.settings.name)]);
+    let _ = writeln!(out, "<title>{}</title>", html_escape(&doc_title));
     out.push_str("<style>\n");
     out.push_str(":root {\n");
     out.push_str("  --bg: #ffffff;\n");
@@ -400,25 +410,32 @@ pub fn design_report_with_project(
     let _ = writeln!(
         out,
         "<p class=\"not-validated\"><strong>{}</strong></p>",
-        crate::NOT_VALIDATED_NOTE
+        html_escape(crate::not_validated_note(opts.locale))
     );
     out.push_str("<header>\n");
     let _ = writeln!(out, "  <h1>{}</h1>", esc_name);
-    let designer_str = if !esc_designer.is_empty() {
-        format!(" &bull; Designer: {}", esc_designer)
+    let subtitle = if !surface.settings.designer.is_empty() {
+        tr.fmt(
+            Key::ReportSubtitleDesigner,
+            &[("designer", &surface.settings.designer)],
+        )
     } else {
-        String::new()
+        tr.s(Key::ReportSubtitle).to_string()
     };
     let _ = writeln!(
         out,
-        "  <p class=\"subtitle\">Design Dossier{}</p>",
-        designer_str
+        "  <p class=\"subtitle\">{}</p>",
+        html_escape(&subtitle)
     );
     out.push_str("</header>\n\n");
 
     // ------------------------------------------------------------- 1. Particulars
     out.push_str("<section id=\"particulars\">\n");
-    out.push_str("  <h2>Principal Particulars</h2>\n");
+    let _ = writeln!(
+        out,
+        "  <h2>{}</h2>",
+        html_escape(tr.s(Key::ReportSecParticulars))
+    );
 
     let loa = (hull.model_max.x - hull.model_min.x).max(0.0);
     let boa = (hull.model_max.y - hull.model_min.y).max(0.0);
@@ -436,98 +453,128 @@ pub fn design_report_with_project(
     out.push_str("  <div class=\"cards-grid\">\n");
 
     out.push_str("    <div class=\"card\">\n");
-    out.push_str("      <h3>Dimensions</h3>\n");
+    let _ = writeln!(
+        out,
+        "      <h3>{}</h3>",
+        html_escape(tr.s(Key::ReportPartCardDimensions))
+    );
     out.push_str("      <dl>\n");
     let _ = writeln!(out, "        <dt>LOA</dt><dd>{} m</dd>", fmt_num(loa, 3));
     let _ = writeln!(out, "        <dt>LWL</dt><dd>{} m</dd>", fmt_num(h.lwl, 3));
     let _ = writeln!(out, "        <dt>BWL</dt><dd>{} m</dd>", fmt_num(h.bwl, 3));
     let _ = writeln!(
         out,
-        "        <dt>Beam Max</dt><dd>{} m</dd>",
+        "        <dt>{}</dt><dd>{} m</dd>",
+        html_escape(tr.s(Key::ReportPartBeamMax)),
         fmt_num(boa, 3)
     );
     let _ = writeln!(
         out,
-        "        <dt>Draft T</dt><dd>{} m</dd>",
+        "        <dt>{}</dt><dd>{} m</dd>",
+        html_escape(tr.s(Key::ReportPartDraftT)),
         fmt_num(h.draft, 3)
     );
     let _ = writeln!(
         out,
-        "        <dt>Depth</dt><dd>{} m</dd>",
+        "        <dt>{}</dt><dd>{} m</dd>",
+        html_escape(tr.s(Key::ReportPartDepth)),
         fmt_num(depth, 3)
     );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
     out.push_str("    <div class=\"card\">\n");
-    out.push_str("      <h3>Displacement & Areas</h3>\n");
+    let _ = writeln!(
+        out,
+        "      <h3>{}</h3>",
+        html_escape(tr.s(Key::ReportPartCardDisplacement))
+    );
     out.push_str("      <dl>\n");
     let _ = writeln!(
         out,
-        "        <dt>Volume &nabla;</dt><dd>{} m&sup3;</dd>",
+        "        <dt>{}</dt><dd>{} m&sup3;</dd>",
+        html_escape(tr.s(Key::ReportPartVolume)),
         fmt_num(h.volume_m3, 3)
     );
     let _ = writeln!(
         out,
-        "        <dt>Displacement &Delta;</dt><dd>{} t</dd>",
+        "        <dt>{}</dt><dd>{} t</dd>",
+        html_escape(tr.s(Key::ReportPartDisplacement)),
         fmt_num(h.displacement_t, 3)
     );
     let _ = writeln!(
         out,
-        "        <dt>Mass</dt><dd>{} kg</dd>",
+        "        <dt>{}</dt><dd>{} kg</dd>",
+        html_escape(tr.s(Key::ReportPartMass)),
         fmt_num(h.displacement_kg, 0)
     );
     let _ = writeln!(
         out,
-        "        <dt>Wetted Surface</dt><dd>{} m&sup2;</dd>",
+        "        <dt>{}</dt><dd>{} m&sup2;</dd>",
+        html_escape(tr.s(Key::ReportPartWettedSurface)),
         fmt_num(h.wetted_surface_m2, 2)
     );
     let _ = writeln!(
         out,
-        "        <dt>Waterplane Area</dt><dd>{} m&sup2;</dd>",
+        "        <dt>{}</dt><dd>{} m&sup2;</dd>",
+        html_escape(tr.s(Key::ReportPartWaterplaneArea)),
         fmt_num(h.waterplane_area_m2, 2)
     );
     let _ = writeln!(
         out,
-        "        <dt>Density &rho;</dt><dd>{} kg/m&sup3;</dd>",
+        "        <dt>{}</dt><dd>{} kg/m&sup3;</dd>",
+        html_escape(tr.s(Key::ReportPartDensity)),
         fmt_num(h.water_density, 1)
     );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
     out.push_str("    <div class=\"card\">\n");
-    out.push_str("      <h3>Form Coefficients</h3>\n");
+    let _ = writeln!(
+        out,
+        "      <h3>{}</h3>",
+        html_escape(tr.s(Key::ReportPartCardCoefficients))
+    );
     out.push_str("      <dl>\n");
     let _ = writeln!(
         out,
-        "        <dt>Block Cb</dt><dd>{}</dd>",
+        "        <dt>{}</dt><dd>{}</dd>",
+        html_escape(tr.s(Key::ReportPartBlockCb)),
         fmt_num(h.block_coefficient, 4)
     );
     let _ = writeln!(
         out,
-        "        <dt>Prismatic Cp</dt><dd>{}</dd>",
+        "        <dt>{}</dt><dd>{}</dd>",
+        html_escape(tr.s(Key::ReportPartPrismaticCp)),
         fmt_num(h.prismatic_coefficient, 4)
     );
     let _ = writeln!(
         out,
-        "        <dt>Midship Cm</dt><dd>{}</dd>",
+        "        <dt>{}</dt><dd>{}</dd>",
+        html_escape(tr.s(Key::ReportPartMidshipCm)),
         fmt_num(h.midship_coefficient, 4)
     );
     let _ = writeln!(
         out,
-        "        <dt>Waterplane Cwp</dt><dd>{}</dd>",
+        "        <dt>{}</dt><dd>{}</dd>",
+        html_escape(tr.s(Key::ReportPartWaterplaneCwp)),
         fmt_num(h.waterplane_coefficient, 4)
     );
     let _ = writeln!(
         out,
-        "        <dt>Vertical Prismatic Cvp</dt><dd>{}</dd>",
+        "        <dt>{}</dt><dd>{}</dd>",
+        html_escape(tr.s(Key::ReportPartVerticalPrismaticCvp)),
         fmt_num(h.vertical_prismatic_coefficient, 4)
     );
     out.push_str("      </dl>\n");
     out.push_str("    </div>\n");
 
     out.push_str("    <div class=\"card\">\n");
-    out.push_str("      <h3>Centroids & Stability</h3>\n");
+    let _ = writeln!(
+        out,
+        "      <h3>{}</h3>",
+        html_escape(tr.s(Key::ReportPartCardCentroids))
+    );
     out.push_str("      <dl>\n");
     let _ = writeln!(
         out,
@@ -543,17 +590,20 @@ pub fn design_report_with_project(
     let _ = writeln!(out, "        <dt>KG</dt><dd>{} m</dd>", fmt_num(opts.kg, 3));
     let _ = writeln!(
         out,
-        "        <dt>BM Transverse</dt><dd>{} m</dd>",
+        "        <dt>{}</dt><dd>{} m</dd>",
+        html_escape(tr.s(Key::ReportPartBmTransverse)),
         fmt_num(h.bm_transverse, 3)
     );
     let _ = writeln!(
         out,
-        "        <dt>KM Transverse</dt><dd>{} m</dd>",
+        "        <dt>{}</dt><dd>{} m</dd>",
+        html_escape(tr.s(Key::ReportPartKmTransverse)),
         fmt_num(h.km_transverse, 3)
     );
     let _ = writeln!(
         out,
-        "        <dt>GM Transverse</dt><dd>{} m</dd>",
+        "        <dt>{}</dt><dd>{} m</dd>",
+        html_escape(tr.s(Key::ReportPartGmTransverse)),
         fmt_num(gmt, 3)
     );
     let _ = writeln!(out, "        <dt>TPC</dt><dd>{} t/cm</dd>", fmt_num(tpc, 3));
@@ -572,12 +622,18 @@ pub fn design_report_with_project(
         if !esc_created.is_empty() {
             let _ = writeln!(
                 out,
-                "    <p><strong>Created by:</strong> {}</p>",
+                "    <p><strong>{}</strong> {}</p>",
+                html_escape(tr.s(Key::ReportPartCreatedBy)),
                 esc_created
             );
         }
         if !esc_comment.is_empty() {
-            let _ = writeln!(out, "    <p><strong>Comments:</strong> {}</p>", esc_comment);
+            let _ = writeln!(
+                out,
+                "    <p><strong>{}</strong> {}</p>",
+                html_escape(tr.s(Key::ReportPartComments)),
+                esc_comment
+            );
         }
         out.push_str("  </div>\n");
     }
@@ -586,10 +642,11 @@ pub fn design_report_with_project(
 
     // ------------------------------------------------------------- 2. Linesplan
     out.push_str("<section id=\"lines\">\n");
-    out.push_str("  <h2>Linesplan</h2>\n");
+    let _ = writeln!(out, "  <h2>{}</h2>", html_escape(tr.s(Key::ReportSecLines)));
     let lines_opts = LinesplanOptions {
         level: opts.level,
         mode: opts.mode,
+        locale: opts.locale,
         ..Default::default()
     };
     let lines_svg = linesplan::svg(surface, lines_opts);
@@ -600,7 +657,11 @@ pub fn design_report_with_project(
 
     // ------------------------------------------------------------- 3. Hydrostatics Table
     out.push_str("<section id=\"hydrostatics\">\n");
-    out.push_str("  <h2>Hydrostatics Table</h2>\n");
+    let _ = writeln!(
+        out,
+        "  <h2>{}</h2>",
+        html_escape(tr.s(Key::ReportSecHydrostatics))
+    );
     let draft_max = (opts.draft * 1.25).max(opts.draft);
     let drafts = table::draft_range(draft_max, 10);
     let hyd_table = table::table(surface, &h_opts, &drafts);
@@ -608,7 +669,13 @@ pub fn design_report_with_project(
     out.push_str("  <table>\n");
     out.push_str("    <thead>\n");
     out.push_str("      <tr>\n");
-    out.push_str("        <th>Draft [m]</th><th>Volume [m&sup3;]</th><th>Displ [&Delta; t]</th>\n");
+    let _ = writeln!(
+        out,
+        "        <th>{}</th><th>{}</th><th>{}</th>",
+        html_escape(tr.s(Key::ReportHydroColDraft)),
+        html_escape(tr.s(Key::ReportHydroColVolume)),
+        html_escape(tr.s(Key::ReportHydroColDispl))
+    );
     out.push_str(
         "        <th>KB [m]</th><th>BM [m]</th><th>KM [m]</th><th>LCB [m]</th><th>LCF [m]</th>\n",
     );
@@ -660,13 +727,15 @@ pub fn design_report_with_project(
 
     // ------------------------------------------------------------- 4. Sectional Area Curve
     out.push_str("<section id=\"sac\">\n");
-    out.push_str("  <h2>Sectional Area Curve</h2>\n");
-    let sac_title = format!(
-        "{} - Sectional Area Curve (T = {} m)",
-        esc_name,
-        fmt_num(opts.draft, 3)
+    let _ = writeln!(out, "  <h2>{}</h2>", html_escape(tr.s(Key::ReportSecSac)));
+    let sac_title = tr.fmt(
+        Key::ReportSacChartTitle,
+        &[
+            ("name", &surface.settings.name),
+            ("draft", &fmt_num(opts.draft, 3)),
+        ],
     );
-    let sac_svg = curves::sac_svg(&h.sac, &sac_title);
+    let sac_svg = curves::sac_svg_tr(&h.sac, &sac_title, tr);
     out.push_str("  <div class=\"svg-frame\">\n");
     out.push_str(strip_xml_header(&sac_svg));
     out.push_str("  </div>\n");
@@ -674,7 +743,11 @@ pub fn design_report_with_project(
 
     // ------------------------------------------------------------- 5. Stability & IMO Criteria
     out.push_str("<section id=\"stability\">\n");
-    out.push_str("  <h2>Intact Stability (GZ Cross Curves &amp; IMO A.749)</h2>\n");
+    let _ = writeln!(
+        out,
+        "  <h2>{}</h2>",
+        html_escape(tr.s(Key::ReportSecStability))
+    );
 
     let design_disp = h.displacement_t;
     let displacements = opts
@@ -701,22 +774,34 @@ pub fn design_report_with_project(
         gz_points.push((c.heel_deg, gz));
     }
 
-    let gz_title = format!(
-        "{} - Righting Lever GZ (Displ. {} t, KG {} m)",
-        esc_name,
-        fmt_num(design_disp, 3),
-        fmt_num(opts.kg, 3)
+    let gz_title = tr.fmt(
+        Key::ReportStabGzChartTitle,
+        &[
+            ("name", &surface.settings.name),
+            ("disp", &fmt_num(design_disp, 3)),
+            ("kg", &fmt_num(opts.kg, 3)),
+        ],
     );
-    let gz_svg = gz_chart_svg(&gz_points, imo.as_ref(), &gz_title);
+    let gz_svg = gz_chart_svg(&gz_points, imo.as_ref(), &gz_title, tr);
     out.push_str("  <div class=\"svg-frame\">\n");
     out.push_str(&gz_svg);
     out.push_str("  </div>\n");
 
     // Righting Levers Table
-    out.push_str("  <h3>Righting Levers (Cross Curves)</h3>\n");
+    let _ = writeln!(
+        out,
+        "  <h3>{}</h3>",
+        html_escape(tr.s(Key::ReportStabRightingLevers))
+    );
     out.push_str("  <table>\n");
     out.push_str("    <thead>\n");
-    out.push_str("      <tr><th>Heel [&deg;]</th><th>Draft [m]</th><th>Trim [m]</th><th>KN [m]</th><th>GZ [m]</th></tr>\n");
+    let _ = writeln!(
+        out,
+        "      <tr><th>{}</th><th>{}</th><th>{}</th><th>KN [m]</th><th>GZ [m]</th></tr>",
+        html_escape(tr.s(Key::ReportStabColHeel)),
+        html_escape(tr.s(Key::ReportHydroColDraft)),
+        html_escape(tr.s(Key::ReportStabColTrim))
+    );
     out.push_str("    </thead>\n");
     out.push_str("    <tbody>\n");
     for c in &curves {
@@ -740,77 +825,7 @@ pub fn design_report_with_project(
     out.push_str("  </table>\n");
 
     // IMO A.749 Criteria Table
-    out.push_str("  <h3>IMO A.749 / 2008 IS Code Intact Stability Criteria</h3>\n");
-    out.push_str("  <table>\n");
-    out.push_str("    <thead>\n");
-    out.push_str("      <tr><th class=\"text-left\">Criterion</th><th>Required</th><th>Actual</th><th class=\"text-center\">Status</th></tr>\n");
-    out.push_str("    </thead>\n");
-    out.push_str("    <tbody>\n");
-
-    if let Some(ref imo) = imo {
-        let p_0_30 = imo.area_0_30_m_rad >= 0.055;
-        let p_0_40 = imo.area_0_40_m_rad >= 0.090;
-        let p_30_40 = imo.area_30_40_m_rad >= 0.030;
-        let p_max_30 = imo.max_gz_30_plus_m >= 0.20;
-        let p_angle = imo.angle_of_max_gz_deg >= 25.0;
-        let p_gm0 = imo.gm0_m >= 0.15;
-
-        let badge = |pass: bool| {
-            if pass {
-                "<span class=\"badge-pass\">PASS</span>"
-            } else {
-                "<span class=\"badge-fail\">FAIL</span>"
-            }
-        };
-
-        let _ = writeln!(
-            out,
-            "      <tr><td class=\"text-left\">Area under GZ curve 0&deg; to 30&deg;</td><td>&ge; 0.055 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.area_0_30_m_rad, 4),
-            badge(p_0_30)
-        );
-        let _ = writeln!(
-            out,
-            "      <tr><td class=\"text-left\">Area under GZ curve 0&deg; to 40&deg;</td><td>&ge; 0.090 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.area_0_40_m_rad, 4),
-            badge(p_0_40)
-        );
-        let _ = writeln!(
-            out,
-            "      <tr><td class=\"text-left\">Area under GZ curve 30&deg; to 40&deg;</td><td>&ge; 0.030 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.area_30_40_m_rad, 4),
-            badge(p_30_40)
-        );
-        let _ = writeln!(
-            out,
-            "      <tr><td class=\"text-left\">Maximum GZ at heel &ge; 30&deg;</td><td>&ge; 0.200 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.max_gz_30_plus_m, 3),
-            badge(p_max_30)
-        );
-        let _ = writeln!(
-            out,
-            "      <tr><td class=\"text-left\">Angle of maximum GZ</td><td>&ge; 25.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.angle_of_max_gz_deg, 1),
-            badge(p_angle)
-        );
-        let _ = writeln!(
-            out,
-            "      <tr><td class=\"text-left\">Initial metacentric height GM0</td><td>&ge; 0.150 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.gm0_m, 3),
-            badge(p_gm0)
-        );
-        let _ = writeln!(
-            out,
-            "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Overall Status</strong></td><td>All criteria met</td><td>Displ. {} t</td><td class=\"text-center\">{}</td></tr>",
-            fmt_num(imo.displacement_t, 3),
-            badge(imo.passed)
-        );
-    } else {
-        out.push_str("      <tr><td class=\"text-left\">IMO Criteria Evaluation</td><td>&mdash;</td><td>Insufficient heel range or equilibrium data</td><td class=\"text-center\"><span class=\"badge-fail\">FAIL</span></td></tr>\n");
-    }
-
-    out.push_str("    </tbody>\n");
-    out.push_str("  </table>\n");
+    write_imo_table(&mut out, "h3", imo.as_ref(), tr);
 
     // IMO 2008 IS Code §2.3 Severe Wind and Rolling (Weather) Criterion Table
     let weather_res = stability::evaluate_hull_weather(
@@ -819,114 +834,66 @@ pub fn design_report_with_project(
         &cond,
         &stability::WeatherInput::default(),
     );
-    let badge = |pass: bool| {
-        if pass {
-            "<span class=\"badge-pass\">PASS</span>"
-        } else {
-            "<span class=\"badge-fail\">FAIL</span>"
-        }
-    };
-    out.push_str("  <h3>IMO 2008 IS Code Part A &sect;2.3 Severe Wind and Rolling (Weather) Criterion</h3>\n");
-    out.push_str("  <table>\n");
-    out.push_str("    <thead>\n");
-    out.push_str("      <tr><th class=\"text-left\">Parameter / Criterion</th><th>Requirement / Formula</th><th>Value</th><th class=\"text-center\">Status</th></tr>\n");
-    out.push_str("    </thead>\n");
-    out.push_str("    <tbody>\n");
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Lateral windage area A &amp; lever Z</td><td>P = {} Pa</td><td>A = {} m&sup2;, Z = {} m</td><td class=\"text-center\">&mdash;</td></tr>",
-        fmt_num(weather_res.wind_pressure_pa, 0),
-        fmt_num(weather_res.area_m2, 3),
-        fmt_num(weather_res.z_m, 3)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Wind heeling levers l<sub>w1</sub> / l<sub>w2</sub></td><td>l<sub>w2</sub> = 1.5 &middot; l<sub>w1</sub></td><td>{} m / {} m</td><td class=\"text-center\">&mdash;</td></tr>",
-        fmt_num(weather_res.lw1_m, 4),
-        fmt_num(weather_res.lw2_m, 4)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Roll factors (X<sub>1</sub>, X<sub>2</sub>, k, r, s) &amp; period T</td><td>T = 2&middot;C&middot;B / &radic;GM</td><td>({}, {}, {}, {}, {}), T = {} s</td><td class=\"text-center\">&mdash;</td></tr>",
-        fmt_num(weather_res.x1, 3),
-        fmt_num(weather_res.x2, 3),
-        fmt_num(weather_res.k, 3),
-        fmt_num(weather_res.r, 3),
-        fmt_num(weather_res.s, 4),
-        fmt_num(weather_res.roll_period_s, 2)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Roll-back angle &phi;<sub>1</sub></td><td>109&middot;k&middot;X<sub>1</sub>&middot;X<sub>2</sub>&middot;&radic;(r&middot;s)</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
-        fmt_num(weather_res.phi1_deg, 2)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Steady wind heel angle &phi;<sub>0</sub></td><td>&le; {}&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
-        fmt_num(weather_res.phi0_limit_deg, 1),
-        fmt_opt(weather_res.phi0_deg, 2),
-        badge(weather_res.phi0_passed)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Integration limits (&phi;<sub>0</sub> &minus; &phi;<sub>1</sub>, &phi;<sub>c</sub>, &phi;<sub>2</sub>)</td><td>&phi;<sub>2</sub> = min(50&deg;, &phi;<sub>f</sub>, &phi;<sub>c2</sub>)</td><td>({}&deg;, {}&deg;, {}&deg;)</td><td class=\"text-center\">&mdash;</td></tr>",
-        fmt_opt(weather_res.phi_roll_deg, 2),
-        fmt_opt(weather_res.phic_deg, 2),
-        fmt_opt(weather_res.phi2_deg, 2)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr><td class=\"text-left\">Energy balance (area b vs area a)</td><td>b &ge; a</td><td>a = {} m&middot;rad, b = {} m&middot;rad (b/a = {})</td><td class=\"text-center\">{}</td></tr>",
-        fmt_num(weather_res.area_a_m_rad, 4),
-        fmt_num(weather_res.area_b_m_rad, 4),
-        fmt_num(weather_res.area_ratio, 2),
-        badge(weather_res.area_passed)
-    );
-    let _ = writeln!(
-        out,
-        "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Weather Criterion Overall</strong></td><td>&phi;<sub>0</sub> &le; 16&deg; and b &ge; a</td><td>l<sub>w1</sub> = {} m, l<sub>w2</sub> = {} m</td><td class=\"text-center\">{}</td></tr>",
-        fmt_num(weather_res.lw1_m, 4),
-        fmt_num(weather_res.lw2_m, 4),
-        badge(weather_res.passed)
-    );
-    out.push_str("    </tbody>\n");
-    out.push_str("  </table>\n");
+    write_weather_table(&mut out, "h3", &weather_res, tr);
     out.push_str("</section>\n\n");
 
     // ------------------------------------------------------------- 6. Resistance (Holtrop-Mennen)
     out.push_str("<section id=\"resistance\">\n");
-    out.push_str("  <h2>Resistance &amp; Powering (Holtrop–Mennen)</h2>\n");
+    let _ = writeln!(
+        out,
+        "  <h2>{}</h2>",
+        html_escape(tr.s(Key::ReportSecResistance))
+    );
 
     if !opts.include_resistance {
-        out.push_str("  <div class=\"note-box\">Resistance analysis skipped (include_resistance is false).</div>\n");
+        let _ = writeln!(
+            out,
+            "  <div class=\"note-box\">{}</div>",
+            html_escape(tr.s(Key::ReportResSkipped))
+        );
     } else {
         match HoltropInput::measure(&hull, &h_opts) {
             None => {
-                out.push_str("  <div class=\"note-box\">Resistance analysis skipped: hull parameters cannot be measured at this condition (hull may displace zero volume or lack a valid waterline).</div>\n");
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"note-box\">{}</div>",
+                    html_escape(tr.s(Key::ReportResUnmeasurable))
+                );
             }
             Some(input) => {
                 let warnings = input.warnings();
                 if !warnings.is_empty() {
                     out.push_str("  <div class=\"warn-box\">\n");
-                    out.push_str("    <strong>Validity range warnings:</strong>\n    <ul>\n");
+                    let _ = writeln!(
+                        out,
+                        "    <strong>{}</strong>\n    <ul>",
+                        html_escape(tr.s(Key::ReportResWarningsHeading))
+                    );
                     for w in &warnings {
-                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(&w.render(tr)));
                     }
                     out.push_str("    </ul>\n");
                     out.push_str("  </div>\n");
                 }
 
                 let curve = resistance::curve(&input, &opts.speeds_kn);
-                let res_title =
-                    format!("{} - Total Resistance RT and Effective Power PE", esc_name);
-                let res_svg = resistance_chart_svg(&curve, &res_title);
+                let res_title = tr.fmt(
+                    Key::ReportResChartTitle,
+                    &[("name", &surface.settings.name)],
+                );
+                let res_svg = resistance_chart_svg(&curve, &res_title, tr);
                 out.push_str("  <div class=\"svg-frame\">\n");
                 out.push_str(&res_svg);
                 out.push_str("  </div>\n");
 
                 out.push_str("  <table>\n");
                 out.push_str("    <thead>\n");
-                out.push_str("      <tr><th>Speed [kn]</th><th>Speed [m/s]</th><th>Fn</th><th>1+k1</th><th>RF [kN]</th><th>RW [kN]</th><th>RT [kN]</th><th>PE [kW]</th></tr>\n");
+                let _ = writeln!(
+                    out,
+                    "      <tr><th>{}</th><th>{}</th><th>Fn</th><th>1+k1</th><th>RF [kN]</th><th>RW [kN]</th><th>RT [kN]</th><th>PE [kW]</th></tr>",
+                    html_escape(tr.s(Key::ReportResColSpeedKn)),
+                    html_escape(tr.s(Key::ReportResColSpeedMs))
+                );
                 out.push_str("    </thead>\n");
                 out.push_str("    <tbody>\n");
                 for r in &curve {
@@ -953,39 +920,53 @@ pub fn design_report_with_project(
     // ------------------------------------------------------------- 7. Planing (Savitsky, only if include_planing)
     if opts.include_planing {
         out.push_str("<section id=\"planing\">\n");
-        out.push_str("  <h2>Planing Performance (Savitsky)</h2>\n");
+        let _ = writeln!(
+            out,
+            "  <h2>{}</h2>",
+            html_escape(tr.s(Key::ReportSecPlaning))
+        );
 
         match planing::setup(surface, subdiv, &h_opts, None, opts.lcg_x, None) {
             Err(e) => {
-                let _ = writeln!(
-                    out,
-                    "  <div class=\"note-box\">Planing prediction unavailable: {}</div>",
-                    html_escape(&e)
-                );
+                let msg = tr.fmt(Key::ReportPlanUnavailable, &[("err", &e)]);
+                let _ = writeln!(out, "  <div class=\"note-box\">{}</div>", html_escape(&msg));
             }
             Ok(setup) => {
                 if let Some(dead) = setup.deadrise_measured {
                     if dead < 5.0 {
-                        let _ = writeln!(
-                            out,
-                            "  <div class=\"warn-box\">Measured deadrise ({}&deg;) is low. Savitsky's method applies to prismatic planing craft with deadrise 10&ndash;30&deg;.</div>",
-                            fmt_num(dead, 1)
-                        );
+                        let msg = tr.fmt(Key::ReportPlanLowDeadrise, &[("deg", &fmt_num(dead, 1))]);
+                        let _ =
+                            writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(&msg));
                     }
                 }
                 let pts = planing::planing_curve(&setup.hull, &opts.speeds_kn);
                 if pts.is_empty() {
-                    out.push_str("  <div class=\"note-box\">No planing equilibrium converged in the given speed range.</div>\n");
+                    let _ = writeln!(
+                        out,
+                        "  <div class=\"note-box\">{}</div>",
+                        html_escape(tr.s(Key::ReportPlanNoConvergence))
+                    );
                 } else {
-                    let plan_title = format!("{} - Planing Resistance &amp; Trim", esc_name);
-                    let plan_svg = planing_chart_svg(&pts, &plan_title);
+                    let plan_title = tr.fmt(
+                        Key::ReportPlanChartTitle,
+                        &[("name", &surface.settings.name)],
+                    );
+                    let plan_svg = planing_chart_svg(&pts, &plan_title, tr);
                     out.push_str("  <div class=\"svg-frame\">\n");
                     out.push_str(&plan_svg);
                     out.push_str("  </div>\n");
 
                     out.push_str("  <table>\n");
                     out.push_str("    <thead>\n");
-                    out.push_str("      <tr><th>Speed [kn]</th><th>Trim [&deg;]</th><th>Mean Wetted Length [m]</th><th>Wetted Area [m&sup2;]</th><th>LCP/b</th><th>Resistance [kN]</th><th>PE [kW]</th></tr>\n");
+                    let _ = writeln!(
+                        out,
+                        "      <tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>LCP/b</th><th>{}</th><th>PE [kW]</th></tr>",
+                        html_escape(tr.s(Key::ReportResColSpeedKn)),
+                        html_escape(tr.s(Key::ReportPlanLegTrim)),
+                        html_escape(tr.s(Key::ReportPlanColWettedLen)),
+                        html_escape(tr.s(Key::ReportPlanColWettedArea)),
+                        html_escape(tr.s(Key::ReportPlanLegRes))
+                    );
                     out.push_str("    </thead>\n");
                     out.push_str("    <tbody>\n");
                     for p in &pts {
@@ -1016,7 +997,11 @@ pub fn design_report_with_project(
     };
     if has_loading {
         out.push_str("<section id=\"loading\">\n");
-        out.push_str("  <h2>Loading Conditions</h2>\n");
+        let _ = writeln!(
+            out,
+            "  <h2>{}</h2>",
+            html_escape(tr.s(Key::ReportSecLoading))
+        );
 
         let cond_names: Vec<&str> = match &project.report.loading_conditions {
             Some(names) => names.iter().map(|s| s.as_str()).collect(),
@@ -1031,11 +1016,9 @@ pub fn design_report_with_project(
 
         for name in cond_names {
             let Some(orig_cond) = project.loading_conditions.iter().find(|c| c.name == name) else {
-                let _ = writeln!(
-                    out,
-                    "  <div class=\"warn-box\">Loading condition <strong>{}</strong> not found in project.</div>",
-                    html_escape(name)
-                );
+                let msg = html_escape(tr.s(Key::ReportLoadNotFound))
+                    .replace("{name}", &format!("<strong>{}</strong>", html_escape(name)));
+                let _ = writeln!(out, "  <div class=\"warn-box\">{msg}</div>");
                 continue;
             };
 
@@ -1047,15 +1030,15 @@ pub fn design_report_with_project(
 
             if !res.equilibrium_found {
                 out.push_str("  <div class=\"warn-box\">\n");
-                let _ = writeln!(
-                    out,
-                    "    <strong>Warning: {}.</strong>",
-                    html_escape(loading::NO_EQUILIBRIUM_NOTE)
+                let note = tr.fmt(
+                    Key::ReportLoadWarningNote,
+                    &[("note", tr.s(Key::LoadingNoEquilibrium))],
                 );
+                let _ = writeln!(out, "    <strong>{}</strong>", html_escape(&note));
                 if !res.warnings.is_empty() {
                     out.push_str("    <ul>\n");
                     for w in &res.warnings {
-                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(&w.render(tr)));
                     }
                     out.push_str("    </ul>\n");
                 }
@@ -1064,7 +1047,16 @@ pub fn design_report_with_project(
 
             out.push_str("  <table>\n");
             out.push_str("    <thead>\n");
-            out.push_str("      <tr><th>&Delta; [t]</th><th>LCG [m]</th><th>TCG [m]</th><th>KG solid [m]</th><th>FSC [m]</th><th>KG fluid [m]</th><th>Draft [m]</th><th>Trim [m]</th><th>List [&deg;]</th><th>GM fluid [m]</th></tr>\n");
+            let _ = writeln!(
+                out,
+                "      <tr><th>&Delta; [t]</th><th>LCG [m]</th><th>TCG [m]</th><th>{}</th><th>FSC [m]</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>",
+                html_escape(tr.s(Key::ReportLoadColKgSolid)),
+                html_escape(tr.s(Key::ReportLoadColKgFluid)),
+                html_escape(tr.s(Key::ReportHydroColDraft)),
+                html_escape(tr.s(Key::ReportStabColTrim)),
+                html_escape(tr.s(Key::ReportLoadColList)),
+                html_escape(tr.s(Key::ReportLoadColGmFluid))
+            );
             out.push_str("    </thead>\n");
             out.push_str("    <tbody>\n");
             let _ = writeln!(
@@ -1085,136 +1077,12 @@ pub fn design_report_with_project(
             out.push_str("  </table>\n");
 
             // IMO A.749 Criteria
-            out.push_str("  <h4>IMO A.749 / 2008 IS Code Intact Stability Criteria</h4>\n");
-            out.push_str("  <table>\n");
-            out.push_str("    <thead>\n");
-            out.push_str("      <tr><th class=\"text-left\">Criterion</th><th>Required</th><th>Actual</th><th class=\"text-center\">Status</th></tr>\n");
-            out.push_str("    </thead>\n");
-            out.push_str("    <tbody>\n");
-            if let Some(ref imo) = res.imo_criteria {
-                let p_0_30 = imo.area_0_30_m_rad >= 0.055;
-                let p_0_40 = imo.area_0_40_m_rad >= 0.090;
-                let p_30_40 = imo.area_30_40_m_rad >= 0.030;
-                let p_max_30 = imo.max_gz_30_plus_m >= 0.20;
-                let p_angle = imo.angle_of_max_gz_deg >= 25.0;
-                let p_gm0 = imo.gm0_m >= 0.15;
-
-                let _ = writeln!(
-                    out,
-                    "      <tr><td class=\"text-left\">Area under GZ curve 0&deg; to 30&deg;</td><td>&ge; 0.055 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.area_0_30_m_rad, 4),
-                    badge(p_0_30)
-                );
-                let _ = writeln!(
-                    out,
-                    "      <tr><td class=\"text-left\">Area under GZ curve 0&deg; to 40&deg;</td><td>&ge; 0.090 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.area_0_40_m_rad, 4),
-                    badge(p_0_40)
-                );
-                let _ = writeln!(
-                    out,
-                    "      <tr><td class=\"text-left\">Area under GZ curve 30&deg; to 40&deg;</td><td>&ge; 0.030 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.area_30_40_m_rad, 4),
-                    badge(p_30_40)
-                );
-                let _ = writeln!(
-                    out,
-                    "      <tr><td class=\"text-left\">Maximum GZ at heel &ge; 30&deg;</td><td>&ge; 0.200 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.max_gz_30_plus_m, 3),
-                    badge(p_max_30)
-                );
-                let _ = writeln!(
-                    out,
-                    "      <tr><td class=\"text-left\">Angle of maximum GZ</td><td>&ge; 25.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.angle_of_max_gz_deg, 1),
-                    badge(p_angle)
-                );
-                let _ = writeln!(
-                    out,
-                    "      <tr><td class=\"text-left\">Initial metacentric height GM0</td><td>&ge; 0.150 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.gm0_m, 3),
-                    badge(p_gm0)
-                );
-                let _ = writeln!(
-                    out,
-                    "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Overall Status</strong></td><td>All criteria met</td><td>Displ. {} t</td><td class=\"text-center\">{}</td></tr>",
-                    fmt_num(imo.displacement_t, 3),
-                    badge(imo.passed)
-                );
-            } else {
-                out.push_str("      <tr><td class=\"text-left\">IMO Criteria Evaluation</td><td>&mdash;</td><td>Insufficient heel range or equilibrium data</td><td class=\"text-center\"><span class=\"badge-fail\">FAIL</span></td></tr>\n");
-            }
-            out.push_str("    </tbody>\n");
-            out.push_str("  </table>\n");
+            write_imo_table(&mut out, "h4", res.imo_criteria.as_ref(), tr);
 
             // Weather criterion
             if inc_weather {
                 if let Some(ref weather_res) = res.weather {
-                    out.push_str("  <h4>IMO 2008 IS Code Part A &sect;2.3 Severe Wind and Rolling (Weather) Criterion</h4>\n");
-                    out.push_str("  <table>\n");
-                    out.push_str("    <thead>\n");
-                    out.push_str("      <tr><th class=\"text-left\">Parameter / Criterion</th><th>Requirement / Formula</th><th>Value</th><th class=\"text-center\">Status</th></tr>\n");
-                    out.push_str("    </thead>\n");
-                    out.push_str("    <tbody>\n");
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Lateral windage area A &amp; lever Z</td><td>P = {} Pa</td><td>A = {} m&sup2;, Z = {} m</td><td class=\"text-center\">&mdash;</td></tr>",
-                        fmt_num(weather_res.wind_pressure_pa, 0),
-                        fmt_num(weather_res.area_m2, 3),
-                        fmt_num(weather_res.z_m, 3)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Wind heeling levers l<sub>w1</sub> / l<sub>w2</sub></td><td>l<sub>w2</sub> = 1.5 &middot; l<sub>w1</sub></td><td>{} m / {} m</td><td class=\"text-center\">&mdash;</td></tr>",
-                        fmt_num(weather_res.lw1_m, 4),
-                        fmt_num(weather_res.lw2_m, 4)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Roll factors (X<sub>1</sub>, X<sub>2</sub>, k, r, s) &amp; period T</td><td>T = 2&middot;C&middot;B / &radic;GM</td><td>({}, {}, {}, {}, {}), T = {} s</td><td class=\"text-center\">&mdash;</td></tr>",
-                        fmt_num(weather_res.x1, 3),
-                        fmt_num(weather_res.x2, 3),
-                        fmt_num(weather_res.k, 3),
-                        fmt_num(weather_res.r, 3),
-                        fmt_num(weather_res.s, 4),
-                        fmt_num(weather_res.roll_period_s, 2)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Roll-back angle &phi;<sub>1</sub></td><td>109&middot;k&middot;X<sub>1</sub>&middot;X<sub>2</sub>&middot;&radic;(r&middot;s)</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
-                        fmt_num(weather_res.phi1_deg, 2)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Steady wind heel angle &phi;<sub>0</sub></td><td>&le; {}&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
-                        fmt_num(weather_res.phi0_limit_deg, 1),
-                        fmt_opt(weather_res.phi0_deg, 2),
-                        badge(weather_res.phi0_passed)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Integration limits (&phi;<sub>0</sub> &minus; &phi;<sub>1</sub>, &phi;<sub>c</sub>, &phi;<sub>2</sub>)</td><td>&phi;<sub>2</sub> = min(50&deg;, &phi;<sub>f</sub>, &phi;<sub>c2</sub>)</td><td>({}&deg;, {}&deg;, {}&deg;)</td><td class=\"text-center\">&mdash;</td></tr>",
-                        fmt_opt(weather_res.phi_roll_deg, 2),
-                        fmt_opt(weather_res.phic_deg, 2),
-                        fmt_opt(weather_res.phi2_deg, 2)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr><td class=\"text-left\">Energy balance (area b vs area a)</td><td>b &ge; a</td><td>a = {} m&middot;rad, b = {} m&middot;rad (b/a = {})</td><td class=\"text-center\">{}</td></tr>",
-                        fmt_num(weather_res.area_a_m_rad, 4),
-                        fmt_num(weather_res.area_b_m_rad, 4),
-                        fmt_num(weather_res.area_ratio, 2),
-                        badge(weather_res.area_passed)
-                    );
-                    let _ = writeln!(
-                        out,
-                        "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Weather Criterion Overall</strong></td><td>&phi;<sub>0</sub> &le; 16&deg; and b &ge; a</td><td>l<sub>w1</sub> = {} m, l<sub>w2</sub> = {} m</td><td class=\"text-center\">{}</td></tr>",
-                        fmt_num(weather_res.lw1_m, 4),
-                        fmt_num(weather_res.lw2_m, 4),
-                        badge(weather_res.passed)
-                    );
-                    out.push_str("    </tbody>\n");
-                    out.push_str("  </table>\n");
+                    write_weather_table(&mut out, "h4", weather_res, tr);
                 }
             }
 
@@ -1224,13 +1092,15 @@ pub fn design_report_with_project(
                 let gz = c.points.first().and_then(|p| p.gz);
                 gz_points.push((c.heel_deg, gz));
             }
-            let gz_title = format!(
-                "{} - Righting Lever GZ (Displ. {} t, KG fluid {} m)",
-                esc_cond,
-                fmt_num(res.displacement_t, 3),
-                fmt_num(res.kg_fluid, 3)
+            let gz_title = tr.fmt(
+                Key::ReportStabGzChartTitleFluid,
+                &[
+                    ("name", &cond.name),
+                    ("disp", &fmt_num(res.displacement_t, 3)),
+                    ("kg", &fmt_num(res.kg_fluid, 3)),
+                ],
             );
-            let gz_svg = gz_chart_svg(&gz_points, res.imo_criteria.as_ref(), &gz_title);
+            let gz_svg = gz_chart_svg(&gz_points, res.imo_criteria.as_ref(), &gz_title, tr);
             out.push_str("  <div class=\"svg-frame\">\n");
             out.push_str(&gz_svg);
             out.push_str("  </div>\n");
@@ -1245,7 +1115,11 @@ pub fn design_report_with_project(
     };
     if has_damage {
         out.push_str("<section id=\"damage\">\n");
-        out.push_str("  <h2>Damage Cases</h2>\n");
+        let _ = writeln!(
+            out,
+            "  <h2>{}</h2>",
+            html_escape(tr.s(Key::ReportSecDamage))
+        );
 
         let case_names: Vec<&str> = match &project.report.damage_cases {
             Some(names) => names.iter().map(|s| s.as_str()).collect(),
@@ -1258,11 +1132,9 @@ pub fn design_report_with_project(
 
         for name in case_names {
             let Some(raw_case) = project.damage_cases.iter().find(|c| c.name == name) else {
-                let _ = writeln!(
-                    out,
-                    "  <div class=\"warn-box\">Damage case <strong>{}</strong> not found in project.</div>",
-                    html_escape(name)
-                );
+                let msg = html_escape(tr.s(Key::ReportDmgNotFound))
+                    .replace("{name}", &format!("<strong>{}</strong>", html_escape(name)));
+                let _ = writeln!(out, "  <div class=\"warn-box\">{msg}</div>");
                 continue;
             };
 
@@ -1272,11 +1144,8 @@ pub fn design_report_with_project(
             let resolved = match project.resolve_damage_case(raw_case) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = writeln!(
-                        out,
-                        "  <div class=\"warn-box\">Cannot resolve damage case: {}</div>",
-                        html_escape(&e)
-                    );
+                    let msg = tr.fmt(Key::ReportDmgResolveError, &[("err", &e)]);
+                    let _ = writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(&msg));
                     continue;
                 }
             };
@@ -1284,35 +1153,51 @@ pub fn design_report_with_project(
             let res = match damage::evaluate(surface, &h_opts, &resolved) {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = writeln!(
-                        out,
-                        "  <div class=\"warn-box\">Damage evaluation error: {}</div>",
-                        html_escape(&e)
-                    );
+                    let msg = tr.fmt(Key::ReportDmgEvalError, &[("err", &e)]);
+                    let _ = writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(&msg));
                     continue;
                 }
             };
 
             for w in &res.warnings {
-                let _ = writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(w));
+                let _ = writeln!(
+                    out,
+                    "  <div class=\"warn-box\">{}</div>",
+                    html_escape(&w.render(tr))
+                );
             }
 
             // Intact vs damaged draft/trim/heel, sinkage, freeboard
-            out.push_str("  <h4>Equilibrium Floating Condition</h4>\n");
+            let _ = writeln!(
+                out,
+                "  <h4>{}</h4>",
+                html_escape(tr.s(Key::ReportDmgEqHeading))
+            );
             out.push_str("  <table>\n");
             out.push_str("    <thead>\n");
-            out.push_str("      <tr><th class=\"text-left\">Condition</th><th>Draft [m]</th><th>Trim [m]</th><th>Heel [&deg;]</th><th>Sinkage [m]</th><th>Freeboard [m]</th></tr>\n");
+            let _ = writeln!(
+                out,
+                "      <tr><th class=\"text-left\">{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>",
+                html_escape(tr.s(Key::ReportDmgColCondition)),
+                html_escape(tr.s(Key::ReportHydroColDraft)),
+                html_escape(tr.s(Key::ReportStabColTrim)),
+                html_escape(tr.s(Key::ReportStabColHeel)),
+                html_escape(tr.s(Key::ReportDmgColSinkage)),
+                html_escape(tr.s(Key::ReportDmgColFreeboard))
+            );
             out.push_str("    </thead>\n");
             out.push_str("    <tbody>\n");
             let _ = writeln!(
                 out,
-                "      <tr><td class=\"text-left\">Intact</td><td>{}</td><td>{}</td><td>0.00</td><td>&mdash;</td><td>&mdash;</td></tr>",
+                "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>0.00</td><td>&mdash;</td><td>&mdash;</td></tr>",
+                html_escape(tr.s(Key::ReportDmgRowIntact)),
                 fmt_num(res.intact_draft, 3),
                 fmt_num(res.intact_trim_m, 3)
             );
             let _ = writeln!(
                 out,
-                "      <tr class=\"active-row\"><td class=\"text-left\">Damaged</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "      <tr class=\"active-row\"><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(tr.s(Key::ReportDmgRowDamaged)),
                 fmt_num(res.draft, 3),
                 fmt_num(res.trim_m, 3),
                 fmt_num(res.heel_deg, 2),
@@ -1323,14 +1208,32 @@ pub fn design_report_with_project(
             out.push_str("  </table>\n");
 
             // Flooded compartments table
-            out.push_str("  <h4>Flooded Compartments</h4>\n");
+            let _ = writeln!(
+                out,
+                "  <h4>{}</h4>",
+                html_escape(tr.s(Key::ReportDmgCompHeading))
+            );
             out.push_str("  <table>\n");
             out.push_str("    <thead>\n");
-            out.push_str("      <tr><th class=\"text-left\">Compartment</th><th>Permeability &mu;</th><th>Submerged Vol [m&sup3;]</th><th>Lost Buoyancy [m&sup3;]</th><th>Centroid X [m]</th><th>Centroid Y [m]</th><th>Centroid Z [m]</th></tr>\n");
+            let _ = writeln!(
+                out,
+                "      <tr><th class=\"text-left\">{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>",
+                html_escape(tr.s(Key::ReportDmgColCompartment)),
+                html_escape(tr.s(Key::ReportDmgColPermeability)),
+                html_escape(tr.s(Key::ReportDmgColSubmergedVol)),
+                html_escape(tr.s(Key::ReportDmgColLostBuoyancy)),
+                html_escape(tr.s(Key::ReportDmgColCentroidX)),
+                html_escape(tr.s(Key::ReportDmgColCentroidY)),
+                html_escape(tr.s(Key::ReportDmgColCentroidZ))
+            );
             out.push_str("    </thead>\n");
             out.push_str("    <tbody>\n");
             if res.compartments.is_empty() {
-                out.push_str("      <tr><td colspan=\"7\" class=\"text-center\">No compartments flooded</td></tr>\n");
+                let _ = writeln!(
+                    out,
+                    "      <tr><td colspan=\"7\" class=\"text-center\">{}</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgNoCompartments))
+                );
             } else {
                 for c in &res.compartments {
                     let _ = writeln!(
@@ -1350,10 +1253,21 @@ pub fn design_report_with_project(
             out.push_str("  </table>\n");
 
             // Residual criteria PASS/FAIL
-            out.push_str("  <h4>Residual Stability Criteria (SOLAS II-1 Reg. 7-2)</h4>\n");
+            let _ = writeln!(
+                out,
+                "  <h4>{}</h4>",
+                html_escape(tr.s(Key::ReportDmgResidualHeading))
+            );
             out.push_str("  <table>\n");
             out.push_str("    <thead>\n");
-            out.push_str("      <tr><th class=\"text-left\">Criterion</th><th>Required</th><th>Actual</th><th class=\"text-center\">Status</th></tr>\n");
+            let _ = writeln!(
+                out,
+                "      <tr><th class=\"text-left\">{}</th><th>{}</th><th>{}</th><th class=\"text-center\">{}</th></tr>",
+                html_escape(tr.s(Key::ReportStabColCriterion)),
+                html_escape(tr.s(Key::ReportStabColRequired)),
+                html_escape(tr.s(Key::ReportStabColActual)),
+                html_escape(tr.s(Key::ReportStabColStatus))
+            );
             out.push_str("    </thead>\n");
             out.push_str("    <tbody>\n");
             if let Some(ref crit) = res.criteria {
@@ -1362,35 +1276,48 @@ pub fn design_report_with_project(
                 let p_area = crit.area_m_rad >= 0.015;
                 let _ = writeln!(
                     out,
-                    "      <tr><td class=\"text-left\">Positive righting lever range</td><td>&ge; 15.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+                    "      <tr><td class=\"text-left\">{}</td><td>&ge; 15.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgCritPosRange)),
                     fmt_num(crit.positive_range_deg, 1),
-                    badge(p_range)
+                    badge_html(p_range, tr)
                 );
                 let _ = writeln!(
                     out,
-                    "      <tr><td class=\"text-left\">Maximum residual righting lever GZ</td><td>&ge; 0.100 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+                    "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.100 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgCritMaxGz)),
                     fmt_num(crit.max_gz_m, 3),
-                    badge(p_max)
+                    badge_html(p_max, tr)
                 );
                 let _ = writeln!(
                     out,
-                    "      <tr><td class=\"text-left\">Angle of maximum residual GZ</td><td>&mdash;</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
+                    "      <tr><td class=\"text-left\">{}</td><td>&mdash;</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgCritAngleMax)),
                     fmt_num(crit.angle_of_max_gz_deg, 1)
                 );
                 let _ = writeln!(
                     out,
-                    "      <tr><td class=\"text-left\">Area under residual GZ curve</td><td>&ge; 0.0150 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+                    "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.0150 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgCritArea)),
                     fmt_num(crit.area_m_rad, 4),
-                    badge(p_area)
+                    badge_html(p_area, tr)
                 );
+                let label = crit.label.render(tr);
                 let _ = writeln!(
                     out,
-                    "      <tr class=\"active-row\"><td class=\"text-left\"><strong>Overall Residual Status</strong></td><td>All criteria met</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
-                    html_escape(&crit.label),
-                    badge(crit.passed)
+                    "      <tr class=\"active-row\"><td class=\"text-left\"><strong>{}</strong></td><td>{}</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgOverallResidual)),
+                    html_escape(tr.s(Key::ReportStabAllCriteriaMet)),
+                    html_escape(&label),
+                    badge_html(crit.passed, tr)
                 );
             } else {
-                out.push_str("      <tr><td class=\"text-left\">Residual Criteria Evaluation</td><td>&mdash;</td><td>Damaged equilibrium not found or criteria not evaluated</td><td class=\"text-center\"><span class=\"badge-fail\">FAIL</span></td></tr>\n");
+                let _ = writeln!(
+                    out,
+                    "      <tr><td class=\"text-left\">{}</td><td>&mdash;</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
+                    html_escape(tr.s(Key::ReportDmgResidualEval)),
+                    html_escape(tr.s(Key::ReportDmgResidualNotFound)),
+                    badge_html(false, tr)
+                );
             }
             out.push_str("    </tbody>\n");
             out.push_str("  </table>\n");
@@ -1401,11 +1328,8 @@ pub fn design_report_with_project(
                 .iter()
                 .map(|p| (p.relative_heel_deg, p.gz))
                 .collect();
-            let gz_title = format!(
-                "{} - Residual Righting Levers (Damaged Equilibrium)",
-                esc_case
-            );
-            let gz_svg = gz_chart_svg(&gz_pts, None, &gz_title);
+            let gz_title = tr.fmt(Key::ReportDmgResidualGzTitle, &[("name", &raw_case.name)]);
+            let gz_svg = gz_chart_svg(&gz_pts, None, &gz_title, tr);
             out.push_str("  <div class=\"svg-frame\">\n");
             out.push_str(&gz_svg);
             out.push_str("  </div>\n");
@@ -1416,7 +1340,11 @@ pub fn design_report_with_project(
     // ------------------------------------------------------------- 10. Seakeeping
     if let Some(ref sk_conf) = project.report.seakeeping {
         out.push_str("<section id=\"seakeeping\">\n");
-        out.push_str("  <h2>Seakeeping</h2>\n");
+        let _ = writeln!(
+            out,
+            "  <h2>{}</h2>",
+            html_escape(tr.s(Key::ReportSecSeakeeping))
+        );
 
         let kg = sk_conf.kg.unwrap_or(opts.kg);
         let mut spec = SeakeepingSpec {
@@ -1433,24 +1361,31 @@ pub fn design_report_with_project(
 
         match seakeeping::head_sea_raos(surface, &spec) {
             Err(e) => {
-                let _ = writeln!(
-                    out,
-                    "  <div class=\"warn-box\">Seakeeping calculation error: {}</div>",
-                    html_escape(&e)
-                );
+                let msg = tr.fmt(Key::ReportSeaCalcError, &[("err", &e)]);
+                let _ = writeln!(out, "  <div class=\"warn-box\">{}</div>", html_escape(&msg));
             }
             Ok(rep) => {
-                let _ = writeln!(
-                    out,
-                    "  <h3>Head Sea Motion RAOs (Speed: {} kn, Draft: {} m, KG: {} m)</h3>",
-                    fmt_num(sk_conf.speed_kn, 1),
-                    fmt_num(opts.draft, 3),
-                    fmt_num(kg, 3)
+                let rao_heading = tr.fmt(
+                    Key::ReportSeaRaoHeading,
+                    &[
+                        ("speed", &fmt_num(sk_conf.speed_kn, 1)),
+                        ("draft", &fmt_num(opts.draft, 3)),
+                        ("kg", &fmt_num(kg, 3)),
+                    ],
                 );
+                let _ = writeln!(out, "  <h3>{}</h3>", html_escape(&rao_heading));
 
                 out.push_str("  <table>\n");
                 out.push_str("    <thead>\n");
-                out.push_str("      <tr><th>&lambda;/L</th><th>Wave &omega; [rad/s]</th><th>&lambda; [m]</th><th>Heave Amp [m/m]</th><th>Heave Phase [&deg;]</th><th>Pitch Amp [rad/rad]</th><th>Pitch Phase [&deg;]</th></tr>\n");
+                let _ = writeln!(
+                    out,
+                    "      <tr><th>&lambda;/L</th><th>{}</th><th>&lambda; [m]</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>",
+                    html_escape(tr.s(Key::ReportSeaColWaveOmega)),
+                    html_escape(tr.s(Key::ReportSeaColHeaveAmp)),
+                    html_escape(tr.s(Key::ReportSeaColHeavePhase)),
+                    html_escape(tr.s(Key::ReportSeaColPitchAmp)),
+                    html_escape(tr.s(Key::ReportSeaColPitchPhase))
+                );
                 out.push_str("    </thead>\n");
                 out.push_str("    <tbody>\n");
                 for p in &rep.frequencies {
@@ -1473,74 +1408,100 @@ pub fn design_report_with_project(
                     let sea = irr.sea;
                     match seastate::irregular_from_raos(&rep, irr) {
                         Err(e) => {
+                            let msg = tr.fmt(Key::ReportSeaIrrError, &[("err", &e)]);
                             let _ = writeln!(
                                 out,
-                                "  <div class=\"warn-box\">Irregular sea response error: {}</div>",
-                                html_escape(&e)
+                                "  <div class=\"warn-box\">{}</div>",
+                                html_escape(&msg)
                             );
                         }
                         Ok(irr) => {
-                            out.push_str("  <h3>Irregular Head Sea Responses</h3>\n");
+                            let _ = writeln!(
+                                out,
+                                "  <h3>{}</h3>",
+                                html_escape(tr.s(Key::ReportSeaIrrHeading))
+                            );
                             out.push_str("  <div class=\"cards-grid\">\n");
 
                             out.push_str("    <div class=\"card\">\n");
-                            out.push_str("      <h3>Wave Spectrum</h3>\n");
+                            let _ = writeln!(
+                                out,
+                                "      <h3>{}</h3>",
+                                html_escape(tr.s(Key::ReportSeaCardSpectrum))
+                            );
                             out.push_str("      <dl>\n");
                             let spec_type = match sea {
                                 WaveSpectrum::Bretschneider { .. } => "Bretschneider",
                                 WaveSpectrum::Jonswap { .. } => "JONSWAP",
                             };
-                            let _ =
-                                writeln!(out, "        <dt>Spectrum</dt><dd>{}</dd>", spec_type);
                             let _ = writeln!(
                                 out,
-                                "        <dt>Target Hs</dt><dd>{} m</dd>",
+                                "        <dt>{}</dt><dd>{}</dd>",
+                                html_escape(tr.s(Key::ReportSeaSpectrum)),
+                                spec_type
+                            );
+                            let _ = writeln!(
+                                out,
+                                "        <dt>{}</dt><dd>{} m</dd>",
+                                html_escape(tr.s(Key::ReportSeaTargetHs)),
                                 fmt_num(sea.hs(), 2)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Peak Period Tp</dt><dd>{} s</dd>",
+                                "        <dt>{}</dt><dd>{} s</dd>",
+                                html_escape(tr.s(Key::ReportSeaPeakPeriod)),
                                 fmt_num(sea.tp(), 2)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Spectrum Hs Check</dt><dd>{} m</dd>",
+                                "        <dt>{}</dt><dd>{} m</dd>",
+                                html_escape(tr.s(Key::ReportSeaHsCheck)),
                                 fmt_num(irr.spectrum.hs_check, 2)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Peak &omega;p</dt><dd>{} rad/s</dd>",
+                                "        <dt>{}</dt><dd>{} rad/s</dd>",
+                                html_escape(tr.s(Key::ReportSeaPeakOmega)),
                                 fmt_num(irr.spectrum.peak_omega, 3)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Zero-Crossing Tz</dt><dd>{} s</dd>",
+                                "        <dt>{}</dt><dd>{} s</dd>",
+                                html_escape(tr.s(Key::ReportSeaZeroCrossing)),
                                 fmt_num(irr.spectrum.tz_s, 2)
                             );
                             out.push_str("      </dl>\n");
                             out.push_str("    </div>\n");
 
                             out.push_str("    <div class=\"card\">\n");
-                            out.push_str("      <h3>Ship Responses</h3>\n");
+                            let _ = writeln!(
+                                out,
+                                "      <h3>{}</h3>",
+                                html_escape(tr.s(Key::ReportSeaCardResponses))
+                            );
                             out.push_str("      <dl>\n");
                             let _ = writeln!(
                                 out,
-                                "        <dt>Heave Significant</dt><dd>{} m</dd>",
+                                "        <dt>{}</dt><dd>{} m</dd>",
+                                html_escape(tr.s(Key::ReportSeaHeaveSig)),
                                 fmt_num(irr.heave.significant, 3)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Heave RMS</dt><dd>{} m</dd>",
+                                "        <dt>{}</dt><dd>{} m</dd>",
+                                html_escape(tr.s(Key::ReportSeaHeaveRms)),
                                 fmt_num(irr.heave.rms, 3)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Pitch Significant</dt><dd>{}&deg;</dd>",
+                                "        <dt>{}</dt><dd>{}&deg;</dd>",
+                                html_escape(tr.s(Key::ReportSeaPitchSig)),
                                 fmt_num(irr.pitch_deg.significant, 2)
                             );
                             let _ = writeln!(
                                 out,
-                                "        <dt>Pitch RMS</dt><dd>{}&deg;</dd>",
+                                "        <dt>{}</dt><dd>{}&deg;</dd>",
+                                html_escape(tr.s(Key::ReportSeaPitchRms)),
                                 fmt_num(irr.pitch_deg.rms, 2)
                             );
                             out.push_str("      </dl>\n");
@@ -1548,10 +1509,22 @@ pub fn design_report_with_project(
 
                             out.push_str("  </div>\n");
 
-                            out.push_str("  <h4>Point Responses &amp; Motion Sickness</h4>\n");
+                            let _ = writeln!(
+                                out,
+                                "  <h4>{}</h4>",
+                                html_escape(tr.s(Key::ReportSeaPointsHeading))
+                            );
                             out.push_str("  <table>\n");
                             out.push_str("    <thead>\n");
-                            out.push_str("      <tr><th class=\"text-left\">Point</th><th>Position X [m]</th><th>Vertical Motion Sig. [m]</th><th>Relative Motion Sig. [m]</th><th>Vert. Accel. RMS [g]</th><th>MSI [% (2 h)]</th></tr>\n");
+                            let _ = writeln!(
+                                out,
+                                "      <tr><th class=\"text-left\">{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>MSI [% (2 h)]</th></tr>",
+                                html_escape(tr.s(Key::ReportSeaColPoint)),
+                                html_escape(tr.s(Key::ReportSeaColPosX)),
+                                html_escape(tr.s(Key::ReportSeaColVertSig)),
+                                html_escape(tr.s(Key::ReportSeaColRelSig)),
+                                html_escape(tr.s(Key::ReportSeaColVertAcc))
+                            );
                             out.push_str("    </thead>\n");
                             out.push_str("    <tbody>\n");
                             for pt in &irr.points {
@@ -1569,10 +1542,15 @@ pub fn design_report_with_project(
                             out.push_str("    </tbody>\n");
                             out.push_str("  </table>\n");
 
+                            let msi_note = if irr.msi_note == seastate::MSI_NOTE {
+                                seastate::msi_note(tr)
+                            } else {
+                                irr.msi_note
+                            };
                             let _ = writeln!(
                                 out,
                                 "  <div class=\"note-box\">{}</div>\n",
-                                html_escape(irr.msi_note)
+                                html_escape(msi_note)
                             );
                         }
                     }
@@ -1585,29 +1563,29 @@ pub fn design_report_with_project(
     // ------------------------------------------------------------- 11. Far-field wave pattern
     if let Some(waves) = &opts.waves {
         out.push_str("<section id=\"waves\">\n");
-        out.push_str("  <h2>Far-Field Wave Pattern (Michell thin-ship)</h2>\n");
+        let _ = writeln!(out, "  <h2>{}</h2>", html_escape(tr.s(Key::ReportSecWaves)));
         match wave_section_field(surface, subdiv, opts.draft, waves) {
             Err(e) => {
-                let _ = writeln!(
-                    out,
-                    "  <div class=\"note-box\">Wave pattern unavailable: {}</div>",
-                    html_escape(&e)
-                );
+                let msg = tr.fmt(Key::ReportWaveUnavailable, &[("err", &e)]);
+                let _ = writeln!(out, "  <div class=\"note-box\">{}</div>", html_escape(&msg));
             }
             Ok((field, wash)) => {
                 let regime = crate::wave_pattern::regime(field.froude);
-                let _ = writeln!(out, "  <p>{}</p>", html_escape(regime.sentence()));
+                let _ = writeln!(out, "  <p>{}</p>", html_escape(regime.sentence_tr(tr)));
                 if !field.warnings.is_empty() {
                     out.push_str("  <div class=\"warn-box\">\n    <ul>\n");
                     for w in &field.warnings {
-                        let _ = writeln!(out, "      <li>{}</li>", html_escape(w));
+                        let _ = writeln!(out, "      <li>{}</li>", html_escape(&w.render(tr)));
                     }
                     out.push_str("    </ul>\n  </div>\n");
                 }
                 let knots = field.speed_m_s / resistance::KNOT;
                 let _ = writeln!(
                     out,
-                    "  <table>\n    <thead>\n      <tr><th>Speed [kn]</th><th>Fn</th><th>Draft [m]</th><th>&lambda;<sub>T</sub> [m]</th><th>&theta;<sub>c</sub> [&deg;]</th><th>Shortest wave [m]</th><th>max |&zeta;| [m]</th></tr>\n    </thead>\n    <tbody>\n      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n    </tbody>\n  </table>",
+                    "  <table>\n    <thead>\n      <tr><th>{}</th><th>Fn</th><th>{}</th><th>&lambda;<sub>T</sub> [m]</th><th>&theta;<sub>c</sub> [&deg;]</th><th>{}</th><th>max |&zeta;| [m]</th></tr>\n    </thead>\n    <tbody>\n      <tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>\n    </tbody>\n  </table>",
+                    html_escape(tr.s(Key::ReportResColSpeedKn)),
+                    html_escape(tr.s(Key::ReportHydroColDraft)),
+                    html_escape(tr.s(Key::ReportWaveColShortest)),
                     fmt_num(knots, 2),
                     fmt_num(field.froude, 3),
                     fmt_num(opts.draft, 3),
@@ -1617,17 +1595,17 @@ pub fn design_report_with_project(
                     fmt_num(field.max_abs_zeta_m, 3),
                 );
                 if let Some(d) = waves.wash_distance_m {
-                    let height = wash.map_or("calm".to_string(), |w| {
-                        format!("{} m", fmt_num(w.height_m, 3))
-                    });
-                    let _ = writeln!(
-                        out,
-                        "  <p>Wash height at {} m: {} (thin-ship estimate, deep water)</p>",
-                        fmt_num(d, 2),
-                        height
+                    let height = wash.map_or_else(
+                        || tr.s(Key::ReportWaveWashCalm).to_string(),
+                        |w| format!("{} m", fmt_num(w.height_m, 3)),
                     );
+                    let wash_line = tr.fmt(
+                        Key::ReportWaveWashLine,
+                        &[("d", &fmt_num(d, 2)), ("height", &height)],
+                    );
+                    let _ = writeln!(out, "  <p>{}</p>", html_escape(&wash_line));
                 }
-                let svg = crate::wave_pattern::wave_svg(&field, waves.clip_m);
+                let svg = crate::wave_pattern::wave_svg_tr(&field, waves.clip_m, tr);
                 let svg = match svg.strip_prefix("<?xml") {
                     Some(rest) => rest.split_once('\n').map_or("", |(_, body)| body),
                     None => svg.as_str(),
@@ -1637,7 +1615,7 @@ pub fn design_report_with_project(
                 out.push_str("  </div>\n");
                 out.push_str("  <div class=\"note-box\">\n");
                 for note in &field.notes {
-                    let _ = writeln!(out, "    <p>{}</p>", html_escape(note));
+                    let _ = writeln!(out, "    <p>{}</p>", html_escape(&note.render(tr)));
                 }
                 out.push_str("  </div>\n");
             }
@@ -1648,16 +1626,220 @@ pub fn design_report_with_project(
     // ------------------------------------------------------------- Footer
     let version = crate::VERSION;
     out.push_str("<footer>\n");
+    let meta = tr.fmt(
+        Key::ReportFooterMeta,
+        &[
+            ("version", version),
+            ("level", &opts.level.to_string()),
+            ("mode", &format!("{:?}", opts.mode)),
+        ],
+    );
+    let _ = writeln!(out, "  <p>{}</p>", html_escape(&meta));
     let _ = writeln!(
         out,
-        "  <p>SeaCraft v{} &bull; Design Dossier &bull; Subdivision Level {}, Mode {:?}</p>",
-        version, opts.level, opts.mode
+        "  <p>{}</p>",
+        html_escape(tr.s(Key::ReportFooterUnits))
     );
-    out.push_str("  <p>Units: Metres (m), Tonnes (t = 1000 kg), Kilograms per cubic metre (kg/m&sup3;), Degrees (&deg;), Knots (kn), Kilonewtons (kN), Kilowatts (kW).</p>\n");
     out.push_str("</footer>\n\n");
 
     out.push_str("</body>\n</html>\n");
     Ok(out)
+}
+
+fn badge_html(pass: bool, tr: Tr) -> String {
+    if pass {
+        format!(
+            "<span class=\"badge-pass\">{}</span>",
+            html_escape(tr.s(Key::ReportBadgePass))
+        )
+    } else {
+        format!(
+            "<span class=\"badge-fail\">{}</span>",
+            html_escape(tr.s(Key::ReportBadgeFail))
+        )
+    }
+}
+
+fn write_imo_table(out: &mut String, heading_tag: &str, imo: Option<&ImoCriteria>, tr: Tr) {
+    let _ = writeln!(
+        out,
+        "  <{heading_tag}>{}</{heading_tag}>",
+        html_escape(tr.s(Key::ReportStabImoHeading))
+    );
+    out.push_str("  <table>\n");
+    out.push_str("    <thead>\n");
+    let _ = writeln!(
+        out,
+        "      <tr><th class=\"text-left\">{}</th><th>{}</th><th>{}</th><th class=\"text-center\">{}</th></tr>",
+        html_escape(tr.s(Key::ReportStabColCriterion)),
+        html_escape(tr.s(Key::ReportStabColRequired)),
+        html_escape(tr.s(Key::ReportStabColActual)),
+        html_escape(tr.s(Key::ReportStabColStatus))
+    );
+    out.push_str("    </thead>\n");
+    out.push_str("    <tbody>\n");
+    if let Some(imo) = imo {
+        let p_0_30 = imo.area_0_30_m_rad >= 0.055;
+        let p_0_40 = imo.area_0_40_m_rad >= 0.090;
+        let p_30_40 = imo.area_30_40_m_rad >= 0.030;
+        let p_max_30 = imo.max_gz_30_plus_m >= 0.20;
+        let p_angle = imo.angle_of_max_gz_deg >= 25.0;
+        let p_gm0 = imo.gm0_m >= 0.15;
+
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.055 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoArea030)),
+            fmt_num(imo.area_0_30_m_rad, 4),
+            badge_html(p_0_30, tr)
+        );
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.090 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoArea040)),
+            fmt_num(imo.area_0_40_m_rad, 4),
+            badge_html(p_0_40, tr)
+        );
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.030 m&middot;rad</td><td>{} m&middot;rad</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoArea3040)),
+            fmt_num(imo.area_30_40_m_rad, 4),
+            badge_html(p_30_40, tr)
+        );
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.200 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoMaxGz30)),
+            fmt_num(imo.max_gz_30_plus_m, 3),
+            badge_html(p_max_30, tr)
+        );
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&ge; 25.0&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoAngleMaxGz)),
+            fmt_num(imo.angle_of_max_gz_deg, 1),
+            badge_html(p_angle, tr)
+        );
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&ge; 0.150 m</td><td>{} m</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoGm0)),
+            fmt_num(imo.gm0_m, 3),
+            badge_html(p_gm0, tr)
+        );
+        let displ_val = tr.fmt(
+            Key::ReportStabDisplVal,
+            &[("disp", &fmt_num(imo.displacement_t, 3))],
+        );
+        let _ = writeln!(
+            out,
+            "      <tr class=\"active-row\"><td class=\"text-left\"><strong>{}</strong></td><td>{}</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabOverallStatus)),
+            html_escape(tr.s(Key::ReportStabAllCriteriaMet)),
+            html_escape(&displ_val),
+            badge_html(imo.passed, tr)
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>&mdash;</td><td>{}</td><td class=\"text-center\">{}</td></tr>",
+            html_escape(tr.s(Key::ReportStabImoEval)),
+            html_escape(tr.s(Key::ReportStabImoInsufficient)),
+            badge_html(false, tr)
+        );
+    }
+    out.push_str("    </tbody>\n");
+    out.push_str("  </table>\n");
+}
+
+fn write_weather_table(out: &mut String, heading_tag: &str, weather_res: &WeatherResult, tr: Tr) {
+    let _ = writeln!(
+        out,
+        "  <{heading_tag}>{}</{heading_tag}>",
+        html_escape(tr.s(Key::ReportWeatherHeading))
+    );
+    out.push_str("  <table>\n");
+    out.push_str("    <thead>\n");
+    let _ = writeln!(
+        out,
+        "      <tr><th class=\"text-left\">{}</th><th>{}</th><th>{}</th><th class=\"text-center\">{}</th></tr>",
+        html_escape(tr.s(Key::ReportWeatherColParam)),
+        html_escape(tr.s(Key::ReportWeatherColReq)),
+        html_escape(tr.s(Key::ReportWeatherColValue)),
+        html_escape(tr.s(Key::ReportStabColStatus))
+    );
+    out.push_str("    </thead>\n");
+    out.push_str("    <tbody>\n");
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{}</td><td>P = {} Pa</td><td>A = {} m&sup2;, Z = {} m</td><td class=\"text-center\">&mdash;</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowWindage)),
+        fmt_num(weather_res.wind_pressure_pa, 0),
+        fmt_num(weather_res.area_m2, 3),
+        fmt_num(weather_res.z_m, 3)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{} l<sub>w1</sub> / l<sub>w2</sub></td><td>l<sub>w2</sub> = 1.5 &middot; l<sub>w1</sub></td><td>{} m / {} m</td><td class=\"text-center\">&mdash;</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowLevers)),
+        fmt_num(weather_res.lw1_m, 4),
+        fmt_num(weather_res.lw2_m, 4)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{} (X<sub>1</sub>, X<sub>2</sub>, k, r, s) {}</td><td>T = 2&middot;C&middot;B / &radic;GM</td><td>({}, {}, {}, {}, {}), T = {} s</td><td class=\"text-center\">&mdash;</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowRollFactors)),
+        html_escape(tr.s(Key::ReportWeatherRowPeriod)),
+        fmt_num(weather_res.x1, 3),
+        fmt_num(weather_res.x2, 3),
+        fmt_num(weather_res.k, 3),
+        fmt_num(weather_res.r, 3),
+        fmt_num(weather_res.s, 4),
+        fmt_num(weather_res.roll_period_s, 2)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{} &phi;<sub>1</sub></td><td>109&middot;k&middot;X<sub>1</sub>&middot;X<sub>2</sub>&middot;&radic;(r&middot;s)</td><td>{}&deg;</td><td class=\"text-center\">&mdash;</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowPhi1)),
+        fmt_num(weather_res.phi1_deg, 2)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{} &phi;<sub>0</sub></td><td>&le; {}&deg;</td><td>{}&deg;</td><td class=\"text-center\">{}</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowPhi0)),
+        fmt_num(weather_res.phi0_limit_deg, 1),
+        fmt_opt(weather_res.phi0_deg, 2),
+        badge_html(weather_res.phi0_passed, tr)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{} (&phi;<sub>0</sub> &minus; &phi;<sub>1</sub>, &phi;<sub>c</sub>, &phi;<sub>2</sub>)</td><td>&phi;<sub>2</sub> = min(50&deg;, &phi;<sub>f</sub>, &phi;<sub>c2</sub>)</td><td>({}&deg;, {}&deg;, {}&deg;)</td><td class=\"text-center\">&mdash;</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowLimits)),
+        fmt_opt(weather_res.phi_roll_deg, 2),
+        fmt_opt(weather_res.phic_deg, 2),
+        fmt_opt(weather_res.phi2_deg, 2)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr><td class=\"text-left\">{}</td><td>b &ge; a</td><td>a = {} m&middot;rad, b = {} m&middot;rad (b/a = {})</td><td class=\"text-center\">{}</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherRowEnergy)),
+        fmt_num(weather_res.area_a_m_rad, 4),
+        fmt_num(weather_res.area_b_m_rad, 4),
+        fmt_num(weather_res.area_ratio, 2),
+        badge_html(weather_res.area_passed, tr)
+    );
+    let _ = writeln!(
+        out,
+        "      <tr class=\"active-row\"><td class=\"text-left\"><strong>{}</strong></td><td>&phi;<sub>0</sub> &le; 16&deg; {} b &ge; a</td><td>l<sub>w1</sub> = {} m, l<sub>w2</sub> = {} m</td><td class=\"text-center\">{}</td></tr>",
+        html_escape(tr.s(Key::ReportWeatherOverall)),
+        html_escape(tr.s(Key::ReportWeatherOverallAnd)),
+        fmt_num(weather_res.lw1_m, 4),
+        fmt_num(weather_res.lw2_m, 4),
+        badge_html(weather_res.passed, tr)
+    );
+    out.push_str("    </tbody>\n");
+    out.push_str("  </table>\n");
 }
 
 /// Escape text safely for embedding in HTML.
@@ -1708,7 +1890,12 @@ fn strip_xml_header(svg: &str) -> &str {
 }
 
 /// Generate an inline SVG chart of the GZ righting arm versus heel angle.
-fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title: &str) -> String {
+fn gz_chart_svg(
+    points: &[(f64, Option<f64>)],
+    imo: Option<&ImoCriteria>,
+    title: &str,
+    tr: Tr,
+) -> String {
     let w = 900.0;
     let h = 450.0;
     let (ml, mr, mt, mb) = (70.0, 30.0, 40.0, 50.0);
@@ -1747,7 +1934,11 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
         .collect();
 
     if valid.len() < 2 {
-        let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">Insufficient stability points to draw curve</text></svg>\n");
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">{}</text></svg>\n",
+            html_escape(tr.s(Key::ReportStabGzInsufficient))
+        );
         return out;
     }
 
@@ -1855,10 +2046,16 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
 
     // Points
     for &(h, g) in &valid {
+        let tip = tr.fmt(
+            Key::ReportStabGzPointTip,
+            &[("heel", &format!("{h:.1}")), ("gz", &fmt_num(g, 3))],
+        );
         let _ = writeln!(
             out,
-            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" fill=\"#1f5fa8\" stroke=\"#ffffff\" stroke-width=\"1.5\"><title>Heel: {:.1}&deg;, GZ: {} m</title></circle>",
-            sx(h), sy(g), h, fmt_num(g, 3)
+            "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"4\" fill=\"#1f5fa8\" stroke=\"#ffffff\" stroke-width=\"1.5\"><title>{}</title></circle>",
+            sx(h),
+            sy(g),
+            html_escape(&tip)
         );
     }
 
@@ -1866,21 +2063,38 @@ fn gz_chart_svg(points: &[(f64, Option<f64>)], imo: Option<&ImoCriteria>, title:
     if let Some(im) = imo {
         if im.angle_of_max_gz_deg <= x_max && im.max_gz_30_plus_m.is_finite() {
             let x_peak = sx(im.angle_of_max_gz_deg);
-            let y_peak = sy(valid.iter().map(|&(_, g)| g).fold(0.0_f64, f64::max));
+            let peak_gz = valid.iter().map(|&(_, g)| g).fold(0.0_f64, f64::max);
+            let y_peak = sy(peak_gz);
+            let peak_label = tr.fmt(
+                Key::ReportStabGzPeak,
+                &[
+                    ("max", &format!("{peak_gz:.3}")),
+                    ("angle", &format!("{:.1}", im.angle_of_max_gz_deg)),
+                ],
+            );
             let _ = writeln!(
                 out,
-                "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#1f5fa8\">Peak {:.3} m @ {:.1}&deg;</text>",
-                x_peak, y_peak - 10.0, valid.iter().map(|&(_, g)| g).fold(0.0_f64, f64::max), im.angle_of_max_gz_deg
+                "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#1f5fa8\">{}</text>",
+                x_peak,
+                y_peak - 10.0,
+                html_escape(&peak_label)
             );
         }
     }
 
     // Axis labels
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\">Heel Angle [&deg;]</text>", ml + (w - ml - mr) / 2.0, h - 12.0);
     let _ = writeln!(
         out,
-        "<text class=\"label\" transform=\"rotate(-90)\" x=\"{:.1}\" y=\"20\" text-anchor=\"middle\" font-weight=\"bold\">Righting Lever GZ [m]</text>",
-        -(mt + (h - mt - mb) / 2.0)
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\">{}</text>",
+        ml + (w - ml - mr) / 2.0,
+        h - 12.0,
+        html_escape(tr.s(Key::ReportStabGzXAxis))
+    );
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" transform=\"rotate(-90)\" x=\"{:.1}\" y=\"20\" text-anchor=\"middle\" font-weight=\"bold\">{}</text>",
+        -(mt + (h - mt - mb) / 2.0),
+        html_escape(tr.s(Key::ReportStabGzYAxis))
     );
 
     out.push_str("</svg>\n");
@@ -1902,7 +2116,7 @@ fn speed_range(speeds: impl Iterator<Item = f64>, fallback: f64) -> (f64, f64) {
 }
 
 /// Generate an inline SVG dual-axis chart of Resistance (RT) and Effective Power (PE) vs Speed.
-fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
+fn resistance_chart_svg(res: &[Resistance], title: &str, tr: Tr) -> String {
     let w = 900.0;
     let h = 450.0;
     let (ml, mr, mt, mb) = (70.0, 70.0, 40.0, 50.0);
@@ -1934,7 +2148,11 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
     );
 
     if res.len() < 2 {
-        let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">Insufficient speed points to draw curve</text></svg>\n");
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">{}</text></svg>\n",
+            html_escape(tr.s(Key::ReportResChartInsufficient))
+        );
         return out;
     }
 
@@ -2050,7 +2268,13 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
         "<circle cx=\"{:.1}\" cy=\"{leg_y:.1}\" r=\"3.5\" fill=\"#0969da\"/>",
         leg_x + 12.0
     );
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#0969da\" font-weight=\"bold\">RT Total Resistance [kN]</text>", leg_x + 30.0, leg_y + 4.0);
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#0969da\" font-weight=\"bold\">{}</text>",
+        leg_x + 30.0,
+        leg_y + 4.0,
+        html_escape(tr.s(Key::ReportResLegRt))
+    );
 
     let leg_y2 = leg_y + 20.0;
     let _ = writeln!(out, "<line x1=\"{leg_x:.1}\" y1=\"{leg_y2:.1}\" x2=\"{:.1}\" y2=\"{leg_y2:.1}\" stroke=\"#cf222e\" stroke-width=\"2.5\" stroke-dasharray=\"5 3\"/>", leg_x + 24.0);
@@ -2059,20 +2283,34 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
         "<circle cx=\"{:.1}\" cy=\"{leg_y2:.1}\" r=\"3.5\" fill=\"#cf222e\"/>",
         leg_x + 12.0
     );
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#cf222e\" font-weight=\"bold\">PE Effective Power [kW]</text>", leg_x + 30.0, leg_y2 + 4.0);
-
-    // Axis labels
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\">Speed [knots]</text>", ml + (w - ml - mr) / 2.0, h - 12.0);
     let _ = writeln!(
         out,
-        "<text class=\"label\" transform=\"rotate(-90)\" x=\"{:.1}\" y=\"20\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#0969da\">Total Resistance RT [kN]</text>",
-        -(mt + (h - mt - mb) / 2.0)
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#cf222e\" font-weight=\"bold\">{}</text>",
+        leg_x + 30.0,
+        leg_y2 + 4.0,
+        html_escape(tr.s(Key::ReportResLegPe))
+    );
+
+    // Axis labels
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\">{}</text>",
+        ml + (w - ml - mr) / 2.0,
+        h - 12.0,
+        html_escape(tr.s(Key::ReportResAxisSpeed))
     );
     let _ = writeln!(
         out,
-        "<text class=\"label\" transform=\"rotate(90)\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#cf222e\">Effective Power PE [kW]</text>",
+        "<text class=\"label\" transform=\"rotate(-90)\" x=\"{:.1}\" y=\"20\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#0969da\">{}</text>",
+        -(mt + (h - mt - mb) / 2.0),
+        html_escape(tr.s(Key::ReportResAxisRt))
+    );
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" transform=\"rotate(90)\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#cf222e\">{}</text>",
         mt + (h - mt - mb) / 2.0,
-        -(w - 20.0)
+        -(w - 20.0),
+        html_escape(tr.s(Key::ReportResAxisPe))
     );
 
     out.push_str("</svg>\n");
@@ -2080,7 +2318,7 @@ fn resistance_chart_svg(res: &[Resistance], title: &str) -> String {
 }
 
 /// Generate an inline SVG chart for Savitsky planing results.
-fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
+fn planing_chart_svg(points: &[PlaningPoint], title: &str, tr: Tr) -> String {
     let w = 900.0;
     let h = 450.0;
     let (ml, mr, mt, mb) = (70.0, 70.0, 40.0, 50.0);
@@ -2112,7 +2350,11 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
     );
 
     if points.len() < 2 {
-        let _ = writeln!(out, "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">Insufficient speed points to draw curve</text></svg>\n");
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">{}</text></svg>\n",
+            html_escape(tr.s(Key::ReportResChartInsufficient))
+        );
         return out;
     }
 
@@ -2215,7 +2457,13 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
         "<circle cx=\"{:.1}\" cy=\"{leg_y:.1}\" r=\"3.5\" fill=\"#0969da\"/>",
         leg_x + 12.0
     );
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#0969da\" font-weight=\"bold\">Resistance [kN]</text>", leg_x + 30.0, leg_y + 4.0);
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#0969da\" font-weight=\"bold\">{}</text>",
+        leg_x + 30.0,
+        leg_y + 4.0,
+        html_escape(tr.s(Key::ReportPlanLegRes))
+    );
 
     let leg_y2 = leg_y + 20.0;
     let _ = writeln!(out, "<line x1=\"{leg_x:.1}\" y1=\"{leg_y2:.1}\" x2=\"{:.1}\" y2=\"{leg_y2:.1}\" stroke=\"#d97706\" stroke-width=\"2.5\" stroke-dasharray=\"5 3\"/>", leg_x + 24.0);
@@ -2224,20 +2472,34 @@ fn planing_chart_svg(points: &[PlaningPoint], title: &str) -> String {
         "<circle cx=\"{:.1}\" cy=\"{leg_y2:.1}\" r=\"3.5\" fill=\"#d97706\"/>",
         leg_x + 12.0
     );
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#d97706\" font-weight=\"bold\">Trim [&deg;]</text>", leg_x + 30.0, leg_y2 + 4.0);
-
-    // Axis labels
-    let _ = writeln!(out, "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\">Speed [knots]</text>", ml + (w - ml - mr) / 2.0, h - 12.0);
     let _ = writeln!(
         out,
-        "<text class=\"label\" transform=\"rotate(-90)\" x=\"{:.1}\" y=\"20\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#0969da\">Resistance [kN]</text>",
-        -(mt + (h - mt - mb) / 2.0)
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" fill=\"#d97706\" font-weight=\"bold\">{}</text>",
+        leg_x + 30.0,
+        leg_y2 + 4.0,
+        html_escape(tr.s(Key::ReportPlanLegTrim))
+    );
+
+    // Axis labels
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\">{}</text>",
+        ml + (w - ml - mr) / 2.0,
+        h - 12.0,
+        html_escape(tr.s(Key::ReportResAxisSpeed))
     );
     let _ = writeln!(
         out,
-        "<text class=\"label\" transform=\"rotate(90)\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#d97706\">Trim [&deg;]</text>",
+        "<text class=\"label\" transform=\"rotate(-90)\" x=\"{:.1}\" y=\"20\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#0969da\">{}</text>",
+        -(mt + (h - mt - mb) / 2.0),
+        html_escape(tr.s(Key::ReportPlanLegRes))
+    );
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" transform=\"rotate(90)\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-weight=\"bold\" fill=\"#d97706\">{}</text>",
         mt + (h - mt - mb) / 2.0,
-        -(w - 20.0)
+        -(w - 20.0),
+        html_escape(tr.s(Key::ReportPlanLegTrim))
     );
 
     out.push_str("</svg>\n");
@@ -2638,5 +2900,110 @@ mod tests {
         // Deterministic on same input
         let html2 = design_report_with_project(&surface, &opts, &project).unwrap();
         assert_eq!(html, html2, "repeated calls must be identical");
+    }
+
+    #[test]
+    fn turkish_design_report_localizes_all_sections_and_embedded_svgs() {
+        let (surface, mut opts, project) = demo_hull_project();
+        opts.locale = Locale::Tr;
+        opts.include_planing = true;
+        opts.waves = Some(WaveReport {
+            wash_distance_m: Some(9.0),
+            ..waves_at_fn(0.45)
+        });
+
+        let html = design_report_with_project(&surface, &opts, &project).expect("Turkish report");
+        assert!(html.contains("<html lang=\"tr\">"), "expected lang=tr");
+        assert!(html.contains(crate::not_validated_note(Locale::Tr)));
+
+        for id in [
+            "particulars",
+            "lines",
+            "hydrostatics",
+            "sac",
+            "stability",
+            "resistance",
+            "planing",
+            "loading",
+            "damage",
+            "seakeeping",
+            "waves",
+        ] {
+            assert!(
+                html.contains(&format!("id=\"{id}\"")),
+                "missing section id `{id}`"
+            );
+        }
+
+        let sec_open = html.matches("<section").count();
+        let sec_close = html.matches("</section>").count();
+        assert_eq!(sec_open, 11);
+        assert_eq!(sec_close, 11);
+        let svg_open = html.matches("<svg").count();
+        let svg_close = html.matches("</svg>").count();
+        assert_eq!(svg_open, svg_close);
+        assert!(svg_open >= 7, "svg_open={svg_open}");
+        assert!(!html.contains("NaN"));
+        assert!(!html.contains("<?xml"));
+
+        for heading in [
+            "Ana Boyutlar ve Özellikler",
+            "Endaze Resmi",
+            "Hidrostatik Tablosu",
+            "Kesit Alanları Eğrisi",
+            "Hasarsız Stabilite",
+            "Direnç ve Güç",
+            "Kayıcı Tekne Performansı",
+            "Yükleme Durumları",
+            "Yara Durumları",
+            "Denizcilik (Deniz Tutma)",
+            "Uzak Alan Dalga Deseni",
+            "Tasarım Dosyası",
+        ] {
+            assert!(
+                html.contains(heading),
+                "missing Turkish heading `{heading}`"
+            );
+        }
+
+        assert!(html.contains("GEÇTİ") || html.contains("KALDI"));
+        assert!(html.contains("Posta planı - postalar"));
+        assert!(html.contains("Cp (alan eğrisi)"));
+        assert!(html.contains("Meyil Açısı"));
+        let tr = Tr::new(Locale::Tr);
+        assert!(html.contains(crate::wave_pattern::Regime::HullSpeed.sentence_tr(tr)));
+        assert!(html.contains(tr.s(Key::WaveNoteFarField)));
+    }
+
+    /// The method-validity caveats are the text a reader most needs to understand, so a Turkish
+    /// dossier must not fall back to English for them (demo hull: L/B about 3, a wide transom,
+    /// and Fn 0.15 is below Michell's range).
+    #[test]
+    fn turkish_design_report_localizes_method_warnings_and_wave_notes() {
+        let (surface, mut opts, project) = demo_hull_project();
+        opts.locale = Locale::Tr;
+        opts.waves = Some(waves_at_fn(0.15));
+        let html = design_report_with_project(&surface, &opts, &project).expect("Turkish report");
+        for english in [
+            "is outside",
+            "wetted transom",
+            "waves shorter than",
+            "spacing coarsened",
+            "Far-field thin-ship",
+            "applicability range",
+        ] {
+            assert!(
+                !html.contains(english),
+                "English `{english}` in a Turkish report"
+            );
+        }
+        assert!(html.contains("aralığının dışında"), "Turkish range warning");
+        assert!(html.contains("ıslak ayna alanı"), "Turkish transom warning");
+        assert!(html.contains("kısa dalgalar"), "Turkish cut-off note");
+
+        opts.locale = Locale::En;
+        let en = design_report_with_project(&surface, &opts, &project).expect("English report");
+        assert!(en.contains("is outside 3.9-14.9"));
+        assert!(en.contains("wetted transom"));
     }
 }

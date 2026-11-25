@@ -8,6 +8,7 @@
 //! compute.
 
 use eframe::egui;
+use seacraft_core::i18n::{Key, Locale, Tr};
 
 use super::geometry::{EarthFrame, Envelope, HullOutlines, Point2};
 use crate::theme;
@@ -476,6 +477,17 @@ pub struct Forces {
 
 /// Paint the body plan in `rect`.
 pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, s: &BodyPlanScene) {
+    paint_body_plan_tr(painter, rect, view, s, Tr::new(Locale::En));
+}
+
+/// Localized form of [`paint_body_plan`].
+pub fn paint_body_plan_tr(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &View2,
+    s: &BodyPlanScene,
+    tr: Tr,
+) {
     paint_backdrop(painter, rect, view, s.capsize);
     let mut hull_rect = egui::Rect::NOTHING;
     for line in s.stations.iter().chain(s.section.iter()) {
@@ -512,7 +524,10 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
             rect,
             up.to + egui::vec2(5.0, 0.0),
             egui::Align2::LEFT_TOP,
-            format!("Buoyancy {force_kn} kN ({mass})"),
+            tr.fmt(
+                Key::HeelDrawBuoyancy,
+                &[("force", &force_kn), ("mass", &mass)],
+            ),
             font.clone(),
             PillStyle {
                 text: theme::BUOYANCY,
@@ -525,7 +540,10 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
             rect,
             down.to + egui::vec2(5.0, 0.0),
             egui::Align2::LEFT_BOTTOM,
-            format!("Weight {force_kn} kN ({mass})"),
+            tr.fmt(
+                Key::HeelDrawWeight,
+                &[("force", &force_kn), ("mass", &mass)],
+            ),
             font.clone(),
             PillStyle {
                 text: theme::WEIGHT,
@@ -545,12 +563,13 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
         for p in [p0, p1] {
             painter.line_segment([p - egui::vec2(0.0, 4.0), p + egui::vec2(0.0, 4.0)], thin);
         }
+        let lever_s = super::signed(f.lever_m);
         paint_label_pill(
             painter,
             rect,
             egui::pos2(0.5 * (p0.x + p1.x), p0.y - 4.0),
             egui::Align2::CENTER_BOTTOM,
-            format!("lever {} m", super::signed(f.lever_m)),
+            tr.fmt(Key::HeelDrawLever, &[("lever", &lever_s)]),
             font.clone(),
             PillStyle {
                 text: colour,
@@ -581,16 +600,16 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
             let mid = arc.point_at(0.5);
             let out = (mid - arc.center).normalized();
             let on_right = out.x >= 0.0;
-            let label = format!(
-                "{} {} kN·m",
+            let moment_s = format_moment_knm(arc.moment_knm);
+            let label = tr.fmt(
                 if arc.righting {
-                    "Righting"
+                    Key::HeelDrawRightingMoment
                 } else if s.capsize != CapsizeAlert::None {
-                    "Capsizing"
+                    Key::HeelDrawCapsizingMoment
                 } else {
-                    "Heeling"
+                    Key::HeelDrawHeelingMoment
                 },
-                format_moment_knm(arc.moment_knm),
+                &[("moment", &moment_s)],
             );
             paint_label_pill(
                 painter,
@@ -618,8 +637,8 @@ pub fn paint_body_plan(painter: &egui::Painter, rect: egui::Rect, view: &View2, 
     }
     if s.capsize != CapsizeAlert::None {
         let badge = match s.capsize {
-            CapsizeAlert::ConditionCapsizes => "⚠ Capsizes",
-            CapsizeAlert::PastVanishingAngle => "⚠ Past vanishing angle",
+            CapsizeAlert::ConditionCapsizes => tr.s(Key::HeelBadgeCapsizes),
+            CapsizeAlert::PastVanishingAngle => tr.s(Key::HeelBadgePastVanishing),
             CapsizeAlert::None => unreachable!(),
         };
         paint_label_pill(

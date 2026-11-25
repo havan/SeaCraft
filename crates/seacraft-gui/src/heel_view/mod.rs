@@ -15,6 +15,7 @@ use crate::theme;
 use eframe::egui;
 use seacraft_core::heel::{self, Equilibrium, HeelState, MassCondition};
 use seacraft_core::hydro::{Hull, HydroOptions};
+use seacraft_core::i18n::{Key, Locale, Tr};
 use seacraft_core::loading::{LoadingCondition, WeightItem};
 use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::subdiv::SubdivisionOptions;
@@ -183,6 +184,8 @@ pub struct SweepInput {
     pub opts: HydroOptions,
     pub start: StartInput,
     pub weights: Vec<WeightItem>,
+    /// The language a failure is reported in.
+    pub tr: Tr,
 }
 
 /// One computed condition: the sweep the curve and the drag preview use, and the equilibrium.
@@ -199,7 +202,7 @@ pub struct HeelSweepOut {
     /// `I_TL`), when it floats upright.
     pub upright_gm: Option<f64>,
     /// Why the start is doubtful (a loading condition not in equilibrium).
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     /// The hull it was measured on.
     pub hull: Arc<Hull>,
     pub opts: HydroOptions,
@@ -390,6 +393,7 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
         opts,
         start,
         weights,
+        tr,
     } = input;
     let hull = hull.unwrap_or_else(|| Arc::new(Hull::new(&surface, subdivision)));
     let mut warnings = Vec::new();
@@ -400,9 +404,9 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
             lcg,
         } => {
             let mut m = MassCondition::bare(&hull, &opts, kg, lcg).ok_or_else(|| {
-                format!(
-                    "the hull displaces nothing at the dock draft {:.3} m",
-                    opts.draft
+                tr.fmt(
+                    Key::HeelErrDockNothing,
+                    &[("draft", &format!("{:.3}", opts.draft))],
                 )
             })?;
             m.kg_estimate = kg_estimate;
@@ -410,7 +414,7 @@ pub fn compute_sweep(input: SweepInput) -> Result<HeelSweepOut, String> {
         }
         StartInput::Condition(cond) => {
             seacraft_core::loading::validate(&cond)
-                .map_err(|e| format!("loading condition invalid: {e}"))?;
+                .map_err(|e| tr.fmt(Key::HeelErrLoadingInvalid, &[("error", &e.to_string())]))?;
             let r = seacraft_core::loading::evaluate(&surface, &opts, &cond);
             if !r.equilibrium_found {
                 warnings.extend(r.warnings.iter().cloned());
@@ -516,12 +520,33 @@ pub struct HeelViewPanel<'a> {
 
 /// "Heel 12.4° to starboard", "Heel ≈ 12° to port" (a sweep sample), "Upright".
 pub fn heel_words(heel_deg: f64, approx: bool) -> String {
-    let side = if heel_deg > 0.0 { "starboard" } else { "port" };
+    heel_words_tr(heel_deg, approx, Tr::new(Locale::En))
+}
+
+/// Localized form of [`heel_words`].
+pub fn heel_words_tr(heel_deg: f64, approx: bool, tr: Tr) -> String {
+    let stbd = heel_deg > 0.0;
     match (approx, heel_deg.abs()) {
-        (true, a) if a < 0.5 => "Heel ≈ 0°".to_string(),
-        (true, a) => format!("Heel ≈ {a:.0}° to {side}"),
-        (false, a) if a < 0.05 => "Upright".to_string(),
-        (false, a) => format!("Heel {a:.1}° to {side}"),
+        (true, a) if a < 0.5 => tr.s(Key::HeelWordsApproxZero).to_string(),
+        (true, a) => {
+            let deg_s = format!("{a:.0}");
+            let key = if stbd {
+                Key::HeelWordsApproxStbd
+            } else {
+                Key::HeelWordsApproxPort
+            };
+            tr.fmt(key, &[("deg", &deg_s)])
+        }
+        (false, a) if a < 0.05 => tr.s(Key::HeelWordsUpright).to_string(),
+        (false, a) => {
+            let deg_s = format!("{a:.1}");
+            let key = if stbd {
+                Key::HeelWordsExactStbd
+            } else {
+                Key::HeelWordsExactPort
+            };
+            tr.fmt(key, &[("deg", &deg_s)])
+        }
     }
 }
 
@@ -532,60 +557,101 @@ pub(crate) fn signed(x: f64) -> String {
 
 /// The readout of the state drawn, in plain words.
 pub fn readout(s: &HeelState, out: &HeelSweepOut, approx: bool) -> String {
+    readout_tr(s, out, approx, Tr::new(Locale::En))
+}
+
+/// Localized form of [`readout`].
+pub fn readout_tr(s: &HeelState, out: &HeelSweepOut, approx: bool, tr: Tr) -> String {
     let keel = out.hull.keel;
+    let lever_s = signed(s.lever_m);
+    let gz_s = signed(s.gz_m);
+    let heel_arm_s = signed(s.heeling_arm_m);
     let mut parts = vec![
-        heel_words(s.heel_deg, approx),
-        format!(
-            "righting lever {} m = GZ {} m − heeling arm {} m",
-            signed(s.lever_m),
-            signed(s.gz_m),
-            signed(s.heeling_arm_m)
+        heel_words_tr(s.heel_deg, approx, tr),
+        tr.fmt(
+            Key::HeelReadoutLineLever,
+            &[
+                ("lever", &lever_s),
+                ("gz", &gz_s),
+                ("heel_arm", &heel_arm_s),
+            ],
         ),
     ];
     if let (Some(d), Some(t)) = (s.draft, s.trim_m) {
-        parts.push(format!("draft {d:.3} m"));
-        parts.push(format!("trim {} m", signed(t)));
+        let draft_s = format!("{d:.3}");
+        let trim_s = signed(t);
+        parts.push(tr.fmt(Key::HeelReadoutLineDraft, &[("draft", &draft_s)]));
+        parts.push(tr.fmt(Key::HeelReadoutLineTrim, &[("trim", &trim_s)]));
     }
     parts.push(format!("Δ {:.2} t", s.displacement_t));
-    let est = if out.mass.kg_estimate { " (est.)" } else { "" };
+    let est = if out.mass.kg_estimate {
+        tr.s(Key::HeelReadoutLineEst)
+    } else {
+        ""
+    };
     parts.push(format!("KG {:.3} m{est}", out.mass.kg(keel)));
     if let Some(gm) = out.upright_gm {
-        parts.push(format!("upright GM {gm:.3} m"));
+        let gm_s = format!("{gm:.3}");
+        parts.push(tr.fmt(Key::HeelReadoutLineUprightGm, &[("gm", &gm_s)]));
     }
     parts.join(" · ")
 }
 
 /// Where the condition settles, in plain words.
 pub fn equilibrium_line(eq: &Equilibrium, displacement_t: f64) -> String {
+    equilibrium_line_tr(eq, displacement_t, Tr::new(Locale::En))
+}
+
+/// Localized form of [`equilibrium_line`].
+pub fn equilibrium_line_tr(eq: &Equilibrium, displacement_t: f64, tr: Tr) -> String {
     match eq {
         Equilibrium::Stable { state } if state.heel_deg.abs() < 0.05 => match state.trim_m {
-            Some(t) => format!("Settles upright, trim {} m", signed(t)),
-            None => "Settles upright".to_string(),
+            Some(t) => {
+                let trim_s = signed(t);
+                tr.fmt(Key::HeelEqSettlesUprightTrim, &[("trim", &trim_s)])
+            }
+            None => tr.s(Key::HeelEqSettlesUpright).to_string(),
         },
         Equilibrium::Stable { state } => {
-            let side = if state.heel_deg > 0.0 {
-                "starboard"
-            } else {
-                "port"
-            };
-            let mut words = format!("Settles at {:.1}° to {side}", state.heel_deg.abs());
-            if let Some(t) = state.trim_m {
-                words.push_str(&format!(", trim {} m", signed(t)));
+            let deg_s = format!("{:.1}", state.heel_deg.abs());
+            let stbd = state.heel_deg > 0.0;
+            match state.trim_m {
+                Some(t) => {
+                    let trim_s = signed(t);
+                    let key = if stbd {
+                        Key::HeelEqSettlesStbdTrim
+                    } else {
+                        Key::HeelEqSettlesPortTrim
+                    };
+                    tr.fmt(key, &[("deg", &deg_s), ("trim", &trim_s)])
+                }
+                None => {
+                    let key = if stbd {
+                        Key::HeelEqSettlesStbd
+                    } else {
+                        Key::HeelEqSettlesPort
+                    };
+                    tr.fmt(key, &[("deg", &deg_s)])
+                }
             }
-            words
         }
         Equilibrium::Loll { port, starboard } => {
             let p = format!("{:.1}", port.heel_deg.abs());
             let s = format!("{:.1}", starboard.heel_deg.abs());
             if p == s {
-                format!("Lolls to {s}° either side: the upright GM is negative")
+                tr.fmt(Key::HeelEqLollSym, &[("deg", &s)])
             } else {
-                format!("Lolls to {p}° port or {s}° starboard: the upright GM is negative")
+                tr.fmt(Key::HeelEqLollAsym, &[("port", &p), ("stbd", &s)])
             }
         }
-        Equilibrium::Capsizes { .. } => "Capsizes: no stable equilibrium within ±90°".to_string(),
-        Equilibrium::CannotFloat => format!("The hull cannot float {displacement_t:.2} t"),
-        Equilibrium::Unresolved { reason } => format!("No equilibrium determined: {reason}"),
+        Equilibrium::Capsizes { .. } => tr.s(Key::HeelEqCapsizes).to_string(),
+        Equilibrium::CannotFloat => {
+            let disp_s = format!("{displacement_t:.2}");
+            tr.fmt(Key::HeelBannerCannotFloatBody, &[("disp", &disp_s)])
+        }
+        Equilibrium::Unresolved { reason } => {
+            tr.fmt(Key::HeelEqUnresolved, &[("reason", &reason.render(tr))])
+        }
     }
 }
 
@@ -663,41 +729,50 @@ pub struct ReadoutRow {
 
 /// Structured rows for the right-hand readout table: (turning-couple rows, condition rows).
 pub fn readout_rows(s: &HeelState, out: &HeelSweepOut) -> (Vec<ReadoutRow>, Vec<ReadoutRow>) {
+    readout_rows_tr(s, out, Tr::new(Locale::En))
+}
+
+/// Localized form of [`readout_rows`].
+pub fn readout_rows_tr(
+    s: &HeelState,
+    out: &HeelSweepOut,
+    tr: Tr,
+) -> (Vec<ReadoutRow>, Vec<ReadoutRow>) {
     let force_kn = draw::weight_force_kn(s.displacement_t);
     let moment_knm = draw::righting_moment_knm(s.displacement_t, s.lever_m);
     let righting = draw::is_righting(s.heel_deg, s.lever_m);
     let lever_col = draw::lever_colour(s.heel_deg, s.lever_m);
     let moment_name = if righting || moment_knm.abs() < 0.005 {
-        "Righting moment"
+        tr.s(Key::HeelReadoutRightingMoment)
     } else if capsize_alert(out, Some(s)) != draw::CapsizeAlert::None {
-        "Capsizing moment"
+        tr.s(Key::HeelReadoutCapsizingMoment)
     } else {
-        "Heeling moment"
+        tr.s(Key::HeelReadoutHeelingMoment)
     };
     let couple = vec![
         ReadoutRow {
-            name: "Righting lever",
+            name: tr.s(Key::HeelReadoutLever),
             value: signed(s.lever_m),
             unit: "m",
             colour: lever_col,
             strong: true,
-            hint: "Actual righting arm between B and G perpendicular to gravity (GZ − heeling arm)",
+            hint: tr.s(Key::HeelReadoutLeverTip),
         },
         ReadoutRow {
-            name: "GZ (centreline)",
+            name: tr.s(Key::HeelReadoutGzCl),
             value: signed(s.gz_m),
             unit: "m",
             colour: theme::TEXT_PRIMARY,
             strong: false,
-            hint: "Righting arm with G placed on the hull centreline",
+            hint: tr.s(Key::HeelReadoutGzClTip),
         },
         ReadoutRow {
-            name: "Heeling arm",
+            name: tr.s(Key::HeelReadoutHeelingArm),
             value: signed(s.heeling_arm_m),
             unit: "m",
             colour: theme::TEXT_PRIMARY,
             strong: false,
-            hint: "Righting arm consumed by off-centre transverse gravity (TCG)",
+            hint: tr.s(Key::HeelReadoutHeelingArmTip),
         },
         ReadoutRow {
             name: moment_name,
@@ -705,63 +780,63 @@ pub fn readout_rows(s: &HeelState, out: &HeelSweepOut) -> (Vec<ReadoutRow>, Vec<
             unit: "kN·m",
             colour: lever_col,
             strong: true,
-            hint: "Turning couple Δ × g × |lever| acting to right or capsize the hull (g = 9.80665 m/s²)",
+            hint: tr.s(Key::HeelReadoutMomentTip),
         },
         ReadoutRow {
-            name: "Buoyancy / weight",
+            name: tr.s(Key::HeelReadoutBuoyancyWeight),
             value: draw::format_force_kn(force_kn),
             unit: "kN",
             colour: theme::TEXT_PRIMARY,
             strong: false,
-            hint: "Vertical buoyant and weight force Δ × g (equal in magnitude)",
+            hint: tr.s(Key::HeelReadoutBuoyancyWeightTip),
         },
     ];
 
     let mut condition = Vec::new();
     if let Some(d) = s.draft {
         condition.push(ReadoutRow {
-            name: "Draft",
+            name: tr.s(Key::HydroDraft),
             value: format!("{d:.3}"),
             unit: "m",
             colour: theme::TEXT_PRIMARY,
             strong: false,
-            hint: "Mean free-trim hydrostatic draft above keel",
+            hint: tr.s(Key::HeelReadoutDraftTip),
         });
     }
     if let Some(t) = s.trim_m {
         condition.push(ReadoutRow {
-            name: "Trim",
+            name: tr.s(Key::HydroTrim),
             value: signed(t),
             unit: "m",
             colour: theme::TEXT_PRIMARY,
             strong: false,
-            hint: "Free-trim stern-to-bow difference (+ bow up)",
+            hint: tr.s(Key::HeelReadoutTrimTip),
         });
     }
     let (disp_val, disp_unit) = draw::format_mass_parts(s.displacement_t);
     condition.push(ReadoutRow {
-        name: "Displacement",
+        name: tr.s(Key::HeelReadoutDisp),
         value: disp_val,
         unit: disp_unit,
         colour: theme::TEXT_PRIMARY,
         strong: false,
-        hint: "Total displacement Δ including trial weights",
+        hint: tr.s(Key::HeelReadoutDispTip),
     });
     condition.push(ReadoutRow {
         name: "KG",
         value: format!("{:.3}", out.mass.kg(out.hull.keel)),
         unit: if out.mass.kg_estimate {
-            "m (est.)"
+            tr.s(Key::HeelReadoutKgEstUnit)
         } else {
             "m"
         },
         colour: theme::TEXT_PRIMARY,
         strong: false,
-        hint: "Height of the combined centre of gravity above the keel",
+        hint: tr.s(Key::HeelReadoutKgTip),
     });
     if let Some(gm) = out.upright_gm {
         condition.push(ReadoutRow {
-            name: "Upright GM",
+            name: tr.s(Key::HeelReadoutUprightGm),
             value: format!("{gm:.3}"),
             unit: "m",
             colour: if gm < 0.0 {
@@ -770,7 +845,7 @@ pub fn readout_rows(s: &HeelState, out: &HeelSweepOut) -> (Vec<ReadoutRow>, Vec<
                 theme::TEXT_PRIMARY
             },
             strong: gm < 0.0,
-            hint: "Free-trim initial transverse metacentric height at 0° heel, including heel–trim coupling (negative means upright is unstable)",
+            hint: tr.s(Key::HeelReadoutUprightGmTip),
         });
     }
     (couple, condition)
@@ -778,6 +853,11 @@ pub fn readout_rows(s: &HeelState, out: &HeelSweepOut) -> (Vec<ReadoutRow>, Vec<
 
 /// Draw the view: header, inputs, the two drawings, the readout and the GZ curve.
 pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
+    panel_tr(ui, p, Tr::new(Locale::En))
+}
+
+/// Localized form of [`panel`].
+pub fn panel_tr(ui: &mut egui::Ui, p: HeelViewPanel<'_>, tr: Tr) -> HeelViewAction {
     let HeelViewPanel {
         state,
         shown,
@@ -794,16 +874,16 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         conditions,
     } = p;
     *drawn = None;
-    let mut action = header(ui);
+    let mut action = header_tr(ui, tr);
     ui.horizontal_wrapped(|ui| {
         let start_name = |s: HeelStart| match s {
-            HeelStart::Dock => "Bare hull (dock)".to_string(),
-            HeelStart::Condition(i) => conditions
-                .get(i)
-                .cloned()
-                .unwrap_or_else(|| format!("Condition {}", i + 1)),
+            HeelStart::Dock => tr.s(Key::HeelCtlBareHull).to_string(),
+            HeelStart::Condition(i) => conditions.get(i).cloned().unwrap_or_else(|| {
+                let n_s = (i + 1).to_string();
+                tr.fmt(Key::HeelCtlConditionN, &[("n", &n_s)])
+            }),
         };
-        ui.label("Start");
+        ui.label(tr.s(Key::HeelCtlStart));
         egui::ComboBox::from_id_salt("heel_start")
             .selected_text(start_name(state.start))
             .show_ui(ui, |ui| {
@@ -821,21 +901,25 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 }
             });
         ui.separator();
-        ui.label("Heel");
+        ui.label(tr.s(Key::HeelCtlHeel));
         // One decimal shown, but not rounded: a settle moves the heel in small steps, and a
         // rounding slider would report them as the user's edit and stop it.
         let slider = egui::Slider::new(&mut state.heel_deg, -90.0..=90.0)
             .suffix("°")
             .custom_formatter(|v, _| format!("{v:.1}"));
-        if ui.add(slider).on_hover_text("+ to starboard").changed() {
+        if ui
+            .add(slider)
+            .on_hover_text(tr.s(Key::HeelCtlHeelTip))
+            .changed()
+        {
             state.anim = None;
             action = combine_action(action, HeelViewAction::ManualHeel);
         }
-        ui.checkbox(&mut state.hold, "Hold heel")
-            .on_hover_text("Keep the heel where you leave it instead of settling");
+        ui.checkbox(&mut state.hold, tr.s(Key::HeelCtlHoldHeel))
+            .on_hover_text(tr.s(Key::HeelCtlHoldHeelTip));
         ui.separator();
         let at_b = shown.map(|s| s.b.x);
-        ui.label("Section x");
+        ui.label(tr.s(Key::HeelCtlSectionX));
         let mut x = state.section.or(at_b).unwrap_or(0.0);
         if ui
             .add(
@@ -844,22 +928,25 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     .suffix(" m")
                     .fixed_decimals(2),
             )
-            .on_hover_text("The station drawn strongly in the body plan")
+            .on_hover_text(tr.s(Key::HeelCtlSectionXTip))
             .changed()
         {
             state.section = Some(x);
         }
         if ui
-            .add_enabled(state.section.is_some(), egui::Button::new("at B"))
-            .on_hover_text("Draw the section through the centre of buoyancy")
+            .add_enabled(
+                state.section.is_some(),
+                egui::Button::new(tr.s(Key::HeelCtlAtB)),
+            )
+            .on_hover_text(tr.s(Key::HeelCtlAtBTip))
             .clicked()
         {
             state.section = None;
         }
         ui.separator();
         if ui
-            .checkbox(&mut state.auto_recalculate, "Auto-recalculate")
-            .on_hover_text("Recompute automatically when weights, start, or model inputs change")
+            .checkbox(&mut state.auto_recalculate, tr.s(Key::HeelCtlAutoRecalc))
+            .on_hover_text(tr.s(Key::HeelCtlAutoRecalcTip))
             .changed()
         {
             action = combine_action(action, HeelViewAction::Changed);
@@ -868,15 +955,13 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             let no_kg_dock = kg_note == KgNote::Unset && state.start == HeelStart::Dock;
             let needs_recalc = stale || (sweep.is_none() && failure.is_none() && !no_kg_dock);
             let btn = if needs_recalc && !busy {
-                theme::primary_button("Recalculate")
+                theme::primary_button(tr.s(Key::HeelCtlRecalculate))
             } else {
-                egui::Button::new("Recalculate")
+                egui::Button::new(tr.s(Key::HeelCtlRecalculate))
             };
             if ui
                 .add_enabled(!busy, btn)
-                .on_hover_text(
-                    "Recompute the heel sweep and equilibrium for the current inputs (F5)",
-                )
+                .on_hover_text(tr.s(Key::HeelCtlRecalculateTip))
                 .clicked()
             {
                 action = combine_action(action, HeelViewAction::Recalculate);
@@ -890,10 +975,10 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         ui.colored_label(theme::FAIL, format!("⚠ {msg}"));
     }
     if kg_note == KgNote::Unset && state.start == HeelStart::Dock {
-        ui.colored_label(theme::WARN, NO_KG_HINT);
+        ui.colored_label(theme::WARN, tr.s(Key::HeelNoKgHint));
         if let (Some(o), Some(plane)) = (outlines, dock_plane) {
             let frame = geometry::EarthFrame::from_plane(&plane);
-            let caption = " · Upright at the dock draft";
+            let caption = tr.s(Key::HeelCaptionProfileUpright);
             let height = layout_heights(ui.available_height(), DEFAULT_SPLIT).0;
             let (_, views) = drawings(
                 ui,
@@ -906,6 +991,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 draw::CapsizeAlert::None,
                 false,
                 height,
+                tr,
             );
             *drawn = Some(views);
         }
@@ -914,13 +1000,10 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
     let waiting_manual = !state.auto_recalculate && !busy;
     let Some(out) = sweep else {
         if waiting_manual && failure.is_none() {
-            ui.colored_label(
-                theme::WARN,
-                "Auto-recalculate is off — click Recalculate to compute.",
-            );
+            ui.colored_label(theme::WARN, tr.s(Key::HeelCtlManualWait));
             if let (Some(o), Some(plane)) = (outlines, dock_plane) {
                 let frame = geometry::EarthFrame::from_plane(&plane);
-                let caption = " · Upright at the dock draft";
+                let caption = tr.s(Key::HeelCaptionProfileUpright);
                 let height = layout_heights(ui.available_height(), DEFAULT_SPLIT).0;
                 let (_, views) = drawings(
                     ui,
@@ -933,6 +1016,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     draw::CapsizeAlert::None,
                     false,
                     height,
+                    tr,
                 );
                 *drawn = Some(views);
             }
@@ -947,12 +1031,12 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
         // typo must not be a dead end.
         ui.scope(|ui| {
             if stale {
-                stale_chip(ui, failure.is_some(), waiting_manual);
+                stale_chip(ui, failure.is_some(), waiting_manual, tr);
                 ui.multiply_opacity(theme::STALE_OPACITY);
             }
-            status_banner(ui, out, None);
+            status_banner(ui, out, None, tr);
         });
-        let a = weights_table(ui, state, conditions);
+        let a = weights_table(ui, state, conditions, tr);
         action = combine_action(action, a);
         return action;
     }
@@ -982,9 +1066,10 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     }
                     if let (Some(s), Some(o)) = (shown, outlines) {
                         let frame = geometry::EarthFrame::from_plane(&s.plane);
-                        let trim = s
-                            .trim_m
-                            .map_or(String::new(), |t| format!(" · trim {} m", signed(t)));
+                        let trim = s.trim_m.map_or(String::new(), |t| {
+                            let trim_s = signed(t);
+                            tr.fmt(Key::HeelCaptionProfileTrim, &[("trim", &trim_s)])
+                        });
                         // Interactive while stale too: moving a weight re-keys the sweep on the
                         // first frame of the drag, and the drag must carry on over the old result.
                         let (a, views) = drawings(
@@ -998,6 +1083,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                             capsize,
                             true,
                             draw_height,
+                            tr,
                         );
                         *drawn = Some(views);
                         action = combine_action(action, a);
@@ -1007,14 +1093,15 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 ui.vertical(|ui| {
                     ui.set_width(side);
                     if stale {
-                        stale_chip(ui, failure.is_some(), waiting_manual);
+                        stale_chip(ui, failure.is_some(), waiting_manual, tr);
                         ui.multiply_opacity(theme::STALE_OPACITY);
                     }
-                    status_banner(ui, out, shown);
+                    status_banner(ui, out, shown, tr);
                     for w in &out.warnings {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(format!("⚠ {w}")).color(theme::WARN),
+                                egui::RichText::new(format!("⚠ {}", w.render(tr)))
+                                    .color(theme::WARN),
                             )
                             .wrap(),
                         );
@@ -1024,7 +1111,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                             egui::Label::new(
                                 egui::RichText::new(format!(
                                     "⚠ {}",
-                                    seacraft_core::heel::LID_SUBMERGED_WARNING
+                                    tr.s(Key::HeelWarnLidSubmerged)
                                 ))
                                 .color(theme::WARN),
                             )
@@ -1033,10 +1120,10 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     }
                     if let Some(s) = shown {
                         ui.add_space(3.0);
-                        readout_table(ui, s, out, !shown_exact);
+                        readout_table(ui, s, out, !shown_exact, tr);
                     }
                     ui.add_space(3.0);
-                    let a = weights_table(ui, state, conditions);
+                    let a = weights_table(ui, state, conditions, tr);
                     action = combine_action(action, a);
                 });
             });
@@ -1050,7 +1137,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                     egui::Sense::click_and_drag(),
                 )
                 .on_hover_cursor(egui::CursorIcon::ResizeVertical)
-                .on_hover_text("Drag to share the height between the drawings and the plot");
+                .on_hover_text(tr.s(Key::HeelSplitterTip));
             let stroke = if split.hovered() || split.dragged() {
                 theme::OUTLINE_HOVER
             } else {
@@ -1083,7 +1170,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                         ui.set_width(caption_w);
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(STATIC_CAPTION)
+                                egui::RichText::new(tr.s(Key::HeelStaticCaption))
                                     .size(theme::SMALL_SIZE)
                                     .color(theme::TEXT_SECONDARY),
                             )
@@ -1093,10 +1180,18 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     theme::segmented(ui, |ui| {
-                        ui.selectable_value(&mut state.plot_moment, true, "Moment (kN·m)")
-                            .on_hover_text("Plot righting and heeling moments in kN·m");
-                        ui.selectable_value(&mut state.plot_moment, false, "Lever (m)")
-                            .on_hover_text("Plot righting and heeling levers in metres");
+                        ui.selectable_value(
+                            &mut state.plot_moment,
+                            true,
+                            tr.s(Key::HeelPlotMomentBtn),
+                        )
+                        .on_hover_text(tr.s(Key::HeelPlotMomentBtnTip));
+                        ui.selectable_value(
+                            &mut state.plot_moment,
+                            false,
+                            tr.s(Key::HeelPlotLeverBtn),
+                        )
+                        .on_hover_text(tr.s(Key::HeelPlotLeverBtnTip));
                     });
                 });
             });
@@ -1106,6 +1201,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
                 shown.map(|s| s.heel_deg),
                 plot_height,
                 state.plot_moment,
+                tr,
             ) {
                 state.heel_deg = (heel * 10.0).round() / 10.0;
                 state.anim = None;
@@ -1113,7 +1209,7 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
             }
         });
     if let Some(views) = *drawn {
-        for a in [mass_field(ui, state, &views), keys(ui, state, &views)] {
+        for a in [mass_field(ui, state, &views, tr), keys(ui, state, &views)] {
             action = combine_action(action, a);
         }
     }
@@ -1123,48 +1219,49 @@ pub fn panel(ui: &mut egui::Ui, p: HeelViewPanel<'_>) -> HeelViewAction {
 /// Draw a single left-accented status banner for the condition and currently displayed heel:
 /// when held past the vanishing angle, leads with the immediate capsize hazard and tucks the
 /// small-angle equilibrium inside as secondary context so the two never contradict each other.
-fn status_banner(ui: &mut egui::Ui, out: &HeelSweepOut, shown: Option<&HeelState>) {
+fn status_banner(ui: &mut egui::Ui, out: &HeelSweepOut, shown: Option<&HeelState>, tr: Tr) {
     let disp = out.mass.displacement_t;
     if capsize_alert(out, shown) == draw::CapsizeAlert::PastVanishingAngle {
         if let Some(s) = shown {
-            let at = if s.heel_deg.abs() < 0.05 {
-                "upright".to_string()
+            let body = if s.heel_deg.abs() < 0.05 {
+                tr.s(Key::HeelBannerPastVanishingBodyUpright).to_string()
             } else {
-                let side = if s.heel_deg > 0.0 {
-                    "starboard"
+                let deg_s = format!("{:.1}", s.heel_deg.abs());
+                let key = if s.heel_deg > 0.0 {
+                    Key::HeelBannerPastVanishingBodyStbd
                 } else {
-                    "port"
+                    Key::HeelBannerPastVanishingBodyPort
                 };
-                format!("at {:.1}° to {side}", s.heel_deg.abs())
+                tr.fmt(key, &[("deg", &deg_s)])
             };
             let righting_note = match &out.equilibrium {
                 Equilibrium::Stable { state } if state.heel_deg.abs() < 0.05 => {
-                    Some("Within righting range: settles upright".to_string())
+                    Some(tr.s(Key::HeelBannerWithinRangeUpright).to_string())
                 }
                 Equilibrium::Stable { state } => {
-                    let side = if state.heel_deg > 0.0 {
-                        "starboard"
+                    let deg_s = format!("{:.1}", state.heel_deg.abs());
+                    let key = if state.heel_deg > 0.0 {
+                        Key::HeelBannerWithinRangeStbd
                     } else {
-                        "port"
+                        Key::HeelBannerWithinRangePort
                     };
-                    Some(format!(
-                        "Within righting range: settles at {:.1}° to {side}",
-                        state.heel_deg.abs()
-                    ))
+                    Some(tr.fmt(key, &[("deg", &deg_s)]))
                 }
-                _ => Some(format!(
-                    "Within righting range: {}",
-                    out.equilibrium.describe(disp)
-                )),
+                _ => {
+                    let desc = if tr.locale() == Locale::En {
+                        out.equilibrium.describe(disp)
+                    } else {
+                        equilibrium_line_tr(&out.equilibrium, disp, tr)
+                    };
+                    Some(tr.fmt(Key::HeelBannerWithinRangeOther, &[("desc", &desc)]))
+                }
             };
             paint_status_card(
                 ui,
                 theme::FAIL,
                 theme::HEEL_STATUS_FAIL_BG,
-                "⚠ Past vanishing angle — capsizes",
-                &format!(
-                    "Let go {at}, it would not come back: the righting lever turns it further over."
-                ),
+                tr.s(Key::HeelBannerPastVanishing),
+                &body,
                 righting_note.as_deref(),
             );
             return;
@@ -1174,18 +1271,29 @@ fn status_banner(ui: &mut egui::Ui, out: &HeelSweepOut, shown: Option<&HeelState
     let (accent, fill, title, detail) = match &out.equilibrium {
         Equilibrium::Stable { state } => {
             let headline = if state.heel_deg.abs() < 0.05 {
-                "Settles upright".to_string()
+                tr.s(Key::HeelEqSettlesUpright).to_string()
             } else {
-                let side = if state.heel_deg > 0.0 {
-                    "starboard"
+                let deg_s = format!("{:.1}", state.heel_deg.abs());
+                let key = if state.heel_deg > 0.0 {
+                    Key::HeelEqSettlesStbd
                 } else {
-                    "port"
+                    Key::HeelEqSettlesPort
                 };
-                format!("Settles at {:.1}° to {side}", state.heel_deg.abs())
+                tr.fmt(key, &[("deg", &deg_s)])
             };
             let detail = match (state.trim_m, state.draft) {
-                (Some(t), Some(d)) => format!("Trim {} m · draft {d:.3} m", signed(t)),
-                (Some(t), None) => format!("Trim {} m", signed(t)),
+                (Some(t), Some(d)) => {
+                    let trim_s = signed(t);
+                    let draft_s = format!("{d:.3}");
+                    tr.fmt(
+                        Key::HeelBannerTrimAndDraft,
+                        &[("trim", &trim_s), ("draft", &draft_s)],
+                    )
+                }
+                (Some(t), None) => {
+                    let trim_s = signed(t);
+                    tr.fmt(Key::HeelBannerTrimOnly, &[("trim", &trim_s)])
+                }
                 _ => String::new(),
             };
             (theme::OK, theme::HEEL_STATUS_OK_BG, headline, detail)
@@ -1193,26 +1301,29 @@ fn status_banner(ui: &mut egui::Ui, out: &HeelSweepOut, shown: Option<&HeelState
         Equilibrium::Loll { .. } => (
             theme::WARN,
             theme::HEEL_STATUS_WARN_BG,
-            equilibrium_line(&out.equilibrium, disp),
-            "Upright GM is negative".to_string(),
+            equilibrium_line_tr(&out.equilibrium, disp, tr),
+            tr.s(Key::HeelBannerLollGmNeg).to_string(),
         ),
         Equilibrium::Capsizes { .. } => (
             theme::FAIL,
             theme::HEEL_STATUS_FAIL_BG,
-            "⚠ Capsizes".to_string(),
-            "No stable equilibrium within ±90°".to_string(),
+            tr.s(Key::HeelBadgeCapsizes).to_string(),
+            tr.s(Key::HeelBannerCapsizesBody).to_string(),
         ),
-        Equilibrium::CannotFloat => (
-            theme::FAIL,
-            theme::HEEL_STATUS_FAIL_BG,
-            "⚠ Cannot float".to_string(),
-            format!("The hull cannot float {disp:.2} t"),
-        ),
+        Equilibrium::CannotFloat => {
+            let disp_s = format!("{disp:.2}");
+            (
+                theme::FAIL,
+                theme::HEEL_STATUS_FAIL_BG,
+                tr.s(Key::HeelBannerCannotFloat).to_string(),
+                tr.fmt(Key::HeelBannerCannotFloatBody, &[("disp", &disp_s)]),
+            )
+        }
         Equilibrium::Unresolved { reason } => (
             theme::WARN,
             theme::HEEL_STATUS_WARN_BG,
-            "⚠ No equilibrium determined".to_string(),
-            reason.clone(),
+            tr.s(Key::HeelBannerNoEq).to_string(),
+            reason.render(tr),
         ),
     };
     paint_status_card(ui, accent, fill, &title, &detail, None);
@@ -1271,8 +1382,8 @@ fn paint_status_card(
 const READOUT_TWO_COL_WIDTH: f32 = 360.0;
 
 /// Structured three-column readout card for the currently displayed heel angle.
-fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: bool) {
-    let (couple, condition) = readout_rows(s, out);
+fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: bool, tr: Tr) {
+    let (couple, condition) = readout_rows_tr(s, out, tr);
     let moment_knm = draw::righting_moment_knm(s.displacement_t, s.lever_m);
     let righting = draw::is_righting(s.heel_deg, s.lever_m);
     let peak_knm = out
@@ -1300,7 +1411,7 @@ fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: b
             ui.set_min_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.label(
-                egui::RichText::new(heel_words(s.heel_deg, approx))
+                egui::RichText::new(heel_words_tr(s.heel_deg, approx, tr))
                     .strong()
                     .color(theme::TEXT_PRIMARY),
             );
@@ -1316,12 +1427,12 @@ fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: b
                         paint_readout_grid(
                             ui,
                             "heel_couple_grid",
-                            "Turning couple",
+                            tr.s(Key::HeelReadoutCoupleHead),
                             &couple,
                             w_c,
                             true,
                         );
-                        paint_moment_bar(ui, moment_knm.abs(), peak_knm, righting);
+                        paint_moment_bar(ui, moment_knm.abs(), peak_knm, righting, tr);
                     });
                     ui.add_space(gap);
                     ui.vertical(|ui| {
@@ -1329,7 +1440,7 @@ fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: b
                         paint_readout_grid(
                             ui,
                             "heel_condition_grid",
-                            "Floating condition",
+                            tr.s(Key::HeelReadoutConditionHead),
                             &condition,
                             w_k,
                             true,
@@ -1338,13 +1449,20 @@ fn readout_table(ui: &mut egui::Ui, s: &HeelState, out: &HeelSweepOut, approx: b
                 });
             } else {
                 let w = max_width(&couple).max(max_width(&condition));
-                paint_readout_grid(ui, "heel_couple_grid", "Turning couple", &couple, w, false);
-                paint_moment_bar(ui, moment_knm.abs(), peak_knm, righting);
+                paint_readout_grid(
+                    ui,
+                    "heel_couple_grid",
+                    tr.s(Key::HeelReadoutCoupleHead),
+                    &couple,
+                    w,
+                    false,
+                );
+                paint_moment_bar(ui, moment_knm.abs(), peak_knm, righting, tr);
                 ui.separator();
                 paint_readout_grid(
                     ui,
                     "heel_condition_grid",
-                    "Floating condition",
+                    tr.s(Key::HeelReadoutConditionHead),
                     &condition,
                     w,
                     false,
@@ -1400,7 +1518,7 @@ fn paint_readout_grid(
 
 /// Zero-centred horizontal bar comparing the current turning moment against peak sweep moment:
 /// green to the right when righting, coral-red to the left when capsizing.
-fn paint_moment_bar(ui: &mut egui::Ui, abs_knm: f64, peak_knm: f64, righting: bool) {
+fn paint_moment_bar(ui: &mut egui::Ui, abs_knm: f64, peak_knm: f64, righting: bool, tr: Tr) {
     let w = ui.available_width().max(80.0);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 8.0), egui::Sense::hover());
     let p = ui.painter();
@@ -1440,11 +1558,9 @@ fn paint_moment_bar(ui: &mut egui::Ui, abs_knm: f64, peak_knm: f64, righting: bo
         ],
         egui::Stroke::new(1.0, theme::GRID_DATUM),
     );
-    resp.on_hover_text(format!(
-        "{:.0}% of peak sweep moment ({} kN·m)",
-        frac * 100.0,
-        draw::format_moment_knm(peak_knm),
-    ));
+    let pct_s = format!("{:.0}", frac * 100.0);
+    let peak_s = draw::format_moment_knm(peak_knm);
+    resp.on_hover_text(tr.fmt(Key::HeelMomentBarTip, &[("pct", &pct_s), ("peak", &peak_s)]));
 }
 
 /// Minimum accepted trial-weight mass (tonnes), shared by both mass editors.
@@ -1457,7 +1573,12 @@ fn valid_trial_mass(m: f64) -> bool {
 
 /// The small field where a weight's mass is typed, at the point picked. Enter places (or edits)
 /// the weight; Esc cancels.
-fn mass_field(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) -> HeelViewAction {
+fn mass_field(
+    ui: &mut egui::Ui,
+    state: &mut HeelViewState,
+    views: &DrawnViews,
+    tr: Tr,
+) -> HeelViewAction {
     let Some(mut entry) = state.entry.clone() else {
         return HeelViewAction::None;
     };
@@ -1477,7 +1598,7 @@ fn mass_field(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) 
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut entry.text)
                             .desired_width(56.0)
-                            .hint_text("mass"),
+                            .hint_text(tr.s(Key::HeelMassHint)),
                     );
                     ui.label("t");
                     if !entry.focused {
@@ -1495,12 +1616,12 @@ fn mass_field(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) 
                     } else if enter && (edit.lost_focus() || edit.has_focus()) {
                         match entry.text.trim().parse::<f64>() {
                             Ok(m) if valid_trial_mass(m) => {
-                                place(state, &entry, m);
+                                place(state, &entry, m, tr);
                                 close = true;
                                 action = HeelViewAction::Changed;
                             }
                             _ => {
-                                entry.error = Some("type a mass in tonnes".into());
+                                entry.error = Some(tr.s(Key::HeelMassError).into());
                                 entry.focused = false;
                             }
                         }
@@ -1516,13 +1637,14 @@ fn mass_field(ui: &mut egui::Ui, state: &mut HeelViewState, views: &DrawnViews) 
 }
 
 /// Place a new weight at the entry's point, or set the mass of the one it edits.
-fn place(state: &mut HeelViewState, entry: &PendingWeight, mass_t: f64) {
+fn place(state: &mut HeelViewState, entry: &PendingWeight, mass_t: f64, tr: Tr) {
     match entry.editing.and_then(|i| state.weights.get_mut(i)) {
         Some(w) => w.mass_t = mass_t,
         None => {
             let n = state.weights.len() + 1;
+            let n_s = n.to_string();
             state.weights.push(WeightItem {
-                name: format!("Weight {n}"),
+                name: tr.fmt(Key::HeelWeightsNameN, &[("n", &n_s)]),
                 mass_t,
                 x: entry.at.x,
                 y: entry.at.y,
@@ -1591,16 +1713,18 @@ fn weights_table(
     ui: &mut egui::Ui,
     state: &mut HeelViewState,
     conditions: &[String],
+    tr: Tr,
 ) -> HeelViewAction {
     let mut action = HeelViewAction::None;
-    let title = format!("Trial weights ({})", state.weights.len());
+    let count_s = state.weights.len().to_string();
+    let title = tr.fmt(Key::HeelWeightsTitle, &[("count", &count_s)]);
     egui::CollapsingHeader::new(title)
         .id_salt("heel_weights")
         .default_open(true)
         .show(ui, |ui| {
             if state.weights.is_empty() {
                 ui.label(
-                    egui::RichText::new("Click a drawing to place a weight, then type its mass.")
+                    egui::RichText::new(tr.s(Key::HeelWeightsEmptyHint))
                         .color(theme::TEXT_SECONDARY),
                 );
             }
@@ -1611,54 +1735,60 @@ fn weights_table(
                 .id_salt("heel_weights_scroll")
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-            egui::Grid::new("heel_weights_grid")
-                .striped(true)
-                .show(ui, |ui| {
-                    if !state.weights.is_empty() {
-                        for h in ["", "mass t", "x m", "y m", "z m", ""] {
-                            ui.label(egui::RichText::new(h).color(theme::TEXT_SECONDARY));
-                        }
-                        ui.end_row();
-                    }
-                    let selected = state.selected;
-                    for (i, w) in state.weights.iter_mut().enumerate() {
-                        let mut edited = false;
-                        if ui.selectable_label(selected == Some(i), &w.name).clicked() {
-                            state.selected = Some(i);
-                        }
-                        let mut mass = w.mass_t;
-                        let resp = ui.add(
-                            egui::DragValue::new(&mut mass)
-                                .speed(0.05)
-                                .max_decimals(6)
-                                .range(TRIAL_MASS_RANGE)
-                                .clamp_existing_to_range(false),
-                        );
-                        if resp.changed() && valid_trial_mass(mass) {
-                            w.mass_t = mass;
-                            edited = true;
-                        }
-                        for v in [&mut w.x, &mut w.y, &mut w.z] {
-                            let mut coord = *v;
-                            let resp = ui.add(
-                                egui::DragValue::new(&mut coord)
-                                    .speed(0.02)
-                                    .fixed_decimals(2),
-                            );
-                            if resp.changed() && coord.is_finite() {
-                                *v = coord;
-                                edited = true;
+                    egui::Grid::new("heel_weights_grid")
+                        .striped(true)
+                        .show(ui, |ui| {
+                            if !state.weights.is_empty() {
+                                for h in
+                                    ["", tr.s(Key::HeelWeightsColMass), "x m", "y m", "z m", ""]
+                                {
+                                    ui.label(egui::RichText::new(h).color(theme::TEXT_SECONDARY));
+                                }
+                                ui.end_row();
                             }
-                        }
-                        if ui.small_button("✕").on_hover_text("Remove this weight").clicked() {
-                            remove = Some(i);
-                        }
-                        if edited {
-                            action = HeelViewAction::Changed;
-                        }
-                        ui.end_row();
-                    }
-                });
+                            let selected = state.selected;
+                            for (i, w) in state.weights.iter_mut().enumerate() {
+                                let mut edited = false;
+                                if ui.selectable_label(selected == Some(i), &w.name).clicked() {
+                                    state.selected = Some(i);
+                                }
+                                let mut mass = w.mass_t;
+                                let resp = ui.add(
+                                    egui::DragValue::new(&mut mass)
+                                        .speed(0.05)
+                                        .max_decimals(6)
+                                        .range(TRIAL_MASS_RANGE)
+                                        .clamp_existing_to_range(false),
+                                );
+                                if resp.changed() && valid_trial_mass(mass) {
+                                    w.mass_t = mass;
+                                    edited = true;
+                                }
+                                for v in [&mut w.x, &mut w.y, &mut w.z] {
+                                    let mut coord = *v;
+                                    let resp = ui.add(
+                                        egui::DragValue::new(&mut coord)
+                                            .speed(0.02)
+                                            .fixed_decimals(2),
+                                    );
+                                    if resp.changed() && coord.is_finite() {
+                                        *v = coord;
+                                        edited = true;
+                                    }
+                                }
+                                if ui
+                                    .small_button("✕")
+                                    .on_hover_text(tr.s(Key::HeelWeightsRemoveTip))
+                                    .clicked()
+                                {
+                                    remove = Some(i);
+                                }
+                                if edited {
+                                    action = HeelViewAction::Changed;
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
             if let Some(i) = remove {
                 remove_weight(state, i);
@@ -1668,11 +1798,12 @@ fn weights_table(
             match state.start {
                 HeelStart::Condition(i) => {
                     let button = ui
-                        .add_enabled(!none, egui::Button::new("Add to this condition"))
-                        .on_hover_text(
-                            "Append the trial weights to this loading condition (Undo takes them out)",
+                        .add_enabled(
+                            !none,
+                            egui::Button::new(tr.s(Key::HeelWeightsAddToCondition)),
                         )
-                        .on_disabled_hover_text("Place a weight first");
+                        .on_hover_text(tr.s(Key::HeelWeightsAddToConditionTip))
+                        .on_disabled_hover_text(tr.s(Key::HeelWeightsPlaceFirst));
                     if button.clicked() {
                         action = HeelViewAction::AddToCondition(i);
                     }
@@ -1680,12 +1811,12 @@ fn weights_table(
                 HeelStart::Dock => {
                     let enabled = !none && !conditions.is_empty();
                     let reason = if none {
-                        "Place a weight first"
+                        tr.s(Key::HeelWeightsPlaceFirst)
                     } else {
-                        "The project has no loading condition yet (Loading tab)"
+                        tr.s(Key::HeelWeightsNoConditions)
                     };
                     ui.add_enabled_ui(enabled, |ui| {
-                        ui.menu_button("Add to loading condition…", |ui| {
+                        ui.menu_button(tr.s(Key::HeelWeightsAddToLoading), |ui| {
                             for (i, name) in conditions.iter().enumerate() {
                                 if ui.button(name).clicked() {
                                     action = HeelViewAction::AddToCondition(i);
@@ -1826,13 +1957,13 @@ fn pointer(
 
 /// The view's out-of-date chip: says whether the update failed, waits for manual
 /// recalculation, or is recomputing.
-fn stale_chip(ui: &mut egui::Ui, failed: bool, waiting_manual: bool) {
+fn stale_chip(ui: &mut egui::Ui, failed: bool, waiting_manual: bool, tr: Tr) {
     let (text, colour) = if failed {
-        ("out of date — update failed", theme::STALE)
+        (tr.s(Key::HeelStaleFailed), theme::STALE)
     } else if waiting_manual {
-        ("out of date — click Recalculate", theme::WARN)
+        (tr.s(Key::HeelStaleManual), theme::WARN)
     } else {
-        ("out of date — recomputing", theme::STALE)
+        (tr.s(Key::HeelStaleRecomputing), theme::STALE)
     };
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0, colour))
@@ -1861,6 +1992,7 @@ fn drawings(
     capsize: draw::CapsizeAlert,
     interactive: bool,
     height: f32,
+    tr: Tr,
 ) -> (HeelViewAction, DrawnViews) {
     let width = ui.available_width();
     let gap = 8.0;
@@ -1954,7 +2086,7 @@ fn drawings(
         }
     });
     let painter = ui.painter_at(body_rect);
-    draw::paint_body_plan(
+    draw::paint_body_plan_tr(
         &painter,
         body_rect,
         &body_view,
@@ -1965,6 +2097,7 @@ fn drawings(
             weights: &weights_body,
             capsize,
         },
+        tr,
     );
     let (top, bottom) = geometry::profile_silhouette(outlines, frame);
     let painter = ui.painter_at(profile_rect);
@@ -2008,14 +2141,22 @@ fn drawings(
     ui.horizontal_top(|ui| {
         let body_caption = match (shown, section_x) {
             (Some(_), Some(x)) => {
-                format!("Looking forward · B and G projected onto the section at x = {x:.2} m")
+                let x_s = format!("{x:.2}");
+                tr.fmt(Key::HeelCaptionBodyProjected, &[("x", &x_s)])
             }
-            (None, Some(x)) => format!("Looking forward · section at x = {x:.2} m"),
-            _ => "Looking forward".to_string(),
+            (None, Some(x)) => {
+                let x_s = format!("{x:.2}");
+                tr.fmt(Key::HeelCaptionBodySection, &[("x", &x_s)])
+            }
+            _ => tr.s(Key::HeelCaptionBodyOnly).to_string(),
         };
         caption(ui, body_caption, body_width);
         ui.add_space(gap);
-        caption(ui, format!("From starboard{profile_note}"), profile_width);
+        caption(
+            ui,
+            tr.fmt(Key::HeelCaptionProfile, &[("note", profile_note)]),
+            profile_width,
+        );
     });
     (action, views)
 }
@@ -2028,6 +2169,7 @@ fn gz_plot(
     shown_heel: Option<f64>,
     height: f32,
     as_moment: bool,
+    tr: Tr,
 ) -> Option<f64> {
     use crate::panels::{plot_interactive_sized, PlotMark, PlotSeries};
     let pts = |f: fn(&HeelState) -> f64| -> Vec<(f64, f64)> {
@@ -2042,12 +2184,12 @@ fn gz_plot(
     let series = if as_moment {
         [
             PlotSeries {
-                label: "GZ moment, G on the centreline (kN·m)".into(),
+                label: tr.s(Key::HeelPlotGzMomentSeries).into(),
                 points: pts(|s| draw::righting_moment_knm(s.displacement_t, s.gz_m)),
                 dashed: false,
             },
             PlotSeries {
-                label: "Heeling moment (kN·m)".into(),
+                label: tr.s(Key::HeelPlotHeelingMomentSeries).into(),
                 points: pts(|s| draw::righting_moment_knm(s.displacement_t, s.heeling_arm_m)),
                 dashed: true,
             },
@@ -2055,35 +2197,35 @@ fn gz_plot(
     } else {
         [
             PlotSeries {
-                label: "GZ, G on the centreline (m)".into(),
+                label: tr.s(Key::HeelPlotGzLeverSeries).into(),
                 points: pts(|s| s.gz_m),
                 dashed: false,
             },
             PlotSeries {
-                label: "Heeling arm (m)".into(),
+                label: tr.s(Key::HeelPlotHeelingArmSeries).into(),
                 points: pts(|s| s.heeling_arm_m),
                 dashed: true,
             },
         ]
     };
     let title = if as_moment {
-        "Righting moment against heel (°), free to trim"
+        tr.s(Key::HeelPlotTitleMoment)
     } else {
-        "Righting arm against heel (°), free to trim"
+        tr.s(Key::HeelPlotTitleLever)
     };
     let marks: Vec<PlotMark> = match &out.equilibrium {
         Equilibrium::Stable { state } => vec![PlotMark {
             x: state.heel_deg,
-            label: "settles",
+            label: tr.s(Key::HeelPlotMarkSettles),
         }],
         Equilibrium::Loll { port, starboard } => vec![
             PlotMark {
                 x: port.heel_deg,
-                label: "loll",
+                label: tr.s(Key::HeelPlotMarkLoll),
             },
             PlotMark {
                 x: starboard.heel_deg,
-                label: "loll",
+                label: tr.s(Key::HeelPlotMarkLoll),
             },
         ],
         _ => Vec::new(),
@@ -2102,18 +2244,27 @@ fn gz_plot(
 
 /// Draw the view's header: the views as tabs and the close button.
 pub fn header(ui: &mut egui::Ui) -> HeelViewAction {
+    header_tr(ui, Tr::new(Locale::En))
+}
+
+/// Localized form of [`header`].
+pub fn header_tr(ui: &mut egui::Ui, tr: Tr) -> HeelViewAction {
     let mut action = HeelViewAction::None;
     ui.horizontal_wrapped(|ui| {
         for other in AnalysisView::ALL {
             let shown = other == AnalysisView::Heel;
-            if ui.selectable_label(shown, other.tab_label(shown)).clicked() && !shown {
+            if ui
+                .selectable_label(shown, other.tab_label_tr(shown, tr))
+                .clicked()
+                && !shown
+            {
                 action = HeelViewAction::Open(other);
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("✕")
-                .on_hover_text("Close Heel and righting arm")
+                .on_hover_text(tr.s(Key::HeelCloseTip))
                 .clicked()
             {
                 action = HeelViewAction::Close;
@@ -2555,6 +2706,7 @@ mod tests {
         };
         let opts = HydroOptions::from_surface(&s, sub);
         let out = compute_sweep(SweepInput {
+            tr: Tr::new(Locale::En),
             surface: s,
             hull: None,
             subdivision: sub,

@@ -180,6 +180,7 @@ pub fn shared_output(outputs: &[&Path]) -> io::Result<Option<(usize, usize)>> {
         .map(|p| {
             let land = landing(p)?;
             Ok(match land.to_str() {
+                // i18n-casing: not translated (file paths)
                 Some(text) => PathBuf::from(text.to_lowercase()),
                 None => land,
             })

@@ -23,7 +23,9 @@ The MCP server runs headless on the core, or connects to a running GUI over the 
 ```
 Cargo.toml                  workspace: core + cli + gui, one shared version
 crates/seacraft-core/
+  build.rs                  git version stamping + i18n codegen from locales/*.json
   src/lib.rs                public API and module map
+  src/i18n.rs               Locale, LanguagePref, Tr translator and compiled Key lookups
   src/math.rs               Vec3, Plane, 2D polygon moments (area/mx/my/ix/iy)
   src/mesh.rs               Surface = control points/edges/faces/layers, extents,
                             edge incidence, boundary/crease initialisation
@@ -71,10 +73,10 @@ crates/seacraft-core/
   src/io.rs                 write_atomic: temp sibling + sync + rename for every user file
   src/control_auth.rs       control-channel token (0600 file, constant-time compare) + read/write roots (ported, see ATTRIBUTION)
 crates/seacraft-cli/
-  src/main.rs               clap front end, table/JSON/CSV output
+  src/main.rs               clap front end (`--lang`), table/JSON/CSV output
   src/mcp.rs                JSON-RPC 2.0 MCP server over stdio (headless + --connect)
 crates/seacraft-gui/
-  src/main.rs               eframe bootstrap, `--open FILE`, `--control HOST:PORT`
+  src/main.rs               eframe bootstrap, `--open FILE`, `--lang CODE`, `--control HOST:PORT`
   src/app.rs                App state, menus, file actions, dock wiring
   src/commands.rs           typed model/analysis operations (transform, optimise, topology,
                             crease, generate, hydro table, trim scan, Bonjean, offsets,
@@ -105,7 +107,10 @@ crates/seacraft-gui/
   src/panels.rs             layer dock, hydrostatics dock, design-dock tabs (loading, damage, windage, performance), report options, plot_xy/plot_gz
   examples/orbit_bench.rs   real-window, real-GPU frame times while orbiting
   tests/                    integration tests, headless except those in gpu_hull.rs and gpu_hull_routing.rs that need a GPU adapter (ignored by default)
-xtask/                      cargo xtask ci: fmt, clippy, tests, versions, demo numbers, repository checks
+xtask/                      cargo xtask ci: fmt, clippy, tests, versions, demo numbers, i18n, repository checks
+locales/                    en.json, tr.json translation catalogs compiled by build.rs
+docs/i18n.md                internationalisation architecture, rules and contributor guide
+docs/i18n-glossary-tr.md    Turkish naval-architecture glossary and casing/unit rules
 docs/oracles.md             formulae, tests and numbers for all numeric test oracles
 docs/oracles/heave_2d.py    independent Python oracle (Frank panels + Ursell multipoles) for seakeeping.rs
 docs/oracles/heave_2d_lid.py  Frank panels with the irregular-frequency lid vs Ursell (E3)
@@ -186,6 +191,14 @@ rename), so a crash cannot truncate it. Autosave keeps a locked session pair in 
 `seacraft-gui --control HOST:PORT` opens a loopback JSON-lines channel, executed on the next frame.
 Authentication is on by default: a random token in a file only the user can read, compared in constant time
 (`crates/seacraft-core/src/control_auth.rs`), with optional read and write roots for file access.
+
+## Internationalisation
+
+User-facing GUI chrome, human-readable CLI output and generated documents (reports, linesplans, offsets,
+templates, plywood panels and plots) are localized via `locales/*.json` compiled into `seacraft_core::i18n`.
+Machine-readable formats (`.fef`, `.seacraft.json`, `--json`, `--csv`, CLI flags/`--help`/`--version`, MCP schemas
+and DXF layer names) stay invariant in English, and `.` is always the decimal separator. See
+[`docs/i18n.md`](i18n.md) and [`docs/i18n-glossary-tr.md`](i18n-glossary-tr.md).
 
 ## Decisions worth keeping
 

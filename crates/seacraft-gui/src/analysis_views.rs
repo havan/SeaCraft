@@ -15,6 +15,7 @@
 
 use eframe::egui;
 use seacraft_core::develop::Unfolded;
+use seacraft_core::i18n::{Key, Locale, Tr};
 
 use crate::commands::{
     self, BonjeanParams, BonjeanResult, HydroTableParams, HydroTableResult, ModelSnapshot,
@@ -52,23 +53,39 @@ impl AnalysisView {
 
     /// The menu item and the view's heading.
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized menu item and view heading.
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            AnalysisView::HydroTable => "Hydrostatic table",
-            AnalysisView::Bonjean => "Bonjean curves",
-            AnalysisView::Offsets => "Offsets",
-            AnalysisView::TrimScan => "Trim scan",
-            AnalysisView::Heel => "Heel and righting arm",
-            AnalysisView::Waves => "Wave pattern",
-            AnalysisView::Plates => "Plate development",
+            AnalysisView::HydroTable => tr.s(Key::AnalysisViewHydroTable),
+            AnalysisView::Bonjean => tr.s(Key::AnalysisViewBonjean),
+            AnalysisView::Offsets => tr.s(Key::AnalysisViewOffsets),
+            AnalysisView::TrimScan => tr.s(Key::AnalysisViewTrimScan),
+            AnalysisView::Heel => tr.s(Key::AnalysisViewHeel),
+            AnalysisView::Waves => tr.s(Key::AnalysisViewWaves),
+            AnalysisView::Plates => tr.s(Key::AnalysisViewPlates),
         }
     }
 
     /// The view's tab in the drawer's header: its label when it is the view shown, else a short
     /// name, so the row of tabs still leaves room for the header's buttons.
     pub fn tab_label(self, shown: bool) -> &'static str {
+        self.tab_label_tr(
+            shown,
+            seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+        )
+    }
+
+    /// Localized view tab label.
+    pub fn tab_label_tr(self, shown: bool, tr: seacraft_core::i18n::Tr) -> &'static str {
         match self {
-            AnalysisView::Heel if !shown => "Heel",
-            _ => self.label(),
+            AnalysisView::Heel if !shown => tr.s(seacraft_core::i18n::Key::AnalysisViewHeelShort),
+            _ => self.label_tr(tr),
         }
     }
 
@@ -229,6 +246,7 @@ pub fn compute(
     view: AnalysisView,
     inputs: &ViewInputs,
     model: &ModelSnapshot,
+    tr: Tr,
 ) -> Result<ViewResult, String> {
     let m = model.view();
     Ok(match view {
@@ -238,7 +256,7 @@ pub fn compute(
         AnalysisView::Bonjean => ViewResult::Bonjean(commands::bonjean_in(m, &inputs.bonjean)?),
         AnalysisView::Offsets => ViewResult::Offsets(commands::offsets_in(m, &inputs.offsets)?),
         AnalysisView::TrimScan => ViewResult::TrimScan(commands::trim_scan_in(m, &inputs.trim)?),
-        AnalysisView::Plates => ViewResult::Plates(plates(model, &inputs.plates)?),
+        AnalysisView::Plates => ViewResult::Plates(plates(model, &inputs.plates, tr)?),
         AnalysisView::Waves => {
             return Err("the wave pattern is computed by the window's wave job".into())
         }
@@ -249,23 +267,23 @@ pub fn compute(
 }
 
 /// Develop each chosen layer flat, one row per layer.
-fn plates(model: &ModelSnapshot, params: &PlateParams) -> Result<Vec<PlateRow>, String> {
+fn plates(model: &ModelSnapshot, params: &PlateParams, tr: Tr) -> Result<Vec<PlateRow>, String> {
     let surface = model
         .surface
         .as_ref()
-        .ok_or_else(|| "plate development: no model is loaded".to_string())?;
+        .ok_or_else(|| tr.s(Key::AnalysisErrNoModel).to_string())?;
     let chosen: Vec<usize> = match params.layers {
         PlateLayers::All => (0..surface.layers.len()).collect(),
         PlateLayers::Marked => (0..surface.layers.len())
             .filter(|&i| surface.layers[i].developable)
             .collect(),
         PlateLayers::One(i) if i < surface.layers.len() => vec![i],
-        PlateLayers::One(i) => return Err(format!("plate development: no layer {i}")),
+        PlateLayers::One(i) => {
+            return Err(tr.fmt(Key::AnalysisErrNoLayer, &[("index", &i.to_string())]))
+        }
     };
     if chosen.is_empty() {
-        return Err(
-            "plate development: no layer is marked developable (Layer properties)".to_owned(),
-        );
+        return Err(tr.s(Key::AnalysisErrNoneMarked).to_owned());
     }
     Ok(chosen
         .into_iter()
@@ -355,19 +373,24 @@ fn opt(value: Option<f64>, decimals: usize) -> EngCell {
 
 /// The engineering table of a result.
 pub fn table(result: &ViewResult) -> ViewTable {
+    table_tr(result, Tr::new(Locale::En))
+}
+
+/// Localized engineering table of a result.
+pub fn table_tr(result: &ViewResult, tr: Tr) -> ViewTable {
     match result {
-        ViewResult::HydroTable(t) => hydro_table(t),
+        ViewResult::HydroTable(t) => hydro_table(t, tr),
         ViewResult::Bonjean(b) => bonjean_table(b),
-        ViewResult::Offsets(o) => offsets_table(o),
-        ViewResult::TrimScan(s) => trim_table(s),
-        ViewResult::Plates(rows) => plate_table(rows),
+        ViewResult::Offsets(o) => offsets_table(o, tr),
+        ViewResult::TrimScan(s) => trim_table(s, tr),
+        ViewResult::Plates(rows) => plate_table(rows, tr),
     }
 }
 
-fn hydro_table(t: &HydroTableResult) -> ViewTable {
+fn hydro_table(t: &HydroTableResult, tr: Tr) -> ViewTable {
     let columns = vec![
         TableColumn::number("T", "m"),
-        TableColumn::number("Volume", "m³"),
+        TableColumn::number(tr.s(Key::AnalysisColVolume), "m³"),
         TableColumn::number("Δ", "t"),
         TableColumn::number("KB", "m"),
         TableColumn::number("BM", "m"),
@@ -433,12 +456,12 @@ fn bonjean_table(b: &BonjeanResult) -> ViewTable {
     ViewTable { columns, rows }
 }
 
-fn offsets_table(o: &OffsetsResult) -> ViewTable {
+fn offsets_table(o: &OffsetsResult, tr: Tr) -> ViewTable {
     let mut columns = vec![
         TableColumn::number("x", "m"),
-        TableColumn::number("Keel z", "m"),
-        TableColumn::number("Deck z", "m"),
-        TableColumn::number("Half beam", "m"),
+        TableColumn::number(tr.s(Key::AnalysisColKeelZ), "m"),
+        TableColumn::number(tr.s(Key::AnalysisColDeckZ), "m"),
+        TableColumn::number(tr.s(Key::AnalysisColHalfBeam), "m"),
     ];
     columns.extend(
         o.waterlines_m
@@ -468,11 +491,11 @@ fn offsets_table(o: &OffsetsResult) -> ViewTable {
     ViewTable { columns, rows }
 }
 
-fn trim_table(s: &TrimScanResult) -> ViewTable {
+fn trim_table(s: &TrimScanResult, tr: Tr) -> ViewTable {
     let columns = vec![
-        TableColumn::number("Trim", "m"),
+        TableColumn::number(tr.s(Key::AnalysisColTrim), "m"),
         TableColumn::number("T", "m"),
-        TableColumn::number("Volume", "m³"),
+        TableColumn::number(tr.s(Key::AnalysisColVolume), "m³"),
         TableColumn::number("LWL", "m"),
         TableColumn::number("Fn", ""),
         TableColumn::number("R_T", "kN"),
@@ -493,7 +516,7 @@ fn trim_table(s: &TrimScanResult) -> ViewTable {
                 num(p.rt_n / 1000.0, 3),
                 num(p.pe_kw, 2),
                 if best == Some(p.trim_m) {
-                    "least R_T".into()
+                    tr.s(Key::AnalysisTrimLeastRt).into()
                 } else {
                     "".into()
                 },
@@ -503,23 +526,28 @@ fn trim_table(s: &TrimScanResult) -> ViewTable {
     ViewTable { columns, rows }
 }
 
-fn plate_table(rows: &[PlateRow]) -> ViewTable {
+fn plate_table(rows: &[PlateRow], tr: Tr) -> ViewTable {
     let columns = vec![
-        TableColumn::text("Layer"),
-        TableColumn::text("Marked"),
-        TableColumn::number("Faces", ""),
-        TableColumn::number("Area", "m²"),
-        TableColumn::number("Flat width", "m"),
-        TableColumn::number("Flat height", "m"),
-        TableColumn::number("Max gap", "mm"),
-        TableColumn::number("RMS gap", "mm"),
-        TableColumn::number("Gap ratio", "%"),
-        TableColumn::text("Developable"),
+        TableColumn::text(tr.s(Key::AnalysisColLayer)),
+        TableColumn::text(tr.s(Key::AnalysisColMarked)),
+        TableColumn::number(tr.s(Key::AnalysisColFaces), ""),
+        TableColumn::number(tr.s(Key::AnalysisColArea), "m²"),
+        TableColumn::number(tr.s(Key::AnalysisColFlatWidth), "m"),
+        TableColumn::number(tr.s(Key::AnalysisColFlatHeight), "m"),
+        TableColumn::number(tr.s(Key::AnalysisColMaxGap), "mm"),
+        TableColumn::number(tr.s(Key::AnalysisColRmsGap), "mm"),
+        TableColumn::number(tr.s(Key::AnalysisColGapRatio), "%"),
+        TableColumn::text(tr.s(Key::AnalysisColDevelopable)),
     ];
     let rows = rows
         .iter()
         .map(|r| {
-            let marked: EngCell = if r.marked { "yes" } else { NO_VALUE }.into();
+            let marked: EngCell = if r.marked {
+                tr.s(Key::AnalysisPlatesCellYes)
+            } else {
+                NO_VALUE
+            }
+            .into();
             match &r.result {
                 Ok(u) => {
                     let p = &u.plate;
@@ -533,13 +561,18 @@ fn plate_table(rows: &[PlateRow]) -> ViewTable {
                         num(p.max_gap_m * 1000.0, 1),
                         num(p.rms_gap_m * 1000.0, 1),
                         num(p.gap_ratio * 100.0, 2),
-                        if p.developable { "yes" } else { "no" }.into(),
+                        if p.developable {
+                            tr.s(Key::AnalysisPlatesCellYes)
+                        } else {
+                            tr.s(Key::AnalysisPlatesCellNo)
+                        }
+                        .into(),
                     ]
                 }
                 Err(_) => {
                     let mut row = vec![r.name.as_str().into(), marked];
                     row.extend((0..7).map(|_| EngCell::from(NO_VALUE)));
-                    row.push("no faces".into());
+                    row.push(tr.s(Key::AnalysisPlatesCellNoFaces).into());
                     row
                 }
             }
@@ -550,41 +583,72 @@ fn plate_table(rows: &[PlateRow]) -> ViewTable {
 
 /// The lines above a result's table: what it was computed for.
 pub fn caption(result: &ViewResult) -> Vec<String> {
+    caption_tr(result, Tr::new(Locale::En))
+}
+
+/// Localized caption lines above a result's table.
+pub fn caption_tr(result: &ViewResult, tr: Tr) -> Vec<String> {
     match result {
-        ViewResult::HydroTable(t) => vec![format!(
-            "{} drafts, water {:.3} t/m³, level {}. Drafts above the keel; LCB and LCF in model x.",
-            t.drafts,
-            t.water_density / 1000.0,
-            t.level
-        )],
-        ViewResult::Bonjean(b) => vec![format!(
-            "Section area below draft T (m above the keel) at each station; depth {:.3} m, \
-             design draft {:.3} m, largest area {:.3} m², level {}.",
-            b.depth_m, b.design_draft_m, b.area_max_m2, b.level
-        )],
-        ViewResult::Offsets(o) => vec![format!(
-            "Half-breadths at waterlines WL (height above the keel, z = {:.3}) and hull heights \
-             (model z) at buttocks BL (offset from the centreline); widest {:.3} m, level {}.",
-            o.keel_z, o.max_half_breadth_m, o.level
-        )],
+        ViewResult::HydroTable(t) => {
+            let drafts_s = t.drafts.to_string();
+            let density_s = format!("{:.3}", t.water_density / 1000.0);
+            let level_s = t.level.to_string();
+            vec![tr.fmt(
+                Key::AnalysisHydroCaption,
+                &[
+                    ("drafts", &drafts_s),
+                    ("density", &density_s),
+                    ("level", &level_s),
+                ],
+            )]
+        }
+        ViewResult::Bonjean(b) => {
+            let depth_s = format!("{:.3}", b.depth_m);
+            let draft_s = format!("{:.3}", b.design_draft_m);
+            let area_s = format!("{:.3}", b.area_max_m2);
+            let level_s = b.level.to_string();
+            vec![tr.fmt(
+                Key::AnalysisBonjeanCaption,
+                &[
+                    ("depth", &depth_s),
+                    ("draft", &draft_s),
+                    ("area", &area_s),
+                    ("level", &level_s),
+                ],
+            )]
+        }
+        ViewResult::Offsets(o) => {
+            let keel_s = format!("{:.3}", o.keel_z);
+            let widest_s = format!("{:.3}", o.max_half_breadth_m);
+            let level_s = o.level.to_string();
+            vec![tr.fmt(
+                Key::AnalysisOffsetsCaption,
+                &[
+                    ("keel", &keel_s),
+                    ("widest", &widest_s),
+                    ("level", &level_s),
+                ],
+            )]
+        }
         ViewResult::TrimScan(s) => {
-            let mut lines = vec![format!(
-                "{:.2} kn, displacement held at {:.3} m³, level {}.",
-                s.speed_kn, s.target_volume_m3, s.level
+            let speed_s = format!("{:.2}", s.speed_kn);
+            let volume_s = format!("{:.3}", s.target_volume_m3);
+            let level_s = s.level.to_string();
+            let mut lines = vec![tr.fmt(
+                Key::AnalysisTrimCaption,
+                &[
+                    ("speed", &speed_s),
+                    ("volume", &volume_s),
+                    ("level", &level_s),
+                ],
             )];
             if s.at_boundary {
-                lines.push(
-                    "The least resistance is at an end of the range: widen the scan.".to_owned(),
-                );
+                lines.push(tr.s(Key::AnalysisTrimBoundaryWarn).to_owned());
             }
-            lines.extend(s.warnings.iter().cloned());
+            lines.extend(s.warnings.iter().map(|w| w.render(tr)));
             lines
         }
-        ViewResult::Plates(_) => vec![
-            "Each layer developed flat as one plate (starboard only unless both sides). \
-             Developable: the largest seam gap is under 0.5 % of the plate diagonal."
-                .to_owned(),
-        ],
+        ViewResult::Plates(_) => vec![tr.s(Key::AnalysisPlatesCaption).to_owned()],
     }
 }
 
@@ -592,6 +656,11 @@ pub fn caption(result: &ViewResult) -> Vec<String> {
 /// missing value is an empty field; a field with a comma, quote or line
 /// break is quoted.
 pub fn to_csv(table: &ViewTable) -> String {
+    to_csv_tr(table, Tr::new(Locale::En))
+}
+
+/// Localized CSV formatting (localizes criteria badge strings via `tr`).
+pub fn to_csv_tr(table: &ViewTable, tr: Tr) -> String {
     fn field(text: &str) -> String {
         if text.contains([',', '"', '\n', '\r']) {
             format!("\"{}\"", text.replace('"', "\"\""))
@@ -618,7 +687,7 @@ pub fn to_csv(table: &ViewTable) -> String {
                 Some(EngCell::Text(t)) if t == NO_VALUE => String::new(),
                 Some(EngCell::Text(t)) => field(t),
                 Some(EngCell::Badge(passed, stale)) => {
-                    field(panels::criteria_badge_style(*passed, *stale).0)
+                    field(panels::criteria_badge_style_tr(*passed, *stale, tr).0)
                 }
             })
             .collect();
@@ -661,6 +730,11 @@ pub struct ViewPanel<'a> {
 /// Draw a view: the views as tabs, *Compute*, *Copy CSV* and close, its inputs,
 /// then the result (dimmed when stale): caption, table, plot.
 pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
+    panel_tr(ui, p, Tr::new(Locale::En))
+}
+
+/// Localized form of [`panel`].
+pub fn panel_tr(ui: &mut egui::Ui, p: ViewPanel<'_>, tr: Tr) -> ViewAction {
     let mut action = ViewAction::None;
     let view = p.view;
     let has_result = p.state.slot(view).result.is_some();
@@ -671,31 +745,33 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
         // others are one click away without the menu.
         for other in AnalysisView::ALL {
             let shown = other == view;
-            if ui.selectable_label(shown, other.tab_label(shown)).clicked() && !shown {
+            if ui
+                .selectable_label(shown, other.tab_label_tr(shown, tr))
+                .clicked()
+                && !shown
+            {
                 action = ViewAction::Open(other);
             }
         }
         ui.separator();
         if ui
-            .add_enabled(!p.busy, egui::Button::new("Compute"))
-            .on_hover_text("Compute the table for the current model (F5 when out of date)")
+            .add_enabled(!p.busy, egui::Button::new(tr.s(Key::CommonCompute)))
+            .on_hover_text(tr.s(Key::AnalysisBtnComputeTip))
             .clicked()
         {
             action = ViewAction::Compute;
         }
         if ui
-            .add_enabled(has_result, egui::Button::new("Copy CSV"))
-            .on_hover_text("Copy the table to the clipboard as CSV")
+            .add_enabled(has_result, egui::Button::new(tr.s(Key::AnalysisBtnCopyCsv)))
+            .on_hover_text(tr.s(Key::AnalysisBtnCopyCsvTip))
             .clicked()
         {
             action = ViewAction::CopyCsv;
         }
         if view == AnalysisView::Plates
             && ui
-                .button("Export patterns…")
-                .on_hover_text(
-                    "Builder panels: lay each panel flat, measure it and write its pattern",
-                )
+                .button(tr.s(Key::AnalysisBtnExportPatterns))
+                .on_hover_text(tr.s(Key::AnalysisBtnExportPatternsTip))
                 .clicked()
         {
             action = ViewAction::OpenBuilderPanels;
@@ -706,7 +782,7 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("✕")
-                .on_hover_text(format!("Close {}", view.label()))
+                .on_hover_text(tr.fmt(Key::AnalysisBtnCloseTip, &[("view", view.label_tr(tr))]))
                 .clicked()
             {
                 action = ViewAction::Close;
@@ -714,7 +790,7 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
         });
     });
     ui.add_space(2.0);
-    if inputs(ui, view, &mut p.state.inputs, &p.layers, p.design_draft) {
+    if inputs(ui, view, &mut p.state.inputs, &p.layers, p.design_draft, tr) {
         action = ViewAction::Changed;
     }
     ui.add_space(2.0);
@@ -725,29 +801,26 @@ pub fn panel(ui: &mut egui::Ui, p: ViewPanel<'_>) -> ViewAction {
     let outline = &mut p.state.outline;
     let Some(result) = p.state.slots[view.index()].result.as_ref() else {
         if !p.busy {
-            ui.label(
-                egui::RichText::new("Nothing computed yet: Compute fills the table.")
-                    .color(theme::TEXT_MUTED),
-            );
+            ui.label(egui::RichText::new(tr.s(Key::AnalysisEmpty)).color(theme::TEXT_MUTED));
         }
         return action;
     };
     egui::ScrollArea::vertical()
         .id_salt("analysis_view_body")
         .show(ui, |ui| {
-            panels::stale_section(ui, p.stale, |ui| {
-                for line in caption(result) {
+            panels::stale_section_tr(ui, p.stale, tr, |ui| {
+                for line in caption_tr(result, tr) {
                     ui.label(egui::RichText::new(line).color(theme::TEXT_SECONDARY));
                 }
                 ui.add_space(4.0);
-                let t = table(result);
+                let t = table_tr(result, tr);
                 egui::ScrollArea::horizontal()
                     .id_salt(("analysis_table", view.key()))
                     .show(ui, |ui| {
-                        panels::eng_table(ui, &t.eng_columns(), &t.rows);
+                        panels::eng_table_tr(ui, &t.eng_columns(), &t.rows, tr);
                     });
                 ui.add_space(6.0);
-                plot(ui, result, outline);
+                plot(ui, result, outline, tr);
             });
         });
     action
@@ -771,13 +844,14 @@ fn inputs(
     inputs: &mut ViewInputs,
     layers: &[(String, bool)],
     design_draft: f64,
+    tr: Tr,
 ) -> bool {
     let mut changed = false;
     ui.horizontal_wrapped(|ui| match view {
         AnalysisView::HydroTable => {
             let p = &mut inputs.table;
             let mut to = p.to.unwrap_or(design_draft);
-            ui.label("Drafts up to");
+            ui.label(tr.s(Key::AnalysisInputDraftsUpTo));
             if ui
                 .add(
                     theme::num(&mut to)
@@ -793,28 +867,61 @@ fn inputs(
             }
             if p.to.is_some() {
                 if ui
-                    .small_button("design draft")
-                    .on_hover_text("Back to the draft the dock measures at")
+                    .small_button(tr.s(Key::AnalysisInputDesignDraft))
+                    .on_hover_text(tr.s(Key::AnalysisInputDesignDraftTip))
                     .clicked()
                 {
                     p.to = None;
                     changed = true;
                 }
             } else {
-                ui.label(egui::RichText::new("(design draft)").color(theme::TEXT_MUTED));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::AnalysisInputDesignDraftMuted))
+                        .color(theme::TEXT_MUTED),
+                );
             }
-            changed |= drag_usize(ui, &mut p.steps, 1..=100, "steps: ");
+            changed |= drag_usize(
+                ui,
+                &mut p.steps,
+                1..=100,
+                tr.s(Key::AnalysisInputStepsPrefix),
+            );
         }
         AnalysisView::Bonjean => {
             let p = &mut inputs.bonjean;
-            changed |= drag_usize(ui, &mut p.stations, 2..=200, "stations: ");
-            changed |= drag_usize(ui, &mut p.draft_steps, 2..=50, "drafts: ");
+            changed |= drag_usize(
+                ui,
+                &mut p.stations,
+                2..=200,
+                tr.s(Key::AnalysisInputStationsPrefix),
+            );
+            changed |= drag_usize(
+                ui,
+                &mut p.draft_steps,
+                2..=50,
+                tr.s(Key::AnalysisInputDraftsPrefix),
+            );
         }
         AnalysisView::Offsets => {
             let p = &mut inputs.offsets;
-            changed |= drag_usize(ui, &mut p.stations, 2..=200, "stations: ");
-            changed |= drag_usize(ui, &mut p.waterline_steps, 1..=40, "waterlines: ");
-            changed |= drag_usize(ui, &mut p.buttock_steps, 1..=40, "buttocks: ");
+            changed |= drag_usize(
+                ui,
+                &mut p.stations,
+                2..=200,
+                tr.s(Key::AnalysisInputStationsPrefix),
+            );
+            changed |= drag_usize(
+                ui,
+                &mut p.waterline_steps,
+                1..=40,
+                tr.s(Key::AnalysisInputWaterlinesPrefix),
+            );
+            changed |= drag_usize(
+                ui,
+                &mut p.buttock_steps,
+                1..=40,
+                tr.s(Key::AnalysisInputButtocksPrefix),
+            );
         }
         AnalysisView::TrimScan => {
             let p = &mut inputs.trim;
@@ -823,7 +930,7 @@ fn inputs(
                     theme::num(&mut p.speed_kn)
                         .speed(0.1)
                         .range(0.1..=100.0)
-                        .prefix("speed: ")
+                        .prefix(tr.s(Key::AnalysisInputSpeedPrefix))
                         .suffix(" kn"),
                 )
                 .changed();
@@ -833,7 +940,7 @@ fn inputs(
                         .speed(0.01)
                         .range(-20.0..=20.0)
                         .fixed_decimals(2)
-                        .prefix("trim from: ")
+                        .prefix(tr.s(Key::AnalysisInputTrimFromPrefix))
                         .suffix(" m"),
                 )
                 .changed();
@@ -843,13 +950,18 @@ fn inputs(
                         .speed(0.01)
                         .range(-20.0..=20.0)
                         .fixed_decimals(2)
-                        .prefix("to: ")
+                        .prefix(tr.s(Key::AnalysisInputToPrefix))
                         .suffix(" m"),
                 )
                 .changed();
-            changed |= drag_usize(ui, &mut p.steps, 2..=60, "steps: ");
+            changed |= drag_usize(
+                ui,
+                &mut p.steps,
+                2..=60,
+                tr.s(Key::AnalysisInputStepsPrefix),
+            );
             changed |= ui
-                .checkbox(&mut p.hold_volume, "hold displacement")
+                .checkbox(&mut p.hold_volume, tr.s(Key::AnalysisInputHoldDisplacement))
                 .changed();
         }
         // The wave and heel views draw their own inputs (`wave_view`, `heel_view`).
@@ -857,11 +969,15 @@ fn inputs(
         AnalysisView::Plates => {
             let p = &mut inputs.plates;
             let name = |l: PlateLayers| match l {
-                PlateLayers::All => "All layers".to_owned(),
-                PlateLayers::Marked => "Layers marked developable".to_owned(),
-                PlateLayers::One(i) => layers
-                    .get(i)
-                    .map_or_else(|| format!("Layer {i}"), |(n, _)| n.clone()),
+                PlateLayers::All => tr.s(Key::AnalysisInputLayersAll).to_owned(),
+                PlateLayers::Marked => tr.s(Key::AnalysisInputLayersMarked).to_owned(),
+                PlateLayers::One(i) => layers.get(i).map_or_else(
+                    || {
+                        let idx_s = i.to_string();
+                        tr.fmt(Key::AnalysisInputLayersOneFallback, &[("index", &idx_s)])
+                    },
+                    |(n, _)| n.clone(),
+                ),
             };
             let before = p.layers;
             egui::ComboBox::from_id_salt("plate_layers")
@@ -874,14 +990,16 @@ fn inputs(
                     }
                 });
             changed |= p.layers != before;
-            changed |= ui.checkbox(&mut p.both_sides, "both sides").changed();
+            changed |= ui
+                .checkbox(&mut p.both_sides, tr.s(Key::AnalysisInputBothSides))
+                .changed();
         }
     });
     changed
 }
 
 /// The plot under a table, where the view has one.
-fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize) {
+fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize, tr: Tr) {
     match result {
         ViewResult::Bonjean(b) => {
             // One curve per station, draft up and area across, unlabelled
@@ -900,7 +1018,14 @@ fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize) {
                     )
                 })
                 .collect();
-            panels::plot_xy(ui, "Bonjean curves", "area (m²)", "draft (m)", &series);
+            panels::plot_xy_tr(
+                ui,
+                tr.s(Key::AnalysisViewBonjean),
+                tr.s(Key::AnalysisBonjeanPlotX),
+                tr.s(Key::AnalysisBonjeanPlotY),
+                &series,
+                tr,
+            );
         }
         ViewResult::TrimScan(s) => {
             let series = vec![(
@@ -910,7 +1035,14 @@ fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize) {
                     .map(|p| (p.trim_m, p.rt_n / 1000.0))
                     .collect(),
             )];
-            panels::plot_xy(ui, "Trim scan", "trim (m)", "R_T (kN)", &series);
+            panels::plot_xy_tr(
+                ui,
+                tr.s(Key::AnalysisViewTrimScan),
+                tr.s(Key::AnalysisTrimPlotX),
+                tr.s(Key::AnalysisTrimPlotY),
+                &series,
+                tr,
+            );
         }
         ViewResult::Plates(rows) => {
             let developed: Vec<(usize, &PlateRow, &Unfolded)> = rows
@@ -926,7 +1058,7 @@ fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize) {
             }
             if developed.len() > 1 {
                 ui.horizontal(|ui| {
-                    ui.label("Flat pattern of");
+                    ui.label(tr.s(Key::AnalysisPlatesFlatPatternOf));
                     egui::ComboBox::from_id_salt("plate_outline")
                         .selected_text(rows[*outline].name.clone())
                         .show_ui(ui, |ui| {
@@ -937,7 +1069,7 @@ fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize) {
                 });
             }
             if let Some((_, r, plate)) = developed.iter().find(|(i, _, _)| i == outline) {
-                flat_pattern(ui, &r.name, plate);
+                flat_pattern(ui, &r.name, plate, tr);
             }
         }
         ViewResult::HydroTable(_) | ViewResult::Offsets(_) => {}
@@ -945,7 +1077,7 @@ fn plot(ui: &mut egui::Ui, result: &ViewResult, outline: &mut usize) {
 }
 
 /// The developed plate drawn to scale: every flattened face outlined.
-fn flat_pattern(ui: &mut egui::Ui, name: &str, plate: &Unfolded) {
+fn flat_pattern(ui: &mut egui::Ui, name: &str, plate: &Unfolded, tr: Tr) {
     let width = ui.available_width().max(120.0);
     let height = 240.0;
     let (response, painter) = ui.allocate_painter(egui::vec2(width, height), egui::Sense::hover());
@@ -958,12 +1090,14 @@ fn flat_pattern(ui: &mut egui::Ui, name: &str, plate: &Unfolded) {
         egui::StrokeKind::Inside,
     );
     let (caption, area) = panels::split_caption(rect);
+    let w_s = format!("{:.3}", plate.width_m);
+    let h_s = format!("{:.3}", plate.height_m);
     painter.text(
         caption.left_center() + egui::vec2(6.0, 0.0),
         egui::Align2::LEFT_CENTER,
-        format!(
-            "Flat pattern: {name}, {:.3} × {:.3} m",
-            plate.width_m, plate.height_m
+        tr.fmt(
+            Key::AnalysisPlatesFlatPatternCaption,
+            &[("name", name), ("width", &w_s), ("height", &h_s)],
         ),
         theme::caption_font(),
         theme::PLOT_TEXT,
@@ -1053,7 +1187,7 @@ mod tests {
             marked: true,
             result: Err("no faces".into()),
         }];
-        let t = plate_table(&rows);
+        let t = plate_table(&rows, Tr::new(Locale::En));
         assert_eq!(t.rows[0].len(), t.columns.len());
         assert_eq!(t.rows[0][1], EngCell::from("yes"));
     }

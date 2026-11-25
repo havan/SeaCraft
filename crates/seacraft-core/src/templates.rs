@@ -21,6 +21,7 @@
 use serde::Serialize;
 
 use crate::hydro::{chain_paths, plane_segments, Hull};
+use crate::i18n::{Key, Locale, Msg, Tr};
 use crate::math::{Plane, Vec3};
 use crate::mesh::Surface;
 use crate::sheet::{Anchor, Label, PageSetup, PathKind, Sheet, SheetPath};
@@ -538,11 +539,15 @@ pub struct TemplateOptions {
     pub dwl_m: Option<f64>,
     /// Add imperial readings beside the metric ones.
     pub imperial: bool,
+    /// Display locale for labels, sheet names, notes, and warnings.
+    pub locale: Locale,
 }
 
 /// One pattern and what was found while drawing it.
 #[derive(Clone, Debug)]
 pub struct Template {
+    /// The sheet's name: the drawing carries it in the document's language, JSON in English.
+    pub name: Msg,
     /// The drawing, its marks and its notes.
     pub sheet: Sheet,
     /// Where along the hull it is, for a station or a transom.
@@ -556,7 +561,7 @@ pub struct Template {
     /// The longest straight piece of the hull's section, in metres: how coarse the mesh is.
     pub longest_segment_m: f64,
     /// What a builder should know before trusting this pattern.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
 }
 
 /// A section drawn as a pattern: the lines and what was measured, before marks and notes.
@@ -575,7 +580,7 @@ pub(crate) struct Outline {
     pub(crate) longest_segment_m: f64,
     /// `[min_u, min_v, max_u, max_v]` of the hull's section.
     pub(crate) bounds: [f64; 4],
-    pub(crate) warnings: Vec<String>,
+    pub(crate) warnings: Vec<Msg>,
 }
 
 /// The pattern's lines for a section: the mould line `skin_m` inside the hull, each open line
@@ -585,7 +590,7 @@ pub(crate) fn outline(
     section: &[SectionPath],
     skin_m: f64,
     legs_to: Option<f64>,
-    plane: &str,
+    plane: Key,
 ) -> Outline {
     let mould = mould_line(section, skin_m);
     let mut out = Outline {
@@ -644,16 +649,14 @@ pub(crate) fn outline(
             .collect();
     }
     if mould.crosses_itself {
-        out.warnings.push(
-            "skin is thicker than the hull's local radius here: the mould line crosses itself"
-                .into(),
-        );
+        out.warnings.push(Msg::new(Key::TemplatesWarnCrossesItself));
     }
     if mould.clamped > 0 {
-        out.warnings.push(format!(
-            "{} segments are too oblique to the {plane} plane for a reliable deduction",
-            mould.clamped
-        ));
+        out.warnings.push(
+            Msg::new(Key::TemplatesWarnOblique)
+                .arg("count", mould.clamped)
+                .arg_msg("plane", Msg::new(plane)),
+        );
     }
     out
 }
@@ -842,6 +845,7 @@ pub fn station_template(
     count: usize,
     opts: &TemplateOptions,
 ) -> Option<Template> {
+    let tr = Tr::new(opts.locale);
     let section = cut(hull, &Frame::station(x));
     if section.is_empty() {
         return None;
@@ -856,16 +860,15 @@ pub fn station_template(
     let legs_to = match opts.strongback_z {
         Some(z) if z.is_finite() && z >= top - 1e-9 => Some(z),
         Some(_) => {
-            warnings.push(
-                "the strongback level is below the top of this section: no legs drawn".into(),
-            );
+            warnings.push(Msg::new(Key::TemplatesWarnStrongbackLow));
             None
         }
         None => None,
     };
-    let outline = outline(&section, skin, legs_to, "station");
+    let outline = outline(&section, skin, legs_to, Key::TemplatesPlaneStation);
     let [u0, v0, u1, v1] = outline.bounds;
-    let mut sheet = Sheet::new(format!("Station {index}"));
+    let name = Msg::new(Key::TemplatesSheetStation).arg("index", index);
+    let mut sheet = Sheet::new(name.render(tr));
     let half_breadth_m = draw_outline(&mut sheet, &outline, opts.half);
 
     // Marks reach a little beyond the section on each side.
@@ -880,9 +883,11 @@ pub fn station_template(
     add_levels(&mut sheet, opts, hull.keel, 1.0, [left, v0, right, v1]);
     if let (Some(z), true) = (legs_to, outline.sheer.is_empty()) {
         sheet.paths.push(mark((left, z), (right, z)));
-        sheet
-            .labels
-            .push(mark_label((right, z + 0.001), Anchor::End, "Strongback"));
+        sheet.labels.push(mark_label(
+            (right, z + 0.001),
+            Anchor::End,
+            tr.s(Key::TemplatesMarkStrongback),
+        ));
     }
     // The sheer, where an open section ends: a tick outward from each end.
     for (i, end) in outline.sheer.iter().enumerate() {
@@ -901,9 +906,11 @@ pub fn station_template(
             } else {
                 Anchor::Start
             };
-            sheet
-                .labels
-                .push(mark_label((end.0 + out, end.1 + 0.001), anchor, "Sheer"));
+            sheet.labels.push(mark_label(
+                (end.0 + out, end.1 + 0.001),
+                anchor,
+                tr.s(Key::TemplatesMarkSheer),
+            ));
         }
     }
     let middle = if opts.half {
@@ -914,33 +921,42 @@ pub fn station_template(
     add_title(&mut sheet, (middle, (v0 + v1) / 2.0));
 
     let face = mould_face(outline.mean_along, outline.along_range);
-    sheet.notes.push(format!(
-        "Station {index} of {count}, x = {}",
-        units::length(x, opts.imperial)
+    let count_s = count.to_string();
+    let x_str = units::length(x, opts.imperial);
+    sheet.notes.push(tr.fmt(
+        Key::TemplatesNoteStationOf,
+        &[
+            ("index", &index.to_string()),
+            ("count", &count_s),
+            ("x", &x_str),
+        ],
     ));
-    sheet.notes.push(skin_note(skin));
+    sheet.notes.push(skin_note(skin, tr));
     sheet.notes.push(
         match face {
-            MouldFace::Forward => "Station line on the FORWARD face of the mould",
-            MouldFace::Aft => "Station line on the AFT face of the mould",
-            MouldFace::Either => "Either face on the station line",
+            MouldFace::Forward => tr.s(Key::TemplatesNoteFaceForward),
+            MouldFace::Aft => tr.s(Key::TemplatesNoteFaceAft),
+            MouldFace::Either => tr.s(Key::TemplatesNoteFaceEither),
         }
         .into(),
     );
-    sheet.notes.extend(bevel_note(face, outline.along_range));
-    sheet.notes.extend(measure_notes(&outline));
+    sheet
+        .notes
+        .extend(bevel_note(face, outline.along_range, tr));
+    sheet.notes.extend(measure_notes(&outline, tr));
     if opts.half {
-        sheet.notes.push(HALF_NOTE.into());
+        sheet.notes.push(tr.s(Key::TemplatesNoteHalf).into());
     }
     if let (Some(z), false) = (legs_to, outline.sheer.is_empty()) {
-        sheet.notes.push(format!(
-            "Legs run up to the strongback level, {} above the baseline",
-            units::length(z - hull.keel, opts.imperial)
-        ));
+        let height = units::length(z - hull.keel, opts.imperial);
+        sheet
+            .notes
+            .push(tr.fmt(Key::TemplatesNoteLegs, &[("height", &height)]));
     }
     warnings.extend(outline.warnings.iter().cloned());
-    sheet.notes.extend(warnings.iter().cloned());
+    sheet.notes.extend(warnings.iter().map(|w| w.render(tr)));
     Some(Template {
+        name,
         sheet,
         x: Some(x),
         face: Some(face),
@@ -968,31 +984,29 @@ fn mould_face(mean: f64, (least, most): (f64, f64)) -> MouldFace {
 
 /// Where a mould set on its line by `face` still stands proud of the skin: the pieces of the
 /// section that narrow the other way by more than a degree.
-fn bevel_note(face: MouldFace, (least, most): (f64, f64)) -> Option<String> {
-    let deg = |a: f64| a.abs().min(1.0).asin().to_degrees();
+fn bevel_note(face: MouldFace, (least, most): (f64, f64), tr: Tr) -> Option<String> {
+    let deg = |a: f64| format!("{:.1}", a.abs().min(1.0).asin().to_degrees());
     let (aft, forward) = (least < -BEVEL_SIN, most > BEVEL_SIN);
     match face {
-        MouldFace::Forward if aft => Some(format!(
-            "Bevel the aft face where the hull narrows aft, up to {:.1}°, or it stands proud of the skin",
-            deg(least)
-        )),
-        MouldFace::Aft if forward => Some(format!(
-            "Bevel the forward face where the hull narrows forward, up to {:.1}°, or it stands proud of the skin",
-            deg(most)
-        )),
-        MouldFace::Either if aft && forward => Some(format!(
-            "Bevel needed both ways: the hull narrows forward by up to {:.1}° and aft by up to {:.1}°; the \
-             face off the line stands proud of the skin where the hull narrows towards it",
-            deg(most),
-            deg(least)
-        )),
+        MouldFace::Forward if aft => {
+            let d = deg(least);
+            Some(tr.fmt(Key::TemplatesNoteBevelAft, &[("deg", &d)]))
+        }
+        MouldFace::Aft if forward => {
+            let d = deg(most);
+            Some(tr.fmt(Key::TemplatesNoteBevelForward, &[("deg", &d)]))
+        }
+        MouldFace::Either if aft && forward => {
+            let fwd_deg = deg(most);
+            let aft_deg = deg(least);
+            Some(tr.fmt(
+                Key::TemplatesNoteBevelBoth,
+                &[("fwd_deg", &fwd_deg), ("aft_deg", &aft_deg)],
+            ))
+        }
         _ => None,
     }
 }
-
-/// The note on a half pattern.
-const HALF_NOTE: &str =
-    "Half mould: the starboard side. Flip the pattern about the centreline (CL) for the other side";
 
 impl Frame {
     /// The centre plane, seen from starboard: the bow to the right, up is up.
@@ -1040,14 +1054,16 @@ pub fn profile_template(
     stations: &[(usize, f64)],
     opts: &TemplateOptions,
 ) -> Option<Template> {
+    let tr = Tr::new(opts.locale);
     let section = cut(hull, &Frame::profile());
     if section.is_empty() {
         return None;
     }
     let skin = skin_of(opts);
-    let outline = outline(&section, skin, None, "profile");
+    let outline = outline(&section, skin, None, Key::TemplatesPlaneProfile);
     let [u0, v0, u1, v1] = outline.bounds;
-    let mut sheet = Sheet::new("Profile");
+    let name = Msg::new(Key::TemplatesSheetProfile);
+    let mut sheet = Sheet::new(name.render(tr));
     draw_outline(&mut sheet, &outline, false);
     let span = [u0 - MARK_REACH_M, v0, u1 + MARK_REACH_M, v1];
     add_levels(&mut sheet, opts, hull.keel, 1.0, span);
@@ -1061,13 +1077,14 @@ pub fn profile_template(
             .push(mark_label(at, Anchor::Middle, number.to_string()));
     }
     add_title(&mut sheet, ((u0 + u1) / 2.0, (v0 + v1) / 2.0));
+    sheet.notes.push(tr.s(Key::TemplatesNoteProfile).into());
+    sheet.notes.push(skin_note(skin, tr));
+    sheet.notes.extend(measure_notes(&outline, tr));
     sheet
         .notes
-        .push("Profile on the centreline, bow to the right".into());
-    sheet.notes.push(skin_note(skin));
-    sheet.notes.extend(measure_notes(&outline));
-    sheet.notes.extend(outline.warnings.iter().cloned());
+        .extend(outline.warnings.iter().map(|w| w.render(tr)));
     Some(Template {
+        name,
         sheet,
         x: None,
         face: None,
@@ -1088,6 +1105,7 @@ pub fn transom_template(
     transom: &Transom,
     opts: &TemplateOptions,
 ) -> Option<Template> {
+    let tr = Tr::new(opts.locale);
     let rake = transom.rake_deg;
     if !rake.is_finite() || rake.abs() > MAX_TRANSOM_RAKE_DEG {
         return None;
@@ -1098,9 +1116,10 @@ pub fn transom_template(
         return None;
     }
     let skin = skin_of(opts);
-    let outline = outline(&section, skin, None, "transom");
+    let outline = outline(&section, skin, None, Key::TemplatesPlaneTransom);
     let [u0, v0, u1, v1] = outline.bounds;
-    let mut sheet = Sheet::new("Transom");
+    let name = Msg::new(Key::TemplatesSheetTransom);
+    let mut sheet = Sheet::new(name.render(tr));
     let half_breadth_m = draw_outline(&mut sheet, &outline, opts.half);
     let left = if opts.half {
         -MARK_REACH_M
@@ -1123,24 +1142,28 @@ pub fn transom_template(
         (u0 + u1) / 2.0
     };
     add_title(&mut sheet, (middle, (v0 + v1) / 2.0));
-    sheet.notes.push(format!(
-        "Transom at x = {}, top raked {rake:.1}° aft",
-        units::length(transom.x, opts.imperial)
+    let x_str = units::length(transom.x, opts.imperial);
+    let rake_str = format!("{rake:.1}");
+    sheet.notes.push(tr.fmt(
+        Key::TemplatesNoteTransomAt,
+        &[("x", &x_str), ("rake", &rake_str)],
     ));
-    sheet.notes.push(skin_note(skin));
-    sheet.notes.push(
-        "Cut 1 mm forward of the plane given: a plane lying in the transom face has no section"
-            .into(),
-    );
+    sheet.notes.push(skin_note(skin, tr));
     sheet
         .notes
-        .push("Heights are measured up the slope of the transom, from the baseline".into());
-    sheet.notes.extend(measure_notes(&outline));
+        .push(tr.s(Key::TemplatesNoteTransomShift).into());
+    sheet
+        .notes
+        .push(tr.s(Key::TemplatesNoteTransomSlope).into());
+    sheet.notes.extend(measure_notes(&outline, tr));
     if opts.half {
-        sheet.notes.push(HALF_NOTE.into());
+        sheet.notes.push(tr.s(Key::TemplatesNoteHalf).into());
     }
-    sheet.notes.extend(outline.warnings.iter().cloned());
+    sheet
+        .notes
+        .extend(outline.warnings.iter().map(|w| w.render(tr)));
     Some(Template {
+        name,
         sheet,
         x: Some(transom.x),
         face: None,
@@ -1175,6 +1198,8 @@ pub struct SetOptions {
     pub transom: Option<Transom>,
     /// Add imperial readings beside the metric ones.
     pub imperial: bool,
+    /// Display locale for labels, sheet names, notes, and warnings.
+    pub locale: Locale,
 }
 
 impl Default for SetOptions {
@@ -1189,6 +1214,7 @@ impl Default for SetOptions {
             profile: false,
             transom: None,
             imperial: false,
+            locale: Locale::En,
         }
     }
 }
@@ -1196,8 +1222,8 @@ impl Default for SetOptions {
 /// One line of a set's summary.
 #[derive(Clone, Debug, Serialize)]
 pub struct TemplateRow {
-    /// The sheet's name.
-    pub sheet: String,
+    /// The sheet's name, in English in JSON.
+    pub sheet: Msg,
     /// Where along the hull it is, for a station or a transom.
     pub x: Option<f64>,
     /// The cut line's largest distance from the centreline, in metres.
@@ -1220,7 +1246,7 @@ pub struct TemplateSet {
     /// One summary line for each sheet.
     pub rows: Vec<TemplateRow>,
     /// Every sheet's warnings, each starting with its sheet's name, and what was skipped.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Msg>,
 }
 
 /// The patterns for `surface`: a mould at each station, then the profile and the transom when
@@ -1258,6 +1284,7 @@ pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet,
             ));
         }
     }
+    let tr = Tr::new(opts.locale);
     let positions = station_positions(&hull, &opts.stations)?;
     let template_opts = TemplateOptions {
         skin_m: opts.skin_m,
@@ -1269,11 +1296,12 @@ pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet,
             .unwrap_or_else(|| crate::offsets::default_waterlines(&hull, 6)),
         dwl_m: Some(surface.settings.draft).filter(|d| d.is_finite() && *d > 0.0),
         imperial: opts.imperial,
+        locale: opts.locale,
     };
     let name = surface.settings.name.trim();
     let mut set = TemplateSet {
         title: if name.is_empty() {
-            "Untitled hull".into()
+            tr.s(Key::BuilderUntitledHull).into()
         } else {
             name.to_owned()
         },
@@ -1282,9 +1310,12 @@ pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet,
         warnings: Vec::new(),
     };
     let add = |set: &mut TemplateSet, template: Template| {
-        let name = &template.sheet.name;
-        set.warnings
-            .extend(template.warnings.iter().map(|w| format!("{name}: {w}")));
+        let name = &template.name;
+        set.warnings.extend(template.warnings.iter().map(|w| {
+            Msg::new(Key::TemplatesWarnOnSheet)
+                .arg_msg("sheet", name.clone())
+                .arg_msg("warning", w.clone())
+        }));
         set.rows.push(TemplateRow {
             sheet: name.clone(),
             x: template.x,
@@ -1302,10 +1333,13 @@ pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet,
                 cut_at.push((i + 1, *x));
                 add(&mut set, template);
             }
-            None => set.warnings.push(format!(
-                "Station {}: the plane at x = {x:.3} m cuts nothing and was skipped",
-                i + 1
-            )),
+            None => {
+                set.warnings.push(
+                    Msg::new(Key::TemplatesWarnStationSkipped)
+                        .arg("index", i + 1)
+                        .arg("x", format!("{x:.3}")),
+                );
+            }
         }
     }
     if set.sheets.is_empty() {
@@ -1319,16 +1353,18 @@ pub fn template_set(surface: &Surface, opts: &SetOptions) -> Result<TemplateSet,
             Some(template) => add(&mut set, template),
             None => set
                 .warnings
-                .push("Profile: the centre plane cuts nothing; the profile was skipped".into()),
+                .push(Msg::new(Key::TemplatesWarnProfileSkipped)),
         }
     }
     if let Some(transom) = opts.transom {
         match transom_template(&hull, &transom, &template_opts) {
             Some(template) => add(&mut set, template),
-            None => set.warnings.push(format!(
-                "Transom: the transom plane at x = {:.3} m cuts nothing and was skipped",
-                transom.x
-            )),
+            None => {
+                set.warnings.push(
+                    Msg::new(Key::TemplatesWarnTransomSkipped)
+                        .arg("x", format!("{:.3}", transom.x)),
+                );
+            }
         }
     }
     Ok(set)
@@ -1419,25 +1455,22 @@ pub fn write(set: &TemplateSet, format: Format, setup: &PageSetup) -> Result<Wri
 }
 
 /// The note that says what the cut line is.
-pub(crate) fn skin_note(skin_m: f64) -> String {
+pub(crate) fn skin_note(skin_m: f64, tr: Tr) -> String {
     if skin_m > 0.0 {
-        format!(
-            "Mould line {} inside the hull surface",
-            units::mm_tenths(skin_m)
-        )
+        let skin = units::mm_tenths(skin_m);
+        tr.fmt(Key::TemplatesNoteSkinDeducted, &[("skin", &skin)])
     } else {
-        "Mould line is the hull surface: no skin deducted".into()
+        tr.s(Key::TemplatesNoteSkinNone).into()
     }
 }
 
 /// The notes that say how the surface meets the plane and how coarse the section is.
-pub(crate) fn measure_notes(outline: &Outline) -> [String; 2] {
+pub(crate) fn measure_notes(outline: &Outline, tr: Tr) -> [String; 2] {
+    let deg = format!("{:.1}", outline.max_bevel_deg);
+    let mm = units::millimetres(outline.longest_segment_m);
     [
-        format!("Largest bevel {:.1}°", outline.max_bevel_deg),
-        format!(
-            "Longest straight segment {} mm",
-            units::millimetres(outline.longest_segment_m)
-        ),
+        tr.fmt(Key::TemplatesNoteLargestBevel, &[("deg", &deg)]),
+        tr.fmt(Key::TemplatesNoteLongestSegment, &[("mm", &mm)]),
     ]
 }
 
@@ -1621,6 +1654,10 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+
+    fn english(warnings: &[Msg]) -> Vec<String> {
+        warnings.iter().map(ToString::to_string).collect()
+    }
 
     fn opts(skin: f64) -> TemplateOptions {
         TemplateOptions {
@@ -2160,7 +2197,7 @@ mod tests {
         let t = station_template(&tube(0.005, 0.005, 1.0, 64), 0.5, 1, 1, &opts(0.012)).unwrap();
         let warning =
             "skin is thicker than the hull's local radius here: the mould line crosses itself";
-        assert_eq!(t.warnings, [warning]);
+        assert_eq!(english(&t.warnings), [warning]);
         assert!(
             t.sheet.notes.iter().any(|n| n == warning),
             "{:?}",
@@ -2182,7 +2219,7 @@ mod tests {
         let hull = tube(1.0, 0.0, 0.1, 64);
         let t = station_template(&hull, 0.05, 1, 1, &opts(0.01)).unwrap();
         assert_eq!(
-            t.warnings,
+            english(&t.warnings),
             ["64 segments are too oblique to the station plane for a reliable deduction"]
         );
         for (u, v) in cut_points(&t) {
@@ -2330,6 +2367,34 @@ mod tests {
         let mut surface = crate::demo::demo_hull(true);
         surface.settings.name = "Kayık".into();
         surface
+    }
+
+    /// A Turkish set draws Turkish sheet names and notes; its summary and warnings stay
+    /// English in JSON, as `--json` and the MCP replies promise.
+    #[test]
+    fn a_turkish_set_names_sheets_in_turkish_and_summarizes_in_english() {
+        let o = SetOptions {
+            stations: StationChoice::At(vec![1.0, 999.0]),
+            skin_m: 0.05,
+            locale: Locale::Tr,
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &o).unwrap();
+        assert_eq!(set.sheets[0].name, "Posta 1");
+        let json = serde_json::to_value(&set.rows).unwrap();
+        assert_eq!(json[0]["sheet"], "Station 1");
+        let warnings = serde_json::to_value(&set.warnings).unwrap();
+        let skipped = warnings
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(skipped.starts_with("Station 2: "), "{skipped}");
+        let tr = Tr::new(Locale::Tr);
+        let shown = set.warnings.last().unwrap().render(tr);
+        assert!(shown.starts_with("Posta 2: "), "{shown}");
     }
 
     /// Closed form: a 10 x 4 x 2 box cut at y = 0 is a 10 x 2 rectangle; a 10 mm skin leaves
@@ -2502,7 +2567,7 @@ mod tests {
             ("Profile", "Transom")
         );
         assert_eq!(set.rows.len(), 13);
-        assert_eq!(set.rows[11].sheet, "Profile");
+        assert_eq!(set.rows[11].sheet.to_string(), "Profile");
         let json = serde_json::to_value(&set.rows[0]).unwrap();
         assert_eq!(json["sheet"], "Station 1");
         assert_eq!(json["face"], "aft");
@@ -2529,7 +2594,7 @@ mod tests {
         assert!(
             set.warnings
                 .iter()
-                .any(|w| w.contains("999.000 m") && w.contains("skipped")),
+                .any(|w| w.to_string().contains("999.000 m") && w.to_string().contains("skipped")),
             "{:?}",
             set.warnings
         );
@@ -2551,7 +2616,7 @@ mod tests {
         assert!(
             set.warnings
                 .iter()
-                .any(|w| w.contains("transom") && w.contains("skipped")),
+                .any(|w| w.to_string().contains("transom") && w.to_string().contains("skipped")),
             "{:?}",
             set.warnings
         );
@@ -2813,5 +2878,73 @@ mod tests {
         // At full size on A4 a 12 m hull's stations are a few hundred pages, which is allowed.
         let full = crate::sheet::page_count(&set.sheets, &PageSetup::default());
         assert!(full > 20 && full < crate::sheet::MAX_TILED_PAGES, "{full}");
+    }
+
+    #[test]
+    fn turkish_templates_pdf_svg_and_dxf_localize_all_outputs() {
+        let opts = SetOptions {
+            stations: StationChoice::Count(3),
+            skin_m: 0.006,
+            half: true,
+            profile: true,
+            transom: Some(Transom {
+                x: 0.3,
+                rake_deg: 10.0,
+            }),
+            locale: Locale::Tr,
+            ..SetOptions::default()
+        };
+        let set = template_set(&demo(), &opts).unwrap();
+        let names: Vec<&str> = set.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Posta 1", "Posta 2", "Posta 3", "Profil", "Ayna kıç"]
+        );
+
+        let setup = PageSetup {
+            scale: 0.1,
+            locale: Locale::Tr,
+            ..PageSetup::default()
+        };
+        let tiled = write(&set, Format::PdfTiled, &setup).unwrap();
+        assert!(tiled.missing.is_empty(), "{:?}", tiled.missing);
+        let shown = crate::pdf::shown_text(&tiled.bytes);
+        for want in [
+            "Posta 1",
+            "Profil",
+            "Ayna kıç",
+            "Ölçek 1:10",
+            "Kalıp çizgisi tekne yüzeyinin 6.0 mm içinde",
+        ] {
+            assert!(shown.iter().any(|t| t == want), "{want} in {shown:?}");
+        }
+
+        let single = write(&set, Format::PdfSingle, &setup).unwrap();
+        assert!(single.missing.is_empty(), "{:?}", single.missing);
+        let p0 = crate::pdf::page_text(&single.bytes, 0);
+        assert!(p0.iter().any(|t| t == "Ölçek 1:10"), "{p0:?}");
+        assert!(
+            p0.iter()
+                .any(|t| t == "Kalıp çizgisi tekne yüzeyinin 6.0 mm içinde"),
+            "{p0:?}"
+        );
+
+        let svg = String::from_utf8(write(&set, Format::Svg, &setup).unwrap().bytes).unwrap();
+        for want in ["Posta 1", "Yarım kalıp", "Küpeşte"] {
+            assert!(svg.contains(want), "missing `{want}` in SVG");
+        }
+
+        let dxf = String::from_utf8(write(&set, Format::Dxf, &setup).unwrap().bytes).unwrap();
+        for layer in ["CUT", "MARK", "REFERENCE", "TEXT"] {
+            assert!(dxf.contains(layer), "missing DXF layer {layer}");
+        }
+        assert!(
+            dxf.contains("Ayna k\\U+0131\\U+00E7"),
+            "missing escaped Turkish transom"
+        );
+        assert!(
+            dxf.contains("Kal\\U+0131p"),
+            "missing escaped Turkish skin note"
+        );
     }
 }

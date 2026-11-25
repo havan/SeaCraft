@@ -25,6 +25,25 @@ pub const STORAGE_KEY: &str = "recent_files";
 /// The storage key the last connected-editing choice is kept under.
 pub const CONNECTED_STORAGE_KEY: &str = "connected_edit";
 
+/// The storage key the preferred display language is kept under (`"auto"`, `"en"`, `"tr"`).
+pub const LANGUAGE_STORAGE_KEY: &str = "language";
+
+/// Read the saved language preference from `storage`, defaulting to [`LanguagePref::Auto`].
+pub fn load_language_pref(storage: &dyn eframe::Storage) -> seacraft_core::i18n::LanguagePref {
+    storage
+        .get_string(LANGUAGE_STORAGE_KEY)
+        .map(|s| seacraft_core::i18n::LanguagePref::parse(&s))
+        .unwrap_or_default()
+}
+
+/// Keep the language preference in `storage` (the caller flushes).
+pub fn save_language_pref(
+    pref: seacraft_core::i18n::LanguagePref,
+    storage: &mut dyn eframe::Storage,
+) {
+    storage.set_string(LANGUAGE_STORAGE_KEY, pref.as_str().to_owned());
+}
+
 fn default_preset_name() -> String {
     seacraft_core::connected::DEFAULT_PRESET.to_owned()
 }
@@ -362,10 +381,15 @@ pub enum RecentAction {
 
 /// The items of File > Open recent (inside the submenu): the files, most
 /// recent first, missing ones greyed with a tooltip, and Clear list.
-pub fn recent_menu(ui: &mut egui::Ui, entries: &[RecentEntry]) -> RecentAction {
+pub fn recent_menu(
+    ui: &mut egui::Ui,
+    entries: &[RecentEntry],
+    tr: seacraft_core::i18n::Tr,
+) -> RecentAction {
+    use seacraft_core::i18n::Key;
     let mut action = RecentAction::None;
     if entries.is_empty() {
-        ui.label(egui::RichText::new("No recent files").color(theme::TEXT_MUTED));
+        ui.label(egui::RichText::new(tr.s(Key::RecentEmpty)).color(theme::TEXT_MUTED));
     }
     for (i, entry) in entries.iter().enumerate() {
         let name = format!("{}  {}", i + 1, entry.label());
@@ -382,12 +406,15 @@ pub fn recent_menu(ui: &mut egui::Ui, entries: &[RecentEntry]) -> RecentAction {
                 action = RecentAction::Open(entry.path.clone());
             }
         } else {
-            response.on_disabled_hover_text(format!("{full}\nThe file is missing."));
+            response.on_disabled_hover_text(tr.fmt(Key::RecentMissingFile, &[("path", &full)]));
         }
     }
     ui.separator();
     if ui
-        .add_enabled(!entries.is_empty(), egui::Button::new("Clear list"))
+        .add_enabled(
+            !entries.is_empty(),
+            egui::Button::new(tr.s(Key::RecentClearList)),
+        )
         .clicked()
     {
         action = RecentAction::Clear;
@@ -542,6 +569,51 @@ mod tests {
         }
         let reloaded = JsonFileStorage::open(&path);
         assert_eq!(ConnectedChoice::load(&reloaded), choice);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn old_storage_without_language_defaults_to_auto() {
+        let path = temp_storage_path("lang-old");
+        std::fs::write(&path, r#"{"recent_files": "[]"}"#).unwrap();
+        let storage = JsonFileStorage::open(&path);
+        assert_eq!(
+            load_language_pref(&storage),
+            seacraft_core::i18n::LanguagePref::Auto
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn invalid_language_falls_back_to_auto() {
+        let path = temp_storage_path("lang-invalid");
+        std::fs::write(&path, r#"{"language": "xx_UNKNOWN"}"#).unwrap();
+        let storage = JsonFileStorage::open(&path);
+        assert_eq!(
+            load_language_pref(&storage),
+            seacraft_core::i18n::LanguagePref::Auto
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn language_pref_round_trips_through_storage() {
+        use seacraft_core::i18n::{LanguagePref, Locale};
+
+        let path = temp_storage_path("lang-roundtrip");
+        for pref in [
+            LanguagePref::Fixed(Locale::Tr),
+            LanguagePref::Fixed(Locale::En),
+            LanguagePref::Auto,
+        ] {
+            {
+                let mut storage = JsonFileStorage::open(&path);
+                save_language_pref(pref, &mut storage);
+                eframe::Storage::flush(&mut storage);
+            }
+            let reloaded = JsonFileStorage::open(&path);
+            assert_eq!(load_language_pref(&reloaded), pref);
+        }
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

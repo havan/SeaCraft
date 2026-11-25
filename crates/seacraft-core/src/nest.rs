@@ -5,6 +5,7 @@
 //! its length), never a quarter turn, so a plywood piece keeps its grain along the sheet. The
 //! search is deterministic and good, not optimal.
 
+use crate::i18n::{Key, Msg};
 use serde::Serialize;
 
 /// A point, metres.
@@ -78,7 +79,7 @@ pub struct Placement {
 pub struct Packing {
     pub bins: Vec<Bin>,
     pub placements: Vec<Placement>,
-    pub unplaced: Vec<(usize, String)>,
+    pub unplaced: Vec<(usize, Msg)>,
 }
 
 fn turn(outline: &[Pt], end_for_end: bool, turned_over: bool) -> Vec<Pt> {
@@ -470,16 +471,12 @@ fn lowest_spot(shape: &Shape, bin: Bin, placed: &[Placed], gap: f64, search_gap:
 /// Places `items` on bins, largest first. `new_bin(length)` gives the bin to open for an item
 /// of that length (its turned box's) that fits no open bin, or `None` when no bin is long
 /// enough. `gap` is kept between items and from every bin edge.
+/// Each reason not placed is a [`Msg`], shown in the reader's language.
 pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> Packing {
     let mut out = Packing::default();
     if !gap.is_finite() || gap < 0.0 {
         out.unplaced = (0..items.len())
-            .map(|i| {
-                (
-                    i,
-                    "the gap between pieces must be a length of 0 or more".to_string(),
-                )
-            })
+            .map(|i| (i, Msg::new(Key::PanelsNestErrGap)))
             .collect();
         return out;
     }
@@ -495,7 +492,7 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                 .iter()
                 .any(|p| !p.0.is_finite() || !p.1.is_finite())
         {
-            out.unplaced.push((i, "its outline is not a shape".into()));
+            out.unplaced.push((i, Msg::new(Key::PanelsNestErrNotShape)));
             continue;
         }
         let shapes = shapes(item);
@@ -533,12 +530,10 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
             let length = shapes[0].length;
             let width = shapes[0].width;
             let Some(bin) = new_bin(length) else {
+                let len_mm = crate::units::millimetres(length);
                 out.unplaced.push((
                     i,
-                    format!(
-                        "longer than the longest sheet or blank ({} mm)",
-                        crate::units::millimetres(length)
-                    ),
+                    Msg::new(Key::PanelsNestErrLongerMax).arg("length", len_mm),
                 ));
                 continue;
             };
@@ -547,18 +542,17 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                 || bin.length <= 0.0
                 || bin.width <= 0.0
             {
-                out.unplaced
-                    .push((i, "the sheet or blank has no usable size".into()));
+                out.unplaced.push((i, Msg::new(Key::PanelsNestErrNoSize)));
                 continue;
             }
             if bin.width - 2.0 * gap <= 0.0 || width > bin.width - 2.0 * gap + 1e-9 {
+                let w_mm = crate::units::millimetres(width);
+                let u_mm = crate::units::millimetres((bin.width - 2.0 * gap).max(0.0));
                 out.unplaced.push((
                     i,
-                    format!(
-                        "wider than the sheet less the gaps ({} mm > {} mm)",
-                        crate::units::millimetres(width),
-                        crate::units::millimetres((bin.width - 2.0 * gap).max(0.0))
-                    ),
+                    Msg::new(Key::PanelsNestErrWider)
+                        .arg("width", w_mm)
+                        .arg("usable", u_mm),
                 ));
                 continue;
             }
@@ -569,22 +563,18 @@ pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> P
                     spot = Some((out.bins.len() - 1, found));
                 }
                 Ok(None) => {
+                    let len_mm = crate::units::millimetres(length);
+                    let u_mm = crate::units::millimetres((bin.length - 2.0 * gap).max(0.0));
                     out.unplaced.push((
                         i,
-                        format!(
-                            "longer than the sheet or blank less the gaps ({} mm > {} mm)",
-                            crate::units::millimetres(length),
-                            crate::units::millimetres((bin.length - 2.0 * gap).max(0.0))
-                        ),
+                        Msg::new(Key::PanelsNestErrLongerBin)
+                            .arg("length", len_mm)
+                            .arg("usable", u_mm),
                     ));
                     continue;
                 }
                 Err(()) => {
-                    out.unplaced.push((
-                        i,
-                        "the sheet or blank is too large to search (exceeds nesting search limit)"
-                            .into(),
-                    ));
+                    out.unplaced.push((i, Msg::new(Key::PanelsNestErrTooLarge)));
                     continue;
                 }
             }
@@ -800,7 +790,7 @@ mod tests {
         assert_eq!(p.unplaced.len(), 1);
         assert_eq!(p.unplaced[0].0, 0);
         assert!(
-            p.unplaced[0].1.contains("wider than"),
+            p.unplaced[0].1.to_string().contains("wider than"),
             "{}",
             p.unplaced[0].1
         );
@@ -833,7 +823,7 @@ mod tests {
         assert_eq!(p.unplaced.len(), 1);
         assert_eq!(p.unplaced[0].0, 0);
         assert!(
-            p.unplaced[0].1.contains("longer than"),
+            p.unplaced[0].1.to_string().contains("longer than"),
             "{}",
             p.unplaced[0].1
         );
@@ -1004,7 +994,7 @@ mod tests {
         assert!(p.placements.is_empty());
         assert_eq!(p.unplaced.len(), 1);
         assert!(
-            p.unplaced[0].1.contains("too large to search"),
+            p.unplaced[0].1.to_string().contains("too large to search"),
             "{}",
             p.unplaced[0].1
         );

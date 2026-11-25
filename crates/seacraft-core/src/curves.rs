@@ -186,6 +186,12 @@ fn chart_frame(out: &mut String, title: &str, w: f64, h: f64) {
 /// submerged section area on the y axis, with the prismatic coefficient and
 /// maximum area annotated.
 pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
+    sac_svg_tr(sac, title, crate::i18n::Tr::new(crate::i18n::Locale::En))
+}
+
+/// Localized sectional area curve SVG chart.
+pub fn sac_svg_tr(sac: &[SectionArea], title: &str, tr: crate::i18n::Tr) -> String {
+    use crate::i18n::Key;
     let w = 900.0;
     let h = 480.0;
     let (ml, mr, mt, mb) = (72.0, 24.0, 42.0, 56.0);
@@ -200,7 +206,8 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
     if sac.len() < 2 {
         let _ = writeln!(
             out,
-            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">no section areas</text>"
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">{}</text>",
+            esc(tr.s(Key::CurvesSacEmpty))
         );
         out.push_str("</svg>\n");
         return out;
@@ -290,7 +297,8 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
 
     let mut caption = format!("A_max {amax:.3} m²");
     if let Some(cp) = prismatic_from_sac(sac) {
-        let _ = write!(caption, "   Cp (area curve) {cp:.4}");
+        let cp_txt = tr.fmt(Key::CurvesSacCpCaption, &[("cp", &format!("{cp:.4}"))]);
+        let _ = write!(caption, "   {}", esc(&cp_txt));
     }
     let _ = writeln!(
         out,
@@ -305,6 +313,16 @@ pub fn sac_svg(sac: &[SectionArea], title: &str) -> String {
 /// Bonjean curves as a standalone SVG: draft up the vertical axis, section
 /// area along the horizontal, one polyline per station.
 pub fn bonjean_svg(bonjean: &Bonjean, title: &str) -> String {
+    bonjean_svg_tr(
+        bonjean,
+        title,
+        crate::i18n::Tr::new(crate::i18n::Locale::En),
+    )
+}
+
+/// Localized Bonjean curves standalone SVG.
+pub fn bonjean_svg_tr(bonjean: &Bonjean, title: &str, tr: crate::i18n::Tr) -> String {
+    use crate::i18n::Key;
     let w = 860.0;
     let h = 560.0;
     let (ml, mr, mt, mb) = (72.0, 120.0, 42.0, 56.0);
@@ -319,7 +337,8 @@ pub fn bonjean_svg(bonjean: &Bonjean, title: &str) -> String {
     if bonjean.drafts_m.len() < 2 || bonjean.sections.is_empty() {
         let _ = writeln!(
             out,
-            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">no Bonjean data</text>"
+            "<text class=\"label\" x=\"{ml:.0}\" y=\"80\">{}</text>",
+            esc(tr.s(Key::CurvesBonjeanEmpty))
         );
         out.push_str("</svg>\n");
         return out;
@@ -404,9 +423,10 @@ pub fn bonjean_svg(bonjean: &Bonjean, title: &str) -> String {
     );
     let _ = writeln!(
         out,
-        "<text class=\"label\" x=\"18\" y=\"{:.1}\" text-anchor=\"middle\" transform=\"rotate(-90 18 {:.1})\">draft [m]</text>",
+        "<text class=\"label\" x=\"18\" y=\"{:.1}\" text-anchor=\"middle\" transform=\"rotate(-90 18 {:.1})\">{}</text>",
         mt + (h - mt - mb) / 2.0,
-        mt + (h - mt - mb) / 2.0
+        mt + (h - mt - mb) / 2.0,
+        esc(tr.s(Key::CurvesBonjeanDraftAxis))
     );
 
     out.push_str("</svg>\n");
@@ -645,5 +665,35 @@ mod tests {
             "SAC integral {volume:.3} vs displacement {:.3}",
             result.volume_m3
         );
+    }
+
+    #[test]
+    fn turkish_svgs_localize_labels_and_empty_states() {
+        let tr = crate::i18n::Tr::new(crate::i18n::Locale::Tr);
+        let empty_sac = sac_svg_tr(&[], "Boş SAC", tr);
+        assert!(empty_sac.contains("kesit alanı yok"), "{empty_sac}");
+
+        let empty_bj = bonjean_svg_tr(
+            &Bonjean {
+                drafts_m: vec![],
+                sections: vec![],
+            },
+            "Boş Bonjean",
+            tr,
+        );
+        assert!(empty_bj.contains("Bonjean verisi yok"), "{empty_bj}");
+
+        let sac: Vec<SectionArea> = [(0.0, 0.0), (5.0, 1.0), (10.0, 0.2)]
+            .iter()
+            .map(|&(x, area)| SectionArea { x, area })
+            .collect();
+        let sac_tr = sac_svg_tr(&sac, "Kesit Alanları", tr);
+        assert!(sac_tr.contains("Cp (alan eğrisi)"), "{sac_tr}");
+
+        let s = barge(10.0, 4.0, 3.0);
+        let hull = Hull::new(&s, LEVEL);
+        let bj = bonjean(&hull, 5, &draft_range(0.3, 2.4, 4));
+        let bj_tr = bonjean_svg_tr(&bj, "Bonjean Eğrileri", tr);
+        assert!(bj_tr.contains("su çekimi [m]"), "{bj_tr}");
     }
 }

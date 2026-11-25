@@ -26,6 +26,8 @@ pub struct LinesplanOptions {
     /// Spikes are clamped to 12 % of the view so a sharp bilge cannot swamp the
     /// drawing.
     pub comb_scale: f64,
+    /// Language for view titles, captions, and annotations (DXF layer names stay English).
+    pub locale: crate::i18n::Locale,
 }
 
 impl Default for LinesplanOptions {
@@ -38,6 +40,7 @@ impl Default for LinesplanOptions {
             mode: SubdivisionMode::Loop,
             combs: false,
             comb_scale: 0.6,
+            locale: crate::i18n::Locale::En,
         }
     }
 }
@@ -528,6 +531,8 @@ fn svg_path(c: &Curve, map: &dyn Fn(f64, f64) -> (f64, f64)) -> String {
 
 /// Render the linesplan as a standalone SVG document.
 pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
+    use crate::i18n::{Key, Tr};
+    let tr = Tr::new(opts.locale);
     let cut = cut_all(surface, opts);
     let (min, max) = (cut.min, cut.max);
     let l = (max.x - min.x).max(0.1);
@@ -554,11 +559,8 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         out,
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.0}\" height=\"{height:.0}\" viewBox=\"0 0 {width:.0} {height:.0}\">"
     );
-    let _ = writeln!(
-        out,
-        "<title>{} - linesplan</title>",
-        html_escape(&surface.settings.name)
-    );
+    let title = tr.fmt(Key::LinesplanSvgTitle, &[("name", &surface.settings.name)]);
+    let _ = writeln!(out, "<title>{}</title>", html_escape(&title));
     out.push_str("<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>\n");
     out.push_str("<style>\n");
     out.push_str(".frame{fill:none;stroke:#111;stroke-width:0.8}\n");
@@ -572,12 +574,20 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     out.push_str(".title{font:13px ui-sans-serif,system-ui,sans-serif;fill:#111}\n");
     out.push_str("</style>\n");
 
+    let comb_label = || {
+        html_escape(&tr.fmt(
+            Key::LinesplanSvgCombs,
+            &[("scale", &format!("{}", opts.comb_scale))],
+        ))
+    };
+
     // ---- profile (buttocks) ------------------------------------------
     let _ = writeln!(out, "<g id=\"profile\">");
     let _ = writeln!(
         out,
-        "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">Profile - buttocks</text>",
-        top - 12.0
+        "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">{}</text>",
+        top - 12.0,
+        html_escape(tr.s(Key::LinesplanSvgProfile))
     );
     let _ = writeln!(
         out,
@@ -608,9 +618,9 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         if !combs.is_empty() {
             let _ = writeln!(
                 out,
-                "<text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">combs: 1 m⁻¹ = {} m</text>",
+                "<text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">{}</text>",
                 top + dw + 26.0,
-                opts.comb_scale
+                comb_label()
             );
         }
     }
@@ -630,8 +640,9 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     let _ = writeln!(out, "<g id=\"plan\">");
     let _ = writeln!(
         out,
-        "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">Plan - waterlines</text>",
-        plan_y - 12.0
+        "<text class=\"title\" x=\"{margin:.1}\" y=\"{:.1}\">{}</text>",
+        plan_y - 12.0,
+        html_escape(tr.s(Key::LinesplanSvgPlan))
     );
     let _ = writeln!(
         out,
@@ -661,9 +672,9 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         if !combs.is_empty() {
             let _ = writeln!(
                 out,
-                "<text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">combs: 1 m⁻¹ = {} m</text>",
+                "<text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">{}</text>",
                 plan_y + bw + 26.0,
-                opts.comb_scale
+                comb_label()
             );
         }
     }
@@ -685,8 +696,9 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
     let _ = writeln!(out, "<g id=\"bodyplan\">");
     let _ = writeln!(
         out,
-        "<text class=\"title\" x=\"{body_x:.1}\" y=\"{:.1}\">Body plan - stations</text>",
-        plan_y - 12.0
+        "<text class=\"title\" x=\"{body_x:.1}\" y=\"{:.1}\">{}</text>",
+        plan_y - 12.0,
+        html_escape(tr.s(Key::LinesplanSvgBodyPlan))
     );
     let _ = writeln!(
         out,
@@ -720,24 +732,30 @@ pub fn svg(surface: &Surface, opts: LinesplanOptions) -> String {
         if !combs.is_empty() {
             let _ = writeln!(
                 out,
-                "<text class=\"label\" x=\"{body_x:.1}\" y=\"{:.1}\">combs: 1 m⁻¹ = {} m</text>",
+                "<text class=\"label\" x=\"{body_x:.1}\" y=\"{:.1}\">{}</text>",
                 plan_y + bw + 26.0,
-                opts.comb_scale
+                comb_label()
             );
         }
     }
     out.push_str("</g>\n");
 
     // Scale bar and captions.
+    let caption = tr.fmt(
+        Key::LinesplanSvgCaption,
+        &[
+            ("l", &format!("{l:.2}")),
+            ("b", &format!("{b:.2}")),
+            ("d", &format!("{d:.2}")),
+            ("m_per_px", &format!("{:.2}", l / lw)),
+            ("px", &format!("{}", lw.round() as i64)),
+        ],
+    );
     let _ = writeln!(
         out,
-        "<g id=\"captions\"><text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">L {:.2} m   B {:.2} m   D {:.2} m   {:.2} m per {} px</text>",
+        "<g id=\"captions\"><text class=\"label\" x=\"{margin:.1}\" y=\"{:.1}\">{}</text>",
         height - margin + 8.0,
-        l,
-        b,
-        d,
-        l / lw,
-        lw.round() as i64
+        html_escape(&caption)
     );
     out.push_str("</g>\n</svg>\n");
     out
@@ -810,9 +828,22 @@ pub fn dxf(surface: &Surface, opts: LinesplanOptions) -> String {
             },
         ));
     };
-    label(min.x, max.z + 2.0 * text_height, "PROFILE - buttocks");
-    label(min.x, plan_y0 - 2.0 * text_height, "PLAN - waterlines");
-    label(body_x0, max.z + 2.0 * text_height, "BODY PLAN - stations");
+    let tr = crate::i18n::Tr::new(opts.locale);
+    label(
+        min.x,
+        max.z + 2.0 * text_height,
+        tr.s(crate::i18n::Key::LinesplanDxfProfile),
+    );
+    label(
+        min.x,
+        plan_y0 - 2.0 * text_height,
+        tr.s(crate::i18n::Key::LinesplanDxfPlan),
+    );
+    label(
+        body_x0,
+        max.z + 2.0 * text_height,
+        tr.s(crate::i18n::Key::LinesplanDxfBodyPlan),
+    );
 
     // The two centrelines (ship y = 0) and the keel line.
     entities.push(DxfEntity::new(
@@ -1408,5 +1439,45 @@ mod tests {
         assert!(plain.buttocks.iter().all(|c| c.spikes.is_empty()));
         assert!(plain.waterlines.iter().all(|c| c.spikes.is_empty()));
         assert_eq!(plain.stations.len(), curves.stations.len());
+    }
+
+    #[test]
+    fn turkish_svg_and_dxf_localize_labels_keeping_cad_layers() {
+        let surface = crate::demo::demo_hull(false);
+        let opts = LinesplanOptions {
+            combs: true,
+            locale: crate::i18n::Locale::Tr,
+            ..Default::default()
+        };
+
+        let svg_tr = svg(&surface, opts);
+        assert!(svg_tr.contains(" - endaze resmi</title>"), "{svg_tr}");
+        assert!(svg_tr.contains("Profil - boyuna kesitler (bato hatları)"));
+        assert!(svg_tr.contains("Plan - su hatları"));
+        assert!(svg_tr.contains("Posta planı - postalar"));
+        assert!(svg_tr.contains("taraklar: 1 m⁻¹ ="));
+        assert!(svg_tr.contains("px başına"));
+
+        let dxf_tr = dxf(&surface, opts);
+        for layer in [
+            "Stations",
+            "Buttocks",
+            "Waterlines",
+            "Grid",
+            "Centerline",
+            "Waterplane",
+            "Stations 3D",
+            "Buttocks 3D",
+            "Waterlines 3D",
+            "Combs",
+        ] {
+            assert!(
+                dxf_tr.contains(&format!("\n{layer}\n")),
+                "CAD layer `{layer}` must stay English"
+            );
+        }
+        assert!(dxf_tr.contains("PROF\\U+0130L - boyuna kesitler"));
+        assert!(dxf_tr.contains("PLAN - su hatlar\\U+0131"));
+        assert!(dxf_tr.contains("POSTA PLANI - postalar"));
     }
 }

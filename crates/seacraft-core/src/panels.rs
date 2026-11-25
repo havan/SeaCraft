@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::flatten::{boundary_loops, clean, FlattenError};
+use crate::i18n::{Key, Locale, Msg, PluralCategory, Tr};
 use crate::math::Vec3;
 use crate::mesh::{ordered, Layer, Surface};
 use crate::pdf::Anchor;
@@ -70,10 +71,20 @@ pub struct Seam {
 impl Seam {
     /// `edge to Side`, `centreline` or `open edge`.
     pub fn name(&self) -> String {
+        self.name_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized form of [`Seam::name`].
+    pub fn name_tr(&self, tr: Tr) -> String {
+        self.name_msg().render(tr)
+    }
+
+    /// The name as a message, for output that renders it later (English in JSON).
+    pub fn name_msg(&self) -> Msg {
         match &self.mate {
-            Mate::Panel(p) => format!("edge to {p}"),
-            Mate::Centreline => "centreline".into(),
-            Mate::Open => "open edge".into(),
+            Mate::Panel(p) => Msg::new(Key::PanelsSeamEdgeTo).arg("panel", p),
+            Mate::Centreline => Msg::new(Key::PanelsSeamCentreline),
+            Mate::Open => Msg::new(Key::PanelsSeamOpen),
         }
     }
 }
@@ -160,7 +171,8 @@ impl FoundPanel {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Refusal {
     pub panel: String,
-    pub reason: String,
+    /// Why, in the reader's language when rendered; English in JSON.
+    pub reason: Msg,
 }
 
 /// The layers panels are made from when the user names none: those marked developable, or every
@@ -334,9 +346,7 @@ pub fn find_panels(
         if !one_way || !loops_on_edges {
             refused.push(Refusal {
                 panel: name,
-                reason: "its faces do not all face the same way: turn the faces of this layer so \
-                         they all face out"
-                    .into(),
+                reason: Msg::new(Key::PanelsRefuseWinding),
             });
             continue;
         }
@@ -371,11 +381,9 @@ pub fn find_panels(
             let p = mesh.verts[end];
             refused.push(Refusal {
                 panel: name,
-                reason: format!(
-                    "a crease ends inside the panel at x {:.2} m, z {:.2} m: carry the crease to \
-                     the panel's edge or split the layer there",
-                    p.x, p.z
-                ),
+                reason: Msg::new(Key::PanelsRefuseInnerCrease)
+                    .arg("x", format!("{:.2}", p.x))
+                    .arg("z", format!("{:.2}", p.z)),
             });
             continue;
         }
@@ -577,7 +585,7 @@ pub fn find_panels(
             };
             refused.push(Refusal {
                 panel: name,
-                reason: err.to_string(),
+                reason: err.msg(),
             });
             continue;
         }
@@ -624,7 +632,8 @@ impl Default for Limits {
 /// How one seam's flat length follows its 3D length.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SeamMeasure {
-    pub name: String,
+    /// The seam's name; English in JSON.
+    pub name: Msg,
     /// Largest |flat − 3D| cumulative length at the station ticks and the far end, measured from
     /// either end.
     pub drift_m: f64,
@@ -637,8 +646,8 @@ pub struct SeamMeasure {
 pub struct Mismatch {
     pub a: String,
     pub b: String,
-    /// The seam's name on panel `a`.
-    pub seam: String,
+    /// The seam's name on panel `a`; English in JSON.
+    pub seam: Msg,
     pub max_m: f64,
 }
 
@@ -818,7 +827,7 @@ pub(crate) fn measure_found(
 ) -> Result<FlatPanel, Refusal> {
     let flat = flat_pattern(&found).map_err(|e| Refusal {
         panel: found.name.clone(),
-        reason: e.to_string(),
+        reason: e.msg(),
     })?;
     let xy = flat.xy;
     let st = crate::flatten::strain(&found.verts, &found.tris, &xy);
@@ -827,15 +836,12 @@ pub(crate) fn measure_found(
         let Some(ids) = found.seam_local(seam) else {
             return Err(Refusal {
                 panel: found.name.clone(),
-                reason: format!(
-                    "its {} could not be followed on the panel's mesh, so it was not measured",
-                    seam.name()
-                ),
+                reason: Msg::new(Key::PanelsRefuseSeamUnfollowed).arg_msg("seam", seam.name_msg()),
             });
         };
         let (t3, tf) = ticks(&found.verts, &xy, &ids, stations);
         seams.push(SeamMeasure {
-            name: seam.name(),
+            name: seam.name_msg(),
             drift_m: drift_from_both_ends(&t3, &tf),
             length_3d_m: t3.last().copied().unwrap_or(0.0),
             length_flat_m: tf.last().copied().unwrap_or(0.0),
@@ -1080,7 +1086,7 @@ pub fn measure_panels(
                 mismatches.push(Mismatch {
                     a: pa.found.name.clone(),
                     b: pb.found.name.clone(),
-                    seam: sa.name(),
+                    seam: sa.name_msg(),
                     max_m: drift_from_both_ends(&fa, &fb),
                 });
             }
@@ -1100,6 +1106,16 @@ const SEAM_LABEL_INSET_M: f64 = 0.015;
 /// Wording every panel sheet carries.
 pub const THICKNESS_NOTE: &str = "Developed on the modelled surface: no plywood thickness allowed";
 pub const MEASURED_NOTE: &str = "Measured against the model; not a bending test of plywood.";
+
+/// Localized form of [`THICKNESS_NOTE`].
+pub fn thickness_note(locale: Locale) -> &'static str {
+    Tr::new(locale).s(Key::PanelsNoteThickness)
+}
+
+/// Localized form of [`MEASURED_NOTE`].
+pub fn measured_note(locale: Locale) -> &'static str {
+    Tr::new(locale).s(Key::PanelsNoteMeasured)
+}
 
 /// A point where a station plane crosses the panel: its key and its flat position.
 type PlanePoint = ((usize, usize), (f64, f64));
@@ -1230,27 +1246,46 @@ fn reading_angle(d: (f64, f64)) -> f64 {
 
 /// The first note of a panel that does not lie flat.
 pub fn failing_heading(measures: &Measures, limits: Limits) -> String {
-    let (drift, seam) = measures
-        .worst_seam()
-        .map_or((0.0, String::from("edge")), |s| (s.drift_m, s.name.clone()));
-    let mut heading = format!(
-        "Does not lie flat: must stretch {:.2} % (limit {:.1} %), seam drift {:.1} mm along the {} (limit {:.0} mm)",
-        measures.rms_stretch * 100.0,
-        limits.rms_stretch * 100.0,
-        drift * 1000.0,
-        seam,
-        limits.seam_drift_m * 1000.0
+    failing_heading_tr(measures, limits, Tr::new(Locale::En))
+}
+
+/// Localized form of [`failing_heading`].
+pub fn failing_heading_tr(measures: &Measures, limits: Limits, tr: Tr) -> String {
+    failing_heading_msg(measures, limits).render(tr)
+}
+
+/// [`failing_heading`] as a message, rendered in each reader's language.
+pub fn failing_heading_msg(measures: &Measures, limits: Limits) -> Msg {
+    let (drift, seam) = measures.worst_seam().map_or_else(
+        || (0.0, Msg::new(Key::PanelsSeamEdgeFallback)),
+        |s| (s.drift_m, s.name.clone()),
     );
-    if measures.unsettled_m.is_some() {
-        heading.push_str("; the flattening stopped at its limit before it settled");
-    }
-    heading
+    let unsettled = if measures.unsettled_m.is_some() {
+        Msg::new(Key::PanelsNoteFailingUnsettledSuffix)
+    } else {
+        Msg::Raw(String::new())
+    };
+    Msg::new(Key::PanelsNoteFailing)
+        .arg("rms", format!("{:.2}", measures.rms_stretch * 100.0))
+        .arg("rms_limit", format!("{:.1}", limits.rms_stretch * 100.0))
+        .arg("drift", format!("{:.1}", drift * 1000.0))
+        .arg_msg("seam", seam)
+        .arg(
+            "drift_limit",
+            format!("{:.0}", limits.seam_drift_m * 1000.0),
+        )
+        .arg_msg("unsettled", unsettled)
 }
 
 /// How far each of a panel's stitched edges differs from its mate's at the ticks, as a sheet
 /// note; `None` for a panel stitched to nothing. A mate measured apart from this panel (not in
 /// the set, or its edge not paired) is said to be not compared.
 pub fn mismatch_note(panel: &FlatPanel, mismatches: &[Mismatch]) -> Option<String> {
+    mismatch_note_tr(panel, mismatches, Tr::new(Locale::En))
+}
+
+/// Localized form of [`mismatch_note`].
+pub fn mismatch_note_tr(panel: &FlatPanel, mismatches: &[Mismatch], tr: Tr) -> Option<String> {
     let me = &panel.found.name;
     let mut mates: Vec<&str> = panel
         .found
@@ -1276,27 +1311,26 @@ pub fn mismatch_note(panel: &FlatPanel, mismatches: &[Mismatch]) -> Option<Strin
                 .fold(None, |w: Option<f64>, d| Some(w.map_or(d, |w| w.max(d))));
             match worst {
                 Some(d) => format!("{mate} {:.1} mm", d * 1000.0),
-                None => format!("{mate} not compared"),
+                None => tr.fmt(Key::PanelsNoteMismatchNotCompared, &[("mate", mate)]),
             }
         })
         .collect();
-    Some(format!(
-        "Against the mating edge, largest difference at the ticks: {}",
-        parts.join("; ")
-    ))
+    let joined = parts.join("; ");
+    Some(tr.fmt(Key::PanelsNoteMismatch, &[("parts", &joined)]))
 }
 
 /// What an unsettled flattening may still be off by, as a sheet note.
 pub fn unsettled_note(unsettled_m: f64) -> String {
+    unsettled_note_tr(unsettled_m, Tr::new(Locale::En))
+}
+
+/// Localized form of [`unsettled_note`].
+pub fn unsettled_note_tr(unsettled_m: f64, tr: Tr) -> String {
     if unsettled_m.is_finite() {
-        format!(
-            "Flattening stopped at its iteration limit: points may still move about {:.2} mm",
-            unsettled_m * 1000.0
-        )
+        let mm = format!("{:.2}", unsettled_m * 1000.0);
+        tr.fmt(Key::PanelsNoteUnsettled, &[("mm", &mm)])
     } else {
-        "Flattening stopped at its iteration limit: how far points may still move could not be \
-         estimated"
-            .into()
+        tr.s(Key::PanelsNoteUnsettledUnknown).into()
     }
 }
 
@@ -1368,6 +1402,25 @@ pub fn panel_sheet(
     stations: &[(String, f64)],
     limits: Limits,
     imperial: bool,
+) -> Sheet {
+    panel_sheet_tr(
+        panel,
+        offsets,
+        stations,
+        limits,
+        imperial,
+        Tr::new(Locale::En),
+    )
+}
+
+/// Localized form of [`panel_sheet`].
+pub fn panel_sheet_tr(
+    panel: &FlatPanel,
+    offsets: &PanelOffsets,
+    stations: &[(String, f64)],
+    limits: Limits,
+    imperial: bool,
+    tr: Tr,
 ) -> Sheet {
     let found = &panel.found;
     let xy = &panel.xy;
@@ -1449,7 +1502,7 @@ pub fn panel_sheet(
                 (p.0 + off.0, p.1 + off.1),
                 reading_angle(d),
                 Anchor::Middle,
-                "Centreline".into(),
+                tr.s(Key::PanelsMarkCentreline).into(),
             ));
         }
         sheet.paths.push(SheetPath {
@@ -1461,9 +1514,9 @@ pub fn panel_sheet(
 
     for spot in seam_spots(panel) {
         let text = match &found.seams[spot.seam].mate {
-            Mate::Panel(m) => format!("Stitch to {m}"),
-            Mate::Centreline => "Centreline: stitch to its mirror".into(),
-            Mate::Open => "Open edge".into(),
+            Mate::Panel(m) => tr.fmt(Key::PanelsMarkStitchTo, &[("mate", m)]),
+            Mate::Centreline => tr.s(Key::PanelsMarkStitchMirror).into(),
+            Mate::Open => tr.s(Key::PanelsMarkOpenEdge).into(),
         };
         sheet
             .labels
@@ -1489,8 +1542,8 @@ pub fn panel_sheet(
         text: found.name.clone(),
     });
     let copies = match found.copies {
-        Copies::One => "Cut 1".to_string(),
-        Copies::MirroredPair => "Cut 2, one turned over".to_string(),
+        Copies::One => tr.s(Key::PanelsCutOne).to_owned(),
+        Copies::MirroredPair => tr.s(Key::PanelsCutTwo).to_owned(),
     };
     sheet.labels.push(mark_label(
         (centre.0, centre.1 - 0.005),
@@ -1503,7 +1556,7 @@ pub fn panel_sheet(
             (centre.0, centre.1 - 0.015),
             0.0,
             Anchor::Middle,
-            "Ticks match from either end".into(),
+            tr.s(Key::PanelsMarkTicksMatch).into(),
         ));
     }
 
@@ -1513,48 +1566,58 @@ pub fn panel_sheet(
 
     let m = &panel.measures;
     if !panel.lies_flat {
-        sheet.notes.push(failing_heading(m, limits));
+        sheet.notes.push(failing_heading_tr(m, limits, tr));
     }
     if let Some(d) = m.unsettled_m {
-        sheet.notes.push(unsettled_note(d));
+        sheet.notes.push(unsettled_note_tr(d, tr));
     }
-    sheet.notes.push(format!(
-        "Stretch: {:.3} % RMS, {:.3} % largest (limit {:.1} % RMS)",
-        m.rms_stretch * 100.0,
-        m.max_stretch * 100.0,
-        limits.rms_stretch * 100.0
+    let rms = format!("{:.3}", m.rms_stretch * 100.0);
+    let max_s = format!("{:.3}", m.max_stretch * 100.0);
+    let rms_limit = format!("{:.1}", limits.rms_stretch * 100.0);
+    sheet.notes.push(tr.fmt(
+        Key::PanelsNoteStretch,
+        &[("rms", &rms), ("max", &max_s), ("limit", &rms_limit)],
     ));
     let drifts: Vec<String> = m
         .seams
         .iter()
-        .map(|s| format!("{} {:.1} mm", s.name, s.drift_m * 1000.0))
+        .map(|s| format!("{} {:.1} mm", s.name.render(tr), s.drift_m * 1000.0))
         .collect();
-    sheet.notes.push(format!(
-        "Seam drift from either end (limit {:.0} mm): {}",
-        limits.seam_drift_m * 1000.0,
-        drifts.join("; ")
+    let drift_limit = format!("{:.0}", limits.seam_drift_m * 1000.0);
+    let drifts_s = drifts.join("; ");
+    sheet.notes.push(tr.fmt(
+        Key::PanelsNoteSeamDrift,
+        &[("limit", &drift_limit), ("drifts", &drifts_s)],
     ));
     sheet.notes.push(match m.level_shift_m {
-        Some(d) => format!(
-            "Outline shift to the next subdivision level: {:.2} mm",
-            d * 1000.0
-        ),
-        None => "Outline shift to the next subdivision level: not measured".into(),
+        Some(d) => {
+            let mm = format!("{:.2}", d * 1000.0);
+            tr.fmt(Key::PanelsNoteLevelShift, &[("mm", &mm)])
+        }
+        None => tr.s(Key::PanelsNoteLevelShiftNone).into(),
     });
-    sheet.notes.push(format!(
-        "Edge-joining gap: {:.1} mm",
-        m.edge_join_gap_m * 1000.0
+    let gap_mm = format!("{:.1}", m.edge_join_gap_m * 1000.0);
+    sheet
+        .notes
+        .push(tr.fmt(Key::PanelsNoteEdgeJoinGap, &[("mm", &gap_mm)]));
+    let length_s = crate::units::length(hi.0 - lo.0, imperial);
+    let width_s = crate::units::length(hi.1 - lo.1, imperial);
+    let flat_s = format!("{:.3}", m.area_flat_m2);
+    let model_s = format!("{:.3}", m.area_3d_m2);
+    sheet.notes.push(tr.fmt(
+        Key::PanelsNoteSizeArea,
+        &[
+            ("length", &length_s),
+            ("width", &width_s),
+            ("flat", &flat_s),
+            ("model", &model_s),
+        ],
     ));
-    sheet.notes.push(format!(
-        "Size {} by {}; area {:.3} m² flat, {:.3} m² on the model",
-        crate::units::length(hi.0 - lo.0, imperial),
-        crate::units::length(hi.1 - lo.1, imperial),
-        m.area_flat_m2,
-        m.area_3d_m2
-    ));
-    sheet.notes.push(THICKNESS_NOTE.into());
-    sheet.notes.push(MEASURED_NOTE.into());
-    sheet.notes.push(crate::NOT_VALIDATED_NOTE.into());
+    sheet.notes.push(thickness_note(tr.locale()).into());
+    sheet.notes.push(measured_note(tr.locale()).into());
+    sheet
+        .notes
+        .push(crate::not_validated_note(tr.locale()).into());
     sheet
 }
 
@@ -1678,8 +1741,18 @@ pub fn offsets_pdf(
     title: &str,
     imperial: bool,
 ) -> Result<crate::pdf::Document, String> {
+    offsets_pdf_tr(all, title, imperial, Tr::new(Locale::En))
+}
+
+/// Localized form of [`offsets_pdf`].
+pub fn offsets_pdf_tr(
+    all: &[PanelOffsets],
+    title: &str,
+    imperial: bool,
+    tr: Tr,
+) -> Result<crate::pdf::Document, String> {
     let mut doc = crate::pdf::Pdf::new(title);
-    add_offsets_tables(&mut doc, all, title, imperial)?;
+    add_offsets_tables_tr(&mut doc, all, title, imperial, tr)?;
     doc.finish()
 }
 
@@ -1691,19 +1764,30 @@ pub fn add_offsets_tables(
     title: &str,
     imperial: bool,
 ) -> Result<usize, String> {
-    use crate::pdf::{add_table, Table};
+    add_offsets_tables_tr(doc, all, title, imperial, Tr::new(Locale::En))
+}
+
+/// Localized form of [`add_offsets_tables`].
+pub fn add_offsets_tables_tr(
+    doc: &mut crate::pdf::Pdf,
+    all: &[PanelOffsets],
+    title: &str,
+    imperial: bool,
+    tr: Tr,
+) -> Result<usize, String> {
+    use crate::pdf::{add_table_tr, Table};
     use crate::units::{ft_in_8ths, millimetres};
     if all.is_empty() {
-        return Err("there are no panel offsets to tabulate".into());
+        return Err(tr.s(Key::PanelsOffsetsErrEmpty).into());
     }
-    let subtitle =
-        "Square off a straight baseline along the panel's lowest edge, from its aft end. \
-                    Crossings count up from the baseline; \"-\" means the row has fewer.";
+    let subtitle = tr.s(Key::PanelsOffsetsSubtitle);
+    let footer = crate::not_validated_note(tr.locale());
+    let along_col = tr.s(Key::PanelsOffsetsColAlong);
     let mut pages = 0;
     type Write = fn(f64) -> String;
-    let mut systems: Vec<(&str, Write)> = vec![("millimetres", millimetres)];
+    let mut systems: Vec<(&str, Write)> = vec![(tr.s(Key::OffsetsUnitMillimetres), millimetres)];
     if imperial {
-        systems.push(("feet-inches-eighths", ft_in_8ths));
+        systems.push((tr.s(Key::OffsetsUnitImperial), ft_in_8ths));
     }
     for o in all {
         let crossings = o
@@ -1713,8 +1797,11 @@ pub fn add_offsets_tables(
             .max()
             .unwrap_or(0);
         for (unit, length) in &systems {
-            let mut header = vec!["Along".to_owned()];
-            header.extend((1..=crossings).map(|i| format!("Crossing {i}")));
+            let mut header = vec![along_col.to_owned()];
+            header.extend((1..=crossings).map(|i| {
+                let idx_s = i.to_string();
+                tr.fmt(Key::PanelsOffsetsColCrossing, &[("index", &idx_s)])
+            }));
             let rows: Vec<Vec<String>> = o
                 .rows
                 .iter()
@@ -1728,17 +1815,21 @@ pub fn add_offsets_tables(
                     row
                 })
                 .collect();
-            let heading = format!("{title}: {} offsets, {unit}", o.panel);
-            pages += add_table(
+            let heading = tr.fmt(
+                Key::PanelsOffsetsTableTitle,
+                &[("title", title), ("panel", &o.panel), ("unit", unit)],
+            );
+            pages += add_table_tr(
                 doc,
                 &Table {
                     title: &heading,
                     subtitle,
                     header: &header,
                     rows: &rows,
-                    footer: crate::NOT_VALIDATED_NOTE,
+                    footer,
                     repeat: 1,
                 },
+                tr,
             );
         }
     }
@@ -1773,7 +1864,8 @@ pub struct StockRow {
     pub sheets_each: Option<usize>,
     /// Where each sheet's reach ends along the panel, from its aft end, metres.
     pub joints_m: Vec<f64>,
-    pub note: Option<String>,
+    /// Why the panel was not laid out; serialized in English, rendered in the reader's language.
+    pub note: Option<Msg>,
 }
 
 /// The pattern's extent: `(min x, min y, length, width)`.
@@ -1800,25 +1892,27 @@ pub fn lay_out(panel: &FlatPanel, stock: Stock) -> StockRow {
     };
     let reach = stock.length_m - stock.scarf_m.max(0.0);
     if width > stock.width_m + 1e-9 {
-        row.note = Some(format!(
-            "wider than the stock ({} mm > {} mm): not laid out",
-            crate::units::millimetres(width),
-            crate::units::millimetres(stock.width_m)
-        ));
+        let w = crate::units::millimetres(width);
+        let sw = crate::units::millimetres(stock.width_m);
+        row.note = Some(
+            Msg::new(Key::PanelsStockWider)
+                .arg("width", w)
+                .arg("stock_width", sw),
+        );
         return row;
     }
     if reach <= 0.0 || !reach.is_finite() {
-        row.note = Some("the scarf is as long as the sheet: not laid out".into());
+        row.note = Some(Msg::new(Key::PanelsStockScarfTooLong));
         return row;
     }
     // Counted before any joint is placed, so a reach of almost nothing cannot run away.
     let further = ((length - 1e-9 - stock.length_m) / reach).ceil().max(0.0);
     if !further.is_finite() || further + 1.0 > MAX_SHEETS_EACH as f64 {
-        row.note = Some(format!(
-            "would take more than {MAX_SHEETS_EACH} sheets end to end, the scarf leaving {} mm of \
-             each further sheet: not laid out",
-            crate::units::millimetres(reach)
-        ));
+        row.note = Some(
+            Msg::new(Key::PanelsStockTooManySheets)
+                .arg("max", MAX_SHEETS_EACH)
+                .arg("reach", crate::units::millimetres(reach)),
+        );
         return row;
     }
     let mut end = stock.length_m;
@@ -1881,6 +1975,8 @@ pub struct PanelOptions {
     pub imperial: bool,
     /// The pieces nested on the plywood; `None` for the patterns alone.
     pub nesting: Option<crate::panel_layout::Nesting>,
+    /// Display locale for pattern labels, notes, refusals, and summaries.
+    pub locale: Locale,
 }
 
 impl Default for PanelOptions {
@@ -1894,6 +1990,7 @@ impl Default for PanelOptions {
             stock: Stock::default(),
             imperial: false,
             nesting: None,
+            locale: Locale::En,
         }
     }
 }
@@ -1913,6 +2010,10 @@ pub struct PanelRow {
     pub sheets_each: Option<usize>,
     /// `None` when the flattening settled; otherwise how far its points may still move, mm.
     pub unsettled_mm: Option<f64>,
+    /// The pattern's failing heading when it does not lie flat, for the reasons the front ends
+    /// give in their own language; not in JSON.
+    #[serde(skip)]
+    pub failing: Option<Msg>,
 }
 
 /// Every panel of a hull: patterns, measures, offsets and the plywood they take.
@@ -1941,8 +2042,13 @@ impl PanelSet {
     /// Why the patterns are not written when a panel does not lie flat: the summary, then each
     /// failing panel's line, joined by "; ". `None` when every panel lies flat.
     pub fn not_flat_reason(&self) -> Option<String> {
-        let summary = self.not_flat_summary()?;
-        Some(format!("{summary}: {}", self.failing().join("; ")))
+        self.not_flat_reason_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized form of [`PanelSet::not_flat_reason`].
+    pub fn not_flat_reason_tr(&self, tr: Tr) -> Option<String> {
+        let summary = self.not_flat_summary_tr(tr)?;
+        Some(format!("{summary}: {}", self.failing_tr(tr).join("; ")))
     }
 
     /// What every front end replies with: `panels` (the rows), `refused`, `mismatches`,
@@ -1963,80 +2069,104 @@ impl PanelSet {
     /// One line for each panel that does not lie flat within the limits (its name and its
     /// sheet's heading) and each panel that could not be laid flat (its name and why).
     pub fn failing(&self) -> Vec<String> {
-        self.sheets
+        self.failing_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized form of [`PanelSet::failing`].
+    pub fn failing_tr(&self, tr: Tr) -> Vec<String> {
+        self.rows
             .iter()
-            .zip(&self.rows)
-            .filter(|(_, r)| !r.lies_flat)
-            .map(|(sheet, r)| format!("{}: {}", r.panel, sheet.notes[0]))
-            .chain(
-                self.refused
-                    .iter()
-                    .map(|r| format!("{} cannot be laid flat: {}", r.panel, r.reason)),
-            )
+            .filter_map(|r| {
+                let heading = r.failing.as_ref()?;
+                Some(format!("{}: {}", r.panel, heading.render(tr)))
+            })
+            .chain(self.refused.iter().map(|r| {
+                tr.fmt(
+                    Key::PanelsRefusedLine,
+                    &[("panel", &r.panel), ("reason", &r.reason.render(tr))],
+                )
+            }))
             .collect()
     }
 
     /// How many panels [`Self::failing`] names, out of all, in words; `None` when every panel
     /// lies flat.
     pub fn not_flat_summary(&self) -> Option<String> {
-        let failing = self.failing();
+        self.not_flat_summary_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized form of [`PanelSet::not_flat_summary`].
+    pub fn not_flat_summary_tr(&self, tr: Tr) -> Option<String> {
+        let failing = self.failing_tr(tr);
         if failing.is_empty() {
             return None;
         }
-        let what = if self.refused.is_empty() {
-            "do not lie flat within the limits"
+        let key = if self.refused.is_empty() {
+            Key::PanelsSummaryNotFlat
         } else {
-            "do not lie flat within the limits or could not be laid flat"
+            Key::PanelsSummaryNotFlatOrRefused
         };
-        Some(format!(
-            "{} of {} panels {what}",
-            failing.len(),
-            self.rows.len() + self.refused.len()
-        ))
+        let failing_s = failing.len().to_string();
+        let total_s = (self.rows.len() + self.refused.len()).to_string();
+        Some(tr.fmt(key, &[("failing", &failing_s), ("total", &total_s)]))
     }
 
     /// The plywood count in words, naming any panel it leaves out and why: one not laid out on
     /// the stock, or one that could not be laid flat at all.
     pub fn sheet_count_line(&self) -> String {
+        self.sheet_count_line_tr(Tr::new(Locale::En))
+    }
+
+    /// Localized form of [`PanelSet::sheet_count_line`].
+    pub fn sheet_count_line_tr(&self, tr: Tr) -> String {
         if let Some(layout) = &self.layout {
-            let mut line = layout.count_line();
+            let mut line = layout.count_line_tr(tr);
             if !self.refused.is_empty() {
                 let names: Vec<&str> = self.refused.iter().map(|r| r.panel.as_str()).collect();
-                line.push_str(&format!(
-                    "; not counted, could not be laid flat: {}",
-                    names.join(", ")
-                ));
+                let joined = names.join(", ");
+                line.push_str(&tr.fmt(Key::PanelsCountRefusedSuffix, &[("names", &joined)]));
             }
             return line;
         }
+        let tr_suffix = tr.s(Key::PanelsStockNotLaidOutSuffix);
+        let fallback_why = tr.s(Key::PanelsCountNotLaidOut);
         let mut left_out: Vec<String> = self
             .stock
             .iter()
             .filter(|r| r.sheets_each.is_none())
             .map(|r| {
-                let why = r.note.as_deref().unwrap_or("not laid out");
+                let note = r.note.as_ref().map(|m| m.render(tr));
+                let why = note.as_deref().unwrap_or(fallback_why);
                 let why = why.split(" (").next().unwrap_or(why);
-                format!("{} ({})", r.panel, why.trim_end_matches(": not laid out"))
+                let why = why
+                    .strip_suffix(tr_suffix)
+                    .or_else(|| why.strip_suffix(": not laid out"))
+                    .unwrap_or(why);
+                format!("{} ({why})", r.panel)
             })
             .collect();
+        let could_not = tr.s(Key::PanelsCountCouldNotFlatten);
         left_out.extend(
             self.refused
                 .iter()
-                .map(|r| format!("{} (could not be laid flat)", r.panel)),
+                .map(|r| format!("{} ({could_not})", r.panel)),
         );
+        let sheets_s = self.total_sheets.to_string();
         if left_out.is_empty() {
-            return format!(
-                "{} plywood sheets, end to end, no nesting: an upper bound",
-                self.total_sheets
-            );
+            return tr.fmt(Key::PanelsCountEndToEnd, &[("sheets", &sheets_s)]);
         }
         let all = self.rows.len() + self.refused.len();
-        format!(
-            "{} plywood sheets for {} of {all} panels, end to end, no nesting: an upper bound for \
-             those; not counted: {}",
-            self.total_sheets,
-            all - left_out.len(),
-            left_out.join(", ")
+        let counted_s = (all - left_out.len()).to_string();
+        let total_s = all.to_string();
+        let left_s = left_out.join(", ");
+        tr.fmt(
+            Key::PanelsCountEndToEndPartial,
+            &[
+                ("sheets", &sheets_s),
+                ("counted", &counted_s),
+                ("total", &total_s),
+                ("left_out", &left_s),
+            ],
         )
     }
 }
@@ -2098,6 +2228,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             );
         }
     }
+    let tr = Tr::new(opts.locale);
     let layers = chosen_layers(surface, opts.layers.as_deref())?;
     // Only the model's extent is read from the hull: the panels' layers need not be in its
     // hydrostatics, and a chosen layer with no faces finds no panel below.
@@ -2106,7 +2237,10 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
     let stations: Vec<(String, f64)> = xs
         .iter()
         .enumerate()
-        .map(|(i, &x)| (format!("St {}", i + 1), x))
+        .map(|(i, &x)| {
+            let idx_s = (i + 1).to_string();
+            (tr.fmt(Key::PanelsMarkStation, &[("index", &idx_s)]), x)
+        })
         .collect();
     let (panels, mismatches, refused) =
         measure_panels(surface, opts.subdivision, &layers, &xs, opts.limits);
@@ -2129,7 +2263,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
     let name = surface.settings.name.trim();
     let mut set = PanelSet {
         title: if name.is_empty() {
-            "Untitled hull".into()
+            tr.s(Key::BuilderUntitledHull).into()
         } else {
             name.to_owned()
         },
@@ -2143,32 +2277,48 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         stations: stations.clone(),
         layout: None,
     };
+    // The seam-drift note's fixed opening, to find it among the notes; `None` if a translation
+    // ever opens with a placeholder, so it can never match every note.
+    let drift_prefix = tr
+        .s(Key::PanelsNoteSeamDrift)
+        .split('{')
+        .next()
+        .filter(|p| !p.is_empty());
+    let stock_len = crate::units::millimetres(st.length_m);
+    let stock_wid = crate::units::millimetres(st.width_m);
     let split_nesting = opts
         .nesting
         .filter(|n| n.mode == crate::panel_layout::NestMode::Split);
     for p in &panels {
         let offsets = panel_offsets(p, opts.offset_spacing_m);
-        let mut sheet = panel_sheet(p, &offsets, &stations, opts.limits, opts.imperial);
+        let mut sheet = panel_sheet_tr(p, &offsets, &stations, opts.limits, opts.imperial, tr);
         let row = lay_out(p, st);
         let plywood = if let Some(n) = split_nesting {
             let usable = st.length_m - 2.0 * n.gap_m;
             let usable_w = st.width_m - 2.0 * n.gap_m;
             let (x0, y0, _, width) = extent(p);
+            let gap_mm = crate::units::millimetres(n.gap_m);
             if width > usable_w + 1e-9 {
-                format!(
-                    "Plywood (split layout): wider than {} × {} mm sheet less gaps ({} mm > {} mm)",
-                    crate::units::millimetres(st.length_m),
-                    crate::units::millimetres(st.width_m),
-                    crate::units::millimetres(width),
-                    crate::units::millimetres(usable_w.max(0.0))
+                let panel_w = crate::units::millimetres(width);
+                let usable_w_mm = crate::units::millimetres(usable_w.max(0.0));
+                tr.fmt(
+                    Key::PanelsNoteSplitWider,
+                    &[
+                        ("length", &stock_len),
+                        ("width", &stock_wid),
+                        ("panel_w", &panel_w),
+                        ("usable_w", &usable_w_mm),
+                    ],
                 )
             } else {
-                match crate::panel_layout::split_points(p, usable) {
-                    Ok(joints) if joints.is_empty() => format!(
-                        "Plywood (split layout): fits one {} × {} mm sheet (gap {} mm)",
-                        crate::units::millimetres(st.length_m),
-                        crate::units::millimetres(st.width_m),
-                        crate::units::millimetres(n.gap_m)
+                match crate::panel_layout::split_points_tr(p, usable, tr) {
+                    Ok(joints) if joints.is_empty() => tr.fmt(
+                        Key::PanelsNoteSplitFitsOne,
+                        &[
+                            ("length", &stock_len),
+                            ("width", &stock_wid),
+                            ("gap", &gap_mm),
+                        ],
                     ),
                     Ok(joints) => {
                         for &j in &joints {
@@ -2182,51 +2332,66 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
                             .iter()
                             .map(|j| crate::units::length(*j - x0, opts.imperial))
                             .collect();
-                        format!(
-                            "Plywood (split layout): {} parts on {} × {} mm sheets (gap {} mm), \
-                             split joints {} from the aft end",
-                            joints.len() + 1,
-                            crate::units::millimetres(st.length_m),
-                            crate::units::millimetres(st.width_m),
-                            crate::units::millimetres(n.gap_m),
-                            joint_text.join(", ")
+                        let parts_s = (joints.len() + 1).to_string();
+                        let joints_s = joint_text.join(", ");
+                        tr.fmt(
+                            Key::PanelsNoteSplitParts,
+                            &[
+                                ("parts", &parts_s),
+                                ("length", &stock_len),
+                                ("width", &stock_wid),
+                                ("gap", &gap_mm),
+                                ("joints", &joints_s),
+                            ],
                         )
                     }
-                    Err(why) => format!("Plywood (split layout): not split ({why})"),
+                    Err(why) => tr.fmt(Key::PanelsNoteSplitErr, &[("reason", &why)]),
                 }
             }
         } else {
             sheet.paths.extend(stock_paths(&row, p, st));
             match (&row.note, row.sheets_each) {
-                (Some(note), _) => format!("Plywood: {note}"),
+                (Some(note), _) => {
+                    tr.fmt(Key::PanelsNotePlywoodNote, &[("note", &note.render(tr))])
+                }
                 (None, Some(n)) => {
                     let joints: Vec<String> = row
                         .joints_m
                         .iter()
                         .map(|j| crate::units::length(*j, opts.imperial))
                         .collect();
-                    let sheets = if n == 1 { "sheet" } else { "sheets" };
-                    let mut text = format!(
-                        "Plywood: {n} {sheets} of {} × {} mm each copy",
-                        crate::units::millimetres(st.length_m),
-                        crate::units::millimetres(st.width_m)
+                    let key = match tr.locale().plural_category(n) {
+                        PluralCategory::One => Key::PanelsNotePlywoodEachOne,
+                        PluralCategory::Other => Key::PanelsNotePlywoodEachOther,
+                    };
+                    let n_s = n.to_string();
+                    let mut text = tr.fmt(
+                        key,
+                        &[
+                            ("count", &n_s),
+                            ("length", &stock_len),
+                            ("width", &stock_wid),
+                        ],
                     );
                     if !joints.is_empty() {
-                        text.push_str(&format!(", joints {} from the aft end", joints.join(", ")));
+                        let joints_s = joints.join(", ");
+                        text.push_str(
+                            &tr.fmt(Key::PanelsNotePlywoodJointsSuffix, &[("joints", &joints_s)]),
+                        );
                     }
                     text
                 }
-                (None, None) => "Plywood: not laid out".into(),
+                (None, None) => tr.s(Key::PanelsNotePlywoodNone).into(),
             }
         };
         // Before the three closing sentences.
         let at = sheet.notes.len().saturating_sub(3);
         sheet.notes.insert(at, plywood);
-        if let Some(note) = mismatch_note(p, &set.mismatches) {
+        if let Some(note) = mismatch_note_tr(p, &set.mismatches, tr) {
             let at = sheet
                 .notes
                 .iter()
-                .position(|n| n.starts_with("Seam drift"))
+                .position(|n| drift_prefix.is_some_and(|p| n.starts_with(p)))
                 .map_or(0, |i| i + 1);
             sheet.notes.insert(at, note);
         }
@@ -2243,6 +2408,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             area_m2: m.area_flat_m2,
             sheets_each: row.sheets_each,
             unsettled_mm: m.unsettled_m.map(|d| d * 1000.0),
+            failing: (!p.lies_flat).then(|| failing_heading_msg(m, opts.limits)),
         });
         set.offsets.push(offsets);
         set.stock.push(row);
@@ -2253,7 +2419,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         .nesting
         .filter(|n| n.mode != crate::panel_layout::NestMode::None)
     {
-        let layout = crate::panel_layout::nest_panels(&panels, &set.sheets, st, n);
+        let layout = crate::panel_layout::nest_panels_tr(&panels, &set.sheets, st, n, tr);
         set.total_sheets = layout.plywood_sheets;
         set.layout = Some(layout);
     }
@@ -2261,9 +2427,13 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
     for sheet in &mut set.sheets {
         for r in &set.refused {
             let at = sheet.notes.len().saturating_sub(3);
-            sheet
-                .notes
-                .insert(at, format!("Not in this set: {}: {}", r.panel, r.reason));
+            sheet.notes.insert(
+                at,
+                tr.fmt(
+                    Key::PanelsNoteNotInSet,
+                    &[("panel", &r.panel), ("reason", &r.reason.render(tr))],
+                ),
+            );
         }
     }
     Ok(set)
@@ -2325,35 +2495,36 @@ pub fn stale_sheet_files(path: &std::path::Path, count: usize) -> Vec<std::path:
 
 /// What to tell the user about [`stale_sheet_files`]; `None` when there are none.
 pub fn stale_sheet_note(stale: &[std::path::PathBuf]) -> Option<String> {
+    stale_sheet_note_tr(stale, Tr::new(Locale::En))
+}
+
+/// Localized form of [`stale_sheet_note`].
+pub fn stale_sheet_note_tr(stale: &[std::path::PathBuf], tr: Tr) -> Option<String> {
     let names: Vec<String> = stale.iter().map(|p| p.display().to_string()).collect();
-    let (what, verb) = match names.len() {
-        0 => return None,
-        1 => ("1 older sheet file".to_owned(), "is"),
-        n => (format!("{n} older sheet files"), "are"),
+    if names.is_empty() {
+        return None;
+    }
+    let joined = names.join(", ");
+    let count_s = names.len().to_string();
+    let key = match tr.locale().plural_category(names.len()) {
+        PluralCategory::One => Key::PanelsStaleSheetsOne,
+        PluralCategory::Other => Key::PanelsStaleSheetsOther,
     };
-    Some(format!(
-        "{what} from an earlier export {verb} not part of this layout and {} left in place: {}. \
-         Delete or move {} so {} not cut by mistake",
-        if names.len() == 1 { "was" } else { "were" },
-        names.join(", "),
-        if names.len() == 1 { "it" } else { "them" },
-        if names.len() == 1 {
-            "it is"
-        } else {
-            "they are"
-        },
-    ))
+    Some(tr.fmt(key, &[("count", &count_s), ("names", &joined)]))
 }
 
 /// The sheet number N when `name` is what [`sheet_file_name`] gives `path` for sheet N, ignoring
 /// case as [`crate::io::shared_output`] does: on a case-insensitive filesystem `skiff-sheet-3.SVG`
 /// is the file an export to `skiff.svg` would write as its third sheet.
 fn sheet_number(path: &std::path::Path, name: &str) -> Option<usize> {
+    // i18n-casing: not translated (file names)
     let name = name.to_lowercase();
+    // i18n-casing: not translated (file names)
     let stem = path.file_stem()?.to_str()?.to_lowercase();
     let rest = name.strip_prefix(&stem)?.strip_prefix("-sheet-")?;
     let digits = match path.extension() {
         Some(ext) => rest
+            // i18n-casing: not translated (file names)
             .strip_suffix(&ext.to_str()?.to_lowercase())?
             .strip_suffix('.')?,
         None => rest,
@@ -2363,12 +2534,9 @@ fn sheet_number(path: &std::path::Path, name: &str) -> Option<usize> {
     }
     let n: usize = digits.parse().ok()?;
     let expected = sheet_file_name(path, n - 1);
+    // i18n-casing: not translated (file names)
     (expected.file_name()?.to_str()?.to_lowercase() == name).then_some(n)
 }
-
-/// What the first lines of a layout page say.
-const LAYOUT_PAGE_WORDS: &str =
-    "Layout, not full size: cut from the SVG or DXF files, or from the full-size patterns that follow";
 
 /// The patterns as `format`. With `offsets_pages`, a PDF also carries every panel's offsets
 /// tables after the patterns (A4 landscape, as [`offsets_pdf`] makes them); an SVG or DXF
@@ -2398,6 +2566,7 @@ pub fn write(
         layout_pages: 0,
         per_sheet: Vec::new(),
     };
+    let tr = Tr::new(setup.locale);
     let drawings = set.layout.as_ref().map_or(&[][..], |l| &l.drawings[..]);
     // Cutting files are for the shop: full size, whatever scale the patterns are drawn at,
     // so their geometry matches the stock their notes name.
@@ -2415,18 +2584,21 @@ pub fn write(
     let mut doc = crate::pdf::Pdf::new(&setup.title);
     let mut layout_pages = 0;
     if matches!(format, Format::PdfSingle | Format::PdfTiled) {
+        let initial_scale = tr.fmt(Key::SheetScaleLabel, &[("scale", "1:1000")]);
+        let page_words = tr.s(Key::PanelsLayoutPageWords);
         for d in drawings {
             let mut lines = vec![
                 format!("{} · {}", d.name, setup.title),
-                "Scale 1:1000".to_string(),
-                LAYOUT_PAGE_WORDS.to_string(),
+                initial_scale.clone(),
+                page_words.to_string(),
             ];
             // The scale is known once the page is fitted; reserve its line on the scratch pass
             // so the final pass has the same room and cannot drop to a different scale.
             let mut scratch = crate::pdf::Pdf::new(&setup.title);
             let mut scale = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut scratch)?;
             loop {
-                lines[1] = format!("Scale {}", crate::units::scale_label(scale));
+                let scale_str = crate::units::scale_label(scale);
+                lines[1] = tr.fmt(Key::SheetScaleLabel, &[("scale", &scale_str)]);
                 let mut check = crate::pdf::Pdf::new(&setup.title);
                 let next = crate::sheet::pdf_overview_into(d, &setup, &lines, &mut check)?;
                 if (next - scale).abs() <= 1e-12 {
@@ -2456,7 +2628,7 @@ pub fn write(
             // is needed before the patterns are drawn.
             let count = if tables {
                 let mut scratch = crate::pdf::Pdf::new(&setup.title);
-                add_offsets_tables(&mut scratch, &set.offsets, &set.title, setup.imperial)?
+                add_offsets_tables_tr(&mut scratch, &set.offsets, &set.title, setup.imperial, tr)?
             } else {
                 0
             };
@@ -2464,13 +2636,13 @@ pub fn write(
                 &set.sheets,
                 &setup,
                 &mut doc,
-                &[("Layout", layout_pages)],
-                &[("Offsets", count)],
+                &[(tr.s(Key::PanelsPdfSectionLayout), layout_pages)],
+                &[(tr.s(Key::PanelsPdfSectionOffsets), count)],
             )?;
         }
     }
     let added = if tables {
-        add_offsets_tables(&mut doc, &set.offsets, &set.title, setup.imperial)?
+        add_offsets_tables_tr(&mut doc, &set.offsets, &set.title, setup.imperial, tr)?
     } else {
         0
     };
@@ -2765,10 +2937,10 @@ mod tests {
             .iter()
             .find(|r| r.panel == "Side")
             .expect("Side refused");
-        assert!(r.reason.contains("x 1.20 m"), "{}", r.reason);
+        let reason = r.reason.to_string();
+        assert!(reason.contains("x 1.20 m"), "{reason}");
         assert!(
-            r.reason
-                .contains("carry the crease to the panel's edge or split the layer"),
+            reason.contains("carry the crease to the panel's edge or split the layer"),
             "{}",
             r.reason
         );
@@ -2877,7 +3049,12 @@ mod tests {
             .iter()
             .find(|r| r.panel == "Side")
             .expect("Side refused");
-        assert!(r.reason.contains("do not all face the same way"), "{r:?}");
+        assert!(
+            r.reason
+                .to_string()
+                .contains("do not all face the same way"),
+            "{r:?}"
+        );
     }
 
     /// The side's three bow points made one (a pole, as a stem often is): the welded copies of
@@ -2900,7 +3077,7 @@ mod tests {
             p.measures
                 .seams
                 .iter()
-                .find(|m| m.name.contains(mate))
+                .find(|m| m.name.to_string().contains(mate))
                 .cloned()
                 .unwrap_or_else(|| panic!("{}: {:?}", p.found.name, p.measures.seams))
         };
@@ -3215,7 +3392,7 @@ mod tests {
                 .measures
                 .seams
                 .iter()
-                .filter(|m| m.name.starts_with(prefix))
+                .filter(|m| m.name.to_string().starts_with(prefix))
                 .map(|m| m.length_3d_m)
                 .collect();
             w.sort_by(f64::total_cmp);
@@ -3538,7 +3715,7 @@ mod tests {
         let rows = [lay_out(&plank(2.0, 1.3, Copies::One), Stock::default())];
         assert_eq!(rows[0].sheets_each, None);
         assert_eq!(
-            rows[0].note.as_deref(),
+            rows[0].note.as_ref().map(ToString::to_string).as_deref(),
             Some("wider than the stock (1300 mm > 1220 mm): not laid out")
         );
         assert_eq!(total_sheets(&rows), 0);
@@ -3568,7 +3745,11 @@ mod tests {
         let row = lay_out(&plank5, short_reach);
         assert_eq!(row.sheets_each, None);
         assert!(row.joints_m.is_empty());
-        let note = row.note.as_deref().unwrap_or_default();
+        let note = row
+            .note
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         assert!(
             note.contains(&format!("more than {MAX_SHEETS_EACH} sheets"))
                 && note.contains("not laid out"),
@@ -3791,11 +3972,72 @@ mod tests {
                 failing[0]
             ))
         );
+        // A Turkish set draws Turkish headings; its reasons and JSON stay English, and its
+        // own reader's form is Turkish.
+        let turkish = panel_set(
+            &s,
+            &PanelOptions {
+                locale: Locale::Tr,
+                ..opts.clone()
+            },
+        )
+        .expect("a set");
+        assert!(turkish.sheets[1].notes[0].starts_with("Düz açılmaz"));
+        assert_eq!(turkish.failing(), failing);
+        assert_eq!(turkish.not_flat_reason(), set.not_flat_reason());
+        let tr_reason = turkish.not_flat_reason_tr(Tr::new(Locale::Tr)).unwrap();
+        assert!(tr_reason.contains("Side: Düz açılmaz"), "{tr_reason}");
+        assert_eq!(
+            serde_json::to_string(&turkish.summary()).unwrap(),
+            serde_json::to_string(&set.summary()).unwrap()
+        );
         let flat = panel_set(&s, &PanelOptions::default()).expect("a set");
         if flat.all_lie_flat() {
             assert!(flat.failing().is_empty() && flat.not_flat_summary().is_none());
             assert!(flat.not_flat_reason().is_none());
         }
+    }
+
+    /// A panel wider than the stock is not laid out: the reason reads Turkish in a Turkish
+    /// drawing, and the JSON `plywood` line and stock rows stay English.
+    #[test]
+    fn a_turkish_set_keeps_its_stock_refusals_english_in_json() {
+        let s = pram_fixture(0.0, 0.0);
+        let narrow = PanelOptions {
+            stock: Stock {
+                width_m: 0.01,
+                ..Stock::default()
+            },
+            ..PanelOptions::default()
+        };
+        let english = panel_set(&s, &narrow).expect("a set");
+        let turkish = panel_set(
+            &s,
+            &PanelOptions {
+                locale: Locale::Tr,
+                ..narrow.clone()
+            },
+        )
+        .expect("a set");
+        assert!(english.stock.iter().all(|r| r.sheets_each.is_none()));
+        let plywood = english.sheet_count_line();
+        assert!(plywood.contains("wider than the stock"), "{plywood}");
+        assert_eq!(turkish.sheet_count_line(), plywood);
+        assert_eq!(
+            serde_json::to_string(&turkish.summary()).unwrap(),
+            serde_json::to_string(&english.summary()).unwrap()
+        );
+        let tr = Tr::new(Locale::Tr);
+        let tr_line = turkish.sheet_count_line_tr(tr);
+        assert!(tr_line.contains("plakadan geniş"), "{tr_line}");
+        assert!(
+            turkish.sheets[0]
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Kontrplak: plakadan geniş")),
+            "{:?}",
+            turkish.sheets[0].notes
+        );
     }
 
     #[test]
@@ -4053,7 +4295,7 @@ mod tests {
                 "{}",
                 &text[..40]
             );
-            assert!(text.contains(&sheet.name));
+            assert!(text.contains(&sheet.name.to_string()));
         }
         let dxf = write(&set, Format::Dxf, &PageSetup::default(), false).unwrap();
         assert_eq!(dxf.per_sheet.len(), layout.sheets.len());
@@ -4276,6 +4518,94 @@ mod tests {
         assert!(
             plywood_note.contains("wider than") && !plywood_note.contains("fits one"),
             "{plywood_note}"
+        );
+    }
+
+    #[test]
+    fn turkish_panels_and_nesting_localize_pdfs_svgs_dxfs_and_summaries() {
+        use crate::sheet::PageSetup;
+        use crate::templates::Format;
+
+        let tr = Tr::new(Locale::Tr);
+        let (skiff, _) = crate::examples::build(crate::examples::Example::Skiff4m).unwrap();
+
+        for mode in [
+            crate::panel_layout::NestMode::Split,
+            crate::panel_layout::NestMode::Blanks,
+        ] {
+            let opts = PanelOptions {
+                nesting: Some(crate::panel_layout::Nesting { mode, gap_m: 0.01 }),
+                locale: Locale::Tr,
+                ..PanelOptions::default()
+            };
+            let set = panel_set(&skiff, &opts).unwrap();
+            assert!(set.sheet_count_line_tr(tr).contains("kontrplak plaka"));
+
+            let setup = PageSetup {
+                scale: 0.25,
+                locale: Locale::Tr,
+                ..PageSetup::default()
+            };
+            let pdf = write(&set, Format::PdfTiled, &setup, true).unwrap();
+            assert!(pdf.written.missing.is_empty(), "{:?}", pdf.written.missing);
+            let shown = crate::pdf::shown_text(&pdf.written.bytes);
+            for want in [
+                thickness_note(Locale::Tr),
+                crate::not_validated_note(Locale::Tr),
+                "Boyunca",
+                "Kesişim 1",
+                "Yerleşim",
+                "Ofsetler",
+            ] {
+                assert!(
+                    shown.iter().any(|t| t == want || t.contains(want)),
+                    "{mode:?}: missing `{want}` in PDF"
+                );
+            }
+
+            let svg = write(&set, Format::Svg, &setup, false).unwrap();
+            let svg_text = String::from_utf8(svg.written.bytes).unwrap();
+            assert!(svg_text.contains(thickness_note(Locale::Tr)));
+            let sheets = &set.layout.as_ref().unwrap().sheets;
+            for (sheet_svg, sheet) in svg.per_sheet.iter().zip(sheets) {
+                let s = String::from_utf8(sheet_svg.bytes.clone()).unwrap();
+                let name = sheet.name.render(Tr::new(Locale::Tr));
+                assert!(
+                    name.starts_with("Plaka ") || name.starts_with("Birleşik plaka "),
+                    "{name}"
+                );
+                assert!(s.contains(&name), "missing `{}` in sheet SVG", name);
+            }
+
+            let dxf = write(&set, Format::Dxf, &setup, false).unwrap();
+            let dxf_text = String::from_utf8(dxf.written.bytes).unwrap();
+            for layer in ["CUT", "MARK", "REFERENCE", "TEXT"] {
+                assert!(dxf_text.contains(layer));
+            }
+            assert!(dxf_text.contains("\\U+"));
+        }
+
+        // Non-flat panel failure summary & list in Turkish.
+        let bowed = pram_fixture(0.0, 0.08);
+        let opts = PanelOptions {
+            limits: Limits {
+                seam_drift_m: 0.002,
+                rms_stretch: 0.000_001,
+            },
+            locale: Locale::Tr,
+            ..PanelOptions::default()
+        };
+        let set = panel_set(&bowed, &opts).unwrap();
+        assert!(!set.all_lie_flat());
+        let failing = set.failing_tr(tr);
+        assert!(
+            failing.iter().any(|l| l.contains("Düz açılmaz")),
+            "{failing:?}"
+        );
+        let summary = set.not_flat_summary_tr(tr).unwrap();
+        assert!(
+            summary.contains("sınırlar içinde düz açılmıyor"),
+            "{summary}"
         );
     }
 }

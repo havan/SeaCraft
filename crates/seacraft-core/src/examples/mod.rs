@@ -117,49 +117,57 @@ impl Example {
 
     /// A short title for a picker.
     pub fn title(self) -> &'static str {
+        self.title_tr(crate::i18n::Tr::new(crate::i18n::Locale::En))
+    }
+
+    /// Localized short title for a picker.
+    pub fn title_tr(self, tr: crate::i18n::Tr) -> &'static str {
+        use crate::i18n::Key;
         match self {
-            Example::Yacht10m => "10 m cruising yacht",
-            Example::Kayik9m => "9 m Aegean kayık (piyade)",
-            Example::Runabout6m => "6.5 m outboard runabout",
-            Example::Skiff4m => "4.3 m plywood skiff",
-            Example::Container230m => "230 m container ship (KCS-like)",
-            Example::Trawler22m => "22 m fishing vessel",
-            Example::Wigley => "Wigley hull (benchmark)",
+            Example::Yacht10m => tr.s(Key::ExampleYacht10mTitle),
+            Example::Kayik9m => tr.s(Key::ExampleKayik9mTitle),
+            Example::Runabout6m => tr.s(Key::ExampleRunabout6mTitle),
+            Example::Skiff4m => tr.s(Key::ExampleSkiff4mTitle),
+            Example::Container230m => tr.s(Key::ExampleContainer230mTitle),
+            Example::Trawler22m => tr.s(Key::ExampleTrawler22mTitle),
+            Example::Wigley => tr.s(Key::ExampleWigleyTitle),
         }
     }
 
     /// One line: what the hull is.
     pub fn description(self) -> &'static str {
+        self.description_tr(crate::i18n::Tr::new(crate::i18n::Locale::En))
+    }
+
+    /// Localized one-line summary of the hull.
+    pub fn description_tr(self, tr: crate::i18n::Tr) -> &'static str {
+        use crate::i18n::Key;
         match self {
-            Example::Yacht10m => "Fin-keel cruiser with spade rudder and deck",
-            Example::Kayik9m => {
-                "Round-bilge workboat on a deep keel, raked stem, small transom, inboard diesel, 7 kn; means of 12 surveyed piyade boats (Turan 2022), lines our own; KG 0.95 m estimated"
-            }
-            Example::Runabout6m => {
-                "Hard-chine deep-V planing boat (23° deadrise), flat raked transom for an outboard, 30 kn; KG 0.65 m assumed"
-            }
-            Example::Skiff4m => {
-                "Flat-bottom stitch-and-glue skiff for oars or a 6 hp outboard, 12 kn; bottom, sides and transom lie flat in plywood within the default panel limits; KG 0.42 m estimated"
-            }
-            Example::Container230m => "Bulbous bow and transom stern, KCS particulars, own lines",
-            Example::Trawler22m => {
-                "Steel round-bilge stern trawler: skeg, raked transom, bulwark; KG 2.50 m assumed"
-            }
-            Example::Wigley => {
-                "Parabolic benchmark hull, L 10 m, B 1 m, T 0.625 m; closed-form hydrostatics"
-            }
+            Example::Yacht10m => tr.s(Key::ExampleYacht10mDesc),
+            Example::Kayik9m => tr.s(Key::ExampleKayik9mDesc),
+            Example::Runabout6m => tr.s(Key::ExampleRunabout6mDesc),
+            Example::Skiff4m => tr.s(Key::ExampleSkiff4mDesc),
+            Example::Container230m => tr.s(Key::ExampleContainer230mDesc),
+            Example::Trawler22m => tr.s(Key::ExampleTrawler22mDesc),
+            Example::Wigley => tr.s(Key::ExampleWigleyDesc),
         }
     }
 
     /// Where the target particulars come from.
     pub fn source(self) -> &'static str {
+        self.source_tr(crate::i18n::Tr::new(crate::i18n::Locale::En))
+    }
+
+    /// Localized source note for the target particulars.
+    pub fn source_tr(self, tr: crate::i18n::Tr) -> &'static str {
+        use crate::i18n::Key;
         match self {
-            Example::Kayik9m => "Turan (2022), mean of 12 piyade boats",
-            Example::Container230m => "KCS benchmark particulars; lines our own",
-            Example::Trawler22m => "representative of vessels of this size",
-            Example::Wigley => "closed form",
-            Example::Skiff4m => "representative of home-built skiffs of this size; lines our own",
-            _ => "representative of production boats of this size",
+            Example::Kayik9m => tr.s(Key::ExampleKayik9mSource),
+            Example::Container230m => tr.s(Key::ExampleContainer230mSource),
+            Example::Trawler22m => tr.s(Key::ExampleTrawler22mSource),
+            Example::Wigley => tr.s(Key::ExampleWigleySource),
+            Example::Skiff4m => tr.s(Key::ExampleSkiff4mSource),
+            _ => tr.s(Key::ExampleSourceProductionBoats),
         }
     }
 
@@ -649,6 +657,23 @@ mod tests {
             let a = serde_json::to_string(&checks::measure(&s)).unwrap();
             let b = serde_json::to_string(&checks::measure(&plain)).unwrap();
             assert_eq!(a, b, "{e}");
+        }
+    }
+
+    #[test]
+    fn turkish_metadata_is_populated_and_distinct() {
+        let en = crate::i18n::Tr::new(crate::i18n::Locale::En);
+        let tr = crate::i18n::Tr::new(crate::i18n::Locale::Tr);
+        for e in Example::VARIANTS {
+            assert_eq!(e.title(), e.title_tr(en));
+            assert_eq!(e.description(), e.description_tr(en));
+            assert_eq!(e.source(), e.source_tr(en));
+            assert!(!e.title_tr(tr).is_empty());
+            assert!(!e.description_tr(tr).is_empty());
+            assert!(!e.source_tr(tr).is_empty());
+            assert_ne!(e.title_tr(tr), e.title());
+            assert_ne!(e.description_tr(tr), e.description());
+            assert_ne!(e.source_tr(tr), e.source());
         }
     }
 }

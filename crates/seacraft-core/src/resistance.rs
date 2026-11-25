@@ -39,6 +39,7 @@
 //! vessel.
 
 use crate::hydro::{self, Hull, HydroOptions};
+use crate::i18n::{Key, Msg};
 use crate::subdiv::SubdivisionOptions;
 use serde::{Deserialize, Serialize};
 
@@ -162,26 +163,26 @@ impl HoltropInput {
         })
     }
 
-    /// The empirical validity ranges this hull falls outside, as short strings.
-    pub fn warnings(&self) -> Vec<String> {
+    /// The empirical validity ranges this hull falls outside, as short messages.
+    pub fn warnings(&self) -> Vec<Msg> {
         let mut out = Vec::new();
         let lb = self.length_wl / self.beam_wl;
         let bt = self.beam_wl / self.draft;
         if !(0.55..=0.85).contains(&self.cp) {
-            out.push(format!("Cp {:.3} is outside 0.55-0.85", self.cp));
+            out.push(Msg::new(Key::WarnHmCp).arg("cp", format!("{:.3}", self.cp)));
         }
         if !(3.9..=14.9).contains(&lb) {
-            out.push(format!("L/B {lb:.2} is outside 3.9-14.9"));
+            out.push(Msg::new(Key::WarnHmLb).arg("lb", format!("{lb:.2}")));
         }
         if !(2.1..=4.0).contains(&bt) {
-            out.push(format!("B/T {bt:.2} is outside 2.1-4.0"));
+            out.push(Msg::new(Key::WarnHmBt).arg("bt", format!("{bt:.2}")));
         }
         if self.bulb_area_m2 > 0.0 && self.bulb_centre_z > 0.6 * self.draft {
-            out.push(format!(
-                "bulb centre {:.2} m is above 0.6 T ({:.2} m); the method uses 0.6 T",
-                self.bulb_centre_z,
-                0.6 * self.draft
-            ));
+            out.push(
+                Msg::new(Key::WarnHmBulb)
+                    .arg("z", format!("{:.2}", self.bulb_centre_z))
+                    .arg("limit", format!("{:.2}", 0.6 * self.draft)),
+            );
         }
         out
     }
@@ -962,7 +963,7 @@ impl DsyhsInput {
     /// - BWL / Tc: 2.46 to 19.38
     /// - LWL / ∇^(1/3): 4.34 to 8.50
     /// - LCB from FPP: 0.50 to 0.56 · LWL
-    pub fn warnings(&self) -> Vec<String> {
+    pub fn warnings(&self) -> Vec<Msg> {
         let mut out = Vec::new();
         let lb = if self.beam_wl > 1e-6 {
             self.length_wl / self.beam_wl
@@ -980,40 +981,34 @@ impl DsyhsInput {
             0.0
         };
         if !(0.52..=0.60).contains(&self.cp) {
-            out.push(format!(
-                "Cp {:.3} is outside DSYHS valid range 0.52-0.60",
-                self.cp
-            ));
+            out.push(Msg::new(Key::WarnDsyhsCp).arg("cp", format!("{:.3}", self.cp)));
         }
         if !(0.65..=0.78).contains(&self.cm) {
-            out.push(format!(
-                "Cm {:.3} is outside DSYHS valid range 0.65-0.78",
-                self.cm
-            ));
+            out.push(Msg::new(Key::WarnDsyhsCm).arg("cm", format!("{:.3}", self.cm)));
         }
         if !(2.73..=5.00).contains(&lb) {
-            out.push(format!(
-                "L/B {lb:.2} is outside DSYHS valid range 2.73-5.00"
-            ));
+            out.push(Msg::new(Key::WarnDsyhsLb).arg("lb", format!("{lb:.2}")));
         }
         if !(2.46..=19.38).contains(&bt) {
-            out.push(format!(
-                "B/T {bt:.2} is outside DSYHS valid range 2.46-19.38"
-            ));
+            out.push(Msg::new(Key::WarnDsyhsBt).arg("bt", format!("{bt:.2}")));
         }
         if !(4.34..=8.50).contains(&l_vol) {
-            out.push(format!(
-                "L/∇^(1/3) {l_vol:.2} is outside DSYHS valid range 4.34-8.50"
-            ));
+            out.push(Msg::new(Key::WarnDsyhsLVol).arg("value", format!("{l_vol:.2}")));
         }
         if !(0.50..=0.56).contains(&self.lcb_fpp_ratio) {
-            out.push(format!(
-                "LCB from FPP {:.3}·LWL is outside DSYHS valid range 0.50-0.56",
-                self.lcb_fpp_ratio
-            ));
+            out.push(
+                Msg::new(Key::WarnDsyhsLcb).arg("value", format!("{:.3}", self.lcb_fpp_ratio)),
+            );
         }
         out
     }
+}
+
+/// The warning for a speed outside the DSYHS Froude range 0.15 to 0.75, where the curve is clamped.
+pub fn dsyhs_fn_warning(froude: f64, speed_kn: f64) -> Msg {
+    Msg::new(Key::WarnDsyhsFn)
+        .arg("fn", format!("{froude:.3}"))
+        .arg("speed", format!("{speed_kn:.2}"))
 }
 
 #[rustfmt::skip]
@@ -1519,8 +1514,14 @@ mod tests {
             a.ra_n,
             b.ra_n
         );
-        assert!(above.warnings().iter().any(|w| w.contains("0.6 T")));
-        assert!(!at_limit.warnings().iter().any(|w| w.contains("0.6 T")));
+        assert!(above
+            .warnings()
+            .iter()
+            .any(|w| w.to_string().contains("0.6 T")));
+        assert!(!at_limit
+            .warnings()
+            .iter()
+            .any(|w| w.to_string().contains("0.6 T")));
     }
 
     /// The worked example printed in Holtrop (1984), "A statistical re-analysis
@@ -1904,9 +1905,9 @@ mod tests {
         i.draft = 5.0;
         i.beam_wl = 2.0; // L/B 50
         let w = i.warnings();
-        assert!(w.iter().any(|s| s.contains("Cp")), "{w:?}");
-        assert!(w.iter().any(|s| s.contains("L/B")), "{w:?}");
-        assert!(w.iter().any(|s| s.contains("B/T")), "{w:?}");
+        assert!(w.iter().any(|s| s.to_string().contains("Cp")), "{w:?}");
+        assert!(w.iter().any(|s| s.to_string().contains("L/B")), "{w:?}");
+        assert!(w.iter().any(|s| s.to_string().contains("B/T")), "{w:?}");
     }
 
     /// R8-2 A07. DSYHS regresses on the canoe body. The 10 m yacht floats
@@ -1934,7 +1935,7 @@ mod tests {
             whole.volume_m3
         );
         assert!(
-            !d.warnings().iter().any(|w| w.contains("B/Tc")),
+            !d.warnings().iter().any(|w| w.to_string().contains("B/Tc")),
             "{:?}",
             d.warnings()
         );

@@ -25,6 +25,7 @@
 
 use crate::curves::station_polygons;
 use crate::hydro::Hull;
+use crate::i18n::{Key, Locale, Tr};
 use crate::math::Vec3;
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -229,10 +230,16 @@ fn cell(v: Option<f64>) -> String {
 /// The table as a standalone HTML page: both tables, station keel and sheer
 /// heights, and the ordinate lists the cells belong to.
 pub fn html(table: &TableOfOffsets, title: &str) -> String {
+    html_tr(table, title, Tr::new(Locale::En))
+}
+
+/// Localized form of [`html`].
+pub fn html_tr(table: &TableOfOffsets, title: &str, tr: Tr) -> String {
     let mut out = String::with_capacity(4096);
     let _ = write!(
         out,
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n",
+        "<!DOCTYPE html>\n<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n",
+        tr.locale().code(),
         esc(title)
     );
     out.push_str(
@@ -248,22 +255,28 @@ pub fn html(table: &TableOfOffsets, title: &str) -> String {
          </style>\n</head>\n<body>\n",
     );
     let _ = writeln!(out, "<h1>{}</h1>", esc(title));
+    let keel_z = format!("{:.3}", table.keel_z);
     let _ = writeln!(
         out,
-        "<p class=\"note\">Metres. Stations on x (forward), half-breadths to starboard from the centreline, \
-         waterlines measured above the keel ({:.3} m in model z). &ldquo;-&rdquo; means the section does not \
-         reach that ordinate.</p>",
-        table.keel_z
+        "<p class=\"note\">{}</p>",
+        esc(&tr.fmt(Key::OffsetsHtmlNote, &[("keel_z", &keel_z)]))
     );
 
     // ---- waterline table ------------------------------------------------
-    out.push_str(
-        "<h2>Half-breadths at waterlines</h2>\n<table>\n<thead><tr><th class=\"x\">x [m]</th>",
+    let _ = write!(
+        out,
+        "<h2>{}</h2>\n<table>\n<thead><tr><th class=\"x\">x [m]</th>",
+        esc(tr.s(Key::OffsetsHtmlWaterlinesHeading))
     );
     for wl in &table.waterlines_m {
         let _ = write!(out, "<th>WL {wl:.2}</th>");
     }
-    out.push_str("<th>keel z</th><th>sheer z</th><th>B/2</th></tr></thead>\n<tbody>\n");
+    let _ = writeln!(
+        out,
+        "<th>{}</th><th>{}</th><th>B/2</th></tr></thead>\n<tbody>",
+        esc(tr.s(Key::OffsetsHtmlColKeelZ)),
+        esc(tr.s(Key::OffsetsHtmlColSheerZ))
+    );
     for s in &table.stations {
         let _ = write!(out, "<tr><td class=\"x\">{:.3}</td>", s.x);
         for v in &s.waterline_half_breadths {
@@ -278,7 +291,11 @@ pub fn html(table: &TableOfOffsets, title: &str) -> String {
     out.push_str("</tbody>\n</table>\n");
 
     // ---- buttock table --------------------------------------------------
-    out.push_str("<h2>Heights at buttocks</h2>\n<table>\n<thead><tr><th class=\"x\">x [m]</th>");
+    let _ = write!(
+        out,
+        "<h2>{}</h2>\n<table>\n<thead><tr><th class=\"x\">x [m]</th>",
+        esc(tr.s(Key::OffsetsHtmlButtocksHeading))
+    );
     for b in &table.buttocks_m {
         let _ = write!(out, "<th>B {b:.2}</th>");
     }
@@ -290,9 +307,11 @@ pub fn html(table: &TableOfOffsets, title: &str) -> String {
         }
         out.push_str("</tr>\n");
     }
-    out.push_str("</tbody>\n</table>\n<p class=\"note\">Buttock heights are the lowest model z at which \
-                  the hull reaches the offset in the column (the buttock curve drawn in the profile \
-                  view).</p>\n</body>\n</html>\n");
+    let _ = writeln!(
+        out,
+        "</tbody>\n</table>\n<p class=\"note\">{}</p>\n</body>\n</html>",
+        esc(tr.s(Key::OffsetsHtmlButtockNote))
+    );
     out
 }
 
@@ -304,33 +323,56 @@ pub fn pdf(
     title: &str,
     imperial: bool,
 ) -> Result<crate::pdf::Document, String> {
-    use crate::pdf::{add_table, Pdf, Table};
+    pdf_tr(table, title, imperial, Tr::new(Locale::En))
+}
+
+/// Localized form of [`pdf`].
+pub fn pdf_tr(
+    table: &TableOfOffsets,
+    title: &str,
+    imperial: bool,
+    tr: Tr,
+) -> Result<crate::pdf::Document, String> {
+    use crate::pdf::{add_table_tr, Pdf, Table};
     use crate::units::{ft_in_8ths, millimetres};
     if table.stations.is_empty() {
-        return Err("the table of offsets has no stations: nothing to tabulate".into());
+        return Err(tr.s(Key::OffsetsErrEmpty).into());
     }
-    let subtitle = "Heights are above the baseline (keel). \"-\" means the section does not reach.";
+    let subtitle = tr.s(Key::OffsetsPdfSubtitle);
+    let footer = crate::not_validated_note(tr.locale());
+    let station_col = tr.s(Key::OffsetsColStation);
+    let keel_col = tr.s(Key::OffsetsColKeel);
+    let sheer_col = tr.s(Key::OffsetsColSheer);
     let mut doc = Pdf::new(title);
     // The unit in the titles, the x column's heading, and how a length and an x are written.
     type Write = fn(f64) -> String;
-    let mut systems: Vec<(&str, &str, Write, Write)> =
-        vec![("millimetres", "x [m]", millimetres, |x| format!("{x:.3}"))];
+    let mut systems: Vec<(&str, &str, Write, Write)> = vec![(
+        tr.s(Key::OffsetsUnitMillimetres),
+        "x [m]",
+        millimetres,
+        |x| format!("{x:.3}"),
+    )];
     if imperial {
-        systems.push(("feet-inches-eighths", "x [ft-in-8]", ft_in_8ths, ft_in_8ths));
+        systems.push((
+            tr.s(Key::OffsetsUnitImperial),
+            "x [ft-in-8]",
+            ft_in_8ths,
+            ft_in_8ths,
+        ));
     }
     for (unit, x_head, length, x) in systems {
         let cell = |v: Option<f64>| v.map_or_else(|| "-".to_owned(), length);
         let height = |z: f64| length(z - table.keel_z);
         let station = |i: usize| (i + 1).to_string();
 
-        let mut header = vec!["Station".to_owned(), x_head.to_owned()];
+        let mut header = vec![station_col.to_owned(), x_head.to_owned()];
         header.extend(
             table
                 .waterlines_m
                 .iter()
                 .map(|h| format!("WL {}", length(*h))),
         );
-        header.extend(["Keel", "Sheer", "B/2"].map(String::from));
+        header.extend([keel_col, sheer_col, "B/2"].map(String::from));
         let rows: Vec<Vec<String>> = table
             .stations
             .iter()
@@ -342,20 +384,24 @@ pub fn pdf(
                 row
             })
             .collect();
-        let half_breadths = format!("{title}: half-breadths, {unit}");
-        add_table(
+        let half_breadths = tr.fmt(
+            Key::OffsetsPdfHalfBreadthsTitle,
+            &[("title", title), ("unit", unit)],
+        );
+        add_table_tr(
             &mut doc,
             &Table {
                 title: &half_breadths,
                 subtitle,
                 header: &header,
                 rows: &rows,
-                footer: crate::NOT_VALIDATED_NOTE,
+                footer,
                 repeat: 2,
             },
+            tr,
         );
 
-        let mut header = vec!["Station".to_owned(), x_head.to_owned()];
+        let mut header = vec![station_col.to_owned(), x_head.to_owned()];
         header.extend(table.buttocks_m.iter().map(|b| format!("B {}", length(*b))));
         let rows: Vec<Vec<String>> = table
             .stations
@@ -371,17 +417,21 @@ pub fn pdf(
                 row
             })
             .collect();
-        let buttocks = format!("{title}: heights on buttocks, {unit}");
-        add_table(
+        let buttocks = tr.fmt(
+            Key::OffsetsPdfButtocksTitle,
+            &[("title", title), ("unit", unit)],
+        );
+        add_table_tr(
             &mut doc,
             &Table {
                 title: &buttocks,
                 subtitle,
                 header: &header,
                 rows: &rows,
-                footer: crate::NOT_VALIDATED_NOTE,
+                footer,
                 repeat: 2,
             },
+            tr,
         );
     }
     doc.finish()
@@ -694,10 +744,59 @@ mod tests {
     }
 
     #[test]
+    fn page_markers_follow_the_document_language() {
+        let table = box_table(40, &[1.0], &[1.0]);
+        let en = pdf(&table, "Box", false).unwrap();
+        let text = crate::pdf::page_text(&en.bytes, 0);
+        assert!(text.iter().any(|t| t == "Page 1 of 2"), "{text:?}");
+        let tr = pdf_tr(&table, "Box", false, Tr::new(Locale::Tr)).unwrap();
+        let text = crate::pdf::page_text(&tr.bytes, 1);
+        assert!(text.iter().any(|t| t == "Sayfa 2 / 2"), "{text:?}");
+        assert!(!text.iter().any(|t| t.starts_with("Page ")), "{text:?}");
+    }
+
+    #[test]
     fn an_empty_table_is_an_error() {
         let mut table = box_table(5, &[1.0], &[1.0]);
         table.stations.clear();
         let err = pdf(&table, "Box", false).unwrap_err();
         assert!(err.contains("nothing to tabulate"), "{err}");
+    }
+
+    #[test]
+    fn turkish_offsets_html_and_pdf_localize_headings_and_render_all_glyphs() {
+        let tr = Tr::new(Locale::Tr);
+        let mut table = box_table(5, &[1.0], &[1.0]);
+
+        let page = html_tr(&table, "Kutu <ofset>", tr);
+        assert!(page.contains("<html lang=\"tr\">"));
+        assert!(page.contains("Kutu &lt;ofset&gt;"));
+        for want in [
+            "Su hatlarında yarı genişlikler",
+            "omurga z",
+            "küpeşte z",
+            "Boyuna kesitlerde (Bato hatlarında) yükseklikler",
+        ] {
+            assert!(page.contains(want), "missing `{want}` in Turkish HTML");
+        }
+
+        let doc = pdf_tr(&table, "Kutu", true, tr).unwrap();
+        assert!(doc.missing.is_empty(), "{:?}", doc.missing);
+        let shown = crate::pdf::shown_text(&doc.bytes);
+        for want in [
+            "Posta",
+            "Omurga",
+            "Küpeşte",
+            "Kutu: yarı genişlikler, milimetre",
+            "Kutu: yarı genişlikler, fit-inç-sekizlik",
+            "Kutu: boyuna kesit yükseklikleri, milimetre",
+            crate::not_validated_note(Locale::Tr),
+        ] {
+            assert!(shown.iter().any(|t| t == want), "{want} in {shown:?}");
+        }
+
+        table.stations.clear();
+        let err = pdf_tr(&table, "Kutu", false, tr).unwrap_err();
+        assert!(err.contains("posta yok"), "{err}");
     }
 }

@@ -106,7 +106,9 @@ impl Default for StartRects {
 pub fn start_card(
     ui: &mut egui::Ui,
     recent: &[crate::recent::RecentEntry],
+    tr: seacraft_core::i18n::Tr,
 ) -> (StartAction, StartRects) {
+    use seacraft_core::i18n::Key;
     let mut action = StartAction::None;
     let mut rects = StartRects::default();
     let full = ui.available_rect_before_wrap();
@@ -143,7 +145,9 @@ pub fn start_card(
                         .heading()
                         .color(theme::TEXT_PRIMARY),
                 );
-                ui.label(egui::RichText::new("Start a hull design").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::StartSubtitle)).color(theme::TEXT_SECONDARY),
+                );
                 ui.add_space(12.0);
                 let button = |ui: &mut egui::Ui, text: &str, shortcut: Option<String>| {
                     let mut b = egui::Button::new(text).min_size(egui::vec2(size.x - 40.0, 30.0));
@@ -152,31 +156,33 @@ pub fn start_card(
                     }
                     ui.add(b)
                 };
-                let r = button(ui, "New design…", Some(keys(egui::Key::N)));
+                let r = button(ui, tr.s(Key::StartNewDesign), Some(keys(egui::Key::N)));
                 rects.new_design = r.rect;
                 if r.clicked() {
                     action = StartAction::NewDesign;
                 }
                 if !Example::all().is_empty() {
-                    let r = button(ui, "Open an example…", None);
+                    let r = button(ui, tr.s(Key::StartExample), None);
                     rects.example = r.rect;
                     if r.clicked() {
                         action = StartAction::Example;
                     }
                 }
-                let r = button(ui, "Open…", Some(keys(egui::Key::O)));
+                let r = button(ui, tr.s(Key::StartOpen), Some(keys(egui::Key::O)));
                 rects.open = r.rect;
                 if r.clicked() {
                     action = StartAction::Open;
                 }
-                let r = button(ui, "Open demo hull", None);
+                let r = button(ui, tr.s(Key::StartDemo), None);
                 rects.demo = r.rect;
                 if r.clicked() {
                     action = StartAction::Demo;
                 }
                 if shown > 0 {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Recent").color(theme::TEXT_SECONDARY));
+                    ui.label(
+                        egui::RichText::new(tr.s(Key::StartRecent)).color(theme::TEXT_SECONDARY),
+                    );
                     for (i, entry) in recent.iter().take(shown).enumerate() {
                         let full_path = entry.path.display().to_string();
                         // The folder beside the name: two files of one
@@ -199,7 +205,9 @@ pub fn start_card(
                                 action = StartAction::OpenRecent(i);
                             }
                         } else {
-                            r.on_disabled_hover_text(format!("{full_path}\nThe file is missing."));
+                            r.on_disabled_hover_text(
+                                tr.fmt(Key::RecentMissingFile, &[("path", &full_path)]),
+                            );
                         }
                     }
                 }
@@ -476,9 +484,18 @@ impl NewDesignState {
 
     /// Why *Create* is disabled, if it is.
     pub fn problem(&self) -> Option<String> {
+        self.problem_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized reason *Create* is disabled, if any.
+    pub fn problem_tr(&self, tr: seacraft_core::i18n::Tr) -> Option<String> {
+        use seacraft_core::i18n::Key;
         if self.start == StartFrom::Example {
             if !self.example.is_available() {
-                return Some(format!("the {} example is not available", self.example));
+                let ex = self.example.to_string();
+                return Some(tr.fmt(Key::NewDesignErrExampleUnavailable, &[("example", &ex)]));
             }
             return self.example_error.clone();
         }
@@ -489,16 +506,21 @@ impl NewDesignState {
             return Some(e);
         }
         if self.speed_kn.is_some_and(|v| !(v.is_finite() && v > 0.0)) {
-            return Some("design speed must be > 0".into());
+            return Some(tr.s(Key::NewDesignErrSpeedPositive).to_owned());
         }
         if self.kg.is_some_and(|v| !(v.is_finite() && v > 0.0)) {
-            return Some("KG estimate must be > 0".into());
+            return Some(tr.s(Key::NewDesignErrKgPositive).to_owned());
         }
         None
     }
 
     pub fn can_create(&self) -> bool {
         self.problem().is_none()
+    }
+
+    /// Localized check for whether *Create* is enabled.
+    pub fn can_create_tr(&self, tr: seacraft_core::i18n::Tr) -> bool {
+        self.problem_tr(tr).is_none()
     }
 
     /// The target displacement, from the target Cb.
@@ -691,6 +713,7 @@ pub(crate) fn field(
 
 /// An optional target: a checkbox that turns it on (at `default`) and its
 /// value. Returns whether anything changed.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn optional(
     ui: &mut egui::Ui,
     name: &str,
@@ -699,6 +722,7 @@ pub(crate) fn optional(
     speed: f64,
     decimals: usize,
     unit: &str,
+    tr: seacraft_core::i18n::Tr,
 ) -> bool {
     let mut on = value.is_some();
     let mut changed = false;
@@ -724,7 +748,10 @@ pub(crate) fn optional(
                 .changed();
         }
         None => {
-            ui.label(egui::RichText::new("auto").color(theme::TEXT_MUTED));
+            ui.label(
+                egui::RichText::new(tr.s(seacraft_core::i18n::Key::CommonAuto))
+                    .color(theme::TEXT_MUTED),
+            );
         }
     }
     ui.label(egui::RichText::new(unit).color(theme::TEXT_MUTED));
@@ -732,7 +759,12 @@ pub(crate) fn optional(
 }
 
 /// Draw the New design dialog.
-pub fn new_design_dialog(ctx: &egui::Context, state: &mut NewDesignState) -> NewDesignAction {
+pub fn new_design_dialog(
+    ctx: &egui::Context,
+    state: &mut NewDesignState,
+    tr: seacraft_core::i18n::Tr,
+) -> NewDesignAction {
+    use seacraft_core::i18n::Key;
     if let Some(wait) = state.tick(Instant::now()) {
         ctx.request_repaint_after(wait);
     }
@@ -740,47 +772,47 @@ pub fn new_design_dialog(ctx: &egui::Context, state: &mut NewDesignState) -> New
     let modal = egui::Modal::new(egui::Id::unique("new_design_dialog")).show(ctx, |ui| {
         ui.set_width(600.0);
         ui.label(
-            egui::RichText::new("New design")
+            egui::RichText::new(tr.s(Key::NewDesignTitle))
                 .heading()
                 .color(theme::TEXT_PRIMARY),
         );
         ui.add_space(4.0);
-        start_from(ui, state);
+        start_from(ui, state, tr);
         ui.separator();
         let parametric = state.start == StartFrom::Parametric;
         if state.start == StartFrom::Example {
-            example_preview(ui, state);
+            example_preview(ui, state, tr);
         } else {
-            ui.add_enabled_ui(parametric, |ui| principal(ui, state));
+            ui.add_enabled_ui(parametric, |ui| principal(ui, state, tr));
         }
         if parametric {
-            egui::CollapsingHeader::new("Targets (optional)")
+            egui::CollapsingHeader::new(tr.s(Key::NewDesignTargets))
                 .id_salt("new_design_targets")
                 .default_open(false)
-                .show(ui, |ui| targets(ui, state));
-            egui::CollapsingHeader::new("Shape (optional)")
+                .show(ui, |ui| targets(ui, state, tr));
+            egui::CollapsingHeader::new(tr.s(Key::NewDesignShape))
                 .id_salt("new_design_shape")
                 .default_open(false)
-                .show(ui, |ui| shape(ui, state));
+                .show(ui, |ui| shape(ui, state, tr));
             ui.separator();
-            preview(ui, state);
+            preview(ui, state, tr);
         }
         ui.separator();
         ui.horizontal(|ui| {
-            if let Some(p) = state.problem() {
+            if let Some(p) = state.problem_tr(tr) {
                 ui.colored_label(theme::FAIL, format!("⚠ {p}"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = match state.start {
-                    StartFrom::Import => "Open…",
-                    _ => "Create",
+                    StartFrom::Import => tr.s(Key::StartOpen),
+                    _ => tr.s(Key::CommonCreate),
                 };
-                let create = ui.add_enabled(state.can_create(), theme::primary_button(label));
+                let create = ui.add_enabled(state.can_create_tr(tr), theme::primary_button(label));
                 state.rects.create = create.rect;
                 if create.clicked() {
                     action = NewDesignAction::Create(state.request());
                 }
-                let cancel = ui.button("Cancel");
+                let cancel = ui.button(tr.s(Key::CommonCancel));
                 state.rects.cancel = cancel.rect;
                 if cancel.clicked() {
                     action = NewDesignAction::Cancel;
@@ -800,20 +832,27 @@ pub fn new_design_dialog(ctx: &egui::Context, state: &mut NewDesignState) -> New
     action
 }
 
-fn start_from(ui: &mut egui::Ui, state: &mut NewDesignState) {
+fn start_from(ui: &mut egui::Ui, state: &mut NewDesignState, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     egui::Grid::new("new_design_start")
         .num_columns(2)
         .spacing(egui::vec2(12.0, 6.0))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new("Start from").color(theme::TEXT_SECONDARY));
+            ui.label(
+                egui::RichText::new(tr.s(Key::NewDesignStartFrom)).color(theme::TEXT_SECONDARY),
+            );
             ui.horizontal(|ui| {
-                ui.radio_value(&mut state.start, StartFrom::Parametric, "Parametric");
+                ui.radio_value(
+                    &mut state.start,
+                    StartFrom::Parametric,
+                    tr.s(Key::NewDesignParametric),
+                );
                 ui.add_enabled_ui(state.start == StartFrom::Parametric, |ui| {
                     for kind in [HullKind::Displacement, HullKind::Planing, HullKind::Yacht] {
                         let label = match kind {
-                            HullKind::Displacement => "Displacement",
-                            HullKind::Planing => "Planing",
-                            HullKind::Yacht => "Yacht",
+                            HullKind::Displacement => tr.s(Key::NewDesignKindDisplacement),
+                            HullKind::Planing => tr.s(Key::NewDesignKindPlaning),
+                            HullKind::Yacht => tr.s(Key::NewDesignKindYacht),
                         };
                         if ui.selectable_label(state.kind == kind, label).clicked()
                             && state.kind != kind
@@ -828,16 +867,20 @@ fn start_from(ui: &mut egui::Ui, state: &mut NewDesignState) {
             if !examples.is_empty() {
                 ui.label("");
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut state.start, StartFrom::Example, "Example");
+                    ui.radio_value(
+                        &mut state.start,
+                        StartFrom::Example,
+                        tr.s(Key::NewDesignExample),
+                    );
                     ui.add_enabled_ui(state.start == StartFrom::Example, |ui| {
                         egui::ComboBox::from_id_salt("new_design_example")
-                            .selected_text(state.example.title())
+                            .selected_text(state.example.title_tr(tr))
                             .width(260.0)
                             .show_ui(ui, |ui| {
                                 for e in examples {
                                     let r = ui
-                                        .selectable_label(state.example == e, e.title())
-                                        .on_hover_text(e.description());
+                                        .selectable_label(state.example == e, e.title_tr(tr))
+                                        .on_hover_text(e.description_tr(tr));
                                     if r.clicked() && state.example != e {
                                         state.set_example(e);
                                     }
@@ -849,23 +892,32 @@ fn start_from(ui: &mut egui::Ui, state: &mut NewDesignState) {
             }
             ui.label("");
             ui.horizontal(|ui| {
-                ui.radio_value(&mut state.start, StartFrom::Demo, "Demo hull");
+                ui.radio_value(
+                    &mut state.start,
+                    StartFrom::Demo,
+                    tr.s(Key::NewDesignDemoHull),
+                );
                 ui.add_enabled(
                     state.start == StartFrom::Demo,
-                    egui::Checkbox::new(&mut state.half_model, "half model"),
+                    egui::Checkbox::new(&mut state.half_model, tr.s(Key::NewDesignHalfModel)),
                 );
             });
             ui.end_row();
             ui.label("");
-            ui.radio_value(&mut state.start, StartFrom::Import, "Import .fef…");
+            ui.radio_value(
+                &mut state.start,
+                StartFrom::Import,
+                tr.s(Key::NewDesignImportFef),
+            );
             ui.end_row();
         });
 }
 
-fn principal(ui: &mut egui::Ui, state: &mut NewDesignState) {
-    ui.label(egui::RichText::new("Principal dimensions").color(theme::TEXT_PRIMARY));
+fn principal(ui: &mut egui::Ui, state: &mut NewDesignState, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
+    ui.label(egui::RichText::new(tr.s(Key::NewDesignPrincipal)).color(theme::TEXT_PRIMARY));
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Name").color(theme::TEXT_SECONDARY));
+        ui.label(egui::RichText::new(tr.s(Key::NewDesignName)).color(theme::TEXT_SECONDARY));
         if ui
             .add(egui::TextEdit::singleline(&mut state.name).desired_width(240.0))
             .changed()
@@ -893,14 +945,15 @@ fn principal(ui: &mut egui::Ui, state: &mut NewDesignState) {
             if field(ui, "T", dim(&mut state.draft), "m").changed() {
                 state.touched.draft = true;
             }
-            if field(ui, "Depth", dim(&mut state.depth), "m").changed() {
+            if field(ui, tr.s(Key::NewDesignDepth), dim(&mut state.depth), "m").changed() {
                 state.touched.depth = true;
             }
             ui.end_row();
         });
 }
 
-fn targets(ui: &mut egui::Ui, state: &mut NewDesignState) {
+fn targets(ui: &mut egui::Ui, state: &mut NewDesignState, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     let actual = state.preview.as_ref().map(|p| p.report.clone());
     let actual = actual.as_ref();
     egui::Grid::new("new_design_targets")
@@ -947,8 +1000,12 @@ fn targets(ui: &mut egui::Ui, state: &mut NewDesignState) {
                 }
                 None => {
                     let text = match actual {
-                        Some(r) => format!("auto ({:.2} t, Cb {:.3})", r.displacement_t, r.cb),
-                        None => "auto".to_owned(),
+                        Some(r) => {
+                            let disp = format!("{:.2}", r.displacement_t);
+                            let cb = format!("{:.3}", r.cb);
+                            tr.fmt(Key::NewDesignAutoDisp, &[("disp", &disp), ("cb", &cb)])
+                        }
+                        None => tr.s(Key::CommonAuto).to_owned(),
                     };
                     ui.label(egui::RichText::new(text).color(theme::TEXT_MUTED));
                 }
@@ -963,7 +1020,8 @@ fn targets(ui: &mut egui::Ui, state: &mut NewDesignState) {
                 actual.map_or(50.0, |r| (r.lcb_frac * 1000.0).round() / 10.0),
                 0.1,
                 1,
-                "% LWL from aft end",
+                tr.s(Key::NewDesignLcbUnit),
+                tr,
             );
             ui.end_row();
             let fn_text = |v: Option<f64>, lwl: f64| {
@@ -971,22 +1029,41 @@ fn targets(ui: &mut egui::Ui, state: &mut NewDesignState) {
                     .unwrap_or_else(|| "kn".to_owned())
             };
             let unit = fn_text(state.speed_kn, state.lwl);
-            optional(ui, "Design speed", &mut state.speed_kn, 8.0, 0.1, 1, &unit);
+            optional(
+                ui,
+                tr.s(Key::NewDesignDesignSpeed),
+                &mut state.speed_kn,
+                8.0,
+                0.1,
+                1,
+                &unit,
+                tr,
+            );
             ui.end_row();
             let kg_default = (0.6 * state.depth * 100.0).round() / 100.0;
-            optional(ui, "KG estimate", &mut state.kg, kg_default, 0.01, 2, "m");
+            optional(
+                ui,
+                tr.s(Key::NewDesignKgEstimate),
+                &mut state.kg,
+                kg_default,
+                0.01,
+                2,
+                "m",
+                tr,
+            );
             ui.end_row();
         });
 }
 
-fn shape(ui: &mut egui::Ui, state: &mut NewDesignState) {
+fn shape(ui: &mut egui::Ui, state: &mut NewDesignState, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     egui::Grid::new("new_design_shape")
         .num_columns(3)
         .spacing(egui::vec2(8.0, 6.0))
         .show(ui, |ui| {
             if field(
                 ui,
-                "Deadrise",
+                tr.s(Key::NewDesignDeadrise),
                 theme::num(&mut state.deadrise_deg)
                     .speed(0.5)
                     .range(0.0..=90.0)
@@ -1000,25 +1077,29 @@ fn shape(ui: &mut egui::Ui, state: &mut NewDesignState) {
             ui.end_row();
             if field(
                 ui,
-                "Transom",
+                tr.s(Key::NewDesignTransom),
                 theme::num(&mut state.transom_frac)
                     .speed(0.01)
                     .range(0.0..=2.0)
                     .fixed_decimals(2),
-                "of beam",
+                tr.s(Key::NewDesignOfBeam),
             )
             .changed()
             {
                 state.touched.transom = true;
             }
             ui.end_row();
-            ui.label(egui::RichText::new("Control net").color(theme::TEXT_SECONDARY));
+            ui.label(
+                egui::RichText::new(tr.s(Key::NewDesignControlNet)).color(theme::TEXT_SECONDARY),
+            );
             ui.horizontal(|ui| {
                 ui.add(theme::num(&mut state.stations).range(1..=99));
                 ui.label(egui::RichText::new("×").color(theme::TEXT_MUTED));
                 ui.add(theme::num(&mut state.points_per_station).range(1..=99));
             });
-            ui.label(egui::RichText::new("stations × points").color(theme::TEXT_MUTED));
+            ui.label(
+                egui::RichText::new(tr.s(Key::NewDesignStationsXPoints)).color(theme::TEXT_MUTED),
+            );
             ui.end_row();
         });
 }
@@ -1067,9 +1148,10 @@ pub fn compare_rows(report: &GenerateReport) -> Vec<CompareRow> {
     ]
 }
 
-fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
+fn preview(ui: &mut egui::Ui, state: &NewDesignState, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Preview").color(theme::TEXT_PRIMARY));
+        ui.label(egui::RichText::new(tr.s(Key::NewDesignPreview)).color(theme::TEXT_PRIMARY));
         if state.preview_busy() {
             ui.spinner();
         }
@@ -1079,7 +1161,7 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
                 .as_ref()
                 .is_some_and(|p| Some(&p.spec) != state.last_spec.as_ref())
         {
-            ui.label(egui::RichText::new("out of date").color(theme::STALE));
+            ui.label(egui::RichText::new(tr.s(Key::NewDesignOutOfDate)).color(theme::STALE));
         }
     });
     ui.horizontal_top(|ui| {
@@ -1088,6 +1170,7 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
             ui.painter(),
             rect,
             state.preview.as_ref().map(|p| (&p.surface, p.spec.draft)),
+            tr,
         );
         ui.add_space(8.0);
         ui.vertical(|ui| {
@@ -1095,7 +1178,9 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
                 ui.colored_label(theme::FAIL, e);
             }
             let Some(p) = &state.preview else {
-                ui.label(egui::RichText::new("generating…").color(theme::TEXT_MUTED));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::NewDesignGenerating)).color(theme::TEXT_MUTED),
+                );
                 return;
             };
             egui::Grid::new("new_design_compare")
@@ -1103,8 +1188,11 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
                 .spacing(egui::vec2(10.0, 4.0))
                 .show(ui, |ui| {
                     ui.label("");
-                    ui.label(egui::RichText::new("target").color(theme::TARGET));
-                    ui.label(egui::RichText::new("actual").color(theme::TEXT_SECONDARY));
+                    ui.label(egui::RichText::new(tr.s(Key::NewDesignTarget)).color(theme::TARGET));
+                    ui.label(
+                        egui::RichText::new(tr.s(Key::NewDesignActual))
+                            .color(theme::TEXT_SECONDARY),
+                    );
                     ui.label("");
                     ui.end_row();
                     for r in compare_rows(&p.report) {
@@ -1112,7 +1200,7 @@ fn preview(ui: &mut egui::Ui, state: &NewDesignState) {
                         let target = r
                             .target
                             .map(|t| format!("{t:.*}", r.decimals))
-                            .unwrap_or_else(|| "auto".to_owned());
+                            .unwrap_or_else(|| tr.s(Key::CommonAuto).to_owned());
                         ui.label(egui::RichText::new(target).monospace().color(theme::TARGET));
                         ui.label(
                             egui::RichText::new(format!("{:.*}", r.decimals, r.actual))
@@ -1137,6 +1225,15 @@ pub struct ExampleRow {
 /// The particulars an example preview lists: its design requirements and
 /// its KG.
 pub fn example_rows(project: &Project) -> Vec<ExampleRow> {
+    example_rows_tr(
+        project,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Localized example preview particulars.
+pub fn example_rows_tr(project: &Project, tr: seacraft_core::i18n::Tr) -> Vec<ExampleRow> {
+    use seacraft_core::i18n::Key;
     let mut rows = Vec::new();
     let mut push = |name, v: Option<f64>, decimals: usize, unit: &str| {
         if let Some(v) = v {
@@ -1150,22 +1247,23 @@ pub fn example_rows(project: &Project) -> Vec<ExampleRow> {
         push("LWL", r.lwl, 2, "m");
         push("BWL", r.bwl, 2, "m");
         push("T", r.draft, 3, "m");
-        push("Depth", r.depth, 2, "m");
+        push(tr.s(Key::NewDesignDepth), r.depth, 2, "m");
         push("Δ", r.displacement_t, 2, "t");
         push("Cb", r.cb, 3, "");
-        push("Speed", r.design_speed_kn, 1, "kn");
+        push(tr.s(Key::NewDesignSpeed), r.design_speed_kn, 1, "kn");
     }
     push("KG", project.kg, 2, "m");
     rows
 }
 
 /// The example under *Example*: what it is, its outlines and particulars.
-fn example_preview(ui: &mut egui::Ui, state: &NewDesignState) {
+fn example_preview(ui: &mut egui::Ui, state: &NewDesignState, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     let e = state.example;
-    ui.label(egui::RichText::new(e.title()).color(theme::TEXT_PRIMARY));
-    ui.label(egui::RichText::new(e.description()).color(theme::TEXT_SECONDARY));
+    ui.label(egui::RichText::new(e.title_tr(tr)).color(theme::TEXT_PRIMARY));
+    ui.label(egui::RichText::new(e.description_tr(tr)).color(theme::TEXT_SECONDARY));
     ui.label(
-        egui::RichText::new(format!("Particulars: {}", e.source()))
+        egui::RichText::new(tr.fmt(Key::NewDesignParticulars, &[("source", e.source_tr(tr))]))
             .small()
             .color(theme::TEXT_MUTED),
     );
@@ -1177,6 +1275,7 @@ fn example_preview(ui: &mut egui::Ui, state: &NewDesignState) {
             ui.painter(),
             rect,
             built.map(|b| (&b.surface, b.surface.settings.draft)),
+            tr,
         );
         ui.add_space(8.0);
         ui.vertical(|ui| {
@@ -1188,7 +1287,7 @@ fn example_preview(ui: &mut egui::Ui, state: &NewDesignState) {
                 .num_columns(2)
                 .spacing(egui::vec2(10.0, 4.0))
                 .show(ui, |ui| {
-                    for r in example_rows(&b.project) {
+                    for r in example_rows_tr(&b.project, tr) {
                         ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
                         ui.label(
                             egui::RichText::new(r.value)
@@ -1204,7 +1303,13 @@ fn example_preview(ui: &mut egui::Ui, state: &NewDesignState) {
 
 /// Profile (top) and body plan (bottom) of a control net, with its design
 /// waterline `draft` above the keel.
-fn draw_outlines(painter: &egui::Painter, rect: egui::Rect, net: Option<(&Surface, f64)>) {
+fn draw_outlines(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    net: Option<(&Surface, f64)>,
+    tr: seacraft_core::i18n::Tr,
+) {
+    use seacraft_core::i18n::Key;
     painter.rect_filled(rect, 4.0, theme::CANVAS);
     painter.rect_stroke(
         rect,
@@ -1237,7 +1342,7 @@ fn draw_outlines(painter: &egui::Painter, rect: egui::Rect, net: Option<(&Surfac
 
     // Profile: x across, z up.
     let map = fit(top.shrink(10.0), (min.x, min.z), (max.x, max.z));
-    caption(top, "profile");
+    caption(top, tr.s(Key::NewDesignProfileCaption));
     for e in &s.edges {
         let (a, b) = (s.points[e.a].p, s.points[e.b].p);
         painter.line_segment([map(a.x, a.z), map(b.x, b.z)], net);
@@ -1247,7 +1352,7 @@ fn draw_outlines(painter: &egui::Painter, rect: egui::Rect, net: Option<(&Surfac
     // Body plan: y across (mirrored, the model is a half), z up.
     let half = max.y.abs().max(min.y.abs()).max(1e-6);
     let map = fit(bottom.shrink(10.0), (-half, min.z), (half, max.z));
-    caption(bottom, "body plan");
+    caption(bottom, tr.s(Key::NewDesignBodyPlanCaption));
     for e in &s.edges {
         let (a, b) = (s.points[e.a].p, s.points[e.b].p);
         painter.line_segment([map(a.y, a.z), map(b.y, b.z)], net);
@@ -1315,8 +1420,17 @@ impl ProjectSettingsState {
     }
 
     pub fn problem(&self) -> Option<String> {
+        self.problem_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn problem_tr(&self, tr: seacraft_core::i18n::Tr) -> Option<String> {
         if !(self.water_density.is_finite() && self.water_density > 0.0) {
-            return Some("water density must be > 0".into());
+            return Some(
+                tr.s(seacraft_core::i18n::Key::ProjectSettingsErrDensityPositive)
+                    .to_owned(),
+            );
         }
         self.requirements.validate().err()
     }
@@ -1336,12 +1450,14 @@ impl ProjectSettingsState {
 pub fn project_settings_dialog(
     ctx: &egui::Context,
     state: &mut ProjectSettingsState,
+    tr: seacraft_core::i18n::Tr,
 ) -> ProjectSettingsAction {
+    use seacraft_core::i18n::Key;
     let mut action = ProjectSettingsAction::None;
     let modal = egui::Modal::new(egui::Id::unique("project_settings_dialog")).show(ctx, |ui| {
         ui.set_width(440.0);
         ui.label(
-            egui::RichText::new("Project settings")
+            egui::RichText::new(tr.s(Key::ProjectSettingsTitle))
                 .heading()
                 .color(theme::TEXT_PRIMARY),
         );
@@ -1352,21 +1468,21 @@ pub fn project_settings_dialog(
             .show(ui, |ui| {
                 field(
                     ui,
-                    "Name",
+                    tr.s(Key::NewDesignName),
                     egui::TextEdit::singleline(&mut state.name).desired_width(220.0),
                     "",
                 );
                 ui.end_row();
                 field(
                     ui,
-                    "Designer",
+                    tr.s(Key::ProjectSettingsDesigner),
                     egui::TextEdit::singleline(&mut state.designer).desired_width(220.0),
                     "",
                 );
                 ui.end_row();
                 field(
                     ui,
-                    "Water density",
+                    tr.s(Key::ProjectSettingsWaterDensity),
                     theme::num(&mut state.water_density)
                         .speed(0.5)
                         .range(0.0..=2000.0)
@@ -1376,9 +1492,11 @@ pub fn project_settings_dialog(
                 ui.end_row();
             });
         ui.separator();
-        ui.label(egui::RichText::new("Design requirements").color(theme::TEXT_PRIMARY));
         ui.label(
-            egui::RichText::new("Targets are shown against the measured hull; they never move it.")
+            egui::RichText::new(tr.s(Key::ProjectSettingsRequirements)).color(theme::TEXT_PRIMARY),
+        );
+        ui.label(
+            egui::RichText::new(tr.s(Key::ProjectSettingsRequirementsHint))
                 .small()
                 .color(theme::TEXT_MUTED),
         );
@@ -1387,52 +1505,85 @@ pub fn project_settings_dialog(
             .num_columns(3)
             .spacing(egui::vec2(8.0, 6.0))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("Design name").color(theme::TEXT_SECONDARY));
+                ui.label(
+                    egui::RichText::new(tr.s(Key::ProjectSettingsDesignName))
+                        .color(theme::TEXT_SECONDARY),
+                );
                 ui.add(egui::TextEdit::singleline(&mut r.name).desired_width(200.0));
                 ui.label("");
                 ui.end_row();
-                optional(ui, "LWL", &mut r.lwl, 10.0, 0.01, 2, "m");
+                optional(ui, "LWL", &mut r.lwl, 10.0, 0.01, 2, "m", tr);
                 ui.end_row();
-                optional(ui, "BWL", &mut r.bwl, 3.0, 0.01, 2, "m");
+                optional(ui, "BWL", &mut r.bwl, 3.0, 0.01, 2, "m", tr);
                 ui.end_row();
-                optional(ui, "T", &mut r.draft, 0.6, 0.01, 3, "m");
+                optional(ui, "T", &mut r.draft, 0.6, 0.01, 3, "m", tr);
                 ui.end_row();
-                optional(ui, "Depth", &mut r.depth, 1.5, 0.01, 2, "m");
+                optional(
+                    ui,
+                    tr.s(Key::NewDesignDepth),
+                    &mut r.depth,
+                    1.5,
+                    0.01,
+                    2,
+                    "m",
+                    tr,
+                );
                 ui.end_row();
-                optional(ui, "Δ", &mut r.displacement_t, 10.0, 0.05, 2, "t");
+                optional(ui, "Δ", &mut r.displacement_t, 10.0, 0.05, 2, "t", tr);
                 ui.end_row();
-                optional(ui, "Cb", &mut r.cb, 0.5, 0.002, 3, "");
+                optional(ui, "Cb", &mut r.cb, 0.5, 0.002, 3, "", tr);
                 ui.end_row();
                 let mut pct = r.lcb_frac.map(|f| 100.0 * f);
-                if optional(ui, "LCB", &mut pct, 50.0, 0.1, 1, "% LWL from aft end") {
+                if optional(
+                    ui,
+                    "LCB",
+                    &mut pct,
+                    50.0,
+                    0.1,
+                    1,
+                    tr.s(Key::NewDesignLcbUnit),
+                    tr,
+                ) {
                     r.lcb_frac = pct.map(|p| p / 100.0);
                 }
                 ui.end_row();
                 optional(
                     ui,
-                    "Design speed",
+                    tr.s(Key::NewDesignDesignSpeed),
                     &mut r.design_speed_kn,
                     8.0,
                     0.1,
                     1,
                     "kn",
+                    tr,
                 );
                 ui.end_row();
-                optional(ui, "KG estimate", &mut r.kg, 1.0, 0.01, 2, "m");
+                optional(
+                    ui,
+                    tr.s(Key::NewDesignKgEstimate),
+                    &mut r.kg,
+                    1.0,
+                    0.01,
+                    2,
+                    "m",
+                    tr,
+                );
                 ui.end_row();
             });
         ui.separator();
         ui.horizontal(|ui| {
-            if let Some(p) = state.problem() {
+            let problem = state.problem_tr(tr);
+            if let Some(p) = &problem {
                 ui.colored_label(theme::FAIL, format!("⚠ {p}"));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let ok = ui.add_enabled(state.problem().is_none(), egui::Button::new("Apply"));
+                let ok =
+                    ui.add_enabled(problem.is_none(), egui::Button::new(tr.s(Key::CommonApply)));
                 state.rects.create = ok.rect;
                 if ok.clicked() {
                     action = state.apply();
                 }
-                let cancel = ui.button("Cancel");
+                let cancel = ui.button(tr.s(Key::CommonCancel));
                 state.rects.cancel = cancel.rect;
                 if cancel.clicked() {
                     action = ProjectSettingsAction::Cancel;

@@ -12,6 +12,7 @@ use eframe::egui;
 use seacraft_core::damage::DamageResult;
 use seacraft_core::export::{self, RenderMesh};
 use seacraft_core::hydro::{Hull, HydroOptions, Hydrostatics};
+use seacraft_core::i18n::Tr;
 use seacraft_core::loading::LoadingResult;
 use seacraft_core::math::{Plane, Vec3};
 use seacraft_core::project::{self, Project};
@@ -452,17 +453,24 @@ impl ExportKind {
     ];
 
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            ExportKind::Obj => "Wavefront OBJ…",
-            ExportKind::Stl => "STL (binary)…",
-            ExportKind::ThreeMf => "3MF (welded mesh)…",
-            ExportKind::Ply => "PLY (ASCII)…",
-            ExportKind::HullIges => "Hull IGES (surfaces)…",
-            ExportKind::Html => "HTML viewer…",
-            ExportKind::Linesplan => "Linesplan SVG…",
-            ExportKind::LinesplanDxf => "Linesplan DXF…",
-            ExportKind::LinesplanIges => "Linesplan IGES…",
-            ExportKind::OffsetsPdf => "Offsets table PDF…",
+            ExportKind::Obj => tr.s(Key::ExportObj),
+            ExportKind::Stl => tr.s(Key::ExportStl),
+            ExportKind::ThreeMf => tr.s(Key::ExportThreemf),
+            ExportKind::Ply => tr.s(Key::ExportPly),
+            ExportKind::HullIges => tr.s(Key::ExportHullIges),
+            ExportKind::Html => tr.s(Key::ExportHtml),
+            ExportKind::Linesplan => tr.s(Key::ExportLinesplanSvg),
+            ExportKind::LinesplanDxf => tr.s(Key::ExportLinesplanDxf),
+            ExportKind::LinesplanIges => tr.s(Key::ExportLinesplanIges),
+            ExportKind::OffsetsPdf => tr.s(Key::ExportOffsetsPdf),
         }
     }
 
@@ -635,12 +643,20 @@ impl DesignDock {
 
     /// The tab-bar label.
     pub fn label(self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    /// Localized tab-bar label.
+    pub fn label_tr(self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
-            DesignDock::Hydrostatics => "Hydro",
-            DesignDock::Loading => "Loading",
-            DesignDock::Damage => "Damage",
-            DesignDock::Windage => "Windage",
-            DesignDock::Performance => "Performance",
+            DesignDock::Hydrostatics => tr.s(Key::DockTabHydro),
+            DesignDock::Loading => tr.s(Key::DockTabLoading),
+            DesignDock::Damage => tr.s(Key::DockTabDamage),
+            DesignDock::Windage => tr.s(Key::DockTabWindage),
+            DesignDock::Performance => tr.s(Key::DockTabPerformance),
         }
     }
 
@@ -683,11 +699,18 @@ pub enum ResistanceMethod {
 
 impl ResistanceMethod {
     pub fn label(&self) -> &'static str {
+        self.label_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn label_tr(&self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         match self {
             Self::Holtrop => "Holtrop & Mennen",
             Self::Dsyhs => "Delft (DSYHS)",
-            Self::Savitsky => "Savitsky (Planing)",
-            Self::Michell => "Michell (Thin ship)",
+            Self::Savitsky => tr.s(Key::PerfMethodSavitsky),
+            Self::Michell => tr.s(Key::PerfMethodMichell),
         }
     }
 }
@@ -707,7 +730,7 @@ pub struct ResistanceRow {
 pub struct ResistanceResult {
     pub method: String,
     pub rows: Vec<ResistanceRow>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     pub rt_label: String,
 }
 
@@ -715,7 +738,7 @@ impl ResistanceResult {
     pub fn from_core(
         method: &str,
         rows: &[seacraft_core::resistance::Resistance],
-        warnings: Vec<String>,
+        warnings: Vec<seacraft_core::i18n::Msg>,
         rt_label: &str,
     ) -> Self {
         Self {
@@ -932,16 +955,27 @@ pub enum OpenError {
     Parse { path: PathBuf, reason: String },
 }
 
-impl std::fmt::Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+impl OpenError {
+    /// The message in `tr`'s language; `Display` gives English.
+    pub fn render(&self, tr: Tr) -> String {
+        let (key, path, reason) = match self {
             OpenError::Read { path, reason } => {
-                write!(f, "Cannot read {}: {reason}", path.display())
+                (seacraft_core::i18n::Key::LogOpenCannotRead, path, reason)
             }
             OpenError::Parse { path, reason } => {
-                write!(f, "Parse error in {}: {reason}", path.display())
+                (seacraft_core::i18n::Key::LogOpenParseError, path, reason)
             }
-        }
+        };
+        tr.fmt(
+            key,
+            &[("path", &path.display().to_string()), ("reason", reason)],
+        )
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.render(Tr::new(seacraft_core::i18n::Locale::En)))
     }
 }
 
@@ -1274,6 +1308,16 @@ pub struct App {
     clipped_volumes_cache: std::sync::Mutex<Vec<ClippedMeshEntry>>,
     /// Periodic autosave state machine and startup orphan recovery queue.
     autosave: crate::autosave::AutosaveState,
+    /// Persisted language preference (`Auto` or fixed locale).
+    language_pref: seacraft_core::i18n::LanguagePref,
+    /// Explicit `--lang` CLI override, if any.
+    cli_locale: Option<seacraft_core::i18n::Locale>,
+    /// `SEACRAFT_LANG` environment override, if any.
+    env_locale: Option<seacraft_core::i18n::Locale>,
+    /// Detected OS locale (`Locale::En` in deterministic headless tests).
+    system_locale: seacraft_core::i18n::Locale,
+    /// Effective active locale, resolved from the fields above.
+    locale: seacraft_core::i18n::Locale,
 }
 
 /// Build a [`MovePlan`] for `seeds`: rigid when `connected` is `None`, or
@@ -1316,12 +1360,63 @@ struct OptimiseJob {
     kg: Option<f64>,
 }
 
+/// The status line while a control point is dragged without connected editing.
+/// "exported <path> and <n> full-size sheet files (Builder panels)".
+fn exported_sheets(tr: Tr, path: &std::path::Path, n: usize) -> String {
+    let key = match tr.locale().plural_category(n) {
+        seacraft_core::i18n::PluralCategory::One => seacraft_core::i18n::Key::LogExportedSheetsOne,
+        seacraft_core::i18n::PluralCategory::Other => {
+            seacraft_core::i18n::Key::LogExportedSheetsOther
+        }
+    };
+    tr.fmt(
+        key,
+        &[
+            ("path", &path.display().to_string()),
+            ("count", &n.to_string()),
+        ],
+    )
+}
+
+fn drag_hint(tr: Tr, point: usize) -> String {
+    tr.fmt(
+        seacraft_core::i18n::Key::StatusDragHint,
+        &[("point", &point.to_string())],
+    )
+}
+
+/// The status line while connected editing moves `count` points within `reach_m`.
+fn reach_status(tr: Tr, preset: &str, reach_m: f64, count: usize) -> String {
+    tr.fmt(
+        seacraft_core::i18n::Key::StatusConnectedReach,
+        &[
+            ("preset", crate::panels::connected_preset_label(tr, preset)),
+            ("reach", &format!("{reach_m:.2}")),
+            ("count", &count.to_string()),
+        ],
+    )
+}
+
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>) -> Self {
+    /// The window app. `cli_locale` is `--lang`: it, `SEACRAFT_LANG` and the saved preference
+    /// are all in force before the first status line or a `--open` load says anything.
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        open: Option<PathBuf>,
+        cli_locale: Option<seacraft_core::i18n::Locale>,
+    ) -> Self {
         crate::theme::apply(&cc.egui_ctx);
         let mut app = Self::new_detached();
-        app.status =
-            "No model loaded — start a new design (Ctrl+N) or open a .fef (Ctrl+O).".to_owned();
+        app.system_locale = seacraft_core::i18n::Locale::detect_system();
+        let bad_env = match seacraft_core::i18n::Locale::from_env_checked() {
+            Ok(loc) => {
+                app.env_locale = loc;
+                None
+            }
+            Err(bad) => Some(bad),
+        };
+        app.cli_locale = cli_locale;
+        app.refresh_locale();
         app.preset_store =
             crate::connected_presets::PresetStore::load(crate::recent::data_dir().as_deref());
         // The recent list lives in the user's data directory. eframe's own
@@ -1334,6 +1429,17 @@ impl App {
             if let Some(storage) = cc.storage {
                 app.recent = RecentFiles::load(storage);
             }
+        }
+        app.status = app
+            .tr()
+            .s(seacraft_core::i18n::Key::StatusNoModel)
+            .to_owned();
+        if let Some(bad) = bad_env {
+            let msg = app.tr().fmt(
+                seacraft_core::i18n::Key::LogBadSeacraftLang,
+                &[("value", &bad)],
+            );
+            app.log(Level::Warning, msg);
         }
         if let Some(p) = open {
             app.load(p);
@@ -1509,6 +1615,11 @@ impl App {
             hover_followers: None,
             clipped_volumes_cache: std::sync::Mutex::new(Vec::new()),
             autosave: crate::autosave::AutosaveState::new(),
+            language_pref: seacraft_core::i18n::LanguagePref::Auto,
+            cli_locale: None,
+            env_locale: None,
+            system_locale: seacraft_core::i18n::Locale::En,
+            locale: seacraft_core::i18n::Locale::En,
         }
     }
 
@@ -1537,7 +1648,7 @@ impl App {
         let surface = match parsed {
             Ok(surface) => surface,
             Err(err) => {
-                self.log(Level::Error, err.to_string());
+                self.log(Level::Error, err.render(self.tr()));
                 return Err(err);
             }
         };
@@ -1545,29 +1656,44 @@ impl App {
             Ok(p) => (p.unwrap_or_default(), None),
             Err(e) => (Project::default(), Some(e)),
         };
-        let layers_word = if surface.layers.len() == 1 {
-            "layer"
-        } else {
-            "layers"
+        let tr = self.tr();
+        let layers = surface.layers.len();
+        let summary_key = match tr.locale().plural_category(layers) {
+            seacraft_core::i18n::PluralCategory::One => {
+                seacraft_core::i18n::Key::StatusOpenSummaryOne
+            }
+            seacraft_core::i18n::PluralCategory::Other => {
+                seacraft_core::i18n::Key::StatusOpenSummaryOther
+            }
         };
-        let mut summary = format!(
-            "{} — {} points, {} faces, {} {}",
-            surface.settings.name,
-            surface.points.len(),
-            surface.faces.len(),
-            surface.layers.len(),
-            layers_word
+        let mut summary = tr.fmt(
+            summary_key,
+            &[
+                ("name", &surface.settings.name),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+                ("count", &layers.to_string()),
+            ],
         );
         let level = if let Some(e) = &project_error {
-            summary = format!("{summary} — project file not loaded: {e}");
+            summary = tr.fmt(
+                seacraft_core::i18n::Key::StatusOpenProjectNotLoaded,
+                &[("summary", &summary), ("error", &e.to_string())],
+            );
             Level::Warning
         } else {
             if !project.is_empty() {
-                summary.push_str(" + project");
+                summary.push_str(tr.s(seacraft_core::i18n::Key::StatusOpenPlusProject));
             }
             Level::Info
         };
-        self.log(level, format!("opened {}: {summary}", path.display()));
+        self.log(
+            level,
+            tr.fmt(
+                seacraft_core::i18n::Key::LogOpened,
+                &[("path", &path.display().to_string()), ("summary", &summary)],
+            ),
+        );
         // The status line keeps the model summary it always showed.
         self.status = summary;
         self.saved_state = Some((fef::write(&surface), project.clone()));
@@ -1592,12 +1718,18 @@ impl App {
     /// `y >= 0` modelled, mirrored on evaluation).
     pub fn load_demo_shape(&mut self, symmetric: bool) {
         let surface = demo::demo_hull(symmetric);
-        let half = if symmetric { " (symmetric)" } else { "" };
-        self.set_status(format!(
-            "{} — built-in demo hull{half} ({} points, {} faces)",
-            surface.settings.name,
-            surface.points.len(),
-            surface.faces.len()
+        let key = if symmetric {
+            seacraft_core::i18n::Key::StatusDemoLoadedHalf
+        } else {
+            seacraft_core::i18n::Key::StatusDemoLoaded
+        };
+        self.set_status(self.tr().fmt(
+            key,
+            &[
+                ("name", &surface.settings.name),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+            ],
         ));
         self.surface = Some(surface);
         self.path = None;
@@ -1614,11 +1746,13 @@ impl App {
 
     /// Replace the current model with a newly generated parametric hull.
     pub fn load_generated(&mut self, surface: Surface) {
-        self.set_status(format!(
-            "{} — parametric hull ({} points, {} faces)",
-            surface.settings.name,
-            surface.points.len(),
-            surface.faces.len()
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusGeneratedLoaded,
+            &[
+                ("name", &surface.settings.name),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+            ],
         ));
         self.surface = Some(surface);
         self.path = None;
@@ -1649,13 +1783,16 @@ impl App {
         surface: Surface,
         project: Project,
     ) {
-        self.set_status(format!(
-            "{} — example `{}` ({} points, {} faces, {} layers) + project",
-            kind.title(),
-            kind.slug(),
-            surface.points.len(),
-            surface.faces.len(),
-            surface.layers.len()
+        let title = kind.title_tr(self.tr());
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusExampleLoaded,
+            &[
+                ("title", title),
+                ("slug", kind.slug()),
+                ("points", &surface.points.len().to_string()),
+                ("faces", &surface.faces.len().to_string()),
+                ("layers", &surface.layers.len().to_string()),
+            ],
         ));
         self.surface = Some(surface);
         self.path = None;
@@ -1922,9 +2059,10 @@ impl App {
         let raos_stale = self.raos_stale();
         let busy_resistance = self.resistance_track.busy();
         let busy_raos = self.raos_track.busy();
-        let wave_regime = self.wave_current().map(|w| w.regime.sentence());
+        let tr = self.tr();
+        let wave_regime = self.wave_current().map(|w| w.regime.sentence_tr(tr));
         let default_kg = self.effective_performance_kg_default();
-        let kg_source = self.performance_kg_source();
+        let kg_source = self.performance_kg_source_tr(tr);
         let kg_estimate = self.kg_is_estimate();
         let limits = self.hydro_limits();
         let keel_z = self.keel_z();
@@ -1945,21 +2083,22 @@ impl App {
             return;
         }
         panel.show(ui, |ui| {
-            toggle_wide = panels::live_strip(
+            toggle_wide = panels::live_strip_tr(
                 ui,
                 self.hydro.result.as_ref(),
                 self.hydro.kg,
                 hydro_stale,
                 self.dock_wide,
+                tr,
             );
-            panels::target_strip(ui, &targets, hydro_stale);
+            panels::target_strip_tr(ui, &targets, hydro_stale, tr);
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui| {
                 // Tight enough that the five tabs fit one row at 384 px.
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.spacing_mut().button_padding.x = 5.0;
                 for (i, t) in DesignDock::ALL.into_iter().enumerate() {
-                    let response = ui.selectable_label(tab == t, t.label());
+                    let response = ui.selectable_label(tab == t, t.label_tr(tr));
                     if tab_stale[i] {
                         panels::stale_dot(ui, response.rect);
                     }
@@ -1974,7 +2113,7 @@ impl App {
             }
             egui::ScrollArea::vertical().show(ui, |ui| match tab {
                 DesignDock::Hydrostatics => {
-                    action = DockAction::Hydro(panels::hydrostatics(
+                    action = DockAction::Hydro(panels::hydrostatics_tr(
                         ui,
                         panels::HydroPanel {
                             options: &mut self.hydro.options,
@@ -1989,10 +2128,11 @@ impl App {
                             curves: self.hydro.curves.as_deref(),
                             curves_stale,
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Loading => {
-                    action = DockAction::Loading(panels::loading(
+                    action = DockAction::Loading(panels::loading_tr(
                         ui,
                         panels::LoadingPanel {
                             project: &mut self.project,
@@ -2004,10 +2144,11 @@ impl App {
                             scroll_to: scroll_to_tank,
                             lightship: lightship.clone(),
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Damage => {
-                    action = DockAction::Damage(panels::damage(
+                    action = DockAction::Damage(panels::damage_tr(
                         ui,
                         panels::DamagePanel {
                             project: &mut self.project,
@@ -2018,10 +2159,11 @@ impl App {
                             highlight: comp_highlight,
                             scroll_to: scroll_to_comp,
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Windage => {
-                    action = DockAction::Windage(panels::windage(
+                    action = DockAction::Windage(panels::windage_tr(
                         ui,
                         panels::WindagePanel {
                             project: &mut self.project,
@@ -2033,10 +2175,11 @@ impl App {
                             selected: &mut self.selected_windage,
                             keel_z,
                         },
+                        tr,
                     ));
                 }
                 DesignDock::Performance => {
-                    action = DockAction::Performance(panels::performance(
+                    action = DockAction::Performance(panels::performance_tr(
                         ui,
                         panels::PerformancePanel {
                             state: &mut self.perf_state,
@@ -2048,6 +2191,7 @@ impl App {
                             stale_raos: raos_stale,
                             wave_regime,
                         },
+                        tr,
                     ));
                 }
             });
@@ -2107,22 +2251,27 @@ impl App {
         // `App::new` themes the window's context; a headless test's context
         // gets the same type scale on its first frame.
         crate::theme::ensure(ui);
+        let tr = self.tr();
         self.shortcuts(ui);
         self.read_connected_flip(ui);
         self.menu(ui);
-        egui::Window::new("About SeaCraft")
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::AboutTitle))
+            .id(egui::Id::unique("about_window"))
             .open(&mut self.about_open)
             .collapsible(false)
             .default_width(520.0)
             .default_height(480.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ui.ctx(), panels::about);
+            .show(ui.ctx(), |ui| panels::about(ui, tr));
         self.toolbar(ui);
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.dirty {
-                    ui.colored_label(crate::theme::WARN, "● unsaved")
-                        .on_hover_text(self.autosave.hover_text());
+                    ui.colored_label(
+                        crate::theme::WARN,
+                        tr.s(seacraft_core::i18n::Key::StatusUnsaved),
+                    )
+                    .on_hover_text(self.autosave.hover_text_tr(tr));
                 }
                 // The latest message, coloured by its level; a click lists
                 // them all (View > Messages).
@@ -2134,35 +2283,40 @@ impl App {
                         .truncate()
                         .sense(egui::Sense::click()),
                     )
-                    .on_hover_text("Click for the message log");
+                    .on_hover_text(tr.s(seacraft_core::i18n::Key::StatusClickLogTip));
                 self.status_rect = status.rect;
                 if status.clicked() {
                     self.show_messages = !self.show_messages;
                 }
                 let errors = self.messages.count(Level::Error);
-                if errors > 0 {
-                    let word = if errors == 1 { "error" } else { "errors" };
-                    if ui
+                if errors > 0
+                    && ui
                         .add(
                             egui::Label::new(
-                                egui::RichText::new(format!("{errors} {word}"))
-                                    .color(crate::theme::FAIL),
+                                egui::RichText::new(tr.plural(
+                                    seacraft_core::i18n::Key::StatusErrorsOne,
+                                    seacraft_core::i18n::Key::StatusErrorsOther,
+                                    errors,
+                                ))
+                                .color(crate::theme::FAIL),
                             )
                             .sense(egui::Sense::click()),
                         )
-                        .on_hover_text("Open the message log")
+                        .on_hover_text(tr.s(seacraft_core::i18n::Key::StatusOpenLogTip))
                         .clicked()
-                    {
-                        self.show_messages = true;
-                    }
+                {
+                    self.show_messages = true;
                 }
                 let stale = self.stale_count();
                 if stale > 0 {
                     ui.separator();
-                    let word = if stale == 1 { "result" } else { "results" };
                     ui.colored_label(
                         crate::theme::STALE,
-                        format!("{stale} {word} out of date · F5"),
+                        tr.plural(
+                            seacraft_core::i18n::Key::StatusResultsStaleOne,
+                            seacraft_core::i18n::Key::StatusResultsStaleOther,
+                            stale,
+                        ),
                     );
                 }
                 ui.separator();
@@ -2192,7 +2346,7 @@ impl App {
                 self.cache.as_ref(),
                 self.selection.active(),
             ) {
-                (Some(s), Some(c), Some(p)) => render::station_caption(s, &c.net_lines, p),
+                (Some(s), Some(c), Some(p)) => render::station_caption_tr(s, &c.net_lines, p, tr),
                 _ => None,
             };
             let mut layer_action = panels::LayerAction::None;
@@ -2213,7 +2367,7 @@ impl App {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let top = ui.cursor().top();
                         if let Some(surface) = self.surface.as_ref() {
-                            layer_action = panels::layers(
+                            layer_action = panels::layers_tr(
                                 ui,
                                 panels::LayersPanel {
                                     surface,
@@ -2221,6 +2375,7 @@ impl App {
                                     picked_face: self.picked_face,
                                     state: &mut self.layer_panel,
                                 },
+                                tr,
                             );
                         }
                         self.layer_list_rect = egui::Rect::from_x_y_ranges(
@@ -2230,7 +2385,7 @@ impl App {
                         ui.add_space(4.0);
                         ui.separator();
                         let top = ui.cursor().top();
-                        inspector = panels::inspector(
+                        inspector = panels::inspector_tr(
                             ui,
                             panels::InspectorPanel {
                                 surface: self.surface.as_ref(),
@@ -2238,6 +2393,7 @@ impl App {
                                 station_caption: station_caption.clone(),
                                 pending: &mut self.inspector_pending,
                             },
+                            tr,
                         );
                         self.inspector_rect = egui::Rect::from_x_y_ranges(
                             ui.max_rect().x_range(),
@@ -2486,6 +2642,8 @@ impl App {
     }
 
     fn menu(&mut self, ui: &mut egui::Ui) {
+        use seacraft_core::i18n::Key;
+        let tr = self.tr();
         // "Ctrl+S" here, "⌘S" on a Mac: the same text egui uses elsewhere.
         let ctx = ui.ctx().clone();
         let keys = |modifiers: egui::Modifiers, key: egui::Key| {
@@ -2494,15 +2652,15 @@ impl App {
         let command_shift = egui::Modifiers::COMMAND | egui::Modifiers::SHIFT;
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
+                ui.menu_button(tr.s(Key::MenuFile), |ui| {
                     // One entry for the three ways to start a model.
-                    ui.menu_button("New", |ui| {
+                    ui.menu_button(tr.s(Key::MenuFileNew), |ui| {
                         if ui
                             .add(
-                                egui::Button::new("Design…")
+                                egui::Button::new(tr.s(Key::MenuFileNewDesign))
                                     .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::N)),
                             )
-                            .on_hover_text("A hull from the main dimensions and a hull type")
+                            .on_hover_text(tr.s(Key::MenuFileNewDesignTip))
                             .clicked()
                         {
                             self.request(PendingAction::NewDesign);
@@ -2510,16 +2668,16 @@ impl App {
                         }
                         if !seacraft_core::examples::Example::all().is_empty()
                             && ui
-                                .button("From an example…")
-                                .on_hover_text("One of the example hulls, as a starting point")
+                                .button(tr.s(Key::MenuFileNewExample))
+                                .on_hover_text(tr.s(Key::MenuFileNewExampleTip))
                                 .clicked()
                         {
                             self.request(PendingAction::NewExample);
                             ui.close();
                         }
                         if ui
-                            .button("Demo hull")
-                            .on_hover_text("The small demo hull, to try things on")
+                            .button(tr.s(Key::MenuFileNewDemo))
+                            .on_hover_text(tr.s(Key::MenuFileNewDemoTip))
                             .clicked()
                         {
                             self.request(PendingAction::NewDemo);
@@ -2528,7 +2686,7 @@ impl App {
                     });
                     if ui
                         .add(
-                            egui::Button::new("Open .fef…")
+                            egui::Button::new(tr.s(Key::MenuFileOpen))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::O)),
                         )
                         .clicked()
@@ -2538,8 +2696,8 @@ impl App {
                     }
                     let entries = self.recent.entries();
                     let mut recent = RecentAction::None;
-                    ui.menu_button("Open recent", |ui| {
-                        recent = crate::recent::recent_menu(ui, &entries);
+                    ui.menu_button(tr.s(Key::MenuFileOpenRecent), |ui| {
+                        recent = crate::recent::recent_menu(ui, &entries, tr);
                         if recent != RecentAction::None {
                             ui.close();
                         }
@@ -2552,7 +2710,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Save")
+                            egui::Button::new(tr.s(Key::MenuFileSave))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::S)),
                         )
                         .clicked()
@@ -2563,7 +2721,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Save as…")
+                            egui::Button::new(tr.s(Key::MenuFileSaveAs))
                                 .shortcut_text(keys(command_shift, egui::Key::S)),
                         )
                         .clicked()
@@ -2575,21 +2733,21 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some() && self.report_job.is_none(),
-                            egui::Button::new("Design report…"),
+                            egui::Button::new(tr.s(Key::MenuFileDesignReport)),
                         )
                         .clicked()
                     {
                         self.open_dialog(DialogKind::Report);
                         ui.close();
                     }
-                    if ui.button("Report options…").clicked() {
+                    if ui.button(tr.s(Key::MenuFileReportOptions)).clicked() {
                         self.show_report_options = true;
                         ui.close();
                     }
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Builder templates…"),
+                            egui::Button::new(tr.s(Key::MenuFileBuilderTemplates)),
                         )
                         .clicked()
                     {
@@ -2597,7 +2755,10 @@ impl App {
                         ui.close();
                     }
                     if ui
-                        .add_enabled(self.surface.is_some(), egui::Button::new("Builder panels…"))
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new(tr.s(Key::MenuFileBuilderPanels)),
+                        )
                         .clicked()
                     {
                         self.open_builder_panels();
@@ -2606,7 +2767,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.surface.is_some(),
-                            egui::Button::new("Project settings…"),
+                            egui::Button::new(tr.s(Key::MenuFileProjectSettings)),
                         )
                         .clicked()
                     {
@@ -2614,9 +2775,9 @@ impl App {
                         ui.close();
                     }
                     ui.add_enabled_ui(self.surface.is_some(), |ui| {
-                        ui.menu_button("Export", |ui| {
+                        ui.menu_button(tr.s(Key::MenuFileExport), |ui| {
                             for kind in ExportKind::ALL {
-                                if ui.button(kind.label()).clicked() {
+                                if ui.button(kind.label_tr(tr)).clicked() {
                                     self.open_dialog(DialogKind::Export(kind));
                                     ui.close();
                                 }
@@ -2624,16 +2785,16 @@ impl App {
                         });
                     });
                     ui.separator();
-                    if ui.button("Quit").clicked() {
+                    if ui.button(tr.s(Key::MenuFileQuit)).clicked() {
                         self.request(PendingAction::Quit);
                         ui.close();
                     }
                 });
-                ui.menu_button("Edit", |ui| {
+                ui.menu_button(tr.s(Key::MenuEdit), |ui| {
                     if ui
                         .add_enabled(
                             self.history.can_undo(),
-                            egui::Button::new("Undo")
+                            egui::Button::new(tr.s(Key::MenuEditUndo))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Z)),
                         )
                         .clicked()
@@ -2644,7 +2805,7 @@ impl App {
                     if ui
                         .add_enabled(
                             self.history.can_redo(),
-                            egui::Button::new("Redo")
+                            egui::Button::new(tr.s(Key::MenuEditRedo))
                                 .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Y)),
                         )
                         .clicked()
@@ -2653,16 +2814,16 @@ impl App {
                         ui.close();
                     }
                 });
-                ui.menu_button("View", |ui| {
-                    panels::menu_heading(ui, "Show");
-                    ui.checkbox(&mut self.display.shaded, "Shaded hull");
-                    ui.checkbox(&mut self.display.wireframe, "Wireframe");
-                    ui.checkbox(&mut self.display.control_net, "Control net");
-                    ui.checkbox(&mut self.display.points, "Control points");
-                    ui.menu_button("Hidden net", |ui| {
+                ui.menu_button(tr.s(Key::MenuView), |ui| {
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingShow));
+                    ui.checkbox(&mut self.display.shaded, tr.s(Key::MenuViewShadedHull));
+                    ui.checkbox(&mut self.display.wireframe, tr.s(Key::MenuViewWireframe));
+                    ui.checkbox(&mut self.display.control_net, tr.s(Key::MenuViewControlNet));
+                    ui.checkbox(&mut self.display.points, tr.s(Key::MenuViewControlPoints));
+                    ui.menu_button(tr.s(Key::MenuViewHiddenNet), |ui| {
                         for mode in render::HiddenNet::ALL {
                             if ui
-                                .radio(self.display.hidden_net == mode, mode.label())
+                                .radio(self.display.hidden_net == mode, mode.label_tr(tr))
                                 .clicked()
                             {
                                 self.display.hidden_net = mode;
@@ -2670,37 +2831,49 @@ impl App {
                             }
                         }
                     });
-                    ui.checkbox(&mut self.display.station_focus, "Station focus");
-                    ui.checkbox(&mut self.display.waterplane, "Waterplane");
-                    ui.checkbox(&mut self.display.volumes, "Tanks & compartments");
-                    ui.checkbox(&mut self.display.windage, "Windage outlines");
-                    ui.checkbox(&mut self.display.grid, "Grid");
-                    ui.checkbox(&mut self.display.orientation, "Orientation");
-                    ui.checkbox(&mut self.display.curves, "Intersection curves");
-                    ui.checkbox(&mut self.display.combs, "Curvature combs");
-                    ui.menu_button("Curves and combs", |ui| {
+                    ui.checkbox(
+                        &mut self.display.station_focus,
+                        tr.s(Key::MenuViewStationFocus),
+                    );
+                    ui.checkbox(&mut self.display.waterplane, tr.s(Key::MenuViewWaterplane));
+                    ui.checkbox(&mut self.display.volumes, tr.s(Key::MenuViewVolumes));
+                    ui.checkbox(&mut self.display.windage, tr.s(Key::MenuViewWindage));
+                    ui.checkbox(&mut self.display.grid, tr.s(Key::MenuViewGrid));
+                    ui.checkbox(
+                        &mut self.display.orientation,
+                        tr.s(Key::MenuViewOrientation),
+                    );
+                    ui.checkbox(&mut self.display.curves, tr.s(Key::MenuViewCurves));
+                    ui.checkbox(&mut self.display.combs, tr.s(Key::MenuViewCombs));
+                    ui.menu_button(tr.s(Key::MenuViewCurvesAndCombs), |ui| {
                         let mut display = self.display.clone();
-                        if panels::section_settings(ui, &mut display) {
+                        if panels::section_settings(ui, &mut display, tr) {
                             self.display = display;
                         }
                     });
                     ui.separator();
-                    panels::menu_heading(ui, "Shading");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingShading));
                     crate::theme::segmented(ui, |ui| {
                         let current = self.display.analysis;
                         // Each mode with its remembered parameter (the
                         // toolbar edits it; 14 stripes, 1 m, 3° by default).
                         let params = self.analysis_params;
                         for (kind, label) in [
-                            (seacraft_core::AnalysisMode::Shaded, "Shaded"),
-                            (seacraft_core::AnalysisMode::Zebra { stripes: 0.0 }, "Zebra"),
+                            (
+                                seacraft_core::AnalysisMode::Shaded,
+                                tr.s(Key::MenuViewShadingShaded),
+                            ),
+                            (
+                                seacraft_core::AnalysisMode::Zebra { stripes: 0.0 },
+                                tr.s(Key::MenuViewShadingZebra),
+                            ),
                             (
                                 seacraft_core::AnalysisMode::Curvature { radius: 0.0 },
-                                "Curvature",
+                                tr.s(Key::MenuViewShadingCurvature),
                             ),
                             (
                                 seacraft_core::AnalysisMode::Draft { angle_deg: 0.0 },
-                                "Draft",
+                                tr.s(Key::MenuViewShadingDraft),
                             ),
                         ] {
                             let on = panels::same_analysis_kind(current, kind);
@@ -2710,18 +2883,18 @@ impl App {
                         }
                     });
                     ui.separator();
-                    panels::menu_heading(ui, "Panels");
-                    ui.checkbox(&mut self.show_layers, "Layer panel");
-                    ui.checkbox(&mut self.show_messages, "Messages");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingPanels));
+                    ui.checkbox(&mut self.show_layers, tr.s(Key::MenuViewLayerPanel));
+                    ui.checkbox(&mut self.show_messages, tr.s(Key::MenuViewMessages));
                     // One right-hand dock with tabs: several right-hand panels
                     // leave no room for the viewports.
-                    ui.checkbox(&mut self.show_analysis, "Analysis dock");
+                    ui.checkbox(&mut self.show_analysis, tr.s(Key::MenuViewAnalysisDock));
                     // The dock's tabs, indented under the dock they belong to.
                     ui.indent("dock_tabs", |ui| {
                         for tab in DesignDock::ALL {
                             let name = match tab {
-                                DesignDock::Hydrostatics => "Hydrostatics",
-                                other => other.label(),
+                                DesignDock::Hydrostatics => tr.s(Key::DockTabHydrostatics),
+                                other => other.label_tr(tr),
                             };
                             if ui
                                 .radio(self.show_analysis && self.dock_tab == tab, name)
@@ -2732,10 +2905,13 @@ impl App {
                         }
                     });
                     ui.separator();
-                    panels::menu_heading(ui, "Precision");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingPrecision));
                     let mut level = self.level as u32;
-                    if crate::theme::slider(ui, egui::Slider::new(&mut level, 0..=5).text("level"))
-                        .changed()
+                    if crate::theme::slider(
+                        ui,
+                        egui::Slider::new(&mut level, 0..=5).text(tr.s(Key::MenuViewLevel)),
+                    )
+                    .changed()
                     {
                         // Through the setters: shading caches and the
                         // hydrostatics key on the revision.
@@ -2746,7 +2922,7 @@ impl App {
                     // a mode could be chosen.
                     let mut mode = self.mode;
                     ui.horizontal(|ui| {
-                        ui.label("Scheme");
+                        ui.label(tr.s(Key::MenuViewScheme));
                         ui.radio_value(&mut mode, SubdivisionMode::Loop, "Loop");
                         ui.radio_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
                     });
@@ -2754,9 +2930,9 @@ impl App {
                         self.set_subdivision_mode(mode);
                     }
                     ui.separator();
-                    panels::menu_heading(ui, "Views");
+                    panels::menu_heading(ui, tr.s(Key::MenuViewHeadingViews));
                     if ui
-                        .add(egui::Button::new("Frame the model in every view").shortcut_text("F"))
+                        .add(egui::Button::new(tr.s(Key::MenuViewFrameAll)).shortcut_text("F"))
                         .clicked()
                     {
                         self.reset_cameras();
@@ -2766,7 +2942,7 @@ impl App {
                         .add(
                             egui::Button::selectable(
                                 self.maximised.is_some(),
-                                "Maximise active view",
+                                tr.s(Key::MenuViewMaximiseActive),
                             )
                             .shortcut_text(keys(egui::Modifiers::COMMAND, egui::Key::Space)),
                         )
@@ -2778,20 +2954,56 @@ impl App {
                 });
                 self.model_menu(ui);
                 self.analysis_menu(ui);
-                ui.menu_button("Help", |ui| {
-                    ui.menu_button("Keyboard and mouse", |ui| {
-                        panels::shortcut_list(ui, &panels::shortcuts(&keys));
+                ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuHelp), |ui| {
+                    ui.menu_button(
+                        tr.s(seacraft_core::i18n::Key::MenuHelpKeyboardAndMouse),
+                        |ui| {
+                            panels::shortcut_list(ui, &panels::shortcuts(&keys, tr));
+                        },
+                    );
+                    ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuHelpLanguage), |ui| {
+                        let ticked = self.language_menu_ticked();
+                        let auto_selected = ticked == seacraft_core::i18n::LanguagePref::Auto;
+                        if ui
+                            .add(egui::Button::selectable(
+                                auto_selected,
+                                tr.fmt(
+                                    seacraft_core::i18n::Key::LangSystemDefault,
+                                    &[("lang", self.system_locale.native_name())],
+                                ),
+                            ))
+                            .clicked()
+                        {
+                            self.set_language_pref(seacraft_core::i18n::LanguagePref::Auto);
+                            ui.close();
+                        }
+                        ui.separator();
+                        for &loc in seacraft_core::i18n::Locale::ALL {
+                            let selected = ticked == seacraft_core::i18n::LanguagePref::Fixed(loc);
+                            if ui
+                                .add(egui::Button::selectable(selected, loc.native_name()))
+                                .clicked()
+                            {
+                                self.set_language_pref(seacraft_core::i18n::LanguagePref::Fixed(
+                                    loc,
+                                ));
+                                ui.close();
+                            }
+                        }
                     });
-                    if ui.button("About SeaCraft…").clicked() {
+                    if ui
+                        .button(tr.s(seacraft_core::i18n::Key::MenuHelpAbout))
+                        .clicked()
+                    {
                         self.about_open = true;
                         ui.close();
                     }
                     ui.separator();
                     panels::menu_heading(
                         ui,
-                        &format!(
-                            "SeaCraft {} · hull design after FREE!ship",
-                            seacraft_core::VERSION
+                        &tr.fmt(
+                            seacraft_core::i18n::Key::MenuHelpFooter,
+                            &[("version", seacraft_core::VERSION)],
                         ),
                     );
                 });
@@ -2819,6 +3031,7 @@ impl App {
             presets: &self.preset_store.presets,
             default_reach_m,
             preset_error: self.preset_store.error.as_deref(),
+            tr: self.tr(),
         };
         let out = egui::Panel::top("toolbar")
             .frame(
@@ -2856,11 +3069,12 @@ impl App {
 
     /// The central area with no model: the start card.
     fn start_screen(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let recent = self.recent.entries();
         let (action, rects) = egui::CentralPanel::default()
             .show(ui, |ui| {
                 self.central_rect = ui.available_rect_before_wrap();
-                crate::new_design::start_card(ui, &recent)
+                crate::new_design::start_card(ui, &recent, tr)
             })
             .inner;
         self.start_rects = Some(rects);
@@ -2901,10 +3115,11 @@ impl App {
     }
 
     fn new_design_window(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let Some(state) = self.new_design.as_mut() else {
             return;
         };
-        match crate::new_design::new_design_dialog(ui.ctx(), state) {
+        match crate::new_design::new_design_dialog(ui.ctx(), state, tr) {
             crate::new_design::NewDesignAction::None => {}
             crate::new_design::NewDesignAction::Cancel => self.new_design = None,
             crate::new_design::NewDesignAction::Create(request) => {
@@ -2950,7 +3165,11 @@ impl App {
                         Ok(r) => r,
                         Err(e) => {
                             self.history = history;
-                            self.log(Level::Error, format!("New design failed: {e}"));
+                            let msg = self.tr().fmt(
+                                seacraft_core::i18n::Key::LogNewDesignFailed,
+                                &[("error", &e.to_string())],
+                            );
+                            self.log(Level::Error, msg);
                             return;
                         }
                     },
@@ -2969,9 +3188,14 @@ impl App {
                 self.apply_requirement_defaults();
                 self.reset_cameras();
                 self.history.snapshot(&before);
-                self.set_status(format!(
-                    "{name} — new {} design ({} points, {} faces)",
-                    spec.kind, result.points, result.faces
+                self.set_status(self.tr().fmt(
+                    seacraft_core::i18n::Key::StatusNewDesign,
+                    &[
+                        ("name", &name.to_string()),
+                        ("kind", &spec.kind.to_string()),
+                        ("points", &result.points.to_string()),
+                        ("faces", &result.faces.to_string()),
+                    ],
                 ));
             }
         }
@@ -3054,10 +3278,11 @@ impl App {
     }
 
     fn project_settings_window(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let Some(state) = self.project_settings.as_mut() else {
             return;
         };
-        match crate::new_design::project_settings_dialog(ui.ctx(), state) {
+        match crate::new_design::project_settings_dialog(ui.ctx(), state, tr) {
             crate::new_design::ProjectSettingsAction::None => {}
             crate::new_design::ProjectSettingsAction::Cancel => self.project_settings = None,
             crate::new_design::ProjectSettingsAction::Apply(edit) => {
@@ -3109,7 +3334,11 @@ impl App {
         if requirements_changed {
             self.set_requirements(requirements);
         }
-        self.set_status("project settings applied".to_owned());
+        self.set_status(
+            self.tr()
+                .s(seacraft_core::i18n::Key::StatusProjectSettingsApplied)
+                .to_owned(),
+        );
     }
 
     /// Replace the design requirements (Project settings, or its undo): the
@@ -3301,7 +3530,13 @@ impl App {
         };
         let text = fef::write(surface);
         if let Err(err) = seacraft_core::io::write_atomic(path, &text) {
-            let msg = format!("cannot write {}: {err}", path.display());
+            let msg = self.tr().fmt(
+                seacraft_core::i18n::Key::LogCannotWrite,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("error", &err.to_string()),
+                ],
+            );
             self.log(Level::Error, msg.clone());
             return Err(msg);
         }
@@ -3309,33 +3544,42 @@ impl App {
         self.remember_recent(path);
         let sidecar = project::sidecar_path(path);
         if let Some(e) = &self.project_error {
-            let mut msg = format!(
-                "saved {}; project file left as it was ({e})",
-                path.display()
+            let mut msg = self.tr().fmt(
+                seacraft_core::i18n::Key::LogSavedProjectLeft,
+                &[
+                    ("path", &path.display().to_string()),
+                    ("error", &e.to_string()),
+                ],
             );
             // The sidecar on disk could not be read, so it is not
             // overwritten; design data entered since stays unsaved.
             self.saved_state = Some((text, Project::default()));
             self.refresh_dirty();
             if self.dirty {
-                msg.push_str(" — design data NOT saved: fix or remove the project file");
+                msg.push_str(self.tr().s(seacraft_core::i18n::Key::LogDesignDataNotSaved));
             }
             self.log(Level::Warning, msg);
             return Ok(());
         }
-        let mut msg = format!("saved {}", path.display());
+        let tr = self.tr();
+        let path_s = path.display().to_string();
+        let mut key = seacraft_core::i18n::Key::LogSaved;
         if !self.project.is_empty() || sidecar.exists() {
             if let Err(e) = self
                 .project
                 .validate()
                 .and_then(|()| self.project.save(&sidecar))
             {
-                let msg = format!("saved {}, but {e}", path.display());
+                let msg = tr.fmt(
+                    seacraft_core::i18n::Key::LogSavedProjectFailed,
+                    &[("path", &path_s), ("error", &e.to_string())],
+                );
                 self.log(Level::Error, msg.clone());
                 return Err(msg);
             }
-            msg.push_str(" + project");
+            key = seacraft_core::i18n::Key::LogSavedWithProject;
         }
+        let msg = tr.fmt(key, &[("path", &path_s)]);
         self.dirty = false;
         self.saved_state = Some((text, self.project.clone()));
         self.autosave.note_clean();
@@ -3355,7 +3599,7 @@ impl App {
     /// checks answer at once; the encoding (a quarter of a second for SVG or VTI at a million
     /// points) and the write run in a job, which logs "Saved wave pattern to …" when done.
     pub fn write_wave_image(&mut self, path: &std::path::Path) -> Result<(), String> {
-        use seacraft_core::wave_pattern::{wave_png, wave_svg, wave_vti};
+        use seacraft_core::wave_pattern::{wave_png, wave_svg_tr, wave_vti};
         #[derive(Clone, Copy)]
         enum Format {
             Png,
@@ -3380,17 +3624,21 @@ impl App {
             return Err("a wave pattern image is still being written".to_owned());
         }
         let clip = self.perf_state.waves.clip_m;
+        let tr = self.tr();
         let target = path.to_path_buf();
         let job = Job::spawn(self.revision, move || {
             let bytes = match format {
                 Format::Png => wave_png(&field, clip).ok_or("the wave field is empty")?,
-                Format::Svg => wave_svg(&field, clip).into_bytes(),
+                Format::Svg => wave_svg_tr(&field, clip, tr).into_bytes(),
                 Format::Vti => wave_vti(&field).into_bytes(),
             };
             seacraft_core::io::write_atomic(&target, bytes)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))
         });
-        self.set_status(format!("writing wave pattern {}…", path.display()));
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusWaveImageWriting,
+            &[("path", &path.display().to_string())],
+        ));
         self.wave_image_job = Some((path.to_path_buf(), job));
         Ok(())
     }
@@ -3423,11 +3671,20 @@ impl App {
 
     fn finish_wave_image(&mut self, path: &std::path::Path, out: Result<(), String>) {
         match out {
-            Ok(()) => self.log(
-                Level::Info,
-                format!("Saved wave pattern to {}", path.display()),
-            ),
-            Err(e) => self.log(Level::Error, format!("Wave pattern image failed: {e}")),
+            Ok(()) => {
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogWaveImageSaved,
+                    &[("path", &path.display().to_string())],
+                );
+                self.log(Level::Info, msg)
+            }
+            Err(e) => {
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogWaveImageFailed,
+                    &[("error", &e)],
+                );
+                self.log(Level::Error, msg)
+            }
         }
     }
 
@@ -3450,8 +3707,11 @@ impl App {
         };
         // By default the drawing shows what the viewports show: their
         // refinement, section counts and combs, as the CLI does with its flags.
-        let linesplan_opts =
-            linesplan.unwrap_or_else(|| self.display.section_options(self.level, self.mode));
+        let linesplan_opts = linesplan.unwrap_or_else(|| {
+            let mut opts = self.display.section_options(self.level, self.mode);
+            opts.locale = self.locale;
+            opts
+        });
         let written = match kind {
             ExportKind::Obj => write_atomic(
                 path,
@@ -3483,7 +3743,7 @@ impl App {
                 return self.write_offsets_pdf(path, &defaults, false).map(|_| ());
             }
         };
-        self.log_export(kind.label(), path, written)
+        self.log_export(kind.label_tr(self.tr()), path, written)
     }
 
     /// Write the table of offsets `params` asks for as a PDF, with `imperial` tables after the
@@ -3495,7 +3755,19 @@ impl App {
         params: &crate::commands::OffsetsParams,
         imperial: bool,
     ) -> Result<usize, String> {
-        let label = ExportKind::OffsetsPdf.label();
+        let locale = self.locale;
+        self.write_offsets_pdf_locale(path, params, imperial, locale)
+    }
+
+    pub fn write_offsets_pdf_locale(
+        &mut self,
+        path: &std::path::Path,
+        params: &crate::commands::OffsetsParams,
+        imperial: bool,
+        locale: seacraft_core::i18n::Locale,
+    ) -> Result<usize, String> {
+        let label = ExportKind::OffsetsPdf.label_tr(self.tr());
+        let tr = seacraft_core::i18n::Tr::new(locale);
         let name = self
             .surface
             .as_ref()
@@ -3511,8 +3783,11 @@ impl App {
                     buttocks_m: r.buttocks_m,
                     stations: r.stations,
                 };
-                let title = format!("{name} - table of offsets");
-                seacraft_core::offsets::pdf(&table, &title, imperial)
+                let title = tr.fmt(
+                    seacraft_core::i18n::Key::OffsetsPdfDocTitle,
+                    &[("name", &name)],
+                );
+                seacraft_core::offsets::pdf_tr(&table, &title, imperial, tr)
             });
         match made {
             Ok(doc) => {
@@ -3520,7 +3795,13 @@ impl App {
                 self.log_export(label, path, written).map(|()| doc.pages)
             }
             Err(err) => {
-                let msg = format!("cannot export {}: {err}", path.display());
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogCannotExport,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("error", &err.to_string()),
+                    ],
+                );
                 self.log(Level::Error, msg.clone());
                 Err(msg)
             }
@@ -3536,18 +3817,24 @@ impl App {
     ) -> Result<(), String> {
         match written {
             Ok(()) => {
-                self.log(
-                    Level::Info,
-                    format!(
-                        "exported {} ({})",
-                        path.display(),
-                        label.trim_end_matches('…')
-                    ),
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogExported,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("what", label.trim_end_matches('…')),
+                    ],
                 );
+                self.log(Level::Info, msg);
                 Ok(())
             }
             Err(err) => {
-                let msg = format!("cannot write {}: {err}", path.display());
+                let msg = self.tr().fmt(
+                    seacraft_core::i18n::Key::LogCannotWrite,
+                    &[
+                        ("path", &path.display().to_string()),
+                        ("error", &err.to_string()),
+                    ],
+                );
                 self.log(Level::Error, msg.clone());
                 Err(msg)
             }
@@ -3555,17 +3842,19 @@ impl App {
     }
 
     fn dialog_window(&mut self, ui: &mut egui::Ui) {
+        use seacraft_core::i18n::Key;
         let Some(mut dialog) = self.dialog.take() else {
             return;
         };
+        let tr = self.tr();
         let title = match dialog.kind {
-            DialogKind::Open => "Open .fef",
-            DialogKind::SaveAs => "Save as",
-            DialogKind::Export(k) => k.label(),
-            DialogKind::Report => "Design report",
-            DialogKind::Templates => "Builder templates",
-            DialogKind::Panels => "Builder panels",
-            DialogKind::WaveImage => "Wave pattern image",
+            DialogKind::Open => tr.s(Key::DialogOpenFef),
+            DialogKind::SaveAs => tr.s(Key::DialogSaveAs),
+            DialogKind::Export(k) => k.label_tr(tr),
+            DialogKind::Report => tr.s(Key::DialogDesignReport),
+            DialogKind::Templates => tr.s(Key::DialogBuilderTemplates),
+            DialogKind::Panels => tr.s(Key::DialogBuilderPanels),
+            DialogKind::WaveImage => tr.s(Key::DialogWaveImage),
         };
         let mut accept = false;
         let mut cancel = false;
@@ -3577,7 +3866,7 @@ impl App {
             .default_width(520.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ui.ctx(), |ui| {
-                ui.label("Path");
+                ui.label(tr.s(Key::CommonPath));
                 ui.add(egui::TextEdit::singleline(&mut dialog.path).desired_width(f32::INFINITY));
                 if let Some(err) = &dialog.error {
                     ui.colored_label(crate::theme::FAIL, err);
@@ -3590,9 +3879,9 @@ impl App {
                     ui.colored_label(crate::theme::WARN, warning);
                 }
                 let ok_label = if confirming.is_some() {
-                    "Write anyway"
+                    tr.s(Key::CommonWriteAnyway)
                 } else {
-                    "OK"
+                    tr.s(Key::CommonOk)
                 };
                 ui.separator();
                 let wanted = match dialog.kind {
@@ -3613,7 +3902,7 @@ impl App {
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr.s(Key::CommonCancel)).clicked() {
                         cancel = true;
                     }
                     if ui.button(ok_label).clicked() {
@@ -3651,7 +3940,10 @@ impl App {
         // Each action's typed result decides: the dialog stays open on the
         // error it returned (also logged), and closes on success.
         let result = match dialog.kind {
-            DialogKind::Open => self.open_model(&path).map_err(|e| e.to_string()),
+            DialogKind::Open => {
+                let tr = self.tr();
+                self.open_model(&path).map_err(|e| e.render(tr))
+            }
             DialogKind::SaveAs => self.write_model(&path),
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
@@ -3675,24 +3967,30 @@ impl App {
     }
 
     fn pending_window(&mut self, ui: &mut egui::Ui) {
+        use seacraft_core::i18n::Key;
         let Some(action) = self.pending else { return };
+        let tr = self.tr();
         let mut choice: Option<Option<PendingAction>> = None; // Some(None) = cancel
-        egui::Window::new("Unsaved changes")
+        egui::Window::new(tr.s(Key::DialogUnsavedTitle))
+            .id(egui::Id::unique("unsaved_changes_window"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ui.ctx(), |ui| {
-                ui.label("There are unsaved changes. Save them first?");
+                ui.label(tr.s(Key::DialogUnsavedPrompt));
                 ui.horizontal(|ui| {
-                    if ui.add(crate::theme::primary_button("Save")).clicked() {
+                    if ui
+                        .add(crate::theme::primary_button(tr.s(Key::CommonSave)))
+                        .clicked()
+                    {
                         choice = Some(Some(action));
                     }
-                    if ui.button("Discard").clicked() {
+                    if ui.button(tr.s(Key::CommonDiscard)).clicked() {
                         choice = Some(None);
                         self.pending = None;
                         self.perform(action);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr.s(Key::CommonCancel)).clicked() {
                         choice = Some(None);
                     }
                 });
@@ -3927,10 +4225,14 @@ impl App {
         if let Some(previous) = self.history.undo(&current) {
             let moved = previous.surface.as_ref().map_or(0, |s| s.points.len());
             self.restore_snapshot(previous);
+            let tr = self.tr();
             self.set_status(if whole {
-                "undo — previous model restored".to_owned()
+                tr.s(seacraft_core::i18n::Key::StatusUndoModel).to_owned()
             } else {
-                format!("undo — {moved} control points restored")
+                tr.fmt(
+                    seacraft_core::i18n::Key::StatusUndoPoints,
+                    &[("count", &moved.to_string())],
+                )
             });
         }
     }
@@ -3979,7 +4281,10 @@ impl App {
         self.selection.retain_valid(n);
         self.mark_geometry_changed();
         self.refresh_dirty();
-        self.set_status(format!("restored to mark {id}"));
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusRestoredMark,
+            &[("id", &id.to_string())],
+        ));
         Ok(())
     }
 
@@ -3991,6 +4296,7 @@ impl App {
     }
 
     fn viewports(&mut self, ui: &mut egui::Ui) {
+        let tr = self.tr();
         let failure = self.gpu_hull.failure.lock().ok().and_then(|mut f| f.take());
         if let Some((key, message)) = failure {
             self.report_gpu_hull_failure(key, message);
@@ -4046,7 +4352,7 @@ impl App {
             self.viewport_rects[index] = cell;
             let response = ui.allocate_rect(cell, egui::Sense::click_and_drag());
             let view = self.cameras[index].transform();
-            let title = render::title_rect(ui.painter(), cell, &self.cameras[index]);
+            let title = render::title_rect_tr(ui.painter(), cell, &self.cameras[index], tr);
             self.title_rects[index] = title;
             if response.double_clicked()
                 && response
@@ -4190,11 +4496,11 @@ impl App {
                             self.bump_revision();
                             self.touch_geometry();
                             let count = drag.plan.weights().len();
-                            if count > 1 {
-                                self.set_status(format!("{count} control points moved"));
-                            } else {
-                                self.set_status("control point moved".to_owned());
-                            }
+                            self.set_status(self.tr().plural(
+                                seacraft_core::i18n::Key::StatusPointsMovedOne,
+                                seacraft_core::i18n::Key::StatusPointsMovedOther,
+                                count,
+                            ));
                             if drag.connected
                                 && self.persisted_choice.as_ref() != Some(&self.connected_choice())
                             {
@@ -4459,7 +4765,7 @@ impl App {
                 let vis = self.net_visibility(index);
                 let focus_point = self.hovered_point.or_else(|| drawn_selection.active());
                 let net_lines = self.cache.as_ref().map(|c| &c.net_lines);
-                render::viewport_with_texture(
+                render::viewport_with_texture_tr(
                     ui,
                     cell,
                     &self.cameras[index],
@@ -4476,9 +4782,10 @@ impl App {
                     hull,
                     gpu_hull,
                     waterline,
+                    tr,
                 );
             } else {
-                render::viewport(
+                render::viewport_tr(
                     ui,
                     cell,
                     &self.cameras[index],
@@ -4486,6 +4793,7 @@ impl App {
                     &self.display,
                     self.active == index,
                     None,
+                    tr,
                 );
             }
             self.draw_pick_overlays(ui, cell, index);
@@ -4495,21 +4803,29 @@ impl App {
             self.view_button_rects[index] = [fit, maximise];
             let hud = crate::theme::IconStyle::Hud;
             if crate::theme::icon_button_at(ui, fit, crate::theme::Icon::Fit, hud, false)
-                .on_hover_text(format!(
-                    "Frame the model in this view ({fit_key} frames every view)"
+                .on_hover_text(tr.fmt(
+                    seacraft_core::i18n::Key::ViewBtnFrameTip,
+                    &[("key", &fit_key)],
                 ))
                 .clicked()
             {
                 self.refit_camera(index);
             }
             let (icon, tip) = if self.maximised.is_some() {
-                (crate::theme::Icon::Restore, "Restore the four views")
+                (
+                    crate::theme::Icon::Restore,
+                    tr.s(seacraft_core::i18n::Key::ViewBtnRestore),
+                )
             } else {
-                (crate::theme::Icon::Maximise, "Maximise this view")
+                (
+                    crate::theme::Icon::Maximise,
+                    tr.s(seacraft_core::i18n::Key::ViewBtnMaximise),
+                )
             };
             if crate::theme::icon_button_at(ui, maximise, icon, hud, false)
-                .on_hover_text(format!(
-                    "{tip} ({max_key}, or double-click the view's title)"
+                .on_hover_text(tr.fmt(
+                    seacraft_core::i18n::Key::ViewBtnMaximiseTip,
+                    &[("action", tip), ("key", &max_key)],
                 ))
                 .clicked()
             {
@@ -4576,9 +4892,15 @@ impl App {
         if !self.perf_state.waves.plan_contours || self.wave_current().is_some() {
             None
         } else if self.wave_failure().is_some() {
-            Some("Wave contours failed: see the Wave pattern view")
+            Some(
+                self.tr()
+                    .s(seacraft_core::i18n::Key::StatusWaveContoursFailed),
+            )
         } else {
-            Some("Wave contours: computing…")
+            Some(
+                self.tr()
+                    .s(seacraft_core::i18n::Key::StatusWaveContoursComputing),
+            )
         }
     }
 
@@ -4813,16 +5135,14 @@ impl App {
         self.active = index;
         if let Some((preset, reach_m)) = &connected {
             let reach = reach_m.unwrap_or_else(|| preset.reach.metres(surface));
-            self.set_status(format!(
-                "{} · reach {:.2} m · {} points",
-                preset.name,
+            self.set_status(reach_status(
+                Tr::new(self.locale),
+                &preset.name,
                 reach,
-                plan.weights().len()
+                plan.weights().len(),
             ));
         } else {
-            self.set_status(format!(
-                "dragging control point {point} · hold X, Y or Z to lock an axis"
-            ));
+            self.set_status(drag_hint(Tr::new(self.locale), point));
         }
         self.drag = Some(DragState {
             point,
@@ -4864,14 +5184,14 @@ impl App {
         let point = drag.point;
         if now {
             let reach = self.effective_connected_reach_m();
-            self.set_status(format!(
-                "{} · reach {reach:.2} m · {count} points",
-                preset.name
+            self.set_status(reach_status(
+                Tr::new(self.locale),
+                &preset.name,
+                reach,
+                count,
             ));
         } else {
-            self.set_status(format!(
-                "dragging control point {point} · hold X, Y or Z to lock an axis"
-            ));
+            self.set_status(drag_hint(Tr::new(self.locale), point));
         }
         self.bump_revision();
         self.touch_geometry();
@@ -4925,23 +5245,25 @@ impl App {
             let connected_status = if lock.is_none() && drag.connected {
                 let preset = self.active_connected_preset();
                 let reach = self.effective_connected_reach_m();
-                Some(format!(
-                    "{} · reach {:.2} m · {} points",
-                    preset.name,
+                Some(reach_status(
+                    Tr::new(self.locale),
+                    &preset.name,
                     reach,
-                    drag.plan.weights().len()
+                    drag.plan.weights().len(),
                 ))
             } else {
                 None
             };
+            let tr = Tr::new(self.locale);
             self.set_status(match lock {
-                Some(axis) => format!(
-                    "dragging control point {point} along {} (locked)",
-                    crate::model_menu::axis_name(axis)
+                Some(axis) => tr.fmt(
+                    seacraft_core::i18n::Key::StatusDragLocked,
+                    &[
+                        ("point", &point.to_string()),
+                        ("axis", crate::model_menu::axis_name(axis)),
+                    ],
                 ),
-                None => connected_status.unwrap_or_else(|| {
-                    format!("dragging control point {point} · hold X, Y or Z to lock an axis")
-                }),
+                None => connected_status.unwrap_or_else(|| drag_hint(tr, point)),
             });
         }
         self.axis_lock = lock;
@@ -4972,9 +5294,11 @@ impl App {
         self.connected.reach_m = Some(next);
         rebuild_drag_plan(drag, surface, Some((&preset, Some(next))));
         let count = drag.plan.weights().len();
-        self.set_status(format!(
-            "{} · reach {next:.2} m · {count} points",
-            preset.name
+        self.set_status(reach_status(
+            Tr::new(self.locale),
+            &preset.name,
+            next,
+            count,
         ));
         self.dirty = true;
         self.autosave.note_dirty();
@@ -5306,9 +5630,18 @@ impl App {
         self.heel.start = crate::heel_view::HeelStart::Condition(i);
         self.project_changed();
         self.refresh_dirty();
-        self.set_status(format!(
-            "Added {n} trial weight{} to {name}",
-            if n == 1 { "" } else { "s" }
+        let tr = self.tr();
+        let key = match tr.locale().plural_category(n) {
+            seacraft_core::i18n::PluralCategory::One => {
+                seacraft_core::i18n::Key::StatusTrialWeightsOne
+            }
+            seacraft_core::i18n::PluralCategory::Other => {
+                seacraft_core::i18n::Key::StatusTrialWeightsOther
+            }
+        };
+        self.set_status(tr.fmt(
+            key,
+            &[("count", &n.to_string()), ("name", &name.to_string())],
         ));
     }
 
@@ -5352,7 +5685,10 @@ impl App {
             }
             None => {
                 self.heel.start = HeelStart::Dock;
-                self.set_status("Heel view: that loading condition is gone; showing the bare hull");
+                self.set_status(
+                    self.tr()
+                        .s(seacraft_core::i18n::Key::StatusHeelConditionGone),
+                );
             }
         }
     }
@@ -5361,14 +5697,21 @@ impl App {
     /// no KG for the bare hull).
     fn heel_sweep_input(&self) -> Result<crate::heel_view::SweepInput, String> {
         use crate::heel_view::{HeelStart, StartInput};
-        let surface = self.surface.clone().ok_or("no model loaded")?;
+        let tr = self.tr();
+        let surface = self
+            .surface
+            .clone()
+            .ok_or(tr.s(seacraft_core::i18n::Key::StatusNoModelLower))?;
         let subdivision = seacraft_core::subdiv::SubdivisionOptions {
             level: self.level,
             mode: self.mode,
         };
         let start = match self.heel.start {
             HeelStart::Dock => StartInput::Dock {
-                kg: self.hydro.kg.ok_or("Set KG in the Hydrostatics dock")?,
+                kg: self
+                    .hydro
+                    .kg
+                    .ok_or(tr.s(seacraft_core::i18n::Key::HeelNoKgHint))?,
                 kg_estimate: self.kg_is_estimate(),
                 lcg: if self.hydro.free_trim {
                     self.hydro.lcg
@@ -5381,7 +5724,7 @@ impl App {
                     .project
                     .loading_conditions
                     .get(i)
-                    .ok_or("that loading condition is gone")?;
+                    .ok_or(tr.s(seacraft_core::i18n::Key::StatusLoadingConditionGone))?;
                 StartInput::Condition(Box::new(self.project.with_windage(c)))
             }
         };
@@ -5398,6 +5741,7 @@ impl App {
             opts,
             start,
             weights: self.heel.weights.clone(),
+            tr,
         })
     }
 
@@ -5851,22 +6195,22 @@ impl App {
         }
         match self.hydro.curves_track.poll(key) {
             Some(Ok(out)) => self.install_curves(out, key),
-            Some(Err(e)) => self.log(Level::Error, format!("GZ curves failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobGzCurves, &e),
             None => {}
         }
         match self.loading_track.poll(self.loading_key()) {
             Some(Ok(r)) => self.install_loading(r),
-            Some(Err(e)) => self.log(Level::Error, format!("Loading compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobLoading, &e),
             None => {}
         }
         match self.damage_track.poll(self.damage_key()) {
             Some(Ok(r)) => self.damage_result = Some(r),
-            Some(Err(e)) => self.log(Level::Error, format!("Damage compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobDamage, &e),
             None => {}
         }
         match self.resistance_track.poll(self.resistance_key()) {
             Some(Ok(r)) => self.perf_state.resistance = Some(r),
-            Some(Err(e)) => self.log(Level::Error, format!("Resistance compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobResistance, &e),
             None => {}
         }
         match self.waves_track.poll(self.waves_key()) {
@@ -5874,17 +6218,17 @@ impl App {
                 self.perf_state.wave_result = Some(w);
                 self.wave_result_rev += 1;
             }
-            Some(Err(e)) => self.log(Level::Error, format!("Wave pattern failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobWavePattern, &e),
             None => {}
         }
         match self.heel_sweep_track.poll(self.heel_key()) {
             Some(Ok(out)) => self.heel_sweep = Some(out),
-            Some(Err(e)) => self.log(Level::Error, format!("Heel view failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobHeel, &e),
             None => {}
         }
         match self.heel_hull_track.poll(self.heel_hull_key()) {
             Some(Ok(h)) => self.heel_hull = Some(h),
-            Some(Err(e)) => self.log(Level::Error, format!("Heel view hull failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobHeelHull, &e),
             None => {}
         }
         // A failed exact solve leaves the drawing on the nearest sweep sample: nothing to report.
@@ -5893,7 +6237,7 @@ impl App {
         }
         match self.wave_drag_track.poll(self.wave_drag_key()) {
             Some(Ok(d)) => self.perf_state.wave_drag = Some(d),
-            Some(Err(e)) => self.log(Level::Error, format!("Wave drag curve failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobWaveDrag, &e),
             None => {}
         }
         match self.raos_track.poll(self.raos_key()) {
@@ -5901,7 +6245,7 @@ impl App {
                 self.perf_state.raos = Some(r);
                 self.perf_state.sea_result = irr;
             }
-            Some(Err(e)) => self.log(Level::Error, format!("Seakeeping compute failed: {e}")),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobSeakeeping, &e),
             None => {}
         }
         self.poll_analysis_views();
@@ -5958,7 +6302,11 @@ impl App {
             return;
         };
         let key = self.hydro_key();
-        self.set_status("computing GZ cross curves…".to_owned());
+        self.set_status(
+            self.tr()
+                .s(seacraft_core::i18n::Key::StatusGzComputing)
+                .to_owned(),
+        );
         self.hydro
             .curves_track
             .start(key, move || Ok(compute_cross_curves_for(inputs)));
@@ -5968,7 +6316,12 @@ impl App {
     /// Returns true when the curves were refused.
     fn refuse_curves_without_kg(&mut self) -> bool {
         if self.surface.is_some() && self.hydro.kg.is_none() {
-            self.set_status(format!("GZ curves: {KG_UNSET_HINT}"));
+            let tr = self.tr();
+            self.set_status(format!(
+                "{}: {}",
+                tr.s(seacraft_core::i18n::Key::JobGzCurves),
+                tr.s(seacraft_core::i18n::Key::StatusKgUnset)
+            ));
             return true;
         }
         false
@@ -5984,16 +6337,21 @@ impl App {
         }
         let free = self.hydro.free_trim;
         self.hydro.curves = out.curves;
+        let tr = self.tr();
+        let mass = format!("{:.2}", out.displacement_t);
         self.set_status(if self.hydro.curves.is_none() {
-            "GZ curves: nothing is submerged at this draft".to_owned()
+            tr.s(seacraft_core::i18n::Key::StatusGzNothingSubmerged)
+                .to_owned()
         } else if free {
-            format!(
-                "GZ cross curves for {:.2} t and ±30 %, free to trim about {:.3} m",
-                out.displacement_t,
-                out.lcg.unwrap_or_default()
+            tr.fmt(
+                seacraft_core::i18n::Key::StatusGzDoneFree,
+                &[
+                    ("mass", &mass),
+                    ("lcg", &format!("{:.3}", out.lcg.unwrap_or_default())),
+                ],
             )
         } else {
-            format!("GZ cross curves for {:.2} t and ±30 %", out.displacement_t)
+            tr.fmt(seacraft_core::i18n::Key::StatusGzDone, &[("mass", &mass)])
         });
     }
 
@@ -6161,38 +6519,38 @@ impl App {
     /// Why a tab's computation failed for the current inputs, if it did.
     pub fn tab_failure(&self, tab: DesignDock) -> Option<String> {
         let key = self.hydro_key();
-        let failures: Vec<(&str, Option<&str>)> = match tab {
+        use seacraft_core::i18n::Key;
+        let failures: Vec<(Key, Option<&str>)> = match tab {
             DesignDock::Hydrostatics => vec![
-                ("Hydrostatics", self.hydro.track.failure(key)),
-                ("GZ curves", self.hydro.curves_track.failure(key)),
+                (Key::JobHydrostatics, self.hydro.track.failure(key)),
+                (Key::JobGzCurves, self.hydro.curves_track.failure(key)),
             ],
             DesignDock::Loading | DesignDock::Windage => vec![(
-                "Loading compute",
+                Key::JobLoading,
                 self.loading_track.failure(self.loading_key()),
             )],
-            DesignDock::Damage => vec![(
-                "Damage compute",
-                self.damage_track.failure(self.damage_key()),
-            )],
+            DesignDock::Damage => {
+                vec![(Key::JobDamage, self.damage_track.failure(self.damage_key()))]
+            }
             DesignDock::Performance => vec![
                 (
-                    "Resistance compute",
+                    Key::JobResistance,
                     self.resistance_track.failure(self.resistance_key()),
                 ),
+                (Key::JobSeakeeping, self.raos_track.failure(self.raos_key())),
                 (
-                    "Seakeeping compute",
-                    self.raos_track.failure(self.raos_key()),
+                    Key::JobWavePattern,
+                    self.waves_track.failure(self.waves_key()),
                 ),
-                ("Wave pattern", self.waves_track.failure(self.waves_key())),
                 (
-                    "Wave drag curve",
+                    Key::JobWaveDrag,
                     self.wave_drag_track.failure(self.wave_drag_key()),
                 ),
             ],
         };
         failures
             .into_iter()
-            .find_map(|(what, e)| e.map(|e| format!("{what} failed: {e}")))
+            .find_map(|(what, e)| e.map(|e| self.job_failure(what, e)))
     }
 
     /// Whether a hydrostatics job is running (test hook).
@@ -6286,6 +6644,7 @@ impl App {
             .apply(seacraft_core::report::ReportOptions::from_surface(surface));
         opts.level = self.level;
         opts.mode = self.mode;
+        opts.locale = self.locale;
         // The wave pattern goes in while it is shown, with the view's settings, at the report's
         // draft. Its domain and wash line in metres need the waterline at that draft: a current
         // pattern's or hydrostatics' when either is at that draft (a stale one may be of another
@@ -6336,21 +6695,35 @@ impl App {
         let (Some((mut opts, waves)), Some(surface)) =
             (self.report_options(), self.surface.clone())
         else {
-            let msg = "No model loaded.".to_owned();
+            let msg = self
+                .tr()
+                .s(seacraft_core::i18n::Key::StatusNoModel)
+                .to_owned();
             self.log(Level::Error, msg.clone());
             return Err(msg);
         };
         let project = self.project.clone();
         let path = path.to_path_buf();
-        self.set_status(format!("writing report {}…", path.display()));
+        let tr = self.tr();
+        self.set_status(tr.fmt(
+            seacraft_core::i18n::Key::StatusReportWriting,
+            &[("path", &path.display().to_string())],
+        ));
         let target = path.clone();
         let job = Job::spawn(self.revision, move || {
             // Measuring the waterline, when it comes to that, is slow: here, off the window.
             opts.waves = waves.map(|w| w.into_report(&surface, &opts));
             seacraft_core::report::design_report_with_project(&surface, &opts, &project).and_then(
                 |html| {
-                    seacraft_core::io::write_atomic(&target, html)
-                        .map_err(|e| format!("cannot write {}: {e}", target.display()))
+                    seacraft_core::io::write_atomic(&target, html).map_err(|e| {
+                        tr.fmt(
+                            seacraft_core::i18n::Key::LogCannotWrite,
+                            &[
+                                ("path", &target.display().to_string()),
+                                ("error", &e.to_string()),
+                            ],
+                        )
+                    })
                 },
             )
         });
@@ -6363,15 +6736,23 @@ impl App {
         let Some((path, job)) = &self.report_job else {
             return;
         };
+        use seacraft_core::i18n::Key;
+        let tr = self.tr();
         let (level, msg) = match job.poll() {
             crate::jobs::Poll::Running => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
                 return;
             }
-            crate::jobs::Poll::Done(()) => {
-                (Level::Info, format!("wrote report {}", path.display()))
+            crate::jobs::Poll::Done(()) => (
+                Level::Info,
+                tr.fmt(
+                    Key::LogReportWritten,
+                    &[("path", &path.display().to_string())],
+                ),
+            ),
+            crate::jobs::Poll::Failed(e) => {
+                (Level::Error, tr.fmt(Key::LogReportFailed, &[("error", &e)]))
             }
-            crate::jobs::Poll::Failed(e) => (Level::Error, format!("report failed: {e}")),
         };
         self.log(level, msg);
         self.report_job = None;
@@ -6382,7 +6763,7 @@ impl App {
         if !self.show_messages {
             return;
         }
-        match crate::messages::messages_window(ui.ctx(), &self.messages) {
+        match crate::messages::messages_window(ui.ctx(), &self.messages, self.tr()) {
             MessagesAction::None => {}
             MessagesAction::Clear => self.messages.clear(),
             MessagesAction::Close => self.show_messages = false,
@@ -6400,7 +6781,13 @@ impl App {
             s.settings.name.hash(&mut h);
             (h.finish(), s.settings.draft.to_bits())
         });
-        revision_key(&[self.revision, self.templates_rev, name, draft])
+        revision_key(&[
+            self.revision,
+            self.templates_rev,
+            name,
+            draft,
+            self.locale as u64,
+        ])
     }
 
     /// Collect the preview job and start the next one when it is due: never while a point is
@@ -6417,11 +6804,13 @@ impl App {
             match (&self.surface, quiet) {
                 (Some(surface), true) => {
                     let surface = surface.clone();
-                    let (level, mode) = (self.level, self.mode);
+                    let (level, mode, locale) = (self.level, self.mode, self.locale);
                     let params = self.templates_params.clone();
                     let format = params.pdf_format();
                     self.templates_track.start(key, move || {
-                        crate::commands::templates_in(&surface, level, mode, &params, format)
+                        crate::commands::templates_in_locale(
+                            &surface, level, mode, &params, format, locale,
+                        )
                     });
                 }
                 (Some(_), false) => {
@@ -6461,12 +6850,14 @@ impl App {
             return;
         }
         self.drive_templates_preview(ui.ctx());
+        let tr = self.tr();
         let key = self.templates_key();
         let mut params = self.templates_params.clone();
         let mut open = true;
         let mut action = None;
         let status = self.templates_status(key);
-        egui::Window::new("Builder templates")
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::DialogBuilderTemplates))
+            .id(egui::Id::unique("builder_templates_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -6478,7 +6869,7 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(640.0)
                     .show(ui, |ui| {
-                        action = panels::templates_options(ui, &mut params, &status);
+                        action = panels::templates_options_tr(ui, &mut params, &status, tr);
                     });
             });
         if params != self.templates_params {
@@ -6499,7 +6890,7 @@ impl App {
             s.settings.name.hash(&mut h);
             h.finish()
         });
-        revision_key(&[self.revision, self.panels_rev, name])
+        revision_key(&[self.revision, self.panels_rev, name, self.locale as u64])
     }
 
     /// Collect the measurement and start the next when it is due: one job at a time (laying
@@ -6550,10 +6941,13 @@ impl App {
             match (&self.surface, quiet) {
                 (Some(surface), true) => {
                     let surface = surface.clone();
-                    let (level, mode, revision) = (self.level, self.mode, self.revision);
+                    let (level, mode, revision, locale) =
+                        (self.level, self.mode, self.revision, self.locale);
                     let params = self.panels_params.clone();
                     self.panels_track.start(key, move || {
-                        crate::commands::panels_in(&surface, level, mode, &params, revision)
+                        crate::commands::panels_in_locale(
+                            &surface, level, mode, &params, revision, locale,
+                        )
                     });
                 }
                 (Some(_), false) => {
@@ -6610,7 +7004,9 @@ impl App {
         let mut export = None;
         let block = self.panels_export_block();
         let status = self.panels_status();
-        egui::Window::new("Builder panels")
+        let tr = self.tr();
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::DialogBuilderPanels))
+            .id(egui::Id::unique("builder_panels_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -6625,12 +7021,13 @@ impl App {
                         egui::ScrollArea::vertical()
                             .id_salt("panels_options_scroll")
                             .show(ui, |ui| {
-                                builder_panels::panels_options(ui, &mut params, &layers);
+                                builder_panels::panels_options_tr(ui, &mut params, &layers, tr);
                                 ui.separator();
-                                export = builder_panels::panels_export(
+                                export = builder_panels::panels_export_tr(
                                     ui,
                                     &mut params,
                                     block.as_deref(),
+                                    tr,
                                 );
                             });
                     });
@@ -6639,16 +7036,17 @@ impl App {
                         .id_salt("panels_list_scroll")
                         .max_height(240.0)
                         .show(ui, |ui| {
-                            action = builder_panels::panels_list(ui, &status, selected);
+                            action = builder_panels::panels_list_tr(ui, &status, selected, tr);
                         });
                     ui.separator();
                     let set = status.set();
                     let layout = set.and_then(|s| s.layout.as_ref());
                     let showing_sheets = show_sheets && layout.is_some();
                     if layout.is_some() {
-                        switch_action = builder_panels::panels_view_switch(ui, showing_sheets);
+                        switch_action =
+                            builder_panels::panels_view_switch_tr(ui, showing_sheets, tr);
                     }
-                    for line in set.map(|s| s.failing()).unwrap_or_default() {
+                    for line in set.map(|s| s.failing_tr(tr)).unwrap_or_default() {
                         ui.colored_label(crate::theme::TEXT_PRIMARY, line);
                     }
                     let stale = matches!(status, builder_panels::PanelsStatus::Stale(_));
@@ -6657,20 +7055,21 @@ impl App {
                         |ui| {
                             if let Some(layout) = layout.filter(|_| showing_sheets) {
                                 let not_flat = vec![false; layout.drawings.len()];
-                                crate::sheet_view::show(
+                                crate::sheet_view::show_tr(
                                     ui,
                                     &layout.drawings,
                                     &not_flat,
                                     stale,
                                     &mut sheets_view,
+                                    tr,
                                 );
                             } else {
                                 let sheets = set.map_or(&[][..], |s| &s.sheets[..]);
                                 let not_flat: Vec<bool> = set
                                     .map(|s| s.rows.iter().map(|r| !r.lies_flat).collect())
                                     .unwrap_or_default();
-                                clicked = crate::sheet_view::show(
-                                    ui, sheets, &not_flat, stale, &mut view,
+                                clicked = crate::sheet_view::show_tr(
+                                    ui, sheets, &not_flat, stale, &mut view, tr,
                                 );
                             }
                         },
@@ -6757,16 +7156,18 @@ impl App {
     /// Why the patterns cannot be exported now, if they cannot: the panels for the current
     /// options are not measured yet or could not be, or a panel does not lie flat.
     pub fn panels_export_block(&self) -> Option<String> {
+        let tr = self.tr();
         match self.panels_status() {
             builder_panels::PanelsStatus::Working | builder_panels::PanelsStatus::Stale(_) => {
-                Some("Wait for the panels to be measured for these options".to_owned())
+                Some(tr.s(seacraft_core::i18n::Key::PanelsBlockWait).to_owned())
             }
             builder_panels::PanelsStatus::Failed(reason) => Some(reason.to_owned()),
-            builder_panels::PanelsStatus::Ready(set) if set.sheets.is_empty() => {
-                Some("No panel could be drawn".to_owned())
-            }
+            builder_panels::PanelsStatus::Ready(set) if set.sheets.is_empty() => Some(
+                tr.s(seacraft_core::i18n::Key::PanelsBlockNoPanel)
+                    .to_owned(),
+            ),
             builder_panels::PanelsStatus::Ready(set) => {
-                crate::commands::panels_refusal(set, &self.panels_params)
+                crate::commands::panels_refusal_tr(set, &self.panels_params, tr)
             }
         }
     }
@@ -6786,9 +7187,11 @@ impl App {
         if let Some(reason) = self.panels_export_block() {
             return Err(reason);
         }
-        let set = self
-            .panels_preview()
-            .ok_or("Wait for the panels to be measured")?;
+        let set = self.panels_preview().ok_or_else(|| {
+            self.tr()
+                .s(seacraft_core::i18n::Key::StatusPanelsNotMeasured)
+                .to_owned()
+        })?;
         Ok((set.set.clone(), format))
     }
 
@@ -6798,12 +7201,12 @@ impl App {
     fn panels_export_clash(&self, path: &std::path::Path) -> Option<String> {
         let (set, format) = self.panels_for_export(path).ok()?;
         let count = crate::commands::panels_sheet_count(&set, format);
-        crate::commands::panels_sheet_clash(path, count)
+        crate::commands::panels_sheet_clash_tr(path, count, self.tr())
     }
 
     /// Log the sheet files an earlier, larger layout left beside `path` (never deleted).
     fn log_stale_sheets(&mut self, stale: &[PathBuf]) {
-        if let Some(note) = seacraft_core::panels::stale_sheet_note(stale) {
+        if let Some(note) = seacraft_core::panels::stale_sheet_note_tr(stale, self.tr()) {
             self.log(Level::Warning, note);
         }
     }
@@ -6813,28 +7216,30 @@ impl App {
     /// worker).
     pub fn export_panels_to(&mut self, path: &std::path::Path) -> Result<(), String> {
         let (set, format) = self.panels_for_export(path)?;
-        let file = crate::commands::panels_file(&set, &self.panels_params, format)?;
+        let file =
+            crate::commands::panels_file_locale(&set, &self.panels_params, format, self.locale)?;
         match crate::commands::write_panels_file(path, &file) {
             Ok(sheet_paths) => {
                 let stale = seacraft_core::panels::stale_sheet_files(path, sheet_paths.len());
                 let result = if sheet_paths.is_empty() {
-                    self.log_export("Builder panels", path, Ok(()))
+                    self.log_export(
+                        self.tr().s(seacraft_core::i18n::Key::WhatBuilderPanels),
+                        path,
+                        Ok(()),
+                    )
                 } else {
-                    let n = sheet_paths.len();
-                    let noun = if n == 1 { "file" } else { "files" };
-                    self.log(
-                        Level::Info,
-                        format!(
-                            "exported {} and {n} full-size sheet {noun} (Builder panels)",
-                            path.display()
-                        ),
-                    );
+                    let msg = exported_sheets(self.tr(), path, sheet_paths.len());
+                    self.log(Level::Info, msg);
                     Ok(())
                 };
                 self.log_stale_sheets(&stale);
                 result
             }
-            Err(e) => self.log_export("Builder panels", path, Err(e)),
+            Err(e) => self.log_export(
+                self.tr().s(seacraft_core::i18n::Key::WhatBuilderPanels),
+                path,
+                Err(e),
+            ),
         }
     }
 
@@ -6848,10 +7253,14 @@ impl App {
             }
         };
         let params = self.panels_params.clone();
+        let locale = self.locale;
         let target = path.to_path_buf();
-        self.set_status(format!("writing panel patterns {}…", path.display()));
+        self.set_status(self.tr().fmt(
+            seacraft_core::i18n::Key::StatusPanelsWriting,
+            &[("path", &path.display().to_string())],
+        ));
         let job = Job::spawn(self.revision, move || {
-            let file = crate::commands::panels_file(&set, &params, format)?;
+            let file = crate::commands::panels_file_locale(&set, &params, format, locale)?;
             let sheet_paths = crate::commands::write_panels_file(&target, &file)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
             let stale = seacraft_core::panels::stale_sheet_files(&target, sheet_paths.len());
@@ -6882,24 +7291,31 @@ impl App {
                 stale: left,
             }) => {
                 stale = left;
+                let tr = self.tr();
+                let shown = path.display().to_string();
                 (
                     Level::Info,
                     match (pages, sheets) {
-                        (0, 0) => format!("exported {} (Builder panels)", path.display()),
-                        (0, n) => {
-                            let noun = if n == 1 { "file" } else { "files" };
-                            format!(
-                                "exported {} and {n} full-size sheet {noun} (Builder panels)",
-                                path.display()
-                            )
-                        }
-                        (n, _) => {
-                            format!("exported {} (Builder panels, {n} pages)", path.display())
-                        }
+                        (0, 0) => tr.fmt(
+                            seacraft_core::i18n::Key::LogExported,
+                            &[
+                                ("path", &shown),
+                                ("what", tr.s(seacraft_core::i18n::Key::WhatBuilderPanels)),
+                            ],
+                        ),
+                        (0, n) => exported_sheets(tr, path, n),
+                        (n, _) => tr.fmt(
+                            seacraft_core::i18n::Key::LogExportedPages,
+                            &[("path", &shown), ("count", &n.to_string())],
+                        ),
                     },
                 )
             }
-            crate::jobs::Poll::Failed(e) => (Level::Error, format!("panel patterns failed: {e}")),
+            crate::jobs::Poll::Failed(e) => (
+                Level::Error,
+                self.tr()
+                    .fmt(seacraft_core::i18n::Key::LogPanelsFailed, &[("error", &e)]),
+            ),
         };
         self.log(level, msg);
         self.log_stale_sheets(&stale);
@@ -6969,18 +7385,23 @@ impl App {
             Some(bytes) => bytes.to_vec(),
             None => {
                 let surface = self.surface.as_ref().ok_or("No model loaded.")?;
-                crate::commands::templates_in(
+                crate::commands::templates_in_locale(
                     surface,
                     self.level,
                     self.mode,
                     &self.templates_params,
                     format,
+                    self.locale,
                 )?
                 .bytes
             }
         };
         let written = seacraft_core::io::write_atomic(path, bytes);
-        self.log_export("Builder templates", path, written)
+        self.log_export(
+            self.tr().s(seacraft_core::i18n::Key::WhatBuilderTemplates),
+            path,
+            written,
+        )
     }
 
     /// The Export dialog's OK: write the previewed PDF at once, or cut another format on a
@@ -6995,17 +7416,23 @@ impl App {
         };
         if let Some(bytes) = self.templates_preview_in(format) {
             let written = seacraft_core::io::write_atomic(path, bytes);
-            return self.log_export("Builder templates", path, written);
+            return self.log_export(
+                self.tr().s(seacraft_core::i18n::Key::WhatBuilderTemplates),
+                path,
+                written,
+            );
         }
         let Some(surface) = self.surface.clone() else {
             return Err("No model loaded.".to_owned());
         };
-        let (level, mode) = (self.level, self.mode);
+        let (level, mode, locale) = (self.level, self.mode, self.locale);
         let params = self.templates_params.clone();
         let target = path.to_path_buf();
         self.set_status(format!("writing templates {}…", path.display()));
         let job = Job::spawn(self.revision, move || {
-            let r = crate::commands::templates_in(&surface, level, mode, &params, format)?;
+            let r = crate::commands::templates_in_locale(
+                &surface, level, mode, &params, format, locale,
+            )?;
             seacraft_core::io::write_atomic(&target, r.bytes)
                 .map_err(|e| format!("cannot write {}: {e}", target.display()))
         });
@@ -7025,9 +7452,24 @@ impl App {
             }
             crate::jobs::Poll::Done(()) => (
                 Level::Info,
-                format!("exported {} (Builder templates)", path.display()),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogExported,
+                    &[
+                        ("path", &path.display().to_string()),
+                        (
+                            "what",
+                            self.tr().s(seacraft_core::i18n::Key::WhatBuilderTemplates),
+                        ),
+                    ],
+                ),
             ),
-            crate::jobs::Poll::Failed(e) => (Level::Error, format!("templates failed: {e}")),
+            crate::jobs::Poll::Failed(e) => (
+                Level::Error,
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogTemplatesFailed,
+                    &[("error", &e)],
+                ),
+            ),
         };
         self.log(level, msg);
         self.templates_export_job = None;
@@ -7057,11 +7499,13 @@ impl App {
             .text_edit_focused()
             .then(|| ui.ctx().memory(|m| m.focused()))
             .flatten();
+        let tr = self.tr();
         let before = (
             self.project.clone(),
             (self.hydro.kg, self.hydro.kg_estimate),
         );
-        egui::Window::new("Report options")
+        egui::Window::new(tr.s(seacraft_core::i18n::Key::ReportOptsTitle))
+            .id(egui::Id::unique("report_options_window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -7070,11 +7514,12 @@ impl App {
                 egui::ScrollArea::vertical()
                     .max_height(560.0)
                     .show(ui, |ui| {
-                        let _ = panels::report_options(
+                        let _ = panels::report_options_tr(
                             ui,
                             &mut self.project.report,
                             &conditions,
                             &cases,
+                            tr,
                         );
                     });
             });
@@ -7337,11 +7782,14 @@ impl App {
 
     pub fn start_loading_compute(&mut self) {
         let Some(surface) = self.surface.clone() else {
-            self.set_status("No model loaded.");
+            self.set_status(self.tr().s(seacraft_core::i18n::Key::StatusNoModel));
             return;
         };
         if self.project.loading_conditions.is_empty() {
-            self.set_status("No loading condition in project.");
+            self.set_status(
+                self.tr()
+                    .s(seacraft_core::i18n::Key::StatusNoLoadingCondition),
+            );
             return;
         }
         let sel = self
@@ -7351,7 +7799,10 @@ impl App {
         let with_windage = self.project.with_windage(cond);
         let key = self.loading_key();
         if let Err(e) = seacraft_core::loading::validate(&with_windage) {
-            let msg = format!("Loading condition invalid: {e}");
+            let msg = self.tr().fmt(
+                seacraft_core::i18n::Key::LogLoadingInvalid,
+                &[("error", &e.to_string())],
+            );
             self.log(Level::Error, msg.clone());
             // Remembered, so the automatic recompute does not retry it.
             self.loading_track.fail(key, msg);
@@ -7408,16 +7859,20 @@ impl App {
             let why = if res.warnings.is_empty() {
                 String::new()
             } else {
-                format!(" ({})", res.warnings.join("; "))
+                let tr = seacraft_core::i18n::Tr::new(self.locale);
+                let all: Vec<String> = res.warnings.iter().map(|w| w.render(tr)).collect();
+                format!(" ({})", all.join("; "))
             };
-            self.log(
-                Level::Warning,
-                format!(
-                    "Loading condition \"{}\": {}{why}",
-                    res.name,
-                    seacraft_core::loading::NO_EQUILIBRIUM_NOTE
-                ),
+            let tr = self.tr();
+            let msg = tr.fmt(
+                seacraft_core::i18n::Key::LogLoadingNoEq,
+                &[
+                    ("name", &res.name),
+                    ("note", tr.s(seacraft_core::i18n::Key::LoadingNoEquilibrium)),
+                    ("why", &why),
+                ],
             );
+            self.log(Level::Warning, msg);
         }
         self.loading_result = Some(res);
     }
@@ -7428,11 +7883,11 @@ impl App {
 
     pub fn start_damage_compute(&mut self) {
         let Some(surface) = self.surface.clone() else {
-            self.set_status("No model loaded.");
+            self.set_status(self.tr().s(seacraft_core::i18n::Key::StatusNoModel));
             return;
         };
         if self.project.damage_cases.is_empty() {
-            self.set_status("No damage case in project.");
+            self.set_status(self.tr().s(seacraft_core::i18n::Key::StatusNoDamageCase));
             return;
         }
         let sel = self
@@ -7524,12 +7979,19 @@ impl App {
     }
 
     pub fn performance_kg_source(&self) -> &'static str {
+        self.performance_kg_source_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    pub fn performance_kg_source_tr(&self, tr: seacraft_core::i18n::Tr) -> &'static str {
+        use seacraft_core::i18n::Key;
         if self.perf_state.kg.is_some() {
-            "Manual"
+            tr.s(Key::PerfKgSourceManual)
         } else if self.loading_current() {
-            "Loading (KG_fluid)"
+            tr.s(Key::PerfKgSourceLoading)
         } else {
-            "Hydro dock"
+            tr.s(Key::PerfKgSourceHydro)
         }
     }
 
@@ -7702,7 +8164,10 @@ impl App {
             }
             Err(message) => self.log(
                 Level::Warning,
-                format!("The viewport keeps the slower drawing: the GPU hull failed ({message})."),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogGpuHullFailed,
+                    &[("message", &message.to_string())],
+                ),
             ),
         }
     }
@@ -7740,7 +8205,10 @@ impl App {
         if self.gpu_hull.logged.insert(message.clone()) {
             self.log(
                 Level::Warning,
-                format!("The viewport falls back to the slower drawing for this mesh: {message}"),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogGpuHullFallback,
+                    &[("message", &message.to_string())],
+                ),
             );
         }
     }
@@ -8476,11 +8944,19 @@ impl App {
         }
         self.select_point(Some(index));
         self.mark_geometry_changed();
-        if moved.len() > 1 {
-            self.status_note(format!("{} control points moved", moved.len()));
+        let tr = self.tr();
+        self.status_note(if moved.len() > 1 {
+            tr.plural(
+                seacraft_core::i18n::Key::StatusPointsMovedOne,
+                seacraft_core::i18n::Key::StatusPointsMovedOther,
+                moved.len(),
+            )
         } else {
-            self.status_note(format!("control point {index} moved"));
-        }
+            tr.fmt(
+                seacraft_core::i18n::Key::StatusPointMoved,
+                &[("index", &index.to_string())],
+            )
+        });
         Ok((to, symmetric && to.y == 0.0, moved))
     }
 
@@ -8540,10 +9016,11 @@ impl App {
         self.selection.clear();
         self.selection.add_all(seeds.iter().copied());
         self.mark_geometry_changed();
-        self.status_note(format!(
-            "{} control point{} moved",
+        let tr = self.tr();
+        self.status_note(tr.plural(
+            seacraft_core::i18n::Key::StatusPointsMovedCountOne,
+            seacraft_core::i18n::Key::StatusPointsMovedOther,
             moved.len(),
-            if moved.len() == 1 { "" } else { "s" }
         ));
         Ok(moved)
     }
@@ -8660,6 +9137,8 @@ impl App {
     /// already stored there. Headless apps have none until a test gives one.
     pub fn set_storage(&mut self, storage: Box<dyn eframe::Storage>) {
         self.recent = RecentFiles::load(storage.as_ref());
+        self.language_pref = crate::recent::load_language_pref(storage.as_ref());
+        self.refresh_locale();
         let choice = crate::recent::ConnectedChoice::load(storage.as_ref());
         self.connected = ConnectedState {
             on: choice.on,
@@ -8669,6 +9148,74 @@ impl App {
         self.storage = Some(storage);
         self.persisted_choice = Some(self.connected_choice());
         self.reconcile_connected_preset();
+    }
+
+    /// Active display locale.
+    pub fn locale(&self) -> seacraft_core::i18n::Locale {
+        self.locale
+    }
+
+    /// Lightweight translator for the active locale.
+    pub fn tr(&self) -> seacraft_core::i18n::Tr {
+        seacraft_core::i18n::Tr::new(self.locale)
+    }
+
+    /// Saved language preference (`Auto` or a fixed locale).
+    pub fn language_pref(&self) -> seacraft_core::i18n::LanguagePref {
+        self.language_pref
+    }
+
+    /// "<job> failed: <error>" in the window's language.
+    fn job_failure(&self, what: seacraft_core::i18n::Key, error: &str) -> String {
+        let tr = self.tr();
+        tr.fmt(
+            seacraft_core::i18n::Key::LogJobFailed,
+            &[("what", tr.s(what)), ("error", error)],
+        )
+    }
+
+    fn log_job_failure(&mut self, what: seacraft_core::i18n::Key, error: &str) {
+        let msg = self.job_failure(what, error);
+        self.log(Level::Error, msg);
+    }
+
+    fn refresh_locale(&mut self) {
+        self.locale = seacraft_core::i18n::resolve_locale(
+            self.cli_locale,
+            self.env_locale,
+            self.language_pref,
+            self.system_locale,
+        );
+    }
+
+    /// Choose a language preference (`Auto` or a fixed locale), persist it, and switch live.
+    pub fn set_language_pref(&mut self, pref: seacraft_core::i18n::LanguagePref) {
+        self.language_pref = pref;
+        self.cli_locale = None;
+        self.env_locale = None;
+        self.refresh_locale();
+        self.persist_recent();
+    }
+
+    /// Switch immediately to `locale` and persist it as the user's preference.
+    pub fn set_locale(&mut self, locale: seacraft_core::i18n::Locale) {
+        self.set_language_pref(seacraft_core::i18n::LanguagePref::Fixed(locale));
+    }
+
+    /// The entry `Help ▸ Language` ticks: the language actually in force when `--lang` or
+    /// `SEACRAFT_LANG` overrides the saved preference (they outrank it, as in
+    /// [`seacraft_core::i18n::resolve_locale`]), otherwise the saved preference.
+    pub fn language_menu_ticked(&self) -> seacraft_core::i18n::LanguagePref {
+        match self.cli_locale.or(self.env_locale) {
+            Some(loc) => seacraft_core::i18n::LanguagePref::Fixed(loc),
+            None => self.language_pref,
+        }
+    }
+
+    /// Apply an explicit `--lang` CLI override for this session without overwriting saved prefs.
+    pub fn set_cli_locale(&mut self, locale: seacraft_core::i18n::Locale) {
+        self.cli_locale = Some(locale);
+        self.refresh_locale();
     }
 
     /// Take the storage back (tests: to read what was written).
@@ -8732,9 +9279,17 @@ impl App {
             self.log(Level::Warning, err);
         } else if !fell_back {
             let n = self.preset_store.presets.len();
+            let tr = self.tr();
+            let count = n.to_string();
             let msg = match &self.preset_store.path {
-                Some(p) => format!("loaded {n} connected presets from {}", p.display()),
-                None => format!("loaded {n} built-in connected presets"),
+                Some(p) => tr.fmt(
+                    seacraft_core::i18n::Key::StatusPresetsLoadedFrom,
+                    &[("count", &count), ("path", &p.display().to_string())],
+                ),
+                None => tr.fmt(
+                    seacraft_core::i18n::Key::StatusPresetsLoadedBuiltin,
+                    &[("count", &count)],
+                ),
             };
             self.set_status(msg);
         }
@@ -8751,7 +9306,10 @@ impl App {
                 self.preset_store.reload();
                 self.hover_followers = None;
                 self.reconcile_connected_preset();
-                self.set_status(format!("wrote example presets to {}", path.display()));
+                self.set_status(self.tr().fmt(
+                    seacraft_core::i18n::Key::StatusPresetsWritten,
+                    &[("path", &path.display().to_string())],
+                ));
             }
             Err(err) => {
                 self.log(Level::Warning, err);
@@ -8809,9 +9367,12 @@ impl App {
         self.hover_followers = None;
         self.log(
             Level::Warning,
-            format!(
-                "connected preset \"{missing}\" is no longer available; using \"{}\"",
-                self.connected.preset
+            self.tr().fmt(
+                seacraft_core::i18n::Key::LogPresetGone,
+                &[
+                    ("missing", &missing.to_string()),
+                    ("using", &self.connected.preset),
+                ],
             ),
         );
         true
@@ -8842,6 +9403,7 @@ impl App {
         };
         self.recent.save(storage.as_mut());
         choice.save(storage.as_mut());
+        crate::recent::save_language_pref(self.language_pref, storage.as_mut());
         storage.flush();
         self.persisted_choice = Some(choice);
         let failure = storage.get_string(crate::recent::FLUSH_ERROR_KEY);
@@ -8850,7 +9412,10 @@ impl App {
             let e = failure.clone().unwrap_or_default();
             self.log(
                 Level::Warning,
-                format!("the recent files list is kept for this session only: {e}"),
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogRecentSessionOnly,
+                    &[("error", &e)],
+                ),
             );
         }
         self.recent_failure = failure;
@@ -9060,10 +9625,7 @@ fn compute_resistance_impl(
             let core_rows = resistance::dsyhs_curve(&dsyhs_in, speeds);
             for r in &core_rows {
                 if !(0.15..=0.75).contains(&r.fn_) {
-                    warnings.push(format!(
-                        "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
-                        r.fn_, r.speed_kn
-                    ));
+                    warnings.push(resistance::dsyhs_fn_warning(r.fn_, r.speed_kn));
                 }
             }
             let rows = core_rows
@@ -9090,7 +9652,9 @@ fn compute_resistance_impl(
             let core_rows = seacraft_core::planing::planing_curve(&setup.hull, speeds);
             let mut warnings = Vec::new();
             if core_rows.is_empty() {
-                warnings.push("No planing equilibrium found at these speeds".to_string());
+                warnings.push(seacraft_core::i18n::Msg::new(
+                    seacraft_core::i18n::Key::WarnPlaningNoEquilibrium,
+                ));
             }
             let rows = core_rows
                 .into_iter()
@@ -9189,21 +9753,29 @@ impl App {
     /// the menu has drawn.
     fn model_menu(&mut self, ui: &mut egui::Ui) {
         let mut action = crate::model_menu::ModelAction::None;
-        ui.menu_button("Model", |ui| {
-            let targets = self.model_targets();
-            action = crate::model_menu::menu_body(ui, &targets);
+        let tr = self.tr();
+        ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuModel), |ui| {
+            let targets = self.model_targets_tr(tr);
+            action = crate::model_menu::menu_body(ui, &targets, tr);
         });
         self.apply_model_action(action);
     }
 
     /// What each Model menu item would act on now, or why it is disabled.
     pub fn model_targets(&self) -> crate::model_menu::ModelTargets {
-        crate::model_menu::ModelTargets::compute(
+        self.model_targets_tr(seacraft_core::i18n::Tr::new(
+            seacraft_core::i18n::Locale::En,
+        ))
+    }
+
+    fn model_targets_tr(&self, tr: seacraft_core::i18n::Tr) -> crate::model_menu::ModelTargets {
+        crate::model_menu::ModelTargets::compute_tr(
             self.surface.as_ref(),
             self.picked_points(),
             self.picked_face(),
             self.optimise_job.is_some(),
             self.selected(),
+            tr,
         )
     }
 
@@ -9329,7 +9901,11 @@ impl App {
                     d.error = None;
                     d.result = None;
                 }
-                self.set_status("optimising the hull…".to_owned());
+                self.set_status(
+                    self.tr()
+                        .s(seacraft_core::i18n::Key::StatusOptimising)
+                        .to_owned(),
+                );
             }
             Err(e) => {
                 if let Some(d) = self.optimise_dialog.as_mut() {
@@ -9360,20 +9936,29 @@ impl App {
         let message = match outcome {
             Ok((surface, report)) if job.revision() == self.revision => {
                 let r = crate::commands::install_optimized(self, surface, report, level, kg);
-                Ok(format!(
-                    "R_T {:+.1} % at {:.1} kn after {} evaluations{}; draft now {:.3} m",
-                    r.report.rt_change_pct,
-                    r.report.speed_kn,
-                    r.report.evaluations,
-                    if r.report.converged {
-                        ""
-                    } else {
-                        " (not converged)"
-                    },
-                    r.draft
+                let tr = self.tr();
+                Ok(tr.fmt(
+                    seacraft_core::i18n::Key::StatusOptimised,
+                    &[
+                        ("change", &format!("{:+.1}", r.report.rt_change_pct)),
+                        ("speed", &format!("{:.1}", r.report.speed_kn)),
+                        ("evaluations", &r.report.evaluations.to_string()),
+                        (
+                            "note",
+                            if r.report.converged {
+                                ""
+                            } else {
+                                tr.s(seacraft_core::i18n::Key::StatusOptimisedNotConverged)
+                            },
+                        ),
+                        ("draft", &format!("{:.3}", r.draft)),
+                    ],
                 ))
             }
-            Ok(_) => Err("the model changed while optimising; the result was discarded".to_owned()),
+            Ok(_) => Err(self
+                .tr()
+                .s(seacraft_core::i18n::Key::StatusOptimiseDiscarded)
+                .to_owned()),
             Err(e) => Err(e),
         };
         match message {
@@ -9395,9 +9980,10 @@ impl App {
     /// here, after they have drawn.
     fn model_windows(&mut self, ui: &mut egui::Ui) {
         use crate::model_menu::{DialogAction, OptimiseAction};
+        let tr = self.tr();
         self.poll_optimise(ui.ctx());
         let transform = match self.transform_dialog.as_mut() {
-            Some(state) => crate::model_menu::transform_dialog(ui.ctx(), state),
+            Some(state) => crate::model_menu::transform_dialog(ui.ctx(), state, tr),
             None => DialogAction::None,
         };
         match transform {
@@ -9414,7 +10000,7 @@ impl App {
         }
         let running = self.optimise_job.is_some();
         let optimise = match self.optimise_dialog.as_mut() {
-            Some(state) => crate::model_menu::optimise_dialog(ui.ctx(), state, running),
+            Some(state) => crate::model_menu::optimise_dialog(ui.ctx(), state, running, tr),
             None => OptimiseAction::None,
         };
         match optimise {
@@ -9422,12 +10008,18 @@ impl App {
             OptimiseAction::Close => {
                 self.optimise_dialog = None;
                 if self.optimise_job.take().is_some() {
-                    self.set_status("optimisation stopped; the hull is unchanged".to_owned());
+                    self.set_status(
+                        tr.s(seacraft_core::i18n::Key::ModelOptimiseStopped)
+                            .to_owned(),
+                    );
                 }
             }
             OptimiseAction::Stop => {
                 self.optimise_job = None;
-                self.set_status("optimisation stopped; the hull is unchanged".to_owned());
+                self.set_status(
+                    tr.s(seacraft_core::i18n::Key::ModelOptimiseStopped)
+                        .to_owned(),
+                );
             }
             OptimiseAction::Run(spec, level) => self.start_optimise(*spec, level),
         }
@@ -9498,9 +10090,9 @@ impl App {
             &painter,
             cell.center_bottom() + egui::vec2(0.0, -8.0),
             egui::Align2::CENTER_BOTTOM,
-            format!(
-                "Locked to {} — release the key to drag freely",
-                crate::model_menu::axis_name(axis)
+            self.tr().fmt(
+                seacraft_core::i18n::Key::ViewAxisLocked,
+                &[("axis", crate::model_menu::axis_name(axis))],
             ),
         );
     }
@@ -9512,6 +10104,7 @@ impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.recent.save(storage);
         self.connected_choice().save(storage);
+        crate::recent::save_language_pref(self.language_pref, storage);
         self.persist_recent();
     }
 
@@ -9587,6 +10180,7 @@ impl App {
         let dirty = self.dirty && self.surface.is_some();
         let dragging = self.drag.is_some();
         let revs = (self.revision, self.project_rev);
+        self.autosave.tr = self.tr();
         let surface = &self.surface;
         let project = &self.project;
         let path = &self.path;
@@ -9630,7 +10224,9 @@ impl App {
         if self.dirty {
             self.log(
                 Level::Warning,
-                "cannot recover autosave while the current model has unsaved changes; save or discard first".to_owned(),
+                self.tr()
+                    .s(seacraft_core::i18n::Key::LogRecoverUnsaved)
+                    .to_owned(),
             );
             return;
         }
@@ -9640,9 +10236,12 @@ impl App {
             Err(err) => {
                 self.log(
                     Level::Warning,
-                    format!(
-                        "cannot recover autosave {}: invalid .fef ({err}); keeping file on disk",
-                        orphan.json_path.display()
+                    self.tr().fmt(
+                        seacraft_core::i18n::Key::LogRecoverInvalidFef,
+                        &[
+                            ("path", &orphan.json_path.display().to_string()),
+                            ("error", &err.to_string()),
+                        ],
                     ),
                 );
                 return;
@@ -9690,18 +10289,24 @@ impl App {
         if let Some(proj_err) = project_bad {
             self.log(
                 Level::Warning,
-                format!(
-                    "recovered geometry `{}` from autosave, but project could not be parsed ({proj_err}); using default project and keeping {} on disk",
-                    orphan.model_name,
-                    orphan.json_path.display()
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogRecoverProjectBad,
+                    &[
+                        ("name", &orphan.model_name),
+                        ("error", &proj_err.to_string()),
+                        ("path", &orphan.json_path.display().to_string()),
+                    ],
                 ),
             );
             if let Err(err) = write_res {
                 self.log(
                     Level::Warning,
-                    format!(
-                        "could not write fresh autosave snapshot ({err}); keeping {}",
-                        orphan.json_path.display()
+                    self.tr().fmt(
+                        seacraft_core::i18n::Key::LogRecoverWriteFailed,
+                        &[
+                            ("error", &err.to_string()),
+                            ("path", &orphan.json_path.display().to_string()),
+                        ],
                     ),
                 );
             }
@@ -9710,22 +10315,32 @@ impl App {
                 .original_path
                 .as_ref()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "untitled".to_owned());
+                .unwrap_or_else(|| {
+                    self.tr()
+                        .s(seacraft_core::i18n::Key::LogRecoverUntitled)
+                        .to_owned()
+                });
             self.log(
                 Level::Info,
-                format!(
-                    "recovered `{}` ({target_desc}) from autosave {}",
-                    orphan.model_name,
-                    orphan.json_path.display()
+                self.tr().fmt(
+                    seacraft_core::i18n::Key::LogRecoverDone,
+                    &[
+                        ("name", &orphan.model_name),
+                        ("target", &target_desc),
+                        ("path", &orphan.json_path.display().to_string()),
+                    ],
                 ),
             );
             match write_res {
                 Ok(()) => orphan.remove_files(),
                 Err(err) => self.log(
                     Level::Warning,
-                    format!(
-                        "could not write fresh autosave snapshot ({err}); keeping orphan {}",
-                        orphan.json_path.display()
+                    self.tr().fmt(
+                        seacraft_core::i18n::Key::LogRecoverWriteFailedOrphan,
+                        &[
+                            ("error", &err.to_string()),
+                            ("path", &orphan.json_path.display().to_string()),
+                        ],
                     ),
                 ),
             }
@@ -9734,15 +10349,12 @@ impl App {
         if !self.autosave.orphans.is_empty() {
             let remaining = self.autosave.orphans.len();
             self.autosave.orphans.clear();
-            let word = if remaining == 1 {
-                "autosave"
-            } else {
-                "autosaves"
-            };
-            self.log(
-                Level::Info,
-                format!("{remaining} other {word} kept on disk for the next start"),
+            let msg = self.tr().plural(
+                seacraft_core::i18n::Key::LogRecoverOthersKeptOne,
+                seacraft_core::i18n::Key::LogRecoverOthersKeptOther,
+                remaining,
             );
+            self.log(Level::Info, msg);
         }
     }
 
@@ -9768,11 +10380,12 @@ impl App {
         }
         let count = self.autosave.orphans.len();
         self.autosave.orphans.clear();
-        let word = if count == 1 { "autosave" } else { "autosaves" };
-        self.log(
-            Level::Info,
-            format!("deferred {count} {word} to the next start"),
+        let msg = self.tr().plural(
+            seacraft_core::i18n::Key::LogRecoverDeferredOne,
+            seacraft_core::i18n::Key::LogRecoverDeferredOther,
+            count,
         );
+        self.log(Level::Info, msg);
     }
 
     fn recovery_window(&mut self, ctx: &egui::Context) {
@@ -9780,7 +10393,7 @@ impl App {
             return;
         };
         let remaining = self.autosave.orphans.len();
-        let action = crate::autosave::recovery_modal(ctx, orphan, remaining);
+        let action = crate::autosave::recovery_modal(ctx, orphan, remaining, self.tr());
         match action {
             crate::autosave::RecoveryAction::None => {}
             crate::autosave::RecoveryAction::Recover => self.recover_orphan(),
@@ -9802,13 +10415,15 @@ impl App {
     /// The Analysis menu: one item per view.
     fn analysis_menu(&mut self, ui: &mut egui::Ui) {
         use crate::analysis_views::AnalysisView;
-        ui.menu_button("Analysis", |ui| {
+        let tr = self.tr();
+        ui.menu_button(tr.s(seacraft_core::i18n::Key::MenuAnalysis), |ui| {
             for view in AnalysisView::ALL {
                 // Tables and curves of the hull, then the studies.
                 if view == AnalysisView::TrimScan {
                     ui.separator();
                 }
-                let item = egui::Button::selectable(self.analysis.open == Some(view), view.label());
+                let item =
+                    egui::Button::selectable(self.analysis.open == Some(view), view.label_tr(tr));
                 if ui.add_enabled(self.surface.is_some(), item).clicked() {
                     self.open_analysis_view(view);
                     ui.close();
@@ -9837,6 +10452,7 @@ impl App {
             return;
         }
         let (stale, busy, failure, layers, design_draft) = self.analysis_view_panel_inputs(view);
+        let tr = self.tr();
         let window = ui.ctx().content_rect().height();
         let mut action = crate::analysis_views::ViewAction::None;
         egui::Panel::bottom("analysis_drawer")
@@ -9847,7 +10463,7 @@ impl App {
                 // Keep the drawer's height while a view has little to show
                 // (computing, or no result yet), so it does not jump.
                 ui.set_min_height(ui.available_height());
-                action = crate::analysis_views::panel(
+                action = crate::analysis_views::panel_tr(
                     ui,
                     crate::analysis_views::ViewPanel {
                         view,
@@ -9858,6 +10474,7 @@ impl App {
                         layers,
                         design_draft,
                     },
+                    tr,
                 );
             });
         self.apply_view_action(action, ui.ctx());
@@ -9894,6 +10511,7 @@ impl App {
         let before = self.perf_state.waves.clone();
         let mut settings = before.clone();
         let mut map = self.wave_map;
+        let tr = self.tr();
         let mut action = WaveViewAction::None;
         egui::Panel::bottom("analysis_drawer")
             .resizable(true)
@@ -9902,7 +10520,7 @@ impl App {
             .show(ui, |ui| {
                 // Keep the drawer's height while there is little to show.
                 ui.set_min_height(ui.available_height());
-                action = crate::wave_view::panel(
+                action = crate::wave_view::panel_tr(
                     ui,
                     WaveViewPanel {
                         settings: &mut settings,
@@ -9918,6 +10536,7 @@ impl App {
                         texture,
                         map: &mut map,
                     },
+                    tr,
                 );
             });
         self.wave_map = map;
@@ -9999,6 +10618,7 @@ impl App {
         let failure = self.heel_failure().map(str::to_owned);
         let busy = self.heel_busy();
         let mut state = self.heel.clone();
+        let tr = self.tr();
         let mut action = HeelViewAction::None;
         let mut drawn = None;
         egui::Panel::bottom("analysis_drawer")
@@ -10007,7 +10627,7 @@ impl App {
             .size_range(160.0..=(window * 0.8).round())
             .show(ui, |ui| {
                 ui.set_min_height(ui.available_height());
-                action = crate::heel_view::panel(
+                action = crate::heel_view::panel_tr(
                     ui,
                     HeelViewPanel {
                         state: &mut state,
@@ -10024,6 +10644,7 @@ impl App {
                         kg_note,
                         conditions: &conditions,
                     },
+                    tr,
                 );
             });
         self.heel_drawn = drawn;
@@ -10128,20 +10749,31 @@ impl App {
         let key = self.analysis_key(view);
         let model = crate::commands::ModelSnapshot::of(self);
         let inputs = self.analysis.inputs.clone();
-        self.set_status(format!("computing {}…", view.label().to_lowercase()));
+        let tr = self.tr();
+        self.set_status(tr.fmt(
+            seacraft_core::i18n::Key::AnalysisStatusComputing,
+            &[("view", view.label_tr(tr))],
+        ));
         self.analysis.slot_mut(view).track.start(key, move || {
-            crate::analysis_views::compute(view, &inputs, &model)
+            crate::analysis_views::compute(view, &inputs, &model, tr)
         });
     }
 
     /// Take finished view jobs; a failure goes to the status line and stays
     /// on the view until its inputs change.
     fn poll_analysis_views(&mut self) {
+        let tr = self.tr();
         for view in crate::analysis_views::AnalysisView::ALL {
             let key = self.analysis_key(view);
             match self.analysis.slot_mut(view).track.poll(key) {
                 Some(Ok(r)) => self.install_analysis_view(view, r),
-                Some(Err(e)) => self.log(Level::Error, format!("{} failed: {e}", view.label())),
+                Some(Err(e)) => self.log(
+                    Level::Error,
+                    tr.fmt(
+                        seacraft_core::i18n::Key::AnalysisStatusFailed,
+                        &[("view", view.label_tr(tr)), ("error", &e)],
+                    ),
+                ),
                 None => {}
             }
         }
@@ -10152,17 +10784,29 @@ impl App {
         view: crate::analysis_views::AnalysisView,
         result: crate::analysis_views::ViewResult,
     ) {
-        let rows = crate::analysis_views::table(&result).rows.len();
+        let tr = self.tr();
+        let rows = crate::analysis_views::table_tr(&result, tr).rows.len();
         self.analysis.slot_mut(view).result = Some(result);
-        self.set_status(format!("{}: {rows} rows", view.label()));
+        let rows_s = rows.to_string();
+        self.set_status(tr.fmt(
+            seacraft_core::i18n::Key::AnalysisStatusRows,
+            &[("view", view.label_tr(tr)), ("rows", &rows_s)],
+        ));
     }
 
     /// Block until a view's job ends and take its result (tests).
     pub fn wait_analysis_view(&mut self, view: crate::analysis_views::AnalysisView) {
+        let tr = self.tr();
         let key = self.analysis_key(view);
         match self.analysis.slot_mut(view).track.wait(key) {
             Some(Ok(r)) => self.install_analysis_view(view, r),
-            Some(Err(e)) => self.log(Level::Error, format!("{} failed: {e}", view.label())),
+            Some(Err(e)) => self.log(
+                Level::Error,
+                tr.fmt(
+                    seacraft_core::i18n::Key::AnalysisStatusFailed,
+                    &[("view", view.label_tr(tr)), ("error", &e)],
+                ),
+            ),
             None => {}
         }
     }
@@ -10180,14 +10824,16 @@ impl App {
         &self,
         view: crate::analysis_views::AnalysisView,
     ) -> Option<crate::analysis_views::ViewTable> {
+        let tr = self.tr();
         self.analysis_view_result(view)
-            .map(crate::analysis_views::table)
+            .map(|r| crate::analysis_views::table_tr(r, tr))
     }
 
     /// A view's table as the CSV *Copy CSV* puts on the clipboard.
     pub fn analysis_view_csv(&self, view: crate::analysis_views::AnalysisView) -> Option<String> {
+        let tr = self.tr();
         self.analysis_view_table(view)
-            .map(|t| crate::analysis_views::to_csv(&t))
+            .map(|t| crate::analysis_views::to_csv_tr(&t, tr))
     }
 
     /// A view shows a result computed for other inputs.
@@ -10253,9 +10899,14 @@ impl App {
             ViewAction::Compute => self.start_analysis_view(view),
             ViewAction::CopyCsv => {
                 if let Some(csv) = self.analysis_view_csv(view) {
+                    let tr = self.tr();
                     let rows = csv.lines().count().saturating_sub(1);
+                    let rows_s = rows.to_string();
                     ctx.copy_text(csv);
-                    self.set_status(format!("{}: {rows} rows copied as CSV", view.label()));
+                    self.set_status(tr.fmt(
+                        seacraft_core::i18n::Key::AnalysisStatusCopiedCsv,
+                        &[("view", view.label_tr(tr)), ("rows", &rows_s)],
+                    ));
                 }
             }
             ViewAction::Close => self.close_analysis_view(),

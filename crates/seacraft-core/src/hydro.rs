@@ -66,7 +66,8 @@ pub struct SectionArea {
 #[derive(Debug, Clone, Serialize)]
 pub struct Warning {
     pub code: &'static str,
-    pub message: String,
+    /// Serialised as its English text; render it with a `Tr` for a reader.
+    pub message: crate::i18n::Msg,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -1016,10 +1017,7 @@ impl Hull {
         if self.lid_submerged(&wp) {
             result.warnings.push(Warning {
                 code: "open_hull_lid_submerged",
-                message: "the hull is open (no deck faces) and its open edge is below the \
-                          waterline; it is measured closed by a lid, as if the deck were \
-                          watertight"
-                    .into(),
+                message: crate::i18n::Msg::new(crate::i18n::Key::HeelCoreLidSubmergedWarning),
             });
         }
         result.volume_m3 = volume * opts.appendage_coefficient;
@@ -1036,7 +1034,7 @@ impl Hull {
         } else {
             result.warnings.push(Warning {
                 code: "nothing_submerged",
-                message: "the model is not submerged at this draft".into(),
+                message: crate::i18n::Msg::new(crate::i18n::Key::WarnHydroNothingSubmerged),
             });
         }
 
@@ -1090,9 +1088,9 @@ impl Hull {
             }
         } else if !segs.is_empty() {
             result.warnings.push(Warning {
-            code: "waterline_not_closed",
-            message: "waterline segments did not form a closed loop; waterplane properties are unavailable".into(),
-        });
+                code: "waterline_not_closed",
+                message: crate::i18n::Msg::new(crate::i18n::Key::WarnHydroWaterlineOpen),
+            });
         }
         if result.lwl == 0.0 {
             // Fall back to the submerged extents.

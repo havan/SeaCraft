@@ -611,7 +611,7 @@ pub struct TrimScanResult {
     pub target_volume_m3: f64,
     pub at_boundary: bool,
     pub best: Option<TrimPoint>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     pub points: Vec<TrimPoint>,
 }
 
@@ -859,6 +859,8 @@ pub struct UnfoldParams {
     /// Where to write the plate as SVG. The caller has already checked the
     /// path (the control channel against its write roots).
     pub path: Option<PathBuf>,
+    /// Display language for text inside written SVG files.
+    pub locale: seacraft_core::i18n::Locale,
 }
 
 impl Default for UnfoldParams {
@@ -873,6 +875,7 @@ impl Default for UnfoldParams {
             both_sides: false,
             layer: None,
             path: None,
+            locale: seacraft_core::i18n::Locale::En,
         }
     }
 }
@@ -952,11 +955,17 @@ pub fn unfold_in(model: ModelView<'_>, params: &UnfoldParams) -> Result<UnfoldRe
     let plate = seacraft_core::develop::unfold(&hull.verts, &faces);
     let mut written = None;
     if let Some(path) = &params.path {
-        let title = format!(
-            "{} - plate on {:?} {:.2}..{:.2} m",
-            surface.settings.name, axis, selection.slabs[0].1, selection.slabs[0].2
+        let tr = seacraft_core::i18n::Tr::new(params.locale);
+        let title = tr.fmt(
+            seacraft_core::i18n::Key::CliUnfoldSvgTitle,
+            &[
+                ("name", &surface.settings.name),
+                ("lo", &format!("{:.2}", selection.slabs[0].1)),
+                ("hi", &format!("{:.2}", selection.slabs[0].2)),
+                ("axis", &format!("{axis:?}")),
+            ],
         );
-        seacraft_core::io::write_atomic(path, seacraft_core::develop::svg(&plate, &title))
+        seacraft_core::io::write_atomic(path, seacraft_core::develop::svg_tr(&plate, &title, tr))
             .map_err(|e| format!("curves.unfold: cannot write {}: {e}", path.display()))?;
         written = Some(path.to_string_lossy().to_string());
     }
@@ -2070,7 +2079,7 @@ pub struct TemplatesResult {
     pub format: seacraft_core::templates::Format,
     pub pages: Option<usize>,
     pub rows: Vec<seacraft_core::templates::TemplateRow>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     pub missing: Vec<char>,
 }
 
@@ -2082,6 +2091,25 @@ pub fn templates_in(
     params: &TemplatesParams,
     format: seacraft_core::templates::Format,
 ) -> Result<TemplatesResult, String> {
+    templates_in_locale(
+        surface,
+        level,
+        mode,
+        params,
+        format,
+        seacraft_core::i18n::Locale::En,
+    )
+}
+
+/// Localized form of [`templates_in`].
+pub fn templates_in_locale(
+    surface: &Surface,
+    level: u8,
+    mode: SubdivisionMode,
+    params: &TemplatesParams,
+    format: seacraft_core::templates::Format,
+    locale: seacraft_core::i18n::Locale,
+) -> Result<TemplatesResult, String> {
     use seacraft_core::sheet::{PageSetup, Paper};
     use seacraft_core::templates::{template_set, write, SetOptions};
     let setup = PageSetup {
@@ -2091,6 +2119,7 @@ pub fn templates_in(
         scale: params.scale,
         imperial: params.imperial,
         title: String::new(),
+        locale,
     };
     setup.check()?;
     let opts = SetOptions {
@@ -2106,6 +2135,7 @@ pub fn templates_in(
         profile: params.profile,
         transom: params.transom,
         imperial: params.imperial,
+        locale,
     };
     let set = template_set(surface, &opts)?;
     let written = write(&set, format, &setup)?;
@@ -2194,6 +2224,14 @@ impl PanelsParams {
 
     /// The paper the patterns are laid on, checked.
     pub fn setup(&self) -> Result<seacraft_core::sheet::PageSetup, String> {
+        self.setup_locale(seacraft_core::i18n::Locale::En)
+    }
+
+    /// Localized form of [`PanelsParams::setup`].
+    pub fn setup_locale(
+        &self,
+        locale: seacraft_core::i18n::Locale,
+    ) -> Result<seacraft_core::sheet::PageSetup, String> {
         let setup = seacraft_core::sheet::PageSetup {
             paper: seacraft_core::sheet::Paper::parse(&self.paper)?,
             margin_mm: self.margin_mm,
@@ -2201,6 +2239,7 @@ impl PanelsParams {
             scale: self.scale,
             imperial: self.imperial,
             title: String::new(),
+            locale,
         };
         setup.check()?;
         Ok(setup)
@@ -2223,6 +2262,25 @@ pub fn panels_in(
     p: &PanelsParams,
     revision: u64,
 ) -> Result<PanelsPreview, String> {
+    panels_in_locale(
+        surface,
+        level,
+        mode,
+        p,
+        revision,
+        seacraft_core::i18n::Locale::En,
+    )
+}
+
+/// Localized form of [`panels_in`].
+pub fn panels_in_locale(
+    surface: &Surface,
+    level: u8,
+    mode: SubdivisionMode,
+    p: &PanelsParams,
+    revision: u64,
+    locale: seacraft_core::i18n::Locale,
+) -> Result<PanelsPreview, String> {
     use seacraft_core::panels::{panel_set, PanelOptions};
     // The paper is not checked here: it is used when writing, and is no part of what is measured.
     let checked = seacraft_core::panel_choices::check(&p.choices).map_err(|e| e.to_string())?;
@@ -2238,6 +2296,7 @@ pub fn panels_in(
         stock: checked.stock,
         imperial: p.imperial,
         nesting: checked.nesting,
+        locale,
     };
     Ok(PanelsPreview {
         set: std::sync::Arc::new(panel_set(surface, &opts)?),
@@ -2263,10 +2322,23 @@ pub struct PanelsFile {
 /// Why the patterns of `set` are not written, if they are not: a panel does not lie flat and
 /// `allow_undevelopable` is off.
 pub fn panels_refusal(set: &seacraft_core::panels::PanelSet, p: &PanelsParams) -> Option<String> {
+    panels_refusal_tr(
+        set,
+        p,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Localized form of [`panels_refusal`].
+pub fn panels_refusal_tr(
+    set: &seacraft_core::panels::PanelSet,
+    p: &PanelsParams,
+    tr: seacraft_core::i18n::Tr,
+) -> Option<String> {
     if p.allow_undevelopable {
         return None;
     }
-    set.not_flat_reason()
+    set.not_flat_reason_tr(tr)
 }
 
 /// The patterns of `set` as `format`. Pure: safe to run on a job thread.
@@ -2275,10 +2347,20 @@ pub fn panels_file(
     p: &PanelsParams,
     format: seacraft_core::templates::Format,
 ) -> Result<PanelsFile, String> {
-    if let Some(reason) = panels_refusal(set, p) {
+    panels_file_locale(set, p, format, seacraft_core::i18n::Locale::En)
+}
+
+/// Localized form of [`panels_file`].
+pub fn panels_file_locale(
+    set: &seacraft_core::panels::PanelSet,
+    p: &PanelsParams,
+    format: seacraft_core::templates::Format,
+    locale: seacraft_core::i18n::Locale,
+) -> Result<PanelsFile, String> {
+    if let Some(reason) = panels_refusal_tr(set, p, seacraft_core::i18n::Tr::new(locale)) {
         return Err(reason);
     }
-    let w = seacraft_core::panels::write(set, format, &p.setup()?, p.offsets_pages)?;
+    let w = seacraft_core::panels::write(set, format, &p.setup_locale(locale)?, p.offsets_pages)?;
     Ok(PanelsFile {
         bytes: w.written.bytes,
         format,
@@ -2307,6 +2389,20 @@ pub fn panels_sheet_count(
 /// exist and would be replaced, and older ones beyond `count` that would be left in place.
 /// `None` when the export touches no existing sheet file and leaves none behind.
 pub fn panels_sheet_clash(path: &std::path::Path, count: usize) -> Option<String> {
+    panels_sheet_clash_tr(
+        path,
+        count,
+        seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En),
+    )
+}
+
+/// Localized form of [`panels_sheet_clash`].
+pub fn panels_sheet_clash_tr(
+    path: &std::path::Path,
+    count: usize,
+    tr: seacraft_core::i18n::Tr,
+) -> Option<String> {
+    use seacraft_core::i18n::{Key, PluralCategory};
     let replaced: Vec<String> = (0..count)
         .map(|i| seacraft_core::panels::sheet_file_name(path, i))
         .filter(|p| p.exists())
@@ -2317,26 +2413,31 @@ pub fn panels_sheet_clash(path: &std::path::Path, count: usize) -> Option<String
         .map(|p| p.display().to_string())
         .collect();
     let mut parts = Vec::new();
-    match replaced.len() {
-        0 => {}
-        1 => parts.push(format!("This replaces a sheet file: {}.", replaced[0])),
-        n => parts.push(format!(
-            "This replaces {n} sheet files: {}.",
-            replaced.join(", ")
-        )),
+    if !replaced.is_empty() {
+        let count_s = replaced.len().to_string();
+        let paths_s = replaced.join(", ");
+        match tr.locale().plural_category(replaced.len()) {
+            PluralCategory::One => {
+                parts.push(tr.fmt(Key::PanelsClashReplacesOne, &[("path", &replaced[0])]))
+            }
+            PluralCategory::Other => parts.push(tr.fmt(
+                Key::PanelsClashReplacesOther,
+                &[("count", &count_s), ("paths", &paths_s)],
+            )),
+        }
     }
-    match stale.len() {
-        0 => {}
-        1 => parts.push(format!(
-            "1 older sheet file from an earlier export is not part of this layout; it will be \
-             left in place, so set it aside: {}.",
-            stale[0]
-        )),
-        n => parts.push(format!(
-            "{n} older sheet files from an earlier export are not part of this layout; they will \
-             be left in place, so set them aside: {}.",
-            stale.join(", ")
-        )),
+    if !stale.is_empty() {
+        let count_s = stale.len().to_string();
+        let paths_s = stale.join(", ");
+        match tr.locale().plural_category(stale.len()) {
+            PluralCategory::One => {
+                parts.push(tr.fmt(Key::PanelsClashStaleOne, &[("path", &stale[0])]))
+            }
+            PluralCategory::Other => parts.push(tr.fmt(
+                Key::PanelsClashStaleOther,
+                &[("count", &count_s), ("paths", &paths_s)],
+            )),
+        }
     }
     (!parts.is_empty()).then(|| parts.join(" "))
 }

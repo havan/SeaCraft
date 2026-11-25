@@ -28,6 +28,7 @@
 //! ```
 
 use crate::hydro::{self, Hull, HydroOptions};
+use crate::i18n::{Key, Msg};
 use crate::math::Vec3;
 use crate::mesh::Surface;
 use crate::resistance::{self, Resistance, WaveBranch};
@@ -639,7 +640,7 @@ pub const MICHELL_TRANSOM_AREA_LIMIT: f64 = 0.05;
 /// Thin-ship validity warnings for a Michell curve on `grid`: L/B below 6, each row whose Fn is
 /// outside 0.2..=1.0, and a wetted transom larger than [`MICHELL_TRANSOM_AREA_LIMIT`] of the largest
 /// section (Michell's integral assumes the hull closes at the stern).
-pub fn michell_warnings(grid: &MichellGrid, rows: &[Resistance]) -> Vec<String> {
+pub fn michell_warnings(grid: &MichellGrid, rows: &[Resistance]) -> Vec<Msg> {
     let mut warnings = Vec::new();
     let lb = if grid.beam_wl > 1e-6 {
         grid.length_wl / grid.beam_wl
@@ -647,28 +648,36 @@ pub fn michell_warnings(grid: &MichellGrid, rows: &[Resistance]) -> Vec<String> 
         0.0
     };
     if lb < 6.0 {
-        warnings.push(format!(
-            "L/B {lb:.2} is outside thin-ship recommended range (L/B >= 6.0)"
-        ));
+        warnings.push(Msg::new(Key::WarnMichellLb).arg("lb", format!("{lb:.2}")));
     }
     let transom = grid.transom_area_ratio();
     if transom > MICHELL_TRANSOM_AREA_LIMIT {
-        warnings.push(format!(
-            "wetted transom is {:.0} % of the largest section: Michell's integral assumes the hull \
-             closes at the stern, so R_w for a transom stern is outside the method (flagged above {:.0} %)",
-            transom * 100.0,
-            MICHELL_TRANSOM_AREA_LIMIT * 100.0
-        ));
+        warnings.push(transom_warning(transom));
     }
     for r in rows {
         if !(0.20..=1.0).contains(&r.fn_) {
-            warnings.push(format!(
-                "Fn {:.3} at {:.2} kn is outside typical Michell applicability range (0.20-1.0)",
-                r.fn_, r.speed_kn
-            ));
+            warnings.push(fn_warning(r.fn_, r.speed_kn));
         }
     }
     warnings
+}
+
+/// The warning for a wetted transom `ratio` of the largest section above
+/// [`MICHELL_TRANSOM_AREA_LIMIT`].
+pub fn transom_warning(ratio: f64) -> Msg {
+    Msg::new(Key::WarnMichellTransom)
+        .arg("pct", format!("{:.0}", ratio * 100.0))
+        .arg(
+            "limit",
+            format!("{:.0}", MICHELL_TRANSOM_AREA_LIMIT * 100.0),
+        )
+}
+
+/// The warning for a Froude number outside Michell's usual 0.2 to 1.0.
+pub fn fn_warning(froude: f64, speed_kn: f64) -> Msg {
+    Msg::new(Key::WarnMichellFn)
+        .arg("fn", format!("{froude:.3}"))
+        .arg("speed", format!("{speed_kn:.2}"))
 }
 
 #[cfg(test)]
@@ -1086,7 +1095,7 @@ mod tests {
         let flagged = |g: &MichellGrid| {
             michell_warnings(g, &rows(g))
                 .iter()
-                .any(|w| w.contains("wetted transom"))
+                .any(|w| w.to_string().contains("wetted transom"))
         };
         assert!(!flagged(&closed));
         assert!(flagged(&cut));

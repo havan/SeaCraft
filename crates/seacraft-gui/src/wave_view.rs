@@ -13,6 +13,7 @@ use crate::analysis_views::AnalysisView;
 use crate::theme;
 use crate::waves::{WaveDomain, WaveDrag, WaveResult, WaveSettings, WaveSpeed};
 use eframe::egui;
+use seacraft_core::i18n::{Key, Locale, Tr};
 use seacraft_core::resistance::{GRAVITY, KNOT};
 use seacraft_core::wave_pattern::{HULL_SPEED_FN, KELVIN_HALF_ANGLE_DEG};
 
@@ -82,18 +83,17 @@ const SLIDER_FN: (f64, f64) = (0.10, 1.00);
 const READOUTS_WIDTH: f32 = 240.0;
 /// Below this drawer width the plots go under the map.
 const WIDE: f32 = 900.0;
-/// The theory behind every number in the view, named in its header.
-const METHOD_TITLE: &str = "Thin-ship theory (Michell)";
-const METHOD_HOVER: &str =
-    "Michell's thin-ship theory: a slender hull at steady speed in deep, calm \
-    water, with small waves and no viscosity, spray or squat. It gives the waves far from the hull \
-    and their drag, not the water at the hull. It does not suit planing hulls.";
 /// Height kept for the bottom row of inputs.
 const BOTTOM_ROW: f32 = 34.0;
 
 /// Draw the view: header (the views as tabs, the speed, notes, close), the fit banner, the body
 /// (readouts, map, plots) and the inputs used less often.
 pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
+    panel_tr(ui, p, Tr::new(Locale::En))
+}
+
+/// Localized form of [`panel`].
+pub fn panel_tr(ui: &mut egui::Ui, p: WaveViewPanel<'_>, tr: Tr) -> WaveViewAction {
     let WaveViewPanel {
         settings,
         result,
@@ -114,12 +114,20 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
     ui.horizontal_wrapped(|ui| {
         for other in AnalysisView::ALL {
             let shown = other == AnalysisView::Waves;
-            if ui.selectable_label(shown, other.tab_label(shown)).clicked() && !shown {
+            if ui
+                .selectable_label(shown, other.tab_label_tr(shown, tr))
+                .clicked()
+                && !shown
+            {
                 action = WaveViewAction::Open(other);
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("✕").on_hover_text("Close Wave pattern").clicked() {
+            if ui
+                .button("✕")
+                .on_hover_text(tr.s(Key::WaveCloseTip))
+                .clicked()
+            {
                 action = WaveViewAction::Close;
             }
         });
@@ -127,16 +135,21 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
     ui.horizontal(|ui| {
         // The method's name. When a second method arrives (planing, say), this becomes the
         // drop-down that picks it.
-        ui.label(egui::RichText::new(METHOD_TITLE).strong())
-            .on_hover_text(METHOD_HOVER);
+        ui.label(egui::RichText::new(tr.s(Key::WaveMethodTitle)).strong())
+            .on_hover_text(tr.s(Key::WaveMethodHover));
         ui.separator();
-        if speed_control(ui, settings, length_wl) {
+        if speed_control(ui, settings, length_wl, tr) {
             action = WaveViewAction::Changed;
         }
         if let Some(r) = result {
-            let mut notes: Vec<&str> = r.field.notes.iter().map(String::as_str).collect();
-            notes.extend(r.warnings.iter().map(String::as_str));
-            ui.label(egui::RichText::new("Notes").color(theme::TEXT_SECONDARY))
+            let notes: Vec<String> = r
+                .field
+                .notes
+                .iter()
+                .chain(&r.warnings)
+                .map(|n| n.render(tr))
+                .collect();
+            ui.label(egui::RichText::new(tr.s(Key::WaveNotes)).color(theme::TEXT_SECONDARY))
                 .on_hover_text(notes.join("\n\n"));
         }
         if busy {
@@ -145,31 +158,28 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
         // The chip sits in the header, so the map does not move when the result goes stale (as
         // it does mid-drag on the wash line).
         if stale && result.is_some() {
-            crate::panels::stale_chip(ui);
+            crate::panels::stale_chip_tr(ui, tr);
         }
     });
 
     if let Some(r) = result {
-        let reasons = fit_reasons(r);
+        let reasons = fit_reasons_tr(r, tr);
         if !reasons.is_empty() {
+            let joined = reasons.join(", ");
             ui.colored_label(
                 theme::WARN,
-                format!(
-                    "Thin-ship theory does not fit this hull ({}): read the pattern as a sketch, \
-                     not a prediction.",
-                    reasons.join(", ")
-                ),
+                tr.fmt(Key::WaveBannerFit, &[("reasons", &joined)]),
             );
         }
     }
     if heeled_or_trimmed {
-        ui.colored_label(
-            theme::WARN,
-            "Computed upright at the draft; heel and trim are ignored.",
-        );
+        ui.colored_label(theme::WARN, tr.s(Key::WaveBannerHeeledOrTrimmed));
     }
     if let Some(failure) = failure {
-        ui.colored_label(theme::FAIL, format!("Wave pattern failed: {failure}"));
+        ui.colored_label(
+            theme::FAIL,
+            tr.fmt(Key::WaveBannerFailed, &[("failure", failure)]),
+        );
     }
 
     let avail = ui.available_size();
@@ -183,7 +193,7 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
                         if stale {
                             ui.multiply_opacity(theme::STALE_OPACITY);
                         }
-                        body_columns(ui, r, drag, settings, texture, map, body)
+                        body_columns(ui, r, drag, settings, texture, map, body, tr)
                     })
                     .inner;
                 if asked != WaveViewAction::None {
@@ -192,14 +202,14 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
             }
             None if busy => {
                 ui.label(
-                    egui::RichText::new("Computing the wave pattern…").color(theme::TEXT_MUTED),
+                    egui::RichText::new(tr.s(Key::WaveComputingPattern)).color(theme::TEXT_MUTED),
                 );
             }
             None => {}
         }
     });
 
-    let row = bottom_row(ui, settings, result, current, length_wl, beam_wl);
+    let row = bottom_row(ui, settings, result, current, length_wl, beam_wl, tr);
     if row != WaveViewAction::None {
         action = row;
     }
@@ -208,12 +218,10 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
 
 /// The number field, the kn/Fn switch and the slider (Fn 0.10 to 1.00, shown in the field's unit).
 /// True when the speed changed.
-fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>) -> bool {
+fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>, tr: Tr) -> bool {
     let mut changed = false;
-    ui.label("Speed").on_hover_text(
-        "The boat's speed through the water, in knots or as a Froude number. Type it, drag the \
-         number or scrub the slider; the map, readouts and plots all follow it.",
-    );
+    ui.label(tr.s(Key::WaveCtlSpeed))
+        .on_hover_text(tr.s(Key::WaveCtlSpeedTip));
     let knots = s.speed.is_knots();
     let (mut value, range) = match s.speed {
         WaveSpeed::Knots(v) => (v, 0.1..=100.0),
@@ -226,7 +234,7 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
                 .range(range)
                 .max_decimals(3),
         )
-        .on_hover_text("Drag to change the speed, or click to type it")
+        .on_hover_text(tr.s(Key::WaveCtlSpeedDragTip))
         .changed()
     {
         s.speed = if knots {
@@ -239,12 +247,9 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
     let mut to_knots = knots;
     theme::segmented(ui, |ui| {
         ui.selectable_value(&mut to_knots, true, "kn")
-            .on_hover_text("Knots: nautical miles per hour (1 kn = 0.514 m/s)");
+            .on_hover_text(tr.s(Key::WaveCtlKnTip));
         ui.selectable_value(&mut to_knots, false, "Fn")
-            .on_hover_text(
-                "Froude number: the speed divided by √(g × waterline length). The same Froude \
-             number gives the same shape of wave pattern on a small or a large hull.",
-            );
+            .on_hover_text(tr.s(Key::WaveCtlFnTip));
     });
     if to_knots != knots {
         // The speed itself does not jump: the value converts by the waterline length.
@@ -270,7 +275,7 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
                 .show_value(false)
                 .clamping(egui::SliderClamping::Edits),
         )
-        .on_hover_text("Scrub the speed: everything in the view follows it");
+        .on_hover_text(tr.s(Key::WaveCtlSpeedSliderTip));
         if r.changed() && v != value {
             s.speed = if knots {
                 WaveSpeed::Knots(v)
@@ -286,16 +291,26 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
 /// The short reasons thin-ship theory does not fit, for the banner: "L/B 3.1", "wide transom",
 /// "Fn 0.05 outside 0.20–1.00". Empty when it fits.
 pub fn fit_reasons(r: &WaveResult) -> Vec<String> {
+    fit_reasons_tr(r, Tr::new(Locale::En))
+}
+
+/// Localized form of [`fit_reasons`].
+pub fn fit_reasons_tr(r: &WaveResult, tr: Tr) -> Vec<String> {
     let mut reasons = Vec::new();
     if r.beam_wl > 0.0 && r.length_wl / r.beam_wl < 6.0 {
-        reasons.push(format!("L/B {:.1}", r.length_wl / r.beam_wl));
+        let lb_s = format!("{:.1}", r.length_wl / r.beam_wl);
+        reasons.push(tr.fmt(Key::WaveFitLb, &[("lb", &lb_s)]));
     }
-    if r.warnings.iter().any(|w| w.starts_with("wetted transom")) {
-        reasons.push("wide transom".to_string());
+    if r.warnings
+        .iter()
+        .any(|w| w.key() == Some(Key::WarnMichellTransom))
+    {
+        reasons.push(tr.s(Key::WaveFitWideTransom).to_string());
     }
     let f = r.field.froude;
     if !(0.20..=1.0).contains(&f) {
-        reasons.push(format!("Fn {f:.2} outside 0.20–1.00"));
+        let fn_s = format!("{f:.2}");
+        reasons.push(tr.fmt(Key::WaveFitFnOutside, &[("fn", &fn_s)]));
     }
     reasons
 }
@@ -312,18 +327,26 @@ fn signed(x: f64, decimals: usize) -> String {
 
 /// The catamaran interference in words: within 1 % is neutral.
 pub fn interference_words(ratio: f64) -> String {
+    interference_words_tr(ratio, Tr::new(Locale::En))
+}
+
+/// Localized form of [`interference_words`].
+pub fn interference_words_tr(ratio: f64, tr: Tr) -> String {
     let pct = (ratio - 1.0) * 100.0;
     if pct.abs() < 1.0 {
-        "neutral (±1 %)".to_string()
+        tr.s(Key::WaveInterferenceNeutral).to_string()
     } else if pct < 0.0 {
-        format!("favourable (−{:.0} %)", pct.abs())
+        let pct_s = format!("{:.0}", pct.abs());
+        tr.fmt(Key::WaveInterferenceFavourable, &[("pct", &pct_s)])
     } else {
-        format!("unfavourable (+{pct:.0} %)")
+        let pct_s = format!("{pct:.0}");
+        tr.fmt(Key::WaveInterferenceUnfavourable, &[("pct", &pct_s)])
     }
 }
 
 /// Readouts, map and plots; the plots go under the map when the drawer is narrow.
 /// Returns what the map (a dragged wash line) or the plots (a clicked speed or spacing) asked for.
+#[allow(clippy::too_many_arguments)]
 fn body_columns(
     ui: &mut egui::Ui,
     r: &WaveResult,
@@ -332,6 +355,7 @@ fn body_columns(
     texture: Option<egui::TextureId>,
     map: &mut MapState,
     size: egui::Vec2,
+    tr: Tr,
 ) -> WaveViewAction {
     let mut action = WaveViewAction::None;
     let wide = size.x >= WIDE;
@@ -343,7 +367,7 @@ fn body_columns(
         ui.allocate_ui_with_layout(egui::vec2(READOUTS_WIDTH, size.y), top_down, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("wave_readouts")
-                .show(ui, |ui| readouts(ui, r, settings));
+                .show(ui, |ui| readouts(ui, r, settings, tr));
         });
         ui.allocate_ui_with_layout(egui::vec2(map_w, size.y), top_down, |ui| {
             let map_h = if wide {
@@ -351,11 +375,11 @@ fn body_columns(
             } else {
                 (0.55 * size.y).round()
             };
-            if let Some(d) = wave_map(ui, r, settings, texture, map, egui::vec2(map_w, map_h)) {
+            if let Some(d) = wave_map(ui, r, settings, texture, map, egui::vec2(map_w, map_h), tr) {
                 action = WaveViewAction::SetWashDistance(d);
             }
             if !wide {
-                let asked = plots(ui, r, drag, settings, map);
+                let asked = plots(ui, r, drag, settings, map, tr);
                 if asked != WaveViewAction::None {
                     action = asked;
                 }
@@ -363,7 +387,7 @@ fn body_columns(
         });
         if wide {
             ui.allocate_ui_with_layout(egui::vec2(plots_w, size.y), top_down, |ui| {
-                let asked = plots(ui, r, drag, settings, map);
+                let asked = plots(ui, r, drag, settings, map, tr);
                 if asked != WaveViewAction::None {
                     action = asked;
                 }
@@ -375,8 +399,8 @@ fn body_columns(
 
 /// The left column: the regime sentence, then one readout per question (its name over its value),
 /// each with a definition on hover.
-fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
-    ui.add(egui::Label::new(r.regime.sentence()).wrap());
+fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings, tr: Tr) {
+    ui.add(egui::Label::new(r.regime.sentence_tr(tr)).wrap());
     ui.add_space(6.0);
     let f = &r.field;
     let (mut crest, mut trough) = (0.0f64, 0.0f64);
@@ -387,38 +411,39 @@ fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
         }
     }
     let hull_speed_kn = HULL_SPEED_FN * (GRAVITY * r.length_wl).sqrt() / KNOT;
-    let mut rows: Vec<(String, String, &str)> =
-        vec![
+    let len_s = format!("{:.1}", f.transverse_wavelength_m);
+    let ratio_s = format!("{:.1}", f.transverse_wavelength_m / r.length_wl);
+    let hull_kn_s = format!("{hull_speed_kn:.1}");
+    let crest_s = signed(crest, 2);
+    let trough_s = signed(trough, 2);
+    let rw_s = format!("{:.2}", r.drag_here.rw_n / 1000.0);
+    let cw_s = format!("{:.2}", r.drag_here.cw * 1000.0);
+    let mut rows: Vec<(String, String, &'static str)> = vec![
         (
-            "Wave length".into(),
-            format!(
-                "{:.1} m = {:.1} × waterline",
-                f.transverse_wavelength_m,
-                f.transverse_wavelength_m / r.length_wl
+            tr.s(Key::WaveReadoutWavelength).into(),
+            tr.fmt(
+                Key::WaveReadoutWavelengthVal,
+                &[("len", &len_s), ("ratio", &ratio_s)],
             ),
-            "The length of the transverse waves behind the hull, crest to crest, against the \
-             waterline length.",
+            tr.s(Key::WaveReadoutWavelengthTip),
         ),
         (
-            "Hull speed".into(),
-            format!("{hull_speed_kn:.1} kn (Fn 0.40, rule of thumb)"),
-            "The speed at which the transverse wave is about as long as the waterline: a rule of \
-             thumb, not a limit.",
+            tr.s(Key::WaveReadoutHullSpeed).into(),
+            tr.fmt(Key::WaveReadoutHullSpeedVal, &[("kn", &hull_kn_s)]),
+            tr.s(Key::WaveReadoutHullSpeedTip),
         ),
         (
-            "Highest crest".into(),
-            format!("{} m · deepest trough {} m", signed(crest, 2), signed(trough, 2)),
-            "The highest and lowest water on the map, away from the hull (far field only).",
-        ),
-        (
-            "Wave drag here".into(),
-            format!(
-                "{:.2} kN (C_w {:.2} × 10⁻³)",
-                r.drag_here.rw_n / 1000.0,
-                r.drag_here.cw * 1000.0
+            tr.s(Key::WaveReadoutCrest).into(),
+            tr.fmt(
+                Key::WaveReadoutCrestVal,
+                &[("crest", &crest_s), ("trough", &trough_s)],
             ),
-            "Michell's thin-ship estimate of the wave-making resistance at this speed, and its \
-             coefficient on the wetted surface.",
+            tr.s(Key::WaveReadoutCrestTip),
+        ),
+        (
+            tr.s(Key::WaveReadoutDrag).into(),
+            tr.fmt(Key::WaveReadoutDragVal, &[("rw", &rw_s), ("cw", &cw_s)]),
+            tr.s(Key::WaveReadoutDragTip),
         ),
     ];
     let off_map = match settings.domain {
@@ -426,31 +451,38 @@ fn readouts(ui: &mut egui::Ui, r: &WaveResult, settings: &WaveSettings) {
         WaveDomain::Auto => false,
     };
     let wash = match r.wash {
-        Some(w) => format!("{:.2} m crest to trough", w.height_m),
-        None => "calm".to_string(),
+        Some(w) => {
+            let h_s = format!("{:.2}", w.height_m);
+            tr.fmt(Key::WaveReadoutWashHeight, &[("h", &h_s)])
+        }
+        None => tr.s(Key::WaveReadoutWashCalm).to_string(),
     };
+    let d_s = format!("{:.1}", r.wash_distance_m);
     rows.push((
-        format!("Wash at {:.1} m", r.wash_distance_m),
+        tr.fmt(Key::WaveReadoutWash, &[("d", &d_s)]),
         if off_map {
-            format!("{wash} · wash line off the map")
+            tr.fmt(Key::WaveReadoutWashOffMap, &[("wash", &wash)])
         } else {
             wash
         },
-        "The largest crest-to-trough height along a line this far to the side: a thin-ship \
-         estimate in deep water, not a wash assessment against any rule.",
+        tr.s(Key::WaveReadoutWashTip),
     ));
     if let Some(s) = r.cat_spacing_m {
+        let s_s = format!("{s:.1}");
+        let s_ratio = format!("{:.2}", s / r.length_wl);
         rows.push((
-            "Spacing".into(),
-            format!("{s:.1} m ({:.2} L)", s / r.length_wl),
-            "The distance between the demihulls' centrelines.",
+            tr.s(Key::WaveReadoutSpacing).into(),
+            tr.fmt(
+                Key::WaveReadoutSpacingVal,
+                &[("s", &s_s), ("ratio", &s_ratio)],
+            ),
+            tr.s(Key::WaveReadoutSpacingTip),
         ));
         if let Some(i) = r.interference {
             rows.push((
-                "Interference".into(),
-                interference_words(i),
-                "The pair's wave drag against twice one demihull's alone at this speed: below \
-                 that (favourable) the wave systems partly cancel.",
+                tr.s(Key::WaveReadoutInterference).into(),
+                interference_words_tr(i, tr),
+                tr.s(Key::WaveReadoutInterferenceTip),
             ));
         }
     }
@@ -515,6 +547,7 @@ fn wave_map(
     texture: Option<egui::TextureId>,
     map: &mut MapState,
     size: egui::Vec2,
+    tr: Tr,
 ) -> Option<f64> {
     let size = egui::vec2(size.x, (size.y - COLOUR_BAR).max(60.0));
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
@@ -679,10 +712,11 @@ fn wave_map(
         ));
     }
     let small = egui::FontId::proportional(11.0);
+    let d_s = format!("{d:.1}");
     painter.text(
         t.at(x1, d) + egui::vec2(-6.0, -3.0),
         egui::Align2::RIGHT_BOTTOM,
-        format!("wash {d:.1} m"),
+        tr.fmt(Key::WaveMapWashLabel, &[("d", &d_s)]),
         small.clone(),
         theme::WAVE_CUT,
     );
@@ -690,7 +724,7 @@ fn wave_map(
         painter.text(
             egui::pos2(t.at(bow, 0.0).x, hull_bottom + 4.0),
             egui::Align2::RIGHT_TOP,
-            "far field only: not the wave profile on the hull",
+            tr.s(Key::WaveMapFarField),
             small.clone(),
             theme::TEXT_MUTED,
         );
@@ -698,7 +732,7 @@ fn wave_map(
     painter.text(
         rect.right_top() + egui::vec2(-8.0, 6.0),
         egui::Align2::RIGHT_TOP,
-        "Bow →",
+        tr.s(Key::WaveMapBow),
         small.clone(),
         theme::TEXT_SECONDARY,
     );
@@ -726,13 +760,15 @@ fn wave_map(
         let iy = (((y - y0) / (2.0 * hy)).round().max(0.0) as usize).min(f.ys.len() - 1);
         let k = iy * nx + ix;
         let text = if f.wet[k] {
-            format!(
-                "x {x:.1} m · y {} m · elevation {} m",
-                signed(y, 1),
-                signed(f.zeta[k], 2)
+            let x_s = format!("{x:.1}");
+            let y_s = signed(y, 1);
+            let z_s = signed(f.zeta[k], 2);
+            tr.fmt(
+                Key::WaveMapCursorWet,
+                &[("x", &x_s), ("y", &y_s), ("z", &z_s)],
             )
         } else {
-            "hull".to_string()
+            tr.s(Key::WaveMapCursorHull).to_string()
         };
         painter.text(
             rect.right_bottom() + egui::vec2(-8.0, -6.0),
@@ -742,12 +778,12 @@ fn wave_map(
             theme::TEXT_SECONDARY,
         );
     }
-    colour_bar(ui, r.clip_m, rect.width());
+    colour_bar(ui, r.clip_m, rect.width(), tr);
     wash
 }
 
 /// The window's colour map as a bar from trough to crest, labelled −clip, calm and +clip.
-fn colour_bar(ui: &mut egui::Ui, clip_m: f64, width: f32) {
+fn colour_bar(ui: &mut egui::Ui, clip_m: f64, width: f32, tr: Tr) {
     let w = width.clamp(120.0, 320.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 8.0), egui::Sense::hover());
     let mut mesh = egui::Mesh::default();
@@ -763,14 +799,12 @@ fn colour_bar(ui: &mut egui::Ui, clip_m: f64, width: f32) {
         mesh.add_triangle(k + 1, k + 3, k + 2);
     }
     ui.painter().add(egui::Shape::mesh(mesh));
+    let neg_s = signed(-clip_m, 2);
+    let pos_s = signed(clip_m, 2);
     ui.label(
-        egui::RichText::new(format!(
-            "{} m · calm · {} m",
-            signed(-clip_m, 2),
-            signed(clip_m, 2)
-        ))
-        .small()
-        .color(theme::TEXT_SECONDARY),
+        egui::RichText::new(tr.fmt(Key::WaveColourBar, &[("neg", &neg_s), ("pos", &pos_s)]))
+            .small()
+            .color(theme::TEXT_SECONDARY),
     );
 }
 
@@ -818,6 +852,7 @@ fn plots(
     drag: Option<&WaveDrag>,
     settings: &WaveSettings,
     map: &mut MapState,
+    tr: Tr,
 ) -> WaveViewAction {
     use crate::panels::{plot_interactive, PlotMark, PlotSeries};
     let mut action = WaveViewAction::None;
@@ -827,8 +862,8 @@ fn plots(
             let cat = r.cat_spacing_m.is_some();
             if cat {
                 theme::segmented(ui, |ui| {
-                    ui.selectable_value(&mut map.spacing_plot, false, "vs speed");
-                    ui.selectable_value(&mut map.spacing_plot, true, "vs spacing");
+                    ui.selectable_value(&mut map.spacing_plot, false, tr.s(Key::WavePlotVsSpeed));
+                    ui.selectable_value(&mut map.spacing_plot, true, tr.s(Key::WavePlotVsSpacing));
                 });
             }
             if cat && map.spacing_plot && r.spacing_scan.len() > 1 {
@@ -838,17 +873,18 @@ fn plots(
                 );
                 let series = [
                     PlotSeries {
-                        label: "pair over 2 × one hull".into(),
+                        label: tr.s(Key::WavePlotPairRatio).into(),
                         points: r.spacing_scan.clone(),
                         dashed: false,
                     },
                     PlotSeries {
-                        label: "no interference".into(),
+                        label: tr.s(Key::WavePlotNoInterference).into(),
                         points: vec![(s0, 1.0), (s1, 1.0)],
                         dashed: true,
                     },
                 ];
-                let caption = format!("Interference vs spacing (m) at Fn {:.2}", r.field.froude);
+                let fn_s = format!("{:.2}", r.field.froude);
+                let caption = tr.fmt(Key::WavePlotSpacingCaption, &[("fn", &fn_s)]);
                 if let Some(s) =
                     plot_interactive(ui, &caption, &series, r.cat_spacing_m, &[], Some((s0, s1)))
                 {
@@ -865,12 +901,12 @@ fn plots(
                         (
                             vec![
                                 PlotSeries {
-                                    label: "catamaran".into(),
+                                    label: tr.s(Key::WavePlotCatSeries).into(),
                                     points: pair.clone(),
                                     dashed: false,
                                 },
                                 PlotSeries {
-                                    label: "2 × one hull (no interference)".into(),
+                                    label: tr.s(Key::WavePlotTwoMonoSeries).into(),
                                     points: mono,
                                     dashed: true,
                                 },
@@ -891,9 +927,12 @@ fn plots(
                 let (humps, hollows) = prominent_extrema(&ys, 0.05);
                 let mut marks = vec![PlotMark {
                     x: HULL_SPEED_FN,
-                    label: "hull speed",
+                    label: tr.s(Key::WavePlotHullSpeed),
                 }];
-                for (indices, label) in [(&humps, "hump"), (&hollows, "hollow")] {
+                for (indices, label) in [
+                    (&humps, tr.s(Key::WavePlotHump)),
+                    (&hollows, tr.s(Key::WavePlotHollow)),
+                ] {
                     marks.extend(
                         indices
                             .iter()
@@ -905,7 +944,7 @@ fn plots(
                 let fn_now = r.field.froude;
                 if let Some(f) = plot_interactive(
                     ui,
-                    "Wave drag coefficient C_w × 10³ vs Fn",
+                    tr.s(Key::WavePlotDragCaption),
                     &series,
                     Some(fn_now),
                     &marks,
@@ -917,17 +956,18 @@ fn plots(
                             .in_unit(knots, d.length_wl),
                     );
                 }
+                let fn_s = format!("{fn_now:.2}");
+                let kn_s = format!("{:.1}", r.field.speed_m_s / KNOT);
                 ui.label(
-                    egui::RichText::new(format!(
-                        "marker: Fn {fn_now:.2} = {:.1} kn; click or drag to set the speed",
-                        r.field.speed_m_s / KNOT
-                    ))
+                    egui::RichText::new(
+                        tr.fmt(Key::WavePlotDragMarkerHint, &[("fn", &fn_s), ("kn", &kn_s)]),
+                    )
                     .small()
                     .color(theme::TEXT_MUTED),
                 );
             } else {
                 ui.label(
-                    egui::RichText::new("Computing the wave drag curve…").color(theme::TEXT_MUTED),
+                    egui::RichText::new(tr.s(Key::WaveComputingDrag)).color(theme::TEXT_MUTED),
                 );
             }
             ui.add_space(6.0);
@@ -936,7 +976,7 @@ fn plots(
                 .iter()
                 .map(|w| PlotMark {
                     x: w.x_m,
-                    label: "largest wave",
+                    label: tr.s(Key::WavePlotLargestWave),
                 })
                 .collect();
             let series = [PlotSeries {
@@ -950,7 +990,8 @@ fn plots(
                     .collect(),
                 dashed: false,
             }];
-            let caption = format!("Wash at {:.1} m: elevation (m) vs x (m)", r.wash_distance_m);
+            let d_s = format!("{:.1}", r.wash_distance_m);
+            let caption = tr.fmt(Key::WavePlotWashCaption, &[("d", &d_s)]);
             let range = r
                 .wash_cut
                 .s
@@ -971,17 +1012,15 @@ fn bottom_row(
     current: bool,
     length_wl: Option<f64>,
     beam_wl: Option<f64>,
+    tr: Tr,
 ) -> WaveViewAction {
     let mut changed = false;
     let mut save = false;
     ui.horizontal_wrapped(|ui| {
         let mut cat = s.cat_spacing_m.is_some();
         if ui
-            .checkbox(&mut cat, "Catamaran")
-            .on_hover_text(
-                "Two copies of this hull side by side; their wave systems add up, and can cancel \
-                 or reinforce each other",
-            )
+            .checkbox(&mut cat, tr.s(Key::WaveCtlCatamaran))
+            .on_hover_text(tr.s(Key::WaveCtlCatamaranTip))
             .changed()
         {
             let guess = crate::waves::catamaran_guess(length_wl, beam_wl);
@@ -994,10 +1033,10 @@ fn bottom_row(
                     theme::num(spacing)
                         .speed(0.05)
                         .range(0.1..=1000.0)
-                        .prefix("spacing ")
+                        .prefix(tr.s(Key::WaveCtlSpacingPrefix))
                         .suffix(" m"),
                 )
-                .on_hover_text("Between the demihulls' centrelines")
+                .on_hover_text(tr.s(Key::WaveCtlSpacingTip))
                 .changed();
         }
         ui.separator();
@@ -1010,23 +1049,20 @@ fn bottom_row(
                 theme::num(&mut wash)
                     .speed(0.1)
                     .range(0.1..=10_000.0)
-                    .prefix("Wash line ")
+                    .prefix(tr.s(Key::WaveCtlWashLinePrefix))
                     .suffix(" m"),
             )
-            .on_hover_text("Distance to the side where the wash height is read")
+            .on_hover_text(tr.s(Key::WaveCtlWashLineTip))
             .changed()
         {
             s.wash_distance_m = Some(wash);
             changed = true;
         }
-        ui.menu_button("Map ▾", |ui| {
+        ui.menu_button(tr.s(Key::WaveMapMenu), |ui| {
             let mut auto = s.domain == WaveDomain::Auto;
             if ui
-                .checkbox(&mut auto, "Auto domain")
-                .on_hover_text(
-                    "The map reaches half a waterline length ahead of the bow, three behind the \
-                     stern and far enough to each side to show the wash line",
-                )
+                .checkbox(&mut auto, tr.s(Key::WaveMapAutoDomain))
+                .on_hover_text(tr.s(Key::WaveMapAutoDomainTip))
                 .changed()
             {
                 let l = length_wl.unwrap_or(10.0);
@@ -1051,18 +1087,18 @@ fn bottom_row(
                 for (v, label, hover) in [
                     (
                         ahead_m,
-                        "ahead of the bow ",
-                        "How far the map reaches ahead of the bow",
+                        tr.s(Key::WaveMapAheadPrefix),
+                        tr.s(Key::WaveMapAheadTip),
                     ),
                     (
                         behind_m,
-                        "behind the stern ",
-                        "How far the map reaches behind the stern",
+                        tr.s(Key::WaveMapBehindPrefix),
+                        tr.s(Key::WaveMapBehindTip),
                     ),
                     (
                         side_m,
-                        "each side ",
-                        "How far the map reaches to each side of the centreline",
+                        tr.s(Key::WaveMapSidePrefix),
+                        tr.s(Key::WaveMapSideTip),
                     ),
                 ] {
                     changed |= ui
@@ -1077,21 +1113,16 @@ fn bottom_row(
                         .changed();
                 }
             }
-            ui.checkbox(&mut s.kelvin_wedge, "Kelvin wedge")
-                .on_hover_text(
-                "The two lines at 19.47° either side of the track that bound a ship's waves in \
-                 deep water, whatever its speed",
-            );
+            ui.checkbox(&mut s.kelvin_wedge, tr.s(Key::WaveMapKelvinWedge))
+                .on_hover_text(tr.s(Key::WaveMapKelvinWedgeTip));
         })
         .response
-        .on_hover_text("How much water the map shows, and the Kelvin wedge");
-        ui.menu_button("Colours ▾", |ui| {
+        .on_hover_text(tr.s(Key::WaveMapMenuTip));
+        ui.menu_button(tr.s(Key::WaveColoursMenu), |ui| {
             let mut auto = s.clip_m.is_none();
             if ui
-                .checkbox(&mut auto, "Auto range")
-                .on_hover_text(
-                    "The colour scale reaches the highest crest or deepest trough on the map",
-                )
+                .checkbox(&mut auto, tr.s(Key::WaveColoursAutoRange))
+                .on_hover_text(tr.s(Key::WaveColoursAutoRangeTip))
                 .changed()
             {
                 s.clip_m = if auto {
@@ -1110,32 +1141,29 @@ fn bottom_row(
                             .prefix("± ")
                             .suffix(" m"),
                     )
-                    .on_hover_text(
-                        "Water this far above or below calm shows in full colour; higher or lower \
-                         water shows the same",
-                    )
+                    .on_hover_text(tr.s(Key::WaveColoursClipTip))
                     .changed();
             }
             changed |= ui
                 .add(
                     theme::num(&mut s.contours)
                         .range(0..=12)
-                        .prefix("Contours each side: "),
+                        .prefix(tr.s(Key::WaveColoursContoursPrefix)),
                 )
-                .on_hover_text("Contour lines on the crest side and on the trough side; 0 for none")
+                .on_hover_text(tr.s(Key::WaveColoursContoursTip))
                 .changed();
         })
         .response
-        .on_hover_text("The colour scale and the contour lines");
-        ui.checkbox(&mut s.plan_contours, "Contours on Plan view")
-            .on_hover_text("Faint contours and the wash line over Plan view");
+        .on_hover_text(tr.s(Key::WaveColoursMenuTip));
+        ui.checkbox(&mut s.plan_contours, tr.s(Key::WaveCtlPlanContours))
+            .on_hover_text(tr.s(Key::WaveCtlPlanContoursTip));
         ui.separator();
         if ui
             .add_enabled(
                 current && result.is_some(),
-                egui::Button::new("Save image…"),
+                egui::Button::new(tr.s(Key::WaveCtlSaveImage)),
             )
-            .on_hover_text("PNG, SVG or VTI, by the file's extension")
+            .on_hover_text(tr.s(Key::WaveCtlSaveImageTip))
             .clicked()
         {
             save = true;

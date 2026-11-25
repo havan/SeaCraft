@@ -31,6 +31,9 @@ cargo run --bin seacraft -- hydro examples/demo-hull.fef --kg 2.2
 - Colours only from `crates/seacraft-gui/src/theme.rs`: `cargo xtask colours`.
 - Slow work stays off the window thread, in `Job<T>`, and a stale result is never shown as current. Reviewed in PRs.
 - Every user file goes through `write_atomic`. Reviewed in PRs.
+- User-facing GUI, CLI and generated-document strings live in `locales/en.json` and `locales/tr.json` via
+  `seacraft_core::i18n` (`docs/i18n.md`, `docs/i18n-glossary-tr.md`); never call `.to_uppercase()` or
+  `.to_lowercase()` on translated text: `cargo xtask i18n`.
 - The version is identical in `Cargo.toml`, `Cargo.lock`, the window title and `seacraft --version`. Only a clean
   checkout of the tag `vX.Y.Z` says `X.Y.Z` alone; any other build names its commit, by the rule in
   `crates/seacraft-core/src/build_version.rs`: `cargo xtask ci`, `packaging/check-version.sh` in the Release workflow.

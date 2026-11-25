@@ -224,9 +224,419 @@ pub fn colour_violations(path: &str, text: &str) -> Vec<String> {
     out
 }
 
+/// The marker that allows a `.to_uppercase()` or `.to_lowercase()` call on the same or the next
+/// line: the text it changes is not translated (a file name, a tool argument, a paper size).
+pub const CASING_ALLOW: &str = "i18n-casing: not translated";
+
+/// `.to_uppercase()` and `.to_lowercase()` calls in non-test Rust source, which map Turkish `i`
+/// to `I` instead of `İ` and `I` to `i` instead of `ı`. A top-level `#[cfg(test)] mod` (up to its
+/// closing `}` in column 0) is skipped, and so is a line marked with [`CASING_ALLOW`] on it or
+/// on the line before.
+pub fn casing_violations(path: &str, text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let code_lines = code_only(text);
+    let mut out = Vec::new();
+    let mut in_test_mod = false;
+    for (i, line) in lines.iter().enumerate() {
+        if in_test_mod {
+            if *line == "}" {
+                in_test_mod = false;
+            }
+            continue;
+        }
+        if *line == "#[cfg(test)]" {
+            let next = lines[i + 1..].iter().find(|l| !l.trim().is_empty());
+            if next.is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{')) {
+                in_test_mod = true;
+                continue;
+            }
+        }
+        let code = code_lines.get(i).map_or("", String::as_str);
+        if !(code.contains(".to_uppercase()") || code.contains(".to_lowercase()")) {
+            continue;
+        }
+        let allowed = line.contains(CASING_ALLOW)
+            || i.checked_sub(1)
+                .is_some_and(|prev| lines[prev].contains(CASING_ALLOW));
+        if !allowed {
+            out.push(format!(
+                "{path}:{}: case change breaks Turkish text; store the casing in locales/*.json, \
+                 or mark text that is never translated with `// {CASING_ALLOW}`",
+                i + 1
+            ));
+        }
+    }
+    out
+}
+
+/// `text` line by line with the contents of comments, string literals and character literals
+/// blanked, so a search finds only code: `"https://"` does not end a line, and `"a
+/// .to_uppercase() call"` is not one. Raw strings (`r#"…"#`) and strings over several lines are
+/// followed; a quote after a letter or digit (`'a` in a lifetime) is not a character literal.
+fn code_only(text: &str) -> Vec<String> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Code,
+        Line,
+        Block(usize),
+        Str,
+        Raw(usize),
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = vec![String::new()];
+    let mut state = State::Code;
+    let mut i = 0;
+    let push = |out: &mut Vec<String>, c: char| {
+        if c == '\n' {
+            out.push(String::new());
+        } else {
+            out.last_mut().expect("never empty").push(c);
+        }
+    };
+    let at = |i: usize, s: &str| {
+        s.chars()
+            .enumerate()
+            .all(|(k, c)| chars.get(i + k) == Some(&c))
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        match state {
+            State::Code => {
+                let ident_before = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+                // b"…", br"…" and b'…': a byte prefix, not the end of a name.
+                let byte_prefix = i > 0
+                    && chars[i - 1] == 'b'
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                if at(i, "//") {
+                    state = State::Line;
+                    i += 2;
+                    continue;
+                }
+                if at(i, "/*") {
+                    state = State::Block(1);
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    push(&mut out, '"');
+                    state = State::Str;
+                    i += 1;
+                    continue;
+                }
+                // r"…", r#"…"#, br"…": a raw string, which ends at `"` and as many `#`s.
+                let raw_start = c == 'r' && (!ident_before || byte_prefix);
+                if raw_start {
+                    let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
+                    if chars.get(i + 1 + hashes) == Some(&'"') {
+                        out.last_mut().expect("never empty").push('"');
+                        state = State::Raw(hashes);
+                        i += hashes + 2;
+                        continue;
+                    }
+                }
+                if c == '\'' && (!ident_before || byte_prefix) {
+                    // 'x', '\n', '\u{…}' are literals; 'a without a closing quote is a lifetime.
+                    let end = if chars.get(i + 1) == Some(&'\\') {
+                        chars[i + 2..]
+                            .iter()
+                            .position(|&q| q == '\'')
+                            .map(|p| i + 2 + p)
+                    } else if chars.get(i + 2) == Some(&'\'') {
+                        Some(i + 2)
+                    } else {
+                        None
+                    };
+                    if let Some(end) = end {
+                        out.last_mut().expect("never empty").push_str("''");
+                        i = end + 1;
+                        continue;
+                    }
+                }
+                push(&mut out, c);
+            }
+            State::Line => {
+                if c == '\n' {
+                    push(&mut out, c);
+                    state = State::Code;
+                }
+            }
+            State::Block(depth) => {
+                if at(i, "*/") {
+                    state = if depth == 1 {
+                        State::Code
+                    } else {
+                        State::Block(depth - 1)
+                    };
+                    i += 2;
+                    continue;
+                }
+                if at(i, "/*") {
+                    state = State::Block(depth + 1);
+                    i += 2;
+                    continue;
+                }
+                if c == '\n' {
+                    push(&mut out, c);
+                }
+            }
+            State::Str => {
+                if c == '\\' {
+                    // An escaped character, or a line continuation: keep the line count.
+                    if chars.get(i + 1) == Some(&'\n') {
+                        push(&mut out, '\n');
+                    }
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    push(&mut out, '"');
+                    state = State::Code;
+                } else if c == '\n' {
+                    push(&mut out, c);
+                }
+            }
+            State::Raw(hashes) => {
+                if c == '"'
+                    && chars[i + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|&&h| h == '#')
+                        .count()
+                        == hashes
+                {
+                    push(&mut out, '"');
+                    state = State::Code;
+                    i += hashes + 1;
+                    continue;
+                }
+                if c == '\n' {
+                    push(&mut out, c);
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Extract `{name}` placeholders from a translation string.
+fn placeholders(text: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find('}') {
+            let name = &after[..close];
+            if !name.is_empty() && !name.contains('{') {
+                out.insert(name.to_owned());
+            }
+            rest = &after[close + 1..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// Whether every `{` in `text` closes with a `}` before the next `{`, and no `}` stands alone,
+/// so `Tr::fmt` substitutes every placeholder instead of printing braces.
+fn balanced_braces(text: &str) -> bool {
+    let mut open = false;
+    for c in text.chars() {
+        match c {
+            '{' if open => return false,
+            '{' => open = true,
+            '}' if !open => return false,
+            '}' => open = false,
+            _ => {}
+        }
+    }
+    !open
+}
+
+fn valid_i18n_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.split(['.', '_']).all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+struct ParsedCatalog {
+    entries: Vec<(String, String)>,
+    duplicates: Vec<String>,
+}
+
+fn parse_catalog_ordered(text: &str) -> Result<ParsedCatalog, String> {
+    use serde::de::{Deserializer, MapAccess, Visitor};
+    use std::fmt;
+
+    struct CatalogVisitor;
+
+    impl<'de> Visitor<'de> for CatalogVisitor {
+        type Value = ParsedCatalog;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON object mapping translation keys to strings")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut entries = Vec::new();
+            let mut seen = std::collections::BTreeSet::new();
+            let mut duplicates = Vec::new();
+            while let Some((k, v)) = map.next_entry::<String, String>()? {
+                if !seen.insert(k.clone()) {
+                    duplicates.push(k.clone());
+                }
+                entries.push((k, v));
+            }
+            Ok(ParsedCatalog {
+                entries,
+                duplicates,
+            })
+        }
+    }
+
+    let mut de = serde_json::Deserializer::from_str(text);
+    let parsed = de
+        .deserialize_map(CatalogVisitor)
+        .map_err(|e| e.to_string())?;
+    de.end().map_err(|e| e.to_string())?;
+    Ok(parsed)
+}
+
+fn validate_catalog(
+    file: &str,
+    text: &str,
+    out: &mut Vec<String>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let parsed = match parse_catalog_ordered(text) {
+        Ok(p) => p,
+        Err(e) => {
+            out.push(format!("{file}: invalid JSON: {e}"));
+            return None;
+        }
+    };
+    for dup in &parsed.duplicates {
+        out.push(format!("{file}: duplicate key `{dup}`"));
+    }
+    let mut prev: Option<&str> = None;
+    let mut map = std::collections::BTreeMap::new();
+    for (k, v) in &parsed.entries {
+        if !valid_i18n_key(k) {
+            out.push(format!("{file}: invalid key `{k}` (use [a-z0-9._])"));
+        }
+        if v.trim().is_empty() {
+            out.push(format!("{file}: empty value for `{k}`"));
+        }
+        if !balanced_braces(v) {
+            out.push(format!("{file}: unbalanced `{{` or `}}` in `{k}`"));
+        }
+        if let Some(p) = prev {
+            if p > k.as_str() {
+                out.push(format!("{file}: key `{k}` is out of order (after `{p}`)"));
+            }
+        }
+        prev = Some(k.as_str());
+        map.insert(k.clone(), v.clone());
+    }
+    Some(map)
+}
+
+/// Validate `locales/en.json` and every translation catalog `others` (`(code, text)`).
+/// Checks JSON validity, duplicate keys, alphabetical key sorting, valid key syntax, non-empty
+/// values, orphan keys, required completeness for `required_complete`, and `{placeholder}` parity.
+pub fn i18n_violations(
+    en_text: &str,
+    others: &[(&str, &str)],
+    required_complete: &[&str],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(en) = validate_catalog("locales/en.json", en_text, &mut out) else {
+        return out;
+    };
+    for &(code, text) in others {
+        let file = format!("locales/{code}.json");
+        let Some(tr) = validate_catalog(&file, text, &mut out) else {
+            continue;
+        };
+        for (k, v) in &tr {
+            match en.get(k) {
+                None => out.push(format!("{file}: orphan key `{k}` (not in locales/en.json)")),
+                Some(en_val) => {
+                    let expected = placeholders(en_val);
+                    let got = placeholders(v);
+                    if expected != got {
+                        out.push(format!(
+                            "{file}: placeholder mismatch for `{k}`: expected {expected:?}, got {got:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        if required_complete.contains(&code) {
+            for k in en.keys() {
+                if !tr.contains_key(k) {
+                    out.push(format!("{file}: missing key `{k}`"));
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unbalanced_braces_are_flagged() {
+        assert!(balanced_braces("no braces"));
+        assert!(balanced_braces("{a} and {b}"));
+        assert!(!balanced_braces("lone { here"));
+        assert!(!balanced_braces("lone } here"));
+        assert!(!balanced_braces("{a {b}"));
+        assert!(!balanced_braces("{a}}"));
+        let en = "{\n  \"k\": \"x {a\"\n}\n";
+        let bad = i18n_violations(en, &[], &[]);
+        assert!(bad.iter().any(|b| b.contains("unbalanced")), "{bad:?}");
+    }
+
+    #[test]
+    fn casing_calls_are_flagged_outside_tests_unless_marked() {
+        let src = "fn a(t: &str) -> String {\n    t.to_uppercase()\n}\n\
+                   fn b(t: &str) -> String {\n    // i18n-casing: not translated (file name)\n    t.to_lowercase()\n}\n\
+                   fn c(t: &str) -> String {\n    t.to_lowercase() // i18n-casing: not translated\n}\n\
+                   // a comment about .to_uppercase() is fine\n\
+                   #[cfg(test)]\nmod tests {\n    fn t() { \"x\".to_uppercase(); }\n}\n\
+                   fn d(t: &str) -> String {\n    t.to_lowercase()\n}\n";
+        let bad = casing_violations("x.rs", src);
+        assert_eq!(bad.len(), 2, "{bad:?}");
+        assert!(bad[0].starts_with("x.rs:2:"), "{bad:?}");
+        assert!(bad[1].starts_with("x.rs:17:"), "{bad:?}");
+    }
+
+    #[test]
+    fn casing_gate_reads_strings_and_comments_as_text() {
+        // A `//` inside a string does not hide the call after it.
+        let url = "fn a(t: &str) -> String {\n    format!(\"https://{}\", t.to_uppercase())\n}\n";
+        let bad = casing_violations("x.rs", url);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].starts_with("x.rs:2:"), "{bad:?}");
+        // Words in a string, a raw string, a block comment or a char-literal quote are not calls.
+        let text = "fn b() -> &'static str {\n    \"Avoid .to_uppercase()\"\n}\n\
+                    const R: &str = r#\"say \".to_lowercase()\" \"#;\n\
+                    /* .to_uppercase() */ const Q: char = '\"'; const B: u8 = b'\"';\n\
+                    const M: &str = \"one \\\n    .to_lowercase() two\";\n";
+        assert_eq!(casing_violations("x.rs", text), Vec::<String>::new());
+        // Line numbers survive a string over several lines.
+        let after = "const M: &str = \"a\n.to_lowercase()\nb\";\nfn c(t: &str) -> String { t.to_lowercase() }\n";
+        let bad = casing_violations("x.rs", after);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].starts_with("x.rs:4:"), "{bad:?}");
+    }
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
@@ -413,5 +823,43 @@ mod tests {
             1
         );
         assert!(colour_violations("crates/seacraft-gui/src/theme.rs", text).is_empty());
+    }
+
+    #[test]
+    fn i18n_passes_valid_catalogs_and_allows_partial_optional_locale() {
+        let en = "{\n  \"a.one\": \"Hello {name}\",\n  \"b.two\": \"World\"\n}\n";
+        let tr = "{\n  \"a.one\": \"Merhaba {name}\",\n  \"b.two\": \"Dünya\"\n}\n";
+        let de = "{\n  \"a.one\": \"Hallo {name}\"\n}\n";
+        assert!(i18n_violations(en, &[("tr", tr), ("de", de)], &["tr"]).is_empty());
+    }
+
+    #[test]
+    fn i18n_flags_duplicates_unsorted_orphans_missing_empty_and_placeholders() {
+        let en = "{\n  \"a.one\": \"Hello {name}\",\n  \"b.two\": \"World\"\n}\n";
+        let bad_dup = "{\n  \"a.one\": \"A\",\n  \"a.one\": \"B\"\n}\n";
+        let bad_order = "{\n  \"b.two\": \"B\",\n  \"a.one\": \"A {name}\"\n}\n";
+        let bad_orphan =
+            "{\n  \"a.one\": \"A {name}\",\n  \"b.two\": \"B\",\n  \"c.extra\": \"X\"\n}\n";
+        let bad_missing = "{\n  \"a.one\": \"A {name}\"\n}\n";
+        let bad_placeholder = "{\n  \"a.one\": \"Merhaba {who}\",\n  \"b.two\": \" \"\n}\n";
+
+        assert!(i18n_violations(bad_dup, &[], &[])
+            .iter()
+            .any(|e| e.contains("duplicate")));
+        assert!(i18n_violations(en, &[("tr", bad_order)], &[])
+            .iter()
+            .any(|e| e.contains("out of order")));
+        assert!(i18n_violations(en, &[("tr", bad_orphan)], &["tr"])
+            .iter()
+            .any(|e| e.contains("orphan")));
+        assert!(i18n_violations(en, &[("tr", bad_missing)], &["tr"])
+            .iter()
+            .any(|e| e.contains("missing key `b.two`")));
+        let errs = i18n_violations(en, &[("tr", bad_placeholder)], &["tr"]);
+        assert!(
+            errs.iter().any(|e| e.contains("placeholder mismatch")),
+            "{errs:?}"
+        );
+        assert!(errs.iter().any(|e| e.contains("empty value")), "{errs:?}");
     }
 }

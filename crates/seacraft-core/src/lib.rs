@@ -26,6 +26,11 @@
 pub const NOT_VALIDATED_NOTE: &str =
     "Not validated: results may be wrong and are not class, flag or statutory approval; see DISCLAIMER.md.";
 
+/// Localized form of [`NOT_VALIDATED_NOTE`].
+pub fn not_validated_note(locale: i18n::Locale) -> &'static str {
+    i18n::Tr::new(locale).s(i18n::Key::DisclaimerNotValidated)
+}
+
 pub mod analysis;
 /// Connected editing: presets and the weights of the points that follow a move.
 pub mod connected;
@@ -46,6 +51,8 @@ pub mod flatten;
 pub mod fonts;
 pub mod heel;
 pub mod hydro;
+/// Compile-time checked multi-language catalogs and locale detection.
+pub mod i18n;
 pub mod iges;
 /// Crash-safe file output: temporary sibling, sync, rename.
 pub mod io;

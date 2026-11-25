@@ -4,6 +4,7 @@
 use eframe::egui;
 use seacraft_core::damage::{Compartment, CompartmentSpec, DamageCase, DamageResult};
 use seacraft_core::hydro::{HydroOptions, Hydrostatics, SectionArea};
+use seacraft_core::i18n::{Key, Locale, PluralCategory, Tr};
 use seacraft_core::loading::{LoadingCondition, LoadingResult, Tank, WeightItem};
 use seacraft_core::math::Vec3;
 use seacraft_core::project::{Project, ReportSeakeeping, ReportSettings, Requirements};
@@ -101,6 +102,11 @@ fn layer_swatch(ui: &mut egui::Ui, color: i32, size: f32) -> egui::Response {
 /// Hiding every layer is allowed: the viewports then show no hull and the
 /// panel says so, which is easier to undo than a refusal.
 pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
+    layers_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`layers`].
+pub fn layers_tr(ui: &mut egui::Ui, panel: LayersPanel<'_>, tr: Tr) -> LayerAction {
     use crate::commands::{LayerDirection, LayerProps};
     let LayersPanel {
         surface,
@@ -116,14 +122,14 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
 
     // ---- heading and buttons, on one row ------------------------------------
     ui.horizontal(|ui| {
-        theme::heading(ui, "Layers");
+        theme::heading(ui, tr.s(Key::LayersTitle));
         // Right to left: added last-first, they read Add, Delete, ↑, ↓.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             ui.spacing_mut().button_padding.x = 5.0;
             if ui
                 .add_enabled(active + 1 < n, egui::Button::new("↓"))
-                .on_hover_text("Move the layer down the list")
+                .on_hover_text(tr.s(Key::LayersMoveDownTip))
                 .clicked()
             {
                 action = LayerAction::Reorder {
@@ -133,7 +139,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
             }
             if ui
                 .add_enabled(active > 0, egui::Button::new("↑"))
-                .on_hover_text("Move the layer up the list")
+                .on_hover_text(tr.s(Key::LayersMoveUpTip))
                 .clicked()
             {
                 action = LayerAction::Reorder {
@@ -146,22 +152,29 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
             let neighbour = if active > 0 { active - 1 } else { 1 };
             let owned = counts.get(active).copied().unwrap_or(0);
             let tip = if n < 2 {
-                "The last layer cannot be deleted".to_owned()
+                tr.s(Key::LayersDeleteLastTip).to_owned()
             } else if owned > 0 {
-                format!(
-                    "Delete \"{}\"; its {owned} face{} move to \"{}\"",
-                    surface.layers[active].name,
-                    if owned == 1 { "" } else { "s" },
-                    surface.layers[neighbour].name
+                let owned_s = owned.to_string();
+                let key = match tr.locale().plural_category(owned) {
+                    PluralCategory::One => Key::LayersDeleteFacesTipOne,
+                    PluralCategory::Other => Key::LayersDeleteFacesTipOther,
+                };
+                tr.fmt(
+                    key,
+                    &[
+                        ("name", &surface.layers[active].name),
+                        ("count", &owned_s),
+                        ("target", &surface.layers[neighbour].name),
+                    ],
                 )
             } else {
-                format!(
-                    "Delete \"{}\" (it has no faces)",
-                    surface.layers[active].name
+                tr.fmt(
+                    Key::LayersDeleteEmptyTip,
+                    &[("name", &surface.layers[active].name)],
                 )
             };
             if ui
-                .add_enabled(n > 1, egui::Button::new("Delete"))
+                .add_enabled(n > 1, egui::Button::new(tr.s(Key::CommonDelete)))
                 .on_hover_text(&tip)
                 .on_disabled_hover_text(&tip)
                 .clicked()
@@ -172,8 +185,8 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
                 };
             }
             if ui
-                .button("Add")
-                .on_hover_text("Add an empty layer and make it active")
+                .button(tr.s(Key::CommonAdd))
+                .on_hover_text(tr.s(Key::LayersAddTip))
                 .clicked()
             {
                 action = LayerAction::Add;
@@ -186,7 +199,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             if layer_swatch(ui, layer.color, 14.0)
-                .on_hover_text("Click to make this layer active")
+                .on_hover_text(tr.s(Key::LayersSwatchTip))
                 .clicked()
             {
                 action = LayerAction::Activate(index);
@@ -202,9 +215,10 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
                             .color(theme::TEXT_SECONDARY),
                     ),
                 )
-                .on_hover_text(format!(
-                    "{count} control face{}",
-                    if count == 1 { "" } else { "s" }
+                .on_hover_text(tr.plural(
+                    Key::LayersFacesCountOne,
+                    Key::LayersFacesCountOther,
+                    count,
                 ));
                 let eye = if layer.visible {
                     egui::RichText::new("◉").color(theme::TEXT_PRIMARY)
@@ -214,9 +228,9 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
                 if ui
                     .add(egui::Button::new(eye).frame(false))
                     .on_hover_text(if layer.visible {
-                        "Visible: click to hide"
+                        tr.s(Key::LayersEyeVisibleTip)
                     } else {
-                        "Hidden: click to show"
+                        tr.s(Key::LayersEyeHiddenTip)
                     })
                     .clicked()
                 {
@@ -238,7 +252,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
                         [ui.available_width(), 18.0],
                         egui::Button::selectable(index == active, (name, egui::Atom::grow())),
                     );
-                    if r.on_hover_text("Make this layer active").clicked() {
+                    if r.on_hover_text(tr.s(Key::LayersMakeActiveTip)).clicked() {
                         action = LayerAction::Activate(index);
                     }
                 });
@@ -246,10 +260,10 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
         });
     }
     if counts.iter().all(|&c| c == 0) {
-        ui.label(egui::RichText::new("The model has no faces").color(theme::TEXT_MUTED));
+        ui.label(egui::RichText::new(tr.s(Key::LayersEmptyModel)).color(theme::TEXT_MUTED));
     }
     if !surface.layers.iter().any(|l| l.visible) {
-        ui.colored_label(theme::WARN, "No visible layers");
+        ui.colored_label(theme::WARN, tr.s(Key::LayersNoVisible));
     }
 
     // ---- the active layer's properties -----------------------------------
@@ -266,7 +280,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
     let mut commit_name: Option<String> = None;
     if let Some((_, buffer)) = state.name_edit.as_mut() {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Name").color(theme::TEXT_SECONDARY));
+            ui.label(egui::RichText::new(tr.s(Key::LayersName)).color(theme::TEXT_SECONDARY));
             let r = ui.add(
                 egui::TextEdit::singleline(buffer)
                     .desired_width(ui.available_width())
@@ -290,7 +304,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
 
     // Colour: the theme's layer palette, one click one step.
     ui.horizontal_wrapped(|ui| {
-        ui.label(egui::RichText::new("Colour").color(theme::TEXT_SECONDARY));
+        ui.label(egui::RichText::new(tr.s(Key::LayersColour)).color(theme::TEXT_SECONDARY));
         ui.spacing_mut().item_spacing.x = 3.0;
         for c in theme::LAYER_PALETTE {
             let r = layer_swatch(ui, c, if c == layer.color { 16.0 } else { 13.0 });
@@ -318,45 +332,45 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
     type Flag = (&'static str, bool, &'static str, fn(bool) -> LayerProps);
     let flags: [Flag; 5] = [
         (
-            "Symmetric",
+            tr.s(Key::LayersFlagSymmetric),
             layer.symmetric,
-            "Only y ≥ 0 is modelled; the faces are mirrored across the centreline",
+            tr.s(Key::LayersFlagSymmetricTip),
             |v| LayerProps {
                 symmetric: Some(v),
                 ..Default::default()
             },
         ),
         (
-            "Developable",
+            tr.s(Key::LayersFlagDevelopable),
             layer.developable,
-            "The plating is meant to be developable (bent, not pressed)",
+            tr.s(Key::LayersFlagDevelopableTip),
             |v| LayerProps {
                 developable: Some(v),
                 ..Default::default()
             },
         ),
         (
-            "Intersections",
+            tr.s(Key::LayersFlagIntersections),
             layer.use_for_intersections,
-            "Use for intersections: stations, buttocks and waterlines are cut through this layer",
+            tr.s(Key::LayersFlagIntersectionsTip),
             |v| LayerProps {
                 use_for_intersections: Some(v),
                 ..Default::default()
             },
         ),
         (
-            "Hydrostatics",
+            tr.s(Key::LayersFlagHydrostatics),
             layer.use_in_hydrostatics,
-            "Use in hydrostatics: the faces count in displacement, stability and every measurement",
+            tr.s(Key::LayersFlagHydrostaticsTip),
             |v| LayerProps {
                 use_in_hydrostatics: Some(v),
                 ..Default::default()
             },
         ),
         (
-            "Lines plan",
+            tr.s(Key::LayersFlagLinesplan),
             layer.show_in_linesplan,
-            "Show in lines plan: the layer's curves are drawn in the lines plan",
+            tr.s(Key::LayersFlagLinesplanTip),
             |v| LayerProps {
                 show_in_linesplan: Some(v),
                 ..Default::default()
@@ -365,7 +379,10 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
     ];
     // Two groups: what the layer is, and what it takes part in.
     let mut flags = flags.into_iter();
-    for (heading, count) in [("Shape", 2), ("Used for", 3)] {
+    for (heading, count) in [
+        (tr.s(Key::LayersHeadingShape), 2),
+        (tr.s(Key::LayersHeadingUsedFor), 3),
+    ] {
         ui.add_space(2.0);
         menu_heading(ui, heading);
         ui.horizontal_wrapped(|ui| {
@@ -383,7 +400,7 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
         state.pending = None;
     }
     ui.add_space(2.0);
-    menu_heading(ui, "Plating, for a weight estimate");
+    menu_heading(ui, tr.s(Key::LayersHeadingPlating));
     egui::Grid::new("layer_plating")
         .num_columns(2)
         .spacing(egui::vec2(8.0, 4.0))
@@ -391,19 +408,19 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
             for (field, label, unit, model, speed, tip) in [
                 (
                     LayerField::Density,
-                    "Density",
+                    tr.s(Key::LayersDensity),
                     "t/m³",
                     layer.density / 1000.0,
                     0.01,
-                    "Material density of the plating, for a weight estimate",
+                    tr.s(Key::LayersDensityTip),
                 ),
                 (
                     LayerField::Thickness,
-                    "Thickness",
+                    tr.s(Key::LayersThickness),
                     "mm",
                     layer.thickness * 1000.0,
                     0.1,
-                    "Plate thickness, for a weight estimate",
+                    tr.s(Key::LayersThicknessTip),
                 ),
             ] {
                 let mut v = match state.pending {
@@ -468,36 +485,46 @@ pub fn layers(ui: &mut egui::Ui, panel: LayersPanel<'_>) -> LayerAction {
     let picked = picked_face.filter(|&f| f < surface.faces.len());
     let picked_layer = picked.and_then(|f| surface.face_layer.get(f).copied());
     let picked_text = match (picked, picked_layer.and_then(|l| surface.layers.get(l))) {
-        (Some(f), Some(l)) => format!("picked face {f} on {}", l.name),
-        _ => "no face picked".to_owned(),
+        (Some(f), Some(l)) => {
+            let f_s = f.to_string();
+            tr.fmt(Key::LayersPickedFace, &[("face", &f_s), ("layer", &l.name)])
+        }
+        _ => tr.s(Key::LayersNoFacePicked).to_owned(),
+    };
+    let count_active = counts[active];
+    let count_s = count_active.to_string();
+    let id_s = layer.id.to_string();
+    let status_key = match tr.locale().plural_category(count_active) {
+        PluralCategory::One => Key::LayersStatusLineOne,
+        PluralCategory::Other => Key::LayersStatusLineOther,
     };
     ui.label(
-        egui::RichText::new(format!(
-            "id {} · {} face{} · {picked_text}",
-            layer.id,
-            counts[active],
-            if counts[active] == 1 { "" } else { "s" }
+        egui::RichText::new(tr.fmt(
+            status_key,
+            &[("id", &id_s), ("count", &count_s), ("picked", &picked_text)],
         ))
         .small()
         .color(theme::TEXT_MUTED),
     );
     let can_move = picked.is_some() && picked_layer != Some(active);
     // The tooltip says what is missing while the button is disabled.
-    let how = "click a control face in any view (inside the amber control net, away from the \
-               points)";
+    let how = tr.s(Key::LayersMoveFaceHow);
     let tip = match (picked, can_move) {
-        (None, _) => format!("No face is picked: {how}, then press this."),
-        (Some(_), false) => format!(
-            "The picked face is already on \"{}\": make another layer active, or {how}.",
-            layer.name
+        (None, _) => tr.fmt(Key::LayersMoveFaceNoneTip, &[("how", how)]),
+        (Some(_), false) => tr.fmt(
+            Key::LayersMoveFaceSameTip,
+            &[("layer", &layer.name), ("how", how)],
         ),
-        (Some(f), true) => format!("Move face {f} onto \"{}\". One undo step.", layer.name),
+        (Some(f), true) => {
+            let f_s = f.to_string();
+            tr.fmt(
+                Key::LayersMoveFaceReadyTip,
+                &[("face", &f_s), ("layer", &layer.name)],
+            )
+        }
     };
     if ui
-        .add_enabled(
-            can_move,
-            egui::Button::new("Move picked face to this layer"),
-        )
+        .add_enabled(can_move, egui::Button::new(tr.s(Key::LayersMoveFace)))
         .on_hover_text(&tip)
         .on_disabled_hover_text(&tip)
         .clicked()
@@ -572,6 +599,16 @@ fn point_layers(surface: &Surface, point: usize) -> Vec<&str> {
     names
 }
 
+fn vertex_kind_label(kind: seacraft_core::mesh::VertexKind, tr: Tr) -> &'static str {
+    use seacraft_core::mesh::VertexKind;
+    match kind {
+        VertexKind::Regular => tr.s(Key::InspectorVertexRegular),
+        VertexKind::Crease => tr.s(Key::InspectorVertexCrease),
+        VertexKind::Dart => tr.s(Key::InspectorVertexDart),
+        VertexKind::Corner => tr.s(Key::InspectorVertexCorner),
+    }
+}
+
 /// The selection Inspector: the selected control point's layer, editable
 /// x/y/z in metres and its vertex kind and crease edges (read-only).
 ///
@@ -579,8 +616,13 @@ fn point_layers(surface: &Surface, point: usize) -> Vec<&str> {
 /// elsewhere), a dragged one when the drag is released, so either is one
 /// undo step. Escape while typing abandons the value.
 pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutput {
+    inspector_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`inspector`].
+pub fn inspector_tr(ui: &mut egui::Ui, panel: InspectorPanel<'_>, tr: Tr) -> InspectorOutput {
     let mut out = InspectorOutput::default();
-    theme::heading(ui, "Inspector");
+    theme::heading(ui, tr.s(Key::InspectorTitle));
     ui.add_space(4.0);
     let point = match (panel.surface, panel.selection.active()) {
         (Some(surface), Some(index)) if index < surface.points.len() => Some((surface, index)),
@@ -590,9 +632,7 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
     let Some((surface, index)) = point else {
         *panel.pending = None;
         ui.data_mut(|d| d.remove::<[f64; 3]>(delta_id));
-        ui.label(
-            egui::RichText::new("Click a point to edit it — Esc clears").color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new(tr.s(Key::InspectorEmptyHint)).color(theme::TEXT_MUTED));
         ui.add_space(4.0);
         return out;
     };
@@ -611,8 +651,9 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
                 min = Vec3::new(min.x.min(p.x), min.y.min(p.y), min.z.min(p.z));
                 max = Vec3::new(max.x.max(p.x), max.y.max(p.y), max.z.max(p.z));
             }
+            let pts_len_s = pts.len().to_string();
             ui.label(
-                egui::RichText::new(format!("{} points selected", pts.len()))
+                egui::RichText::new(tr.fmt(Key::InspectorMultiSelected, &[("count", &pts_len_s)]))
                     .strong()
                     .color(theme::TEXT_PRIMARY),
             );
@@ -641,7 +682,7 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
                     }
                 });
             ui.add_space(4.0);
-            let move_btn = ui.button("Move");
+            let move_btn = ui.button(tr.s(Key::InspectorMove));
             out.move_button = move_btn.rect;
             if move_btn.clicked() {
                 out.action = InspectorAction::MoveSelection {
@@ -661,12 +702,13 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
     let cp = &surface.points[index];
     let layers = point_layers(surface, index);
     let layer = if layers.is_empty() {
-        "no faces".to_owned()
+        tr.s(Key::InspectorNoFaces).to_owned()
     } else {
         layers.join(", ")
     };
+    let index_s = index.to_string();
     ui.label(
-        egui::RichText::new(format!("Point {index}"))
+        egui::RichText::new(tr.fmt(Key::InspectorPoint, &[("index", &index_s)]))
             .strong()
             .color(theme::TEXT_PRIMARY),
     );
@@ -721,12 +763,19 @@ pub fn inspector(ui: &mut egui::Ui, panel: InspectorPanel<'_>) -> InspectorOutpu
         .iter()
         .filter(|e| e.crease && (e.a == index || e.b == index))
         .count();
+    let creases_s = creases.to_string();
+    let footer_key = match tr.locale().plural_category(creases) {
+        PluralCategory::One => Key::InspectorVertexFooterOne,
+        PluralCategory::Other => Key::InspectorVertexFooterOther,
+    };
     ui.add_space(2.0);
     ui.label(
-        egui::RichText::new(format!(
-            "{:?} vertex · {creases} crease edge{}",
-            cp.kind,
-            if creases == 1 { "" } else { "s" }
+        egui::RichText::new(tr.fmt(
+            footer_key,
+            &[
+                ("kind", vertex_kind_label(cp.kind, tr)),
+                ("count", &creases_s),
+            ],
         ))
         .color(theme::TEXT_MUTED),
     );
@@ -791,35 +840,32 @@ pub fn live_strip_rows(h: Option<&Hydrostatics>, kg: Option<f64>) -> [Vec<Readou
 
 /// The About window: the legal notices GPLv3 section 5(d) asks an interactive program to show,
 /// the disclaimer, where the source is, and the licence texts of what is embedded.
-pub fn about(ui: &mut egui::Ui) {
+pub fn about(ui: &mut egui::Ui, tr: seacraft_core::i18n::Tr) {
+    use seacraft_core::i18n::Key;
     theme::heading(ui, format!("SeaCraft {}", seacraft_core::VERSION));
-    ui.label("Copyright (c) 2026 SeaCraft contributors.");
-    ui.label(
-        "SeaCraft comes with ABSOLUTELY NO WARRANTY. It is free software: you may redistribute it \
-         under the terms of the GNU General Public License, version 3 or any later version.",
-    );
-    ui.colored_label(
-        theme::WARN,
-        "Results are not validated and may be wrong. Do not rely on them for design or safety \
-         decisions without independent checks by a qualified person.",
-    );
-    ui.hyperlink_to("Source code of this version", seacraft_core::source_url());
+    ui.label(tr.s(Key::AboutCopyright));
+    ui.label(tr.s(Key::AboutWarranty));
+    ui.colored_label(theme::WARN, tr.s(Key::AboutDisclaimer));
+    ui.hyperlink_to(tr.s(Key::AboutSourceCode), seacraft_core::source_url());
     ui.separator();
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (title, text) in [
-            ("Notices", include_str!("../../../NOTICE")),
+        for (i, (title, text)) in [
+            (tr.s(Key::AboutNotices), include_str!("../../../NOTICE")),
+            (tr.s(Key::AboutGpl), include_str!("../../../LICENSE")),
             (
-                "GNU General Public License",
-                include_str!("../../../LICENSE"),
-            ),
-            (
-                "Font licence (DejaVu)",
+                tr.s(Key::AboutFontLicence),
                 seacraft_core::fonts::DEJAVU_LICENCE,
             ),
-        ] {
-            egui::CollapsingHeader::new(title).show(ui, |ui| {
-                ui.label(egui::RichText::new(text).small());
-            });
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Salted by position, so a live language switch keeps each section open or closed.
+            egui::CollapsingHeader::new(title)
+                .id_salt(("about_licence", i))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(text).small());
+                });
         }
     });
 }
@@ -834,6 +880,18 @@ pub fn live_strip(
     kg: Option<f64>,
     stale: bool,
     wide: bool,
+) -> bool {
+    live_strip_tr(ui, h, kg, stale, wide, Tr::new(Locale::En))
+}
+
+/// Localized form of [`live_strip`].
+pub fn live_strip_tr(
+    ui: &mut egui::Ui,
+    h: Option<&Hydrostatics>,
+    kg: Option<f64>,
+    stale: bool,
+    wide: bool,
+    tr: Tr,
 ) -> bool {
     let mut toggle = false;
     let rows = live_strip_rows(h, kg);
@@ -885,12 +943,9 @@ pub fn live_strip(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let (icon, tip) = if wide {
-                (theme::Icon::Narrow, "Back to the standard dock width")
+                (theme::Icon::Narrow, tr.s(Key::DockLiveStripNarrowTip))
             } else {
-                (
-                    theme::Icon::Widen,
-                    "Widen the dock, for its plots and tables",
-                )
+                (theme::Icon::Widen, tr.s(Key::DockLiveStripWidenTip))
             };
             toggle = theme::icon_button(ui, icon, wide)
                 .on_hover_text(tip)
@@ -985,6 +1040,11 @@ pub fn target_readouts(h: &Hydrostatics, req: &Requirements) -> Vec<TargetReadou
 /// target colour and the deviation in the ok or warn colour (grey while the
 /// hydrostatics are being recomputed).
 pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
+    target_strip_tr(ui, targets, stale, Tr::new(Locale::En));
+}
+
+/// Localized form of [`target_strip`].
+pub fn target_strip_tr(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool, tr: Tr) {
     if targets.is_empty() {
         return;
     }
@@ -1019,15 +1079,14 @@ pub fn target_strip(ui: &mut egui::Ui, targets: &[TargetReadout], stale: bool) {
                 deviation,
             );
             push(")".to_owned(), theme::TARGET);
+            let target_s = format!("{:.*}", t.decimals, t.target);
+            let tol_s = crate::new_design::TARGET_TOLERANCE_PCT.to_string();
             // An item never wraps inside itself: one that does not fit the
             // rest of the row starts the next one.
             ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend))
-                .on_hover_text(format!(
-                    "{} — target {:.*}, ±{} % tolerance; targets never move the hull",
-                    t.text(),
-                    t.decimals,
-                    t.target,
-                    crate::new_design::TARGET_TOLERANCE_PCT
+                .on_hover_text(tr.fmt(
+                    Key::DockTargetHoverTip,
+                    &[("text", &t.text()), ("target", &target_s), ("tol", &tol_s)],
                 ));
         }
     });
@@ -1120,19 +1179,29 @@ pub struct HydroPanel<'a> {
 /// The text and colour of a criteria badge: never colour alone. The colours
 /// are the theme's semantic tokens, so a FAIL is the same red in every dock.
 pub fn criteria_badge_style(passed: bool, stale: bool) -> (&'static str, egui::Color32) {
+    criteria_badge_style_tr(passed, stale, Tr::new(Locale::En))
+}
+
+/// Localized form of [`criteria_badge_style`].
+pub fn criteria_badge_style_tr(passed: bool, stale: bool, tr: Tr) -> (&'static str, egui::Color32) {
     match (passed, stale) {
-        (true, false) => ("PASS", theme::OK),
-        (false, false) => ("FAIL", theme::FAIL),
-        (true, true) => ("PASS · stale", theme::STALE),
-        (false, true) => ("FAIL · stale", theme::STALE),
+        (true, false) => (tr.s(Key::CriteriaBadgePass), theme::OK),
+        (false, false) => (tr.s(Key::CriteriaBadgeFail), theme::FAIL),
+        (true, true) => (tr.s(Key::CriteriaBadgePassStale), theme::STALE),
+        (false, true) => (tr.s(Key::CriteriaBadgeFailStale), theme::STALE),
     }
 }
 
 /// The line that goes with every criteria verdict: a pass is arithmetic against
 /// the criteria, not approval.
 pub fn not_validated_note(ui: &mut egui::Ui) {
+    not_validated_note_tr(ui, Tr::new(Locale::En));
+}
+
+/// Localized form of [`not_validated_note`].
+pub fn not_validated_note_tr(ui: &mut egui::Ui, tr: Tr) {
     ui.label(
-        egui::RichText::new(seacraft_core::NOT_VALIDATED_NOTE)
+        egui::RichText::new(seacraft_core::not_validated_note(tr.locale()))
             .small()
             .color(theme::TEXT_SECONDARY),
     );
@@ -1141,20 +1210,30 @@ pub fn not_validated_note(ui: &mut egui::Ui) {
 /// A criteria verdict: `PASS` green, `FAIL` red, `… · stale` grey when the
 /// result predates the last edit. The only place a verdict is drawn.
 pub fn criteria_badge(ui: &mut egui::Ui, passed: bool, stale: bool) -> egui::Response {
-    let (text, colour) = criteria_badge_style(passed, stale);
+    criteria_badge_tr(ui, passed, stale, Tr::new(Locale::En))
+}
+
+/// Localized form of [`criteria_badge`].
+pub fn criteria_badge_tr(ui: &mut egui::Ui, passed: bool, stale: bool, tr: Tr) -> egui::Response {
+    let (text, colour) = criteria_badge_style_tr(passed, stale, tr);
     ui.label(egui::RichText::new(text).monospace().strong().color(colour))
 }
 
 /// The shared "out of date" chip: a result computed for inputs that have
 /// changed since. F5 recomputes it.
 pub fn stale_chip(ui: &mut egui::Ui) -> egui::Response {
+    stale_chip_tr(ui, Tr::new(Locale::En))
+}
+
+/// Localized form of [`stale_chip`].
+pub fn stale_chip_tr(ui: &mut egui::Ui, tr: Tr) -> egui::Response {
     egui::Frame::new()
         .stroke(egui::Stroke::new(1.0, theme::STALE))
         .corner_radius(8.0)
         .inner_margin(egui::Margin::symmetric(6, 1))
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new("out of date — F5")
+                egui::RichText::new(tr.s(Key::DockStaleChip))
                     .size(theme::SMALL_SIZE)
                     .color(theme::STALE),
             )
@@ -1165,9 +1244,19 @@ pub fn stale_chip(ui: &mut egui::Ui) -> egui::Response {
 /// Draw `add` with the stale look when `stale`: the chip first, then the
 /// content dimmed to [`theme::STALE_OPACITY`]. One look for every result.
 pub fn stale_section<R>(ui: &mut egui::Ui, stale: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    stale_section_tr(ui, stale, Tr::new(Locale::En), add)
+}
+
+/// Localized form of [`stale_section`].
+pub fn stale_section_tr<R>(
+    ui: &mut egui::Ui,
+    stale: bool,
+    tr: Tr,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     ui.scope(|ui| {
         if stale {
-            stale_chip(ui);
+            stale_chip_tr(ui, tr);
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
         add(ui)
@@ -1202,6 +1291,11 @@ impl Readout {
 /// value (monospace, right-aligned by padding to the widest value, so the
 /// decimals of equal-precision rows line up) and unit (muted, fixed width).
 pub fn readouts(ui: &mut egui::Ui, id: &str, rows: &[Readout]) {
+    readouts_tr(ui, id, rows, Tr::new(Locale::En));
+}
+
+/// Localized form of [`readouts`].
+pub fn readouts_tr(ui: &mut egui::Ui, id: &str, rows: &[Readout], tr: Tr) {
     let width = rows
         .iter()
         .map(|r| r.value.chars().count())
@@ -1210,7 +1304,7 @@ pub fn readouts(ui: &mut egui::Ui, id: &str, rows: &[Readout]) {
     egui::Grid::new(id)
         .num_columns(3)
         .spacing(egui::vec2(8.0, 4.0))
-        .show(ui, |ui| readout_cells(ui, rows, width, true));
+        .show(ui, |ui| readout_cells(ui, rows, width, true, tr));
 }
 
 /// A titled group of readouts ("Volume & form", "Centres", …).
@@ -1228,6 +1322,11 @@ pub struct ReadoutGroup {
 /// from the measured waterplane, with the kilogram-to-tonne factor the core's
 /// kg/m³ density needs.
 pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4] {
+    hydrostatic_groups_tr(h, kg, Tr::new(Locale::En))
+}
+
+/// Localized form of [`hydrostatic_groups`].
+pub fn hydrostatic_groups_tr(h: &Hydrostatics, kg: Option<f64>, tr: Tr) -> [ReadoutGroup; 4] {
     let rho_t = h.water_density / 1000.0;
     let tpc = h.waterplane_area_m2 * rho_t / 100.0;
     let mtc = if h.lwl > 1e-9 {
@@ -1238,10 +1337,18 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
     let r = Readout::new;
     [
         ReadoutGroup {
-            title: "Volume & form",
+            title: tr.s(Key::HydroGroupVolumeForm),
             rows: vec![
-                r("volume", format_form_value(h.volume_m3), "m³"),
-                r("displacement", format_form_value(h.displacement_t), "t"),
+                r(
+                    tr.s(Key::HydroRowVolume),
+                    format_form_value(h.volume_m3),
+                    "m³",
+                ),
+                r(
+                    tr.s(Key::HydroRowDisplacement),
+                    format_form_value(h.displacement_t),
+                    "t",
+                ),
                 r("Cb", format!("{:.3}", h.block_coefficient), ""),
                 r("Cp", format!("{:.3}", h.prismatic_coefficient), ""),
                 r("Cm", format!("{:.3}", h.midship_coefficient), ""),
@@ -1249,7 +1356,7 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
             ],
         },
         ReadoutGroup {
-            title: "Centres",
+            title: tr.s(Key::HydroGroupCentres),
             rows: vec![
                 r("LCB", format!("{:.3}", h.lcb.x), "m"),
                 r("LCF", format!("{:.3}", h.lcf.x), "m"),
@@ -1257,7 +1364,7 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
             ],
         },
         ReadoutGroup {
-            title: "Stability",
+            title: tr.s(Key::HydroGroupStability),
             rows: vec![
                 r("BM(t)", format!("{:.3}", h.bm_transverse), "m"),
                 r("KM(t)", format!("{:.3}", h.km_transverse), "m"),
@@ -1267,13 +1374,25 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
             ],
         },
         ReadoutGroup {
-            title: "Dimensions & areas",
+            title: tr.s(Key::HydroGroupDimensionsAreas),
             rows: vec![
                 r("LWL", format!("{:.2}", h.lwl), "m"),
                 r("BWL", format!("{:.2}", h.bwl), "m"),
-                r("wetted", format_form_value(h.wetted_surface_m2), "m²"),
-                r("waterplane", format_form_value(h.waterplane_area_m2), "m²"),
-                r("midship", format_form_value(h.mainframe_area_m2), "m²"),
+                r(
+                    tr.s(Key::HydroRowWetted),
+                    format_form_value(h.wetted_surface_m2),
+                    "m²",
+                ),
+                r(
+                    tr.s(Key::HydroRowWaterplane),
+                    format_form_value(h.waterplane_area_m2),
+                    "m²",
+                ),
+                r(
+                    tr.s(Key::HydroRowMidship),
+                    format_form_value(h.mainframe_area_m2),
+                    "m²",
+                ),
             ],
         },
     ]
@@ -1282,7 +1401,12 @@ pub fn hydrostatic_groups(h: &Hydrostatics, kg: Option<f64>) -> [ReadoutGroup; 4
 /// The readouts as the two columns of the wide layout: volume, form and
 /// centres on the left, stability, dimensions and areas on the right.
 pub fn hydrostatic_rows(h: &Hydrostatics, kg: Option<f64>) -> [Vec<Readout>; 2] {
-    let [form, centres, stability, areas] = hydrostatic_groups(h, kg);
+    hydrostatic_rows_tr(h, kg, Tr::new(Locale::En))
+}
+
+/// Localized form of [`hydrostatic_rows`].
+pub fn hydrostatic_rows_tr(h: &Hydrostatics, kg: Option<f64>, tr: Tr) -> [Vec<Readout>; 2] {
+    let [form, centres, stability, areas] = hydrostatic_groups_tr(h, kg, tr);
     [
         [form.rows, centres.rows].concat(),
         [stability.rows, areas.rows].concat(),
@@ -1292,12 +1416,17 @@ pub fn hydrostatic_rows(h: &Hydrostatics, kg: Option<f64>) -> [Vec<Readout>; 2] 
 /// Draw readout groups as one grid, each group under a small sentence-case
 /// subhead, so every value of the column shares one right edge.
 pub fn grouped_readouts(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup]) {
-    grouped_grid(ui, id, groups, false);
+    grouped_readouts_tr(ui, id, groups, Tr::new(Locale::En));
+}
+
+/// Localized form of [`grouped_readouts`].
+pub fn grouped_readouts_tr(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], tr: Tr) {
+    grouped_grid(ui, id, groups, false, tr);
 }
 
 /// [`grouped_readouts`], tight enough that two columns fit a 364 px dock:
 /// narrower gaps and a unit column only as wide as its units.
-fn grouped_grid(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], compact: bool) {
+fn grouped_grid(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], compact: bool, tr: Tr) {
     let width = groups
         .iter()
         .flat_map(|g| &g.rows)
@@ -1323,14 +1452,14 @@ fn grouped_grid(ui: &mut egui::Ui, id: &str, groups: &[ReadoutGroup], compact: b
                 ui.painter()
                     .galley(rect.left_top(), galley, theme::TEXT_MUTED);
                 ui.end_row();
-                readout_cells(ui, &g.rows, width, !compact);
+                readout_cells(ui, &g.rows, width, !compact, tr);
             }
         });
 }
 
 /// The three cells of each readout row: name, right-aligned value, unit
 /// (in a column at least [`theme::UNIT_WIDTH`] wide when `unit_column`).
-fn readout_cells(ui: &mut egui::Ui, rows: &[Readout], width: usize, unit_column: bool) {
+fn readout_cells(ui: &mut egui::Ui, rows: &[Readout], width: usize, unit_column: bool, tr: Tr) {
     for r in rows {
         let name_label = ui.label(egui::RichText::new(r.name).color(theme::TEXT_SECONDARY));
         let val_label = ui.label(
@@ -1339,7 +1468,7 @@ fn readout_cells(ui: &mut egui::Ui, rows: &[Readout], width: usize, unit_column:
                 .color(theme::TEXT_PRIMARY),
         );
         if matches!(r.name, "Cb" | "Cp" | "Cm") {
-            let note = "Calculated over total draft T including keel; canoe-body coefficients may be higher.";
+            let note = tr.s(Key::HydroCoeffTip);
             name_label.on_hover_text(note);
             val_label.on_hover_text(note);
         }
@@ -1368,22 +1497,63 @@ pub fn hydro_two_columns(available_width: f32) -> bool {
 /// The damaged-equilibrium readouts of the Damage tab. Trim, heel and GM
 /// are signed and show their sign.
 pub fn damage_rows(d: &DamageResult) -> Vec<Readout> {
+    damage_rows_tr(d, Tr::new(Locale::En))
+}
+
+/// Localized form of [`damage_rows`].
+pub fn damage_rows_tr(d: &DamageResult, tr: Tr) -> Vec<Readout> {
     let r = Readout::new;
     vec![
-        r("Δ (mass)", format!("{:.3}", d.displacement_t), "t"),
-        r("Intact draft", format!("{:.3}", d.intact_draft), "m"),
-        r("Damaged draft", format!("{:.3}", d.draft), "m"),
-        r("Sinkage", format!("{:.3}", d.sinkage_m), "m"),
-        r("Damaged heel", format_signed(d.heel_deg, 1), "°"),
-        r("Net buoyant vol.", format!("{:.3}", d.net_volume_m3), "m³"),
+        r(
+            tr.s(Key::LoadingRowDisp),
+            format!("{:.3}", d.displacement_t),
+            "t",
+        ),
+        r(
+            tr.s(Key::DamageRowIntactDraft),
+            format!("{:.3}", d.intact_draft),
+            "m",
+        ),
+        r(
+            tr.s(Key::DamageRowDamagedDraft),
+            format!("{:.3}", d.draft),
+            "m",
+        ),
+        r(
+            tr.s(Key::DamageRowSinkage),
+            format!("{:.3}", d.sinkage_m),
+            "m",
+        ),
+        r(
+            tr.s(Key::DamageRowDamagedHeel),
+            format_signed(d.heel_deg, 1),
+            "°",
+        ),
+        r(
+            tr.s(Key::DamageRowNetBuoyantVol),
+            format!("{:.3}", d.net_volume_m3),
+            "m³",
+        ),
         r("KG", format!("{:.3}", d.kg), "m"),
-        r("Intact trim", format_signed(d.intact_trim_m, 3), "m"),
-        r("Damaged trim", format_signed(d.trim_m, 3), "m"),
+        r(
+            tr.s(Key::DamageRowIntactTrim),
+            format_signed(d.intact_trim_m, 3),
+            "m",
+        ),
+        r(
+            tr.s(Key::DamageRowDamagedTrim),
+            format_signed(d.trim_m, 3),
+            "m",
+        ),
         match d.freeboard_m {
-            Some(fb) => r("Min freeboard", format!("{fb:.3}"), "m"),
-            None => r("Min freeboard", "-".to_string(), ""),
+            Some(fb) => r(tr.s(Key::DamageRowMinFreeboard), format!("{fb:.3}"), "m"),
+            None => r(tr.s(Key::DamageRowMinFreeboard), "-".to_string(), ""),
         },
-        r("Lost buoyancy", format!("{:.3}", d.lost_volume_m3), "m³"),
+        r(
+            tr.s(Key::DamageRowLostBuoyancy),
+            format!("{:.3}", d.lost_volume_m3),
+            "m³",
+        ),
         r("KB", format!("{:.3}", d.kb), "m"),
     ]
 }
@@ -1391,35 +1561,65 @@ pub fn damage_rows(d: &DamageResult) -> Vec<Readout> {
 /// The equilibrium readouts of the Loading tab. TCG, trim, list and GM are
 /// signed and show their sign.
 pub fn loading_rows(l: &LoadingResult) -> Vec<Readout> {
+    loading_rows_tr(l, Tr::new(Locale::En))
+}
+
+/// Localized form of [`loading_rows`].
+pub fn loading_rows_tr(l: &LoadingResult, tr: Tr) -> Vec<Readout> {
     let r = Readout::new;
     vec![
-        r("Δ (mass)", format!("{:.3}", l.displacement_t), "t"),
+        r(
+            tr.s(Key::LoadingRowDisp),
+            format!("{:.3}", l.displacement_t),
+            "t",
+        ),
         r("LCG", format!("{:.3}", l.lcg), "m"),
         r("TCG", format_signed(l.tcg, 3), "m"),
-        r("KG (solid)", format!("{:.3}", l.kg_solid), "m"),
+        r(
+            tr.s(Key::LoadingRowKgSolid),
+            format!("{:.3}", l.kg_solid),
+            "m",
+        ),
         r("FSM", format!("{:.2}", l.fsm_t_m), "t·m"),
         r("FSC", format!("{:.3}", l.fsc_m), "m"),
-        r("KG (fluid)", format!("{:.3}", l.kg_fluid), "m"),
-        r("Draft", format!("{:.3}", l.draft), "m"),
-        r("Trim", format_signed(l.trim_m, 3), "m"),
-        r("List", format_signed(l.list_deg, 1), "°"),
-        r("GM (solid)", format_signed(l.gm_solid, 3), "m"),
-        r("GM (fluid)", format_signed(l.gm_fluid, 3), "m"),
+        r(
+            tr.s(Key::LoadingRowKgFluid),
+            format!("{:.3}", l.kg_fluid),
+            "m",
+        ),
+        r(tr.s(Key::LoadingRowDraft), format!("{:.3}", l.draft), "m"),
+        r(tr.s(Key::LoadingRowTrim), format_signed(l.trim_m, 3), "m"),
+        r(tr.s(Key::LoadingRowList), format_signed(l.list_deg, 1), "°"),
+        r(
+            tr.s(Key::LoadingRowGmSolid),
+            format_signed(l.gm_solid, 3),
+            "m",
+        ),
+        r(
+            tr.s(Key::LoadingRowGmFluid),
+            format_signed(l.gm_fluid, 3),
+            "m",
+        ),
     ]
 }
 
 /// The IMO severe wind and rolling readouts, each with its limit.
 pub fn weather_rows(w: &WeatherResult) -> Vec<Readout> {
+    weather_rows_tr(w, Tr::new(Locale::En))
+}
+
+/// Localized form of [`weather_rows`].
+pub fn weather_rows_tr(w: &WeatherResult, tr: Tr) -> Vec<Readout> {
     vec![
         Readout::new(
-            "Steady heel φ0",
+            tr.s(Key::LoadingWeatherSteadyHeel),
             format!("{:.1}", w.phi0_deg.unwrap_or(0.0)),
-            "° (lim 16°)",
+            tr.s(Key::LoadingWeatherSteadyHeelUnit),
         ),
         Readout::new(
-            "Area ratio b/a",
+            tr.s(Key::LoadingWeatherAreaRatio),
             format!("{:.2}", w.area_ratio),
-            "(req ≥1.0)",
+            tr.s(Key::LoadingWeatherAreaRatioUnit),
         ),
     ]
 }
@@ -1441,9 +1641,10 @@ const SAC_PLOT_HEIGHT: f32 = 124.0;
 
 /// The sectional area curve under the readout, on the same ticked axes as
 /// every other plot.
-fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics) {
+fn plot_sac(ui: &mut egui::Ui, h: &Hydrostatics, tr: Tr) {
     let a_max = h.sac.iter().fold(0.0_f64, |m, s| m.max(s.area));
-    let caption = format!("SAC · A (m²) vs x (m) · A max {a_max:.2} m²");
+    let max_s = format!("{a_max:.2}");
+    let caption = tr.fmt(Key::PlotSacCaption, &[("max", &max_s)]);
     let rect = draw_plot(
         ui,
         &caption,
@@ -1474,7 +1675,14 @@ pub const KG_UNSET: &str = "set KG first";
 /// is the requirements' estimate); unset, an empty text field with a hint,
 /// so no number stands in for a KG nobody gave. Returns true when the user
 /// set a value.
-fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, width: f32) -> bool {
+fn kg_field(
+    ui: &mut egui::Ui,
+    kg: &mut Option<f64>,
+    estimate: bool,
+    max: f64,
+    width: f32,
+    tr: Tr,
+) -> bool {
     match kg {
         Some(value) => ui
             .add_sized(
@@ -1483,12 +1691,16 @@ fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, w
                     .speed(0.02)
                     .range(0.0..=max)
                     .fixed_decimals(2)
-                    .suffix(if estimate { " m est." } else { " m" }),
+                    .suffix(if estimate {
+                        tr.s(Key::HydroKgEstSuffix)
+                    } else {
+                        " m"
+                    }),
             )
             .on_hover_text(if estimate {
-                "KG estimate from the design requirements: set the real KG here"
+                tr.s(Key::HydroKgEstTip)
             } else {
-                "KG above the keel"
+                tr.s(Key::HydroKgTip)
             })
             .changed(),
         None => {
@@ -1497,9 +1709,9 @@ fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, w
             let response = ui
                 .add_sized(
                     [width, 20.0],
-                    egui::TextEdit::singleline(&mut text).hint_text("— set KG"),
+                    egui::TextEdit::singleline(&mut text).hint_text(tr.s(Key::HydroKgHint)),
                 )
-                .on_hover_text("KG above the keel: GM and the GZ curves need it");
+                .on_hover_text(tr.s(Key::HydroKgUnsetTip));
             // Enter or a click elsewhere commits (a single-line field loses
             // focus on Enter).
             let entered = response.lost_focus();
@@ -1527,8 +1739,13 @@ fn kg_field(ui: &mut egui::Ui, kg: &mut Option<f64>, estimate: bool, max: f64, w
 
 /// Draft, trim, heel and KG controls plus the measurement readout.
 pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
+    hydrostatics_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`hydrostatics`].
+pub fn hydrostatics_tr(ui: &mut egui::Ui, panel: HydroPanel<'_>, tr: Tr) -> HydroAction {
     let mut action = HydroAction::None;
-    theme::heading(ui, "Hydrostatics");
+    theme::heading(ui, tr.s(Key::HydroTitle));
     ui.add_space(4.0);
 
     // From a 364 px dock the readout runs in two columns and the floating
@@ -1542,7 +1759,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         .min_col_width(if two_columns { 36.0 } else { 56.0 })
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
-            ui.label("Draft");
+            ui.label(tr.s(Key::HydroDraft));
             changed |= ui
                 .add_sized(
                     [field_width, 20.0],
@@ -1556,7 +1773,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
             if !two_columns {
                 ui.end_row();
             }
-            ui.label("Trim");
+            ui.label(tr.s(Key::HydroTrim));
             changed |= ui
                 .add_sized(
                     [field_width, 20.0],
@@ -1568,7 +1785,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                 )
                 .changed();
             ui.end_row();
-            ui.label("Heel");
+            ui.label(tr.s(Key::HydroHeel));
             changed |= ui
                 .add_sized(
                     [field_width, 20.0],
@@ -1589,6 +1806,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
                 panel.kg_estimate,
                 panel.limits.kg,
                 field_width,
+                tr,
             );
             ui.end_row();
         });
@@ -1598,7 +1816,7 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     // choice for a model that carries no mass distribution.
     ui.horizontal(|ui| {
         let mut on = *panel.free_trim;
-        if ui.checkbox(&mut on, "Free to trim").changed() {
+        if ui.checkbox(&mut on, tr.s(Key::HydroFreeTrim)).changed() {
             *panel.free_trim = on;
             if on && panel.lcg.is_none() {
                 *panel.lcg = panel.result.map(|r| r.lcb.x);
@@ -1631,17 +1849,17 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     if panel.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.small("recomputing…");
+            ui.small(tr.s(Key::CommonRecomputing));
         });
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let gz = ui.button("GZ curves");
+        let gz = ui.button(tr.s(Key::HydroGzCurves));
         if gz.clicked() {
             action = HydroAction::CrossCurves;
         }
         if panel.kg.is_none() {
-            ui.label(egui::RichText::new(KG_UNSET).color(theme::TEXT_MUTED));
+            ui.label(egui::RichText::new(tr.s(Key::HydroKgUnset)).color(theme::TEXT_MUTED));
         }
     });
     ui.add_space(2.0);
@@ -1649,35 +1867,40 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
     ui.add_space(2.0);
 
     let kg = *panel.kg;
-    stale_section(ui, panel.stale && panel.result.is_some(), |ui| {
+    stale_section_tr(ui, panel.stale && panel.result.is_some(), tr, |ui| {
         match panel.result {
             Some(h) if h.volume_m3 > 0.0 => {
-                let [form, centres, stability, areas] = hydrostatic_groups(h, kg);
+                let [form, centres, stability, areas] = hydrostatic_groups_tr(h, kg, tr);
                 if two_columns {
                     // Side by side, so SAC and the cross curves stay above the
                     // fold at 1600 × 1000.
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 13.0;
-                        grouped_grid(ui, "hydro_readouts", &[form, centres], true);
-                        grouped_grid(ui, "hydro_readouts_2", &[stability, areas], true);
+                        grouped_grid(ui, "hydro_readouts", &[form, centres], true, tr);
+                        grouped_grid(ui, "hydro_readouts_2", &[stability, areas], true, tr);
                     });
                 } else {
-                    grouped_readouts(ui, "hydro_readouts", &[form, centres, stability, areas]);
+                    grouped_readouts_tr(
+                        ui,
+                        "hydro_readouts",
+                        &[form, centres, stability, areas],
+                        tr,
+                    );
                 }
                 ui.add_space(2.0);
-                plot_sac(ui, h);
+                plot_sac(ui, h, tr);
                 for warning in &h.warnings {
-                    ui.colored_label(theme::FAIL, &warning.message);
+                    ui.colored_label(theme::FAIL, warning.message.render(tr));
                 }
                 if kg.is_some_and(|kg| h.gm(kg) < 0.0) {
-                    ui.colored_label(theme::FAIL, "negative GM: the hull is unstable upright");
+                    ui.colored_label(theme::FAIL, tr.s(Key::HydroErrNegativeGm));
                 }
             }
             Some(_) => {
-                ui.colored_label(theme::WARN, "nothing is submerged at this draft");
+                ui.colored_label(theme::WARN, tr.s(Key::HydroErrNothingSubmerged));
             }
             None => {
-                ui.small("no measurement yet");
+                ui.small(tr.s(Key::HydroNoMeasurement));
             }
         }
     });
@@ -1687,8 +1910,8 @@ pub fn hydrostatics(ui: &mut egui::Ui, panel: HydroPanel<'_>) -> HydroAction {
         // dock KG over a synthetic ±30 % displacement range, not a condition
         // anyone defined. The per-criterion table lives in Loading.
         ui.separator();
-        stale_section(ui, panel.curves_stale, |ui| {
-            plot_cross_curves(ui, curves, kg);
+        stale_section_tr(ui, panel.curves_stale, tr, |ui| {
+            plot_cross_curves(ui, curves, kg, tr);
         });
     }
     action
@@ -1701,17 +1924,34 @@ pub fn report_options(
     loading_conditions: &[String],
     damage_cases: &[String],
 ) -> bool {
+    report_options_tr(
+        ui,
+        report,
+        loading_conditions,
+        damage_cases,
+        Tr::new(Locale::En),
+    )
+}
+
+/// Localized form of [`report_options`].
+pub fn report_options_tr(
+    ui: &mut egui::Ui,
+    report: &mut ReportSettings,
+    loading_conditions: &[String],
+    damage_cases: &[String],
+    tr: Tr,
+) -> bool {
     let mut changed = false;
 
-    theme::heading(ui, "General hydrostatics");
+    theme::heading(ui, tr.s(Key::ReportOptsGeneralHydro));
     egui::Grid::new("report_hydro_grid")
         .num_columns(2)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
             // Draft override
-            ui.label("Draft override:");
+            ui.label(tr.s(Key::ReportOptsDraftOverride));
             let mut has_draft = report.draft.is_some();
-            if ui.checkbox(&mut has_draft, "Set").changed() {
+            if ui.checkbox(&mut has_draft, tr.s(Key::CommonSet)).changed() {
                 report.draft = if has_draft { Some(1.0) } else { None };
                 changed = true;
             }
@@ -1723,9 +1963,9 @@ pub fn report_options(
             ui.end_row();
 
             // KG override
-            ui.label("KG override:");
+            ui.label(tr.s(Key::ReportOptsKgOverride));
             let mut has_kg = report.kg.is_some();
-            if ui.checkbox(&mut has_kg, "Set").changed() {
+            if ui.checkbox(&mut has_kg, tr.s(Key::CommonSet)).changed() {
                 report.kg = if has_kg { Some(1.0) } else { None };
                 changed = true;
             }
@@ -1737,9 +1977,9 @@ pub fn report_options(
             ui.end_row();
 
             // LCG override (optional)
-            ui.label("LCG (optional):");
+            ui.label(tr.s(Key::ReportOptsLcgOptional));
             let mut has_lcg = report.lcg_x.is_some();
-            if ui.checkbox(&mut has_lcg, "Set").changed() {
+            if ui.checkbox(&mut has_lcg, tr.s(Key::CommonSet)).changed() {
                 report.lcg_x = if has_lcg { Some(0.0) } else { None };
                 changed = true;
             }
@@ -1756,7 +1996,7 @@ pub fn report_options(
             ui.end_row();
 
             // Speeds (comma list)
-            ui.label("Speeds (knots):");
+            ui.label(tr.s(Key::ReportOptsSpeedsColon));
             // While the field has focus its text lives in egui's memory:
             // re-formatting the parsed list every frame would eat a comma
             // or a trailing "." the moment it is typed.
@@ -1779,7 +2019,7 @@ pub fn report_options(
                 });
             let response = ui.add(
                 egui::TextEdit::singleline(&mut speeds_text)
-                    .hint_text("Default (e.g. 6, 8, 10, 12, 14)"),
+                    .hint_text(tr.s(Key::ReportOptsSpeedsHint)),
             );
             if response.changed() {
                 let parsed: Vec<f64> = speeds_text
@@ -1805,10 +2045,10 @@ pub fn report_options(
         });
 
     ui.separator();
-    theme::heading(ui, "Resistance & powering");
+    theme::heading(ui, tr.s(Key::ReportOptsResistanceHeading));
     let mut inc_res = report.include_resistance.unwrap_or(true);
     if ui
-        .checkbox(&mut inc_res, "Holtrop & Mennen resistance")
+        .checkbox(&mut inc_res, tr.s(Key::ReportOptsHoltrop))
         .changed()
     {
         report.include_resistance = Some(inc_res);
@@ -1816,7 +2056,7 @@ pub fn report_options(
     }
     let mut inc_plan = report.include_planing.unwrap_or(false);
     if ui
-        .checkbox(&mut inc_plan, "Savitsky planing analysis")
+        .checkbox(&mut inc_plan, tr.s(Key::ReportOptsSavitsky))
         .changed()
     {
         report.include_planing = Some(inc_plan);
@@ -1824,19 +2064,19 @@ pub fn report_options(
     }
 
     ui.separator();
-    theme::heading(ui, "Loading conditions");
+    theme::heading(ui, tr.s(Key::ReportOptsLoadingHeading));
     let mut inc_w = report.include_weather.unwrap_or(true);
     if ui
-        .checkbox(&mut inc_w, "Include IMO weather criterion")
+        .checkbox(&mut inc_w, tr.s(Key::ReportOptsIncludeWeather))
         .changed()
     {
         report.include_weather = Some(inc_w);
         changed = true;
     }
     if loading_conditions.is_empty() {
-        ui.label("No loading conditions in project.");
+        ui.label(tr.s(Key::LoadingEmptyConditions));
     } else {
-        ui.label("Included conditions:");
+        ui.label(tr.s(Key::ReportOptsIncludedConditions));
         let mut cur_selected = match &report.loading_conditions {
             None => loading_conditions.to_vec(),
             Some(names) => names.clone(),
@@ -1866,11 +2106,11 @@ pub fn report_options(
     }
 
     ui.separator();
-    theme::heading(ui, "Damage cases");
+    theme::heading(ui, tr.s(Key::DamageCases));
     if damage_cases.is_empty() {
-        ui.label("No damage cases in project.");
+        ui.label(tr.s(Key::DamageEmptyCases));
     } else {
-        ui.label("Included damage cases:");
+        ui.label(tr.s(Key::ReportOptsIncludedCases));
         let mut cur_selected = match &report.damage_cases {
             None => damage_cases.to_vec(),
             Some(names) => names.clone(),
@@ -1900,10 +2140,10 @@ pub fn report_options(
     }
 
     ui.separator();
-    theme::heading(ui, "Seakeeping");
+    theme::heading(ui, tr.s(Key::ReportOptsSeakeepingHeading));
     let mut has_seakeeping = report.seakeeping.is_some();
     if ui
-        .checkbox(&mut has_seakeeping, "Include seakeeping analysis")
+        .checkbox(&mut has_seakeeping, tr.s(Key::ReportOptsIncludeSeakeeping))
         .changed()
     {
         if has_seakeeping {
@@ -1922,7 +2162,7 @@ pub fn report_options(
             .num_columns(2)
             .spacing([12.0, 4.0])
             .show(ui, |ui| {
-                ui.label("Speed:");
+                ui.label(tr.s(Key::ReportOptsSpeedColon));
                 changed |= ui
                     .add(
                         theme::num(&mut sk.speed_kn)
@@ -1933,9 +2173,9 @@ pub fn report_options(
                     .changed();
                 ui.end_row();
 
-                ui.label("KG override (optional):");
+                ui.label(tr.s(Key::ReportOptsKgOverrideOpt));
                 let mut has_kg = sk.kg.is_some();
-                if ui.checkbox(&mut has_kg, "Set").changed() {
+                if ui.checkbox(&mut has_kg, tr.s(Key::CommonSet)).changed() {
                     sk.kg = if has_kg { Some(1.0) } else { None };
                     changed = true;
                 }
@@ -1948,7 +2188,10 @@ pub fn report_options(
             });
 
         let mut has_sea = sk.sea.is_some();
-        if ui.checkbox(&mut has_sea, "Irregular sea state").changed() {
+        if ui
+            .checkbox(&mut has_sea, tr.s(Key::ReportOptsIrregularSea))
+            .changed()
+        {
             if has_sea {
                 sk.sea = Some(WaveSpectrum::Bretschneider { hs: 2.0, tp: 7.0 });
             } else {
@@ -1980,7 +2223,7 @@ pub fn report_options(
                 .num_columns(2)
                 .spacing([12.0, 4.0])
                 .show(ui, |ui| {
-                    ui.label("Significant wave height Hs:");
+                    ui.label(tr.s(Key::ReportOptsHsColon));
                     let mut hs = sea.hs();
                     if ui
                         .add(
@@ -1999,7 +2242,7 @@ pub fn report_options(
                     }
                     ui.end_row();
 
-                    ui.label("Peak period Tp:");
+                    ui.label(tr.s(Key::ReportOptsTpColon));
                     let mut tp = sea.tp();
                     if ui
                         .add(
@@ -2019,7 +2262,7 @@ pub fn report_options(
                     ui.end_row();
 
                     if let WaveSpectrum::Jonswap { gamma, .. } = sea {
-                        ui.label("Peak enhancement γ:");
+                        ui.label(tr.s(Key::ReportOptsGammaColon));
                         changed |= ui
                             .add(theme::num(gamma).speed(0.1).range(1.0..=20.0))
                             .changed();
@@ -2058,38 +2301,43 @@ pub struct PerformancePanel<'a> {
 }
 
 pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> PerformanceAction {
+    performance_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`performance`].
+pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) -> PerformanceAction {
     let mut action = PerformanceAction::None;
-    theme::heading(ui, "Performance");
+    theme::heading(ui, tr.s(Key::PerfTitle));
     ui.add_space(4.0);
 
     let is_busy = panel.busy_resistance || panel.busy_raos;
 
     ui.horizontal(|ui| {
-        let btn = ui.add_enabled(!is_busy, egui::Button::new("Compute"));
+        let btn = ui.add_enabled(!is_busy, egui::Button::new(tr.s(Key::CommonCompute)));
         if btn.clicked() {
             action = PerformanceAction::Compute;
         }
         if is_busy {
             ui.spinner();
             if panel.busy_resistance && panel.busy_raos {
-                ui.label("Computing resistance & RAOs…");
+                ui.label(tr.s(Key::PerfBusyBoth));
             } else if panel.busy_resistance {
-                ui.label("Computing resistance…");
+                ui.label(tr.s(Key::PerfBusyResistance));
             } else {
-                ui.label("Computing RAOs…");
+                ui.label(tr.s(Key::PerfBusyRaos));
             }
         }
     });
 
     ui.add_space(4.0);
     ui.separator();
-    ui.strong("Resistance prediction");
+    ui.strong(tr.s(Key::PerfResistanceHeading));
     ui.add_space(2.0);
 
     ui.horizontal(|ui| {
-        ui.label("Method:");
+        ui.label(tr.s(Key::PerfMethodColon));
         egui::ComboBox::from_id_salt("perf_method")
-            .selected_text(panel.state.method.label())
+            .selected_text(panel.state.method.label_tr(tr))
             .show_ui(ui, |ui| {
                 for m in [
                     crate::app::ResistanceMethod::Holtrop,
@@ -2098,7 +2346,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
                     crate::app::ResistanceMethod::Michell,
                 ] {
                     if ui
-                        .selectable_value(&mut panel.state.method, m, m.label())
+                        .selectable_value(&mut panel.state.method, m, m.label_tr(tr))
                         .clicked()
                     {
                         action = PerformanceAction::Changed;
@@ -2108,24 +2356,24 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     });
 
     ui.horizontal(|ui| {
-        ui.label("Speeds (kn):");
+        ui.label(tr.s(Key::PerfSpeedsKnColon));
         let r1 = ui.add(
             theme::num(&mut panel.state.speeds_kn.0)
                 .speed(0.5)
                 .range(0.1..=100.0)
-                .prefix("min: "),
+                .prefix(tr.s(Key::PerfMinColon)),
         );
         let r2 = ui.add(
             theme::num(&mut panel.state.speeds_kn.1)
                 .speed(0.5)
                 .range(0.1..=100.0)
-                .prefix("max: "),
+                .prefix(tr.s(Key::PerfMaxColon)),
         );
         let r3 = ui.add(
             theme::num(&mut panel.state.speeds_kn.2)
                 .speed(0.1)
                 .range(0.1..=20.0)
-                .prefix("step: "),
+                .prefix(tr.s(Key::PerfStepColon)),
         );
         if r1.changed() || r2.changed() || r3.changed() {
             action = PerformanceAction::Changed;
@@ -2133,19 +2381,18 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     });
 
     if let Some(res) = &panel.state.resistance {
-        stale_section(ui, panel.stale_resistance, |ui| resistance_results(ui, res));
+        stale_section_tr(ui, panel.stale_resistance, tr, |ui| {
+            resistance_results(ui, res, tr);
+        });
     }
 
     ui.add_space(4.0);
     ui.separator();
-    ui.strong("Wave pattern");
+    ui.strong(tr.s(Key::AnalysisViewWaves));
     ui.add_space(2.0);
     if ui
-        .button("Open wave pattern")
-        .on_hover_text(
-            "The far-field (thin-ship) wave pattern, wave drag over speed and wash, in the \
-             Analysis drawer",
-        )
+        .button(tr.s(Key::PerfOpenWavePattern))
+        .on_hover_text(tr.s(Key::PerfOpenWavePatternTip))
         .clicked()
     {
         action = PerformanceAction::OpenWaveView;
@@ -2156,13 +2403,13 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
     ui.add_space(4.0);
     ui.separator();
-    ui.strong("Seakeeping (head-sea RAOs)");
+    ui.strong(tr.s(Key::PerfSeakeepingHeading));
     ui.add_space(2.0);
 
     let speed_resp = theme::slider(
         ui,
         egui::Slider::new(&mut panel.state.sk_speed_kn, 0.0..=20.0)
-            .text("Speed (kn)")
+            .text(tr.s(Key::PerfSpeedKn))
             .step_by(0.5),
     );
     if speed_resp.changed() {
@@ -2172,20 +2419,23 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
     ui.horizontal(|ui| {
         ui.label("KG");
         let mut cur_kg = panel.state.kg.or(panel.default_kg);
-        if kg_field(ui, &mut cur_kg, false, 50.0, 84.0) {
+        if kg_field(ui, &mut cur_kg, false, 50.0, 84.0, tr) {
             panel.state.kg = cur_kg;
             action = PerformanceAction::Changed;
         }
         let default = match panel.default_kg {
             Some(kg) => format!("{kg:.2} m"),
-            None => KG_UNSET.to_owned(),
+            None => tr.s(Key::HydroKgUnset).to_owned(),
         };
         if panel.state.kg.is_some() {
-            if ui.small_button("Reset").clicked() {
+            if ui.small_button(tr.s(Key::CommonResetCap)).clicked() {
                 panel.state.kg = None;
                 action = PerformanceAction::Changed;
             }
-            ui.label(format!("(default: {default}, {})", panel.kg_source));
+            ui.label(tr.fmt(
+                Key::PerfKgDefaultSource,
+                &[("default", &default), ("source", panel.kg_source)],
+            ));
         } else if panel.default_kg.is_some() {
             ui.label(format!("({})", panel.kg_source));
         } else {
@@ -2204,26 +2454,23 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
             .add(
                 theme::num(&mut panel.state.points)
                     .range(5..=200)
-                    .prefix("Frequencies: "),
+                    .prefix(tr.s(Key::PerfFrequenciesPrefix)),
             )
-            .on_hover_text("Number of encounter wave frequencies computed for the RAO");
+            .on_hover_text(tr.s(Key::PerfFrequenciesTip));
         if kyy_resp.changed() || pts_resp.changed() {
             action = PerformanceAction::Changed;
         }
     });
 
     if let Some(rep) = &panel.state.raos {
-        stale_section(ui, panel.stale_raos, |ui| rao_results(ui, rep));
+        stale_section_tr(ui, panel.stale_raos, tr, |ui| rao_results(ui, rep, tr));
     } else if !panel.busy_raos {
-        ui.label(
-            egui::RichText::new("Click Compute above for the heave and pitch RAOs.")
-                .color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new(tr.s(Key::PerfRaoHint)).color(theme::TEXT_MUTED));
     }
 
     ui.add_space(4.0);
     ui.separator();
-    if sea_state_section(ui, panel.state, panel.stale_raos) {
+    if sea_state_section(ui, panel.state, panel.stale_raos, tr) {
         action = PerformanceAction::Changed;
     }
 
@@ -2231,20 +2478,27 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 }
 
 /// The resistance curve and its table.
-fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult) {
+fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr: Tr) {
     for w in &res.warnings {
-        ui.colored_label(theme::WARN, format!("⚠ {w}"));
+        ui.colored_label(theme::WARN, format!("⚠ {}", w.render(tr)));
     }
 
     let series = vec![(
         res.method.clone(),
         res.rows.iter().map(|r| (r.speed_kn, r.rt_kn)).collect(),
     )];
-    plot_xy(ui, "Resistance", "Speed (kn)", &res.rt_label, &series);
+    plot_xy_tr(
+        ui,
+        tr.s(Key::PerfPlotResistance),
+        tr.s(Key::PerfPlotSpeedKn),
+        &res.rt_label,
+        &series,
+        tr,
+    );
 
     ui.add_space(2.0);
     let (rt, rt_unit) = split_unit(&res.rt_label);
-    eng_table(
+    eng_table_tr(
         ui,
         &[
             EngColumn::number("V", "kn"),
@@ -2253,11 +2507,12 @@ fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult) {
             EngColumn::number("P_E", "kW"),
         ],
         &resistance_table(res),
+        tr,
     );
 }
 
 /// The natural periods and the motion RAO plot.
-fn rao_results(ui: &mut egui::Ui, rep: &seacraft_core::seakeeping::SeakeepingReport) {
+fn rao_results(ui: &mut egui::Ui, rep: &seacraft_core::seakeeping::SeakeepingReport, tr: Tr) {
     let tn_heave = if rep.natural_heave_omega > 1e-4 {
         format!(
             "{:.2} s",
@@ -2274,13 +2529,13 @@ fn rao_results(ui: &mut egui::Ui, rep: &seacraft_core::seakeeping::SeakeepingRep
     } else {
         "-".to_string()
     };
-    ui.label(format!(
-        "Natural periods: Heave T_n = {}, Pitch T_n = {}",
-        tn_heave, tn_pitch
+    ui.label(tr.fmt(
+        Key::PerfNaturalPeriods,
+        &[("heave", &tn_heave), ("pitch", &tn_pitch)],
     ));
 
     for w in &rep.warnings {
-        ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
+        ui.colored_label(theme::WARN, format!("⚠ {}", w.message.render(tr)));
     }
 
     // A sea-state run puts the RAOs on the spectrum's ω grid, which can reach
@@ -2307,10 +2562,10 @@ fn rao_results(ui: &mut egui::Ui, rep: &seacraft_core::seakeeping::SeakeepingRep
         .map(|p| (p.lambda_over_l, p.pitch_amp))
         .collect();
     let series = vec![
-        ("Heave z/ζ".to_string(), heave_pts),
-        ("Pitch θ/kζ".to_string(), pitch_pts),
+        (tr.s(Key::PerfRaoHeaveLabel).to_string(), heave_pts),
+        (tr.s(Key::PerfRaoPitchLabel).to_string(), pitch_pts),
     ];
-    plot_xy(ui, "Motion RAOs", "λ / L", "RAO", &series);
+    plot_xy_tr(ui, tr.s(Key::PerfRaoPlotTitle), "λ / L", "RAO", &series, tr);
 }
 
 /// The Performance tab's "Sea state" section: spectrum input, response points and
@@ -2320,26 +2575,24 @@ fn sea_state_section(
     ui: &mut egui::Ui,
     state: &mut crate::app::PerformanceState,
     stale: bool,
+    tr: Tr,
 ) -> bool {
     use crate::app::{SeaPoint, SeaPointPos, SeaSpectrumKind, SeaStateInput};
     let mut changed = false;
-    ui.strong("Sea state (irregular head seas)");
+    ui.strong(tr.s(Key::PerfSeaHeading));
     ui.add_space(2.0);
 
     let input = &mut state.sea_input;
     if ui
-        .checkbox(&mut input.enabled, "Compute sea-state responses")
-        .on_hover_text(
-            "Computes the RAOs on the spectrum's frequency grid (0.2–5 ωp) with the next \
-             Compute, so the RAO plot above then covers that range.",
-        )
+        .checkbox(&mut input.enabled, tr.s(Key::PerfSeaEnable))
+        .on_hover_text(tr.s(Key::PerfSeaEnableTip))
         .changed()
     {
         changed = true;
     }
 
     if input.enabled {
-        egui::ComboBox::from_label("Spectrum")
+        egui::ComboBox::new("sea_spectrum", tr.s(Key::PerfSeaSpectrum))
             .selected_text(input.kind.label())
             .show_ui(ui, |ui| {
                 for k in [SeaSpectrumKind::Bretschneider, SeaSpectrumKind::Jonswap] {
@@ -2380,7 +2633,7 @@ fn sea_state_section(
             }
         });
 
-        ui.label("Response points:");
+        ui.label(tr.s(Key::PerfSeaResponsePoints));
         let mut remove = None;
         for (i, p) in input.points.iter_mut().enumerate() {
             ui.horizontal(|ui| {
@@ -2392,10 +2645,10 @@ fn sea_state_section(
                 }
                 match &mut p.pos {
                     SeaPointPos::Lcg => {
-                        ui.label("at the LCG");
+                        ui.label(tr.s(Key::PerfSeaAtLcg));
                     }
                     SeaPointPos::Bow => {
-                        ui.label("at the forward end of the waterline");
+                        ui.label(tr.s(Key::PerfSeaAtBow));
                     }
                     SeaPointPos::Model(x) => {
                         if ui
@@ -2412,7 +2665,11 @@ fn sea_state_section(
                         }
                     }
                 }
-                if ui.small_button("✕").on_hover_text("Remove point").clicked() {
+                if ui
+                    .small_button("✕")
+                    .on_hover_text(tr.s(Key::PerfSeaRemovePoint))
+                    .clicked()
+                {
                     remove = Some(i);
                 }
             });
@@ -2422,7 +2679,7 @@ fn sea_state_section(
             changed = true;
         }
         ui.horizontal(|ui| {
-            if input.points.len() < 16 && ui.small_button("+ Point").clicked() {
+            if input.points.len() < 16 && ui.small_button(tr.s(Key::PerfSeaAddPoint)).clicked() {
                 let n = input.points.len() + 1;
                 input.points.push(SeaPoint {
                     name: format!("P{n}"),
@@ -2430,7 +2687,7 @@ fn sea_state_section(
                 });
                 changed = true;
             }
-            if ui.small_button("Reset points").clicked() {
+            if ui.small_button(tr.s(Key::PerfSeaResetPoints)).clicked() {
                 input.points = SeaStateInput::default_points();
                 changed = true;
             }
@@ -2442,13 +2699,13 @@ fn sea_state_section(
 
     if let Some(r) = &state.sea_result {
         ui.add_space(4.0);
-        stale_section(ui, stale, |ui| sea_state_results(ui, r));
+        stale_section_tr(ui, stale, tr, |ui| sea_state_results(ui, r, tr));
     }
     changed
 }
 
 /// The irregular-sea responses: spectrum, significant motions, MSI.
-fn sea_state_results(ui: &mut egui::Ui, r: &seacraft_core::seastate::IrregularReport) {
+fn sea_state_results(ui: &mut egui::Ui, r: &seacraft_core::seastate::IrregularReport, tr: Tr) {
     {
         let sea = match r.sea {
             seacraft_core::seastate::WaveSpectrum::Bretschneider { hs, tp } => {
@@ -2458,35 +2715,49 @@ fn sea_state_results(ui: &mut egui::Ui, r: &seacraft_core::seastate::IrregularRe
                 format!("JONSWAP Hs {hs:.2} m, Tp {tp:.2} s, γ {gamma:.2}")
             }
         };
-        ui.label(format!(
-            "{sea} at {:.1} kn: Hs check {:.3} m, T1 {:.2} s, Tz {:.2} s",
-            r.speed_kn, r.spectrum.hs_check, r.spectrum.t1_s, r.spectrum.tz_s
+        let speed_s = format!("{:.1}", r.speed_kn);
+        let hs_s = format!("{:.3}", r.spectrum.hs_check);
+        let t1_s = format!("{:.2}", r.spectrum.t1_s);
+        let tz_s = format!("{:.2}", r.spectrum.tz_s);
+        ui.label(tr.fmt(
+            Key::PerfSeaSummary,
+            &[
+                ("sea", &sea),
+                ("speed", &speed_s),
+                ("hs", &hs_s),
+                ("t1", &t1_s),
+                ("tz", &tz_s),
+            ],
         ));
         for w in &r.warnings {
-            ui.colored_label(theme::WARN, format!("⚠ {}", w.message));
+            ui.colored_label(theme::WARN, format!("⚠ {}", w.message.render(tr)));
         }
-        let global: Vec<Vec<EngCell>> = [("Heave", "m", &r.heave), ("Pitch", "deg", &r.pitch_deg)]
-            .into_iter()
-            .map(|(name, unit, st)| {
-                vec![
-                    name.into(),
-                    unit.into(),
-                    format!("{:.3}", st.significant).into(),
-                    format!("{:.3}", st.rms).into(),
-                    format!("{:.2}", st.tz_s).into(),
-                ]
-            })
-            .collect();
-        eng_table(
+        let global: Vec<Vec<EngCell>> = [
+            (tr.s(Key::PerfSeaHeave), "m", &r.heave),
+            (tr.s(Key::PerfSeaPitch), "deg", &r.pitch_deg),
+        ]
+        .into_iter()
+        .map(|(name, unit, st)| {
+            vec![
+                name.into(),
+                unit.into(),
+                format!("{:.3}", st.significant).into(),
+                format!("{:.3}", st.rms).into(),
+                format!("{:.2}", st.tz_s).into(),
+            ]
+        })
+        .collect();
+        eng_table_tr(
             ui,
             &[
-                EngColumn::text("Response"),
+                EngColumn::text(tr.s(Key::PerfSeaColResponse)),
                 EngColumn::unit(),
-                EngColumn::number("Significant", ""),
+                EngColumn::number(tr.s(Key::PerfSeaColSignificant), ""),
                 EngColumn::number("RMS", ""),
                 EngColumn::number("Tz", "s"),
             ],
             &global,
+            tr,
         );
         ui.add_space(2.0);
         let points: Vec<Vec<EngCell>> = r
@@ -2503,22 +2774,20 @@ fn sea_state_results(ui: &mut egui::Ui, r: &seacraft_core::seastate::IrregularRe
                 ]
             })
             .collect();
-        eng_table(
+        eng_table_tr(
             ui,
             &[
-                EngColumn::text("Point"),
+                EngColumn::text(tr.s(Key::PerfSeaColPoint)),
                 EngColumn::number("x", "m"),
-                EngColumn::number("Motion sig.", "m"),
-                EngColumn::number("Relative sig.", "m"),
-                EngColumn::number("Accel. RMS", "g"),
+                EngColumn::number(tr.s(Key::PerfSeaColMotionSig), "m"),
+                EngColumn::number(tr.s(Key::PerfSeaColRelativeSig), "m"),
+                EngColumn::number(tr.s(Key::PerfSeaColAccelRms), "g"),
                 EngColumn::number("MSI", "%"),
             ],
             &points,
+            tr,
         );
-        ui.label(
-            "MSI: share of unadapted people expected to vomit within a 2-hour exposure \
-             (O'Hanlon & McCauley 1974).",
-        );
+        ui.label(tr.s(Key::PerfSeaMsiNote));
     }
 }
 
@@ -2539,10 +2808,10 @@ pub struct DamagePanel<'a> {
     pub scroll_to: bool,
 }
 
-fn unique_case_name(base: &str, existing: &[DamageCase]) -> String {
+fn unique_case_name(base: &str, existing: &[DamageCase], fallback: &str) -> String {
     let base_trimmed = base.trim();
     let base_name = if base_trimmed.is_empty() {
-        "Damage case"
+        fallback
     } else {
         base_trimmed
     };
@@ -2559,10 +2828,10 @@ fn unique_case_name(base: &str, existing: &[DamageCase]) -> String {
     }
 }
 
-fn unique_compartment_name(base: &str, existing: &[Compartment]) -> String {
+fn unique_compartment_name(base: &str, existing: &[Compartment], fallback: &str) -> String {
     let base_trimmed = base.trim();
     let base_name = if base_trimmed.is_empty() {
-        "Compartment"
+        fallback
     } else {
         base_trimmed
     };
@@ -2580,17 +2849,27 @@ fn unique_compartment_name(base: &str, existing: &[Compartment]) -> String {
 }
 
 pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
+    damage_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`damage`].
+pub fn damage_tr(ui: &mut egui::Ui, panel: DamagePanel<'_>, tr: Tr) -> DamageAction {
     let mut action = DamageAction::None;
-    theme::heading(ui, "Damage stability");
+    theme::heading(ui, tr.s(Key::DamageTitle));
     ui.add_space(4.0);
 
     // Compartments section
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Compartments").strong());
-        if ui.button("+ Add compartment").clicked() {
+        ui.label(egui::RichText::new(tr.s(Key::DamageCompartments)).strong());
+        if ui.button(tr.s(Key::DamageAddCompartment)).clicked() {
             let n = panel.project.compartments.len() + 1;
-            let name =
-                unique_compartment_name(&format!("Compartment {n}"), &panel.project.compartments);
+            let n_s = n.to_string();
+            let seed = tr.fmt(Key::DamageCompartmentN, &[("n", &n_s)]);
+            let name = unique_compartment_name(
+                &seed,
+                &panel.project.compartments,
+                tr.s(Key::DamageCompartmentBase),
+            );
             panel.project.compartments.push(Compartment {
                 name,
                 x_min: 0.0,
@@ -2607,12 +2886,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     });
 
     if panel.project.compartments.is_empty() {
-        ui.label(
-            egui::RichText::new(
-                "No compartments defined. Click '+ Add compartment' to create watertight divisions.",
-            )
-            .color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new(tr.s(Key::DamageEmptyCompartments)).color(theme::TEXT_MUTED));
     }
 
     let mut remove_comp = None;
@@ -2625,24 +2899,28 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         }
         let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Name:");
+                ui.label(tr.s(Key::CommonNameColon));
                 let old_name = comp.name.clone();
                 if ui.text_edit_singleline(&mut comp.name).changed() {
                     action = DamageAction::Changed;
                     renamed.push((old_name, comp.name.clone()));
                 }
                 if ui
-                    .checkbox(&mut comp.clip_to_hull, "Clip to hull")
+                    .checkbox(&mut comp.clip_to_hull, tr.s(Key::LoadingClipToHull))
                     .changed()
                 {
                     action = DamageAction::Changed;
                 }
-                if ui.button("✕").on_hover_text("Remove compartment").clicked() {
+                if ui
+                    .button("✕")
+                    .on_hover_text(tr.s(Key::DamageRemoveCompartment))
+                    .clicked()
+                {
                     remove_comp = Some(c_idx);
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("Permeability:");
+                ui.label(tr.s(Key::DamagePermeabilityColon));
                 if ui
                     .add(
                         theme::num(&mut comp.permeability)
@@ -2654,14 +2932,14 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                     action = DamageAction::Changed;
                 }
             });
-            egui::CollapsingHeader::new("Bounds [x, y, z]")
+            egui::CollapsingHeader::new(tr.s(Key::LoadingBounds))
                 .id_salt(("comp_bounds_header", c_idx))
                 .default_open(false)
                 .show(ui, |ui| {
                     egui::Grid::new(format!("comp_bounds_{c_idx}"))
                         .num_columns(3)
                         .show(ui, |ui| {
-                            ui.label("X range (m):");
+                            ui.label(tr.s(Key::LoadingXRange));
                             if ui.add(theme::num(&mut comp.x_min).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
@@ -2670,7 +2948,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                             }
                             ui.end_row();
 
-                            ui.label("Y range (m):");
+                            ui.label(tr.s(Key::LoadingYRange));
                             if ui.add(theme::num(&mut comp.y_min).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
@@ -2679,7 +2957,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                             }
                             ui.end_row();
 
-                            ui.label("Z range (m):");
+                            ui.label(tr.s(Key::LoadingZRange));
                             if ui.add(theme::num(&mut comp.z_min).speed(0.01)).changed() {
                                 action = DamageAction::Changed;
                             }
@@ -2717,7 +2995,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Damage case picker and New / Duplicate / Delete buttons
     ui.separator();
-    theme::heading(ui, "Damage cases");
+    theme::heading(ui, tr.s(Key::DamageCases));
     ui.add_space(4.0);
 
     let mut delete_case = false;
@@ -2726,17 +3004,12 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     if panel.project.damage_cases.is_empty() {
         ui.horizontal(|ui| {
-            ui.label("No damage cases in project.");
-            if ui.button("New").clicked() {
+            ui.label(tr.s(Key::DamageEmptyCases));
+            if ui.button(tr.s(Key::CommonNew)).clicked() {
                 new_case = true;
             }
         });
-        ui.label(
-            egui::RichText::new(
-                "Click 'New' to create a damage case and evaluate damaged equilibrium.",
-            )
-            .color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new(tr.s(Key::DamageEmptyCasesHint)).color(theme::TEXT_MUTED));
     } else {
         if *panel.selected >= panel.project.damage_cases.len() {
             *panel.selected = panel.project.damage_cases.len() - 1;
@@ -2756,20 +3029,24 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                         }
                     }
                 });
-            if ui.button("New").clicked() {
+            if ui.button(tr.s(Key::CommonNew)).clicked() {
                 new_case = true;
             }
-            if ui.button("Duplicate").clicked() {
+            if ui.button(tr.s(Key::CommonDuplicate)).clicked() {
                 duplicate_case = true;
             }
-            if ui.button("Delete").clicked() {
+            if ui.button(tr.s(Key::CommonDelete)).clicked() {
                 delete_case = true;
             }
         });
     }
 
     if new_case {
-        let name = unique_case_name("Damage case 1", &panel.project.damage_cases);
+        let name = unique_case_name(
+            tr.s(Key::DamageCaseDefault),
+            &panel.project.damage_cases,
+            tr.s(Key::DamageCaseBase),
+        );
         panel.project.damage_cases.push(DamageCase {
             name,
             compartments: Vec::new(),
@@ -2788,7 +3065,11 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     if duplicate_case && !panel.project.damage_cases.is_empty() {
         let orig = &panel.project.damage_cases[*panel.selected];
         let mut dup = orig.clone();
-        dup.name = unique_case_name(&orig.name, &panel.project.damage_cases);
+        dup.name = unique_case_name(
+            &orig.name,
+            &panel.project.damage_cases,
+            tr.s(Key::DamageCaseBase),
+        );
         panel.project.damage_cases.push(dup);
         *panel.selected = panel.project.damage_cases.len() - 1;
         return DamageAction::Changed;
@@ -2810,7 +3091,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Editable name
     ui.horizontal(|ui| {
-        ui.label("Name:");
+        ui.label(tr.s(Key::CommonNameColon));
         if ui.text_edit_singleline(&mut case.name).changed() {
             action = DamageAction::Changed;
         }
@@ -2824,18 +3105,15 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         .count()
         > 1
     {
-        ui.colored_label(
-            theme::FAIL,
-            "Another damage case has this name; rename it before saving.",
-        );
+        ui.colored_label(theme::FAIL, tr.s(Key::DamageDuplicateName));
     }
     let case = &mut panel.project.damage_cases[*panel.selected];
 
     // Flooded compartments checkboxes
     ui.add_space(4.0);
-    ui.label(egui::RichText::new("Flooded compartments").strong());
+    ui.label(egui::RichText::new(tr.s(Key::DamageFloodedCompartments)).strong());
     if panel.project.compartments.is_empty() {
-        ui.label("No compartments defined above.");
+        ui.label(tr.s(Key::DamageNoCompartmentsAbove));
     } else {
         for comp in &panel.project.compartments {
             let is_flooded = case.compartments.iter().any(|s| match s {
@@ -2872,7 +3150,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
         .collect();
     if !inlines.is_empty() {
         ui.add_space(2.0);
-        ui.label(egui::RichText::new("Inline compartments (read-only)").italics());
+        ui.label(egui::RichText::new(tr.s(Key::DamageInlineCompartments)).italics());
         for inc in &inlines {
             ui.label(format!(
                 "• {} [x: {:.2}..{:.2}, y: {:.2}..{:.2}, z: {:.2}..{:.2}, μ: {:.2}]",
@@ -2890,7 +3168,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     // Intact condition
     ui.separator();
-    ui.label(egui::RichText::new("Intact condition").strong());
+    ui.label(egui::RichText::new(tr.s(Key::DamageIntactCondition)).strong());
 
     let is_by_cond = case.loading_condition_name.is_some()
         || (case.loading_condition.is_some() && case.displacement_t.is_none());
@@ -2898,7 +3176,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     ui.horizontal(|ui| {
         if ui
-            .radio_value(&mut mode_cond, true, "Loading condition")
+            .radio_value(&mut mode_cond, true, tr.s(Key::DamageModeLoadingCondition))
             .clicked()
             && !is_by_cond
         {
@@ -2917,7 +3195,11 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             case.tcg = None;
             action = DamageAction::Changed;
         }
-        if ui.radio_value(&mut mode_cond, false, "Manual").clicked() && is_by_cond {
+        if ui
+            .radio_value(&mut mode_cond, false, tr.s(Key::DamageModeManual))
+            .clicked()
+            && is_by_cond
+        {
             case.loading_condition_name = None;
             case.loading_condition = None;
             if case.displacement_t.is_none() {
@@ -2935,7 +3217,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
 
     if mode_cond {
         if panel.project.loading_conditions.is_empty() {
-            ui.label("No loading conditions in project.");
+            ui.label(tr.s(Key::LoadingEmptyConditions));
         } else {
             let current_cond_name = case
                 .loading_condition_name
@@ -2947,7 +3229,7 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
                 action = DamageAction::Changed;
             }
             ui.horizontal(|ui| {
-                ui.label("Condition:");
+                ui.label(tr.s(Key::DamageConditionColon));
                 egui::ComboBox::from_id_salt("damage_loading_condition_picker")
                     .selected_text(&current_cond_name)
                     .show_ui(ui, |ui| {
@@ -3018,13 +3300,13 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     // Compute button
     ui.separator();
     ui.horizontal(|ui| {
-        let btn = ui.add_enabled(!panel.busy, egui::Button::new("Compute"));
+        let btn = ui.add_enabled(!panel.busy, egui::Button::new(tr.s(Key::CommonCompute)));
         if btn.clicked() {
             action = DamageAction::Compute;
         }
         if panel.busy {
             ui.spinner();
-            ui.label("computing…");
+            ui.label(tr.s(Key::CommonComputing));
         }
     });
 
@@ -3032,72 +3314,70 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
     if let Some(r) = panel.result {
         ui.separator();
         if panel.stale {
-            stale_chip(ui);
+            stale_chip_tr(ui, tr);
             // The results close the panel: the dimming ends with it.
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
-        theme::heading(ui, "Damaged equilibrium");
+        theme::heading(ui, tr.s(Key::DamageResultsTitle));
         if !r.equilibrium_found {
-            ui.colored_label(
-                theme::FAIL,
-                "Equilibrium NOT found (lost buoyancy exceeds reserve buoyancy or capsized)",
-            );
+            ui.colored_label(theme::FAIL, tr.s(Key::DamageEqNotFound));
         } else {
-            ui.colored_label(theme::OK, "Equilibrium found");
+            ui.colored_label(theme::OK, tr.s(Key::DamageEqFound));
         }
 
-        readouts(ui, "damage_readouts", &damage_rows(r));
+        readouts_tr(ui, "damage_readouts", &damage_rows_tr(r, tr), tr);
 
         if !r.compartments.is_empty() {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Flooded compartment summary").strong());
-            eng_table(
+            ui.label(egui::RichText::new(tr.s(Key::DamageCompSummary)).strong());
+            eng_table_tr(
                 ui,
                 &[
-                    EngColumn::text("Name"),
+                    EngColumn::text(tr.s(Key::LoadingColName)),
                     EngColumn::number("μ", ""),
-                    EngColumn::number("Submerged", "m³"),
-                    EngColumn::number("Lost", "m³"),
+                    EngColumn::number(tr.s(Key::DamageCompColSubmerged), "m³"),
+                    EngColumn::number(tr.s(Key::DamageCompColLost), "m³"),
                     EngColumn::number("x", "m"),
                     EngColumn::number("y", "m"),
                     EngColumn::number("z", "m"),
                 ],
                 &compartment_table(r),
+                tr,
             );
         }
 
         if let Some(crit) = &r.criteria {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Residual stability criteria").strong());
-                criteria_badge(ui, crit.passed, panel.stale);
+                ui.label(egui::RichText::new(tr.s(Key::DamageResidualCriteria)).strong());
+                criteria_badge_tr(ui, crit.passed, panel.stale, tr);
             });
-            not_validated_note(ui);
+            not_validated_note_tr(ui, tr);
             let stale = panel.stale;
             let rows = [
                 criterion_row(
-                    "Positive range ≥ 15°",
+                    tr.s(Key::DamageCritPositiveRange),
                     format!("{:.1}", crit.positive_range_deg),
                     "°",
                     crit.positive_range_deg >= 15.0,
                     stale,
                 ),
                 criterion_row(
-                    "Max GZ ≥ 0.10 m",
+                    tr.s(Key::DamageCritMaxGz),
                     format!("{:.3}", crit.max_gz_m),
                     "m",
                     crit.max_gz_m >= 0.10,
                     stale,
                 ),
                 criterion_row(
-                    "Area ≥ 0.015 m·rad",
+                    tr.s(Key::DamageCritArea),
                     format!("{:.4}", crit.area_m_rad),
                     "m·rad",
                     crit.area_m_rad >= 0.015,
                     stale,
                 ),
             ];
-            eng_table(ui, &criteria_columns(), &rows);
+            eng_table_tr(ui, &criteria_columns(tr), &rows, tr);
         }
 
         ui.add_space(4.0);
@@ -3110,14 +3390,17 @@ pub fn damage(ui: &mut egui::Ui, panel: DamagePanel<'_>) -> DamageAction {
             })
             .collect();
         if !pts.is_empty() {
-            ui.label(egui::RichText::new("Residual righting lever GZ").strong());
-            plot_gz(ui, &[(r.case_name.clone(), pts)]);
+            ui.label(egui::RichText::new(tr.s(Key::DamageResidualGz)).strong());
+            plot_gz_tr(ui, &[(r.case_name.clone(), pts)], tr);
         }
 
         if !r.warnings.is_empty() {
             ui.add_space(4.0);
             for w in &r.warnings {
-                ui.colored_label(theme::WARN, format!("Warning: {w}"));
+                ui.colored_label(
+                    theme::WARN,
+                    tr.fmt(Key::CommonWarningPrefix, &[("msg", &w.render(tr))]),
+                );
             }
         }
     }
@@ -3227,6 +3510,16 @@ pub fn eng_table(
     columns: &[EngColumn<'_>],
     rows: &[Vec<EngCell>],
 ) -> EngTableOutput {
+    eng_table_tr(ui, columns, rows, Tr::new(Locale::En))
+}
+
+/// Localized form of [`eng_table`].
+pub fn eng_table_tr(
+    ui: &mut egui::Ui,
+    columns: &[EngColumn<'_>],
+    rows: &[Vec<EngCell>],
+    tr: Tr,
+) -> EngTableOutput {
     let body_font = egui::FontId::proportional(theme::BODY_SIZE);
     let mono_font = egui::FontId::monospace(theme::MONO_SIZE);
     let unit_font = egui::FontId::proportional(theme::SMALL_SIZE);
@@ -3235,7 +3528,7 @@ pub fn eng_table(
         let (text, font, colour) = match (kind, cell) {
             (_, None) => (String::new(), body_font.clone(), theme::TEXT_PRIMARY),
             (_, Some(EngCell::Badge(passed, stale))) => {
-                let (text, colour) = criteria_badge_style(*passed, *stale);
+                let (text, colour) = criteria_badge_style_tr(*passed, *stale, tr);
                 (text.to_owned(), mono_font.clone(), colour)
             }
             (ColumnKind::Number, Some(EngCell::Text(t))) => {
@@ -3431,12 +3724,12 @@ fn criterion_row(name: &str, value: String, unit: &str, passed: bool, stale: boo
 }
 
 /// The criteria table's columns: criterion, value, unit, verdict.
-fn criteria_columns() -> [EngColumn<'static>; 4] {
+fn criteria_columns(tr: Tr) -> [EngColumn<'static>; 4] {
     [
-        EngColumn::text("Criterion"),
-        EngColumn::number("Value", ""),
+        EngColumn::text(tr.s(Key::CriteriaColCriterion)),
+        EngColumn::number(tr.s(Key::CriteriaColValue), ""),
         EngColumn::unit(),
-        EngColumn::badge("Status"),
+        EngColumn::badge(tr.s(Key::CriteriaColStatus)),
     ]
 }
 
@@ -4060,11 +4353,13 @@ pub fn cross_curve_polylines(curves: &[CrossCurve]) -> Vec<(String, Vec<(f64, f6
 
 /// The dock's GZ plot: heel across, righting lever up, one line per
 /// displacement, for the bare hull at the dock KG.
-fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve], kg: f64) {
+fn plot_cross_curves(ui: &mut egui::Ui, curves: &[CrossCurve], kg: f64, tr: Tr) {
+    let kg_s = format!("{kg:.2}");
+    let caption = tr.fmt(Key::PlotCrossCurvesCaption, &[("kg", &kg_s)]);
     let rect = draw_plot(
         ui,
-        &format!("Cross curves — bare hull at dock KG {kg:.2} m"),
-        "GZ m at Δ",
+        &caption,
+        tr.s(Key::PlotCrossCurvesLegend),
         &cross_curve_polylines(curves),
         true,
         PLOT_HEIGHT,
@@ -4092,10 +4387,10 @@ pub struct LoadingPanel<'a> {
     pub lightship: WeightItem,
 }
 
-fn unique_condition_name(base: &str, existing: &[LoadingCondition]) -> String {
+fn unique_condition_name(base: &str, existing: &[LoadingCondition], fallback: &str) -> String {
     let base_trimmed = base.trim();
     let base_name = if base_trimmed.is_empty() {
-        "Condition"
+        fallback
     } else {
         base_trimmed
     };
@@ -4123,23 +4418,48 @@ pub fn plot_xy(
     y_label: &str,
     series: &[(String, Vec<(f64, f64)>)],
 ) {
+    plot_xy_tr(ui, title, x_label, y_label, series, Tr::new(Locale::En));
+}
+
+/// Localized form of [`plot_xy`].
+pub fn plot_xy_tr(
+    ui: &mut egui::Ui,
+    title: &str,
+    x_label: &str,
+    y_label: &str,
+    series: &[(String, Vec<(f64, f64)>)],
+    tr: Tr,
+) {
     let is_gz = title == "GZ";
     let caption = if is_gz {
-        "GZ (m) vs heel (°)".to_string()
+        tr.s(Key::PlotGzCaption).to_owned()
     } else {
-        format!("{title}: {y_label} vs {x_label}")
+        tr.fmt(
+            Key::PlotXyCaption,
+            &[("title", title), ("y", y_label), ("x", x_label)],
+        )
     };
     draw_plot(ui, &caption, "", series, is_gz, PLOT_HEIGHT);
 }
 
 /// A general GZ plot: heel (deg) across, righting lever GZ (m) up, with labelled curves.
 pub fn plot_gz(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)]) {
-    plot_xy(ui, "GZ", "heel", "GZ", curves);
+    plot_gz_tr(ui, curves, Tr::new(Locale::En));
+}
+
+/// Localized form of [`plot_gz`].
+pub fn plot_gz_tr(ui: &mut egui::Ui, curves: &[(String, Vec<(f64, f64)>)], tr: Tr) {
+    plot_xy_tr(ui, "GZ", "heel", "GZ", curves, tr);
 }
 
 pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
+    loading_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`loading`].
+pub fn loading_tr(ui: &mut egui::Ui, panel: LoadingPanel<'_>, tr: Tr) -> LoadingAction {
     let mut action = LoadingAction::None;
-    theme::heading(ui, "Loading condition");
+    theme::heading(ui, tr.s(Key::LoadingTitle));
     ui.add_space(4.0);
 
     // Condition picker and New / Duplicate / Delete buttons
@@ -4149,8 +4469,8 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
 
     if panel.project.loading_conditions.is_empty() {
         ui.horizontal(|ui| {
-            ui.label("No conditions in project.");
-            if ui.button("New").clicked() {
+            ui.label(tr.s(Key::LoadingEmptyConditions));
+            if ui.button(tr.s(Key::CommonNew)).clicked() {
                 new_requested = true;
             }
         });
@@ -4175,20 +4495,24 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                         }
                     }
                 });
-            if ui.button("New").clicked() {
+            if ui.button(tr.s(Key::CommonNew)).clicked() {
                 new_requested = true;
             }
-            if ui.button("Duplicate").clicked() {
+            if ui.button(tr.s(Key::CommonDuplicate)).clicked() {
                 duplicate_requested = true;
             }
-            if ui.button("Delete").clicked() {
+            if ui.button(tr.s(Key::CommonDelete)).clicked() {
                 delete_requested = true;
             }
         });
     }
 
     if new_requested {
-        let name = unique_condition_name("Condition 1", &panel.project.loading_conditions);
+        let name = unique_condition_name(
+            tr.s(Key::LoadingConditionDefault),
+            &panel.project.loading_conditions,
+            tr.s(Key::LoadingConditionBase),
+        );
         panel.project.loading_conditions.push(LoadingCondition {
             name,
             lightship: panel.lightship.clone(),
@@ -4205,7 +4529,11 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     if duplicate_requested && !panel.project.loading_conditions.is_empty() {
         let orig = &panel.project.loading_conditions[*panel.selected];
         let mut dup = orig.clone();
-        dup.name = unique_condition_name(&orig.name, &panel.project.loading_conditions);
+        dup.name = unique_condition_name(
+            &orig.name,
+            &panel.project.loading_conditions,
+            tr.s(Key::LoadingConditionBase),
+        );
         panel.project.loading_conditions.push(dup);
         *panel.selected = panel.project.loading_conditions.len() - 1;
         return LoadingAction::Changed;
@@ -4240,7 +4568,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     // Editable name; damage cases that refer to it follow the rename.
     let old_name = cond.name.clone();
     ui.horizontal(|ui| {
-        ui.label("Name:");
+        ui.label(tr.s(Key::CommonNameColon));
         if ui.text_edit_singleline(&mut cond.name).changed() {
             action = LoadingAction::Changed;
         }
@@ -4261,20 +4589,17 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         .count()
         > 1
     {
-        ui.colored_label(
-            theme::FAIL,
-            "Another condition has this name; rename it before saving.",
-        );
+        ui.colored_label(theme::FAIL, tr.s(Key::LoadingDuplicateName));
     }
     let cond = &mut panel.project.loading_conditions[*panel.selected];
 
     // Lightship
     ui.separator();
-    ui.label(egui::RichText::new("Lightship").strong());
+    ui.label(egui::RichText::new(tr.s(Key::LoadingLightship)).strong());
     ui.columns(2, |cols| {
         cols[0].spacing_mut().item_spacing.y = 2.0;
         cols[0].horizontal(|ui| {
-            ui.label("Mass (t):");
+            ui.label(tr.s(Key::LoadingMassColon));
             if ui
                 .add(
                     theme::num(&mut cond.lightship.mass_t)
@@ -4319,11 +4644,12 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     // Weights grid
     ui.separator();
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Deadweight items").strong());
-        if ui.button("+ Add weight").clicked() {
+        ui.label(egui::RichText::new(tr.s(Key::LoadingDeadweight)).strong());
+        if ui.button(tr.s(Key::LoadingAddWeight)).clicked() {
             let n = cond.items.len() + 1;
+            let n_s = n.to_string();
             cond.items.push(WeightItem {
-                name: format!("Item {n}"),
+                name: tr.fmt(Key::LoadingItemDefault, &[("n", &n_s)]),
                 mass_t: 0.0,
                 x: 0.0,
                 y: 0.0,
@@ -4339,8 +4665,8 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             .num_columns(6)
             .striped(true)
             .show(ui, |ui| {
-                ui.label("Name");
-                ui.label("Mass (t)");
+                ui.label(tr.s(Key::LoadingColName));
+                ui.label(tr.s(Key::LoadingColMass));
                 ui.label("x (m)");
                 ui.label("y (m)");
                 ui.label("z (m)");
@@ -4377,7 +4703,11 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     if ui.add(theme::num(&mut item.z).speed(0.01)).changed() {
                         action = LoadingAction::Changed;
                     }
-                    if ui.button("✕").on_hover_text("Remove weight").clicked() {
+                    if ui
+                        .button("✕")
+                        .on_hover_text(tr.s(Key::LoadingRemoveWeight))
+                        .clicked()
+                    {
                         remove_item = Some(i);
                     }
                     ui.end_row();
@@ -4388,22 +4718,18 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 }
             });
     } else {
-        ui.label(
-            egui::RichText::new(
-                "No deadweight items. Click '+ Add weight' to add cargo or equipment.",
-            )
-            .color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new(tr.s(Key::LoadingEmptyWeights)).color(theme::TEXT_MUTED));
     }
 
     // Tanks grid
     ui.separator();
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Tanks").strong());
-        if ui.button("+ Add tank").clicked() {
+        ui.label(egui::RichText::new(tr.s(Key::LoadingTanks)).strong());
+        if ui.button(tr.s(Key::LoadingAddTank)).clicked() {
             let n = cond.tanks.len() + 1;
+            let n_s = n.to_string();
             cond.tanks.push(Tank {
-                name: format!("Tank {n}"),
+                name: tr.fmt(Key::LoadingTankDefault, &[("n", &n_s)]),
                 x_min: 0.0,
                 x_max: 1.0,
                 y_min: -0.5,
@@ -4420,10 +4746,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     });
 
     if cond.tanks.is_empty() {
-        ui.label(
-            egui::RichText::new("No tanks defined. Click '+ Add tank' to add a liquid tank.")
-                .color(theme::TEXT_MUTED),
-        );
+        ui.label(egui::RichText::new(tr.s(Key::LoadingEmptyTanks)).color(theme::TEXT_MUTED));
     }
 
     let mut remove_tank = None;
@@ -4435,22 +4758,26 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
         }
         let frame_resp = frame.show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Name:");
+                ui.label(tr.s(Key::CommonNameColon));
                 if ui.text_edit_singleline(&mut tank.name).changed() {
                     action = LoadingAction::Changed;
                 }
                 if ui
-                    .checkbox(&mut tank.clip_to_hull, "Clip to hull")
+                    .checkbox(&mut tank.clip_to_hull, tr.s(Key::LoadingClipToHull))
                     .changed()
                 {
                     action = LoadingAction::Changed;
                 }
-                if ui.button("✕").on_hover_text("Remove tank").clicked() {
+                if ui
+                    .button("✕")
+                    .on_hover_text(tr.s(Key::LoadingRemoveTank))
+                    .clicked()
+                {
                     remove_tank = Some(t_idx);
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("Fill:");
+                ui.label(tr.s(Key::LoadingFillColon));
                 let mut fill_pct = (tank.fill * 100.0).round();
                 if theme::slider(
                     ui,
@@ -4465,7 +4792,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 }
             });
             ui.horizontal(|ui| {
-                ui.label("Density (t/m³):");
+                ui.label(tr.s(Key::LoadingDensityColon));
                 if ui
                     .add(
                         theme::num(&mut tank.density_t_m3)
@@ -4476,7 +4803,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                 {
                     action = LoadingAction::Changed;
                 }
-                ui.label("Perm.:");
+                ui.label(tr.s(Key::LoadingPermColon));
                 if ui
                     .add(
                         theme::num(&mut tank.permeability)
@@ -4488,14 +4815,14 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     action = LoadingAction::Changed;
                 }
             });
-            egui::CollapsingHeader::new("Bounds [x, y, z]")
+            egui::CollapsingHeader::new(tr.s(Key::LoadingBounds))
                 .id_salt(("tank_bounds_header", t_idx))
                 .default_open(false)
                 .show(ui, |ui| {
                     egui::Grid::new(format!("tank_bounds_{t_idx}"))
                         .num_columns(3)
                         .show(ui, |ui| {
-                            ui.label("X range (m):");
+                            ui.label(tr.s(Key::LoadingXRange));
                             if ui.add(theme::num(&mut tank.x_min).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
@@ -4504,7 +4831,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                             }
                             ui.end_row();
 
-                            ui.label("Y range (m):");
+                            ui.label(tr.s(Key::LoadingYRange));
                             if ui.add(theme::num(&mut tank.y_min).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
@@ -4513,7 +4840,7 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                             }
                             ui.end_row();
 
-                            ui.label("Z range (m):");
+                            ui.label(tr.s(Key::LoadingZRange));
                             if ui.add(theme::num(&mut tank.z_min).speed(0.01)).changed() {
                                 action = LoadingAction::Changed;
                             }
@@ -4536,13 +4863,13 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     // Compute button
     ui.separator();
     ui.horizontal(|ui| {
-        let btn = ui.add_enabled(!panel.busy, egui::Button::new("Compute"));
+        let btn = ui.add_enabled(!panel.busy, egui::Button::new(tr.s(Key::CommonCompute)));
         if btn.clicked() {
             action = LoadingAction::Compute;
         }
         if panel.busy {
             ui.spinner();
-            ui.label("computing…");
+            ui.label(tr.s(Key::CommonComputing));
         }
     });
 
@@ -4550,44 +4877,45 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
     if let Some(r) = panel.result {
         ui.separator();
         if panel.stale {
-            stale_chip(ui);
+            stale_chip_tr(ui, tr);
             // The results close the panel: the dimming ends with it.
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
-        theme::heading(ui, "Equilibrium & hydrostatics");
+        theme::heading(ui, tr.s(Key::LoadingResultsTitle));
         if !r.equilibrium_found {
             ui.colored_label(
                 theme::WARN,
-                format!("⚠ {}", seacraft_core::loading::NO_EQUILIBRIUM_NOTE),
+                format!("⚠ {}", tr.s(Key::LoadingNoEquilibrium)),
             );
             for w in &r.warnings {
-                ui.colored_label(theme::WARN, w);
+                ui.colored_label(theme::WARN, w.render(tr));
             }
         }
-        readouts(ui, "loading_readouts", &loading_rows(r));
+        readouts_tr(ui, "loading_readouts", &loading_rows_tr(r, tr), tr);
 
         if !r.tanks.is_empty() {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Tank summary").strong());
-            eng_table(
+            ui.label(egui::RichText::new(tr.s(Key::LoadingTankSummary)).strong());
+            eng_table_tr(
                 ui,
                 &[
-                    EngColumn::text("Tank"),
-                    EngColumn::number("Fill", "%"),
-                    EngColumn::number("Mass", "t"),
-                    EngColumn::number("FSM", "t·m"),
+                    EngColumn::text(tr.s(Key::LoadingTankColTank)),
+                    EngColumn::number(tr.s(Key::LoadingTankColFill), "%"),
+                    EngColumn::number(tr.s(Key::LoadingTankColMass), "t"),
+                    EngColumn::number(tr.s(Key::LoadingTankColFsm), "t·m"),
                 ],
                 &tank_table(r),
+                tr,
             );
         }
 
         if let Some(imo) = &r.imo_criteria {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("IMO A.749 criteria").strong());
-                criteria_badge(ui, imo.passed, panel.stale);
+                ui.label(egui::RichText::new(tr.s(Key::LoadingImoCriteria)).strong());
+                criteria_badge_tr(ui, imo.passed, panel.stale, tr);
             });
-            not_validated_note(ui);
+            not_validated_note_tr(ui, tr);
             let stale = panel.stale;
             let rows = [
                 criterion_row(
@@ -4633,19 +4961,19 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
                     stale,
                 ),
             ];
-            eng_table(ui, &criteria_columns(), &rows);
+            eng_table_tr(ui, &criteria_columns(tr), &rows, tr);
         }
 
         if let Some(w) = &r.weather {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Weather criterion (§2.3)").strong());
-                criteria_badge(ui, w.passed, panel.stale);
+                ui.label(egui::RichText::new(tr.s(Key::LoadingWeatherCriterion)).strong());
+                criteria_badge_tr(ui, w.passed, panel.stale, tr);
             });
             if r.imo_criteria.is_none() {
-                not_validated_note(ui);
+                not_validated_note_tr(ui, tr);
             }
-            readouts(ui, "weather_readouts", &weather_rows(w));
+            readouts_tr(ui, "weather_readouts", &weather_rows_tr(w, tr), tr);
         }
 
         ui.add_space(4.0);
@@ -4661,8 +4989,8 @@ pub fn loading(ui: &mut egui::Ui, panel: LoadingPanel<'_>) -> LoadingAction {
             })
             .collect();
         if !pts.is_empty() {
-            ui.label(egui::RichText::new("Righting lever GZ").strong());
-            plot_gz(ui, &[(r.name.clone(), pts)]);
+            ui.label(egui::RichText::new(tr.s(Key::LoadingRightingLever)).strong());
+            plot_gz_tr(ui, &[(r.name.clone(), pts)], tr);
         }
     }
 
@@ -4698,12 +5026,18 @@ pub fn windage_totals(items: &[WindageItem], keel_z: f64) -> (f64, f64) {
 }
 
 pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
+    windage_tr(ui, panel, Tr::new(Locale::En))
+}
+
+/// Localized form of [`windage`].
+pub fn windage_tr(ui: &mut egui::Ui, panel: WindagePanel<'_>, tr: Tr) -> WindageAction {
     let mut action = WindageAction::None;
-    theme::heading(ui, "Superstructure & windage");
+    theme::heading(ui, tr.s(Key::WindageTitle));
     ui.add_space(4.0);
 
-    if ui.button("+ Add windage item").clicked() {
-        let name = format!("Item {}", panel.project.windage.len() + 1);
+    if ui.button(tr.s(Key::WindageAddItem)).clicked() {
+        let n_s = (panel.project.windage.len() + 1).to_string();
+        let name = tr.fmt(Key::LoadingItemDefault, &[("n", &n_s)]);
         panel.project.windage.push(WindageItem {
             name,
             area_m2: 1.0,
@@ -4717,15 +5051,15 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
 
     let mut remove_idx = None;
     if panel.project.windage.is_empty() {
-        ui.label("No windage items defined.");
+        ui.label(tr.s(Key::WindageEmpty));
     } else {
         egui::Grid::new("windage_items_table")
             .num_columns(4)
             .spacing([8.0, 6.0])
             .show(ui, |ui| {
                 ui.label("");
-                ui.label(egui::RichText::new("Name").strong());
-                ui.label(egui::RichText::new("Geometry").strong());
+                ui.label(egui::RichText::new(tr.s(Key::LoadingColName)).strong());
+                ui.label(egui::RichText::new(tr.s(Key::WindageColGeometry)).strong());
                 ui.label("");
                 ui.end_row();
 
@@ -4751,25 +5085,42 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                             ui.horizontal(|ui| {
                                 ui.label("x:");
                                 rect_changed |= ui
-                                    .add(theme::num(&mut rect.x_min).speed(0.02).prefix("min "))
+                                    .add(
+                                        theme::num(&mut rect.x_min)
+                                            .speed(0.02)
+                                            .prefix(tr.s(Key::WindageMinPrefix)),
+                                    )
                                     .changed();
                                 rect_changed |= ui
-                                    .add(theme::num(&mut rect.x_max).speed(0.02).prefix("max "))
+                                    .add(
+                                        theme::num(&mut rect.x_max)
+                                            .speed(0.02)
+                                            .prefix(tr.s(Key::WindageMaxPrefix)),
+                                    )
                                     .changed();
                             });
                             ui.horizontal(|ui| {
                                 ui.label("z:");
                                 rect_changed |= ui
-                                    .add(theme::num(&mut rect.z_min).speed(0.02).prefix("min "))
+                                    .add(
+                                        theme::num(&mut rect.z_min)
+                                            .speed(0.02)
+                                            .prefix(tr.s(Key::WindageMinPrefix)),
+                                    )
                                     .changed();
                                 rect_changed |= ui
-                                    .add(theme::num(&mut rect.z_max).speed(0.02).prefix("max "))
+                                    .add(
+                                        theme::num(&mut rect.z_max)
+                                            .speed(0.02)
+                                            .prefix(tr.s(Key::WindageMaxPrefix)),
+                                    )
                                     .changed();
                             });
-                            ui.label(format!(
-                                "Area: {:.2} m², z: {:.2} m",
-                                item.area_m2, item.z_centroid
-                            ));
+                            let area_s = format!("{:.2}", item.area_m2);
+                            let z_s = format!("{:.2}", item.z_centroid);
+                            ui.label(
+                                tr.fmt(Key::WindageRectSummary, &[("area", &area_s), ("z", &z_s)]),
+                            );
                         });
                         if rect_changed {
                             item.profile = Some(rect);
@@ -4779,7 +5130,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                     } else {
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
-                                ui.label("Area:");
+                                ui.label(tr.s(Key::WindageAreaColon));
                                 if ui
                                     .add(
                                         theme::num(&mut item.area_m2)
@@ -4799,7 +5150,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
                                     action = WindageAction::Changed;
                                 }
                             });
-                            if ui.button("Draw as rectangle").clicked() {
+                            if ui.button(tr.s(Key::WindageDrawRect)).clicked() {
                                 let area = item.area_m2.max(0.1);
                                 let w = area.sqrt();
                                 let h = w;
@@ -4828,7 +5179,7 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
 
                     if ui
                         .button("✕")
-                        .on_hover_text("Remove windage item")
+                        .on_hover_text(tr.s(Key::WindageRemoveItem))
                         .clicked()
                     {
                         remove_idx = Some(i);
@@ -4867,15 +5218,15 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
 
     ui.add_space(8.0);
     ui.separator();
-    ui.label(egui::RichText::new("Windage totals").strong());
+    ui.label(egui::RichText::new(tr.s(Key::WindageTotals)).strong());
     let (total_area, z_centroid) = windage_totals(&panel.project.windage, panel.keel_z);
     egui::Grid::new("windage_totals_grid")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("Total windage area (ΣA):");
+            ui.label(tr.s(Key::WindageTotalAreaColon));
             ui.label(format!("{:.2} m²", total_area));
             ui.end_row();
-            ui.label("Area-weighted z above keel:");
+            ui.label(tr.s(Key::WindageWeightedZColon));
             ui.label(format!("{:.2} m", z_centroid));
             ui.end_row();
         });
@@ -4884,46 +5235,50 @@ pub fn windage(ui: &mut egui::Ui, panel: WindagePanel<'_>) -> WindageAction {
     ui.separator();
     if let Some(w) = panel.weather {
         if panel.stale {
-            stale_chip(ui);
+            stale_chip_tr(ui, tr);
             // The summary closes the panel: the dimming ends with it.
             ui.multiply_opacity(theme::STALE_OPACITY);
         }
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Weather criterion summary (§2.3)").strong());
-            criteria_badge(ui, w.passed, panel.stale);
+            ui.label(egui::RichText::new(tr.s(Key::WindageWeatherSummary)).strong());
+            criteria_badge_tr(ui, w.passed, panel.stale, tr);
         });
-        not_validated_note(ui);
-        ui.small("from the loading panel's last Compute");
+        not_validated_note_tr(ui, tr);
+        ui.small(tr.s(Key::WindageFromLoading));
         ui.add_space(2.0);
 
         let summary_rows = [
             Readout::new(
-                "Hull lateral windage area",
+                tr.s(Key::WindageRowHullArea),
                 format!("{:.2}", w.hull_windage_area_m2),
                 "m²",
             ),
             Readout::new(
-                "Extra windage area",
+                tr.s(Key::WindageRowExtraArea),
                 format!("{:.2}", w.extra_windage_area_m2),
                 "m²",
             ),
-            Readout::new("Total windage area (A)", format!("{:.2}", w.area_m2), "m²"),
-            Readout::new("Vertical lever arm (Z)", format!("{:.2}", w.z_m), "m"),
-            Readout::new("Wind heeling lever (lw1)", format!("{:.3}", w.lw1_m), "m"),
             Readout::new(
-                "Steady heel angle (φ0)",
+                tr.s(Key::WindageRowTotalArea),
+                format!("{:.2}", w.area_m2),
+                "m²",
+            ),
+            Readout::new(tr.s(Key::WindageRowZArm), format!("{:.2}", w.z_m), "m"),
+            Readout::new(tr.s(Key::WindageRowLw1), format!("{:.3}", w.lw1_m), "m"),
+            Readout::new(
+                tr.s(Key::WindageRowPhi0),
                 format!("{:.1}", w.phi0_deg.unwrap_or(0.0)),
-                "° (lim 16°)",
+                tr.s(Key::LoadingWeatherSteadyHeelUnit),
             ),
             Readout::new(
-                "Energy ratio (b/a)",
+                tr.s(Key::WindageRowEnergyRatio),
                 format!("{:.2}", w.area_ratio),
-                "(req ≥1.0)",
+                tr.s(Key::LoadingWeatherAreaRatioUnit),
             ),
         ];
-        readouts(ui, "windage_weather_grid", &summary_rows);
+        readouts_tr(ui, "windage_weather_grid", &summary_rows, tr);
     } else {
-        ui.label("Compute a loading condition to check the weather criterion");
+        ui.label(tr.s(Key::WindageComputeHint));
     }
 
     action
@@ -5000,6 +5355,22 @@ pub struct ToolbarState<'a> {
     pub presets: &'a [seacraft_core::connected::ConnectedPreset],
     pub default_reach_m: f64,
     pub preset_error: Option<&'a str>,
+    pub tr: seacraft_core::i18n::Tr,
+}
+
+/// Localized display label for built-in connected-editing preset names (custom names pass through).
+pub fn connected_preset_label(tr: seacraft_core::i18n::Tr, name: &str) -> &str {
+    use seacraft_core::i18n::Key;
+    match name {
+        "Blend both ways" => tr.s(Key::ConnectedPresetBlendBothWays),
+        "Blend lengthwise" => tr.s(Key::ConnectedPresetBlendLengthwise),
+        "Blend around station" => tr.s(Key::ConnectedPresetBlendAroundStation),
+        "Nudge" => tr.s(Key::ConnectedPresetNudge),
+        "Move station" => tr.s(Key::ConnectedPresetMoveStation),
+        "Beam only" => tr.s(Key::ConnectedPresetBeamOnly),
+        "Height only" => tr.s(Key::ConnectedPresetHeightOnly),
+        _ => name,
+    }
 }
 
 /// A dock with no model loaded: empty, at its full width. The status bar
@@ -5018,57 +5389,71 @@ pub fn menu_heading(ui: &mut egui::Ui, text: &str) {
 /// Help > Keyboard and mouse. `keys` formats a shortcut for this platform.
 pub fn shortcuts(
     keys: &dyn Fn(egui::Modifiers, egui::Key) -> String,
+    tr: seacraft_core::i18n::Tr,
 ) -> Vec<(String, &'static str)> {
+    use seacraft_core::i18n::Key;
     let command = egui::Modifiers::COMMAND;
-    let plain = |text: &str| text.to_owned();
+    let plain = |k: Key| tr.s(k).to_owned();
     vec![
-        (plain("Click"), "Select a control point"),
+        (plain(Key::ShortcutsClickKey), tr.s(Key::ShortcutsClickDesc)),
         (
-            plain("Shift+click"),
-            "Add a point to the selection, or take it out",
+            plain(Key::ShortcutsShiftClickKey),
+            tr.s(Key::ShortcutsShiftClickDesc),
         ),
         (
-            plain("Shift+drag empty space"),
-            "Select the points in a rectangle",
-        ),
-        (plain("Drag a point"), "Move it in the view's plane"),
-        (
-            plain("X, Y or Z while dragging"),
-            "Keep the point on that axis",
+            plain(Key::ShortcutsShiftDragKey),
+            tr.s(Key::ShortcutsShiftDragDesc),
         ),
         (
-            plain("Alt+Left / Alt+Right"),
-            "Select the previous or next station along the line",
+            plain(Key::ShortcutsDragPointKey),
+            tr.s(Key::ShortcutsDragPointDesc),
+        ),
+        (
+            plain(Key::ShortcutsAxisLockKey),
+            tr.s(Key::ShortcutsAxisLockDesc),
+        ),
+        (
+            plain(Key::ShortcutsAltArrowsKey),
+            tr.s(Key::ShortcutsAltArrowsDesc),
         ),
         (
             plain(if cfg!(target_os = "macos") {
-                "Hold Cmd while dragging"
+                Key::ShortcutsConnectedFlipKeyMac
             } else {
-                "Hold Ctrl while dragging"
+                Key::ShortcutsConnectedFlipKeyCtrl
             }),
-            "Connected editing the other way from the switch, for that drag",
+            tr.s(Key::ShortcutsConnectedFlipDesc),
+        ),
+        (plain(Key::ShortcutsEscKey), tr.s(Key::ShortcutsEscDesc)),
+        (plain(Key::ShortcutsPanKey), tr.s(Key::ShortcutsPanDesc)),
+        (plain(Key::ShortcutsOrbitKey), tr.s(Key::ShortcutsOrbitDesc)),
+        (plain(Key::ShortcutsZoomKey), tr.s(Key::ShortcutsZoomDesc)),
+        (
+            plain(Key::ShortcutsConnectedReachKey),
+            tr.s(Key::ShortcutsConnectedReachDesc),
         ),
         (
-            plain("Esc"),
-            "Cancel a point drag or a selection rectangle, or clear the selection",
+            plain(Key::ShortcutsFrameAllKey),
+            tr.s(Key::ShortcutsFrameAllDesc),
         ),
-        (plain("Drag empty space, or middle drag"), "Pan"),
-        (plain("Right drag in Perspective"), "Orbit"),
-        (plain("Wheel, Ctrl+wheel or pinch"), "Zoom at the pointer"),
         (
-            plain("Wheel during connected drag"),
-            "Change connected-editing reach",
+            plain(Key::ShortcutsActiveViewKey),
+            tr.s(Key::ShortcutsActiveViewDesc),
         ),
-        (plain("F"), "Frame the model in every view"),
-        (plain("1 – 4"), "Make a view the active one"),
         (
             keys(command, egui::Key::Space),
-            "Maximise the active view, or restore the four",
+            tr.s(Key::ShortcutsMaximiseDesc),
         ),
-        (plain("Space"), "Shaded hull on or off"),
-        (plain("F5"), "Recompute the results that are out of date"),
-        (keys(command, egui::Key::Z), "Undo"),
-        (keys(command, egui::Key::Y), "Redo"),
+        (
+            plain(Key::ShortcutsShadedToggleKey),
+            tr.s(Key::ShortcutsShadedToggleDesc),
+        ),
+        (
+            plain(Key::ShortcutsRecomputeKey),
+            tr.s(Key::ShortcutsRecomputeDesc),
+        ),
+        (keys(command, egui::Key::Z), tr.s(Key::ShortcutsUndoDesc)),
+        (keys(command, egui::Key::Y), tr.s(Key::ShortcutsRedoDesc)),
     ]
 }
 
@@ -5089,33 +5474,38 @@ pub fn shortcut_list(ui: &mut egui::Ui, rows: &[(String, &'static str)]) {
 /// The intersection-curve counts and the comb settings, for the toolbar's
 /// "…" menu and View > Curves and combs. Edits `display` and returns whether
 /// anything changed; the caller applies it.
-pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool {
+pub fn section_settings(
+    ui: &mut egui::Ui,
+    display: &mut DisplayOptions,
+    tr: seacraft_core::i18n::Tr,
+) -> bool {
     use crate::render::{
         BUTTOCKS_RANGE, COMB_SCALE_RANGE, COMB_STRIDE_RANGE, STATIONS_RANGE, WATERLINES_RANGE,
     };
+    use seacraft_core::i18n::Key;
     let mut changed = false;
-    ui.label(egui::RichText::new("Intersection curves").color(theme::TEXT_SECONDARY));
+    ui.label(egui::RichText::new(tr.s(Key::SectionsCurvesHeading)).color(theme::TEXT_SECONDARY));
     egui::Grid::new("section_counts")
         .num_columns(2)
         .show(ui, |ui| {
             for (label, value, range, tip) in [
                 (
-                    "stations",
+                    tr.s(Key::SectionsStations),
                     &mut display.stations,
                     STATIONS_RANGE,
-                    "Stations (x = const) from stern to bow, ends included",
+                    tr.s(Key::SectionsStationsTip),
                 ),
                 (
-                    "waterlines",
+                    tr.s(Key::SectionsWaterlines),
                     &mut display.waterlines,
                     WATERLINES_RANGE,
-                    "Waterlines (z = const) from keel to top, both included",
+                    tr.s(Key::SectionsWaterlinesTip),
                 ),
                 (
-                    "buttocks",
+                    tr.s(Key::SectionsButtocks),
                     &mut display.buttocks,
                     BUTTOCKS_RANGE,
-                    "Buttocks (y = const) across the beam, sides included",
+                    tr.s(Key::SectionsButtocksTip),
                 ),
             ] {
                 ui.label(label);
@@ -5127,11 +5517,11 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
             }
         });
     ui.separator();
-    ui.label(egui::RichText::new("Curvature combs").color(theme::TEXT_SECONDARY));
+    ui.label(egui::RichText::new(tr.s(Key::SectionsCombsHeading)).color(theme::TEXT_SECONDARY));
     egui::Grid::new("comb_settings")
         .num_columns(2)
         .show(ui, |ui| {
-            ui.label("scale");
+            ui.label(tr.s(Key::SectionsScale));
             changed |= ui
                 .add(
                     theme::num(&mut display.comb_scale)
@@ -5139,10 +5529,10 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
                         .speed(0.01)
                         .max_decimals(2),
                 )
-                .on_hover_text("Comb gain: metres of spike for a curvature of 1/m")
+                .on_hover_text(tr.s(Key::SectionsScaleTip))
                 .changed();
             ui.end_row();
-            ui.label("density");
+            ui.label(tr.s(Key::SectionsDensity));
             changed |= ui
                 .add(
                     theme::num(&mut display.comb_stride)
@@ -5150,7 +5540,7 @@ pub fn section_settings(ui: &mut egui::Ui, display: &mut DisplayOptions) -> bool
                         .speed(0.05)
                         .prefix("1/"),
                 )
-                .on_hover_text("Draw every n-th comb spike: 1/1 draws them all")
+                .on_hover_text(tr.s(Key::SectionsDensityTip))
                 .changed();
             ui.end_row();
         });
@@ -5192,6 +5582,8 @@ const LEVEL_ITEMS: [&str; 6] = [
 /// display toggles, subdivision level and scheme. One row
 /// at 1600 px; it wraps on a narrower window.
 pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
+    use seacraft_core::i18n::Key;
+    let tr = state.tr;
     let mut out = ToolbarOutput::default();
     ui.horizontal_wrapped(|ui| {
         // Analysis mode: a segmented control.
@@ -5204,26 +5596,26 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 (
                     "shaded",
                     AnalysisMode::Shaded,
-                    "Shaded",
-                    "Lit, flat-shaded hull",
+                    tr.s(Key::MenuViewShadingShaded),
+                    tr.s(Key::ToolbarShadedTip),
                 ),
                 (
                     "zebra",
                     AnalysisMode::Zebra { stripes: 0.0 },
-                    "Zebra",
-                    "Reflection stripes: an unfair surface breaks them",
+                    tr.s(Key::MenuViewShadingZebra),
+                    tr.s(Key::ToolbarZebraTip),
                 ),
                 (
                     "curvature",
                     AnalysisMode::Curvature { radius: 0.0 },
-                    "Curvature",
-                    "Mean curvature map",
+                    tr.s(Key::MenuViewShadingCurvature),
+                    tr.s(Key::ToolbarCurvatureTip),
                 ),
                 (
                     "draft",
                     AnalysisMode::Draft { angle_deg: 0.0 },
-                    "Draft",
-                    "Draft angle of each face against the vertical",
+                    tr.s(Key::MenuViewShadingDraft),
+                    tr.s(Key::ToolbarDraftTip),
                 ),
             ] {
                 let response = ui
@@ -5251,28 +5643,28 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 let param = match current {
                     AnalysisMode::Shaded => None,
                     AnalysisMode::Zebra { stripes } => Some((
-                        "stripes",
+                        tr.s(Key::ToolbarStripes),
                         stripes,
                         2.0..=64.0,
                         0.25,
                         "",
-                        "Number of reflection stripes across the view",
+                        tr.s(Key::ToolbarStripesTip),
                     )),
                     AnalysisMode::Curvature { radius } => Some((
-                        "radius",
+                        tr.s(Key::ToolbarRadius),
                         radius,
                         0.05..=100.0,
                         0.01,
                         " m",
-                        "Radius at which the curvature colour scale saturates",
+                        tr.s(Key::ToolbarRadiusTip),
                     )),
                     AnalysisMode::Draft { angle_deg } => Some((
-                        "angle",
+                        tr.s(Key::ToolbarAngle),
                         angle_deg,
                         0.0..=45.0,
                         0.1,
                         "°",
-                        "Draft angle that separates pullable, borderline and undercut faces",
+                        tr.s(Key::ToolbarAngleTip),
                     )),
                 };
                 if let Some((name, mut value, range, speed, suffix, tip)) = param {
@@ -5331,31 +5723,33 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                 ui,
                 &mut out.rects,
                 "net",
-                "Net",
-                "Control net",
+                tr.s(Key::ToolbarNet),
+                tr.s(Key::ToolbarNetTip),
                 &mut display.control_net,
             );
             toggled |= switch(
                 ui,
                 &mut out.rects,
                 "points",
-                "Points",
-                "Control points (hidden points cannot be picked)",
+                tr.s(Key::ToolbarPoints),
+                tr.s(Key::ToolbarPointsTip),
                 &mut display.points,
             );
             // How the net and its points behind the shaded hull are drawn:
             // beside the two switches it qualifies, each choice its own label.
             let combo = egui::ComboBox::from_id_salt("toolbar_hidden_net")
-                .selected_text(display.hidden_net.toolbar_label())
+                .selected_text(display.hidden_net.toolbar_label_tr(tr))
                 .width(82.0)
                 .show_ui(ui, |ui| {
                     for mode in crate::render::HiddenNet::ALL {
-                        ui.selectable_value(&mut display.hidden_net, mode, mode.toolbar_label());
+                        ui.selectable_value(
+                            &mut display.hidden_net,
+                            mode,
+                            mode.toolbar_label_tr(tr),
+                        );
                     }
                 });
-            let combo = combo
-                .response
-                .on_hover_text("How control-net edges and points behind the shaded hull are drawn");
+            let combo = combo.response.on_hover_text(tr.s(Key::ToolbarHiddenNetTip));
             out.rects.push(("hidden_net", combo.rect));
             if display.hidden_net != state.display.hidden_net {
                 toggled = true;
@@ -5363,32 +5757,32 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             for (name, label, tip, flag) in [
                 (
                     "waterplane",
-                    "Waterplane",
-                    "Waterplane at the current draft",
+                    tr.s(Key::ToolbarWaterplane),
+                    tr.s(Key::ToolbarWaterplaneTip),
                     &mut display.waterplane as &mut bool,
                 ),
                 (
                     "curves",
-                    "Curves",
-                    "Station, buttock and waterline intersection curves",
+                    tr.s(Key::ToolbarCurves),
+                    tr.s(Key::ToolbarCurvesTip),
                     &mut display.curves,
                 ),
                 (
                     "combs",
-                    "Combs",
-                    "Curvature combs along the stations, buttocks and waterlines",
+                    tr.s(Key::ToolbarCombs),
+                    tr.s(Key::ToolbarCombsTip),
                     &mut display.combs,
                 ),
                 (
                     "wireframe",
-                    "Wire",
-                    "Wireframe of the refined mesh",
+                    tr.s(Key::ToolbarWire),
+                    tr.s(Key::ToolbarWireTip),
                     &mut display.wireframe,
                 ),
                 (
                     "orientation",
-                    "Orient",
-                    "Orientation triad and edge labels",
+                    tr.s(Key::ToolbarOrient),
+                    tr.s(Key::ToolbarOrientTip),
                     &mut display.orientation,
                 ),
             ] {
@@ -5397,14 +5791,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             // The curve counts and comb settings, in a small menu.
             let menu = ui
                 .menu_button("…", |ui| {
-                    if section_settings(ui, &mut display) {
+                    if section_settings(ui, &mut display, tr) {
                         toggled = true;
                     }
                 })
                 .response
-                .on_hover_text(
-                    "Section counts (stations, waterlines, buttocks) and comb scale and density",
-                );
+                .on_hover_text(tr.s(Key::ToolbarSectionsTip));
             out.rects.push(("sections", menu.rect));
         });
         if toggled {
@@ -5416,12 +5808,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let toggle = theme::as_switch(ui, |ui| {
-                ui.selectable_label(state.connected.on != state.connected_flipped, "Connected")
+                ui.selectable_label(
+                    state.connected.on != state.connected_flipped,
+                    tr.s(Key::ToolbarConnected),
+                )
             })
-            .on_hover_text(
-                "Connected editing: drag neighbours along with the moved points. \
-                 Hold Ctrl (Cmd on macOS) to flip it for one drag",
-            );
+            .on_hover_text(tr.s(Key::ToolbarConnectedTip));
             if toggle.clicked() {
                 out.connected = Some(ToolbarConnectedAction::Toggle(!state.connected.on));
             }
@@ -5429,16 +5821,20 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
 
             let mut selected_preset = state.connected.preset.clone();
             let combo = egui::ComboBox::from_id_salt("toolbar_connected_preset")
-                .selected_text(&selected_preset)
+                .selected_text(connected_preset_label(tr, &selected_preset))
                 .width(114.0)
                 .show_ui(ui, |ui| {
                     for p in state.presets {
-                        ui.selectable_value(&mut selected_preset, p.name.clone(), &p.name);
+                        ui.selectable_value(
+                            &mut selected_preset,
+                            p.name.clone(),
+                            connected_preset_label(tr, &p.name),
+                        );
                     }
                 });
             let combo_resp = combo
                 .response
-                .on_hover_text("Connected-editing preset (spread, falloff and axes)");
+                .on_hover_text(tr.s(Key::ToolbarConnectedPresetTip));
             out.rects.push(("connected_preset", combo_resp.rect));
             if selected_preset != state.connected.preset {
                 out.connected = Some(ToolbarConnectedAction::SelectPreset(selected_preset));
@@ -5466,7 +5862,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                         .fixed_decimals(2)
                         .suffix(" m"),
                 )
-                .on_hover_text("Reach in metres (scroll during a connected drag to adjust)");
+                .on_hover_text(tr.s(Key::ToolbarConnectedReachTip));
             out.rects.push(("connected_reach", reach_resp.rect));
             if reach_resp.changed() {
                 out.connected = Some(ToolbarConnectedAction::SetReach(Some(
@@ -5477,9 +5873,9 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
             let reset_resp = ui
                 .add_enabled(
                     state.connected.reach_m.is_some(),
-                    egui::Button::new(egui::RichText::new("reset").small()),
+                    egui::Button::new(egui::RichText::new(tr.s(Key::CommonReset)).small()),
                 )
-                .on_hover_text("Reset reach to the preset's own value");
+                .on_hover_text(tr.s(Key::ToolbarConnectedResetTip));
             out.rects.push(("connected_reset", reset_resp.rect));
             if reset_resp.clicked() {
                 out.connected = Some(ToolbarConnectedAction::SetReach(None));
@@ -5491,20 +5887,22 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let mut level = state.level;
+            let level_str = level.to_string();
             let combo = egui::ComboBox::from_id_salt("toolbar_level")
-                .selected_text(format!("Level {level}"))
+                .selected_text(tr.fmt(Key::ToolbarLevel, &[("n", &level_str)]))
                 .width(62.0)
                 .show_ui(ui, |ui| {
                     for (n, name) in LEVEL_ITEMS.iter().enumerate() {
-                        let response =
-                            ui.selectable_value(&mut level, n as u8, format!("Level {n}"));
+                        let n_str = n.to_string();
+                        let response = ui.selectable_value(
+                            &mut level,
+                            n as u8,
+                            tr.fmt(Key::ToolbarLevel, &[("n", &n_str)]),
+                        );
                         out.rects.push((name, response.rect));
                     }
                 });
-            let combo = combo.response.on_hover_text(
-                "How finely the hull is subdivided, for display and for measurement: \
-                     a higher level is smoother and slower (0–5)",
-            );
+            let combo = combo.response.on_hover_text(tr.s(Key::ToolbarLevelTip));
             out.rects.push(("level", combo.rect));
             if level != state.level {
                 out.level = Some(level);
@@ -5520,9 +5918,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &ToolbarState<'_>) -> ToolbarOutput {
                     ui.selectable_value(&mut mode, SubdivisionMode::Loop, "Loop");
                     ui.selectable_value(&mut mode, SubdivisionMode::CatmullClark, "Catmull-Clark");
                 });
-            let combo = combo
-                .response
-                .on_hover_text("Subdivision scheme: hybrid Loop or Catmull-Clark");
+            let combo = combo.response.on_hover_text(tr.s(Key::ToolbarModeTip));
             out.rects.push(("mode", combo.rect));
             if mode != state.mode {
                 out.mode = Some(mode);
@@ -6786,8 +7182,18 @@ mod tests {
         // The helper is the only place a verdict is spelled out.
         let src = include_str!("panels.rs");
         let body = src.split("#[cfg(test)]").next().unwrap();
-        assert_eq!(body.matches("\"FAIL").count(), 2, "FAIL outside the badge");
-        assert_eq!(body.matches("\"PASS").count(), 2, "PASS outside the badge");
+        assert_eq!(body.matches("\"FAIL").count(), 0, "raw FAIL in body");
+        assert_eq!(body.matches("\"PASS").count(), 0, "raw PASS in body");
+        assert_eq!(
+            body.matches("CriteriaBadgeFail").count(),
+            2,
+            "CriteriaBadgeFail outside the badge helper"
+        );
+        assert_eq!(
+            body.matches("CriteriaBadgePass").count(),
+            2,
+            "CriteriaBadgePass outside the badge helper"
+        );
     }
 
     /// R8-3 (A08 follow-up): a loading result without an equilibrium says
@@ -7037,7 +7443,7 @@ pub enum TemplatesStatus<'a> {
     Ready {
         pages: usize,
         sheets: usize,
-        warnings: &'a [String],
+        warnings: &'a [seacraft_core::i18n::Msg],
     },
     /// The current options or model give no patterns; the reason.
     Failed(&'a str),
@@ -7079,6 +7485,16 @@ pub fn templates_options(
     params: &mut TemplatesParams,
     status: &TemplatesStatus<'_>,
 ) -> Option<TemplatesAction> {
+    templates_options_tr(ui, params, status, Tr::new(Locale::En))
+}
+
+/// Localized form of [`templates_options`].
+pub fn templates_options_tr(
+    ui: &mut egui::Ui,
+    params: &mut TemplatesParams,
+    status: &TemplatesStatus<'_>,
+    tr: Tr,
+) -> Option<TemplatesAction> {
     use seacraft_core::templates::{StationChoice, Transom};
     // The list as typed, kept while it is being edited; forgotten in the other modes.
     let list_id = egui::Id::unique("templates_at_text");
@@ -7088,20 +7504,20 @@ pub fn templates_options(
         .num_columns(2)
         .spacing([12.0, 4.0])
         .show(ui, |ui| {
-            ui.label("Stations:");
+            ui.label(tr.s(Key::TemplatesStationsColon));
             ui.horizontal(|ui| {
                 let (count, spacing, list) = match &params.stations {
                     StationChoice::Count(_) => (true, false, false),
                     StationChoice::Spacing(_) => (false, true, false),
                     StationChoice::At(_) => (false, false, true),
                 };
-                if ui.radio(count, "Count").clicked() && !count {
+                if ui.radio(count, tr.s(Key::TemplatesCount)).clicked() && !count {
                     params.stations = StationChoice::Count(11);
                 }
-                if ui.radio(spacing, "Spacing").clicked() && !spacing {
+                if ui.radio(spacing, tr.s(Key::TemplatesSpacing)).clicked() && !spacing {
                     params.stations = StationChoice::Spacing(0.5);
                 }
-                if ui.radio(list, "At x").clicked() && !list {
+                if ui.radio(list, tr.s(Key::TemplatesAtX)).clicked() && !list {
                     params.stations = StationChoice::At(vec![1.0]);
                 }
             });
@@ -7123,8 +7539,10 @@ pub fn templates_options(
                         .collect::<Vec<_>>()
                         .join(", ");
                     let mut text: String = ui.data_mut(|d| d.get_temp(list_id)).unwrap_or(shown);
-                    let response = ui
-                        .add(egui::TextEdit::singleline(&mut text).hint_text("x, x, … in metres"));
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut text)
+                            .hint_text(tr.s(Key::TemplatesStationsHint)),
+                    );
                     match station_list(&text) {
                         Some(parsed) if response.changed() => *xs = parsed,
                         Some(_) => {}
@@ -7135,7 +7553,7 @@ pub fn templates_options(
             }
             ui.end_row();
 
-            ui.label("Skin to deduct:");
+            ui.label(tr.s(Key::TemplatesSkinColon));
             ui.add(
                 theme::num(&mut params.skin_mm)
                     .speed(0.1)
@@ -7144,14 +7562,17 @@ pub fn templates_options(
             );
             ui.end_row();
 
-            ui.label("Half moulds:");
-            ui.checkbox(&mut params.half, "Starboard half only");
+            ui.label(tr.s(Key::TemplatesHalfMouldsColon));
+            ui.checkbox(&mut params.half, tr.s(Key::TemplatesHalfMouldsCheck));
             ui.end_row();
 
-            ui.label("Strongback:");
+            ui.label(tr.s(Key::TemplatesStrongbackColon));
             ui.horizontal(|ui| {
                 let mut on = params.strongback_z.is_some();
-                if ui.checkbox(&mut on, "Legs up to z").changed() {
+                if ui
+                    .checkbox(&mut on, tr.s(Key::TemplatesStrongbackLegs))
+                    .changed()
+                {
                     params.strongback_z = on.then_some(2.0);
                 }
                 if let Some(z) = &mut params.strongback_z {
@@ -7160,14 +7581,14 @@ pub fn templates_options(
             });
             ui.end_row();
 
-            ui.label("Profile:");
-            ui.checkbox(&mut params.profile, "Backbone pattern");
+            ui.label(tr.s(Key::TemplatesProfileColon));
+            ui.checkbox(&mut params.profile, tr.s(Key::TemplatesBackbonePattern));
             ui.end_row();
 
-            ui.label("Transom:");
+            ui.label(tr.s(Key::TemplatesTransomColon));
             ui.horizontal(|ui| {
                 let mut on = params.transom.is_some();
-                if ui.checkbox(&mut on, "At x").changed() {
+                if ui.checkbox(&mut on, tr.s(Key::TemplatesAtX)).changed() {
                     params.transom = on.then_some(Transom {
                         x: 0.0,
                         rake_deg: 0.0,
@@ -7175,7 +7596,7 @@ pub fn templates_options(
                 }
                 if let Some(t) = &mut params.transom {
                     ui.add(theme::num(&mut t.x).speed(0.01).suffix(" m"));
-                    ui.label("rake");
+                    ui.label(tr.s(Key::TemplatesRake));
                     let max = seacraft_core::templates::MAX_TRANSOM_RAKE_DEG;
                     ui.add(
                         theme::num(&mut t.rake_deg)
@@ -7187,25 +7608,27 @@ pub fn templates_options(
             });
             ui.end_row();
 
-            ui.label("Paper:");
+            ui.label(tr.s(Key::TemplatesPaperColon));
             egui::ComboBox::from_id_salt("templates_paper")
+                // i18n-casing: not translated (paper size names)
                 .selected_text(params.paper.to_uppercase())
                 .show_ui(ui, |ui| {
                     for paper in ["a4", "a3", "letter"] {
                         ui.selectable_value(
                             &mut params.paper,
                             paper.to_owned(),
+                            // i18n-casing: not translated (paper size names)
                             paper.to_uppercase(),
                         );
                     }
                 });
             ui.end_row();
 
-            ui.label("Single page:");
-            ui.checkbox(&mut params.single_page, "One page a pattern (plotter)");
+            ui.label(tr.s(Key::TemplatesSinglePageColon));
+            ui.checkbox(&mut params.single_page, tr.s(Key::TemplatesSinglePageCheck));
             ui.end_row();
 
-            ui.label("Margin:");
+            ui.label(tr.s(Key::TemplatesMarginColon));
             ui.add(
                 theme::num(&mut params.margin_mm)
                     .speed(0.5)
@@ -7214,7 +7637,7 @@ pub fn templates_options(
             );
             ui.end_row();
 
-            ui.label("Overlap:");
+            ui.label(tr.s(Key::TemplatesOverlapColon));
             ui.add(
                 theme::num(&mut params.overlap_mm)
                     .speed(0.5)
@@ -7223,7 +7646,7 @@ pub fn templates_options(
             );
             ui.end_row();
 
-            ui.label("Scale:");
+            ui.label(tr.s(Key::TemplatesScaleColon));
             egui::ComboBox::from_id_salt("templates_scale")
                 .selected_text(seacraft_core::units::scale_label(params.scale))
                 .show_ui(ui, |ui| {
@@ -7237,24 +7660,24 @@ pub fn templates_options(
                 });
             ui.end_row();
 
-            ui.label("Imperial:");
-            ui.checkbox(&mut params.imperial, "Feet and inches beside metres");
+            ui.label(tr.s(Key::TemplatesImperialColon));
+            ui.checkbox(&mut params.imperial, tr.s(Key::TemplatesImperialCheck));
             ui.end_row();
         });
 
     ui.separator();
     if !list_reads {
         // The preview and Export would use the last list that read, not the one on screen.
-        ui.colored_label(theme::FAIL, STATION_LIST_ERROR);
+        ui.colored_label(theme::FAIL, tr.s(Key::TemplatesErrStationList));
         ui.separator();
-        ui.add_enabled(false, egui::Button::new("Export…"));
+        ui.add_enabled(false, egui::Button::new(tr.s(Key::CommonExportEllipsis)));
         return None;
     }
     match status {
         TemplatesStatus::Working => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Working…");
+                ui.label(tr.s(Key::CommonWorking));
             });
         }
         TemplatesStatus::Ready {
@@ -7262,14 +7685,16 @@ pub fn templates_options(
             sheets,
             warnings,
         } => {
-            ui.label(format!("{pages} pages, {sheets} patterns"));
+            let pages_s = pages.to_string();
+            let sheets_s = sheets.to_string();
+            ui.label(tr.fmt(
+                Key::TemplatesReady,
+                &[("pages", &pages_s), ("sheets", &sheets_s)],
+            ));
             if *pages > TEMPLATES_MANY_PAGES && !params.single_page {
                 ui.colored_label(
                     theme::WARN,
-                    format!(
-                        "{pages} pages to print, trim and join. A larger paper, or one page a \
-                         pattern on a plotter, needs fewer."
-                    ),
+                    tr.fmt(Key::TemplatesManyPagesWarn, &[("pages", &pages_s)]),
                 );
             }
             if !warnings.is_empty() {
@@ -7277,7 +7702,7 @@ pub fn templates_options(
                     .max_height(120.0)
                     .show(ui, |ui| {
                         for warning in warnings.iter() {
-                            ui.colored_label(theme::WARN, warning);
+                            ui.colored_label(theme::WARN, warning.render(tr));
                         }
                     });
             }
@@ -7289,10 +7714,11 @@ pub fn templates_options(
     ui.separator();
     // The window's one action: filled, once there is something to export.
     let ready = matches!(status, TemplatesStatus::Ready { .. });
+    let export_label = tr.s(Key::CommonExportEllipsis);
     let export = if ready {
-        theme::primary_button("Export…")
+        theme::primary_button(export_label)
     } else {
-        egui::Button::new("Export…")
+        egui::Button::new(export_label)
     };
     ui.add_enabled(ready, export)
         .clicked()

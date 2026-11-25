@@ -766,6 +766,17 @@ fn strings(p: &Value, key: &str, what: &str) -> Result<Option<Vec<String>>, Stri
     }
 }
 
+/// An optional locale tag (`"en"` or `"tr"`).
+fn opt_locale(p: &Value) -> Result<Option<seacraft_core::i18n::Locale>, String> {
+    match p.get("locale") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => seacraft_core::i18n::Locale::from_code(s)
+            .map(Some)
+            .ok_or_else(|| format!("`locale` must be one of \"en\", \"tr\" (got `{s}`)")),
+        Some(_) => Err("`locale` must be a string (\"en\" or \"tr\")".to_string()),
+    }
+}
+
 /// The `build.panels` (and MCP `export_panels`) arguments as panels parameters, every choice
 /// checked but the page, which [`build_panels`] checks after the PDF-only refusal: a refusal
 /// names the argument.
@@ -832,6 +843,7 @@ fn panels_params(p: &Value) -> Result<commands::PanelsParams, String> {
 /// current for the same options.
 fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Option<Value>, String> {
     let params = panels_params(p)?;
+    let locale = opt_locale(p)?.unwrap_or(seacraft_core::i18n::Locale::En);
     let target = match text(p, "path")?.filter(|s| !s.trim().is_empty()) {
         None => None,
         Some(path) => {
@@ -853,7 +865,7 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
     // After the PDF-only refusal: a page that does not work is no reason to refuse an SVG.
     params.setup()?;
     if target.is_none() {
-        let same = params.measured() == app.panels_params().measured();
+        let same = params.measured() == app.panels_params().measured() && locale == app.locale();
         if let Some(pv) = app.panels_preview().filter(|_| same) {
             let mut v = pv.set.summary();
             v["revision"] = json!(pv.revision);
@@ -872,17 +884,18 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
     );
     let write_roots = app.control_roots().write_roots.clone();
     reply_later(reply.clone(), revision, app.revision_watch(), move || {
-        let pv = commands::panels_in(&surface, level, mode, &params, revision)?;
+        let pv = commands::panels_in_locale(&surface, level, mode, &params, revision, locale)?;
         let mut v = pv.set.summary();
         let Some((path, format)) = target else {
             return Ok(v);
         };
+        // The reply is English; `locale` only sets the document's language.
         if let Some(reason) = commands::panels_refusal(&pv.set, &params) {
             v["written"] = json!(false);
             v["reason"] = json!(reason);
             return Ok(v);
         }
-        let file = commands::panels_file(&pv.set, &params, format)?;
+        let file = commands::panels_file_locale(&pv.set, &params, format, locale)?;
         let mut sheet_paths = Vec::with_capacity(file.per_sheet.len());
         for i in 0..file.per_sheet.len() {
             let p = seacraft_core::panels::sheet_file_name(&path, i);
@@ -943,6 +956,7 @@ fn build_templates(
     reply: &Sender<Value>,
 ) -> Result<Option<Value>, String> {
     use seacraft_core::templates::{StationChoice, Transom, MAX_SKIN_M, MAX_STATIONS};
+    let locale = opt_locale(p)?.unwrap_or(seacraft_core::i18n::Locale::En);
     let path = text(p, "path")?
         .filter(|s| !s.trim().is_empty())
         .ok_or("missing `path`")?;
@@ -1017,7 +1031,7 @@ fn build_templates(
         app.revision(),
         app.revision_watch(),
         move || {
-            let r = commands::templates_in(&surface, level, mode, &params, format)?;
+            let r = commands::templates_in_locale(&surface, level, mode, &params, format, locale)?;
             seacraft_core::io::write_atomic(&validated, &r.bytes)
                 .map_err(|e| format!("cannot write {}: {e}", validated.display()))?;
             let missing: Vec<String> = r.missing.iter().map(char::to_string).collect();
@@ -1728,7 +1742,7 @@ fn handle_inner(
                         return Err(format!(
                             "`{key}` applies to the linesplan formats (svg, dxf, igs), not \
                              offsets_pdf: it takes `stations`, `waterline_steps`, \
-                             `buttock_steps`, `level` and `imperial`"
+                             `buttock_steps`, `level`, `imperial` and `locale`"
                         ));
                     }
                 }
@@ -1744,9 +1758,10 @@ fn handle_inner(
                     buttocks: None,
                 };
                 let imperial = boolean(p, "imperial")?.unwrap_or(false);
+                let locale = opt_locale(p)?.unwrap_or(seacraft_core::i18n::Locale::En);
                 let path = std::path::PathBuf::from(path.trim());
                 let validated = app.check_control_write_path(&path)?;
-                let pages = app.write_offsets_pdf(&validated, &params, imperial)?;
+                let pages = app.write_offsets_pdf_locale(&validated, &params, imperial, locale)?;
                 let bytes = std::fs::metadata(&validated).map(|m| m.len()).unwrap_or(0);
                 return Ok(json!({
                     "path": validated.to_string_lossy(),
@@ -1762,6 +1777,12 @@ fn handle_inner(
                     return Err(format!("`{key}` applies to offsets_pdf, not `{format}`"));
                 }
             }
+            let locale = opt_locale(p)?;
+            if locale.is_some() && !kind.is_linesplan() {
+                return Err(format!(
+                    "`locale` applies to the linesplan formats (svg, dxf, igs) and offsets_pdf, not `{format}`"
+                ));
+            }
             // Optional linesplan options; each one omitted keeps the
             // viewports' setting (the export the File menu writes).
             let stations = whole_opt(p, "stations", 1..=200)?;
@@ -1775,14 +1796,17 @@ fn handle_inner(
                 || waterlines.is_some()
                 || combs.is_some()
                 || comb_scale.is_some()
-                || level.is_some();
+                || level.is_some()
+                || locale.is_some();
             if given && !kind.is_linesplan() {
                 return Err(format!(
                     "`stations`, `buttocks`, `waterlines`, `combs`, `comb_scale` and `level` \
                      apply to the linesplan formats (svg, dxf, igs), not `{format}`"
                 ));
             }
-            let linesplan = given.then(|| {
+            // A linesplan always gets explicit options, so an omitted `locale` means English
+            // here as in every other document tool, not the window's language.
+            let linesplan = (given || kind.is_linesplan()).then(|| {
                 let mut o = app
                     .display()
                     .section_options(app.subdivision_level(), app.subdivision_mode());
@@ -1792,6 +1816,7 @@ fn handle_inner(
                 o.combs = combs.unwrap_or(o.combs);
                 o.comb_scale = comb_scale.unwrap_or(o.comb_scale);
                 o.level = level.unwrap_or(o.level);
+                o.locale = locale.unwrap_or(seacraft_core::i18n::Locale::En);
                 o
             });
             let path = std::path::PathBuf::from(path.trim());
@@ -2679,9 +2704,8 @@ fn handle_inner(
                 let rows = seacraft_core::resistance::dsyhs_curve(&dsyhs_in, &speeds);
                 for r in &rows {
                     if !(0.15..=0.75).contains(&r.fn_) {
-                        warnings.push(format!(
-                            "Fn {:.3} at {:.2} kn is outside DSYHS valid range (0.15-0.75, clamped)",
-                            r.fn_, r.speed_kn
+                        warnings.push(seacraft_core::resistance::dsyhs_fn_warning(
+                            r.fn_, r.speed_kn,
                         ));
                     }
                 }
@@ -2833,6 +2857,7 @@ fn handle_inner(
                 }
                 None => None,
             };
+            let locale = opt_locale(p)?.unwrap_or(seacraft_core::i18n::Locale::En);
             let params = commands::UnfoldParams {
                 axis,
                 level,
@@ -2843,10 +2868,12 @@ fn handle_inner(
                 both_sides,
                 layer,
                 path,
+                locale,
             };
             reply_app(commands::unfold(app, &params)?)
         }
         "report.design" => {
+            let locale = opt_locale(p)?;
             let path_str = text(p, "path")?
                 .filter(|s| !s.trim().is_empty())
                 .ok_or("report.design: `path` is required")?;
@@ -2859,6 +2886,9 @@ fn handle_inner(
             let project = app.project();
             let mut opts = seacraft_core::report::ReportOptions::from_surface(surface);
             opts = project.report.apply(opts);
+            if let Some(loc) = locale {
+                opts.locale = loc;
+            }
             if let Some(d) = number_in(p, "draft", 0.001..=1.0e3)? {
                 opts.draft = d;
             }
@@ -6676,5 +6706,76 @@ mod tests {
         );
         let r = handle(&mut app, &ctx, &bad).expect("invalid input fails on window thread");
         assert_eq!(r["ok"], false, "{r}");
+    }
+
+    #[test]
+    fn report_design_honours_optional_locale() {
+        let (mut app, ctx) = demo();
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-control-i18n-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+
+        let path = dir.join("report-tr.html");
+        let r = call(
+            &mut app,
+            &ctx,
+            "report.design",
+            json!({ "path": path.to_string_lossy(), "kg": 2.2, "level": 1, "locale": "tr" }),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+        let html = std::fs::read_to_string(&path).unwrap();
+        assert!(html.contains("<html lang=\"tr\">"), "{html}");
+        assert!(html.contains("Ana Boyutlar ve Özellikler"), "{html}");
+
+        let bad = call(
+            &mut app,
+            &ctx,
+            "report.design",
+            json!({ "path": path.to_string_lossy(), "locale": "xx" }),
+        );
+        assert_eq!(bad["ok"], false, "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An omitted `locale` means English for a connected linesplan export, whatever the window's
+    /// language and whatever other options are passed, as for the headless MCP tools.
+    #[test]
+    fn model_export_linesplan_defaults_to_english_whatever_the_window_language() {
+        let (mut app, ctx) = demo();
+        app.set_locale(seacraft_core::i18n::Locale::Tr);
+        let dir = std::env::temp_dir().join(format!(
+            "seacraft-control-linesplan-locale-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![dir.clone()],
+        ));
+        let cases = [
+            ("bare.svg", json!({}), false),
+            ("stations.svg", json!({ "stations": 10 }), false),
+            ("tr.svg", json!({ "locale": "tr" }), true),
+            ("en.svg", json!({ "locale": "en", "stations": 10 }), false),
+        ];
+        for (name, extra, turkish) in cases {
+            let path = dir.join(name);
+            let mut params = json!({ "path": path.to_string_lossy(), "format": "svg" });
+            for (k, v) in extra.as_object().unwrap() {
+                params[k] = v.clone();
+            }
+            let r = call(&mut app, &ctx, "model.export", params);
+            assert_eq!(r["ok"], true, "{name}: {r}");
+            let svg = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(svg.contains("Posta planı"), turkish, "{name}");
+            assert_eq!(svg.contains("Body plan"), !turkish, "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
