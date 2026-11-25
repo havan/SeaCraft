@@ -849,17 +849,23 @@ pub fn about(ui: &mut egui::Ui, tr: seacraft_core::i18n::Tr) {
     ui.hyperlink_to(tr.s(Key::AboutSourceCode), seacraft_core::source_url());
     ui.separator();
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (title, text) in [
+        for (i, (title, text)) in [
             (tr.s(Key::AboutNotices), include_str!("../../../NOTICE")),
             (tr.s(Key::AboutGpl), include_str!("../../../LICENSE")),
             (
                 tr.s(Key::AboutFontLicence),
                 seacraft_core::fonts::DEJAVU_LICENCE,
             ),
-        ] {
-            egui::CollapsingHeader::new(title).show(ui, |ui| {
-                ui.label(egui::RichText::new(text).small());
-            });
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Salted by position, so a live language switch keeps each section open or closed.
+            egui::CollapsingHeader::new(title)
+                .id_salt(("about_licence", i))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(text).small());
+                });
         }
     });
 }
@@ -2586,7 +2592,7 @@ fn sea_state_section(
     }
 
     if input.enabled {
-        egui::ComboBox::from_label(tr.s(Key::PerfSeaSpectrum))
+        egui::ComboBox::new("sea_spectrum", tr.s(Key::PerfSeaSpectrum))
             .selected_text(input.kind.label())
             .show_ui(ui, |ui| {
                 for k in [SeaSpectrumKind::Bretschneider, SeaSpectrumKind::Jonswap] {
