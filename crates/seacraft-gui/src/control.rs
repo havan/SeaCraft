@@ -884,13 +884,13 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
     );
     let write_roots = app.control_roots().write_roots.clone();
     reply_later(reply.clone(), revision, app.revision_watch(), move || {
-        let tr = seacraft_core::i18n::Tr::new(locale);
         let pv = commands::panels_in_locale(&surface, level, mode, &params, revision, locale)?;
         let mut v = pv.set.summary();
         let Some((path, format)) = target else {
             return Ok(v);
         };
-        if let Some(reason) = commands::panels_refusal_tr(&pv.set, &params, tr) {
+        // The reply is English; `locale` only sets the document's language.
+        if let Some(reason) = commands::panels_refusal(&pv.set, &params) {
             v["written"] = json!(false);
             v["reason"] = json!(reason);
             return Ok(v);

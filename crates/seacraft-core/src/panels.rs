@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Serialize;
 
 use crate::flatten::{boundary_loops, clean, FlattenError};
-use crate::i18n::{Key, Locale, PluralCategory, Tr};
+use crate::i18n::{Key, Locale, Msg, PluralCategory, Tr};
 use crate::math::Vec3;
 use crate::mesh::{ordered, Layer, Surface};
 use crate::pdf::Anchor;
@@ -76,10 +76,15 @@ impl Seam {
 
     /// Localized form of [`Seam::name`].
     pub fn name_tr(&self, tr: Tr) -> String {
+        self.name_msg().render(tr)
+    }
+
+    /// The name as a message, for output that renders it later (English in JSON).
+    pub fn name_msg(&self) -> Msg {
         match &self.mate {
-            Mate::Panel(p) => tr.fmt(Key::PanelsSeamEdgeTo, &[("panel", p)]),
-            Mate::Centreline => tr.s(Key::PanelsSeamCentreline).into(),
-            Mate::Open => tr.s(Key::PanelsSeamOpen).into(),
+            Mate::Panel(p) => Msg::new(Key::PanelsSeamEdgeTo).arg("panel", p),
+            Mate::Centreline => Msg::new(Key::PanelsSeamCentreline),
+            Mate::Open => Msg::new(Key::PanelsSeamOpen),
         }
     }
 }
@@ -166,7 +171,8 @@ impl FoundPanel {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Refusal {
     pub panel: String,
-    pub reason: String,
+    /// Why, in the reader's language when rendered; English in JSON.
+    pub reason: Msg,
 }
 
 /// The layers panels are made from when the user names none: those marked developable, or every
@@ -220,15 +226,6 @@ pub fn find_panels(
     surface: &Surface,
     subdivision: SubdivisionOptions,
     layers: &[usize],
-) -> (Vec<FoundPanel>, Vec<Refusal>) {
-    find_panels_tr(surface, subdivision, layers, Tr::new(Locale::En))
-}
-
-pub(crate) fn find_panels_tr(
-    surface: &Surface,
-    subdivision: SubdivisionOptions,
-    layers: &[usize],
-    tr: Tr,
 ) -> (Vec<FoundPanel>, Vec<Refusal>) {
     let mesh = evaluate(surface, subdivision);
     let nf = mesh.faces.len();
@@ -349,7 +346,7 @@ pub(crate) fn find_panels_tr(
         if !one_way || !loops_on_edges {
             refused.push(Refusal {
                 panel: name,
-                reason: tr.s(Key::PanelsRefuseWinding).into(),
+                reason: Msg::new(Key::PanelsRefuseWinding),
             });
             continue;
         }
@@ -382,11 +379,11 @@ pub(crate) fn find_panels_tr(
                 .find(|v| count[v] == 1 && !on_boundary.contains(v))
                 .unwrap_or(inner_creases[0].0);
             let p = mesh.verts[end];
-            let px = format!("{:.2}", p.x);
-            let pz = format!("{:.2}", p.z);
             refused.push(Refusal {
                 panel: name,
-                reason: tr.fmt(Key::PanelsRefuseInnerCrease, &[("x", &px), ("z", &pz)]),
+                reason: Msg::new(Key::PanelsRefuseInnerCrease)
+                    .arg("x", format!("{:.2}", p.x))
+                    .arg("z", format!("{:.2}", p.z)),
             });
             continue;
         }
@@ -588,7 +585,7 @@ pub(crate) fn find_panels_tr(
             };
             refused.push(Refusal {
                 panel: name,
-                reason: err.describe_tr(tr),
+                reason: err.msg(),
             });
             continue;
         }
@@ -635,7 +632,8 @@ impl Default for Limits {
 /// How one seam's flat length follows its 3D length.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SeamMeasure {
-    pub name: String,
+    /// The seam's name; English in JSON.
+    pub name: Msg,
     /// Largest |flat − 3D| cumulative length at the station ticks and the far end, measured from
     /// either end.
     pub drift_m: f64,
@@ -648,8 +646,8 @@ pub struct SeamMeasure {
 pub struct Mismatch {
     pub a: String,
     pub b: String,
-    /// The seam's name on panel `a`.
-    pub seam: String,
+    /// The seam's name on panel `a`; English in JSON.
+    pub seam: Msg,
     pub max_m: f64,
 }
 
@@ -822,39 +820,28 @@ fn flat_pattern(found: &FoundPanel) -> Result<crate::flatten::Flat, FlattenError
 }
 
 /// Flattens and measures one panel, without the level shift (which needs the surface).
-#[cfg(test)]
 pub(crate) fn measure_found(
     found: FoundPanel,
     stations: &[f64],
     limits: Limits,
 ) -> Result<FlatPanel, Refusal> {
-    measure_found_tr(found, stations, limits, Tr::new(Locale::En))
-}
-
-pub(crate) fn measure_found_tr(
-    found: FoundPanel,
-    stations: &[f64],
-    limits: Limits,
-    tr: Tr,
-) -> Result<FlatPanel, Refusal> {
     let flat = flat_pattern(&found).map_err(|e| Refusal {
         panel: found.name.clone(),
-        reason: e.describe_tr(tr),
+        reason: e.msg(),
     })?;
     let xy = flat.xy;
     let st = crate::flatten::strain(&found.verts, &found.tris, &xy);
     let mut seams = Vec::new();
     for seam in &found.seams {
         let Some(ids) = found.seam_local(seam) else {
-            let seam_name = seam.name_tr(tr);
             return Err(Refusal {
                 panel: found.name.clone(),
-                reason: tr.fmt(Key::PanelsRefuseSeamUnfollowed, &[("seam", &seam_name)]),
+                reason: Msg::new(Key::PanelsRefuseSeamUnfollowed).arg_msg("seam", seam.name_msg()),
             });
         };
         let (t3, tf) = ticks(&found.verts, &xy, &ids, stations);
         seams.push(SeamMeasure {
-            name: seam.name_tr(tr),
+            name: seam.name_msg(),
             drift_m: drift_from_both_ends(&t3, &tf),
             length_3d_m: t3.last().copied().unwrap_or(0.0),
             length_flat_m: tf.last().copied().unwrap_or(0.0),
@@ -1015,28 +1002,10 @@ pub fn measure_panels(
     stations: &[f64],
     limits: Limits,
 ) -> (Vec<FlatPanel>, Vec<Mismatch>, Vec<Refusal>) {
-    measure_panels_tr(
-        surface,
-        subdivision,
-        layers,
-        stations,
-        limits,
-        Tr::new(Locale::En),
-    )
-}
-
-pub(crate) fn measure_panels_tr(
-    surface: &Surface,
-    subdivision: SubdivisionOptions,
-    layers: &[usize],
-    stations: &[f64],
-    limits: Limits,
-    tr: Tr,
-) -> (Vec<FlatPanel>, Vec<Mismatch>, Vec<Refusal>) {
-    let (found, mut refused) = find_panels_tr(surface, subdivision, layers, tr);
+    let (found, mut refused) = find_panels(surface, subdivision, layers);
     let mut panels = Vec::new();
     for f in found {
-        match measure_found_tr(f, stations, limits, tr) {
+        match measure_found(f, stations, limits) {
             Ok(p) => panels.push(p),
             Err(r) => refused.push(r),
         }
@@ -1048,7 +1017,7 @@ pub(crate) fn measure_panels_tr(
         level: if level >= 6 { level - 1 } else { level + 1 },
         ..subdivision
     };
-    let (other_found, _) = find_panels_tr(surface, other, layers, tr);
+    let (other_found, _) = find_panels(surface, other, layers);
     for p in &mut panels {
         let Some(q) = other_found.iter().find(|q| q.name == p.found.name) else {
             continue;
@@ -1117,7 +1086,7 @@ pub(crate) fn measure_panels_tr(
                 mismatches.push(Mismatch {
                     a: pa.found.name.clone(),
                     b: pb.found.name.clone(),
-                    seam: sa.name_tr(tr),
+                    seam: sa.name_msg(),
                     max_m: drift_from_both_ends(&fa, &fb),
                 });
             }
@@ -1282,28 +1251,30 @@ pub fn failing_heading(measures: &Measures, limits: Limits) -> String {
 
 /// Localized form of [`failing_heading`].
 pub fn failing_heading_tr(measures: &Measures, limits: Limits, tr: Tr) -> String {
+    failing_heading_msg(measures, limits).render(tr)
+}
+
+/// [`failing_heading`] as a message, rendered in each reader's language.
+pub fn failing_heading_msg(measures: &Measures, limits: Limits) -> Msg {
     let (drift, seam) = measures.worst_seam().map_or_else(
-        || (0.0, tr.s(Key::PanelsSeamEdgeFallback).to_owned()),
+        || (0.0, Msg::new(Key::PanelsSeamEdgeFallback)),
         |s| (s.drift_m, s.name.clone()),
     );
-    let rms = format!("{:.2}", measures.rms_stretch * 100.0);
-    let rms_limit = format!("{:.1}", limits.rms_stretch * 100.0);
-    let drift_s = format!("{:.1}", drift * 1000.0);
-    let drift_limit = format!("{:.0}", limits.seam_drift_m * 1000.0);
-    let mut heading = tr.fmt(
-        Key::PanelsNoteFailing,
-        &[
-            ("rms", &rms),
-            ("rms_limit", &rms_limit),
-            ("drift", &drift_s),
-            ("seam", &seam),
-            ("drift_limit", &drift_limit),
-        ],
-    );
-    if measures.unsettled_m.is_some() {
-        heading.push_str(tr.s(Key::PanelsNoteFailingUnsettledSuffix));
-    }
-    heading
+    let unsettled = if measures.unsettled_m.is_some() {
+        Msg::new(Key::PanelsNoteFailingUnsettledSuffix)
+    } else {
+        Msg::Raw(String::new())
+    };
+    Msg::new(Key::PanelsNoteFailing)
+        .arg("rms", format!("{:.2}", measures.rms_stretch * 100.0))
+        .arg("rms_limit", format!("{:.1}", limits.rms_stretch * 100.0))
+        .arg("drift", format!("{:.1}", drift * 1000.0))
+        .arg_msg("seam", seam)
+        .arg(
+            "drift_limit",
+            format!("{:.0}", limits.seam_drift_m * 1000.0),
+        )
+        .arg_msg("unsettled", unsettled)
 }
 
 /// How far each of a panel's stitched edges differs from its mate's at the ticks, as a sheet
@@ -1610,7 +1581,7 @@ pub fn panel_sheet_tr(
     let drifts: Vec<String> = m
         .seams
         .iter()
-        .map(|s| format!("{} {:.1} mm", s.name, s.drift_m * 1000.0))
+        .map(|s| format!("{} {:.1} mm", s.name.render(tr), s.drift_m * 1000.0))
         .collect();
     let drift_limit = format!("{:.0}", limits.seam_drift_m * 1000.0);
     let drifts_s = drifts.join("; ");
@@ -2043,6 +2014,10 @@ pub struct PanelRow {
     pub sheets_each: Option<usize>,
     /// `None` when the flattening settled; otherwise how far its points may still move, mm.
     pub unsettled_mm: Option<f64>,
+    /// The pattern's failing heading when it does not lie flat, for the reasons the front ends
+    /// give in their own language; not in JSON.
+    #[serde(skip)]
+    pub failing: Option<Msg>,
 }
 
 /// Every panel of a hull: patterns, measures, offsets and the plywood they take.
@@ -2103,15 +2078,16 @@ impl PanelSet {
 
     /// Localized form of [`PanelSet::failing`].
     pub fn failing_tr(&self, tr: Tr) -> Vec<String> {
-        self.sheets
+        self.rows
             .iter()
-            .zip(&self.rows)
-            .filter(|(_, r)| !r.lies_flat)
-            .map(|(sheet, r)| format!("{}: {}", r.panel, sheet.notes[0]))
+            .filter_map(|r| {
+                let heading = r.failing.as_ref()?;
+                Some(format!("{}: {}", r.panel, heading.render(tr)))
+            })
             .chain(self.refused.iter().map(|r| {
                 tr.fmt(
                     Key::PanelsRefusedLine,
-                    &[("panel", &r.panel), ("reason", &r.reason)],
+                    &[("panel", &r.panel), ("reason", &r.reason.render(tr))],
                 )
             }))
             .collect()
@@ -2270,7 +2246,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         })
         .collect();
     let (panels, mismatches, refused) =
-        measure_panels_tr(surface, opts.subdivision, &layers, &xs, opts.limits, tr);
+        measure_panels(surface, opts.subdivision, &layers, &xs, opts.limits);
     if panels.is_empty() && refused.is_empty() {
         return Err("no panel was found on the chosen layers".into());
     }
@@ -2433,6 +2409,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             area_m2: m.area_flat_m2,
             sheets_each: row.sheets_each,
             unsettled_mm: m.unsettled_m.map(|d| d * 1000.0),
+            failing: (!p.lies_flat).then(|| failing_heading_msg(m, opts.limits)),
         });
         set.offsets.push(offsets);
         set.stock.push(row);
@@ -2455,7 +2432,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
                 at,
                 tr.fmt(
                     Key::PanelsNoteNotInSet,
-                    &[("panel", &r.panel), ("reason", &r.reason)],
+                    &[("panel", &r.panel), ("reason", &r.reason.render(tr))],
                 ),
             );
         }
@@ -2961,10 +2938,10 @@ mod tests {
             .iter()
             .find(|r| r.panel == "Side")
             .expect("Side refused");
-        assert!(r.reason.contains("x 1.20 m"), "{}", r.reason);
+        let reason = r.reason.to_string();
+        assert!(reason.contains("x 1.20 m"), "{reason}");
         assert!(
-            r.reason
-                .contains("carry the crease to the panel's edge or split the layer"),
+            reason.contains("carry the crease to the panel's edge or split the layer"),
             "{}",
             r.reason
         );
@@ -3073,7 +3050,12 @@ mod tests {
             .iter()
             .find(|r| r.panel == "Side")
             .expect("Side refused");
-        assert!(r.reason.contains("do not all face the same way"), "{r:?}");
+        assert!(
+            r.reason
+                .to_string()
+                .contains("do not all face the same way"),
+            "{r:?}"
+        );
     }
 
     /// The side's three bow points made one (a pole, as a stem often is): the welded copies of
@@ -3096,7 +3078,7 @@ mod tests {
             p.measures
                 .seams
                 .iter()
-                .find(|m| m.name.contains(mate))
+                .find(|m| m.name.to_string().contains(mate))
                 .cloned()
                 .unwrap_or_else(|| panic!("{}: {:?}", p.found.name, p.measures.seams))
         };
@@ -3411,7 +3393,7 @@ mod tests {
                 .measures
                 .seams
                 .iter()
-                .filter(|m| m.name.starts_with(prefix))
+                .filter(|m| m.name.to_string().starts_with(prefix))
                 .map(|m| m.length_3d_m)
                 .collect();
             w.sort_by(f64::total_cmp);
@@ -3987,6 +3969,25 @@ mod tests {
                 failing[0]
             ))
         );
+        // A Turkish set draws Turkish headings; its reasons and JSON stay English, and its
+        // own reader's form is Turkish.
+        let turkish = panel_set(
+            &s,
+            &PanelOptions {
+                locale: Locale::Tr,
+                ..opts.clone()
+            },
+        )
+        .expect("a set");
+        assert!(turkish.sheets[1].notes[0].starts_with("Düz açılmaz"));
+        assert_eq!(turkish.failing(), failing);
+        assert_eq!(turkish.not_flat_reason(), set.not_flat_reason());
+        let tr_reason = turkish.not_flat_reason_tr(Tr::new(Locale::Tr)).unwrap();
+        assert!(tr_reason.contains("Side: Düz açılmaz"), "{tr_reason}");
+        assert_eq!(
+            serde_json::to_string(&turkish.summary()).unwrap(),
+            serde_json::to_string(&set.summary()).unwrap()
+        );
         let flat = panel_set(&s, &PanelOptions::default()).expect("a set");
         if flat.all_lie_flat() {
             assert!(flat.failing().is_empty() && flat.not_flat_summary().is_none());
@@ -4249,7 +4250,7 @@ mod tests {
                 "{}",
                 &text[..40]
             );
-            assert!(text.contains(&sheet.name));
+            assert!(text.contains(&sheet.name.to_string()));
         }
         let dxf = write(&set, Format::Dxf, &PageSetup::default(), false).unwrap();
         assert_eq!(dxf.per_sheet.len(), layout.sheets.len());
@@ -4523,16 +4524,12 @@ mod tests {
             let sheets = &set.layout.as_ref().unwrap().sheets;
             for (sheet_svg, sheet) in svg.per_sheet.iter().zip(sheets) {
                 let s = String::from_utf8(sheet_svg.bytes.clone()).unwrap();
+                let name = sheet.name.render(Tr::new(Locale::Tr));
                 assert!(
-                    sheet.name.starts_with("Plaka ") || sheet.name.starts_with("Birleşik plaka "),
-                    "{}",
-                    sheet.name
+                    name.starts_with("Plaka ") || name.starts_with("Birleşik plaka "),
+                    "{name}"
                 );
-                assert!(
-                    s.contains(&sheet.name),
-                    "missing `{}` in sheet SVG",
-                    sheet.name
-                );
+                assert!(s.contains(&name), "missing `{}` in sheet SVG", name);
             }
 
             let dxf = write(&set, Format::Dxf, &setup, false).unwrap();

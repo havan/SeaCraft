@@ -4486,7 +4486,7 @@ fn cmd_panels(a: PanelsArgs, tr: Tr) -> Result<()> {
                 Key::CliPanelsRefusedLine,
                 &[
                     ("panel", &format!("{:<16}", r.panel)),
-                    ("reason", &r.reason),
+                    ("reason", &r.reason.render(tr)),
                 ]
             )
         );

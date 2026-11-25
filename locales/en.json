@@ -1095,7 +1095,7 @@
   "panels.nest.split": "Split pieces to fit sheets",
   "panels.nesting_colon": "Nesting:",
   "panels.note.edge_join_gap": "Edge-joining gap: {mm} mm",
-  "panels.note.failing": "Does not lie flat: must stretch {rms} % (limit {rms_limit} %), seam drift {drift} mm along the {seam} (limit {drift_limit} mm)",
+  "panels.note.failing": "Does not lie flat: must stretch {rms} % (limit {rms_limit} %), seam drift {drift} mm along the {seam} (limit {drift_limit} mm){unsettled}",
   "panels.note.failing_unsettled_suffix": "; the flattening stopped at its limit before it settled",
   "panels.note.level_shift": "Outline shift to the next subdivision level: {mm} mm",
   "panels.note.level_shift_none": "Outline shift to the next subdivision level: not measured",

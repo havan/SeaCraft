@@ -361,7 +361,7 @@ pub fn panels_list_tr(
     for r in &set.refused {
         ui.label(text(tr.fmt(
             Key::PanelsRefusedLine,
-            &[("panel", &r.panel), ("reason", &r.reason)],
+            &[("panel", &r.panel), ("reason", &r.reason.render(tr))],
         )));
     }
     ui.label(text(set.sheet_count_line_tr(tr)));

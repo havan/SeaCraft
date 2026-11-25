@@ -1095,7 +1095,7 @@
   "panels.nest.split": "Parçaları plakalara böl",
   "panels.nesting_colon": "Yerleşim (Nesting):",
   "panels.note.edge_join_gap": "Kenar birleştirme boşluğu: {mm} mm",
-  "panels.note.failing": "Düz açılmaz: {rms} % esneme gerekir (sınır {rms_limit} %), {seam} boyunca dikiş sapması {drift} mm (sınır {drift_limit} mm)",
+  "panels.note.failing": "Düz açılmaz: {rms} % esneme gerekir (sınır {rms_limit} %), {seam} boyunca dikiş sapması {drift} mm (sınır {drift_limit} mm){unsettled}",
   "panels.note.failing_unsettled_suffix": "; açınım yakınsamadan yineleme sınırında durdu",
   "panels.note.level_shift": "Sonraki alt bölünme seviyesinde kontur kayması: {mm} mm",
   "panels.note.level_shift_none": "Sonraki alt bölünme seviyesinde kontur kayması: ölçülmedi",

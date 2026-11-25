@@ -5,7 +5,7 @@
 //! its length), never a quarter turn, so a plywood piece keeps its grain along the sheet. The
 //! search is deterministic and good, not optimal.
 
-use crate::i18n::{Key, Locale, Tr};
+use crate::i18n::{Key, Msg};
 use serde::Serialize;
 
 /// A point, metres.
@@ -79,7 +79,7 @@ pub struct Placement {
 pub struct Packing {
     pub bins: Vec<Bin>,
     pub placements: Vec<Placement>,
-    pub unplaced: Vec<(usize, String)>,
+    pub unplaced: Vec<(usize, Msg)>,
 }
 
 fn turn(outline: &[Pt], end_for_end: bool, turned_over: bool) -> Vec<Pt> {
@@ -471,16 +471,12 @@ fn lowest_spot(shape: &Shape, bin: Bin, placed: &[Placed], gap: f64, search_gap:
 /// Places `items` on bins, largest first. `new_bin(length)` gives the bin to open for an item
 /// of that length (its turned box's) that fits no open bin, or `None` when no bin is long
 /// enough. `gap` is kept between items and from every bin edge.
+/// Each reason not placed is a [`Msg`], shown in the reader's language.
 pub fn pack(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64) -> Packing {
-    pack_tr(items, new_bin, gap, Tr::new(Locale::En))
-}
-
-/// Localized form of [`pack`].
-pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, tr: Tr) -> Packing {
     let mut out = Packing::default();
     if !gap.is_finite() || gap < 0.0 {
         out.unplaced = (0..items.len())
-            .map(|i| (i, tr.s(Key::PanelsNestErrGap).into()))
+            .map(|i| (i, Msg::new(Key::PanelsNestErrGap)))
             .collect();
         return out;
     }
@@ -496,8 +492,7 @@ pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, t
                 .iter()
                 .any(|p| !p.0.is_finite() || !p.1.is_finite())
         {
-            out.unplaced
-                .push((i, tr.s(Key::PanelsNestErrNotShape).into()));
+            out.unplaced.push((i, Msg::new(Key::PanelsNestErrNotShape)));
             continue;
         }
         let shapes = shapes(item);
@@ -538,7 +533,7 @@ pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, t
                 let len_mm = crate::units::millimetres(length);
                 out.unplaced.push((
                     i,
-                    tr.fmt(Key::PanelsNestErrLongerMax, &[("length", &len_mm)]),
+                    Msg::new(Key::PanelsNestErrLongerMax).arg("length", len_mm),
                 ));
                 continue;
             };
@@ -547,8 +542,7 @@ pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, t
                 || bin.length <= 0.0
                 || bin.width <= 0.0
             {
-                out.unplaced
-                    .push((i, tr.s(Key::PanelsNestErrNoSize).into()));
+                out.unplaced.push((i, Msg::new(Key::PanelsNestErrNoSize)));
                 continue;
             }
             if bin.width - 2.0 * gap <= 0.0 || width > bin.width - 2.0 * gap + 1e-9 {
@@ -556,10 +550,9 @@ pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, t
                 let u_mm = crate::units::millimetres((bin.width - 2.0 * gap).max(0.0));
                 out.unplaced.push((
                     i,
-                    tr.fmt(
-                        Key::PanelsNestErrWider,
-                        &[("width", &w_mm), ("usable", &u_mm)],
-                    ),
+                    Msg::new(Key::PanelsNestErrWider)
+                        .arg("width", w_mm)
+                        .arg("usable", u_mm),
                 ));
                 continue;
             }
@@ -574,16 +567,14 @@ pub fn pack_tr(items: &[Item], new_bin: &dyn Fn(f64) -> Option<Bin>, gap: f64, t
                     let u_mm = crate::units::millimetres((bin.length - 2.0 * gap).max(0.0));
                     out.unplaced.push((
                         i,
-                        tr.fmt(
-                            Key::PanelsNestErrLongerBin,
-                            &[("length", &len_mm), ("usable", &u_mm)],
-                        ),
+                        Msg::new(Key::PanelsNestErrLongerBin)
+                            .arg("length", len_mm)
+                            .arg("usable", u_mm),
                     ));
                     continue;
                 }
                 Err(()) => {
-                    out.unplaced
-                        .push((i, tr.s(Key::PanelsNestErrTooLarge).into()));
+                    out.unplaced.push((i, Msg::new(Key::PanelsNestErrTooLarge)));
                     continue;
                 }
             }
@@ -799,7 +790,7 @@ mod tests {
         assert_eq!(p.unplaced.len(), 1);
         assert_eq!(p.unplaced[0].0, 0);
         assert!(
-            p.unplaced[0].1.contains("wider than"),
+            p.unplaced[0].1.to_string().contains("wider than"),
             "{}",
             p.unplaced[0].1
         );
@@ -832,7 +823,7 @@ mod tests {
         assert_eq!(p.unplaced.len(), 1);
         assert_eq!(p.unplaced[0].0, 0);
         assert!(
-            p.unplaced[0].1.contains("longer than"),
+            p.unplaced[0].1.to_string().contains("longer than"),
             "{}",
             p.unplaced[0].1
         );
@@ -1003,7 +994,7 @@ mod tests {
         assert!(p.placements.is_empty());
         assert_eq!(p.unplaced.len(), 1);
         assert!(
-            p.unplaced[0].1.contains("too large to search"),
+            p.unplaced[0].1.to_string().contains("too large to search"),
             "{}",
             p.unplaced[0].1
         );

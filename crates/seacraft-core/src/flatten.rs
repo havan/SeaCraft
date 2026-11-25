@@ -361,23 +361,26 @@ pub enum FlattenError {
 }
 
 impl FlattenError {
-    /// Localized explanation of why a mesh could not be flattened.
-    pub fn describe_tr(&self, tr: crate::i18n::Tr) -> String {
-        use crate::i18n::Key;
+    /// Why a mesh could not be flattened, in the reader's language when rendered.
+    pub fn msg(&self) -> crate::i18n::Msg {
+        use crate::i18n::{Key, Msg};
         match self {
-            FlattenError::Empty => tr.s(Key::PanelsFlattenEmpty).into(),
-            FlattenError::NotADisc { loops: 0 } => tr.s(Key::PanelsFlattenClosed).into(),
+            FlattenError::Empty => Msg::new(Key::PanelsFlattenEmpty),
+            FlattenError::NotADisc { loops: 0 } => Msg::new(Key::PanelsFlattenClosed),
             FlattenError::NotADisc { loops } => {
-                let loops_s = loops.to_string();
-                tr.fmt(Key::PanelsFlattenLoops, &[("loops", &loops_s)])
+                Msg::new(Key::PanelsFlattenLoops).arg("loops", loops)
             }
             FlattenError::Fold { triangle } => {
-                let tri_s = triangle.to_string();
-                tr.fmt(Key::PanelsFlattenFold, &[("triangle", &tri_s)])
+                Msg::new(Key::PanelsFlattenFold).arg("triangle", triangle)
             }
-            FlattenError::SelfCrossing => tr.s(Key::PanelsFlattenSelfCrossing).into(),
-            FlattenError::Unsolvable => tr.s(Key::PanelsFlattenUnsolvable).into(),
+            FlattenError::SelfCrossing => Msg::new(Key::PanelsFlattenSelfCrossing),
+            FlattenError::Unsolvable => Msg::new(Key::PanelsFlattenUnsolvable),
         }
+    }
+
+    /// Localized explanation of why a mesh could not be flattened.
+    pub fn describe_tr(&self, tr: crate::i18n::Tr) -> String {
+        self.msg().render(tr)
     }
 }
 
