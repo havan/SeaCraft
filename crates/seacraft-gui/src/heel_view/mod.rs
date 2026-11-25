@@ -649,7 +649,9 @@ pub fn equilibrium_line_tr(eq: &Equilibrium, displacement_t: f64, tr: Tr) -> Str
             let disp_s = format!("{displacement_t:.2}");
             tr.fmt(Key::HeelBannerCannotFloatBody, &[("disp", &disp_s)])
         }
-        Equilibrium::Unresolved { reason } => tr.fmt(Key::HeelEqUnresolved, &[("reason", reason)]),
+        Equilibrium::Unresolved { reason } => {
+            tr.fmt(Key::HeelEqUnresolved, &[("reason", &reason.render(tr))])
+        }
     }
 }
 
@@ -1321,7 +1323,7 @@ fn status_banner(ui: &mut egui::Ui, out: &HeelSweepOut, shown: Option<&HeelState
             theme::WARN,
             theme::HEEL_STATUS_WARN_BG,
             tr.s(Key::HeelBannerNoEq).to_string(),
-            reason.clone(),
+            reason.render(tr),
         ),
     };
     paint_status_card(ui, accent, fill, &title, &detail, None);

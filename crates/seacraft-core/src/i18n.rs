@@ -293,10 +293,10 @@ impl Tr {
 /// A message read back from JSON has lost its key and is kept as [`Msg::Raw`] text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Msg {
-    /// A catalog key and its `{placeholder}` values.
+    /// A catalog key and its `{placeholder}` values, each rendered in the same language.
     Keyed {
         key: Key,
-        args: Vec<(&'static str, String)>,
+        args: Vec<(&'static str, Msg)>,
     },
     /// Text that is shown as it is in every locale.
     Raw(String),
@@ -313,9 +313,14 @@ impl Msg {
 
     /// Add the value of `{name}`. Numbers are formatted by the caller, with `.` as the decimal
     /// separator in every locale.
-    pub fn arg(mut self, name: &'static str, value: impl std::fmt::Display) -> Self {
+    pub fn arg(self, name: &'static str, value: impl std::fmt::Display) -> Self {
+        self.arg_msg(name, Msg::Raw(value.to_string()))
+    }
+
+    /// Add the value of `{name}` as a message of its own, rendered in the reader's language too.
+    pub fn arg_msg(mut self, name: &'static str, value: Msg) -> Self {
         if let Msg::Keyed { args, .. } = &mut self {
-            args.push((name, value.to_string()));
+            args.push((name, value));
         }
         self
     }
@@ -332,7 +337,10 @@ impl Msg {
     pub fn render(&self, tr: Tr) -> String {
         match self {
             Msg::Keyed { key, args } => {
-                let args: Vec<(&str, &str)> = args.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                let values: Vec<(&str, String)> =
+                    args.iter().map(|(k, v)| (*k, v.render(tr))).collect();
+                let args: Vec<(&str, &str)> =
+                    values.iter().map(|(k, v)| (*k, v.as_str())).collect();
                 tr.fmt(*key, &args)
             }
             Msg::Raw(text) => text.clone(),
@@ -373,6 +381,14 @@ mod tests {
         let m = Msg::new(Key::LangSystemDefault).arg("lang", "X");
         assert_eq!(m.render(Tr::new(Locale::En)), "System default (X)");
         assert_eq!(m.render(Tr::new(Locale::Tr)), "Sistem varsayılanı (X)");
+        // A message inside a message follows the reader's language too.
+        let nested =
+            Msg::new(Key::LangSystemDefault).arg_msg("lang", Msg::new(Key::TemplatesSheetProfile));
+        assert_eq!(
+            nested.render(Tr::new(Locale::Tr)),
+            "Sistem varsayılanı (Profil)"
+        );
+        assert_eq!(nested.to_string(), "System default (Profile)");
         assert_eq!(m.to_string(), "System default (X)");
         let json = serde_json::to_string(&m).unwrap();
         assert_eq!(json, "\"System default (X)\"");

@@ -607,6 +607,11 @@ mod table_layout {
 /// continue on further pages with the first [`Table::repeat`] columns repeated. Rows go first:
 /// every row of the first columns, then every row of the next.
 pub fn add_table(pdf: &mut Pdf, table: &Table<'_>) -> usize {
+    add_table_tr(pdf, table, crate::i18n::Tr::new(crate::i18n::Locale::En))
+}
+
+/// [`add_table`] with the page markers ("Page 2 of 3") in `tr`'s language.
+pub fn add_table_tr(pdf: &mut Pdf, table: &Table<'_>, tr: crate::i18n::Tr) -> usize {
     use table_layout::*;
     let mm = |v: f64| v * PT_PER_MM;
     let (width, height) = PAPER;
@@ -718,7 +723,10 @@ pub fn add_table(pdf: &mut Pdf, table: &Table<'_>) -> usize {
                 );
             }
             if pages > 1 {
-                let marker = format!("Page {page} of {pages}");
+                let marker = tr.fmt(
+                    crate::i18n::Key::PdfTablePageOf,
+                    &[("page", &page.to_string()), ("pages", &pages.to_string())],
+                );
                 text_pt(
                     &mut content,
                     width - MARGIN,

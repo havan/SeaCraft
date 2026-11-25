@@ -75,6 +75,12 @@ impl Window {
             .unwrap_or_default();
     }
 
+    /// A command shortcut as the app labels it: "Ctrl+N" here, "⌘N" on a Mac.
+    fn shortcut(&self, key: egui::Key) -> String {
+        self.ctx
+            .format_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key))
+    }
+
     fn click(&mut self, label: &str) {
         let rect = self
             .widgets
@@ -322,7 +328,8 @@ fn viewports_orientation_model_menu_and_dialogs_render_in_turkish() {
 
     w.click("Dosya");
     w.click("Yeni");
-    w.click("Tasarım… Ctrl+N");
+    let label = format!("Tasarım… {}", w.shortcut(egui::Key::N));
+    w.click(&label);
     assert!(w.shows("Kaydedilmemiş değişiklikler"));
     w.click("Kaydetmeden devam et");
     if let Some(d) = w.app.new_design_mut() {
@@ -741,7 +748,8 @@ fn turkish_example_picker_and_design_report_export() {
     let mut empty = App::headless_empty();
     empty.set_locale(Locale::Tr);
     let mut w_empty = Window::with_app(empty, egui::vec2(1600.0, 1000.0));
-    w_empty.click("Yeni tasarım… Ctrl+N");
+    let label = format!("Yeni tasarım… {}", w_empty.shortcut(egui::Key::N));
+    w_empty.click(&label);
     w_empty.click("Örnek");
     for expected in [
         "10 m gezi yatı",

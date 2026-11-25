@@ -3561,19 +3561,25 @@ impl App {
             self.log(Level::Warning, msg);
             return Ok(());
         }
-        let mut msg = format!("saved {}", path.display());
+        let tr = self.tr();
+        let path_s = path.display().to_string();
+        let mut key = seacraft_core::i18n::Key::LogSaved;
         if !self.project.is_empty() || sidecar.exists() {
             if let Err(e) = self
                 .project
                 .validate()
                 .and_then(|()| self.project.save(&sidecar))
             {
-                let msg = format!("saved {}, but {e}", path.display());
+                let msg = tr.fmt(
+                    seacraft_core::i18n::Key::LogSavedProjectFailed,
+                    &[("path", &path_s), ("error", &e.to_string())],
+                );
                 self.log(Level::Error, msg.clone());
                 return Err(msg);
             }
-            msg.push_str(" + project");
+            key = seacraft_core::i18n::Key::LogSavedWithProject;
         }
+        let msg = tr.fmt(key, &[("path", &path_s)]);
         self.dirty = false;
         self.saved_state = Some((text, self.project.clone()));
         self.autosave.note_clean();
@@ -3934,7 +3940,10 @@ impl App {
         // Each action's typed result decides: the dialog stays open on the
         // error it returned (also logged), and closes on success.
         let result = match dialog.kind {
-            DialogKind::Open => self.open_model(&path).map_err(|e| e.to_string()),
+            DialogKind::Open => {
+                let tr = self.tr();
+                self.open_model(&path).map_err(|e| e.render(tr))
+            }
             DialogKind::SaveAs => self.write_model(&path),
             DialogKind::Export(kind) => self.write_export(kind, &path),
             DialogKind::Report => self.start_report(&path),
@@ -6695,15 +6704,26 @@ impl App {
         };
         let project = self.project.clone();
         let path = path.to_path_buf();
-        self.set_status(format!("writing report {}…", path.display()));
+        let tr = self.tr();
+        self.set_status(tr.fmt(
+            seacraft_core::i18n::Key::StatusReportWriting,
+            &[("path", &path.display().to_string())],
+        ));
         let target = path.clone();
         let job = Job::spawn(self.revision, move || {
             // Measuring the waterline, when it comes to that, is slow: here, off the window.
             opts.waves = waves.map(|w| w.into_report(&surface, &opts));
             seacraft_core::report::design_report_with_project(&surface, &opts, &project).and_then(
                 |html| {
-                    seacraft_core::io::write_atomic(&target, html)
-                        .map_err(|e| format!("cannot write {}: {e}", target.display()))
+                    seacraft_core::io::write_atomic(&target, html).map_err(|e| {
+                        tr.fmt(
+                            seacraft_core::i18n::Key::LogCannotWrite,
+                            &[
+                                ("path", &target.display().to_string()),
+                                ("error", &e.to_string()),
+                            ],
+                        )
+                    })
                 },
             )
         });
@@ -6716,15 +6736,23 @@ impl App {
         let Some((path, job)) = &self.report_job else {
             return;
         };
+        use seacraft_core::i18n::Key;
+        let tr = self.tr();
         let (level, msg) = match job.poll() {
             crate::jobs::Poll::Running => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
                 return;
             }
-            crate::jobs::Poll::Done(()) => {
-                (Level::Info, format!("wrote report {}", path.display()))
+            crate::jobs::Poll::Done(()) => (
+                Level::Info,
+                tr.fmt(
+                    Key::LogReportWritten,
+                    &[("path", &path.display().to_string())],
+                ),
+            ),
+            crate::jobs::Poll::Failed(e) => {
+                (Level::Error, tr.fmt(Key::LogReportFailed, &[("error", &e)]))
             }
-            crate::jobs::Poll::Failed(e) => (Level::Error, format!("report failed: {e}")),
         };
         self.log(level, msg);
         self.report_job = None;

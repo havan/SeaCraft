@@ -4195,7 +4195,7 @@ fn cmd_templates(a: TemplatesArgs, tr: Tr) -> Result<()> {
         };
         println!(
             "{:<12} {:>8} {:>18.0} {:>8} {:>11.1}",
-            row.sheet,
+            row.sheet.render(tr),
             x,
             row.half_breadth_m * 1000.0,
             face,
@@ -4239,7 +4239,10 @@ fn cmd_templates(a: TemplatesArgs, tr: Tr) -> Result<()> {
         println!("{}", tr.s(Key::CliTemplatesNoSkin));
     }
     for warning in &set.warnings {
-        eprintln!("{}", tr.fmt(Key::CliCommonWarning, &[("message", warning)]));
+        eprintln!(
+            "{}",
+            tr.fmt(Key::CliCommonWarning, &[("message", &warning.render(tr))])
+        );
     }
     if !missing.is_empty() {
         println!(
@@ -5096,7 +5099,8 @@ fn cmd_heel(a: HeelArgs, tr: Tr) -> Result<()> {
         .enumerate()
         .map(|(i, w)| {
             heel::parse_weight(w).map(|mut w| {
-                w.name = tr.fmt(Key::CliHeelWeightName, &[("n", &(i + 1).to_string())]);
+                // English in `--json` whatever `--lang`; the rows below print it translated.
+                w.name = format!("Weight {}", i + 1);
                 w
             })
         })
@@ -5172,13 +5176,14 @@ fn cmd_heel(a: HeelArgs, tr: Tr) -> Result<()> {
     };
     let row = |label: &str, value: String| println!("  {label:<14} {value}");
     row(tr.s(Key::CliHeelRowStart), cond(&r.start));
-    for w in &r.weights {
+    for (i, w) in r.weights.iter().enumerate() {
+        let name = tr.fmt(Key::CliHeelWeightName, &[("n", &(i + 1).to_string())]);
         row(
             tr.s(Key::CliHeelRowWeight),
             tr.fmt(
                 Key::CliHeelWeightVal,
                 &[
-                    ("name", &w.name),
+                    ("name", &name),
                     ("mass", &format!("{:.3}", w.mass_t)),
                     ("x", &format!("{:.3}", w.x)),
                     ("y", &format!("{:+.3}", w.y)),

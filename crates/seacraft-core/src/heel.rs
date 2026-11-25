@@ -20,6 +20,7 @@
 //! a positive heel immerses starboard, a positive lever rights the hull.
 
 use crate::hydro::{Hull, HydroOptions};
+use crate::i18n::{Key, Msg};
 use crate::loading::{LoadingResult, WeightItem};
 use crate::math::{Plane, Vec3};
 use crate::stability::{righting_lever, solve_waterline, StabilityCondition};
@@ -220,7 +221,7 @@ pub enum Equilibrium {
     CannotFloat,
     /// No equilibrium could be determined (for example an unreachable LCG or a
     /// solver gap across a crossing).
-    Unresolved { reason: String },
+    Unresolved { reason: Msg },
 }
 
 impl Equilibrium {
@@ -254,7 +255,6 @@ impl Equilibrium {
 
     /// Localized form of [`Equilibrium::describe`].
     pub fn describe_tr(&self, displacement_t: f64, tr: crate::i18n::Tr) -> String {
-        use crate::i18n::Key;
         match self {
             Self::Stable { state } => {
                 let mut words = heel_words_tr(state.heel_deg, tr);
@@ -284,7 +284,7 @@ impl Equilibrium {
                 Key::HeelCoreCannotFloat,
                 &[("disp", &format!("{displacement_t:.1}"))],
             ),
-            Self::Unresolved { reason } => reason.clone(),
+            Self::Unresolved { reason } => reason.render(tr),
         }
     }
 }
@@ -297,7 +297,6 @@ pub fn heel_words(heel_deg: f64) -> String {
 
 /// Localized form of [`heel_words`].
 pub fn heel_words_tr(heel_deg: f64, tr: crate::i18n::Tr) -> String {
-    use crate::i18n::Key;
     if heel_deg.abs() < 0.05 {
         tr.s(Key::HeelCoreFloatsUpright).to_string()
     } else {
@@ -414,7 +413,7 @@ pub struct HeelReport {
     /// The state at the requested heel, when one was asked for and floats.
     pub at_heel: Option<HeelState>,
     /// Why the start is doubtful (a loading condition's warnings).
-    pub warnings: Vec<crate::i18n::Msg>,
+    pub warnings: Vec<Msg>,
 }
 
 /// The equilibrium of `start` plus `weights`, and the state at `at_heel`.
@@ -437,9 +436,7 @@ pub fn report(
     };
     let at_lid = at_heel.as_ref().is_some_and(|s| s.lid_submerged);
     let warnings = if eq_lid || at_lid {
-        vec![crate::i18n::Msg::new(
-            crate::i18n::Key::HeelCoreLidSubmergedWarning,
-        )]
+        vec![Msg::new(crate::i18n::Key::HeelCoreLidSubmergedWarning)]
     } else {
         Vec::new()
     };
@@ -468,7 +465,7 @@ const UPRIGHT_LEVER_M: f64 = 1e-9;
 enum SideSearch {
     Found(HeelState),
     Upright,
-    Unresolved(String),
+    Unresolved(Msg),
     None,
 }
 
@@ -564,7 +561,7 @@ pub fn equilibrium(
             return Equilibrium::CannotFloat;
         }
         return Equilibrium::Unresolved {
-            reason: "no free-trim solution found".into(),
+            reason: Msg::new(Key::HeelCoreUnresolvedNoSolution),
         };
     }
 
@@ -600,7 +597,7 @@ pub fn equilibrium(
     let Some(u) = upright else {
         if mass.tcg().abs() <= SYMMETRIC_TCG_M {
             return Equilibrium::Unresolved {
-                reason: "no free-trim solution upright".into(),
+                reason: Msg::new(Key::HeelCoreUnresolvedNoSolutionUpright),
             };
         }
         let side = mass.tcg().signum();
@@ -608,7 +605,7 @@ pub fn equilibrium(
         if let Some(Some(s1)) = slots.first() {
             if s1.lever_m * side >= 0.0 {
                 return Equilibrium::Unresolved {
-                    reason: "no free-trim waterline near upright".into(),
+                    reason: Msg::new(Key::HeelCoreUnresolvedNearUpright),
                 };
             }
         }
@@ -641,10 +638,10 @@ pub fn equilibrium(
     let loll_on_side = |side: f64| -> SideSearch {
         let slots = side_slots(side);
         let Some(&first) = slots.first() else {
-            return SideSearch::Unresolved("no free-trim waterline near upright".into());
+            return SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedNearUpright));
         };
         let Some(s1) = first else {
-            return SideSearch::Unresolved("no free-trim waterline near upright".into());
+            return SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedNearUpright));
         };
         if s1.lever_m * side < 0.0 {
             return walk_side(hull, mass, base, &slots[1..], side, Some(s1));
@@ -656,7 +653,7 @@ pub fn equilibrium(
         while h.abs() >= 1e-4 {
             let hint = outer.trim_m.unwrap_or(0.0);
             let Some(s) = heel_state(hull, mass, h, base, hint) else {
-                return SideSearch::Unresolved("no free-trim waterline near upright".into());
+                return SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedNearUpright));
             };
             if s.lever_m * side < 0.0 {
                 if outer.lever_m == 0.0 {
@@ -669,9 +666,7 @@ pub fn equilibrium(
                 };
                 return match refine(hull, mass, base, lo, hi) {
                     Some(state) => SideSearch::Found(state),
-                    None => {
-                        SideSearch::Unresolved("no free-trim waterline while refining loll".into())
-                    }
+                    None => SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedRefiningLoll)),
                 };
             }
             outer = s;
@@ -734,18 +729,16 @@ fn walk_side(
             let bracket = lo.lever_m < 0.0 && hi.lever_m >= 0.0;
             if exact_zero || bracket {
                 if saw_gap {
-                    return SideSearch::Unresolved(
-                        "no free-trim waterline across the equilibrium crossing".into(),
-                    );
+                    return SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedCrossing));
                 }
                 if exact_zero {
                     return SideSearch::Found(cur.clone());
                 }
                 return match refine(hull, mass, base, lo, hi) {
                     Some(state) => SideSearch::Found(state),
-                    None => SideSearch::Unresolved(
-                        "no free-trim waterline while refining equilibrium".into(),
-                    ),
+                    None => {
+                        SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedRefiningEquilibrium))
+                    }
                 };
             }
         }
@@ -753,9 +746,7 @@ fn walk_side(
         saw_gap = false;
     }
     if saw_gap || prev.is_none() {
-        return SideSearch::Unresolved(
-            "no free-trim waterline across the remaining heel range".into(),
-        );
+        return SideSearch::Unresolved(Msg::new(Key::HeelCoreUnresolvedRemainingRange));
     }
     SideSearch::None
 }
@@ -1034,7 +1025,7 @@ mod tests {
         );
         assert_eq!(
             Equilibrium::Unresolved {
-                reason: "no free-trim solution found".into()
+                reason: Msg::new(Key::HeelCoreUnresolvedNoSolution)
             }
             .describe(42.0),
             "no free-trim solution found"
@@ -1135,7 +1126,7 @@ mod tests {
         let (hull, base, mass) = box_hull(true, 0.0, Some(11.0));
         let eq = equilibrium(&hull, &mass, &base, None);
         assert!(
-            matches!(&eq, Equilibrium::Unresolved { reason } if reason.contains("free-trim")),
+            matches!(&eq, Equilibrium::Unresolved { reason } if reason.to_string().contains("free-trim")),
             "got {eq:?}"
         );
         assert_eq!(eq.heel_for_side(1.0), None);
@@ -1437,10 +1428,22 @@ mod tests {
         );
         assert_eq!(
             Equilibrium::Unresolved {
-                reason: "custom".into()
+                reason: "custom".to_owned().into()
             }
             .describe_tr(10.0, tr),
             "custom"
+        );
+        // A built-in reason is translated; JSON keeps it in English.
+        let unresolved = Equilibrium::Unresolved {
+            reason: Msg::new(Key::HeelCoreUnresolvedNearUpright),
+        };
+        assert_eq!(
+            unresolved.describe_tr(10.0, tr),
+            "dik konuma yakın serbest trim su hattı yok"
+        );
+        assert_eq!(
+            serde_json::to_value(&unresolved).unwrap()["reason"],
+            "no free-trim waterline near upright"
         );
         assert!(!lid_submerged_warning(tr).is_empty());
         assert_eq!(lid_submerged_warning(en), LID_SUBMERGED_WARNING);

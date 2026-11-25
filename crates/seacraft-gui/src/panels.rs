@@ -7443,7 +7443,7 @@ pub enum TemplatesStatus<'a> {
     Ready {
         pages: usize,
         sheets: usize,
-        warnings: &'a [String],
+        warnings: &'a [seacraft_core::i18n::Msg],
     },
     /// The current options or model give no patterns; the reason.
     Failed(&'a str),
@@ -7702,7 +7702,7 @@ pub fn templates_options_tr(
                     .max_height(120.0)
                     .show(ui, |ui| {
                         for warning in warnings.iter() {
-                            ui.colored_label(theme::WARN, warning);
+                            ui.colored_label(theme::WARN, warning.render(tr));
                         }
                     });
             }

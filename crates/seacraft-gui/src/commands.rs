@@ -2079,7 +2079,7 @@ pub struct TemplatesResult {
     pub format: seacraft_core::templates::Format,
     pub pages: Option<usize>,
     pub rows: Vec<seacraft_core::templates::TemplateRow>,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<seacraft_core::i18n::Msg>,
     pub missing: Vec<char>,
 }
 

@@ -234,6 +234,7 @@ pub const CASING_ALLOW: &str = "i18n-casing: not translated";
 /// on the line before.
 pub fn casing_violations(path: &str, text: &str) -> Vec<String> {
     let lines: Vec<&str> = text.lines().collect();
+    let code_lines = code_only(text);
     let mut out = Vec::new();
     let mut in_test_mod = false;
     for (i, line) in lines.iter().enumerate() {
@@ -250,7 +251,7 @@ pub fn casing_violations(path: &str, text: &str) -> Vec<String> {
                 continue;
             }
         }
-        let code = line.split("//").next().unwrap_or("");
+        let code = code_lines.get(i).map_or("", String::as_str);
         if !(code.contains(".to_uppercase()") || code.contains(".to_lowercase()")) {
             continue;
         }
@@ -264,6 +265,156 @@ pub fn casing_violations(path: &str, text: &str) -> Vec<String> {
                 i + 1
             ));
         }
+    }
+    out
+}
+
+/// `text` line by line with the contents of comments, string literals and character literals
+/// blanked, so a search finds only code: `"https://"` does not end a line, and `"a
+/// .to_uppercase() call"` is not one. Raw strings (`r#"…"#`) and strings over several lines are
+/// followed; a quote after a letter or digit (`'a` in a lifetime) is not a character literal.
+fn code_only(text: &str) -> Vec<String> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Code,
+        Line,
+        Block(usize),
+        Str,
+        Raw(usize),
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = vec![String::new()];
+    let mut state = State::Code;
+    let mut i = 0;
+    let push = |out: &mut Vec<String>, c: char| {
+        if c == '\n' {
+            out.push(String::new());
+        } else {
+            out.last_mut().expect("never empty").push(c);
+        }
+    };
+    let at = |i: usize, s: &str| {
+        s.chars()
+            .enumerate()
+            .all(|(k, c)| chars.get(i + k) == Some(&c))
+    };
+    while i < chars.len() {
+        let c = chars[i];
+        match state {
+            State::Code => {
+                let ident_before = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+                // b"…", br"…" and b'…': a byte prefix, not the end of a name.
+                let byte_prefix = i > 0
+                    && chars[i - 1] == 'b'
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                if at(i, "//") {
+                    state = State::Line;
+                    i += 2;
+                    continue;
+                }
+                if at(i, "/*") {
+                    state = State::Block(1);
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    push(&mut out, '"');
+                    state = State::Str;
+                    i += 1;
+                    continue;
+                }
+                // r"…", r#"…"#, br"…": a raw string, which ends at `"` and as many `#`s.
+                let raw_start = c == 'r' && (!ident_before || byte_prefix);
+                if raw_start {
+                    let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
+                    if chars.get(i + 1 + hashes) == Some(&'"') {
+                        out.last_mut().expect("never empty").push('"');
+                        state = State::Raw(hashes);
+                        i += hashes + 2;
+                        continue;
+                    }
+                }
+                if c == '\'' && (!ident_before || byte_prefix) {
+                    // 'x', '\n', '\u{…}' are literals; 'a without a closing quote is a lifetime.
+                    let end = if chars.get(i + 1) == Some(&'\\') {
+                        chars[i + 2..]
+                            .iter()
+                            .position(|&q| q == '\'')
+                            .map(|p| i + 2 + p)
+                    } else if chars.get(i + 2) == Some(&'\'') {
+                        Some(i + 2)
+                    } else {
+                        None
+                    };
+                    if let Some(end) = end {
+                        out.last_mut().expect("never empty").push_str("''");
+                        i = end + 1;
+                        continue;
+                    }
+                }
+                push(&mut out, c);
+            }
+            State::Line => {
+                if c == '\n' {
+                    push(&mut out, c);
+                    state = State::Code;
+                }
+            }
+            State::Block(depth) => {
+                if at(i, "*/") {
+                    state = if depth == 1 {
+                        State::Code
+                    } else {
+                        State::Block(depth - 1)
+                    };
+                    i += 2;
+                    continue;
+                }
+                if at(i, "/*") {
+                    state = State::Block(depth + 1);
+                    i += 2;
+                    continue;
+                }
+                if c == '\n' {
+                    push(&mut out, c);
+                }
+            }
+            State::Str => {
+                if c == '\\' {
+                    // An escaped character, or a line continuation: keep the line count.
+                    if chars.get(i + 1) == Some(&'\n') {
+                        push(&mut out, '\n');
+                    }
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    push(&mut out, '"');
+                    state = State::Code;
+                } else if c == '\n' {
+                    push(&mut out, c);
+                }
+            }
+            State::Raw(hashes) => {
+                if c == '"'
+                    && chars[i + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|&&h| h == '#')
+                        .count()
+                        == hashes
+                {
+                    push(&mut out, '"');
+                    state = State::Code;
+                    i += hashes + 1;
+                    continue;
+                }
+                if c == '\n' {
+                    push(&mut out, c);
+                }
+            }
+        }
+        i += 1;
     }
     out
 }
@@ -465,6 +616,26 @@ mod tests {
         assert_eq!(bad.len(), 2, "{bad:?}");
         assert!(bad[0].starts_with("x.rs:2:"), "{bad:?}");
         assert!(bad[1].starts_with("x.rs:17:"), "{bad:?}");
+    }
+
+    #[test]
+    fn casing_gate_reads_strings_and_comments_as_text() {
+        // A `//` inside a string does not hide the call after it.
+        let url = "fn a(t: &str) -> String {\n    format!(\"https://{}\", t.to_uppercase())\n}\n";
+        let bad = casing_violations("x.rs", url);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].starts_with("x.rs:2:"), "{bad:?}");
+        // Words in a string, a raw string, a block comment or a char-literal quote are not calls.
+        let text = "fn b() -> &'static str {\n    \"Avoid .to_uppercase()\"\n}\n\
+                    const R: &str = r#\"say \".to_lowercase()\" \"#;\n\
+                    /* .to_uppercase() */ const Q: char = '\"'; const B: u8 = b'\"';\n\
+                    const M: &str = \"one \\\n    .to_lowercase() two\";\n";
+        assert_eq!(casing_violations("x.rs", text), Vec::<String>::new());
+        // Line numbers survive a string over several lines.
+        let after = "const M: &str = \"a\n.to_lowercase()\nb\";\nfn c(t: &str) -> String { t.to_lowercase() }\n";
+        let bad = casing_violations("x.rs", after);
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert!(bad[0].starts_with("x.rs:4:"), "{bad:?}");
     }
 
     fn s(v: &[&str]) -> Vec<String> {

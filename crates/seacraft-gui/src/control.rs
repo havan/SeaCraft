@@ -940,7 +940,7 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect::<Vec<_>>());
-        v["warnings"] = json!(seacraft_core::panels::stale_sheet_note_tr(&stale, tr)
+        v["warnings"] = json!(seacraft_core::panels::stale_sheet_note(&stale)
             .into_iter()
             .collect::<Vec<_>>());
         v["missing_characters"] = json!(missing);

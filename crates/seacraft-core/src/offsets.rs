@@ -333,7 +333,7 @@ pub fn pdf_tr(
     imperial: bool,
     tr: Tr,
 ) -> Result<crate::pdf::Document, String> {
-    use crate::pdf::{add_table, Pdf, Table};
+    use crate::pdf::{add_table_tr, Pdf, Table};
     use crate::units::{ft_in_8ths, millimetres};
     if table.stations.is_empty() {
         return Err(tr.s(Key::OffsetsErrEmpty).into());
@@ -388,7 +388,7 @@ pub fn pdf_tr(
             Key::OffsetsPdfHalfBreadthsTitle,
             &[("title", title), ("unit", unit)],
         );
-        add_table(
+        add_table_tr(
             &mut doc,
             &Table {
                 title: &half_breadths,
@@ -398,6 +398,7 @@ pub fn pdf_tr(
                 footer,
                 repeat: 2,
             },
+            tr,
         );
 
         let mut header = vec![station_col.to_owned(), x_head.to_owned()];
@@ -420,7 +421,7 @@ pub fn pdf_tr(
             Key::OffsetsPdfButtocksTitle,
             &[("title", title), ("unit", unit)],
         );
-        add_table(
+        add_table_tr(
             &mut doc,
             &Table {
                 title: &buttocks,
@@ -430,6 +431,7 @@ pub fn pdf_tr(
                 footer,
                 repeat: 2,
             },
+            tr,
         );
     }
     doc.finish()
@@ -739,6 +741,18 @@ mod tests {
         }
         let second = crate::pdf::page_text(&doc.bytes, 1);
         assert!(second.iter().any(|t| t == "B/2"), "{second:?}");
+    }
+
+    #[test]
+    fn page_markers_follow_the_document_language() {
+        let table = box_table(40, &[1.0], &[1.0]);
+        let en = pdf(&table, "Box", false).unwrap();
+        let text = crate::pdf::page_text(&en.bytes, 0);
+        assert!(text.iter().any(|t| t == "Page 1 of 2"), "{text:?}");
+        let tr = pdf_tr(&table, "Box", false, Tr::new(Locale::Tr)).unwrap();
+        let text = crate::pdf::page_text(&tr.bytes, 1);
+        assert!(text.iter().any(|t| t == "Sayfa 2 / 2"), "{text:?}");
+        assert!(!text.iter().any(|t| t.starts_with("Page ")), "{text:?}");
     }
 
     #[test]

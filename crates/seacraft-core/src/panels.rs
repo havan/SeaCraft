@@ -1804,7 +1804,7 @@ pub fn add_offsets_tables_tr(
     imperial: bool,
     tr: Tr,
 ) -> Result<usize, String> {
-    use crate::pdf::{add_table, Table};
+    use crate::pdf::{add_table_tr, Table};
     use crate::units::{ft_in_8ths, millimetres};
     if all.is_empty() {
         return Err(tr.s(Key::PanelsOffsetsErrEmpty).into());
@@ -1848,7 +1848,7 @@ pub fn add_offsets_tables_tr(
                 Key::PanelsOffsetsTableTitle,
                 &[("title", title), ("panel", &o.panel), ("unit", unit)],
             );
-            pages += add_table(
+            pages += add_table_tr(
                 doc,
                 &Table {
                     title: &heading,
@@ -1858,6 +1858,7 @@ pub fn add_offsets_tables_tr(
                     footer,
                     repeat: 1,
                 },
+                tr,
             );
         }
     }
