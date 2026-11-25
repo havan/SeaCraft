@@ -9,6 +9,13 @@ only.
     cargo build --release --bin seacraft
     python3 site/build.py --seacraft target/release/seacraft --out site/_site
 
+The page is written once per language in `LANGS`, from `site/src/index.html` and the strings in
+`site/locales/`. Whatever seacraft says in words (a hull's description, where it heels, a warning) is
+taken in each language from seacraft itself, run with `--lang`; its `--json` stays English.
+
+`--program-root` names the checkout the program, the example hulls and the program's catalogs come from,
+when it is not this one: the Pages workflow builds the page from main with a release's program.
+
 A hull already in the output folder is kept when its fingerprint still matches (see `hull_key`), so
 a change to the page alone rebuilds in seconds. A clean folder, as in CI, always builds every hull.
 """
@@ -27,34 +34,117 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = Path(__file__).resolve().parent / "src"
 FONTS = Path(__file__).resolve().parent / "fonts"
+SITE_LOCALES = Path(__file__).resolve().parent / "locales"
+# The checkout the program, the example hulls and the program's catalogs come from; see --program-root.
+PROGRAM = ROOT
+
+# The page's languages, English first: it is the page at the site's root, the others in a folder each.
+LANGS = ("en", "tr")
 
 # Holds a finished hull's fingerprint. Written last, so a hull cut short by a failure has none.
 KEY_FILE = ".build-key"
 
 # Page order. `resistance` picks the method whose range of hulls this example falls in, and `motions`
-# is off for the planing hulls, because strip theory does not describe a boat on the plane.
+# is off for the planing hulls, because strip theory does not describe a boat on the plane. Each hull's
+# label on the picker is `hull.<id>` in site/locales, and each method's name `method.<resistance>`.
 HULLS = [
-    {"id": "trawler-22m", "label": "Trawler, 22 m", "resistance": "holtrop", "motions": True},
-    {"id": "yacht-10m", "label": "Yacht, 10 m", "resistance": "dsyhs", "motions": True},
-    {"id": "kayik-9m", "label": "Kayık, 9 m", "resistance": "holtrop", "motions": True},
-    {"id": "runabout-6m", "label": "Runabout, 6.5 m", "resistance": "savitsky", "motions": False},
-    {"id": "skiff-4m", "label": "Plywood skiff, 4.3 m", "resistance": "savitsky", "motions": False},
-    {"id": "container-230m", "label": "Container ship, 230 m", "resistance": "holtrop", "motions": True},
-    {"id": "wigley", "label": "Wigley hull, 10 m", "resistance": "holtrop", "motions": True},
+    {"id": "trawler-22m", "resistance": "holtrop", "motions": True},
+    {"id": "yacht-10m", "resistance": "dsyhs", "motions": True},
+    {"id": "kayik-9m", "resistance": "holtrop", "motions": True},
+    {"id": "runabout-6m", "resistance": "savitsky", "motions": False},
+    {"id": "skiff-4m", "resistance": "savitsky", "motions": False},
+    {"id": "container-230m", "resistance": "holtrop", "motions": True},
+    {"id": "wigley", "resistance": "holtrop", "motions": True},
 ]
-RESISTANCE_NAMES = {
-    "holtrop": "Holtrop and Mennen",
-    "dsyhs": "the Delft yacht series",
-    "savitsky": "Savitsky",
-}
 
 
-def run(seacraft, *args, cwd=None):
-    """Run seacraft and return stdout, failing the build on any error."""
+def run(seacraft, *args, cwd=None, stderr=False):
+    """Run seacraft and return stdout (and stderr after it, when asked), failing the build on any error."""
     done = subprocess.run([str(seacraft), *map(str, args)], capture_output=True, encoding="utf-8", cwd=cwd)
     if done.returncode != 0:
         sys.exit(f"seacraft {' '.join(map(str, args))} failed:\n{done.stderr}")
-    return done.stdout
+    return done.stdout + done.stderr if stderr else done.stdout
+
+
+# --- seacraft's words in each language ------------------------------------------------------------
+#
+# `--json` is English whatever `--lang` says, so the other languages come from the same command run
+# without `--json`: its lines are matched against the program's own catalog, never a copy kept here.
+
+_program_catalogs = {}
+
+
+def program_catalog(lang):
+    """The program's strings in `lang`, from locales/ in the program's checkout."""
+    if lang not in _program_catalogs:
+        path = PROGRAM / "locales" / f"{lang}.json"
+        try:
+            _program_catalogs[lang] = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as error:
+            sys.exit(f"cannot read the program's {lang} strings: {error}")
+    return _program_catalogs[lang]
+
+
+def program_string(lang, key):
+    text = program_catalog(lang).get(key)
+    if text is None:
+        sys.exit(f"the program's {lang} catalog has no {key}")
+    return text
+
+
+def template_pattern(template):
+    """A regular expression matching a whole line printed from a catalog template, one group per placeholder."""
+    parts = re.split(r"\{[a-z_]+\}", template)
+    return re.compile("^" + "(.*)".join(re.escape(p) for p in parts) + "$")
+
+
+# The templates seacraft prints a warning with, in the human-readable output of the commands the page runs.
+WARNING_KEYS = ("cli.common.warning", "cli.common.warning_indent", "cli.heel.warning")
+
+
+def warnings_in(text, lang):
+    """The warnings in a command's human-readable output, in the order it printed them."""
+    patterns = [template_pattern(program_string(lang, key)) for key in WARNING_KEYS]
+    found = []
+    for line in text.splitlines():
+        for pattern in patterns:
+            match = pattern.match(line)
+            if match:
+                found.append(match.group(1).strip())
+                break
+    return found
+
+
+def settles_in(text, lang):
+    """Where `seacraft heel` says the hull settles: the text of its `settles` row."""
+    label = program_string(lang, "cli.heel.row_settles")
+    for line in text.splitlines():
+        if line.strip().startswith(label + " "):
+            return line.strip()[len(label):].strip()
+    sys.exit(f"no {label!r} row in seacraft heel's {lang} output")
+
+
+def said(seacraft, english, *args, cwd=None, settles=False):
+    """What one command says, in every language: `{lang: value}`.
+
+    `english` is the value from the command's `--json`. The other languages run the same command without
+    `--json` and read the warnings (or, with `settles`, where the hull settles) from what it prints. The
+    build stops when a language finds a different number of warnings, rather than pairing the wrong ones.
+    """
+    texts = {"en": english}
+    for lang in LANGS[1:]:
+        printed = run(seacraft, "--lang", lang, *args, cwd=cwd, stderr=True)
+        if settles:
+            texts[lang] = settles_in(printed, lang)
+            continue
+        found = warnings_in(printed, lang)
+        if len(found) != len(english):
+            sys.exit(
+                f"seacraft {' '.join(map(str, args))}: {len(english)} warnings in --json, "
+                f"{len(found)} in the {lang} output:\n{printed}"
+            )
+        texts[lang] = found
+    return texts
 
 
 def release_version(cargo_toml):
@@ -321,12 +411,12 @@ def warning_text(data):
 def resistance_curve(seacraft, hull_id, hull_dir, method, speeds):
     joined = ",".join(f"{s:g}" for s in speeds)
     if method == "savitsky":
-        args = ("planing", f"{hull_id}.fef", "--speeds", joined, "--json")
+        args = ("planing", f"{hull_id}.fef", "--speeds", joined)
         command = shown(hull_id, "planing", "--speeds", joined)
     else:
-        args = ("resistance", f"{hull_id}.fef", "--method", method, "--speeds", joined, "--json")
+        args = ("resistance", f"{hull_id}.fef", "--method", method, "--speeds", joined)
         command = shown(hull_id, "resistance", "--method", method, "--speeds", joined)
-    data = json.loads(run(seacraft, *args, cwd=hull_dir))
+    data = json.loads(run(seacraft, *args, "--json", cwd=hull_dir))
     points = []
     for row in data["speeds"]:
         newtons = row.get("rt_n", row.get("resistance_n"))
@@ -334,21 +424,21 @@ def resistance_curve(seacraft, hull_id, hull_dir, method, speeds):
             points.append([row["speed_kn"], round(newtons / 1000, 3)])
     return {
         "command": command,
-        "method": RESISTANCE_NAMES[method],
+        "method": method,
         "points": points,
-        "warnings": warning_text(data),
+        "warnings": said(seacraft, warning_text(data), *args, cwd=hull_dir),
     }
 
 
 def motions(seacraft, hull_id, hull_dir, draft, kg):
-    args = ("seakeeping", f"{hull_id}.fef", "--draft", draft, "--kg", kg, "--points", 40, "--json")
-    data = json.loads(run(seacraft, *args, cwd=hull_dir))
+    args = ("seakeeping", f"{hull_id}.fef", "--draft", draft, "--kg", kg, "--points", 40)
+    data = json.loads(run(seacraft, *args, "--json", cwd=hull_dir))
     rows = sorted(data["frequencies"], key=lambda f: f["lambda_over_l"])
     return {
         "command": shown(hull_id, "seakeeping", "--draft", f"{draft:g}", "--kg", f"{kg:g}", "--points", 40),
         "heave": [[round(f["lambda_over_l"], 3), round(f["heave_amp"], 4)] for f in rows],
         "pitch": [[round(f["lambda_over_l"], 3), round(f["pitch_amp"], 4)] for f in rows],
-        "warnings": warning_text(data),
+        "warnings": said(seacraft, warning_text(data), *args, cwd=hull_dir),
     }
 
 
@@ -421,8 +511,11 @@ def heel_steps(seacraft, hull_id, hull_dir, kg, beam, stations):
     for k in range(HEEL_POSITIONS):
         y = round(0.4 * beam * k / (HEEL_POSITIONS - 1), 3)
         weight = f"{mass:g}@{nums(x, y, z, digits=3)}"
-        result = json.loads(run(seacraft, "heel", fef, "--kg", kg, "--weight", weight, "--json", cwd=hull_dir))
+        args = ("heel", fef, "--kg", kg, "--weight", weight)
+        result = json.loads(run(seacraft, *args, "--json", cwd=hull_dir))
         step = heel_step(result, y)
+        step["summary"] = said(seacraft, step["summary"], *args, cwd=hull_dir, settles=True)
+        step["warnings"] = said(seacraft, step["warnings"], *args, cwd=hull_dir)
         step["command"] = shown(hull_id, "heel", "--kg", f"{kg:g}", "--weight", weight)
         steps.append(step)
     return {
@@ -466,8 +559,9 @@ def wave_steps(seacraft, hull_id, hull_dir, length):
         args = ("--fn", f"{f:.2f}", "--spacing", f"{spacing:g}", "-o", name)
         result = json.loads(run(seacraft, "waves", f"../{fef}", *args, "--json", cwd=folder))
         if not wave_fits([result]):
+            reason = said(seacraft, warning_text(result), "waves", f"../{fef}", *args, cwd=folder)
             shutil.rmtree(folder)
-            return {"fits": False, "steps": [], "reason": list(dict.fromkeys(warning_text(result)))}
+            return {"fits": False, "steps": [], "reason": {lang: list(dict.fromkeys(r)) for lang, r in reason.items()}}
         shrink_png(hull_dir / image)
         steps.append(
             {
@@ -475,7 +569,9 @@ def wave_steps(seacraft, hull_id, hull_dir, length):
                 "image": image,
                 "size": list(result["grid_points"]),
                 "bytes": (hull_dir / image).stat().st_size,
-                "regime": result["regime"]["sentence"],
+                # The sentence for each language, from the program's catalog by the regime's key.
+                "regime": {"en": result["regime"]["sentence"]}
+                | {lang: program_string(lang, f"wave.regime.{result['regime']['key']}") for lang in LANGS[1:]},
                 "clip_m": round(result["max_abs_zeta_m"], 4),
                 "notes": result.get("notes") or [],
                 "warnings": warning_text(result),
@@ -520,8 +616,9 @@ def hull_key(seacraft, hull_id):
 
     A kept hull is therefore what a full build would write, and old numbers never pass as current.
     """
-    examples = ROOT / "examples"
-    return digest(seacraft, __file__, examples / f"{hull_id}.fef", examples / f"{hull_id}.seacraft.json")
+    examples = PROGRAM / "examples"
+    catalogs = [PROGRAM / "locales" / f"{lang}.json" for lang in LANGS]
+    return digest(seacraft, __file__, examples / f"{hull_id}.fef", examples / f"{hull_id}.seacraft.json", *catalogs)
 
 
 def hull_is_current(hull_dir, key):
@@ -544,21 +641,46 @@ def clear_output(out, keep_hulls):
             shutil.rmtree(item)
 
 
+def localized_file(name, lang):
+    """The file a language's page links to: `report.html` in English, `report.tr.html` in Turkish."""
+    if lang == LANGS[0]:
+        return name
+    stem, dot, suffix = name.rpartition(".")
+    return f"{stem}.{lang}{dot}{suffix}"
+
+
+def hull_name(description):
+    """A hull's name, as `seacraft example --list` begins its description: `name: what it is`."""
+    return description.partition(": ")[0].strip()
+
+
+def example_descriptions(seacraft):
+    """`{hull_id: {lang: description}}` from `seacraft example --list` in each language."""
+    listing = {}
+    for lang in LANGS:
+        for line in run(seacraft, "--lang", lang, "example", "--list").splitlines():
+            hull_id, _, rest = line.partition(" ")
+            listing.setdefault(hull_id, {})[lang] = rest.strip()
+    return listing
+
+
 def hull_data(out, hull_id):
     return json.loads((out / "hulls" / hull_id / "data.json").read_text(encoding="utf-8"))
 
 
-def build_hull(seacraft, hull, description, out):
+def build_hull(seacraft, hull, descriptions, out):
     hull_id = hull["id"]
     hull_dir = out / "hulls" / hull_id
     hull_dir.mkdir(parents=True)
     fef = hull_dir / f"{hull_id}.fef"
-    shutil.copy(ROOT / "examples" / f"{hull_id}.fef", fef)
-    shutil.copy(ROOT / "examples" / f"{hull_id}.seacraft.json", hull_dir)
+    shutil.copy(PROGRAM / "examples" / f"{hull_id}.fef", fef)
+    shutil.copy(PROGRAM / "examples" / f"{hull_id}.seacraft.json", hull_dir)
 
     project = json.loads((hull_dir / f"{hull_id}.seacraft.json").read_text(encoding="utf-8"))
     info = run(seacraft, "info", fef.name, cwd=hull_dir)
-    name = info.splitlines()[0].strip()
+    names = {lang: hull_name(text) for lang, text in descriptions.items()}
+    if names["en"] != info.splitlines()[0].strip():
+        sys.exit(f"{hull_id}: `seacraft example --list` no longer starts with the hull's name, {names['en']!r}")
     length, beam, draft = parse_info(info)
     if project.get("kg") is None:
         sys.exit(f"{hull_id}.seacraft.json has no kg, and the site will not assume one")
@@ -590,16 +712,16 @@ def build_hull(seacraft, hull, description, out):
 
     sac = json.loads(run(seacraft, "sac", fef.name, "--stations", 40, "--json", cwd=hull_dir))
 
-    # The documents a reader can open: SeaCraft's own files, unchanged.
-    run(seacraft, "report", fef.name, "-o", "report.html", cwd=hull_dir)
+    # The documents a reader can open: SeaCraft's own files, unchanged, in each language it writes them in.
+    for lang in LANGS:
+        run(seacraft, "--lang", lang, "report", fef.name, "-o", localized_file("report.html", lang), cwd=hull_dir)
+        run(seacraft, "--lang", lang, "linesplan", fef.name, "-o", localized_file("lines.svg", lang), cwd=hull_dir)
     run(seacraft, "export", fef.name, "-o", "viewer.html", cwd=hull_dir)
-    run(seacraft, "linesplan", fef.name, "-o", "lines.svg", cwd=hull_dir)
 
     data = {
         "id": hull_id,
-        "label": hull["label"],
-        "name": name,
-        "description": description,
+        "name": names,
+        "description": descriptions,
         "length": length,
         "beam": beam,
         "draft": draft,
@@ -625,10 +747,11 @@ def build_hull(seacraft, hull, description, out):
         "motions": motions(seacraft, hull_id, hull_dir, draft, kg) if hull["motions"] else None,
         "waves": wave_steps(seacraft, hull_id, hull_dir, length),
         "heel": heel_steps(seacraft, hull_id, hull_dir, kg, beam, lines["stations"]),
+        # The size of each file the page links to, by language where seacraft writes one per language.
         "files": {
-            "report": (hull_dir / "report.html").stat().st_size,
+            "report": {lang: (hull_dir / localized_file("report.html", lang)).stat().st_size for lang in LANGS},
+            "lines": {lang: (hull_dir / localized_file("lines.svg", lang)).stat().st_size for lang in LANGS},
             "viewer": (hull_dir / "viewer.html").stat().st_size,
-            "lines": (hull_dir / "lines.svg").stat().st_size,
             "fef": fef.stat().st_size,
         },
     }
@@ -643,17 +766,19 @@ BUILDER_HULL = "skiff-4m"
 BUILDER_NEST = "blanks"
 
 
-def builder_files(seacraft, out):
-    """The skiff's plywood panels nested onto sheets, as seacraft writes them, into `out/build`.
+def builder_files(seacraft, out, lang):
+    """The skiff's plywood panels nested onto sheets, as seacraft writes them in `lang`, into
+    `out/build/` for English and `out/build/<lang>/` for the others.
 
     Fails the build when a panel does not lie flat or no sheet file is written, since the section says both.
     """
-    folder = out / "build"
-    folder.mkdir()
+    folder = out / "build" / lang_dir(lang)
+    folder.mkdir(parents=True)
     fef = folder / f"{BUILDER_HULL}.fef"
-    shutil.copy(ROOT / "examples" / fef.name, fef)
-    pdf = json.loads(run(seacraft, "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.pdf", "--json", cwd=folder))
-    svg = json.loads(run(seacraft, "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.svg", "--json", cwd=folder))
+    shutil.copy(PROGRAM / "examples" / fef.name, fef)
+    panels = ("--lang", lang, "panels", fef.name, "--nest", BUILDER_NEST)
+    pdf = json.loads(run(seacraft, *panels, "-o", "panels.pdf", "--json", cwd=folder))
+    svg = json.loads(run(seacraft, *panels, "-o", "panels.svg", "--json", cwd=folder))
     fef.unlink()
     flat = [p["panel"] for p in svg["panels"] if not p["lies_flat"]]
     if flat:
@@ -666,16 +791,92 @@ def builder_files(seacraft, out):
         "command": " ".join(["seacraft", "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.svg"]),
         "pdf_command": " ".join(["seacraft", "panels", fef.name, "--nest", BUILDER_NEST, "-o", "panels.pdf"]),
         "sheets": sheets,
-        "layout": [
-            {"name": s["name"], "length_m": s["length_m"], "width_m": s["width_m"]} for s in svg["layout"]["sheets"]
-        ],
+        "layout": [{"length_m": s["length_m"], "width_m": s["width_m"]} for s in svg["layout"]["sheets"]],
         "plywood_sheets": svg["layout"]["plywood_sheets"],
         "panels": [{"panel": p["panel"], "copies": p["copies"], "lies_flat": p["lies_flat"]} for p in svg["panels"]],
         "pdf_pages": pdf.get("pages"),
         "sizes": {name: (folder / name).stat().st_size for name in files},
     }
     (folder / "index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
-    print(f"  build: {len(sheets)} sheet files, {index['plywood_sheets']} plywood sheets")
+    print(f"  build ({lang}): {len(sheets)} sheet files, {index['plywood_sheets']} plywood sheets")
+
+
+# --- The page, once per language ------------------------------------------------------------------
+
+
+def lang_dir(lang):
+    """The folder a language's page and files live in, relative to the site's root: "" for English."""
+    return "" if lang == LANGS[0] else f"{lang}/"
+
+
+def site_strings(lang):
+    """The page's strings in `lang`, from site/locales."""
+    return json.loads((SITE_LOCALES / f"{lang}.json").read_text(encoding="utf-8"))
+
+
+# The strings app.js needs: everything it writes into the page after it has loaded.
+SCRIPT_PREFIXES = ("js.", "hull.", "method.")
+STRING = re.compile(r"\{\{t:([a-z0-9._]+)\}\}")
+VALUE = re.compile(r"\{\{([a-z_]+)\}\}")
+
+
+def render_page(template, lang, values):
+    """The page in `lang`: each `{{t:key}}` from the site's strings, then each `{{name}}` from `values`.
+
+    A string may itself hold a `{{name}}`, such as the version. A key or value the template names that
+    does not exist stops the build, so a page never goes out with a hole in it.
+    """
+    strings = site_strings(lang)
+
+    def string(match):
+        if match.group(1) not in strings:
+            sys.exit(f"site/locales/{lang}.json has no {match.group(1)}")
+        return strings[match.group(1)]
+
+    text = STRING.sub(string, template)
+    script = {k: v for k, v in strings.items() if k.startswith(SCRIPT_PREFIXES)}
+    # Inside <script>, so no "</" may close it early.
+    values = dict(values, strings=json.dumps(script, ensure_ascii=False, sort_keys=True).replace("</", "<\\/"))
+
+    def value(match):
+        if match.group(1) not in values:
+            sys.exit(f"the page names {{{{{match.group(1)}}}}}, which build.py does not set")
+        return values[match.group(1)]
+
+    return VALUE.sub(value, text)
+
+
+SITE_URL = "https://seacraft.app/"
+
+
+def page_values(lang, version, commit, release):
+    """The values one language's page is filled with, besides its strings."""
+    root = "../" * lang_dir(lang).count("/")
+    others = [other for other in LANGS if other != lang]
+    switch = "".join(
+        f'<a class="lang-link" href="{root}{lang_dir(other)}" hreflang="{other}" lang="{other}" '
+        f'data-lang="{other}">{html_escape(site_strings(other)["page.lang.name"])}</a>'
+        for other in others
+    )
+    alternates = "\n".join(
+        f'<link rel="alternate" hreflang="{other}" href="{SITE_URL}{lang_dir(other)}">' for other in LANGS
+    ) + f'\n<link rel="alternate" hreflang="x-default" href="{SITE_URL}">'
+    return {
+        "lang": lang,
+        "lang_dir": lang_dir(lang),
+        "root": root,
+        "url": SITE_URL + lang_dir(lang),
+        "alternates": alternates,
+        "languages": switch,
+        "langs": json.dumps(list(LANGS)),
+        "version": version,
+        "commit": commit,
+        "release": release,
+    }
+
+
+def html_escape(text):
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 # The desktop screenshots the page shows, from docs/assets.
@@ -692,9 +893,15 @@ def copy_screenshots(source, out):
 
 
 def main():
+    global PROGRAM
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--seacraft", default=str(ROOT / "target/release/seacraft"))
     parser.add_argument("--out", default=str(Path(__file__).resolve().parent / "_site"))
+    parser.add_argument(
+        "--program-root",
+        default=str(ROOT),
+        help="the checkout the program, example hulls and the program's catalogs come from (default: this one)",
+    )
     parser.add_argument(
         "--rebuild-hulls",
         action="store_true",
@@ -704,6 +911,7 @@ def main():
 
     seacraft = Path(args.seacraft).resolve()
     out = Path(args.out).resolve()
+    PROGRAM = Path(args.program_root).resolve()
     # hulls/index.json marks a folder this script made. It is there from the start of a build, so a
     # build that fails part way can be run again and keeps the hulls it finished.
     index = out / "hulls" / "index.json"
@@ -711,14 +919,11 @@ def main():
         sys.exit(f"refusing to delete {out}: it is not empty and is not a site this script built")
 
     version = run(seacraft, "--version").split()[-1]
-    release = release_version(ROOT / "Cargo.toml")
-    listing = {}
-    for line in run(seacraft, "example", "--list").splitlines():
-        hull_id, _, rest = line.partition(" ")
-        listing[hull_id] = rest.strip()
+    release = release_version(PROGRAM / "Cargo.toml")
+    listing = example_descriptions(seacraft)
     for hull in HULLS:
-        if hull["id"] not in listing:
-            sys.exit(f"`seacraft example --list` has no hull {hull['id']}")
+        if set(listing.get(hull["id"], {})) != set(LANGS):
+            sys.exit(f"`seacraft example --list` has no hull {hull['id']} in every language")
 
     keys = {hull["id"]: hull_key(seacraft, hull["id"]) for hull in HULLS}
     kept = set()
@@ -736,31 +941,31 @@ def main():
         build_hull(seacraft, hull, listing[hull_id], out)
         (out / "hulls" / hull_id / KEY_FILE).write_text(keys[hull_id], encoding="utf-8")
 
-    builder_files(seacraft, out)
+    for lang in LANGS:
+        builder_files(seacraft, out, lang)
 
+    # The commit the numbers come from: the program's, which is this checkout's unless --program-root says otherwise.
     commit = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, encoding="utf-8", cwd=ROOT
+        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, encoding="utf-8", cwd=PROGRAM
     ).stdout.strip()
     manifest = {
         "version": version,
         "commit": commit,
-        "hulls": [{"id": h["id"], "label": h["label"]} for h in HULLS],
+        "hulls": [h["id"] for h in HULLS],
         # The hulls whose wave pattern is shown, so the others can point to them.
         "waves_hulls": [h["id"] for h in HULLS if hull_data(out, h["id"])["waves"]["fits"]],
     }
     index.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
+    template = (SRC / "index.html").read_text(encoding="utf-8")
+    for lang in LANGS:
+        folder = out / lang_dir(lang)
+        folder.mkdir(parents=True, exist_ok=True)
+        page = render_page(template, lang, page_values(lang, version, commit, release))
+        (folder / "index.html").write_text(page, encoding="utf-8")
     for item in SRC.iterdir():
-        if item.is_file():
-            text = None
-            if item.suffix == ".html":
-                text = item.read_text(encoding="utf-8")
-                text = text.replace("{{version}}", version).replace("{{commit}}", commit)
-                text = text.replace("{{release}}", release)
-            if text is None:
-                shutil.copy(item, out / item.name)
-            else:
-                (out / item.name).write_text(text, encoding="utf-8")
+        if item.is_file() and item.name != "index.html":
+            shutil.copy(item, out / item.name)
     assets = out / "assets"
     assets.mkdir()
     copy_screenshots(ROOT / "docs" / "assets", assets)

@@ -1,9 +1,42 @@
 /* The hull on the page is data: site/build.py runs seacraft on each example and writes one JSON file per
-   hull. This script draws that data. It computes no hydrostatics of its own. */
+   hull. This script draws that data. It computes no hydrostatics of its own.
+
+   The page comes in several languages. Its words are in the <script id="strings"> build.py wrote from
+   site/locales, and whatever seacraft said is in the hull's data once per language. */
 "use strict";
 
 const NS = "http://www.w3.org/2000/svg";
 const $ = (id) => document.getElementById(id);
+
+const LANG = document.documentElement.lang;
+// The site's root and this language's folder in it, relative to this page: "" and "" in English.
+const ROOT = document.documentElement.dataset.root || "";
+const LANG_DIR = document.documentElement.dataset.langDir || "";
+const STRINGS = JSON.parse($("strings").textContent);
+
+/* A string of the page in its language, with each {name} filled from `values`. */
+function t(key, values = {}) {
+  const text = STRINGS[key];
+  if (text === undefined) {
+    console.error(`no string ${key}`);
+    return key;
+  }
+  return text.replace(/\{([a-z_]+)\}/g, (whole, name) => (name in values ? values[name] : whole));
+}
+
+/* What seacraft said, in this page's language: build.py stores it as {lang: text}. */
+const said = (texts) => texts[LANG] ?? texts.en;
+
+/* A document seacraft writes once per language: report.html in English, report.tr.html in Turkish. */
+const localizedFile = (name) => (LANG_DIR ? name.replace(/\.([a-z]+)$/, `.${LANG}.$1`) : name);
+
+/* Remember a language chosen with the switch, and keep the place on the page. */
+for (const link of document.querySelectorAll(".lang-link")) {
+  link.addEventListener("click", () => {
+    try { localStorage.setItem("seacraft-lang", link.dataset.lang); } catch (e) { /* Private mode: not remembered. */ }
+    if (location.hash) link.hash = location.hash;
+  });
+}
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
 const cache = new Map();
@@ -23,13 +56,17 @@ function html(tag, props = {}, parent) {
   return node;
 }
 
+// The decimal point is always ".", as in seacraft's own output; thousands are grouped as the language does.
+const formatNumber = (value, options) =>
+  value.toLocaleString("en-GB", options).replace(/,/g, t("js.number.group"));
+
 const niceNumber = (value, digits = 2) =>
-  value.toLocaleString("en-GB", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  formatNumber(value, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 
 function significant(value, sig = 4) {
   if (value === 0) return "0";
   const digits = Math.max(0, sig - 1 - Math.floor(Math.log10(Math.abs(value))));
-  return value.toLocaleString("en-GB", { maximumFractionDigits: digits, minimumFractionDigits: 0 });
+  return formatNumber(value, { maximumFractionDigits: digits, minimumFractionDigits: 0 });
 }
 
 function fileSize(bytes) {
@@ -134,7 +171,7 @@ function buildSea(hull) {
   const waterline = el("line", { x1: -1e5, x2: 1e5, y1: 0, y2: 0, class: "wl" }, svg);
   const hint = el("g", { class: "hint" }, svg);
   el("rect", {}, hint);
-  el("text", { "text-anchor": "end", "dominant-baseline": "central" }, hint).textContent = "Drag the waterline";
+  el("text", { "text-anchor": "end", "dominant-baseline": "central" }, hint).textContent = t("js.sea.hint");
   const grip = el("g", {}, svg);
   el("circle", { class: "grip", r: 1 }, grip);
   el("path", { class: "grip-mark" }, grip);
@@ -232,7 +269,7 @@ function setRow(index, animate) {
   state.row = index;
   const row = state.hull.table[index];
   $("draft").value = index;
-  $("draft").setAttribute("aria-valuetext", `${niceNumber(row.draft)} metres`);
+  $("draft").setAttribute("aria-valuetext", t("js.sea.draft_valuetext", { draft: niceNumber(row.draft) }));
   const unit = (v, u) => `${v}<small>${u}</small>`;
   $("r-draft").innerHTML = unit(niceNumber(row.draft), "m");
   $("r-displacement").innerHTML = unit(significant(row.displacement), "t");
@@ -436,7 +473,8 @@ function setHeel(index) {
   weight.setAttribute("width", 12 * u);
   weight.setAttribute("height", 12 * u);
 
-  $("heel-summary").textContent = `Weight ${step.y.toFixed(2)} m out: ${step.summary}.`;
+  const summary = said(step.summary);
+  $("heel-summary").textContent = t("js.heel.summary", { y: niceNumber(step.y), summary });
   $("cmd-heel").textContent = step.command;
   const metres = (v, places) => (v === null ? "–" : `${niceNumber(v, places)} m`);
   $("h-heel").textContent = settled ? `${niceNumber(step.heel_deg, 1)}°` : "–";
@@ -445,12 +483,12 @@ function setHeel(index) {
   $("h-draft").textContent = metres(step.draft, 3);
   const input = $("heel-weight");
   input.value = index;
-  const where = `${significant(data.mass_t, 2)} t on deck, ${niceNumber(step.y)} m off the centreline`;
-  $("heel-label").textContent = `Trial weight: ${where}`;
-  input.setAttribute("aria-valuetext", `${where}. ${step.summary}`);
+  const where = t("js.heel.where", { mass: significant(data.mass_t, 2), y: niceNumber(step.y) });
+  $("heel-label").textContent = t("js.heel.label", { where });
+  input.setAttribute("aria-valuetext", `${where}. ${summary}`);
   const warnings = $("heel-warnings");
   warnings.textContent = "";
-  solverWarnings(warnings, step.warnings);
+  solverWarnings(warnings, said(step.warnings));
   if (!settled) return;
 
   // B and G as seacraft placed them, and G moved to the centreline, where GZ is measured from.
@@ -508,8 +546,8 @@ function setWave(index) {
   const fn = step.fn.toFixed(2);
   const image = $("waves-image");
   // Hidden until this image has loaded, so the previous one never sits above these numbers.
-  const src = `hulls/${hull.id}/${step.image}`;
-  const scale = `Seen from above, bow to the right. The colours run to ±${significant(step.clip_m, 2)} m, the largest elevation at this speed.`;
+  const src = `${ROOT}hulls/${hull.id}/${step.image}`;
+  const scale = t("js.waves.scale", { clip: significant(step.clip_m, 2) });
   image.style.visibility = "hidden";
   image.onload = () => {
     if (image.getAttribute("src") !== src) return; // A later speed or hull has replaced this one.
@@ -518,16 +556,16 @@ function setWave(index) {
   };
   image.onerror = () => {
     if (image.getAttribute("src") !== src) return;
-    $("waves-scale").textContent = `The pattern at Froude number ${fn} did not load. Reload the page to try again.`;
+    $("waves-scale").textContent = t("js.waves.failed", { fn });
   };
   image.src = src;
   image.width = step.size[0];
   image.height = step.size[1];
-  image.alt = `Far-field wave pattern behind the ${hull.name} at Froude number ${fn}, from seacraft waves.`;
+  image.alt = t("js.waves.alt", { hull: said(hull.name), fn });
   $("waves-fn").value = index;
-  $("waves-label").textContent = `Froude number ${fn}`;
-  $("waves-fn").setAttribute("aria-valuetext", `Froude number ${fn}. ${step.regime}`);
-  $("waves-regime").textContent = step.regime;
+  $("waves-label").textContent = t("js.waves.label", { fn });
+  $("waves-fn").setAttribute("aria-valuetext", t("js.waves.valuetext", { fn, regime: said(step.regime) }));
+  $("waves-regime").textContent = said(step.regime);
   $("waves-scale").textContent = scale;
   $("cmd-waves").textContent = step.command;
   state.waveFn = step.fn;
@@ -550,19 +588,19 @@ function drawWaves(hull) {
     setWave(index);
     return;
   }
-  $("waves-reason").textContent = `Thin-ship theory does not fit the ${hull.name}, so the pattern is not shown. SeaCraft says: ${waves.reason.join("; ")}.`;
+  $("waves-reason").textContent = t("js.waves.not_fit", { hull: said(hull.name), reasons: said(waves.reason).join("; ") });
   const names = $("waves-hulls");
   names.textContent = "";
-  const shown = state.manifest.hulls.filter((h) => state.manifest.waves_hulls.includes(h.id));
+  const shown = state.manifest.hulls.filter((id) => state.manifest.waves_hulls.includes(id));
   shown.forEach((other, i) => {
-    if (i) names.append(i === shown.length - 1 ? " or " : ", ");
-    const button = html("button", { type: "button", className: "link-button", textContent: other.label }, names);
+    if (i) names.append(i === shown.length - 1 ? t("js.list.or") : t("js.list.comma"));
+    const button = html("button", { type: "button", className: "link-button", textContent: t(`hull.${other}`) }, names);
     button.addEventListener("click", async () => {
-      const radio = document.querySelector(`#picker input[value="${other.id}"]`);
+      const radio = document.querySelector(`#picker input[value="${other}"]`);
       if (radio) radio.checked = true;
-      await chooseHull(other.id, false);
+      await chooseHull(other, false);
       // The note and its buttons are gone now: carry focus to the control that replaced them.
-      if (state.hull && state.hull.id === other.id && state.hull.waves.fits) $("waves-fn").focus({ preventScroll: true });
+      if (state.hull && state.hull.id === other && state.hull.waves.fits) $("waves-fn").focus({ preventScroll: true });
     });
   });
 }
@@ -590,7 +628,7 @@ function lineChart(host, spec) {
 
   const xs = spec.series.flatMap((s) => s.points.map((p) => p[0]));
   const ys = spec.series.flatMap((s) => s.points.map((p) => p[1])).filter((v) => v !== null);
-  const yText = (v) => (v === null ? "not available" : spec.yFormat(v)); // A failed solve is a gap.
+  const yText = (v) => (v === null ? t("js.chart.not_available") : spec.yFormat(v)); // A failed solve is a gap.
   const xLow = Math.min(...xs);
   const xHigh = Math.max(...xs);
   const yLow = Math.min(0, Math.min(...ys) * 1.15); // Room under the curves for the end labels.
@@ -707,7 +745,7 @@ function lineChart(host, spec) {
   draw();
 
   const details = html("details", { className: "chart-table" }, host);
-  html("summary", { textContent: "Show the numbers" }, details);
+  html("summary", { textContent: t("js.chart.show_numbers") }, details);
   const scroll = html("div", { className: "chart-table-scroll" }, details);
   const table = html("table", {}, scroll);
   const head = html("tr", {}, html("thead", {}, table));
@@ -724,101 +762,81 @@ function lineChart(host, spec) {
 function solverWarnings(host, warnings) {
   if (!warnings || !warnings.length) return;
   const note = html("div", { className: "solver-note" }, host);
-  html("p", { textContent: "What the solver reported about this result:" }, note);
+  html("p", { textContent: t("js.solver.note") }, note);
   const list = html("ul", {}, note);
   for (const warning of warnings) html("li", { textContent: warning }, list);
 }
 
 function drawCharts(hull) {
   chartRedraws.clear();
+  const name = said(hull.name);
+  // The labels of one chart, from its strings: `js.<chart>.title`, `.x_label` and the rest.
+  const labels = (chart, values = {}) => ({
+    title: t(`js.${chart}.title`),
+    sub: t(`js.${chart}.sub`, values),
+    alt: t(`js.${chart}.alt`, { hull: name }),
+    xLabel: t(`js.${chart}.x_label`),
+    yLabel: t(`js.${chart}.y_label`),
+    xName: t(`js.${chart}.x_name`),
+    yName: t(`js.${chart}.y_name`),
+  });
   lineChart($("chart-sac"), {
-    title: "Sectional area along the hull",
-    sub: `At the design draft of ${niceNumber(hull.sac.draft)} m. Stern is on the left.`,
-    alt: `Sectional area curve of the ${hull.name}.`,
-    xLabel: "Position along the hull (m)",
-    yLabel: "Area (m²)",
-    xName: "Position",
-    yName: "Area",
+    ...labels("sac", { draft: niceNumber(hull.sac.draft) }),
     xFormat: (v) => `${niceNumber(v)} m`,
     yFormat: (v) => `${significant(v)} m²`,
-    series: [{ name: "Area", points: hull.sac.points }],
+    series: [{ name: t("js.sac.y_name"), points: hull.sac.points }],
   });
   lineChart($("chart-gz"), {
-    title: "Righting lever against heel",
-    sub: `With the centre of gravity ${niceNumber(hull.stability.kg)} m above the keel, at three displacements.`,
-    alt: `Righting lever curves of the ${hull.name}.`,
-    xLabel: "Heel (degrees)",
-    yLabel: "GZ (m)",
-    xName: "Heel",
-    yName: "GZ",
+    ...labels("gz", { kg: niceNumber(hull.stability.kg) }),
     xFormat: (v) => `${v}°`,
     yFormat: (v) => `${niceNumber(v, 3)} m`,
     series: hull.stability.series,
   });
   lineChart($("chart-resistance"), {
-    title: "Total resistance against speed",
-    sub: `Estimated with ${hull.resistance.method}, using this hull’s own measurements.`,
-    alt: `Resistance curve of the ${hull.name}.`,
-    xLabel: "Speed (knots)",
-    yLabel: "Resistance (kN)",
-    xName: "Speed",
-    yName: "Resistance",
+    ...labels("resistance", { method: t(`method.${hull.resistance.method}`) }),
     xFormat: (v) => `${significant(v, 3)} kn`,
     yFormat: (v) => `${significant(v)} kN`,
-    series: [{ name: "Resistance", points: hull.resistance.points }],
+    series: [{ name: t("js.resistance.y_name"), points: hull.resistance.points }],
   });
-  solverWarnings($("chart-resistance"), hull.resistance.warnings);
+  solverWarnings($("chart-resistance"), said(hull.resistance.warnings));
   const host = $("chart-motions");
   host.textContent = "";
   if (hull.motions) {
     const pair = html("div", { className: "chart-pair" }, host);
     const heave = html("div", {}, pair);
     const pitch = html("div", {}, pair);
-    const shared = {
-      xLabel: "Wave length / ship length",
-      xName: "λ/L",
+    const motion = (which) => ({
+      title: t(`js.motions.${which}_title`),
+      sub: t(`js.motions.${which}_sub`),
+      alt: t(`js.motions.${which}_alt`, { hull: name }),
+      xLabel: t("js.motions.x_label"),
+      xName: t("js.motions.x_name"),
+      yLabel: t(`js.motions.${which}_y_label`),
+      yName: t(`js.motions.${which}_y_name`),
       xFormat: (v) => niceNumber(v),
+      yFormat: (v) => niceNumber(v, 3),
       height: 240,
-    };
-    lineChart(heave, {
-      ...shared,
-      title: "Heave response",
-      sub: "Heave amplitude over wave amplitude, z/ζ, in head waves.",
-      alt: `Heave response of the ${hull.name}.`,
-      yLabel: "Heave (z/ζ)",
-      yName: "Heave",
-      yFormat: (v) => niceNumber(v, 3),
-      series: [{ name: "Heave", points: hull.motions.heave }],
     });
-    lineChart(pitch, {
-      ...shared,
-      title: "Pitch response",
-      sub: "Pitch amplitude over wave slope, θ/kζ, in head waves.",
-      alt: `Pitch response of the ${hull.name}.`,
-      yLabel: "Pitch (θ/kζ)",
-      yName: "Pitch",
-      yFormat: (v) => niceNumber(v, 3),
-      series: [{ name: "Pitch", points: hull.motions.pitch }],
-    });
-    solverWarnings(host, hull.motions.warnings);
+    lineChart(heave, { ...motion("heave"), series: [{ name: t("js.motions.heave_y_name"), points: hull.motions.heave }] });
+    lineChart(pitch, { ...motion("pitch"), series: [{ name: t("js.motions.pitch_y_name"), points: hull.motions.pitch }] });
+    solverWarnings(host, said(hull.motions.warnings));
   } else {
-    html("p", {
-      className: "chart-empty",
-      textContent: "Not run for this hull. Strip theory does not describe a boat on the plane, so choose a displacement hull to see this step.",
-    }, host);
+    html("p", { className: "chart-empty", textContent: t("js.motions.not_run") }, host);
   }
 }
 
 /* --- Build it: the skiff's sheets as seacraft wrote them ----------------------------------------- */
 
 async function drawBuild() {
+  // seacraft writes the sheets once per language: build/ in English, build/<lang>/ in the others.
+  const folder = `${ROOT}build/${LANG_DIR}`;
   let index;
   try {
-    const response = await fetch("build/index.json");
+    const response = await fetch(`${folder}index.json`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     index = await response.json();
   } catch (error) {
-    $("build-caption").textContent = `The sheet layout did not load (${error.message}). Reload the page to try again.`;
+    $("build-caption").textContent = t("js.build.failed", { error: error.message });
     return;
   }
   const host = $("build-sheets");
@@ -826,14 +844,14 @@ async function drawBuild() {
   let sheets;
   try {
     sheets = await Promise.all(index.sheets.map(async (name) => {
-      const response = await fetch(`build/${name}`);
+      const response = await fetch(`${folder}${name}`);
       if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
       const svg = new DOMParser().parseFromString(await response.text(), "image/svg+xml").documentElement;
       if (svg.nodeName !== "svg") throw new Error(`${name} is not an SVG`);
       return svg;
     }));
   } catch (error) {
-    $("build-caption").textContent = `The sheet layout did not load (${error.message}). Reload the page to try again.`;
+    $("build-caption").textContent = t("js.build.failed", { error: error.message });
     return;
   }
   for (const [i, svg] of sheets.entries()) {
@@ -841,34 +859,37 @@ async function drawBuild() {
     svg.removeAttribute("height");
     svg.setAttribute("role", "img");
     const sheet = index.layout[i];
-    svg.setAttribute("aria-label", `${sheet.name}, ${niceNumber(sheet.length_m)} by ${niceNumber(sheet.width_m)} m, with the skiff's pieces nested on it.`);
+    svg.setAttribute("aria-label", t("js.build.sheet_label", {
+      n: i + 1, length: niceNumber(sheet.length_m), width: niceNumber(sheet.width_m),
+    }));
     host.appendChild(svg);
   }
   const size = (s) => `${niceNumber(s.length_m)} × ${niceNumber(s.width_m)} m`;
   const sizes = [...new Set(index.layout.map(size))];
-  const blanks = sizes.length === 1
-    ? `${index.layout.length === 1 ? "one blank" : `${index.layout.length} blanks`} of ${sizes[0]}`
-    : index.layout.map((s) => `${s.name} (${size(s)})`).join(", ");
-  $("build-caption").textContent = `The plywood skiff’s bottom, sides and transom on ${index.plywood_sheets} plywood sheets, scarfed into ${blanks}, as seacraft panels wrote them.`;
+  let blanks;
+  if (sizes.length > 1) blanks = index.layout.map((s, i) => t("js.build.blank", { n: i + 1, size: size(s) })).join(t("js.list.comma"));
+  else if (index.layout.length === 1) blanks = t("js.build.one_blank", { size: sizes[0] });
+  else blanks = t("js.build.blanks", { count: index.layout.length, size: sizes[0] });
+  $("build-caption").textContent = t("js.build.caption", { sheets: index.plywood_sheets, blanks });
   const files = $("build-files");
   const item = (href, title, detail) => {
     const link = html("a", { href }, html("li", {}, files));
     html("b", { textContent: title }, link);
     html("span", { textContent: detail }, link);
   };
-  item("build/panels.pdf", "Patterns and offsets, PDF", `${index.pdf_pages} pages, ${fileSize(index.sizes["panels.pdf"])}`);
-  item("build/panels.svg", "Patterns, SVG", fileSize(index.sizes["panels.svg"]));
-  index.sheets.forEach((name, i) => item(`build/${name}`, `${index.layout[i].name}, SVG`, fileSize(index.sizes[name])));
+  item(`${folder}panels.pdf`, t("js.build.pdf"), t("js.build.pdf_detail", { pages: index.pdf_pages, size: fileSize(index.sizes["panels.pdf"]) }));
+  item(`${folder}panels.svg`, t("js.build.svg"), fileSize(index.sizes["panels.svg"]));
+  index.sheets.forEach((name, i) => item(`${folder}${name}`, t("js.build.sheet_svg", { n: i + 1 }), fileSize(index.sizes[name])));
 }
 
 /* --- Applying a hull to the page ------------------------------------------------------------------- */
 
 function applyHull(hull) {
   state.hull = hull;
-  $("hull-description").textContent = `${hull.description}.`;
+  $("hull-description").textContent = `${said(hull.description)}.`;
   $("cmd-table").textContent = `seacraft table ${hull.id}.fef`;
-  $("loop-hull").textContent = hull.name;
-  $("files-hull").textContent = hull.name;
+  $("loop-hull").textContent = said(hull.name);
+  $("files-hull").textContent = said(hull.name);
   $("cmd-lines").textContent = hull.commands.lines;
   $("cmd-hydro").textContent = `${hull.commands.hydro}\n${hull.commands.sac}`;
   $("cmd-stability").textContent = hull.stability.command;
@@ -876,14 +897,14 @@ function applyHull(hull) {
   $("cmd-report").textContent = hull.commands.report;
   $("cmd-motions-wrap").hidden = !hull.motions;
   if (hull.motions) $("cmd-motions").textContent = hull.motions.command;
-  const base = `hulls/${hull.id}/`;
-  $("file-report").href = `${base}report.html`;
+  const base = `${ROOT}hulls/${hull.id}/`;
+  $("file-report").href = `${base}${localizedFile("report.html")}`;
   $("file-viewer").href = `${base}viewer.html`;
-  $("file-lines").href = `${base}lines.svg`;
+  $("file-lines").href = `${base}${localizedFile("lines.svg")}`;
   $("file-fef").href = `${base}${hull.id}.fef`;
-  $("size-report").textContent = `HTML, ${fileSize(hull.files.report)}`;
-  $("size-viewer").textContent = `HTML, ${fileSize(hull.files.viewer)}`;
-  $("size-lines").textContent = fileSize(hull.files.lines);
+  $("size-report").textContent = t("js.files.html", { size: fileSize(said(hull.files.report)) });
+  $("size-viewer").textContent = t("js.files.html", { size: fileSize(hull.files.viewer) });
+  $("size-lines").textContent = fileSize(said(hull.files.lines));
   $("size-fef").textContent = fileSize(hull.files.fef);
 
   const input = $("draft");
@@ -902,7 +923,7 @@ function applyHull(hull) {
 
 async function loadHull(id) {
   if (!cache.has(id)) {
-    const response = await fetch(`hulls/${id}/data.json`);
+    const response = await fetch(`${ROOT}hulls/${id}/data.json`);
     if (!response.ok) throw new Error(`hull ${id}: HTTP ${response.status}`);
     cache.set(id, await response.json());
   }
@@ -916,7 +937,7 @@ async function chooseHull(id, firstLoad) {
     hull = await loadHull(id);
   } catch (error) {
     if (request !== state.request) return; // A later choice has already replaced this one.
-    $("hull-description").textContent = `This hull’s data did not load (${error.message}). Reload the page to try again.`;
+    $("hull-description").textContent = t("js.load.hull_failed", { error: error.message });
     const shown = state.hull && document.querySelector(`#picker input[value="${state.hull.id}"]`);
     if (shown) shown.checked = true;
     return;
@@ -931,20 +952,20 @@ async function chooseHull(id, firstLoad) {
 async function init() {
   let manifest;
   try {
-    const response = await fetch("hulls/index.json");
+    const response = await fetch(`${ROOT}hulls/index.json`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     manifest = await response.json();
   } catch (error) {
-    $("hull-description").textContent = `The hull data did not load (${error.message}). Reload the page to try again.`;
+    $("hull-description").textContent = t("js.load.manifest_failed", { error: error.message });
     return;
   }
   state.manifest = manifest;
   const picker = $("picker");
-  manifest.hulls.forEach((hull, i) => {
+  manifest.hulls.forEach((id, i) => {
     const label = html("label", {}, picker);
-    const radio = html("input", { type: "radio", name: "hull", value: hull.id, checked: i === 0 }, label);
-    html("span", { textContent: hull.label }, label);
-    radio.addEventListener("change", () => chooseHull(hull.id, false));
+    const radio = html("input", { type: "radio", name: "hull", value: id, checked: i === 0 }, label);
+    html("span", { textContent: t(`hull.${id}`) }, label);
+    radio.addEventListener("change", () => chooseHull(id, false));
   });
   $("heel-weight").addEventListener("input", (event) => setHeel(+event.target.value));
   $("waves-fn").addEventListener("input", (event) => setWave(+event.target.value));
@@ -967,7 +988,7 @@ async function init() {
   }).observe(document.body);
   document.fonts.ready.then(sizeSea);
 
-  chooseHull(manifest.hulls[0].id, true);
+  chooseHull(manifest.hulls[0], true);
   drawBuild();
 }
 

@@ -165,3 +165,9 @@ to its font.
   Font License 1.1
 * **Atkinson Hyperlegible Mono:** Copyright 2020-2024 The Atkinson Hyperlegible Mono Project Authors, SIL Open
   Font License 1.1
+
+## `site/src/`
+
+The header's GitHub mark is the `mark-github` icon from [Octicons](https://github.com/primer/octicons),
+Copyright (c) 2023 GitHub Inc., MIT licence. Its licence text is `site/src/octicons-LICENSE.txt`, served next to
+the page.
