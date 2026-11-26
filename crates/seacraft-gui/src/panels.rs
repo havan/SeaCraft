@@ -2275,15 +2275,17 @@ pub fn report_options_tr(
     changed
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PerformanceAction {
-    None,
-    Changed,
+/// What the user asked for on one frame. Several can come together (a field committed by the
+/// same click that moved the speed or pressed Compute), so each is a flag and the App applies all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PerformanceAction {
+    /// An input the resistance and the RAOs depend on changed.
+    pub changed: bool,
     /// The shared speed moved (it is in the state already): only what depends on it recomputes.
-    SpeedChanged,
-    Compute,
+    pub speed_changed: bool,
+    pub compute: bool,
     /// "Open wave pattern": show the Wave pattern view in the Analysis drawer.
-    OpenWaveView,
+    pub open_wave_view: bool,
 }
 
 pub struct PerformancePanel<'a> {
@@ -2308,7 +2310,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
 /// Localized form of [`performance`].
 pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) -> PerformanceAction {
-    let mut action = PerformanceAction::None;
+    let mut action = PerformanceAction::default();
     theme::heading(ui, tr.s(Key::PerfTitle));
     ui.add_space(4.0);
 
@@ -2317,7 +2319,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     ui.horizontal(|ui| {
         let btn = ui.add_enabled(!is_busy, egui::Button::new(tr.s(Key::CommonCompute)));
         if btn.clicked() {
-            action = PerformanceAction::Compute;
+            action.compute = true;
         }
         if is_busy {
             ui.spinner();
@@ -2343,7 +2345,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     )
     .on_hover_text(tr.s(Key::PerfSpeedSharedTip));
     if speed_resp.changed() {
-        action = PerformanceAction::SpeedChanged;
+        action.speed_changed = true;
     }
 
     ui.add_space(4.0);
@@ -2366,7 +2368,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
                         .selectable_value(&mut panel.state.method, m, m.label_tr(tr))
                         .clicked()
                     {
-                        action = PerformanceAction::Changed;
+                        action.changed = true;
                     }
                 }
             });
@@ -2393,7 +2395,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
                 .prefix(tr.s(Key::PerfStepColon)),
         );
         if r1.changed() || r2.changed() || r3.changed() {
-            action = PerformanceAction::Changed;
+            action.changed = true;
         }
     });
 
@@ -2406,7 +2408,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
             let kn = (kn * 10.0).round() / 10.0;
             if kn != panel.state.speed_kn {
                 panel.state.speed_kn = kn;
-                action = PerformanceAction::SpeedChanged;
+                action.speed_changed = true;
             }
         }
     }
@@ -2420,7 +2422,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
         .on_hover_text(tr.s(Key::PerfOpenWavePatternTip))
         .clicked()
     {
-        action = PerformanceAction::OpenWaveView;
+        action.open_wave_view = true;
     }
     if let Some(sentence) = panel.wave_regime {
         ui.label(egui::RichText::new(sentence).color(theme::TEXT_SECONDARY));
@@ -2436,7 +2438,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
         let mut cur_kg = panel.state.kg.or(panel.default_kg);
         if kg_field(ui, &mut cur_kg, false, 50.0, 84.0, tr) {
             panel.state.kg = cur_kg;
-            action = PerformanceAction::Changed;
+            action.changed = true;
         }
         let default = match panel.default_kg {
             Some(kg) => format!("{kg:.2} m"),
@@ -2445,7 +2447,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
         if panel.state.kg.is_some() {
             if ui.small_button(tr.s(Key::CommonResetCap)).clicked() {
                 panel.state.kg = None;
-                action = PerformanceAction::Changed;
+                action.changed = true;
             }
             ui.label(tr.fmt(
                 Key::PerfKgDefaultSource,
@@ -2473,7 +2475,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
             )
             .on_hover_text(tr.s(Key::PerfFrequenciesTip));
         if kyy_resp.changed() || pts_resp.changed() {
-            action = PerformanceAction::Changed;
+            action.changed = true;
         }
     });
 
@@ -2486,7 +2488,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     ui.add_space(4.0);
     ui.separator();
     if sea_state_section(ui, panel.state, panel.stale_raos, tr) {
-        action = PerformanceAction::Changed;
+        action.changed = true;
     }
 
     action

@@ -1423,3 +1423,26 @@ fn moving_the_speed_keeps_the_resistance_current() {
     assert!(!stale.contains(&"resistance"), "{stale:?}");
     assert!(stale.contains(&"RAOs"), "{stale:?}");
 }
+
+/// Agy review 1: drawing the Wave pattern view does not move the shared speed. Its speed field
+/// has a narrower range (Fn 0.01–2, 0.1–100 kn) than the Performance slider, and a field that
+/// clamps the value it is shown would write the clamped speed back on the next frame.
+#[test]
+fn drawing_the_wave_view_keeps_a_speed_outside_its_field_range() {
+    let (mut app, ctx) = demo_with_waves();
+    for (froude_unit, kn) in [(true, 0.0), (false, 0.0), (false, 150.0)] {
+        app.set_wave_settings(WaveSettings {
+            froude_unit,
+            ..app.wave_settings().clone()
+        });
+        app.performance_state_mut().speed_kn = kn;
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        assert_eq!(
+            app.performance_state().speed_kn,
+            kn,
+            "Fn unit {froude_unit}"
+        );
+    }
+}

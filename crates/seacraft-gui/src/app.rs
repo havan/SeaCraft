@@ -1894,6 +1894,7 @@ impl App {
         self.picked_face = None;
         self.layer_panel = panels::LayerPanelState::default();
         self.cache = None;
+        self.mesh_track.reset();
         self.hydro.result = None;
         self.hydro.curves = None;
         self.hydro.hull = None;
@@ -2301,19 +2302,7 @@ impl App {
                 self.project_changed();
             }
             DockAction::Windage(panels::WindageAction::None) => {}
-            DockAction::Performance(panels::PerformanceAction::Changed) => {
-                self.performance_changed();
-            }
-            DockAction::Performance(panels::PerformanceAction::SpeedChanged) => {
-                self.speed_changed();
-            }
-            DockAction::Performance(panels::PerformanceAction::Compute) => {
-                self.start_performance_compute()
-            }
-            DockAction::Performance(panels::PerformanceAction::OpenWaveView) => {
-                self.set_wave_view_open(true);
-            }
-            DockAction::Performance(panels::PerformanceAction::None) => {}
+            DockAction::Performance(a) => self.apply_performance_action(a),
         }
         self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);
     }
@@ -6087,6 +6076,22 @@ impl App {
         self.last_change = Some(std::time::Instant::now());
     }
 
+    /// Apply what the Performance tab asked for on one frame, all of it.
+    fn apply_performance_action(&mut self, a: panels::PerformanceAction) {
+        // A change bumps the revision, which already covers a speed moved with it.
+        if a.changed {
+            self.performance_changed();
+        } else if a.speed_changed {
+            self.speed_changed();
+        }
+        if a.compute {
+            self.start_performance_compute();
+        }
+        if a.open_wave_view {
+            self.set_wave_view_open(true);
+        }
+    }
+
     /// Open the Wave pattern view in the drawer (it computes while open), or close it if it is the
     /// view shown.
     pub fn set_wave_view_open(&mut self, open: bool) {
@@ -8486,8 +8491,19 @@ impl App {
     /// The hull is drawn at a coarser level while the full one is built in the background.
     pub fn mesh_refining(&self) -> bool {
         self.drag.is_none()
-            && self.cache.as_ref().is_some_and(|c| c.level < self.level)
+            && self
+                .surface
+                .as_ref()
+                .is_some_and(|s| sync_level(s.faces.len(), self.level) < self.level)
+            && self.cache.as_ref().is_some_and(|c| {
+                c.revision == self.revision && c.mode == self.mode && c.level < self.level
+            })
             && self.mesh_track.failure(self.mesh_key()).is_none()
+    }
+
+    /// The background mesh job in flight is for the current geometry, level and mode (test hook).
+    pub fn mesh_job_is_current(&self) -> bool {
+        self.mesh_track.running_for() == Some(self.mesh_key())
     }
 
     /// Cached net lines for the current surface, once [`Self::refresh_cache`] has run.
@@ -11125,5 +11141,37 @@ mod mesh_budget_tests {
         assert_eq!(sync_level(180, 4), 3);
         assert_eq!(sync_level(10_000, 2), 1, "never below level 1");
         assert_eq!(sync_level(10_000, 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod performance_action_tests {
+    use super::App;
+    use crate::analysis_views::AnalysisView;
+    use crate::panels::PerformanceAction;
+
+    /// Agy review 2: a field committed on the same frame as a click on the curve or the
+    /// Compute button gives two actions; the App applies both instead of keeping the last.
+    #[test]
+    fn every_action_of_one_frame_is_applied() {
+        let demo = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/demo-hull.fef");
+        let mut app = App::headless_for_test(Some(demo));
+        let rev = app.perf_rev;
+        app.apply_performance_action(PerformanceAction {
+            changed: true,
+            speed_changed: true,
+            compute: true,
+            open_wave_view: true,
+        });
+        assert_eq!(
+            app.perf_rev,
+            rev + 1,
+            "the change marks the curve out of date"
+        );
+        assert!(
+            app.resistance_track.busy(),
+            "the Compute click starts the curve"
+        );
+        assert_eq!(app.analysis.open, Some(AnalysisView::Waves));
     }
 }

@@ -494,6 +494,28 @@ fn a_superseded_mesh_job_is_dropped() {
     assert_eq!(app.render_cache_level(), Some(4));
     let moved = app.surface().unwrap().points[10].p;
     assert!((moved.z - p.z - 0.5).abs() < 1e-9);
+    // The mesh drawn is the moved hull's, not the one the superseded job built.
+    let expected =
+        seacraft_core::export::render_mesh(app.surface().unwrap(), 4, app.subdivision_mode());
+    assert_eq!(
+        app.render_cache().unwrap().verts,
+        expected.verts,
+        "the edited hull's level 4 mesh"
+    );
+}
+
+/// Agy review 3: no "refining" on the status bar for a hull whose full level builds at once,
+/// on the frame where the level was raised but the mesh is not rebuilt yet.
+#[test]
+fn a_small_hull_never_reads_as_refining() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(3);
+    app.sync_render_cache();
+    app.set_subdivision_level(4);
+    assert!(
+        !app.mesh_refining(),
+        "level 4 is built at once for 81 faces"
+    );
 }
 
 /// `refresh_cache` (the control channel's `ui.render`) builds the full level at once.
@@ -514,4 +536,21 @@ fn small_hull_refines_at_once() {
     frame(&ctx, &mut app, Vec::new());
     assert_eq!(app.render_cache_level(), Some(4));
     assert!(!app.mesh_refining());
+}
+
+/// Agy review 5: opening another model drops the closed one's mesh job, so the new model's job
+/// starts at once instead of after it.
+#[test]
+fn opening_a_model_drops_the_old_mesh_job() {
+    let (mut app, _ctx) = container();
+    app.sync_render_cache();
+    assert!(app.mesh_job_is_current());
+    let path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    app.open_model(std::path::Path::new(&path)).expect("open");
+    app.set_subdivision_level(4);
+    app.sync_render_cache();
+    assert!(app.mesh_job_is_current(), "the new model's job runs");
 }

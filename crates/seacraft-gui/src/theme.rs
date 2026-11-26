@@ -492,6 +492,10 @@ impl<'a> Num<'a> {
     pub fn update_while_editing(self, update: bool) -> Self {
         Self(self.0.update_while_editing(update))
     }
+    /// `false`: the range bounds what the user types or drags, not the value shown.
+    pub fn clamp_existing_to_range(self, clamp: bool) -> Self {
+        Self(self.0.clamp_existing_to_range(clamp))
+    }
 }
 
 impl egui::Widget for Num<'_> {

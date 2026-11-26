@@ -260,6 +260,9 @@ fn speed_control(
             theme::num(&mut value)
                 .speed(if knots { 0.05 } else { 0.002 })
                 .range(range)
+                // The shared speed can be outside this field's range (0 kn from the Performance
+                // slider, or a unit switch): showing it must not write a clamped speed back.
+                .clamp_existing_to_range(false)
                 .max_decimals(3),
         )
         .on_hover_text(tr.s(Key::WaveCtlSpeedDragTip))
