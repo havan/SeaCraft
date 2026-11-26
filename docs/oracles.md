@@ -2011,6 +2011,16 @@ mass-weighted mean of the layer centres.
   - Total 56.0 kg (0.056 t), centre $z = (20 \cdot 0 + 12 \cdot 0.5 + 24 \cdot 0.5)/56 = 18/56$ m. Tolerance $10^{-9}$.
   - `plies_add_glass_and_resin`: `Bottom` plies 200 + 200 g/m² give $4 \cdot 0.4 = 1.6$ kg glass and, at 1.2 resin per glass,
     $1.6 \cdot 1.2 = 1.92$ kg resin. The glass and resin figures are the test's own inputs, not published values.
+- `crates/seacraft-core/src/materials.rs`, the other layer tests, hand-derived:
+  - `a_face_on_the_centreline_counts_once`: a 1 m × 1 m face in the plane $y = 0$ on a symmetric layer has every vertex
+    on the centreline, so it is not mirrored: $A = 1.0$ m², not 2.0.
+  - `zero_plating_warns_and_weighs_nothing`: the box with `Bottom` at density 0 gives `Bottom` a shell of exactly 0 kg
+    ($A\,t \cdot 0$) and one `materials.warn.no_plating` warning.
+  - `a_layer_that_is_not_symmetric_counts_once_off_the_centreline`: the box with `Side` not symmetric has no mirror, so
+    $A = 2.0$ m², centre $(1, 1, 0.5)$ (the face itself, not the mean of it and its mirror), shell
+    $2 \cdot 0.006 \cdot 500 = 6.0$ kg.
+  - `a_layer_with_no_faces_has_no_area`: a fourth layer with no faces has $A = 0$ and 0 kg; the total stays 56.0 kg
+    at the same centre.
 - `crates/seacraft-core/src/examples/mod.rs`, `materials_shell_matches_the_render_mesh_sum`: every example's per-layer shell
   mass equals the sum over `export::render_mesh` (the full mirrored mesh), within $10^{-9}$ relative. A consistency check
   between two ways of summing the same mesh, not an oracle.
@@ -2018,3 +2028,67 @@ mass-weighted mean of the layer centres.
 ### Provenance
 Hand-derived for the box (areas, centres, masses). Nothing here is published; the figures are the builder's numbers applied
 to the modelled surface, with no laminate thickness offset.
+
+## 52. Hull Materials: Seams, Tape and Fillets
+
+### Formula
+Seams are found on the refined half mesh (`subdiv::evaluate`). An edge with two faces is a seam candidate when it is
+creased or its faces are on different layers; a one-face edge with both ends on $y = 0$, creased, on a symmetric layer
+is folded against its own mirror, whose outward normal is $(n_x, -n_y, n_z)$. With unit outward normals $n_1, n_2$, $e$
+along the edge as the first face winds it, and $\varphi = \angle(n_1, n_2)$, the edge is convex when
+$(n_1 \times n_2) \cdot e > 0$, and the inside angle is $\theta = \pi - \varphi$ (convex) or $\pi + \varphi$ (concave).
+$|\theta - \pi| \le 5^\circ$ is flat: no seam. An edge off the centreline between symmetric layers counts twice (port
+and starboard); a centreline edge once.
+
+Tape per metre of seam is $w \cdot n \cdot g \cdot s / 10^6$ kg for width $w$ mm, $n$ plies of $g$ g/m², on $s$
+faces (1 or 2); its resin is that times `resin_per_glass`. The fillet, only on a convex edge with $\theta > 5^\circ$, has
+the cross-section of a cove of radius $r$ in a corner of inside angle $\theta$:
+
+$$A(\theta) = r^2\left(\cot\frac{\theta}{2} - \frac{\pi - \theta}{2}\right).$$
+
+Derivation: the circle of radius $r$ tangent to both faces has its centre on the bisector, at $r / \sin(\theta/2)$
+from the corner; each tangent point is $r \cot(\theta/2)$ from the corner. The kite corner–tangent–centre–tangent is
+two right triangles of legs $r$ and $r\cot(\theta/2)$, area $r^2 \cot(\theta/2)$. Its angle at the circle's centre is
+$\pi - \theta$, so the sector of the circle inside the kite is $r^2 (\pi - \theta)/2$. The cove is the kite less that
+sector. Closed forms: $A(\pi/2) = r^2(1 - \pi/4)$ (kite $r^2$, quarter circle $\pi r^2/4$), and
+$A(2\pi/3) = r^2(1/\sqrt{3} - \pi/6)$ ($\cot(\pi/3) = 1/\sqrt{3}$, sector angle $\pi/3$). Fillet mass is
+$\sum$ edge length $\times A(\theta) \times$ mix density.
+
+### Tests
+All in `crates/seacraft-core/src/materials.rs`, at level 3, tolerance $10^{-9}$ unless stated; the tape, resin and
+fillet figures are the tests' own inputs, not published values.
+- `fillet_area_closed_forms`: the two closed forms above at $r = 1$ (tolerance $10^{-12}$), and $A(\pi/2)$ at
+  $r = 0.012$.
+- `half_box_seams`, the box of §51: three groups, each 4.0 m and convex with $\theta = \pi/2$ on every edge.
+  `Bottom / End`: $x = 0$ and $x = 2$, $y \in [0, 1]$, $z = 0$, so $2 \cdot 1$ m on the half, $\times 2$ for the mirror;
+  centre $(1, 0, 0)$. `Bottom / Side`: $y = 1$, $z = 0$, $x \in [0, 2]$, 2 m $\times 2$; centre $(1, 0, 0)$.
+  `End / Side`: $x = 0$ and $2$, $y = 1$, $z \in [0, 1]$, 2 m $\times 2$; centre $(1, 0, 0.5)$. No `Bottom / Bottom`
+  and no `End / End`: the bottom and the ends meet their mirrors flat across $y = 0$ ($\varphi = 0$).
+  `flat_bottom_across_centreline_has_no_keel_seam` checks the same with a schedule.
+- `half_box_tape_and_fillet`: tape 75 mm, 1 ply of 200 g/m², both faces, resin 1.0 per glass; fillet $r = 12$ mm at
+  1000 kg/m³. Per group: tape $4.0 \cdot 0.075 \cdot 0.2 \cdot 2 = 0.12$ kg, resin 0.12 kg, fillet
+  $4.0 \cdot 0.012^2 \cdot (1 - \pi/4) \cdot 1000$ kg. The total adds the three groups to the 56.0 kg shell; its centre
+  $z$ is $(18 + 0.5\,m_g)/(56 + 3\,m_g)$ for a group mass $m_g$ (two groups at $z = 0$, one at $z = 0.5$).
+- `v_bottom_keel_is_one_seam_counted_once`: half a V bottom from $(x, 0, 0)$ to $(x, 1, 0.5)$, $x \in [0, 2]$, creased
+  on the centreline. Outward normal $(0, 1, -2)/\sqrt{5}$, mirror $(0, -1, -2)/\sqrt{5}$, $\cos\varphi = 3/5$, so
+  $\varphi = 2\arctan(0.5)$ and $\theta = \pi - 2\arctan(0.5)$ (each side rises at $\arctan 0.5$). One
+  `Bottom / Bottom` group of 2.0 m, counted once, centre $(1, 0, 0)$; fillet $2.0 \cdot A(\theta) \cdot 1000$ at
+  $r = 12$ mm.
+- `colour_only_boundary_is_not_a_seam`: a flat, uncreased 2 m × 1 m plate split into two layers at $x = 1$: the
+  boundary is flat ($\varphi = 0$), so no seam.
+- `concave_crease_gets_tape_but_no_fillet`: face A in $z = 0$, $y \in [0, 1]$, outward $-z$; face B in $y = 1$,
+  $z \in [-1, 0]$, outward $-y$; creased shared edge along $x$. $(n_1 \times n_2) \cdot e = -1$, so concave,
+  $\theta = \pi + \pi/2 = 3\pi/2$: tape $2.0 \cdot 0.075 \cdot 0.2 \cdot 2$ kg, no fillet.
+- `a_closed_seam_warns_and_has_no_fillet`: B folded back over A to $(y = 0, z = 0.05)$: convex, $\theta = \arctan 0.05$
+  (under $5^\circ$), so a `materials.warn.seam_closed` warning, tape, and no fillet.
+- `two_faces_winding_an_edge_the_same_way_warn_and_are_not_a_seam`: the concave pair with B's winding reversed: one
+  `materials.warn.seam_winding` warning and no seam.
+- `a_seam_with_a_layer_that_is_not_symmetric_counts_once`: the box with `Side` not symmetric: `Bottom / Side` 2.0 m at
+  $(1, 1, 0)$ and `End / Side` 2.0 m (no mirror), `Bottom / End` still 4.0 m.
+- `crates/seacraft-core/src/examples/mod.rs`, `materials_shell_matches_the_render_mesh_sum` also asserts that no
+  example raises `materials.warn.seam_winding` (its half mesh winds consistently). A consistency check, not an oracle.
+
+### Provenance
+Hand-derived: the fillet cross-section (plane geometry above), the box seams and the V bottom's angle. Nothing here is
+published; the figures are the builder's numbers applied to the modelled surface, not validated (`DISCLAIMER.md`), with
+no laminate thickness offset.

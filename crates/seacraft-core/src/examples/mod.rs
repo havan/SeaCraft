@@ -639,6 +639,14 @@ mod tests {
                 .map(|((w, d), l)| w - 0.5 * d * l.thickness * l.density / 1000.0)
                 .collect();
             assert_eq!(est.layers.len(), reference.len(), "{e}");
+            // Every example winds its half mesh consistently, so no seam edge is refused.
+            assert!(
+                est.warnings
+                    .iter()
+                    .all(|w| w.key() != Some(crate::i18n::Key::MaterialsWarnSeamWinding)),
+                "{e}: {:?}",
+                est.warnings
+            );
             for (row, t) in est.layers.iter().zip(&reference) {
                 let kg = row.shell_kg / 1000.0;
                 assert!(

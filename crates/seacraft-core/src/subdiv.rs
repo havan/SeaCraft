@@ -33,7 +33,7 @@ pub enum SubdivisionMode {
 }
 
 /// Ordered endpoint pair -> indices of the adjacent faces.
-type EdgeFaces = HashMap<(usize, usize), Vec<usize>>;
+pub(crate) type EdgeFaces = HashMap<(usize, usize), Vec<usize>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SubdivisionOptions {
@@ -88,7 +88,7 @@ impl SubdivMesh {
     }
 
     /// Edge incidence: ordered endpoint pair -> indices of adjacent faces.
-    fn edge_faces(&self) -> (EdgeFaces, Vec<(usize, usize)>) {
+    pub(crate) fn edge_faces(&self) -> (EdgeFaces, Vec<(usize, usize)>) {
         let mut map: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
         for (fi, f) in self.faces.iter().enumerate() {
             for i in 0..f.len() {
