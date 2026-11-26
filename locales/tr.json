@@ -1173,6 +1173,7 @@
   "perf.natural_periods": "Doğal periyotlar: Dalıp-çıkma T_n = {heave}, Baş-kıç T_n = {pitch}",
   "perf.open_wave_pattern": "Dalga desenini aç",
   "perf.open_wave_pattern_tip": "Analiz çekmecesinde uzak alan (ince gemi) dalga deseni, hıza göre dalga direnci ve dalga izi",
+  "perf.plot.outside_range": "{method}, yöntemin geçerlilik aralığı dışında",
   "perf.plot.resistance": "Direnç",
   "perf.plot.speed_kn": "Hız (kn)",
   "perf.rao.heave_label": "Dalıp-çıkma z/ζ",

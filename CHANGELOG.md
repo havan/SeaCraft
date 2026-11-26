@@ -4,6 +4,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- The Performance tab greys out the resistance curve and table rows where the method is outside the range it was
+  fitted to, instead of drawing them like the rest: the whole Holtrop & Mennen curve for a hull outside its Cp, L/B
+  or B/T range (the demo hull is, at L/B 3.02 and B/T 5.71), and the DSYHS speeds outside Fn 0.15 to 0.75. The
+  numbers stay; the plot's legend says which part is outside.
 - The MCP `batch` tool now says what its rollback covers: on an error the session's model goes back to where it was
   before the batch, but files written by earlier steps (a design report, an unfolded plate, a wave image) stay on disk.
   It used to call the batch all-or-nothing (#8).

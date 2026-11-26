@@ -723,6 +723,10 @@ pub struct ResistanceRow {
     pub rt_kn: f64,
     pub pe_kw: Option<f64>,
     pub note: Option<String>,
+    /// False where the method is outside the range it was fitted to: the whole Holtrop curve
+    /// for a hull outside its Cp, L/B or B/T range, a DSYHS speed outside Fn 0.15 to 0.75. The
+    /// Performance tab greys these out.
+    pub in_range: bool,
 }
 
 /// Consolidated resistance prediction result for GUI display.
@@ -751,11 +755,20 @@ impl ResistanceResult {
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: None,
+                    in_range: true,
                 })
                 .collect(),
             warnings,
             rt_label: rt_label.to_string(),
         }
+    }
+
+    /// The same result with each row's `in_range` set by `in_range`.
+    pub fn with_in_range(mut self, in_range: impl Fn(&ResistanceRow) -> bool) -> Self {
+        for row in &mut self.rows {
+            row.in_range = in_range(row);
+        }
+        self
     }
 }
 
@@ -9609,14 +9622,17 @@ fn compute_resistance_impl(
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: None,
+                    in_range: true,
                 })
                 .collect();
+            let outside = input.outside_fitted_range();
             Ok(ResistanceResult {
                 method: "Holtrop & Mennen".to_string(),
                 rows,
                 warnings,
                 rt_label: "R_T (kN)".to_string(),
-            })
+            }
+            .with_in_range(|_| !outside))
         }
         ResistanceMethod::Dsyhs => {
             let dsyhs_in = resistance::DsyhsInput::measure(&hull, opts)
@@ -9636,6 +9652,7 @@ fn compute_resistance_impl(
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: None,
+                    in_range: true,
                 })
                 .collect();
             Ok(ResistanceResult {
@@ -9643,7 +9660,8 @@ fn compute_resistance_impl(
                 rows,
                 warnings,
                 rt_label: "R_T (kN)".to_string(),
-            })
+            }
+            .with_in_range(|r| (0.15..=0.75).contains(&r.fn_)))
         }
         ResistanceMethod::Savitsky => {
             let setup =
@@ -9664,6 +9682,7 @@ fn compute_resistance_impl(
                     rt_kn: p.resistance_n / 1000.0,
                     pe_kw: Some(p.pe_w / 1000.0),
                     note: Some(format!("trim {:.1}°", p.trim_deg)),
+                    in_range: true,
                 })
                 .collect();
             Ok(ResistanceResult {
@@ -9722,6 +9741,7 @@ fn compute_resistance_impl(
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: Some(format!("Rw {:.2} kN", r.rw_n / 1000.0)),
+                    in_range: true,
                 })
                 .collect();
             Ok(ResistanceResult {

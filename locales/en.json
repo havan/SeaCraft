@@ -1173,6 +1173,7 @@
   "perf.natural_periods": "Natural periods: Heave T_n = {heave}, Pitch T_n = {pitch}",
   "perf.open_wave_pattern": "Open wave pattern",
   "perf.open_wave_pattern_tip": "The far-field (thin-ship) wave pattern, wave drag over speed and wash, in the Analysis drawer",
+  "perf.plot.outside_range": "{method}, outside the method's fitted range",
   "perf.plot.resistance": "Resistance",
   "perf.plot.speed_kn": "Speed (kn)",
   "perf.rao.heave_label": "Heave z/ζ",

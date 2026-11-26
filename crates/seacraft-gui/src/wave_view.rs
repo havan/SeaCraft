@@ -876,11 +876,13 @@ fn plots(
                         label: tr.s(Key::WavePlotPairRatio).into(),
                         points: r.spacing_scan.clone(),
                         dashed: false,
+                        muted: false,
                     },
                     PlotSeries {
                         label: tr.s(Key::WavePlotNoInterference).into(),
                         points: vec![(s0, 1.0), (s1, 1.0)],
                         dashed: true,
+                        muted: false,
                     },
                 ];
                 let fn_s = format!("{:.2}", r.field.froude);
@@ -904,11 +906,13 @@ fn plots(
                                     label: tr.s(Key::WavePlotCatSeries).into(),
                                     points: pair.clone(),
                                     dashed: false,
+                                    muted: false,
                                 },
                                 PlotSeries {
                                     label: tr.s(Key::WavePlotTwoMonoSeries).into(),
                                     points: mono,
                                     dashed: true,
+                                    muted: false,
                                 },
                             ],
                             pair,
@@ -919,6 +923,7 @@ fn plots(
                             label: String::new(),
                             points: mono.clone(),
                             dashed: false,
+                            muted: false,
                         }],
                         mono,
                     ),
@@ -989,6 +994,7 @@ fn plots(
                     .zip(r.wash_cut.zeta.iter().copied())
                     .collect(),
                 dashed: false,
+                muted: false,
             }];
             let d_s = format!("{:.1}", r.wash_distance_m);
             let caption = tr.fmt(Key::WavePlotWashCaption, &[("d", &d_s)]);

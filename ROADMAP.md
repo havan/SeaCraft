@@ -95,8 +95,9 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 - [ ] Floodable length curves.
 - [ ] VRML import, and edge extrusion in the GUI.
 - [ ] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
-- [ ] Grey out or cut the Holtrop curve where the method does not apply (on the demo hull R_T falls past
-  7.25 kn).
+- [x] Grey out the resistance curve where the method does not apply: all of the Holtrop curve for a hull outside
+  its Cp, L/B or B/T range, and DSYHS speeds outside Fn 0.15 to 0.75. Neither Holtrop paper prints a top Froude
+  number, so no Holtrop speed is greyed on that account.
 - [ ] A 3D wave surface in Perspective view.
 - [ ] A wave pattern method for planing hulls; the Wave pattern view's title, "Thin-ship theory (Michell)",
   then becomes a drop-down that picks the method.
