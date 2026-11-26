@@ -843,6 +843,7 @@
   "log.templates_failed": "templates failed: {error}",
   "log.wave_image_failed": "Wave pattern image failed: {error}",
   "log.wave_image_saved": "Saved wave pattern to {path}",
+  "materials.item_default": "Hull materials (estimate)",
   "materials.warn.no_plating": "Layer {layer} has no density or no thickness, so its shell weighs nothing",
   "materials.warn.plywood_failed": "Plywood for layer {layer} could not be counted: {reason}",
   "materials.warn.seam_closed": "The {between} seam is folded almost shut (inside angle 5° or less), so it gets no fillet",

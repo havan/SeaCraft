@@ -843,6 +843,7 @@
   "log.templates_failed": "şablonlar oluşturulamadı: {error}",
   "log.wave_image_failed": "Dalga deseni görüntüsü oluşturulamadı: {error}",
   "log.wave_image_saved": "Dalga deseni kaydedildi: {path}",
+  "materials.item_default": "Tekne malzemeleri (tahmin)",
   "materials.warn.no_plating": "{layer} katmanının yoğunluğu veya kalınlığı yok, bu yüzden kabuğu ağırlık katmıyor",
   "materials.warn.plywood_failed": "{layer} katmanının kontrplak levhaları sayılamadı: {reason}",
   "materials.warn.seam_closed": "{between} dikişi neredeyse kapanmış (iç açı 5° veya daha az), bu yüzden köşe dolgusu almıyor",

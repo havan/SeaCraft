@@ -9,7 +9,8 @@ use std::f64::consts::PI;
 
 use serde::{Deserialize, Serialize};
 
-use crate::i18n::{Key, Msg};
+use crate::i18n::{Key, Locale, Msg, Tr};
+use crate::loading::WeightItem;
 use crate::math::{polygon_area3, Vec3};
 use crate::mesh::{Layer, Surface};
 use crate::panel_choices::{self, Choices};
@@ -231,6 +232,41 @@ pub struct Estimate {
     pub warnings: Vec<Msg>,
     /// True when the schedule carries any glass.
     pub has_glass: bool,
+}
+
+impl Estimate {
+    /// The total as a loading-condition weight item (tonnes) at the total centre.
+    pub fn weight_item(&self, name: &str) -> WeightItem {
+        let [x, y, z] = self.total.centre;
+        WeightItem {
+            name: name.to_owned(),
+            mass_t: self.total.mass_t,
+            x,
+            y,
+            z,
+        }
+    }
+}
+
+/// The default item name in `locale`, from the catalog.
+pub fn default_item_name(locale: Locale) -> &'static str {
+    Tr::new(locale).s(Key::MaterialsItemDefault)
+}
+
+/// The default item name in every language.
+pub fn default_item_names() -> [&'static str; 2] {
+    [default_item_name(Locale::En), default_item_name(Locale::Tr)]
+}
+
+/// The names `put_item` should also replace for an item called `name`: both defaults when `name` is
+/// either default, none otherwise.
+pub fn replaced_names(name: &str) -> Vec<&'static str> {
+    let defaults = default_item_names();
+    if defaults.contains(&name) {
+        defaults.to_vec()
+    } else {
+        Vec::new()
+    }
 }
 
 /// Accumulates a mass-weighted centre.
@@ -733,6 +769,24 @@ mod tests {
             close(row.area_m2, 4.0);
             close3(row.centre, c);
         }
+    }
+
+    #[test]
+    fn weight_item_is_in_tonnes_at_the_total_centre() {
+        let e = estimate(&half_box(), &Materials::default(), l3());
+        let w = e.weight_item("Hull");
+        close(w.mass_t, 0.056);
+        assert_eq!([w.x, w.y, w.z], e.total.centre);
+        assert_eq!(w.name, "Hull");
+    }
+
+    #[test]
+    fn default_names_come_from_the_catalogs() {
+        let [en, tr] = default_item_names();
+        assert_eq!(en, "Hull materials (estimate)");
+        assert_ne!(en, tr);
+        assert_eq!(replaced_names(tr), vec![en, tr]);
+        assert!(replaced_names("Mine").is_empty());
     }
 
     #[test]
