@@ -864,7 +864,8 @@ def page_values(lang, version, commit, release):
     root = "../" * lang_dir(lang).count("/")
     others = [other for other in LANGS if other != lang]
     switch = "".join(
-        f'<a class="lang-link" href="{root}{lang_dir(other)}" hreflang="{other}" lang="{other}" '
+        # ?lang= tells the page the reader chose it, even when the browser stores nothing and sends no referrer.
+        f'<a class="lang-link" href="{root}{lang_dir(other)}?lang={other}" hreflang="{other}" lang="{other}" '
         f'data-lang="{other}">{html_escape(site_strings(other)["page.lang.name"])}</a>'
         for other in others
     )

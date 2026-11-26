@@ -31,7 +31,7 @@ The page is written once per language in `LANGS` in `build.py`: English at the r
 folder of its own (`tr/`). `src/index.html` is a template: each `{{t:key}}` is a string from `locales/<lang>.json`,
 and the `js.*`, `hull.*` and `method.*` strings go into the page for `app.js`. A first visit to the English page
 from a browser set to Turkish goes to `tr/`; a language chosen with the switch is remembered and wins, and
-when the browser cannot store it, the switch carries it in the link (`?lang=en`) and arriving from another page
+the switch's links also carry it (`?lang=en`) for a browser that stores nothing, and arriving from another page
 of the site counts as a choice too.
 
 What `seacraft` says in words comes from the program in each language, never from these catalogs: `--json` stays

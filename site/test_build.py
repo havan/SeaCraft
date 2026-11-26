@@ -346,9 +346,10 @@ class TestRenderPage(unittest.TestCase):
 
     def test_the_switch_links_every_other_language(self):
         english = build.page_values("en", "v", "c", "r")
-        self.assertIn('href="tr/" hreflang="tr" lang="tr"', english["languages"])
+        self.assertIn('href="tr/?lang=tr" hreflang="tr" lang="tr"', english["languages"])
+        turkish = build.page_values("tr", "v", "c", "r")
+        self.assertIn('href="../?lang=en" hreflang="en" lang="en"', turkish["languages"])
         self.assertIn('hreflang="x-default" href="https://seacraft.app/"', english["alternates"])
-        self.assertIn('href="../" hreflang="en"', build.page_values("tr", "v", "c", "r")["languages"])
 
 
 if __name__ == "__main__":

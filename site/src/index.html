@@ -22,8 +22,8 @@
 /* The English page sends a reader to the language they chose with the switch, which is remembered and
    always wins; failing that, a first visit from a browser set to another language this site has goes to
    that language's page. Arriving from another page of this site, as the switch does, is a choice too, so a
-   browser that remembers nothing still keeps English when it is chosen. When the browser cannot store the
-   choice, the switch also writes it into the link (?lang=en); the page reads it and drops it from the address. */
+   browser that remembers nothing still keeps English when it is chosen. The switch's links also carry the
+   choice (?lang=en), for a browser that stores nothing; the page reads it and drops it from the address. */
 (function () {
   var langs = {{langs}}, chosen = null, marked = /[?&]lang=([a-z]+)/.exec(location.search);
   if (marked) {
