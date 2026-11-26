@@ -1,23 +1,49 @@
 /* SeaCraft site. The page is a ship's side: air above a waterline you can move, sea below it, and a
    red boot-top stripe where the two meet the rest of the page. */
 
+/* Each font in two parts, as Fontsource cuts them: basic Latin, and Latin Extended, which holds Turkish ğ, ş and İ.
+   A browser downloads the second only for a page that uses one of its characters. */
 @font-face {
   font-family: "Big Shoulders";
   src: url("fonts/big-shoulders-latin-standard-normal.woff2") format("woff2");
   font-weight: 100 900;
   font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Big Shoulders";
+  src: url("fonts/big-shoulders-latin-ext-standard-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
   font-family: "Atkinson Hyperlegible Next";
   src: url("fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2") format("woff2");
   font-weight: 200 800;
   font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("fonts/atkinson-hyperlegible-next-latin-ext-wght-normal.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
   font-family: "Atkinson Hyperlegible Mono";
   src: url("fonts/atkinson-hyperlegible-mono-latin-wght-normal.woff2") format("woff2");
   font-weight: 200 800;
   font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  src: url("fonts/atkinson-hyperlegible-mono-latin-ext-wght-normal.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
 :root {
@@ -111,11 +137,12 @@ pre code { font-size: inherit; }
   min-height: 3.75rem;
 }
 .brand { display: inline-flex; align-items: center; gap: .55rem; text-decoration: none; flex: none; }
-.brand-mark { width: 2.4rem; height: auto; overflow: visible; }
+.brand-mark { width: 3rem; height: auto; overflow: visible; }
 .brand-mark .mark-air { fill: var(--hull-air); }
 .brand-mark .mark-sea { fill: var(--hull-sea); }
-.brand-mark .mark-line { fill: none; stroke: var(--ink); stroke-width: 12; stroke-linejoin: round; }
-.brand-mark .mark-wl { stroke: var(--boot-top); stroke-width: 12; stroke-linecap: round; }
+.brand-mark .mark-line { fill: none; stroke: var(--ink); stroke-width: 10; stroke-linejoin: round; }
+.brand-mark .mark-cl { stroke: var(--ink); stroke-width: 6; }
+.brand-mark .mark-wl { stroke: var(--boot-top); stroke-width: 13; stroke-linecap: round; }
 .brand-name { font: 800 1.75rem/1 var(--display); letter-spacing: .01em; }
 .masthead-nav { flex: 1 1 auto; min-width: 0; }
 .masthead-nav ul {
