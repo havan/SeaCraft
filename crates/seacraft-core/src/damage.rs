@@ -715,7 +715,7 @@ pub fn solve_damaged_floating(
 /// The sheer / deck edge of the hull, for the damaged freeboard: the open
 /// boundary of a hull that ends at the sheer ([`hull_deck_boundary_vertices`]),
 /// or the outline of the deck of a closed one ([`closed_hull_deck_edge`]).
-fn hull_deck_edge_vertices(hull: &Hull) -> Vec<Vec3> {
+pub(crate) fn hull_deck_edge_vertices(hull: &Hull) -> Vec<Vec3> {
     let open = hull_deck_boundary_vertices(hull);
     if open.is_empty() {
         closed_hull_deck_edge(hull)
@@ -873,15 +873,34 @@ pub fn resolve_compartments(
     Ok(out)
 }
 
-/// Full evaluation of deterministic damage stability by the lost-buoyancy method.
-pub fn evaluate(
+/// The loading a damage case floats at: displacement, centre of gravity,
+/// water density and the volume the refined hull must float.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Particulars {
+    /// Displacement (t), appendages included.
+    pub displacement_t: f64,
+    /// Centre of gravity above the keel (m).
+    pub kg: f64,
+    /// Longitudinal centre of gravity (m, model x).
+    pub lcg: f64,
+    /// Transverse centre of gravity (m, + to starboard).
+    pub tcg: f64,
+    /// Water density (t/m³).
+    pub density: f64,
+    /// Volume the refined hull floats: Δ / (ρ · c_app) (m³).
+    pub target_volume: f64,
+}
+
+/// Resolve a case's loading: `displacement_t` and `kg` given together win
+/// (LCG defaulting to the hull's LCB at `opts.draft`); otherwise a loading
+/// condition; otherwise the hull at its design draft. Used by [`evaluate`]
+/// and by [`crate::floodable`].
+pub fn resolve_particulars(
     surface: &Surface,
     opts: &HydroOptions,
+    hull: &Hull,
     case: &DamageCase,
-) -> Result<DamageResult, String> {
-    validate(case)?;
-    let compartments = resolve_compartments(case, None)?;
-    let hull = Hull::new(surface, opts.subdivision);
+) -> Particulars {
     let density = case
         .water_density
         .unwrap_or(opts.water_density / 1000.0)
@@ -931,8 +950,33 @@ pub fn evaluate(
             }
         }
     };
+    Particulars {
+        displacement_t,
+        kg,
+        lcg,
+        tcg,
+        density,
+        target_volume: displacement_t / (density * app_coeff),
+    }
+}
 
-    let target_volume = displacement_t / (density * app_coeff);
+/// Full evaluation of deterministic damage stability by the lost-buoyancy method.
+pub fn evaluate(
+    surface: &Surface,
+    opts: &HydroOptions,
+    case: &DamageCase,
+) -> Result<DamageResult, String> {
+    validate(case)?;
+    let compartments = resolve_compartments(case, None)?;
+    let hull = Hull::new(surface, opts.subdivision);
+    let Particulars {
+        displacement_t,
+        kg,
+        lcg,
+        tcg,
+        density,
+        target_volume,
+    } = resolve_particulars(surface, opts, &hull, case);
     let mut warnings = Vec::new();
 
     // 1. Intact equilibrium floating condition.
@@ -1245,6 +1289,62 @@ fn evaluate_residual_criteria(
     })
 }
 
+/// A closed, creased L × B × D box barge from x = 0 to L, centred on y = 0,
+/// keel at z = 0: the analytic test hull of the damage and floodable tests.
+#[cfg(test)]
+pub(crate) fn make_box_barge(length: f64, beam: f64, depth: f64) -> Surface {
+    let mut s = Surface::new();
+    s.layers = vec![crate::mesh::Layer {
+        name: "Hull".into(),
+        symmetric: false,
+        use_in_hydrostatics: true,
+        visible: true,
+        ..crate::mesh::Layer::default()
+    }];
+    s.settings = crate::mesh::ProjectSettings {
+        name: "barge".into(),
+        length,
+        beam,
+        draft: depth,
+        water_density: 1000.0,
+        appendage_coefficient: 1.0,
+        main_particulars_set: true,
+        ..crate::mesh::ProjectSettings::default()
+    };
+    let (l, b) = (length, beam);
+    let corners = [
+        (0.0, 0.0, 0.0),
+        (l, 0.0, 0.0),
+        (l, b, 0.0),
+        (0.0, b, 0.0),
+        (0.0, 0.0, depth),
+        (l, 0.0, depth),
+        (l, b, depth),
+        (0.0, b, depth),
+    ];
+    for (x, y, z) in corners {
+        s.add_point(Vec3::new(x, y - b * 0.5, z));
+    }
+    for face in [
+        vec![0, 3, 2, 1],
+        vec![4, 5, 6, 7],
+        vec![0, 1, 5, 4],
+        vec![1, 2, 6, 5],
+        vec![2, 3, 7, 6],
+        vec![3, 0, 4, 7],
+    ] {
+        s.add_face(face, 0);
+    }
+    s.initialize_trace();
+    for edge in &mut s.edges {
+        edge.crease = true;
+    }
+    for point in &mut s.points {
+        point.kind = crate::mesh::VertexKind::Corner;
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1295,59 +1395,6 @@ mod tests {
         };
         let err = validate(&case).unwrap_err();
         assert!(err.contains("t/m³"), "{err}");
-    }
-
-    fn make_box_barge(length: f64, beam: f64, depth: f64) -> Surface {
-        let mut s = Surface::new();
-        s.layers = vec![crate::mesh::Layer {
-            name: "Hull".into(),
-            symmetric: false,
-            use_in_hydrostatics: true,
-            visible: true,
-            ..crate::mesh::Layer::default()
-        }];
-        s.settings = crate::mesh::ProjectSettings {
-            name: "barge".into(),
-            length,
-            beam,
-            draft: depth,
-            water_density: 1000.0,
-            appendage_coefficient: 1.0,
-            main_particulars_set: true,
-            ..crate::mesh::ProjectSettings::default()
-        };
-        let (l, b) = (length, beam);
-        let corners = [
-            (0.0, 0.0, 0.0),
-            (l, 0.0, 0.0),
-            (l, b, 0.0),
-            (0.0, b, 0.0),
-            (0.0, 0.0, depth),
-            (l, 0.0, depth),
-            (l, b, depth),
-            (0.0, b, depth),
-        ];
-        for (x, y, z) in corners {
-            s.add_point(Vec3::new(x, y - b * 0.5, z));
-        }
-        for face in [
-            vec![0, 3, 2, 1],
-            vec![4, 5, 6, 7],
-            vec![0, 1, 5, 4],
-            vec![1, 2, 6, 5],
-            vec![2, 3, 7, 6],
-            vec![3, 0, 4, 7],
-        ] {
-            s.add_face(face, 0);
-        }
-        s.initialize_trace();
-        for edge in &mut s.edges {
-            edge.crease = true;
-        }
-        for point in &mut s.points {
-            point.kind = crate::mesh::VertexKind::Corner;
-        }
-        s
     }
 
     /// Derived analytic test:
