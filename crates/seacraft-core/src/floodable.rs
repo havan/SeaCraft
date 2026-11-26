@@ -159,6 +159,7 @@ fn compute_with_deck_edge(
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
             (lo.min(v.x), hi.max(v.x))
         });
+    validate_bulkheads(&opts.bulkheads, x_aft, x_fwd)?;
     let grid = Grid::new(x_aft, x_fwd, opts.stations);
     let closed = hull.closed_tris();
     let eval = |trim: f64| -> Trial {
@@ -218,11 +219,16 @@ fn compute_with_deck_edge(
             if points.is_empty() {
                 warnings.push(Msg::new(Key::WarnFloodableNoCurve).arg("mu", format!("{mu:.2}")));
             }
-            FloodableCurve {
+            let mut curve = FloodableCurve {
                 permeability: mu,
                 points,
                 checks: Vec::new(),
+            };
+            if !opts.bulkheads.is_empty() {
+                curve.checks =
+                    check_compartments(&curve, &opts.bulkheads, x_aft, x_fwd, opts.factor);
             }
+            curve
         })
         .collect();
     Ok(FloodableResult {
@@ -254,6 +260,11 @@ fn validate(opts: &FloodableOptions) -> Result<(), String> {
             opts.margin_m
         ));
     }
+    if let Some(f) = opts.factor {
+        if !(f > 0.0 && f <= 1.0) {
+            return Err(format!("factor of subdivision {f} is outside (0, 1]"));
+        }
+    }
     if opts.stations < 11 {
         return Err(format!(
             "{} stations are too few; use at least 11",
@@ -261,6 +272,56 @@ fn validate(opts: &FloodableOptions) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn validate_bulkheads(bulkheads: &[f64], x_aft: f64, x_fwd: f64) -> Result<(), String> {
+    for &x in bulkheads {
+        if !(x > x_aft && x < x_fwd) {
+            return Err(format!(
+                "bulkhead at x = {x} m is not inside the hull ({x_aft:.3} to {x_fwd:.3} m)"
+            ));
+        }
+    }
+    if bulkheads.windows(2).any(|w| w[1] <= w[0]) {
+        return Err("bulkhead positions must increase from aft to forward, each once".into());
+    }
+    Ok(())
+}
+
+/// The compartments the bulkheads make, from the aft end of the hull to its forward end, each judged against
+/// the permissible length at its centre: the triangle on it, as high as it is long, stays under the
+/// permissible curve exactly when its length does not exceed the permissible length there.
+fn check_compartments(
+    curve: &FloodableCurve,
+    bulkheads: &[f64],
+    x_aft: f64,
+    x_fwd: f64,
+    factor: Option<f64>,
+) -> Vec<CompartmentCheck> {
+    let f = factor.unwrap_or(1.0);
+    let mut bounds = Vec::with_capacity(bulkheads.len() + 2);
+    bounds.push(x_aft);
+    bounds.extend_from_slice(bulkheads);
+    bounds.push(x_fwd);
+    bounds
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let floodable = floodable_at(curve, 0.5 * (a + b));
+            let permissible = floodable.map(|l| f * l);
+            CompartmentCheck {
+                x_aft: a,
+                x_fwd: b,
+                length: b - a,
+                floodable,
+                permissible,
+                passed: permissible.map(|p| b - a <= p),
+                reason: floodable
+                    .is_none()
+                    .then(|| Msg::new(Key::FloodableCheckOutsideCurve)),
+            }
+        })
+        .collect()
 }
 
 /// One trial waterline and the compartment it gives for each permeability.
@@ -718,5 +779,90 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("deck edge"), "{err}");
+    }
+
+    fn check_opts(bulkheads: Vec<f64>, factor: Option<f64>) -> FloodableOptions {
+        FloodableOptions {
+            permeabilities: vec![0.85],
+            factor,
+            bulkheads,
+            ..FloodableOptions::default()
+        }
+    }
+
+    #[test]
+    fn bulkheads_split_the_hull_and_are_judged_at_their_midpoints() {
+        let hull = barge_hull();
+        let opts = check_opts(vec![2.0, 4.0, 6.0, 8.0], Some(0.5));
+        let res = compute(&hull, &barge_particulars(0.8), &opts).unwrap();
+        let curve = &res.curves[0];
+        assert_eq!(res.factor, Some(0.5));
+        assert_eq!(curve.checks.len(), 5);
+        let bounds = [0.0, 2.0, 4.0, 6.0, 8.0, L];
+        let mut judged = 0;
+        for (c, w) in curve.checks.iter().zip(bounds.windows(2)) {
+            assert_eq!((c.x_aft, c.x_fwd), (w[0], w[1]));
+            assert!((c.length - (w[1] - w[0])).abs() < 1e-12);
+            if let Some(f) = c.floodable {
+                assert_eq!(Some(f), floodable_at(curve, 0.5 * (w[0] + w[1])));
+                let permissible = c.permissible.unwrap();
+                assert!((permissible - 0.5 * f).abs() < 1e-12);
+                assert_eq!(c.passed, Some(c.length <= permissible));
+                judged += 1;
+            }
+        }
+        assert!(judged >= 3, "{judged} judged");
+        // Amidships the floodable length is 6.87 m (μ 0.85): permissible 3.44 m, so a 2 m compartment passes.
+        assert_eq!(curve.checks[2].passed, Some(true));
+    }
+
+    #[test]
+    fn a_compartment_outside_the_curve_is_not_judged() {
+        let hull = barge_hull();
+        // The μ 0.85 curve starts near x = 1.1 m: a 1 m end compartment (centre 0.5 m) lies outside it.
+        let opts = check_opts(vec![1.0, 9.0], None);
+        let res = compute(&hull, &barge_particulars(0.8), &opts).unwrap();
+        let first = &res.curves[0].checks[0];
+        assert!(res.curves[0].points[0].x_mid > 0.5);
+        assert_eq!(first.passed, None);
+        assert_eq!(first.floodable, None);
+        assert!(first.reason.is_some());
+        // Without a factor, permissible length is the floodable length itself (F = 1).
+        let mid = &res.curves[0].checks[1];
+        assert_eq!(mid.permissible, mid.floodable);
+    }
+
+    #[test]
+    fn unsorted_or_outside_bulkheads_are_errors() {
+        let hull = barge_hull();
+        for bulkheads in [
+            vec![4.0, 2.0],
+            vec![3.0, 3.0],
+            vec![-1.0],
+            vec![11.0],
+            vec![f64::NAN],
+        ] {
+            let err = compute(
+                &hull,
+                &barge_particulars(0.8),
+                &check_opts(bulkheads.clone(), None),
+            )
+            .unwrap_err();
+            assert!(err.contains("bulkhead"), "{bulkheads:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn factor_outside_zero_one_is_an_error() {
+        let hull = barge_hull();
+        for f in [0.0, 1.5, f64::NAN] {
+            let err = compute(
+                &hull,
+                &barge_particulars(0.8),
+                &check_opts(vec![5.0], Some(f)),
+            )
+            .unwrap_err();
+            assert!(err.contains("factor of subdivision"), "{f}: {err}");
+        }
     }
 }

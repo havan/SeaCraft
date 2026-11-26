@@ -528,6 +528,7 @@
   "export.ply": "PLY (ASCII)…",
   "export.stl": "STL (ikili)…",
   "export.threemf": "3MF (birleşik ağ)…",
+  "floodable.check.outside_curve": "değerlendirilmedi: su alabilir boy eğrisi bölmenin ortasına ulaşmıyor",
   "heel.badge.capsizes": "⚠ Alabora olur",
   "heel.badge.past_vanishing": "⚠ Sıfırlanma açısı aşıldı",
   "heel.banner.cannot_float": "⚠ Yüzemez",

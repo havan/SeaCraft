@@ -528,6 +528,7 @@
   "export.ply": "PLY (ASCII)…",
   "export.stl": "STL (binary)…",
   "export.threemf": "3MF (welded mesh)…",
+  "floodable.check.outside_curve": "not judged: the floodable length curve does not reach the compartment’s centre",
   "heel.badge.capsizes": "⚠ Capsizes",
   "heel.badge.past_vanishing": "⚠ Past vanishing angle",
   "heel.banner.cannot_float": "⚠ Cannot float",
