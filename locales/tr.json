@@ -844,6 +844,7 @@
   "log.wave_image_failed": "Dalga deseni görüntüsü oluşturulamadı: {error}",
   "log.wave_image_saved": "Dalga deseni kaydedildi: {path}",
   "materials.warn.no_plating": "{layer} katmanının yoğunluğu veya kalınlığı yok, bu yüzden kabuğu ağırlık katmıyor",
+  "materials.warn.plywood_failed": "{layer} katmanının kontrplak levhaları sayılamadı: {reason}",
   "materials.warn.seam_closed": "{between} dikişi neredeyse kapanmış (iç açı 5° veya daha az), bu yüzden köşe dolgusu almıyor",
   "materials.warn.seam_degenerate": "{between} dikişinin bazı kenarlarının uzunluğu yok, alanı olmayan bir yüz üzerinde ya da ikiden fazla yüzle buluşuyor, bu yüzden sayılmıyor",
   "materials.warn.seam_winding": "{between} dikişinin iki yüzü bir kenar boyunca aynı yönde dönüyor, bu yüzden o kenarlar dikiş sayılmıyor",

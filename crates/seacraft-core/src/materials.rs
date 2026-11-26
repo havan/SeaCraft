@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::{Key, Msg};
 use crate::math::{polygon_area3, Vec3};
-use crate::mesh::Surface;
+use crate::mesh::{Layer, Surface};
 use crate::panel_choices::{self, Choices};
-use crate::panels::Stock;
+use crate::panels::{self, PanelOptions, Stock};
 use crate::subdiv::{self, SubdivMesh, SubdivisionOptions};
 
 /// Which face of the shell a ply sits on. It does not change the mass.
@@ -204,11 +204,27 @@ pub struct Total {
     pub centre: [f64; 3],
 }
 
-/// What the schedule adds up to on a surface. Plywood is added by a later measurement.
+/// Plywood sheets for one developable layer, as `seacraft panels` counts them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlywoodRow {
+    pub layer: String,
+    pub thickness_mm: f64,
+    /// Sheets end to end: an upper bound.
+    pub sheets: usize,
+    pub all_lie_flat: bool,
+    /// Panels that do not lie flat.
+    pub not_flat: Vec<String>,
+    /// Panels the layout refused.
+    pub refused: Vec<String>,
+}
+
+/// What the schedule adds up to on a surface.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Estimate {
     pub layers: Vec<LayerRow>,
     pub seams: Vec<SeamRow>,
+    /// One row per distinct developable layer name; empty when none is developable.
+    pub plywood: Vec<PlywoodRow>,
     pub total: Total,
     /// Schedule names that match no layer of the surface.
     pub unmatched_layers: Vec<String>,
@@ -322,9 +338,11 @@ pub fn estimate(surface: &Surface, schedule: &Materials, opts: SubdivisionOption
     for name in &unmatched_layers {
         warnings.push(Msg::new(Key::MaterialsWarnUnmatchedLayer).arg("name", name));
     }
+    let plywood = plywood_rows(surface, schedule, opts, &mut warnings);
     Estimate {
         layers: rows,
         seams,
+        plywood,
         total: Total {
             mass_kg: total.weight,
             mass_t: total.weight / 1000.0,
@@ -334,6 +352,72 @@ pub fn estimate(surface: &Surface, schedule: &Materials, opts: SubdivisionOption
         warnings,
         has_glass: schedule.has_glass(),
     }
+}
+
+/// Sheets per distinct developable layer name, so thicknesses are not added together. A stock or
+/// panel error is a warning and that layer gets no row.
+fn plywood_rows(
+    surface: &Surface,
+    schedule: &Materials,
+    opts: SubdivisionOptions,
+    warnings: &mut Vec<Msg>,
+) -> Vec<PlywoodRow> {
+    let mut names: Vec<&Layer> = Vec::new();
+    for l in surface.layers.iter().filter(|l| l.developable) {
+        if !names.iter().any(|n| n.name == l.name) {
+            names.push(l);
+        }
+    }
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let failed = |layer: &str, reason: String| {
+        Msg::new(Key::MaterialsWarnPlywoodFailed)
+            .arg("layer", layer)
+            .arg("reason", reason)
+    };
+    let stock = match schedule.plywood.as_ref().map(PlywoodStock::stock) {
+        None => Stock::default(),
+        Some(Ok(s)) => s,
+        Some(Err(e)) => {
+            for l in names {
+                warnings.push(failed(&l.name, e.clone()));
+            }
+            return Vec::new();
+        }
+    };
+    let mut rows = Vec::new();
+    for l in names {
+        let set = panels::panel_set(
+            surface,
+            &PanelOptions {
+                subdivision: opts,
+                layers: Some(vec![l.name.clone()]),
+                stock,
+                ..Default::default()
+            },
+        );
+        match set {
+            Ok(set) => {
+                let not_flat: Vec<String> = set
+                    .rows
+                    .iter()
+                    .filter(|r| !r.lies_flat)
+                    .map(|r| r.panel.clone())
+                    .collect();
+                rows.push(PlywoodRow {
+                    layer: l.name.clone(),
+                    thickness_mm: l.thickness * 1000.0,
+                    sheets: set.total_sheets,
+                    all_lie_flat: not_flat.is_empty(),
+                    not_flat,
+                    refused: set.refused.iter().map(|r| r.panel.clone()).collect(),
+                });
+            }
+            Err(e) => warnings.push(failed(&l.name, e)),
+        }
+    }
+    rows
 }
 
 /// Cross-section of a cove of radius `r` filling a corner of inside angle `theta` (radians):
@@ -1223,5 +1307,77 @@ mod tests {
             scarf_mm: 0.0,
         };
         assert_eq!(p.stock(), Ok(Stock::default()));
+    }
+    #[test]
+    fn skiff_plywood_matches_panels_per_layer() {
+        use crate::examples::{build, Example};
+        use crate::panels::{panel_set, PanelOptions};
+        let (s, _) = build(Example::Skiff4m).unwrap();
+        let e = estimate(&s, &Materials::default(), l3());
+        let got: Vec<(String, f64)> = e
+            .plywood
+            .iter()
+            .map(|r| (r.layer.clone(), r.thickness_mm))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Bottom".to_string(), 9.0),
+                ("Side".to_string(), 6.0),
+                ("Transom".to_string(), 12.0)
+            ]
+        );
+        for r in &e.plywood {
+            let set = panel_set(
+                &s,
+                &PanelOptions {
+                    subdivision: l3(),
+                    layers: Some(vec![r.layer.clone()]),
+                    stock: Stock::default(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(r.sheets, set.total_sheets, "{}", r.layer);
+            assert!(r.sheets > 0);
+            assert!(r.all_lie_flat, "{}", r.layer);
+            assert!(r.not_flat.is_empty() && r.refused.is_empty());
+        }
+        assert!(!e
+            .warnings
+            .iter()
+            .any(|w| w.key() == Some(Key::MaterialsWarnPlywoodFailed)));
+    }
+
+    #[test]
+    fn no_developable_layer_no_plywood() {
+        use crate::examples::{build, Example};
+        let (s, _) = build(Example::Trawler22m).unwrap();
+        assert!(s.layers.iter().all(|l| !l.developable));
+        let e = estimate(&s, &Materials::default(), l3());
+        assert!(e.plywood.is_empty());
+        assert!(!e
+            .warnings
+            .iter()
+            .any(|w| w.key() == Some(Key::MaterialsWarnPlywoodFailed)));
+    }
+
+    #[test]
+    fn bad_plywood_stock_is_a_warning_not_a_row() {
+        use crate::examples::{build, Example};
+        let (s, _) = build(Example::Skiff4m).unwrap();
+        let m = Materials {
+            plywood: Some(PlywoodStock {
+                stock_mm: "nonsense".into(),
+                scarf_mm: 0.0,
+            }),
+            ..Default::default()
+        };
+        let e = estimate(&s, &m, l3());
+        assert!(e.plywood.is_empty());
+        assert!(e
+            .warnings
+            .iter()
+            .any(|w| w.key() == Some(Key::MaterialsWarnPlywoodFailed)));
     }
 }
