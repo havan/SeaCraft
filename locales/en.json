@@ -1712,6 +1712,7 @@
   "wave.computing_pattern": "Computing the wave pattern…",
   "wave.ctl.catamaran": "Catamaran",
   "wave.ctl.catamaran_tip": "Two copies of this hull side by side; their wave systems add up, and can cancel or reinforce each other",
+  "wave.ctl.fn_no_length_tip": "A Froude number needs the waterline length, which is not known yet: the speed reads in knots.",
   "wave.ctl.fn_tip": "Froude number: the speed divided by √(g × waterline length). The same Froude number gives the same shape of wave pattern on a small or a large hull.",
   "wave.ctl.kn_tip": "Knots: nautical miles per hour (1 kn = 0.514 m/s)",
   "wave.ctl.plan_contours": "Contours on Plan view",

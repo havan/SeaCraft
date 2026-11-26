@@ -1398,7 +1398,10 @@ warning when the input is higher.
 Neither paper prints an upper Froude number (re-read 2026-11-26): 1982 gives none, and 1984 derives the high-speed
 fit "for the speed range Fn > 0.55" (p. 273) without a top. The Performance tab therefore greys the Holtrop curve
 only for a hull outside the Cp, L/B or B/T range (`HoltropInput::outside_fitted_range`,
-`outside_fitted_range_follows_the_form_ranges_not_the_bulb_cap`), never by speed.
+`outside_fitted_range_follows_the_form_ranges_not_the_bulb_cap`), never by speed. Those three ranges are not
+printed in either paper either: 1982 says only that "the application is limited to hull forms resembling the average
+ship described by the main dimensions and form coefficients used in the method" (p. 166, re-read 2026-11-26, no
+table of limits on that page). Where SeaCraft's figures come from is not yet cited.
 
 The correlation allowance is taken on $S$, by the 1982 formula. The 1984 example's totals take it on
 $S + S_{APP}$; the test adds the appendages' share back and says so.

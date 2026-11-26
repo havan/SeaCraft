@@ -468,7 +468,7 @@ fn frames_until_refined(ctx: &egui::Context, app: &mut App) {
 #[test]
 fn large_hull_refines_in_the_background() {
     let (mut app, ctx) = container();
-    frame(&ctx, &mut app, Vec::new());
+    app.sync_render_cache();
     assert_eq!(
         app.render_cache_level(),
         Some(3),
@@ -485,7 +485,7 @@ fn large_hull_refines_in_the_background() {
 #[test]
 fn a_superseded_mesh_job_is_dropped() {
     let (mut app, ctx) = container();
-    frame(&ctx, &mut app, Vec::new());
+    app.sync_render_cache();
     assert!(app.mesh_refining());
     let p = app.surface().unwrap().points[10].p;
     app.move_point(10, p + seacraft_core::math::Vec3::new(0.0, 0.0, 0.5))

@@ -3901,7 +3901,7 @@ pub fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "batch",
-            "Run several tool calls atomically",
+            "Run several tool calls, restoring the model on error",
             "Run tool calls in order, stopping at the first error. Each step is {name, arguments}. On an error the \
              session's model is restored to what it was before the batch (both headless and when connected to the GUI), \
              but files written by earlier steps stay on disk: a design report, an unfolded plate or a wave image is not \
@@ -6816,6 +6816,8 @@ mod tests {
             "{description}"
         );
         assert!(!description.contains("all-or-nothing"), "{description}");
+        let title = tool["title"].as_str().unwrap_or_default();
+        assert!(!title.to_lowercase().contains("atomic"), "{title}");
     }
 
     #[test]

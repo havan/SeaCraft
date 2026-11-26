@@ -1409,3 +1409,17 @@ fn froude_unit_without_a_hull_reads_in_knots() {
         WaveSpeed::Knots(app.performance_state().speed_kn)
     );
 }
+
+/// Review I1: the resistance curve does not depend on the shared speed, so moving the speed
+/// leaves it current; the RAOs, which do, go out of date.
+#[test]
+fn moving_the_speed_keeps_the_resistance_current() {
+    let (mut app, _ctx) = demo_with_waves();
+    app.compute_resistance_blocking().expect("resistance");
+    app.compute_raos_blocking().expect("raos");
+    assert!(!app.stale_results().contains(&"resistance"));
+    app.set_wave_speed(WaveSpeed::Knots(8.0));
+    let stale = app.stale_results();
+    assert!(!stale.contains(&"resistance"), "{stale:?}");
+    assert!(stale.contains(&"RAOs"), "{stale:?}");
+}

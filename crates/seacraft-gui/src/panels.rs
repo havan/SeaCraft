@@ -2279,6 +2279,8 @@ pub fn report_options_tr(
 pub enum PerformanceAction {
     None,
     Changed,
+    /// The shared speed moved (it is in the state already): only what depends on it recomputes.
+    SpeedChanged,
     Compute,
     /// "Open wave pattern": show the Wave pattern view in the Analysis drawer.
     OpenWaveView,
@@ -2341,7 +2343,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     )
     .on_hover_text(tr.s(Key::PerfSpeedSharedTip));
     if speed_resp.changed() {
-        action = PerformanceAction::Changed;
+        action = PerformanceAction::SpeedChanged;
     }
 
     ui.add_space(4.0);
@@ -2404,7 +2406,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
             let kn = (kn * 10.0).round() / 10.0;
             if kn != panel.state.speed_kn {
                 panel.state.speed_kn = kn;
-                action = PerformanceAction::Changed;
+                action = PerformanceAction::SpeedChanged;
             }
         }
     }

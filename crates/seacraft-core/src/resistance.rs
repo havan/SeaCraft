@@ -19,6 +19,9 @@
 //!
 //! Limits worth stating in the answer rather than hiding: Holtrop–Mennen is
 //! used here for `0.55 ≤ Cp ≤ 0.85`, `3.9 ≤ L/B ≤ 14.9` and `2.1 ≤ B/T ≤ 4.0`.
+//! Neither paper prints these figures (1982, p. 166, limits the method to hull
+//! forms resembling its average ship without a table), so their source is not
+//! cited yet (`docs/oracles.md` §43).
 //! [`HoltropInput::warnings`] reports the ones a given hull violates instead of
 //! silently extrapolating, and [`HoltropInput::outside_fitted_range`] says
 //! whether any does. Neither paper prints an upper Froude number: 1984 derives

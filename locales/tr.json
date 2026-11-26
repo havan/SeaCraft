@@ -1712,6 +1712,7 @@
   "wave.computing_pattern": "Dalga deseni hesaplanıyor…",
   "wave.ctl.catamaran": "Katamaran",
   "wave.ctl.catamaran_tip": "Bu gövdenin yan yana iki kopyası; dalga sistemleri üst üste biner, birbirini sönümleyebilir veya güçlendirebilir",
+  "wave.ctl.fn_no_length_tip": "Froude sayısı için su hattı boyu gerekir ve henüz bilinmiyor: hız knot olarak gösterilir.",
   "wave.ctl.fn_tip": "Froude sayısı: hızın √(g × su hattı boyu) değerine bölümü. Aynı Froude sayısı küçük veya büyük teknede aynı dalga deseni biçimini verir.",
   "wave.ctl.kn_tip": "Knot: saatte deniz mili (1 kn = 0.514 m/s)",
   "wave.ctl.plan_contours": "Plan görünümünde eş yükseltiler",

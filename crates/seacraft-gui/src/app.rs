@@ -2304,6 +2304,9 @@ impl App {
             DockAction::Performance(panels::PerformanceAction::Changed) => {
                 self.performance_changed();
             }
+            DockAction::Performance(panels::PerformanceAction::SpeedChanged) => {
+                self.speed_changed();
+            }
             DockAction::Performance(panels::PerformanceAction::Compute) => {
                 self.start_performance_compute()
             }
@@ -6070,12 +6073,18 @@ impl App {
         }
     }
 
-    /// Set the speed resistance, waves and seakeeping share (knots).
+    /// Set the speed resistance, waves and seakeeping share (knots). The resistance curve does not
+    /// depend on it and stays current; the wave pattern and the RAOs key on it.
     fn set_shared_speed(&mut self, speed_kn: f64) {
         if self.perf_state.speed_kn != speed_kn {
             self.perf_state.speed_kn = speed_kn;
-            self.performance_changed();
+            self.speed_changed();
         }
+    }
+
+    /// The shared speed moved: the results that depend on it recompute after the quiet period.
+    fn speed_changed(&mut self) {
+        self.last_change = Some(std::time::Instant::now());
     }
 
     /// Open the Wave pattern view in the drawer (it computes while open), or close it if it is the
@@ -6174,6 +6183,7 @@ impl App {
             self.perf_rev,
             self.project_rev,
             self.loading_selected as u64,
+            self.perf_state.speed_kn.to_bits(),
         ])
     }
 
@@ -9256,6 +9266,13 @@ impl App {
     /// socket's `ui.render` needs a mesh without waiting for a frame).
     pub fn refresh_cache(&mut self) {
         self.sync_cache_at(true);
+    }
+
+    /// Refine as a frame does, without drawing or collecting finished jobs: a large hull gets
+    /// its preview and a background job for the full level (test hook; a frame may collect a
+    /// fast job in the same pass, which makes "still refining" a race).
+    pub fn sync_render_cache(&mut self) {
+        self.sync_cache_at(false);
     }
 
     /// A status line for an action that changed nothing about the model.

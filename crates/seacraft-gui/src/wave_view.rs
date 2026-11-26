@@ -235,10 +235,7 @@ fn speed_control(
     let mut changed = false;
     ui.label(tr.s(Key::WaveCtlSpeed))
         .on_hover_text(tr.s(Key::WaveCtlSpeedTip));
-    let shown = |kn: f64| match length_wl {
-        Some(l) if s.froude_unit => WaveSpeed::Knots(kn).in_unit(false, l),
-        _ => WaveSpeed::Knots(kn),
-    };
+    let shown = |kn: f64| shown_speed(kn, s.froude_unit, length_wl);
     let current = *speed_kn;
     let to_kn = |v: WaveSpeed| match (v, length_wl) {
         (WaveSpeed::Knots(kn), _) => kn,
@@ -271,15 +268,20 @@ fn speed_control(
         *speed_kn = to_kn(in_unit(value));
         changed = true;
     }
-    // The unit is only how the speed reads: switching it does not move the speed.
-    let mut froude = s.froude_unit;
+    // The unit is only how the speed reads: switching it does not move the speed. Without a
+    // waterline length the speed reads in knots, and "Fn" cannot be picked.
+    let (selected, fn_enabled) = unit_switch(s.froude_unit, length_wl);
+    let mut froude = selected;
     theme::segmented(ui, |ui| {
         ui.selectable_value(&mut froude, false, "kn")
             .on_hover_text(tr.s(Key::WaveCtlKnTip));
-        ui.selectable_value(&mut froude, true, "Fn")
-            .on_hover_text(tr.s(Key::WaveCtlFnTip));
+        ui.add_enabled_ui(fn_enabled, |ui| {
+            ui.selectable_value(&mut froude, true, "Fn")
+                .on_hover_text(tr.s(Key::WaveCtlFnTip))
+                .on_disabled_hover_text(tr.s(Key::WaveCtlFnNoLengthTip));
+        });
     });
-    if froude != s.froude_unit {
+    if froude != selected {
         s.froude_unit = froude;
         changed = true;
     }
@@ -308,6 +310,22 @@ fn speed_control(
         }
     }
     changed
+}
+
+/// The shared speed (knots) as the view shows it: a Froude number when `froude_unit` is set and a
+/// waterline length (m) is known, else knots.
+fn shown_speed(speed_kn: f64, froude_unit: bool, length_wl: Option<f64>) -> WaveSpeed {
+    match length_wl.filter(|l| *l > 0.0) {
+        Some(l) if froude_unit => WaveSpeed::Knots(speed_kn).in_unit(false, l),
+        _ => WaveSpeed::Knots(speed_kn),
+    }
+}
+
+/// The kn / Fn switch: whether "Fn" is the unit shown, and whether it can be picked (it needs a
+/// waterline length).
+fn unit_switch(froude_unit: bool, length_wl: Option<f64>) -> (bool, bool) {
+    let known = length_wl.is_some_and(|l| l > 0.0);
+    (froude_unit && known, known)
 }
 
 /// The short reasons thin-ship theory does not fit, for the banner: "L/B 3.1", "wide transom",
@@ -1206,6 +1224,17 @@ fn bottom_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review I2: without a waterline length the speed reads in knots, so "kn" is the unit
+    /// selected and "Fn" cannot be picked; with one, the switch follows the setting.
+    #[test]
+    fn the_unit_switch_shows_the_unit_drawn() {
+        assert_eq!(unit_switch(true, None), (false, false));
+        assert_eq!(unit_switch(false, None), (false, false));
+        assert_eq!(unit_switch(true, Some(10.7)), (true, true));
+        assert_eq!(unit_switch(false, Some(10.7)), (false, true));
+        assert_eq!(shown_speed(6.0, true, None), WaveSpeed::Knots(6.0));
+    }
 
     #[test]
     fn interference_is_worded() {
