@@ -145,7 +145,10 @@ pub fn check_read_path(path: &Path, roots: &[PathBuf]) -> std::result::Result<Pa
 /// Verify that an output `path` (which may not exist yet) resolves inside at least one of `roots`.
 /// If `roots` is empty, any path is allowed.
 ///
-/// Parent directories and symlinks are resolved via canonicalization.
+/// Parent directories and symlinks are resolved via canonicalization. The check alone does not
+/// hold the write to the root: a folder on the way can be swapped for a link before the write
+/// runs. Write the returned path inside [`crate::io::within_write_roots`] with the same `roots`,
+/// which opens its folders from the root without following links.
 pub fn check_write_path(path: &Path, roots: &[PathBuf]) -> std::result::Result<PathBuf, String> {
     if roots.is_empty() {
         return Ok(path.to_path_buf());
@@ -282,5 +285,68 @@ mod tests {
         assert!(err.contains("write-root rule violation"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Make `link` a symbolic link to the folder `target`; false where this account may not
+    /// (Windows without the privilege), so the test has nothing to show there.
+    fn link_folder(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link).is_ok();
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_dir(target, link).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        return false;
+    }
+
+    /// Issue #18: a folder under the write root is swapped for a link out of it after the path
+    /// was checked and before the write. The write must fail, and nothing may land outside.
+    #[test]
+    fn a_folder_swapped_for_a_link_after_the_check_is_not_written_through() {
+        let base = std::env::temp_dir().join(format!("seacraft-test-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let roots = vec![root.clone()];
+
+        let validated = check_write_path(&root.join("sub").join("out.fef"), &roots).unwrap();
+        // Between the check and the write: the folder becomes a link out of the root.
+        std::fs::rename(root.join("sub"), root.join("sub-before")).unwrap();
+        if !link_folder(&outside, &root.join("sub")) {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+        let one =
+            crate::io::within_write_roots(&roots, || crate::io::write_atomic(&validated, "hull"));
+        let all = crate::io::within_write_roots(&roots, || {
+            crate::io::write_all_atomic(&[(&validated, "hull")])
+        });
+
+        let landed: Vec<_> = std::fs::read_dir(&outside).unwrap().collect();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(one.is_err(), "write_atomic followed the link");
+        assert!(all.is_err(), "write_all_atomic followed the link");
+        assert!(landed.is_empty(), "{} files outside the root", landed.len());
+    }
+
+    /// Without write roots, writes follow folder links as they always have.
+    #[test]
+    fn without_write_roots_a_linked_folder_is_written_through() {
+        let base =
+            std::env::temp_dir().join(format!("seacraft-test-nolimit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, elsewhere) = (base.join("dir"), base.join("elsewhere"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        if !link_folder(&elsewhere, &dir.join("sub")) {
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+        let path = check_write_path(&dir.join("sub").join("out.fef"), &[]).unwrap();
+        let written = crate::io::within_write_roots(&[], || crate::io::write_atomic(&path, "x"));
+        let landed = std::fs::read_to_string(elsewhere.join("out.fef"));
+        let _ = std::fs::remove_dir_all(&base);
+        written.unwrap();
+        assert_eq!(landed.unwrap(), "x");
     }
 }
