@@ -94,7 +94,7 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 
 - [ ] Floodable length curves.
 - [ ] VRML import, and edge extrusion in the GUI.
-- [ ] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
+- [x] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
 - [x] Grey out the resistance curve where the method does not apply: all of the Holtrop curve for a hull outside
   its Cp, L/B or B/T range, and DSYHS speeds outside Fn 0.15 to 0.75. Neither Holtrop paper prints a top Froude
   number, so no Holtrop speed is greyed on that account.

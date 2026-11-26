@@ -2566,7 +2566,7 @@ fn handle_inner(
 
             let speed_kn = number(p, "speed_kn")?
                 .or(number(p, "speed")?)
-                .unwrap_or(app.performance_state().sk_speed_kn);
+                .unwrap_or(app.performance_state().speed_kn);
             let kg = number(p, "kg")?
                 .or(app.effective_performance_kg())
                 .ok_or("performance.compute: set KG first (or pass `kg`)")?;

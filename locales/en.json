@@ -1203,6 +1203,7 @@
   "perf.sea.summary": "{sea} at {speed} kn: Hs check {hs} m, T1 {t1} s, Tz {tz} s",
   "perf.seakeeping_heading": "Seakeeping (head-sea RAOs)",
   "perf.speed_kn": "Speed (kn)",
+  "perf.speed_shared_tip": "One speed for the three sections: marked on the resistance curve (click the curve to move it), the wave pattern's speed and the speed seakeeping runs at.",
   "perf.speeds_kn_colon": "Speeds (kn):",
   "perf.step_colon": "step: ",
   "perf.title": "Performance",

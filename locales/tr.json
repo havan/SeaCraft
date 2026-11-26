@@ -1203,6 +1203,7 @@
   "perf.sea.summary": "{sea}, {speed} kn hızında: Hs kontrol {hs} m, T1 {t1} s, Tz {tz} s",
   "perf.seakeeping_heading": "Denizcilik (baş dalgası RAO)",
   "perf.speed_kn": "Hız (kn)",
+  "perf.speed_shared_tip": "Üç bölüm için tek hız: direnç eğrisinde işaretlenir (taşımak için eğriye tıklayın), dalga deseninin hızıdır ve denizcilik hesabı bu hızda yapılır.",
   "perf.speeds_kn_colon": "Hızlar (kn):",
   "perf.step_colon": "adım: ",
   "perf.title": "Performans",

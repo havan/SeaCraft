@@ -916,7 +916,9 @@ pub fn compute_raos_with_sea(
 pub struct PerformanceState {
     pub method: ResistanceMethod,
     pub speeds_kn: (f64, f64, f64),
-    pub sk_speed_kn: f64,
+    /// The one speed (knots) that resistance marks, the wave pattern is computed at and
+    /// seakeeping runs at; the Wave pattern view shows it in knots or as a Froude number.
+    pub speed_kn: f64,
     pub kg: Option<f64>,
     pub kyy_frac: f64,
     pub points: usize,
@@ -939,7 +941,7 @@ impl Default for PerformanceState {
         Self {
             method: ResistanceMethod::Holtrop,
             speeds_kn: (2.0, 12.0, 1.0),
-            sk_speed_kn: 6.0,
+            speed_kn: 6.0,
             kg: None,
             kyy_frac: 0.25,
             points: 30,
@@ -1004,6 +1006,8 @@ impl From<OpenError> for String {
 /// waterline length and beam at the report's draft when a current result knows them.
 struct ReportWaves {
     settings: crate::waves::WaveSettings,
+    /// The shared speed ([`PerformanceState::speed_kn`]).
+    speed_kn: f64,
     lengths: Option<(f64, f64)>,
 }
 
@@ -1030,10 +1034,7 @@ impl ReportWaves {
             })
             .or(Some((surface.settings.length, surface.settings.beam)))
             .filter(|(l, b)| *l > 0.0 && *b >= 0.0);
-        let (speed_m_s, froude) = match w.speed {
-            crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
-            crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
-        };
+        let (speed_m_s, froude) = (self.speed_kn * seacraft_core::resistance::KNOT, None);
         let (wash, (ahead_l, behind_l, half_width_l)) = match lengths {
             Some((l, b)) => {
                 let wash = crate::waves::wash_distance(w, l, b);
@@ -3225,7 +3226,7 @@ impl App {
             .filter(|v| v.is_finite() && *v > 0.0);
         if let Some(v) = speed {
             self.perf_state.speeds_kn = crate::new_design::speed_range(v);
-            self.perf_state.sk_speed_kn = v;
+            self.perf_state.speed_kn = v;
             self.performance_changed();
         }
     }
@@ -5411,6 +5412,7 @@ impl App {
             self.revision,
             self.hydro_rev,
             crate::waves::settings_key(&self.perf_state.waves),
+            self.perf_state.speed_kn.to_bits(),
         ])
     }
 
@@ -5945,6 +5947,54 @@ impl App {
         self.last_change = Some(std::time::Instant::now());
     }
 
+    /// The waterline length and beam the Wave pattern view converts by: the kept pattern's,
+    /// else the hydrostatics'.
+    fn wave_lengths(&self) -> (Option<f64>, Option<f64>) {
+        let measured = self.perf_state.wave_result.as_ref();
+        let length_wl = measured
+            .map(|w| w.length_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl))
+            .filter(|l| *l > 0.0);
+        let beam_wl = measured
+            .map(|w| w.beam_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.bwl));
+        (length_wl, beam_wl)
+    }
+
+    /// The shared speed as the Wave pattern view reads it: a Froude number when it shows one and
+    /// a waterline length is known, else knots.
+    pub fn wave_speed(&self) -> crate::waves::WaveSpeed {
+        let knots = crate::waves::WaveSpeed::Knots(self.perf_state.speed_kn);
+        match self.wave_lengths().0 {
+            Some(l) if self.perf_state.waves.froude_unit => knots.in_unit(false, l),
+            _ => knots,
+        }
+    }
+
+    /// Set the shared speed, in knots or as a Froude number (converted by the view's waterline
+    /// length; without one a Froude number is ignored), and show it in that unit.
+    pub fn set_wave_speed(&mut self, speed: crate::waves::WaveSpeed) {
+        let kn = match (speed, self.wave_lengths().0) {
+            (crate::waves::WaveSpeed::Knots(kn), _) => Some(kn),
+            (crate::waves::WaveSpeed::Froude(_), Some(l)) => {
+                Some(speed.m_s(l) / seacraft_core::resistance::KNOT)
+            }
+            (crate::waves::WaveSpeed::Froude(_), None) => None,
+        };
+        self.perf_state.waves.froude_unit = !speed.is_knots();
+        if let Some(kn) = kn.filter(|v| v.is_finite() && *v >= 0.0) {
+            self.set_shared_speed(kn);
+        }
+    }
+
+    /// Set the speed resistance, waves and seakeeping share (knots).
+    fn set_shared_speed(&mut self, speed_kn: f64) {
+        if self.perf_state.speed_kn != speed_kn {
+            self.perf_state.speed_kn = speed_kn;
+            self.performance_changed();
+        }
+    }
+
     /// Open the Wave pattern view in the drawer (it computes while open), or close it if it is the
     /// view shown.
     pub fn set_wave_view_open(&mut self, open: bool) {
@@ -6000,6 +6050,7 @@ impl App {
             self.hydro.options.draft,
             self.hydro.options.water_density,
             &self.perf_state.waves,
+            crate::waves::WaveSpeed::Knots(self.perf_state.speed_kn),
         ) {
             Ok(w) => {
                 self.perf_state.wave_result = Some(w);
@@ -6025,9 +6076,10 @@ impl App {
         let draft = self.hydro.options.draft;
         let rho = self.hydro.options.water_density;
         let settings = self.perf_state.waves.clone();
+        let speed = crate::waves::WaveSpeed::Knots(self.perf_state.speed_kn);
         let key = self.waves_key();
         self.waves_track.start(key, move || {
-            crate::waves::compute_waves(&surface, subdivision, draft, rho, &settings)
+            crate::waves::compute_waves(&surface, subdivision, draft, rho, &settings, speed)
         });
     }
 
@@ -6683,6 +6735,7 @@ impl App {
             });
         let waves = self.waves_needed().then(|| ReportWaves {
             settings: self.perf_state.waves.clone(),
+            speed_kn: self.perf_state.speed_kn,
             lengths,
         });
         Some((opts, waves))
@@ -8033,7 +8086,7 @@ impl App {
         };
         Ok(SeakeepingSpec {
             draft,
-            speed_kn: self.perf_state.sk_speed_kn,
+            speed_kn: self.perf_state.speed_kn,
             kg,
             kyy,
             points: Some(self.perf_state.points),
@@ -10520,16 +10573,12 @@ impl App {
             .map(str::to_owned);
         let heeled_or_trimmed =
             self.hydro.options.heel_deg != 0.0 || self.hydro.options.trim != 0.0;
+        let (length_wl, beam_wl) = self.wave_lengths();
         let measured = self.perf_state.wave_result.as_ref();
-        let length_wl = measured
-            .map(|w| w.length_wl)
-            .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl));
-        let beam_wl = measured
-            .map(|w| w.beam_wl)
-            .or_else(|| self.hydro.result.as_ref().map(|h| h.bwl));
         let drag = self.wave_drag();
         let before = self.perf_state.waves.clone();
         let mut settings = before.clone();
+        let mut speed_kn = self.perf_state.speed_kn;
         let mut map = self.wave_map;
         let tr = self.tr();
         let mut action = WaveViewAction::None;
@@ -10544,6 +10593,7 @@ impl App {
                     ui,
                     WaveViewPanel {
                         settings: &mut settings,
+                        speed_kn: &mut speed_kn,
                         result: measured,
                         drag,
                         stale,
@@ -10565,13 +10615,14 @@ impl App {
             WaveViewAction::SaveImage => self.open_dialog(DialogKind::WaveImage),
             WaveViewAction::Close => self.close_analysis_view(),
             WaveViewAction::Open(other) => self.open_analysis_view(other),
-            WaveViewAction::SetSpeed(speed) => settings.speed = speed,
+            WaveViewAction::SetSpeed(kn) => speed_kn = kn,
             WaveViewAction::SetSpacing(spacing) => settings.cat_spacing_m = Some(spacing),
             WaveViewAction::SetWashDistance(d) => settings.wash_distance_m = Some(d),
         }
         if settings != before {
             self.set_wave_settings(settings);
         }
+        self.set_shared_speed(speed_kn);
     }
 
     /// The Heel view in the drawer under the viewports.

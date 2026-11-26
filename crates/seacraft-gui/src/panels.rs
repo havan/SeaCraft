@@ -2329,6 +2329,21 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
         }
     });
 
+    // One speed for the three sections below: marked on the resistance curve, the wave
+    // pattern's speed, and the speed seakeeping runs at.
+    let speed_max = panel.state.speeds_kn.1.max(20.0);
+    let speed_resp = theme::slider(
+        ui,
+        egui::Slider::new(&mut panel.state.speed_kn, 0.0..=speed_max)
+            .text(tr.s(Key::PerfSpeedKn))
+            .step_by(0.5)
+            .clamping(egui::SliderClamping::Edits),
+    )
+    .on_hover_text(tr.s(Key::PerfSpeedSharedTip));
+    if speed_resp.changed() {
+        action = PerformanceAction::Changed;
+    }
+
     ui.add_space(4.0);
     ui.separator();
     ui.strong(tr.s(Key::PerfResistanceHeading));
@@ -2381,9 +2396,17 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     });
 
     if let Some(res) = &panel.state.resistance {
+        let mut picked = None;
         stale_section_tr(ui, panel.stale_resistance, tr, |ui| {
-            resistance_results(ui, res, tr);
+            picked = resistance_results(ui, res, panel.state.speed_kn, tr);
         });
+        if let Some(kn) = picked {
+            let kn = (kn * 10.0).round() / 10.0;
+            if kn != panel.state.speed_kn {
+                panel.state.speed_kn = kn;
+                action = PerformanceAction::Changed;
+            }
+        }
     }
 
     ui.add_space(4.0);
@@ -2405,16 +2428,6 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     ui.separator();
     ui.strong(tr.s(Key::PerfSeakeepingHeading));
     ui.add_space(2.0);
-
-    let speed_resp = theme::slider(
-        ui,
-        egui::Slider::new(&mut panel.state.sk_speed_kn, 0.0..=20.0)
-            .text(tr.s(Key::PerfSpeedKn))
-            .step_by(0.5),
-    );
-    if speed_resp.changed() {
-        action = PerformanceAction::Changed;
-    }
 
     ui.horizontal(|ui| {
         ui.label("KG");
@@ -2477,18 +2490,19 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     action
 }
 
-/// The resistance curve and its table.
-fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr: Tr) {
+/// The resistance curve and its table, with the shared speed marked on the curve. Returns the
+/// speed (knots) the user clicked or dragged to on the plot.
+fn resistance_results(
+    ui: &mut egui::Ui,
+    res: &crate::app::ResistanceResult,
+    speed_kn: f64,
+    tr: Tr,
+) -> Option<f64> {
     for w in &res.warnings {
         ui.colored_label(theme::WARN, format!("⚠ {}", w.render(tr)));
     }
 
     let series = resistance_series(res, tr);
-    let plain: Vec<(String, Vec<(f64, f64)>)> = series
-        .iter()
-        .map(|s| (s.label.clone(), s.points.clone()))
-        .collect();
-    let muted: Vec<bool> = series.iter().map(|s| s.muted).collect();
     let caption = tr.fmt(
         Key::PlotXyCaption,
         &[
@@ -2497,13 +2511,15 @@ fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr:
             ("x", tr.s(Key::PerfPlotSpeedKn)),
         ],
     );
-    let style = PlotStyle {
-        dashed: &[],
-        muted: &muted,
-        x_range: None,
-        sense: egui::Sense::hover(),
-    };
-    plot_core(ui, &caption, "", &plain, false, PLOT_HEIGHT, style);
+    let (_, picked) = plot_interactive_sized(
+        ui,
+        &caption,
+        &series,
+        Some(speed_kn),
+        &[],
+        None,
+        PLOT_HEIGHT,
+    );
 
     ui.add_space(2.0);
     let (rt, rt_unit) = split_unit(&res.rt_label);
@@ -2518,6 +2534,7 @@ fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr:
         &resistance_table(res),
         tr,
     );
+    picked
 }
 
 /// The resistance curve as plot series: the whole curve in the method's colour, then, when any
