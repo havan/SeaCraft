@@ -87,6 +87,8 @@ enum Command {
     Stability(StabilityArgs),
     /// Evaluate a ship loading condition (weights, tanks, FSM/FSC, floating equilibrium and IMO A.749)
     Loadcase(LoadcaseArgs),
+    /// Builder's weight estimate: shell, glass, resin, tape, fillets and plywood sheets
+    Materials(MaterialsArgs),
     /// Where the hull settles under trial weights: large-angle heel, trim and draft, free to trim
     Heel(HeelArgs),
     /// Deterministic damage stability by the lost-buoyancy method
@@ -1351,6 +1353,29 @@ struct LoadcaseArgs {
 }
 
 #[derive(Args, Debug)]
+struct MaterialsArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Project file (defaults to the model's `<model>.seacraft.json` sidecar; none means an empty
+    /// schedule)
+    case: Option<PathBuf>,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+    /// Emit JSON instead of a table
+    #[arg(long, conflicts_with = "csv")]
+    json: bool,
+    /// Emit CSV, one row per layer, seam or plywood line
+    #[arg(long)]
+    csv: bool,
+    /// Put the estimate into this loading condition of the project file
+    #[arg(long = "add-to", value_name = "CONDITION")]
+    add_to: Option<String>,
+    /// Name of the weight item (defaults to "Hull materials (estimate)")
+    #[arg(long = "item", requires = "add_to")]
+    item: Option<String>,
+}
+
+#[derive(Args, Debug)]
 struct HeelArgs {
     /// Input .fef file
     file: PathBuf,
@@ -1748,6 +1773,7 @@ fn run() -> Result<()> {
         Command::Planing(a) => cmd_planing(a, tr),
         Command::Stability(a) => cmd_stability(a, tr),
         Command::Loadcase(a) => cmd_loadcase(a, tr),
+        Command::Materials(a) => cmd_materials(a, tr),
         Command::Heel(a) => cmd_heel(a, tr),
         Command::Damage(a) => cmd_damage(a, tr),
         Command::Seakeeping(a) => cmd_seakeeping(a, tr),
@@ -5243,6 +5269,259 @@ fn cmd_heel(a: HeelArgs, tr: Tr) -> Result<()> {
                     tr.s(Key::CliHeelNoFreeTrim).into()
                 },
             ),
+        }
+    }
+    Ok(())
+}
+
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_owned()
+    }
+}
+
+/// One CSV row per layer, seam and plywood line. Tape resin rides with the tape column.
+fn materials_csv(est: &seacraft_core::materials::Estimate) -> String {
+    let mut out = String::from(
+        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x,y,z,sheets\n",
+    );
+    for r in &est.layers {
+        out.push_str(&format!(
+            "layer,{},,{},{},{},{},,,{},{},{},{},\n",
+            csv_field(&r.layer),
+            r.area_m2,
+            r.shell_kg,
+            r.glass_kg,
+            r.resin_kg,
+            r.total_kg,
+            r.centre[0],
+            r.centre[1],
+            r.centre[2]
+        ));
+    }
+    for r in &est.seams {
+        out.push_str(&format!(
+            "seam,{},{},,,,,{},{},{},{},{},{},\n",
+            csv_field(&format!("{} / {}", r.between[0], r.between[1])),
+            r.length_m,
+            r.tape_kg + r.tape_resin_kg,
+            r.fillet_kg,
+            r.total_kg,
+            r.centre[0],
+            r.centre[1],
+            r.centre[2]
+        ));
+    }
+    for r in &est.plywood {
+        out.push_str(&format!(
+            "plywood,{},,,,,,,,,,,,{}\n",
+            csv_field(&r.layer),
+            r.sheets
+        ));
+    }
+    out
+}
+
+fn print_materials_table(name: &str, est: &seacraft_core::materials::Estimate, tr: Tr) {
+    println!("{}", tr.fmt(Key::CliMaterialsHeading, &[("name", name)]));
+    println!();
+    println!(
+        "  {:<18} {:>11} {:>11} {:>11} {:>11} {:>11}",
+        tr.s(Key::CliMaterialsColLayer),
+        tr.s(Key::CliMaterialsColArea),
+        tr.s(Key::CliMaterialsColShell),
+        tr.s(Key::CliMaterialsColGlass),
+        tr.s(Key::CliMaterialsColResin),
+        tr.s(Key::CliMaterialsColTotal)
+    );
+    for r in &est.layers {
+        println!(
+            "  {:<18} {:>11.3} {:>11.2} {:>11.2} {:>11.2} {:>11.2}",
+            r.layer, r.area_m2, r.shell_kg, r.glass_kg, r.resin_kg, r.total_kg
+        );
+    }
+    if !est.seams.is_empty() {
+        println!();
+        println!("{}", tr.s(Key::CliMaterialsSeamsHeading));
+        println!(
+            "  {:<24} {:>11} {:>11} {:>11} {:>11}",
+            tr.s(Key::CliMaterialsColBetween),
+            tr.s(Key::CliMaterialsColLength),
+            tr.s(Key::CliMaterialsColTape),
+            tr.s(Key::CliMaterialsColFillet),
+            tr.s(Key::CliMaterialsColTotal)
+        );
+        for r in &est.seams {
+            println!(
+                "  {:<24} {:>11.2} {:>11.2} {:>11.2} {:>11.2}",
+                format!("{} / {}", r.between[0], r.between[1]),
+                r.length_m,
+                r.tape_kg + r.tape_resin_kg,
+                r.fillet_kg,
+                r.total_kg
+            );
+        }
+    }
+    if !est.plywood.is_empty() {
+        println!();
+        println!("{}", tr.s(Key::CliMaterialsPlywoodHeading));
+        for r in &est.plywood {
+            let sheets = tr.fmt(
+                Key::CliMaterialsPlywoodSheets,
+                &[
+                    ("sheets", &r.sheets.to_string()),
+                    ("thickness", &format!("{:.1}", r.thickness_mm)),
+                ],
+            );
+            let note = if !r.not_flat.is_empty() {
+                tr.fmt(
+                    Key::CliMaterialsPlywoodNotFlat,
+                    &[("panels", &r.not_flat.join(", "))],
+                )
+            } else if !r.refused.is_empty() {
+                tr.fmt(
+                    Key::CliMaterialsPlywoodRefused,
+                    &[("panels", &r.refused.join(", "))],
+                )
+            } else if r.all_lie_flat {
+                tr.s(Key::CliMaterialsPlywoodFlat).to_owned()
+            } else {
+                String::new()
+            };
+            println!("  {:<18} {}  {}", r.layer, sheets, note);
+        }
+    }
+    println!();
+    let [x, y, z] = est.total.centre;
+    println!(
+        "{}: {}",
+        tr.s(Key::CliMaterialsTotal),
+        tr.fmt(
+            Key::CliMaterialsTotalLine,
+            &[
+                ("kg", &format!("{:.1}", est.total.mass_kg)),
+                ("t", &format!("{:.3}", est.total.mass_t)),
+                ("x", &format!("{x:.3}")),
+                ("y", &format!("{y:.3}")),
+                ("z", &format!("{z:.3}")),
+            ]
+        )
+    );
+    if !est.has_glass {
+        println!("{}", tr.s(Key::CliMaterialsNoGlass));
+    }
+    for w in &est.warnings {
+        println!(
+            "{}",
+            tr.fmt(Key::CliCommonWarning, &[("message", &w.render(tr))])
+        );
+    }
+    println!("{}", tr.s(Key::CliMaterialsNote));
+    println!("{}", seacraft_core::not_validated_note(tr.locale()));
+}
+
+fn cmd_materials(a: MaterialsArgs, tr: Tr) -> Result<()> {
+    let s = load(&a.file)?;
+    let sidecar = project::sidecar_path(&a.file);
+    let mut loaded: Option<(project::Project, PathBuf)> = None;
+    if a.case.is_some() || sidecar.exists() {
+        match read_case_or_project(&a.file, a.case.as_deref())? {
+            (CaseSource::Project(p), path) => loaded = Some((*p, path)),
+            (CaseSource::Bare(_), path) => {
+                if a.add_to.is_some() {
+                    bail!(
+                        "{}",
+                        tr.fmt(
+                            Key::CliMaterialsAddToBare,
+                            &[("path", &path.display().to_string())]
+                        )
+                    );
+                }
+            }
+        }
+    } else if a.add_to.is_some() {
+        bail!(
+            "{}",
+            tr.fmt(
+                Key::CliMaterialsAddToNoProject,
+                &[("path", &sidecar.display().to_string())]
+            )
+        );
+    }
+    let schedule = loaded
+        .as_ref()
+        .and_then(|(p, _)| p.materials.clone())
+        .unwrap_or_default();
+    schedule
+        .validate()
+        .map_err(|e| anyhow::anyhow!("materials: {e}"))?;
+    let est = seacraft_core::materials::estimate(
+        &s,
+        &schedule,
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+    );
+
+    // The project is written before anything prints, so an unknown condition leaves no output.
+    let mut wrote = None;
+    if let Some(cond_name) = &a.add_to {
+        let (mut proj, path) = loaded.expect("add-to without a project was refused above");
+        let names: Vec<String> = proj
+            .loading_conditions
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let Some(cond) = proj
+            .loading_conditions
+            .iter_mut()
+            .find(|c| &c.name == cond_name)
+        else {
+            bail!(
+                "{}",
+                tr.fmt(
+                    Key::CliMaterialsAddToUnknown,
+                    &[
+                        ("name", cond_name),
+                        ("path", &path.display().to_string()),
+                        ("names", &names.join(", ")),
+                    ]
+                )
+            );
+        };
+        let item_name = a
+            .item
+            .clone()
+            .unwrap_or_else(|| seacraft_core::materials::default_item_name(tr.locale()).to_owned());
+        let also = seacraft_core::materials::replaced_names(&item_name);
+        loading::put_item(cond, est.weight_item(&item_name), &also);
+        proj.save(&path).map_err(|e| anyhow::anyhow!(e))?;
+        wrote = Some(tr.fmt(
+            Key::CliMaterialsWrote,
+            &[
+                ("path", &path.display().to_string()),
+                ("item", &item_name),
+                ("mass", &format!("{:.3}", est.total.mass_t)),
+                ("condition", cond_name),
+            ],
+        ));
+    }
+
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&est)?);
+    } else if a.csv {
+        print!("{}", materials_csv(&est));
+    } else {
+        print_materials_table(&s.settings.name, &est, tr);
+    }
+    if let Some(line) = wrote {
+        if a.json || a.csv {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
         }
     }
     Ok(())
