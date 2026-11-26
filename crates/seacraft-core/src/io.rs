@@ -432,21 +432,44 @@ mod held {
     use std::os::fd::OwnedFd;
     use std::path::Path;
 
+    /// How a folder that is only passed through is opened: `O_PATH` where there is one, which
+    /// needs search permission alone; elsewhere for reading.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const SEARCH: OFlags = OFlags::PATH;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const SEARCH: OFlags = OFlags::RDONLY;
+
     /// An open folder; the temporary file, the rename and the removal are made relative to it.
     pub(super) struct Folder(OwnedFd);
 
     impl Folder {
         /// Open `root`, then each of `folders` in the one before, refusing a symbolic link.
+        /// The root is canonical here, so a link at its last name was put there since: it is
+        /// refused like one below it.
         pub(super) fn open(root: &Path, folders: &[&OsStr]) -> io::Result<Folder> {
-            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-            // The root is canonical here: a link at its last name was put there since.
-            let mut fd = rustix::fs::open(root, flags | OFlags::NOFOLLOW, Mode::empty())
-                .map_err(|e| refused(root, root.as_os_str(), e.into()))?;
-            for name in folders {
-                fd = rustix::fs::openat(&fd, *name, flags | OFlags::NOFOLLOW, Mode::empty())
-                    .map_err(|e| refused(root, name, e.into()))?;
+            let mut fd: Option<OwnedFd> = None;
+            let names = std::iter::once(root.as_os_str()).chain(folders.iter().copied());
+            for (i, name) in names.enumerate() {
+                let last = i == folders.len();
+                let at = |flags: OFlags| match &fd {
+                    None => rustix::fs::open(root, flags, Mode::empty()),
+                    Some(dir) => rustix::fs::openat(dir, name, flags, Mode::empty()),
+                };
+                let flags = OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                // A folder passed through needs only search permission, as a write by name does;
+                // the file's own folder is read when it may be, to sync the rename.
+                let opened = if last {
+                    at(flags | OFlags::RDONLY).or_else(|e| match e {
+                        rustix::io::Errno::ACCESS => at(flags | SEARCH),
+                        e => Err(e),
+                    })
+                } else {
+                    at(flags | SEARCH)
+                };
+                fd = Some(opened.map_err(|e| refused(root, name, e.into()))?);
             }
-            Ok(Folder(fd))
+            fd.map(Folder)
+                .ok_or_else(|| io::Error::other("no folder to open"))
         }
 
         fn stat(&self, name: &OsStr) -> Option<rustix::fs::Stat> {
@@ -992,6 +1015,59 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         assert!(written.is_err(), "wrote by name");
         assert!(landed.is_empty(), "{} files outside the root", landed.len());
+    }
+
+    /// A folder passed through on the way, swapped for a link out of the root before the write:
+    /// the write fails and nothing lands outside.
+    #[test]
+    fn a_folder_on_the_way_swapped_for_a_link_is_refused() {
+        let base = fs::canonicalize(scratch("swap-mid")).unwrap();
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        fs::create_dir_all(root.join("a").join("b")).unwrap();
+        fs::create_dir_all(outside.join("b")).unwrap();
+        fs::rename(root.join("a"), root.join("a-before")).unwrap();
+        if !link_folder(&outside, &root.join("a")) {
+            eprintln!("skipped: this account may not make a folder link");
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        let path = root.join("a").join("b").join("out.fef");
+        let written =
+            within_write_roots(std::slice::from_ref(&root), || write_atomic(&path, "hull"));
+        let landed = outside.join("b").join("out.fef").exists();
+        let _ = fs::remove_dir_all(&base);
+        assert!(written.is_err(), "wrote through the link");
+        assert!(!landed, "a file landed outside the root");
+    }
+
+    /// Folders that may be passed through but not listed (`--x`), on the way and as the file's own
+    /// folder (`-wx`), take a write under a write root as they take one by name. Only where
+    /// `O_PATH` opens such a folder: elsewhere it is opened for reading, and refused.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn traverse_only_folders_under_a_write_root_are_written_through() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fs::canonicalize(scratch("held-traverse")).unwrap();
+        let (mid, out) = (root.join("mid"), root.join("mid").join("out"));
+        fs::create_dir_all(&out).unwrap();
+        let set = |p: &Path, mode| fs::set_permissions(p, fs::Permissions::from_mode(mode));
+        set(&out, 0o311).unwrap();
+        set(&mid, 0o111).unwrap();
+        // An account that reads every folder anyway (root) has nothing to show here.
+        let blind = fs::read_dir(&mid).is_err();
+        let written = within_write_roots(std::slice::from_ref(&root), || {
+            write_atomic(out.join("hull.fef"), "hull")
+        });
+        set(&mid, 0o755).unwrap();
+        set(&out, 0o755).unwrap();
+        let landed = fs::read_to_string(out.join("hull.fef"));
+        let _ = fs::remove_dir_all(&root);
+        if !blind {
+            eprintln!("skipped: this account reads folders it may only pass through");
+            return;
+        }
+        written.unwrap();
+        assert_eq!(landed.unwrap(), "hull");
     }
 
     /// Names that are not UTF-8 are compared byte for byte: two such names are not one file because
