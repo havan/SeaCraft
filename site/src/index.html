@@ -22,12 +22,17 @@
 /* The English page sends a reader to the language they chose with the switch, which is remembered and
    always wins; failing that, a first visit from a browser set to another language this site has goes to
    that language's page. Arriving from another page of this site, as the switch does, is a choice too, so a
-   browser that remembers nothing still keeps English when it is chosen. */
+   browser that remembers nothing still keeps English when it is chosen. When the browser cannot store the
+   choice, the switch also writes it into the link (?lang=en); the page reads it and drops it from the address. */
 (function () {
-  var langs = {{langs}}, chosen = null;
+  var langs = {{langs}}, chosen = null, marked = /[?&]lang=([a-z]+)/.exec(location.search);
+  if (marked) {
+    chosen = marked[1];
+    try { history.replaceState(null, "", location.pathname + location.hash); } catch (e) {}
+  }
   if (document.documentElement.lang !== langs[0]) return;
   var go = function (lang) { if (langs.indexOf(lang) > 0) location.replace(lang + "/" + location.hash); };
-  try { chosen = localStorage.getItem("seacraft-lang"); } catch (e) {}
+  if (!chosen) try { chosen = localStorage.getItem("seacraft-lang"); } catch (e) {}
   if (chosen) { go(chosen); return; }
   try { if (document.referrer && new URL(document.referrer).origin === location.origin) return; } catch (e) {}
   var wanted = (navigator.languages || [navigator.language || ""]).map(function (l) { return String(l).slice(0, 2).toLowerCase(); });

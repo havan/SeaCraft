@@ -33,7 +33,12 @@ const localizedFile = (name) => (LANG_DIR ? name.replace(/\.([a-z]+)$/, `.${LANG
 /* Remember a language chosen with the switch, and keep the place on the page. */
 for (const link of document.querySelectorAll(".lang-link")) {
   link.addEventListener("click", () => {
-    try { localStorage.setItem("seacraft-lang", link.dataset.lang); } catch (e) { /* Private mode: not remembered. */ }
+    try {
+      localStorage.setItem("seacraft-lang", link.dataset.lang);
+    } catch (e) {
+      // Storage blocked: the link carries the choice instead, for this one visit.
+      link.search = `?lang=${link.dataset.lang}`;
+    }
     if (location.hash) link.hash = location.hash;
   });
 }
