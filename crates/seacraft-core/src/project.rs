@@ -56,6 +56,9 @@ pub struct Project {
     /// model carries no KG of its own, and none is invented for it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kg: Option<f64>,
+    /// The laminate and seam schedule the builder entered, for the weight estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materials: Option<crate::materials::Materials>,
     /// Keys written by a newer SeaCraft, kept for the round trip.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -73,6 +76,7 @@ impl Default for Project {
             report: ReportSettings::default(),
             requirements: None,
             kg: None,
+            materials: None,
             extra: serde_json::Map::new(),
         }
     }
@@ -229,6 +233,7 @@ impl Project {
             && self.report.is_empty()
             && self.requirements.is_none()
             && self.kg.is_none()
+            && self.materials.is_none()
             && self.extra.is_empty()
     }
 
@@ -297,6 +302,9 @@ impl Project {
             if !(kg.is_finite() && kg >= 0.0) {
                 return Err(format!("`kg` must be a finite height >= 0, got {kg}"));
             }
+        }
+        if let Some(m) = &self.materials {
+            m.validate().map_err(|e| format!("materials.{e}"))?;
         }
         for c in &self.loading_conditions {
             crate::loading::validate(c)
@@ -457,6 +465,53 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_schedule_alone_is_worth_saving() {
+        let p = Project {
+            materials: Some(crate::materials::Materials::default()),
+            ..Default::default()
+        };
+        assert!(!p.is_empty());
+    }
+
+    #[test]
+    fn project_without_materials_reads_and_writes_as_before() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/skiff-4m.seacraft.json"
+        );
+        let p = Project::load(std::path::Path::new(path)).unwrap();
+        assert!(p.materials.is_none());
+        assert!(!p.extra.contains_key("materials"));
+        let v: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
+        assert!(v.get("materials").is_none());
+    }
+
+    #[test]
+    fn project_validate_checks_the_schedule() {
+        use crate::materials::{Materials, Ply, Side};
+        let p = Project {
+            materials: Some(Materials {
+                resin_per_glass: Some(1.0),
+                layers: [(
+                    "Bottom".to_owned(),
+                    vec![Ply {
+                        g_m2: -1.0,
+                        side: Side::Inside,
+                    }],
+                )]
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let e = p.validate().unwrap_err();
+        assert!(
+            e.contains("materials.") && e.contains("layers.Bottom[0].g_m2"),
+            "{e}"
+        );
     }
 
     #[test]
