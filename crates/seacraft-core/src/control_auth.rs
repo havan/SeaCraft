@@ -287,16 +287,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Make `link` a symbolic link to the folder `target`; false where this account may not
-    /// (Windows without the privilege), so the test has nothing to show there.
-    fn link_folder(target: &Path, link: &Path) -> bool {
-        #[cfg(unix)]
-        return std::os::unix::fs::symlink(target, link).is_ok();
-        #[cfg(windows)]
-        return std::os::windows::fs::symlink_dir(target, link).is_ok();
-        #[cfg(not(any(unix, windows)))]
-        return false;
-    }
+    use crate::io::tests::link_folder;
 
     /// Issue #18: a folder under the write root is swapped for a link out of it after the path
     /// was checked and before the write. The write must fail, and nothing may land outside.
@@ -313,6 +304,7 @@ mod tests {
         // Between the check and the write: the folder becomes a link out of the root.
         std::fs::rename(root.join("sub"), root.join("sub-before")).unwrap();
         if !link_folder(&outside, &root.join("sub")) {
+            eprintln!("skipped: this account may make neither a folder link nor a junction");
             let _ = std::fs::remove_dir_all(&base);
             return;
         }
@@ -339,6 +331,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::create_dir_all(&elsewhere).unwrap();
         if !link_folder(&elsewhere, &dir.join("sub")) {
+            eprintln!("skipped: this account may make neither a folder link nor a junction");
             let _ = std::fs::remove_dir_all(&base);
             return;
         }

@@ -612,7 +612,7 @@ mod held {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     thread_local! {
@@ -818,13 +818,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Make `link` a symbolic link to the folder `target`; false where this account may not
-    /// (Windows without the privilege), so a test has nothing to show there.
-    fn link_folder(target: &Path, link: &Path) -> bool {
+    /// Make `link` a link to the folder `target`: a symbolic link, or on Windows without the
+    /// privilege for one a junction, which needs none. False when neither can be made, so a test
+    /// has nothing to show there.
+    pub(crate) fn link_folder(target: &Path, link: &Path) -> bool {
         #[cfg(unix)]
         return std::os::unix::fs::symlink(target, link).is_ok();
         #[cfg(windows)]
-        return std::os::windows::fs::symlink_dir(target, link).is_ok();
+        return std::os::windows::fs::symlink_dir(target, link).is_ok()
+            || std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(plain(link))
+                .arg(plain(target))
+                .output()
+                .is_ok_and(|o| o.status.success());
         #[cfg(not(any(unix, windows)))]
         return false;
     }
@@ -852,12 +859,13 @@ mod tests {
             write_all_atomic(&files).unwrap();
         });
         assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "one");
-        assert_eq!(fs::read_to_string(dir.join("sub/b.txt")).unwrap(), "two");
-        assert_eq!(fs::read_to_string(dir.join("sub/c.txt")).unwrap(), "three");
+        let sub = dir.join("sub");
+        assert_eq!(fs::read_to_string(sub.join("b.txt")).unwrap(), "two");
+        assert_eq!(fs::read_to_string(sub.join("c.txt")).unwrap(), "three");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let meta = fs::metadata(dir.join("sub/b.txt")).unwrap();
+            let meta = fs::metadata(sub.join("b.txt")).unwrap();
             assert_eq!(meta.permissions().mode() & 0o777, 0o640, "permissions kept");
         }
         assert!(temps(&dir).is_empty(), "{:?}", temps(&dir));
@@ -866,44 +874,71 @@ mod tests {
     }
 
     /// Issue #18, inside the writer: a folder swapped for a link out of the root after the writer
-    /// opened it. The write stays in the folder it opened, or fails; it never lands outside.
+    /// opened it. On Unix the swap happens and the write stays in the folder it opened; on Windows
+    /// the folder is held, so the swap is refused and the write lands in place. Never outside.
+    /// The path is spelled the usual way, without the verbatim prefix a canonical root carries on
+    /// Windows, and must still be held.
     #[test]
     fn a_folder_swapped_after_it_is_opened_keeps_the_write_inside_the_root() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        /// Clears the hook however the test ends, so no later write on this thread meets it.
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                AFTER_OPEN.with(|h| h.borrow_mut().take());
+            }
+        }
+        let _clear = ClearHook;
         let base = fs::canonicalize(scratch("swap-open")).unwrap();
         let (root, outside) = (base.join("root"), base.join("outside"));
         fs::create_dir_all(root.join("sub")).unwrap();
         fs::create_dir(&outside).unwrap();
         let (sub, moved) = (root.join("sub"), root.join("sub-moved"));
-        let swapped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (ran, renamed, linked) = (
+            Rc::new(Cell::new(false)),
+            Rc::new(Cell::new(false)),
+            Rc::new(Cell::new(false)),
+        );
         let hook = {
-            let (sub, moved, outside, swapped) =
-                (sub.clone(), moved.clone(), outside.clone(), swapped.clone());
-            // Windows refuses the rename while the writer holds the folder open.
-            move || swapped.set(fs::rename(&sub, &moved).is_ok() && link_folder(&outside, &sub))
+            let (sub, moved, outside) = (sub.clone(), moved.clone(), outside.clone());
+            let (ran, renamed, linked) = (ran.clone(), renamed.clone(), linked.clone());
+            move || {
+                ran.set(true);
+                renamed.set(fs::rename(&sub, &moved).is_ok());
+                linked.set(renamed.get() && link_folder(&outside, &sub));
+            }
         };
         AFTER_OPEN.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
-        let written = within_write_roots(std::slice::from_ref(&root), || {
-            write_atomic(sub.join("out.fef"), "hull")
-        });
+        let path = plain(&sub).join("out.fef");
+        let written =
+            within_write_roots(std::slice::from_ref(&root), || write_atomic(&path, "hull"));
         let landed: Vec<_> = fs::read_dir(&outside).unwrap().collect();
         let in_moved = fs::read_to_string(moved.join("out.fef"));
+        let in_place = fs::read_to_string(sub.join("out.fef"));
         let _ = fs::remove_dir_all(&base);
+        assert!(ran.get(), "the write was not held: the hook never ran");
         assert!(landed.is_empty(), "{} files outside the root", landed.len());
         #[cfg(unix)]
-        assert!(swapped.get(), "the hook swapped the folder");
-        if swapped.get() {
-            #[cfg(unix)]
-            {
-                written.unwrap();
-                assert_eq!(
-                    in_moved.unwrap(),
-                    "hull",
-                    "the write stays in the folder it opened"
-                );
-            }
-            #[cfg(not(unix))]
-            let _ = (written, in_moved);
+        {
+            assert!(renamed.get() && linked.get(), "the hook swapped the folder");
+            written.unwrap();
+            assert_eq!(
+                in_moved.unwrap(),
+                "hull",
+                "the write stays in the folder it opened"
+            );
+            let _ = in_place;
         }
+        #[cfg(windows)]
+        {
+            assert!(!renamed.get(), "the held folder was renamed");
+            written.unwrap();
+            assert_eq!(in_place.unwrap(), "hull");
+            let _ = (in_moved, linked);
+        }
+        #[cfg(not(any(unix, windows)))]
+        let _ = (written, in_moved, in_place, renamed, linked);
     }
 
     /// Under write roots a link at the file is followed to a file under a root, as it is
