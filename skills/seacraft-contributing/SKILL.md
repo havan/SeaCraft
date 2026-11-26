@@ -17,6 +17,8 @@ Read [CONTRIBUTING.md](../../CONTRIBUTING.md) and [AGENTS.md](../../AGENTS.md) f
 - **Show visible changes** with real screenshots captured from the app: before and after, in the PR
   description, not committed to the repository.
 - **A change to a number** says which numbers moved, by how much and why, and points to the oracle.
+- **Add a line under `Unreleased` in `CHANGELOG.md`** for anything a user would notice: what they now see or can
+  do, in their words.
 - **Write in English**: code, comments, commit messages and docs.
 
 ## Working as an agent
@@ -42,7 +44,8 @@ Commit subjects follow `type(scope): summary`, such as `fix(core): ...`. History
 
 ## Cutting a release
 
-1. Set the version, update `CHANGELOG.md`, and run `cargo xtask ci --full`.
+1. Set the version, turn `Unreleased` in `CHANGELOG.md` into the version with a short summary, and run
+   `cargo xtask ci --full`.
 2. Run the Release workflow by hand on `main` to see every platform build, without creating a release.
 3. Tag `vX.Y.Z` and push the tag. The workflow checks the tag against the version, builds the downloads, tests
    Windows and macOS and creates a **draft** release from `packaging/release-notes.md`.
@@ -53,4 +56,4 @@ Commit subjects follow `type(scope): summary`, such as `fix(core): ...`. History
 ## Reference
 
 `docs/architecture.md` describes the design, and `ROADMAP.md` what comes next. Update `ROADMAP.md` when a
-milestone task lands, and `CHANGELOG.md` for anything a user would notice.
+milestone task lands.

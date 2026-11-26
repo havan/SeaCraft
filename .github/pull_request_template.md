@@ -11,5 +11,6 @@ Closes #
 
 ## Checklist
 - [ ] `cargo xtask ci` passes
+- [ ] `CHANGELOG.md` has a line under `Unreleased` for anything a user would notice
 - [ ] Reference numbers state where they came from (`docs/oracles.md`)
 - [ ] New or ported code and dependencies are `GPL-3.0-or-later` compatible, and attributed
