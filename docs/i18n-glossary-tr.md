@@ -40,6 +40,10 @@ Terminology conventions for SeaCraft's Turkish (`tr`) translation.
 | Loading condition | Yükleme durumu | Yükleme durumu | |
 | Tank / Free surface | Tank / Serbest yüzey | Tank / Serbest yüzey | |
 | Damage stability / Compartment | Yaralı stabilite / Bölme | Yaralı stabilite / Bölme | |
+| Floodable length | Su alabilir boy | Su alabilir boy | Maintainer's choice (2026-11-26) |
+| Margin line | Sınır hattı | Sınır hattı | Maintainer's choice (2026-11-26) |
+| Bulkhead | Perde | Perde | |
+| Permissible length / Factor of subdivision | İzin verilen boy / Bölmelendirme faktörü | İzin verilen boy / Bölm. faktörü | |
 | Windage / Weather criterion | Rüzgâr alanı / Hava kriteri | Rüzgâr alanı / Hava kriteri | |
 | Resistance | Direnç | Direnç | |
 | Wave pattern | Dalga deseni | Dalga deseni | |

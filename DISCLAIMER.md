@@ -51,6 +51,14 @@ calculations, in the figures read for this, show the same pattern, though not at
 program to the gaps measured. Nothing else about seakeeping has been compared with experiments: not other hulls,
 transom sterns, other headings, the irregular-sea statistics or the MSI.
 
+Floodable length curves (`seacraft floodable`, the MCP tool `floodable_length`) follow the definitions and the
+method of Rawson & Tupper (*Basic Ship Theory*, Vol. 1) and Gillmer & Johnson (*Introduction to Naval Architecture*,
+1982), which print no worked numbers. They are checked against a box barge's closed form and against SeaCraft's own
+damage solver ([`docs/oracles.md`](docs/oracles.md) §51-§53), not against a published floodable length table or
+approved software. The margin line is measured from the moulded deck edge, with no deck thickness, every
+compartment is full breadth with one permeability, and the factor of subdivision is the user's: SeaCraft does not
+compute it from the rules. A compartment that passes the check is not shown to meet SOLAS or any other rule.
+
 The wave pattern (`seacraft waves`, the MCP tool `wave_pattern`, the Wave pattern view and Plan view contours in the
 window, the design report) is far-field thin-ship theory: free waves only, without the local disturbance, so near the hull
 it is not the hull wave profile. It is computed upright at the draft; heel and trim are ignored. It has been
