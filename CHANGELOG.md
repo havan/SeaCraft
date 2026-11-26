@@ -19,9 +19,9 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   numbers stay; the plot's legend says which part is outside.
 - The MCP `batch` tool now says what its rollback covers: on an error the session's model goes back to where it was
   before the batch, but files written by earlier steps (a design report, an unfolded plate, a wave image) stay on disk.
-  It used to call the batch all-or-nothing (#8). Connected to the GUI, a `load_hull` inside a batch starts a fresh
-  history there, so the model is not rolled back past it; the failure now says so in `restore_error` instead of
-  passing in silence.
+  It used to call the batch all-or-nothing (#8). Connected to the GUI, `load_hull`, `generate_hull` or `example`
+  inside a batch start a fresh history there, so the model is not rolled back past them. A rollback the GUI refuses,
+  or whose reply is lost, now shows as `restore_error` (unconfirmed) instead of passing in silence.
 
 ## 0.7.0 (2026-11-26)
 

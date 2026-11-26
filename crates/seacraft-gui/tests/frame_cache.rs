@@ -555,19 +555,11 @@ fn opening_a_model_drops_the_old_mesh_job() {
     assert!(app.mesh_job_is_current(), "the new model's job runs");
 }
 
-/// CodeRabbit (PR #22): a press that starts a point drag while the full-level mesh is building
-/// keeps that job accounted for, so a release does not start a second build beside it. A release
-/// without a move then installs the mesh the job built.
-#[test]
-fn a_drag_keeps_the_running_mesh_job() {
-    let (mut app, ctx) = container();
-    // Lay the views out at level 3 (built at once, no job), then raise the level on the press.
-    app.set_subdivision_level(3);
-    frame(&ctx, &mut app, Vec::new());
+/// The control point drawn nearest the middle of view 1, on screen.
+fn point_in_view(app: &App) -> egui::Pos2 {
     let rect = app.viewport_rect(1);
     let transform = app.cameras()[1].transform();
-    let screen = app
-        .surface()
+    app.surface()
         .unwrap()
         .points
         .iter()
@@ -577,7 +569,19 @@ fn a_drag_keeps_the_running_mesh_job() {
             a.distance(rect.center())
                 .total_cmp(&b.distance(rect.center()))
         })
-        .expect("a point in view");
+        .expect("a point in view")
+}
+
+/// CodeRabbit (PR #22): a press that starts a point drag while the full-level mesh is building
+/// keeps that job accounted for, so a release does not start a second build beside it. A release
+/// without a move then installs the mesh the job built.
+#[test]
+fn a_drag_keeps_the_running_mesh_job() {
+    let (mut app, ctx) = container();
+    // Lay the views out at level 3 (built at once, no job), then raise the level on the press.
+    app.set_subdivision_level(3);
+    frame(&ctx, &mut app, Vec::new());
+    let screen = point_in_view(&app);
     frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
     app.set_subdivision_level(5);
     frame(&ctx, &mut app, vec![button(screen, true)]);
@@ -586,4 +590,27 @@ fn a_drag_keeps_the_running_mesh_job() {
     frame(&ctx, &mut app, vec![button(screen, false)]);
     frames_until_refined(&ctx, &mut app);
     assert_eq!(app.render_cache_level(), Some(5));
+}
+
+/// CodeRabbit (PR #22, second review): a click on a point after the full level is in drops the
+/// mesh to the drag preview; the release must build the full level again, not stop at the
+/// preview because the finished job still reads as current.
+#[test]
+fn a_click_after_refinement_builds_the_full_level_again() {
+    let (mut app, ctx) = container();
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+    let screen = point_in_view(&app);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, vec![button(screen, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert!(
+        app.mesh_job_is_current() || app.render_cache_level() == Some(4),
+        "the release builds level 4 again (level {:?})",
+        app.render_cache_level()
+    );
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
 }

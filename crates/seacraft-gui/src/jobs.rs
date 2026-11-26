@@ -136,6 +136,12 @@ impl<T> Track<T> {
         self.job = None;
     }
 
+    /// The stored result was thrown away (the caller replaced it): it is due again. A running
+    /// job is kept, and so is a failure.
+    pub fn unstamp(&mut self) {
+        self.stamp = None;
+    }
+
     /// Forget everything: no result, no job, no failure.
     pub fn reset(&mut self) {
         *self = Self::default();

@@ -2000,6 +2000,11 @@ impl App {
         };
         if stale {
             let level = quick;
+            if level < self.level {
+                // A finished full-level mesh is being replaced by a coarser one (a drag's
+                // preview): it is due again once the drag ends.
+                self.mesh_track.unstamp();
+            }
             let mesh = export::render_mesh(surface, level, self.mode);
             let net_lines = seacraft_core::netlines::NetLines::of(surface);
             let (min, max) = crate::render::display_extents(surface);

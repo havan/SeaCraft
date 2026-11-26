@@ -3896,9 +3896,11 @@ pub fn tool_definitions() -> Vec<Value> {
              written. Each step is {name, arguments}. On an error the session's model is restored to what it was \
              before the batch (both headless and when connected to the GUI), but files written by earlier steps stay \
              on disk, and so may a file the failing step wrote before it failed (a hull saved before its sidecar): a \
-             design report, an unfolded plate or a wave image is not removed. Connected to the GUI, a `load_hull` \
-             inside the batch starts a fresh history there, so the model from before it is not restored; the failure \
-             then carries `restore_error`. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
+             design report, an unfolded plate or a wave image is not removed. Connected to the GUI, a tool that \
+             replaces the whole model inside the batch (load_hull, generate_hull, example) starts a fresh history \
+             there, so the model from before it is not restored. A failure \
+             with `restore_error` means the rollback could not be confirmed (the GUI refused it, or its reply was \
+             lost): read the model with hull_info before any recovery edit. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
              At most 100 calls; nested batch is rejected, and so is export_panels with both `nest` and `path` (call it \
              on its own).",
             obj(
@@ -3924,8 +3926,9 @@ pub fn tool_definitions() -> Vec<Value> {
     ]
 }
 
-/// A connected batch failed: the GUI goes back to `mark`, and a restore that fails (a
-/// `load_hull` in the batch started a fresh history there) is reported, not dropped.
+/// A connected batch failed: the GUI goes back to `mark`. A restore without a good reply is
+/// reported as unconfirmed, not dropped: the GUI refused it (a model replaced in the batch started
+/// a fresh history there), or it may have restored and lost the reply.
 fn batch_remote_failed(remote: &mut Remote, mark: Option<u64>, mut failure: Value) -> Value {
     if let Some(mark) = mark {
         if let Err(e) = remote.request("history.restore", json!({"mark": mark})) {
@@ -6874,6 +6877,13 @@ mod tests {
         assert!(description.contains("the failing step"), "{description}");
         assert!(description.contains("load_hull"), "{description}");
         assert!(description.contains("restore_error"), "{description}");
+        // CodeRabbit (PR #22, second review): a lost reply also gives `restore_error`, so it says
+        // the rollback is unconfirmed, not that it failed, and to look before mending.
+        assert!(
+            description.contains("could not be confirmed"),
+            "{description}"
+        );
+        assert!(description.contains("hull_info"), "{description}");
         // The catalogue shows only the first sentence: it carries the caveat too.
         let catalogue = tool_catalogue();
         let line = catalogue
