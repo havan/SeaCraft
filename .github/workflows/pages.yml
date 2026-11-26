@@ -1,14 +1,31 @@
-# Builds the website from the program's own output and publishes it from main.
-# A pull request that touches the site builds it but does not publish it.
+# Builds the website from the program's own output and publishes it when a release is published, so the
+# numbers on the page are the ones the downloads give.
+#
+# - A published release builds the site and the program from its tag, and publishes.
+# - Run by hand on main, it publishes main's page with the program and example hulls of a release tag
+#   (the latest release unless one is given): a fix to the page need not wait for the next release.
+# - A pull request that touches the site, or a push to main that could change it, builds it to check
+#   that it still builds, and publishes nothing.
+#
+# The github-pages environment must allow the tags `v*` as well as `main`, or the release run is refused.
 name: Website
 
 on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag whose program and example hulls the page shows, such as v0.6.0 (empty: the latest release)'
+        required: false
+        default: ''
   push:
     branches: [main]
-    # Anything that can change a number, a hull or the page.
+    # Anything that can change a number, a hull or the page: checked here, published with the next release.
     paths:
       - 'crates/**'
       - 'examples/**'
+      - 'locales/**'
       - 'site/**'
       - 'docs/assets/**'
       - 'Cargo.lock'
@@ -19,7 +36,6 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,22 +49,50 @@ jobs:
   build:
     name: Build the site
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The tags, so a release build says its plain version and a run by hand can check out a tag.
+          fetch-depth: 0
+      - name: Choose the program the page shows
+        id: program
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANTED: ${{ inputs.tag }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            tag="${WANTED:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}"
+            if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+              echo "::error::not a release tag: $tag"
+              exit 1
+            fi
+            # The page from this run's branch; the program and the example hulls from the release.
+            git worktree add --detach program "refs/tags/$tag"
+            echo "dir=program" >> "$GITHUB_OUTPUT"
+            echo "Program and hulls from $tag" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          fi
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ${{ steps.program.outputs.dir }}
       - run: cargo build --release --locked --bin seacraft
+        working-directory: ${{ steps.program.outputs.dir }}
       # build.py makes the wave pattern images smaller with it when it is installed.
       - run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends pngquant
       - run: python3 site/test_build.py
-      - run: python3 site/build.py --seacraft target/release/seacraft --out site/_site
+      - env:
+          PROGRAM: ${{ steps.program.outputs.dir }}
+        run: python3 site/build.py --seacraft "$PROGRAM/target/release/seacraft" --program-root "$PROGRAM" --out site/_site
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site/_site
 
   deploy:
     name: Publish to GitHub Pages
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10

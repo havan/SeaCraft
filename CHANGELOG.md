@@ -4,6 +4,20 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- The website (https://seacraft.app/) is now in Turkish too, at `/tr/`, with a language switch in a new header
+  that also carries the SeaCraft mark and a GitHub link. Whatever SeaCraft itself says on the page (a hull's
+  description, where it heels, a method's warnings) is the program's own Turkish, from `seacraft --lang tr`, and the
+  reports, lines plans and plywood sheets the Turkish page links to are written in Turkish. The example-hull picker
+  is now a row of buttons under its own heading, and clicking beside the heel drawing no longer leaves a large
+  blinking text caret in it.
+- A new mark for the app icon, the website and its favicon: a hull's section as a body plan draws it, the
+  kayık example's outline, light above a red waterline and blue below, in place of the old shield-like shape.
+- The website's fonts now include Latin Extended, so Turkish `ğ`, `ş` and `İ` are drawn in the page's own fonts
+  instead of a fallback.
+- The website is now published when a release is published, so its numbers are the ones the downloads give,
+  instead of from every change to `main`. Run by hand, the Website workflow publishes main's page with a release's
+  program and example hulls.
+
 - `seacraft heel --json` (and the MCP `heel_equilibrium` tool) now gives each settled state's solved
   `waterplane` as `n . p + d = 0` in model coordinates, so a drawing can place the heeled waterline without
   solving for it again.
