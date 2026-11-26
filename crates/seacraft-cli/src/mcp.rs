@@ -3900,9 +3900,9 @@ pub fn tool_definitions() -> Vec<Value> {
              unfolded plate or a wave image is not removed. Connected to the GUI, a tool that replaces the whole \
              model (load_hull, generate_hull, example) starts a fresh history there, so the model from before it \
              is not restored. A failure with `restore_error` means the rollback could not be confirmed (the GUI \
-             refused it, or its reply was lost). Connected, hull_info shows no geometry to check that by, so for a \
-             batch that matters take a baseline first: save the model with save_hull, or note a hydro_compute \
-             result at a fixed draft, and compare against it after a failure before any recovery edit. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
+             refused it, or its reply was lost). Connected, hull_info shows no geometry to check that by, so before \
+             a batch that matters save the model with save_hull, and after such a failure load it again instead of \
+             mending the model in place. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
              At most 100 calls; nested batch is rejected, and so is export_panels with both `nest` and `path` (call it \
              on its own).",
             obj(
@@ -6892,7 +6892,10 @@ mod tests {
             "{description}"
         );
         assert!(description.contains("save_hull"), "{description}");
-        assert!(description.contains("hydro_compute"), "{description}");
+        // CodeRabbit (fourth review): hydro_compute skips layers kept out of hydrostatics, so
+        // it is no baseline; the saved hull is, loaded again after a failure.
+        assert!(!description.contains("hydro_compute"), "{description}");
+        assert!(description.contains("load it again"), "{description}");
         // The catalogue shows only the first sentence: it carries the caveat too.
         let catalogue = tool_catalogue();
         let line = catalogue
