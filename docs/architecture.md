@@ -191,6 +191,12 @@ rename), so a crash cannot truncate it. Autosave keeps a locked session pair in 
 `seacraft-gui --control HOST:PORT` opens a loopback JSON-lines channel, executed on the next frame.
 Authentication is on by default: a random token in a file only the user can read, compared in constant time
 (`crates/seacraft-core/src/control_auth.rs`), with optional read and write roots for file access.
+`check_write_path` decides whether a path lies under a write root. The write itself is held to the root too:
+each request, and the worker that answers it, runs inside `io::within_write_roots`, so `write_atomic`
+opens the file's folder from the root one folder at a time without following a link, and stages and renames
+in that open folder (`openat`/`renameat` on Unix; on Windows every folder on the way is held open so none can
+be swapped). A folder replaced by a link between the check and the write then fails the write rather than
+leading it out of the root.
 
 ## Internationalisation
 
