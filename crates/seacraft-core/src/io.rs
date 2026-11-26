@@ -8,7 +8,7 @@
 //! all before replacing any, so a bad path among them leaves every file as it was.
 //!
 //! Under write roots ([`within_write_roots`], which the GUI's control channel sets for each
-//! request), a file that lies under a root is written in a folder opened from that root one
+//! request), a file must lie under a root; it is written in a folder opened from that root one
 //! folder at a time, never through a symbolic link, and its temporary file and rename are made
 //! in that open folder. A folder swapped for a link after the path was checked
 //! ([`crate::control_auth::check_write_path`]) then fails the write instead of leading it out of
@@ -33,12 +33,13 @@ thread_local! {
     static WRITE_ROOTS: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Run `f` with this thread's writes held to `roots`. A file that lies under one of them (as
-/// [`crate::control_auth::check_write_path`] returns it: canonical) is written in its folder opened
-/// from that root without following a symbolic link on the way, so the file lands under the root
-/// or the write fails. A link at the file itself is followed only to a file under a write root.
-/// Files elsewhere, such as the app's own settings, are written as usual; empty `roots` hold
-/// nothing. The roots before come back when `f` returns or panics.
+/// Run `f` with this thread's writes held to `roots`. A file must lie under one of them, spelled
+/// as it resolves (as [`crate::control_auth::check_write_path`] returns it: canonical); it is
+/// written in its folder opened from that root without following a symbolic link on the way, so
+/// it lands under the root or the write fails. A link at the file itself is followed only to a
+/// file under a write root. Any other write fails: a file the app writes for itself, such as its
+/// settings, is written inside `within_write_roots(&[], ..)`, which holds nothing. The roots
+/// before come back when `f` returns or panics.
 pub fn within_write_roots<T>(roots: &[PathBuf], f: impl FnOnce() -> T) -> T {
     struct Restore(Vec<PathBuf>);
     impl Drop for Restore {
@@ -234,25 +235,36 @@ fn stage(path: &Path, bytes: &[u8]) -> io::Result<Staged> {
 }
 
 /// The folder `target` is written in, opened from its write root, when this thread's writes are
-/// held to write roots ([`within_write_roots`]) and `path` lies under one; `None` when they are
-/// not, so the write goes by name as it always has. `target` is `path` with a link at the file
-/// followed ([`resolve`]): it must lie under a write root too.
+/// held to write roots ([`within_write_roots`]); `None` when they are not, so the write goes by
+/// name as it always has. `target` is `path` with a link at the file followed ([`resolve`]).
+///
+/// Both must lie under a root as it resolves now, spelled as it resolves (as
+/// [`crate::control_auth::check_write_path`] returns them), or the write is refused: a root
+/// swapped for a link since the check, or a path spelled through a link, cannot be held to it.
 fn held_folder(path: &Path, target: &Path) -> io::Result<Option<held::Folder>> {
     let roots = write_roots();
     if roots.is_empty() {
         return Ok(None);
     }
+    // A root that no longer resolves holds nothing; a path under it alone is refused below.
     let roots: Vec<PathBuf> = roots.iter().filter_map(|r| r.canonicalize().ok()).collect();
+    // The deepest root that holds `p`, and the rest of `p` below it.
     let under = |p: &Path| -> io::Result<Option<(&Path, PathBuf)>> {
-        let p = std::path::absolute(p)?;
-        Ok(roots.iter().find_map(|root| {
-            p.strip_prefix(root)
-                .ok()
-                .map(|rest| (root.as_path(), rest.to_path_buf()))
-        }))
+        let p = plain(&std::path::absolute(p)?);
+        Ok(roots
+            .iter()
+            .filter_map(|root| {
+                p.strip_prefix(plain(root))
+                    .ok()
+                    .map(|rest| (root.as_path(), rest.to_path_buf()))
+            })
+            .max_by_key(|(root, _)| root.components().count()))
     };
     if under(path)?.is_none() {
-        return Ok(None);
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "not under a write root as it resolves now",
+        ));
     }
     let Some((root, rest)) = under(target)? else {
         return Err(io::Error::new(
@@ -280,6 +292,38 @@ fn held_folder(path: &Path, target: &Path) -> io::Result<Option<held::Folder>> {
         ));
     }
     held::Folder::open(root, &parts).map(Some)
+}
+
+/// `p` without a Windows verbatim prefix (`\\?\C:\` becomes `C:\`, `\\?\UNC\s\x` becomes `\\s\x`)
+/// and with its drive letter in capitals, so a canonical root and a path spelled the usual way
+/// compare alike. Elsewhere, `p` as it is.
+fn plain(p: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::Prefix;
+        let mut parts = p.components();
+        if let Some(Component::Prefix(prefix)) = parts.next() {
+            let head = match prefix.kind() {
+                Prefix::VerbatimDisk(d) | Prefix::Disk(d) => {
+                    Some(format!("{}:", char::from(d).to_ascii_uppercase()))
+                }
+                Prefix::VerbatimUNC(server, share) => Some(format!(
+                    r"\\{}\{}",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                )),
+                _ => None,
+            };
+            if let Some(head) = head {
+                let mut out = PathBuf::from(head);
+                for part in parts {
+                    out.push(part.as_os_str());
+                }
+                return out;
+            }
+        }
+    }
+    p.to_path_buf()
 }
 
 /// Where a write to `path` lands, to tell whether two outputs name one file. Symbolic links are
@@ -395,7 +439,9 @@ mod held {
         /// Open `root`, then each of `folders` in the one before, refusing a symbolic link.
         pub(super) fn open(root: &Path, folders: &[&OsStr]) -> io::Result<Folder> {
             let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-            let mut fd = rustix::fs::open(root, flags, Mode::empty())?;
+            // The root is canonical here: a link at its last name was put there since.
+            let mut fd = rustix::fs::open(root, flags | OFlags::NOFOLLOW, Mode::empty())
+                .map_err(|e| refused(root, root.as_os_str(), e.into()))?;
             for name in folders {
                 fd = rustix::fs::openat(&fd, *name, flags | OFlags::NOFOLLOW, Mode::empty())
                     .map_err(|e| refused(root, name, e.into()))?;
@@ -477,10 +523,13 @@ mod held {
                     .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | flags)
                     .open(path)
             };
+            // The root is canonical here, so it is checked like the folders below it.
             let mut path = root.to_path_buf();
-            let mut held = vec![hold(&path, 0)?];
-            for name in folders {
-                path.push(name);
+            let mut held = Vec::with_capacity(folders.len() + 1);
+            for name in std::iter::once(root.as_os_str()).chain(folders.iter().copied()) {
+                if !held.is_empty() {
+                    path.push(name);
+                }
                 let folder = hold(&path, FILE_FLAG_OPEN_REPARSE_POINT)
                     .map_err(|e| super::refused(root, name, e))?;
                 let meta = folder.metadata()?;
@@ -862,10 +911,11 @@ mod tests {
         assert!(away_is_link);
     }
 
-    /// Files outside every write root are written as usual, and the roots before come back when
-    /// the closure returns.
+    /// Under write roots a file outside all of them is refused, unless the write is taken out of
+    /// the roots (`within_write_roots(&[], ..)`, as the app does for its own settings). The roots
+    /// before come back when the closure returns.
     #[test]
-    fn write_roots_hold_only_files_under_them_and_end_with_the_closure() {
+    fn write_roots_refuse_files_outside_them_and_end_with_the_closure() {
         let base = fs::canonicalize(scratch("held-scope")).unwrap();
         let (root, elsewhere) = (base.join("root"), base.join("elsewhere"));
         fs::create_dir_all(&root).unwrap();
@@ -874,7 +924,10 @@ mod tests {
         let inner = vec![elsewhere.clone()];
         within_write_roots(&roots, || {
             assert_eq!(write_roots(), roots);
-            write_atomic(elsewhere.join("settings.json"), "{}").unwrap();
+            let refused = write_atomic(elsewhere.join("settings.json"), "no");
+            assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            within_write_roots(&[], || write_atomic(elsewhere.join("settings.json"), "{}"))
+                .unwrap();
             within_write_roots(&inner, || assert_eq!(write_roots(), inner));
             assert_eq!(write_roots(), roots);
         });
@@ -887,6 +940,58 @@ mod tests {
             "{}"
         );
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The write root itself swapped for a link out of it after the path was checked: the path no
+    /// longer lies under the root as it now resolves, and the write fails rather than going by name.
+    #[test]
+    fn a_write_root_swapped_for_a_link_is_not_written_through() {
+        let base = fs::canonicalize(scratch("swap-root")).unwrap();
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(outside.join("sub")).unwrap();
+        // As check_write_path returned it.
+        let path = root.join("sub").join("out.fef");
+        fs::rename(&root, base.join("root-before")).unwrap();
+        if !link_folder(&outside, &root) {
+            eprintln!("skipped: this account may not make a folder link");
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        let written =
+            within_write_roots(std::slice::from_ref(&root), || write_atomic(&path, "hull"));
+        let landed = outside.join("sub").join("out.fef").exists();
+        let _ = fs::remove_dir_all(&base);
+        assert!(written.is_err(), "wrote through the swapped root");
+        assert!(!landed, "a file landed outside the root");
+    }
+
+    /// A root spelled through a link (as `/tmp` is on macOS) and a path spelled the same way: the
+    /// path cannot be held to the root as it resolves, so the write fails rather than going by name,
+    /// where a folder below it swapped for a link would lead it out.
+    #[test]
+    fn a_path_that_cannot_be_held_to_its_root_is_refused() {
+        let base = fs::canonicalize(scratch("held-alias")).unwrap();
+        let (real, outside) = (base.join("real"), base.join("outside"));
+        fs::create_dir_all(real.join("root").join("sub")).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let alias = base.join("alias");
+        if !link_folder(&real, &alias) {
+            eprintln!("skipped: this account may not make a folder link");
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        let sub = real.join("root").join("sub");
+        fs::rename(&sub, real.join("root").join("sub-before")).unwrap();
+        assert!(link_folder(&outside, &sub));
+        let root = alias.join("root");
+        let written = within_write_roots(std::slice::from_ref(&root), || {
+            write_atomic(root.join("sub").join("out.fef"), "hull")
+        });
+        let landed: Vec<_> = fs::read_dir(&outside).unwrap().collect();
+        let _ = fs::remove_dir_all(&base);
+        assert!(written.is_err(), "wrote by name");
+        assert!(landed.is_empty(), "{} files outside the root", landed.len());
     }
 
     /// Names that are not UTF-8 are compared byte for byte: two such names are not one file because
