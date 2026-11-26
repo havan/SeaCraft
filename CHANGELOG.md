@@ -4,6 +4,23 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+## 0.7.0 (2026-11-26)
+
+SeaCraft in Turkish. The desktop app, the command line and every document SeaCraft writes can now be read in
+Turkish as well as English, and so can the website; files, `--json`, `--csv` and MCP replies are the same whatever
+the language. A new mark, drawn from a hull's section, replaces the app icon, and the website is now published
+with each release, so its numbers are the ones the downloads give.
+
+- SeaCraft now speaks Turkish as well as English. **Help ▸ Language** switches the desktop app between the
+  system's language, English and Türkçe while it runs, and remembers the choice; `seacraft-gui --lang tr` and
+  `seacraft --lang tr …` choose it for one run, and `SEACRAFT_LANG=tr` for a shell. Without a choice SeaCraft
+  follows the operating system's language, and English when it has no translation for it. In Turkish, the
+  command line's tables, summaries and warnings, the design report, the lines plan (SVG and DXF), the curves,
+  wave and plate drawings, the builder's offsets, sheets, templates and plywood panels, and
+  `seacraft example --list` are all Turkish, and the MCP document tools take an optional `locale` (`en` unless
+  given). What other programs read stays the same in every language: `.fef` and `.seacraft.json`, `--json` and
+  `--csv`, MCP tool names and replies, DXF layer names, `--help` and `--version`, and `.` as the decimal point.
+  Turkish terms follow `docs/i18n-glossary-tr.md`; `docs/i18n.md` describes how to add a string or a language.
 - The website (https://seacraft.app/) is now in Turkish too, at `/tr/`, with a language switch in a new header
   that also carries the SeaCraft mark and a GitHub link. Whatever SeaCraft itself says on the page (a hull's
   description, where it heels, a method's warnings) is the program's own Turkish, from `seacraft --lang tr`, and the
@@ -17,7 +34,6 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 - The website is now published when a release is published, so its numbers are the ones the downloads give,
   instead of from every change to `main`. Run by hand, the Website workflow publishes main's page with a release's
   program and example hulls.
-
 - `seacraft heel --json` (and the MCP `heel_equilibrium` tool) now gives each settled state's solved
   `waterplane` as `n . p + d = 0` in model coordinates, so a drawing can place the heeled waterline without
   solving for it again.

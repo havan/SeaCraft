@@ -11,6 +11,9 @@
 
 To begin, choose **Open an example** on the start screen. `SHA256SUMS` holds the checksums.
 
+SeaCraft is in English and Turkish. It starts in your system's language when it has it, and **Help ▸ Language**
+changes it; `seacraft --lang tr` does the same for one command.
+
 **Windows:** the programs are not signed, so SmartScreen may warn you; choose *More info*, then *Run anyway*,
 if you trust this page. This build was compiled and tested automatically, but nobody has opened the GUI on
 Windows by hand yet. Please report what you find.
