@@ -4,6 +4,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- The MCP `batch` tool now says what its rollback covers: on an error the session's model goes back to where it was
+  before the batch, but files written by earlier steps (a design report, an unfolded plate, a wave image) stay on disk.
+  It used to call the batch all-or-nothing (#8).
+
 ## 0.7.0 (2026-11-26)
 
 SeaCraft in Turkish. The desktop app, the command line and every document SeaCraft writes can now be read in

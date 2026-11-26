@@ -3902,11 +3902,12 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "batch",
             "Run several tool calls atomically",
-            "Run tool calls in order, stopping at the first error. Each step is {name, arguments}. On an error earlier steps \
-             are rolled back, so the batch is all-or-nothing (both headless and when connected to the GUI). Returns each \
-             call's result on success, or {failed: {index, name, error}, completed: N} on failure. At most 100 calls; \
-             nested batch is rejected, and so is export_panels with both `nest` and `path` (files on disk cannot be \
-             rolled back; call it on its own).",
+            "Run tool calls in order, stopping at the first error. Each step is {name, arguments}. On an error the \
+             session's model is restored to what it was before the batch (both headless and when connected to the GUI), \
+             but files written by earlier steps stay on disk: a design report, an unfolded plate or a wave image is not \
+             removed. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
+             At most 100 calls; nested batch is rejected, and so is export_panels with both `nest` and `path` (call it \
+             on its own).",
             obj(
                 json!({
                     "calls": {
@@ -6796,6 +6797,25 @@ mod tests {
             })
         );
         assert_eq!(seen[1], json!({"path": "/tmp/lines.svg", "format": "svg"}));
+    }
+
+    #[test]
+    fn batch_description_says_files_are_not_rolled_back() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tool = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "batch")
+            .expect("batch")
+            .clone();
+        let description = tool["description"].as_str().unwrap();
+        assert!(
+            description.contains("files written by earlier steps stay on disk"),
+            "{description}"
+        );
+        assert!(!description.contains("all-or-nothing"), "{description}");
     }
 
     #[test]
