@@ -53,17 +53,21 @@ fn reply_timeout(method: &str) -> Duration {
 /// Answers a request from a worker thread, so slow work never holds the window: `work` runs
 /// there and its result goes to `reply` as [`handle`] would send it, with the model `revision`
 /// it was computed on and whether the window's model has changed since (`watch`, from
-/// [`App::revision_watch`]). A result that is not a JSON object is sent as it is.
+/// [`App::revision_watch`]). A result that is not a JSON object is sent as it is. The worker's
+/// writes are held to the request's write roots ([`seacraft_core::io::within_write_roots`]).
 fn reply_later(
     reply: Sender<Value>,
     revision: u64,
     watch: Arc<AtomicU64>,
     work: impl FnOnce() -> Result<Value, String> + Send + 'static,
 ) {
+    let write_roots = seacraft_core::io::write_roots();
     let spawned = std::thread::Builder::new()
         .name("seacraft-control-work".into())
         .spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            let res = seacraft_core::io::within_write_roots(&write_roots, || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+            });
             let answer = match res {
                 Ok(Ok(mut v)) => {
                     if let Some(o) = v.as_object_mut() {
@@ -722,7 +726,10 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// Answer one request. Every arm validates its input before touching the app,
 /// so a bad request leaves the window exactly as it was.
 /// Answers one request. `None` means a worker answers it later, on `req.reply`
-/// ([`reply_later`]); the caller sends `Some` replies itself.
+/// ([`reply_later`]); the caller sends `Some` replies itself. While it runs, a file written under
+/// a write root is written in folders opened from that root, so a folder swapped for a link after
+/// [`App::check_control_write_path`] cannot lead the write out of it
+/// ([`seacraft_core::io::within_write_roots`]).
 pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Option<Value> {
     let empty = Value::Object(serde_json::Map::new());
     let p = if req.params.is_null() {
@@ -733,14 +740,16 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Optio
     if !p.is_object() {
         return Some(error("`params` must be a JSON object"));
     }
-    let res =
+    let write_roots = app.control_roots().write_roots.clone();
+    let res = seacraft_core::io::within_write_roots(&write_roots, || {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match req.method.as_str() {
             "build.templates" => build_templates(app, p, &req.reply),
             "build.panels" => build_panels(app, p, &req.reply),
             "build.materials" => build_materials(app, p, &req.reply),
             "stability.heel" | "heel_equilibrium" => stability_heel(app, p, &req.reply),
             _ => handle_inner(app, ctx, req, p).map(Some),
-        }));
+        }))
+    });
     // A `build.materials` worker still running sees a schedule this request changed.
     app.sync_schedule_watch();
     match res {
@@ -6045,6 +6054,67 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A request is held to the write roots (issue #18): the model's design-data file next to it,
+    /// which the request never names, is a link out of the root and is not written through.
+    #[cfg(unix)]
+    #[test]
+    fn model_save_does_not_follow_a_sidecar_link_out_of_the_write_root() {
+        let (mut app, ctx) = demo();
+        let base = std::env::temp_dir().join(format!("seacraft-held-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("kept.json"), "kept").unwrap();
+        let path = root.join("hull.fef");
+        let sidecar = seacraft_core::project::sidecar_path(&path);
+        std::os::unix::fs::symlink(outside.join("kept.json"), &sidecar).unwrap();
+        app.set_control_roots(seacraft_core::control_auth::ControlRoots::new(
+            vec![],
+            vec![root.clone()],
+        ));
+        let r = call(
+            &mut app,
+            &ctx,
+            "model.save",
+            json!({ "path": path.to_string_lossy() }),
+        );
+        let kept = std::fs::read_to_string(outside.join("kept.json")).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(kept, "kept", "written out of the root through the link");
+        assert!(
+            seacraft_core::io::write_roots().is_empty(),
+            "the request's roots end with it"
+        );
+    }
+
+    /// A worker answering a request is held to the same write roots as the request.
+    #[cfg(unix)]
+    #[test]
+    fn a_worker_is_held_to_the_requests_write_roots() {
+        let base = std::env::temp_dir().join(format!("seacraft-held-work-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, outside) = (base.join("root"), base.join("outside"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let root = root.canonicalize().unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let target = root.join("link").join("out.svg");
+        let (tx, rx) = mpsc::channel();
+        seacraft_core::io::within_write_roots(std::slice::from_ref(&root), || {
+            reply_later(tx, 0, Arc::new(AtomicU64::new(0)), move || {
+                seacraft_core::io::write_atomic(&target, "svg").map_err(|e| e.to_string())?;
+                Ok(json!({}))
+            })
+        });
+        let answer = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        let landed: Vec<_> = std::fs::read_dir(&outside).unwrap().collect();
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert!(landed.is_empty(), "{} files outside the root", landed.len());
     }
 
     #[test]
