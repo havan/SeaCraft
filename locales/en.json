@@ -845,6 +845,7 @@
   "log.wave_image_saved": "Saved wave pattern to {path}",
   "materials.warn.no_plating": "Layer {layer} has no density or no thickness, so its shell weighs nothing",
   "materials.warn.seam_closed": "The {between} seam is folded almost shut (inside angle 5° or less), so it gets no fillet",
+  "materials.warn.seam_degenerate": "Some edges of the {between} seam have no length, lie on a face of no area or meet more than two faces, so they are not counted",
   "materials.warn.seam_winding": "Two faces of the {between} seam run along an edge in the same direction, so those edges are not counted as a seam",
   "materials.warn.unmatched_layer": "The schedule names layer {name}, which the hull does not have",
   "menu.analysis": "Analysis",

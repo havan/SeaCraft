@@ -2033,8 +2033,12 @@ to the modelled surface, with no laminate thickness offset.
 
 ### Formula
 Seams are found on the refined half mesh (`subdiv::evaluate`). An edge with two faces is a seam candidate when it is
-creased or its faces are on different layers; a one-face edge with both ends on $y = 0$, creased, on a symmetric layer
-is folded against its own mirror, whose outward normal is $(n_x, -n_y, n_z)$. With unit outward normals $n_1, n_2$, $e$
+creased or its faces are on different layers; a one-face edge with both ends on $y = 0$ on a symmetric layer is folded
+against its own mirror, whose outward normal is $(n_x, -n_y, n_z)$. That edge needs no crease: the refinement treats
+every boundary edge as hard, so a crease would decide nothing at level 1 and above, and the fold angle alone decides at
+every level. A face whose every vertex is on $y = 0$ is its own mirror; its free edges are plate edges, not seams.
+An edge with three or more faces, no length, or a face of no area is not measured and raises one
+`materials.warn.seam_degenerate` per layer pair. With unit outward normals $n_1, n_2$, $e$
 along the edge as the first face winds it, and $\varphi = \angle(n_1, n_2)$, the edge is convex when
 $(n_1 \times n_2) \cdot e > 0$, and the inside angle is $\theta = \pi - \varphi$ (convex) or $\pi + \varphi$ (concave).
 $|\theta - \pi| \le 5^\circ$ is flat: no seam. An edge off the centreline between symmetric layers counts twice (port
@@ -2083,10 +2087,19 @@ fillet figures are the tests' own inputs, not published values.
   (under $5^\circ$), so a `materials.warn.seam_closed` warning, tape, and no fillet.
 - `two_faces_winding_an_edge_the_same_way_warn_and_are_not_a_seam`: the concave pair with B's winding reversed: one
   `materials.warn.seam_winding` warning and no seam.
+- `an_uncreased_v_keel_is_still_a_seam_at_every_level`: the V bottom above without the centreline crease gives the same
+  `Bottom / Bottom` group of 2.0 m at $\theta = \pi - 2\arctan(0.5)$ at level 0 and at level 3.
+- `a_plate_in_the_centreline_plane_has_no_seams`: the 1 m × 1 m plate in $y = 0$ of §51 with tape and fillet: its mirror
+  normal is $-n$ ($\varphi = \pi$), but it lies in the plane, so no seam and no warning.
+- `an_edge_of_three_faces_warns_once_and_is_not_a_seam`: three faces of one layer on one creased edge: no seam, exactly
+  one `materials.warn.seam_degenerate` warning for `Hull / Hull`.
+- `a_seam_on_a_face_of_no_area_warns_once`: the fold with B collinear with the shared edge (zero normal): no seam, one
+  `materials.warn.seam_degenerate` warning.
 - `a_seam_with_a_layer_that_is_not_symmetric_counts_once`: the box with `Side` not symmetric: `Bottom / Side` 2.0 m at
   $(1, 1, 0)$ and `End / Side` 2.0 m (no mirror), `Bottom / End` still 4.0 m.
 - `crates/seacraft-core/src/examples/mod.rs`, `materials_shell_matches_the_render_mesh_sum` also asserts that no
-  example raises `materials.warn.seam_winding` (its half mesh winds consistently). A consistency check, not an oracle.
+  example raises `materials.warn.seam_winding` or `materials.warn.seam_degenerate` (its half mesh winds consistently
+  and has no degenerate or non-manifold seam edge). A consistency check, not an oracle.
 
 ### Provenance
 Hand-derived: the fillet cross-section (plane geometry above), the box seams and the V bottom's angle. Nothing here is

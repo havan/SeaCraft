@@ -244,6 +244,9 @@ impl Centroid {
     }
 }
 
+/// A point with `|y|` under this lies on the centreline plane.
+const ON_CENTRELINE: f64 = 1e-9;
+
 /// Area of a face as `polygon_area3` takes it (the same as the exports and `plating_weights`), and
 /// the centroid of its fan triangles weighted by their areas.
 fn polygon_centroid(poly: &[Vec3]) -> (f64, Vec3) {
@@ -271,7 +274,7 @@ pub fn estimate(surface: &Surface, schedule: &Materials, opts: SubdivisionOption
         let poly: Vec<Vec3> = face.iter().map(|&i| mesh.verts[i]).collect();
         let (a, at) = polygon_centroid(&poly);
         acc.add(a, at);
-        let on_centreline = poly.iter().all(|p| p.y.abs() < 1e-9);
+        let on_centreline = poly.iter().all(|p| p.y.abs() < ON_CENTRELINE);
         if surface.layers[li].symmetric && !on_centreline {
             acc.add(a, Vec3::new(at.x, -at.y, at.z));
         }
@@ -389,7 +392,10 @@ fn face_normal(mesh: &SubdivMesh, face: &[usize]) -> Vec3 {
 }
 
 /// Finds the seam edges of the refined half mesh: an edge creased or between two layers whose
-/// fold is not flat, or a creased centreline edge of a symmetric layer folded against its mirror.
+/// fold is not flat, or a centreline edge of a symmetric layer folded against its mirror. A
+/// centreline edge needs no crease: every boundary edge is hard in the refinement, so the fold
+/// angle alone decides, at any level. A face lying in the centreline plane is its own mirror, so
+/// its free edges are plate edges, not seams.
 fn find_seams(surface: &Surface, mesh: &SubdivMesh, warnings: &mut Vec<Msg>) -> Vec<SeamEdge> {
     let normals: Vec<Vec3> = mesh.faces.iter().map(|f| face_normal(mesh, f)).collect();
     let layer = |fi: usize| surface.layers.get(mesh.face_layer[fi]);
@@ -431,13 +437,31 @@ fn find_seams(surface: &Surface, mesh: &SubdivMesh, warnings: &mut Vec<Msg>) -> 
             }
             [f] => {
                 let Some(l) = layer(f) else { continue };
-                if !(crease && l.symmetric && pa.y.abs() < 1e-9 && pb.y.abs() < 1e-9) {
+                let on_centreline = |i: usize| mesh.verts[i].y.abs() < ON_CENTRELINE;
+                if !(l.symmetric && on_centreline(a) && on_centreline(b))
+                    || mesh.faces[f].iter().all(|&i| on_centreline(i))
+                {
                     continue;
                 }
                 let n = normals[f];
                 (f, Vec3::new(n.x, -n.y, n.z), l, true)
             }
-            _ => continue,
+            [] => continue,
+            ref faces => {
+                let mut names: Vec<&str> = faces
+                    .iter()
+                    .filter_map(|&f| layer(f).map(|l| l.name.as_str()))
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
+                match names[..] {
+                    [] => continue,
+                    [only] => names.push(only),
+                    _ => {}
+                }
+                warn(Key::MaterialsWarnSeamDegenerate, names.join(" / "));
+                continue;
+            }
         };
         let Some(l1) = layer(f1) else { continue };
         let n1 = normals[f1];
@@ -445,6 +469,10 @@ fn find_seams(surface: &Surface, mesh: &SubdivMesh, warnings: &mut Vec<Msg>) -> 
         let along = mesh.verts[t] - mesh.verts[s];
         let length = along.length();
         if n1 == Vec3::ZERO || n2 == Vec3::ZERO || length == 0.0 {
+            warn(
+                Key::MaterialsWarnSeamDegenerate,
+                label(&pair(&l1.name, &l2.name)),
+            );
             continue;
         }
         let phi = n1.dot(n2).clamp(-1.0, 1.0).acos();
@@ -716,8 +744,8 @@ mod tests {
         assert_eq!(e.warnings[0].key(), Some(Key::MaterialsWarnNoPlating));
     }
 
-    #[test]
-    fn a_face_on_the_centreline_counts_once() {
+    /// A 1 m x 1 m plate in the centreline plane y = 0 on a symmetric layer (a skeg, a stem).
+    fn centreline_plate() -> Surface {
         let mut s = Surface::new();
         for (x, z) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
             s.add_point(Vec3::new(x, 0.0, z));
@@ -725,8 +753,22 @@ mod tests {
         s.add_face(vec![0, 1, 2, 3], 0);
         s.layers.truncate(1);
         s.layers[0].symmetric = true;
-        let e = estimate(&s, &Materials::default(), l3());
+        s
+    }
+
+    #[test]
+    fn a_face_on_the_centreline_counts_once() {
+        let e = estimate(&centreline_plate(), &Materials::default(), l3());
         close(e.layers[0].area_m2, 1.0);
+    }
+
+    #[test]
+    fn a_plate_in_the_centreline_plane_has_no_seams() {
+        // Its free edges lie on y = 0, but the plate is not folded against a mirror: the
+        // mirror is the plate itself.
+        let e = estimate(&centreline_plate(), &tape_and_fillet(), l3());
+        assert!(e.seams.is_empty(), "{:?}", e.seams);
+        assert!(e.warnings.is_empty(), "{:?}", e.warnings);
     }
 
     #[test]
@@ -915,6 +957,28 @@ mod tests {
     }
 
     #[test]
+    fn an_uncreased_v_keel_is_still_a_seam_at_every_level() {
+        // A boundary edge is hard in the refinement whether creased or not, so the fold angle
+        // alone decides; level 0 and level 3 agree.
+        let s = half_v(false);
+        let theta = PI - 2.0 * 0.5f64.atan();
+        for level in [0, 3] {
+            let opts = SubdivisionOptions {
+                level,
+                mode: SubdivisionMode::Loop,
+            };
+            let e = estimate(&s, &tape_and_fillet(), opts);
+            assert_eq!(names(&e), vec!["Bottom / Bottom"], "level {level}");
+            close(group(&e, "Bottom", "Bottom").length_m, 2.0);
+            let angles = seam_angles(&s, opts, ["Bottom", "Bottom"]);
+            assert!(!angles.is_empty());
+            for t in angles {
+                close(t, theta);
+            }
+        }
+    }
+
+    #[test]
     fn flat_bottom_across_centreline_has_no_keel_seam() {
         let e = estimate(&half_box(), &tape_and_fillet(), l3());
         assert!(e
@@ -1010,6 +1074,50 @@ mod tests {
         assert!(e.seams.is_empty(), "{:?}", e.seams);
         assert_eq!(e.warnings.len(), 1, "{:?}", e.warnings);
         assert_eq!(e.warnings[0].key(), Some(Key::MaterialsWarnSeamWinding));
+    }
+
+    fn degenerate_warning(e: &Estimate) {
+        assert_eq!(e.warnings.len(), 1, "{:?}", e.warnings);
+        assert_eq!(
+            e.warnings[0],
+            Msg::new(Key::MaterialsWarnSeamDegenerate).arg("between", "Hull / Hull")
+        );
+    }
+
+    #[test]
+    fn an_edge_of_three_faces_warns_once_and_is_not_a_seam() {
+        let s = plates(
+            &[
+                (0.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (2.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (2.0, 1.0, -1.0),
+                (0.0, 1.0, -1.0),
+                (2.0, 2.0, 0.0),
+                (0.0, 2.0, 0.0),
+            ],
+            &[
+                (vec![0, 3, 2, 1], 0),
+                (vec![2, 3, 5, 4], 0),
+                (vec![3, 7, 6, 2], 0),
+            ],
+            &["Hull"],
+            false,
+            &[(2, 3)],
+        );
+        let e = estimate(&s, &tape_and_fillet(), l3());
+        assert!(e.seams.is_empty(), "{:?}", e.seams);
+        degenerate_warning(&e);
+    }
+
+    #[test]
+    fn a_seam_on_a_face_of_no_area_warns_once() {
+        // B lies along the shared edge's own line: its normal is zero.
+        let s = fold([(3.0, 1.0, 0.0), (-1.0, 1.0, 0.0)]);
+        let e = estimate(&s, &tape_and_fillet(), l3());
+        assert!(e.seams.is_empty(), "{:?}", e.seams);
+        degenerate_warning(&e);
     }
 
     #[test]

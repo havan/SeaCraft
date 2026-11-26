@@ -639,11 +639,14 @@ mod tests {
                 .map(|((w, d), l)| w - 0.5 * d * l.thickness * l.density / 1000.0)
                 .collect();
             assert_eq!(est.layers.len(), reference.len(), "{e}");
-            // Every example winds its half mesh consistently, so no seam edge is refused.
+            // Every example winds its half mesh consistently and has no degenerate or
+            // non-manifold seam edge, so no seam edge is refused.
+            use crate::i18n::Key;
             assert!(
-                est.warnings
-                    .iter()
-                    .all(|w| w.key() != Some(crate::i18n::Key::MaterialsWarnSeamWinding)),
+                est.warnings.iter().all(|w| !matches!(
+                    w.key(),
+                    Some(Key::MaterialsWarnSeamWinding | Key::MaterialsWarnSeamDegenerate)
+                )),
                 "{e}: {:?}",
                 est.warnings
             );
