@@ -124,16 +124,24 @@ def settles_in(text, lang):
     sys.exit(f"no {label!r} row in seacraft heel's {lang} output")
 
 
-def said(seacraft, english, *args, cwd=None, settles=False):
+def printed_in(seacraft, *args, cwd=None):
+    """What one command prints without `--json` in each language besides English: `{lang: text}`."""
+    return {lang: run(seacraft, "--lang", lang, *args, cwd=cwd, stderr=True) for lang in LANGS[1:]}
+
+
+def said(seacraft, english, *args, cwd=None, settles=False, outputs=None):
     """What one command says, in every language: `{lang: value}`.
 
     `english` is the value from the command's `--json`. The other languages run the same command without
-    `--json` and read the warnings (or, with `settles`, where the hull settles) from what it prints. The
-    build stops when a language finds a different number of warnings, rather than pairing the wrong ones.
+    `--json` and read the warnings (or, with `settles`, where the hull settles) from what it prints;
+    `outputs` from `printed_in` reads two things from one run. The build stops when a language finds a
+    different number of warnings, rather than pairing the wrong ones.
     """
+    if outputs is None:
+        outputs = printed_in(seacraft, *args, cwd=cwd)
     texts = {"en": english}
     for lang in LANGS[1:]:
-        printed = run(seacraft, "--lang", lang, *args, cwd=cwd, stderr=True)
+        printed = outputs[lang]
         if settles:
             texts[lang] = settles_in(printed, lang)
             continue
@@ -514,8 +522,10 @@ def heel_steps(seacraft, hull_id, hull_dir, kg, beam, stations):
         args = ("heel", fef, "--kg", kg, "--weight", weight)
         result = json.loads(run(seacraft, *args, "--json", cwd=hull_dir))
         step = heel_step(result, y)
-        step["summary"] = said(seacraft, step["summary"], *args, cwd=hull_dir, settles=True)
-        step["warnings"] = said(seacraft, step["warnings"], *args, cwd=hull_dir)
+        # One run in each language gives both where the hull settles and its warnings.
+        outputs = printed_in(seacraft, *args, cwd=hull_dir)
+        step["summary"] = said(seacraft, step["summary"], *args, settles=True, outputs=outputs)
+        step["warnings"] = said(seacraft, step["warnings"], *args, outputs=outputs)
         step["command"] = shown(hull_id, "heel", "--kg", f"{kg:g}", "--weight", weight)
         steps.append(step)
     return {
@@ -872,6 +882,8 @@ def page_values(lang, version, commit, release):
         "version": version,
         "commit": commit,
         "release": release,
+        # The release this page's numbers come from, so its downloads give the same numbers.
+        "release_url": f"https://github.com/havan/SeaCraft/releases/tag/v{release}",
     }
 
 

@@ -19,16 +19,21 @@
 <link rel="preload" href="{{root}}fonts/big-shoulders-latin-standard-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="{{root}}style.css">
 <script>
-/* A first visit to the English page from a browser set to another language this site has goes to that
-   language's page. Choosing a language with the switch is remembered and always wins. */
+/* The English page sends a reader to the language they chose with the switch, which is remembered and
+   always wins; failing that, a first visit from a browser set to another language this site has goes to
+   that language's page. Arriving from another page of this site, as the switch does, is a choice too, so a
+   browser that remembers nothing still keeps English when it is chosen. */
 (function () {
-  var langs = {{langs}}, here = document.documentElement.lang, chosen = null;
+  var langs = {{langs}}, chosen = null;
+  if (document.documentElement.lang !== langs[0]) return;
+  var go = function (lang) { if (langs.indexOf(lang) > 0) location.replace(lang + "/" + location.hash); };
   try { chosen = localStorage.getItem("seacraft-lang"); } catch (e) {}
-  if (chosen || here !== langs[0]) return;
+  if (chosen) { go(chosen); return; }
+  try { if (document.referrer && new URL(document.referrer).origin === location.origin) return; } catch (e) {}
   var wanted = (navigator.languages || [navigator.language || ""]).map(function (l) { return String(l).slice(0, 2).toLowerCase(); });
   for (var i = 0; i < wanted.length; i++) {
     if (wanted[i] === langs[0]) return;
-    if (langs.indexOf(wanted[i]) > 0) { location.replace(wanted[i] + "/" + location.hash); return; }
+    if (langs.indexOf(wanted[i]) > 0) { go(wanted[i]); return; }
   }
 })();
 </script>
@@ -339,7 +344,7 @@ claude mcp add seacraft -- seacraft mcp --connect 127.0.0.1:7878</code></pre>
         <li><b>{{t:page.install.mac_intel}}</b><span>{{t:page.install.mac_intel_how}}</span></li>
         <li><b>Linux</b><span>{{t:page.install.linux_how}}</span></li>
       </ul>
-      <p><a class="button" href="https://github.com/havan/SeaCraft/releases/latest">{{t:page.install.latest}}</a></p>
+      <p><a class="button" href="{{release_url}}">{{t:page.install.latest}}</a></p>
       <details class="linux-libs">
         <summary>{{t:page.install.source}}</summary>
         <p>{{t:page.install.rustup}}</p>
