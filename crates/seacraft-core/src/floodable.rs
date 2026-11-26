@@ -16,11 +16,12 @@
 //! full breadth and the ship upright; the deck edge is the moulded sheer, with no deck thickness.
 
 use crate::damage::{hull_deck_edge_vertices, resolve_particulars, DamageCase, Particulars};
-use crate::hydro::{section_area, waterplane_for, Hull, HydroOptions};
+use crate::hydro::{chain_paths, plane_segments, section_area, waterplane_for, Hull, HydroOptions};
 use crate::i18n::{Key, Msg};
 use crate::math::{Plane, Vec3};
 use crate::mesh::Surface;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 /// The margin line's depth below the deck edge (m): 76 mm, the SOLAS 1960 figure.
 pub const DEFAULT_MARGIN_M: f64 = 0.076;
@@ -115,6 +116,9 @@ pub struct FloodableResult {
     pub margin_line: Vec<[f64; 2]>,
     pub curves: Vec<FloodableCurve>,
     pub warnings: Vec<Msg>,
+    /// The hull's centreline profile `(x, z)` polylines, for the plot; not part of the JSON.
+    #[serde(skip)]
+    pub profile: Vec<Vec<[f64; 2]>>,
 }
 
 /// Floodable length curves of `surface` at the loading `case` resolves to (its compartments are not used).
@@ -240,7 +244,27 @@ fn compute_with_deck_edge(
         margin_line: margin.iter().map(|q| [q.x, q.z]).collect(),
         curves,
         warnings,
+        profile: centreline_profile(hull),
     })
+}
+
+/// The hull cut at y = 0, as `(x, z)` polylines.
+fn centreline_profile(hull: &Hull) -> Vec<Vec<[f64; 2]>> {
+    let plane = Plane::new(Vec3::new(0.0, 1.0, 0.0), 0.0);
+    let segs = plane_segments(&hull.verts, &hull.closed_tris(), &plane);
+    let tol = 1e-7 * (hull.model_max.x - hull.model_min.x).max(1.0);
+    chain_paths(&segs, tol)
+        .into_iter()
+        .map(|(pts, closed)| {
+            let mut line: Vec<[f64; 2]> = pts.iter().map(|p| [p.x, p.z]).collect();
+            if closed {
+                if let Some(&first) = line.first() {
+                    line.push(first);
+                }
+            }
+            line
+        })
+        .collect()
 }
 
 fn validate(opts: &FloodableOptions) -> Result<(), String> {
@@ -534,6 +558,303 @@ pub fn floodable_at(curve: &FloodableCurve, x: f64) -> Option<f64> {
     }
     let f = (x - p0.x_mid) / (p1.x_mid - p0.x_mid);
     Some(p0.length + f * (p1.length - p0.length))
+}
+
+/// The curves as a standalone SVG chart in English: see [`svg_tr`].
+pub fn svg(res: &FloodableResult, title: &str) -> String {
+    svg_tr(res, title, crate::i18n::Tr::new(crate::i18n::Locale::En))
+}
+
+/// The curves as a standalone SVG chart: floodable length over x at one scale for both axes, so the terminals
+/// and the bulkhead triangles have their true 2:1 slopes; one curve per permeability, the permissible length of
+/// the first curve dashed when a factor is set, a triangle on each compartment of the first curve's check, and
+/// below them the hull profile (centreline), the deck edge at side, the margin line and the bulkheads on their
+/// own vertical scale.
+pub fn svg_tr(res: &FloodableResult, title: &str, tr: crate::i18n::Tr) -> String {
+    use crate::curves::{chart_frame, esc};
+    let (w, h) = (960.0, 600.0);
+    let (ml, mr, mt) = (64.0, 110.0, 46.0);
+    let band = 110.0; // profile band height (px)
+    let gap = 44.0;
+    let plot_w = w - ml - mr;
+    let plot_h = h - mt - gap - band - 40.0;
+    let span = (res.hull_x_fwd - res.hull_x_aft).max(1e-6);
+    let longest = res
+        .curves
+        .iter()
+        .flat_map(|c| c.points.iter().map(|p| p.length))
+        .fold(0.0, f64::max)
+        .max(1e-6);
+    // One scale for both axes (px per metre).
+    let k = (plot_w / span).min(plot_h / (1.08 * longest));
+    let x0 = ml + 0.5 * (plot_w - k * span);
+    let base = mt + plot_h;
+    let sx = |x: f64| x0 + (x - res.hull_x_aft) * k;
+    let sy = |l: f64| base - l * k;
+    let top_len = plot_h / k;
+
+    let mut out = String::with_capacity(16 * 1024);
+    chart_frame(&mut out, title, w, h);
+    out.push_str("<style>\n");
+    for (i, colour) in ["#1f5fa8", "#b5532a", "#2e7d4f", "#7b3fa0"]
+        .iter()
+        .enumerate()
+    {
+        let _ = writeln!(out, ".c{i}{{stroke:{colour}}}");
+    }
+    out.push_str(".permissible{fill:none;stroke:#1f5fa8;stroke-width:1.2;stroke-dasharray:6 4}\n");
+    out.push_str(".terminal{fill:none;stroke:#777;stroke-width:0.8;stroke-dasharray:2 3}\n");
+    out.push_str(".triangle{fill-opacity:0.12;stroke-width:0.9}\n");
+    out.push_str(".pass{fill:#2e7d4f;stroke:#2e7d4f}\n.fail{fill:#c0392b;stroke:#c0392b}\n");
+    out.push_str(".unjudged{fill:#999;stroke:#999;stroke-dasharray:3 3}\n");
+    out.push_str(".hull{fill:none;stroke:#111;stroke-width:1}\n");
+    out.push_str(".deck{fill:none;stroke:#555;stroke-width:0.8}\n");
+    out.push_str(".margin{fill:none;stroke:#c0392b;stroke-width:1;stroke-dasharray:5 3}\n");
+    out.push_str(".bulkhead{fill:none;stroke:#555;stroke-width:1}\n");
+    out.push_str("</style>\n");
+    let _ = writeln!(
+        out,
+        "<text class=\"title\" x=\"{ml:.0}\" y=\"26\">{}</text>",
+        esc(title)
+    );
+
+    // Axes and grid.
+    let _ = writeln!(
+        out,
+        "<rect class=\"axis\" x=\"{:.1}\" y=\"{mt:.1}\" width=\"{:.1}\" height=\"{plot_h:.1}\"/>",
+        sx(res.hull_x_aft),
+        k * span
+    );
+    let step = nice_step(span.max(top_len) / 8.0);
+    let mut x = (res.hull_x_aft / step).ceil() * step;
+    while x <= res.hull_x_fwd + 1e-9 {
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{0:.1}\" y1=\"{mt:.1}\" x2=\"{0:.1}\" y2=\"{base:.1}\"/>\n<text class=\"label\" x=\"{0:.1}\" y=\"{1:.1}\" text-anchor=\"middle\">{2}</text>",
+            sx(x),
+            base + 14.0,
+            fmt_tick(x)
+        );
+        x += step;
+    }
+    let mut l = step;
+    while l <= top_len + 1e-9 {
+        let _ = writeln!(
+            out,
+            "<line class=\"grid\" x1=\"{0:.1}\" y1=\"{1:.1}\" x2=\"{2:.1}\" y2=\"{1:.1}\"/>\n<text class=\"label\" x=\"{3:.1}\" y=\"{4:.1}\" text-anchor=\"end\">{5}</text>",
+            sx(res.hull_x_aft),
+            sy(l),
+            sx(res.hull_x_fwd),
+            sx(res.hull_x_aft) - 4.0,
+            sy(l) + 4.0,
+            fmt_tick(l)
+        );
+        l += step;
+    }
+    let _ = writeln!(
+        out,
+        "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\" transform=\"rotate(-90 {0:.1} {1:.1})\" text-anchor=\"middle\">{}</text>",
+        sx(res.hull_x_aft) - 40.0,
+        mt + 0.5 * plot_h,
+        esc(tr.s(Key::FloodableSvgLengthAxis))
+    );
+
+    // Terminals: l = 2 (x − x_aft) and l = 2 (x_fwd − x), up to the top of the plot.
+    let rise = 0.5 * top_len;
+    let _ = writeln!(
+        out,
+        "<line class=\"terminal\" x1=\"{:.1}\" y1=\"{base:.1}\" x2=\"{:.1}\" y2=\"{:.1}\"/>",
+        sx(res.hull_x_aft),
+        sx(res.hull_x_aft + rise),
+        sy(top_len)
+    );
+    let _ = writeln!(
+        out,
+        "<line class=\"terminal\" x1=\"{:.1}\" y1=\"{base:.1}\" x2=\"{:.1}\" y2=\"{:.1}\"/>",
+        sx(res.hull_x_fwd),
+        sx(res.hull_x_fwd - rise),
+        sy(top_len)
+    );
+
+    // Bulkhead triangles on the first curve's check.
+    if let Some(first) = res.curves.first() {
+        for c in &first.checks {
+            let class = match c.passed {
+                Some(true) => "pass",
+                Some(false) => "fail",
+                None => "unjudged",
+            };
+            let mid = 0.5 * (c.x_aft + c.x_fwd);
+            let _ = writeln!(
+                out,
+                "<polygon class=\"triangle {class}\" points=\"{:.1},{base:.1} {:.1},{:.1} {:.1},{base:.1}\"/>",
+                sx(c.x_aft),
+                sx(mid),
+                sy(c.length.min(top_len)),
+                sx(c.x_fwd)
+            );
+        }
+    }
+
+    // Curves, and the first curve's permissible length.
+    let poly = |pts: &mut dyn Iterator<Item = (f64, f64)>| -> String {
+        pts.map(|(x, l)| format!("{:.1},{:.1}", sx(x), sy(l.min(top_len))))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // Labels at each curve's forward end, kept 13 px apart.
+    let mut labels: Vec<(f64, f64)> = Vec::new();
+    for (i, c) in res.curves.iter().enumerate() {
+        if c.points.is_empty() {
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "<polyline class=\"curve c{}\" points=\"{}\"/>",
+            i % 4,
+            poly(&mut c.points.iter().map(|p| (p.x_mid, p.length)))
+        );
+        let last = c.points[c.points.len() - 1];
+        labels.push((sy(last.length.min(top_len)) + 4.0, c.permeability));
+    }
+    labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for i in 1..labels.len() {
+        labels[i].0 = labels[i].0.max(labels[i - 1].0 + 13.0);
+    }
+    for (y, mu) in labels {
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{:.1}\" y=\"{y:.1}\">μ = {mu:.2}</text>",
+            sx(res.hull_x_fwd) + 6.0
+        );
+    }
+    if let (Some(f), Some(first)) = (res.factor, res.curves.first()) {
+        if !first.points.is_empty() {
+            let _ = writeln!(
+                out,
+                "<polyline class=\"permissible\" points=\"{}\"/>",
+                poly(&mut first.points.iter().map(|p| (p.x_mid, f * p.length)))
+            );
+            let _ = writeln!(
+                out,
+                "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\">{}</text>",
+                sx(res.hull_x_aft) + 4.0,
+                mt + 14.0,
+                esc(&tr.fmt(
+                    Key::FloodableSvgPermissible,
+                    &[
+                        ("factor", &format!("{f:.2}")),
+                        ("mu", &format!("{:.2}", first.permeability))
+                    ]
+                ))
+            );
+        }
+    }
+    if res.curves.iter().all(|c| c.points.is_empty()) {
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\">{}</text>",
+            ml,
+            mt + 30.0,
+            esc(tr.s(Key::FloodableSvgEmpty))
+        );
+    }
+
+    // Profile band: hull, margin line, bulkheads.
+    let band_top = base + gap;
+    let (z_lo, z_hi) = res
+        .profile
+        .iter()
+        .flatten()
+        .chain(res.margin_line.iter())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p[1]), hi.max(p[1]))
+        });
+    if z_lo.is_finite() && z_hi > z_lo {
+        let kz = (band / (z_hi - z_lo)).min(k);
+        let sz = |z: f64| band_top + band - (z - z_lo) * kz;
+        for line in &res.profile {
+            let pts: Vec<String> = line
+                .iter()
+                .map(|p| format!("{:.1},{:.1}", sx(p[0]), sz(p[1])))
+                .collect();
+            let _ = writeln!(
+                out,
+                "<polyline class=\"hull\" points=\"{}\"/>",
+                pts.join(" ")
+            );
+        }
+        let margin = margin_profile(&res.margin_line);
+        let deck: Vec<String> = margin
+            .iter()
+            .map(|p| format!("{:.1},{:.1}", sx(p[0]), sz(p[1] + res.margin_m)))
+            .collect();
+        let _ = writeln!(
+            out,
+            "<polyline class=\"deck\" points=\"{}\"/>",
+            deck.join(" ")
+        );
+        let pts: Vec<String> = margin
+            .iter()
+            .map(|p| format!("{:.1},{:.1}", sx(p[0]), sz(p[1])))
+            .collect();
+        let _ = writeln!(
+            out,
+            "<polyline class=\"margin\" points=\"{}\"/>",
+            pts.join(" ")
+        );
+        let _ = writeln!(
+            out,
+            "<text class=\"label\" x=\"{:.1}\" y=\"{:.1}\">{}</text>",
+            sx(res.hull_x_fwd) + 6.0,
+            sz(margin.last().map_or(z_hi, |p| p[1])) + 4.0,
+            esc(tr.s(Key::FloodableSvgMarginLine))
+        );
+        if let Some(first) = res.curves.first() {
+            for c in first.checks.iter().skip(1) {
+                let _ = writeln!(
+                    out,
+                    "<line class=\"bulkhead\" x1=\"{0:.1}\" y1=\"{1:.1}\" x2=\"{0:.1}\" y2=\"{2:.1}\"/>",
+                    sx(c.x_aft),
+                    sz(z_lo),
+                    sz(z_hi)
+                );
+            }
+        }
+    }
+    out.push_str("</svg>\n");
+    out
+}
+
+/// The lowest margin point at each x, so a deck edge read on both sides draws one line.
+fn margin_profile(margin: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut out: Vec<[f64; 2]> = Vec::new();
+    for &p in margin {
+        match out.last_mut() {
+            Some(last) if (last[0] - p[0]).abs() < 1e-9 => last[1] = last[1].min(p[1]),
+            _ => out.push(p),
+        }
+    }
+    out
+}
+
+fn nice_step(raw: f64) -> f64 {
+    let mag = 10f64.powf(raw.max(1e-9).log10().floor());
+    let r = raw / mag;
+    mag * if r <= 1.0 {
+        1.0
+    } else if r <= 2.0 {
+        2.0
+    } else if r <= 5.0 {
+        5.0
+    } else {
+        10.0
+    }
+}
+
+fn fmt_tick(v: f64) -> String {
+    let s = format!("{v:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
 #[cfg(test)]
@@ -962,5 +1283,29 @@ mod tests {
         assert!(close(min.x_mid, 0.701), "least at x {} m", min.x_mid);
         let mid = floodable_at(curve, 6.0).unwrap();
         assert!(close(mid, 3.37), "at x = 6 m: {mid} m");
+    }
+
+    #[test]
+    fn svg_has_a_curve_per_permeability_and_a_triangle_per_compartment() {
+        let hull = barge_hull();
+        let opts = FloodableOptions {
+            factor: Some(0.5),
+            bulkheads: vec![2.0, 4.0, 6.0, 8.0],
+            ..FloodableOptions::default()
+        };
+        let res = compute(&hull, &barge_particulars(0.8), &opts).unwrap();
+        assert!(!res.profile.is_empty());
+        let en = svg(&res, "Barge <test>");
+        assert_eq!(en.matches("class=\"curve").count(), 3);
+        assert_eq!(en.matches("class=\"triangle").count(), 5);
+        assert_eq!(en.matches("class=\"permissible\"").count(), 1);
+        assert_eq!(en.matches("class=\"terminal\"").count(), 2);
+        assert!(en.contains("class=\"margin\""));
+        assert!(en.contains("class=\"hull\""));
+        assert!(en.contains("Barge &lt;test&gt;"));
+        assert!(en.contains("Floodable length"));
+        let tr = svg_tr(&res, "Duba", crate::i18n::Tr::new(crate::i18n::Locale::Tr));
+        assert!(tr.contains("Su alabilir boy"), "{tr}");
+        assert!(tr.contains("Sınır hattı"));
     }
 }
