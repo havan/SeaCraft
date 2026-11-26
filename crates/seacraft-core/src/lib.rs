@@ -47,6 +47,7 @@ pub mod examples;
 pub mod export;
 pub mod fef;
 pub mod flatten;
+pub mod floodable;
 /// The embedded DejaVu fonts and their licence.
 pub mod fonts;
 pub mod heel;
