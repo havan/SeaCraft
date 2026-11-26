@@ -2033,11 +2033,10 @@ impl App {
         }
         let key = self.mesh_key();
         let short = self.cache.as_ref().is_some_and(|c| c.level < target);
-        if dragging || full || !short {
-            // Nothing to build in the background: a drag previews at level 2, and a mesh at
-            // the full level needs no job.
-            self.mesh_track.reset();
-        } else if self.mesh_track.ready(key) {
+        // Nothing to build in the background during a drag (it previews at level 2) or for a
+        // mesh already at the full level. A job in flight is kept, not forgotten: its worker
+        // cannot be stopped, so a new one waits for it, and its result is dropped by key.
+        if !(dragging || full || !short) && self.mesh_track.ready(key) {
             let surface = surface.clone();
             let (level, mode) = (target, self.mode);
             self.mesh_track
@@ -5465,7 +5464,13 @@ impl App {
         let Some(cache) = self.cache.as_mut() else {
             return;
         };
-        if cache.revision != self.revision || cache.mode != self.mode || self.drag.is_some() {
+        // Also skipped when the full level is already there (built at once by `refresh_cache`
+        // while the job ran): the same mesh again would only throw away the BVH and waterline.
+        if cache.revision != self.revision
+            || cache.mode != self.mode
+            || cache.level == self.level
+            || self.drag.is_some()
+        {
             return;
         }
         cache.mesh = mesh;
@@ -6351,10 +6356,14 @@ impl App {
     /// Take the results of finished jobs. A failure goes to the status line
     /// (and stays on its tab until the inputs change).
     fn poll_jobs(&mut self) {
-        match self.mesh_track.poll(self.mesh_key()) {
-            Some(Ok(mesh)) => self.install_mesh(mesh),
-            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobRefinedHull, &e),
-            None => {}
+        // A mesh is never installed during a drag, so it waits for the release: taken now, the
+        // track would call it current and never build it again.
+        if self.drag.is_none() {
+            match self.mesh_track.poll(self.mesh_key()) {
+                Some(Ok(mesh)) => self.install_mesh(mesh),
+                Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobRefinedHull, &e),
+                None => {}
+            }
         }
         let key = self.hydro_key();
         match self.hydro.track.poll(key) {

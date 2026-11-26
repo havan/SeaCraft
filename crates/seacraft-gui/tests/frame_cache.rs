@@ -554,3 +554,36 @@ fn opening_a_model_drops_the_old_mesh_job() {
     app.sync_render_cache();
     assert!(app.mesh_job_is_current(), "the new model's job runs");
 }
+
+/// CodeRabbit (PR #22): a press that starts a point drag while the full-level mesh is building
+/// keeps that job accounted for, so a release does not start a second build beside it. A release
+/// without a move then installs the mesh the job built.
+#[test]
+fn a_drag_keeps_the_running_mesh_job() {
+    let (mut app, ctx) = container();
+    // Lay the views out at level 3 (built at once, no job), then raise the level on the press.
+    app.set_subdivision_level(3);
+    frame(&ctx, &mut app, Vec::new());
+    let rect = app.viewport_rect(1);
+    let transform = app.cameras()[1].transform();
+    let screen = app
+        .surface()
+        .unwrap()
+        .points
+        .iter()
+        .filter_map(|p| transform.project(p.p, rect))
+        .filter(|s| rect.shrink(20.0).contains(*s))
+        .min_by(|a, b| {
+            a.distance(rect.center())
+                .total_cmp(&b.distance(rect.center()))
+        })
+        .expect("a point in view");
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    app.set_subdivision_level(5);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert!(app.mesh_job_is_current(), "the press kept the level 5 job");
+    frame(&ctx, &mut app, vec![button(screen, false)]);
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(5));
+}
