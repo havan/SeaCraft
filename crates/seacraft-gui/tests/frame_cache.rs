@@ -434,3 +434,84 @@ fn each_view_draws_a_kept_waterline_mesh_and_only_a_moved_view_rebuilds_it() {
         assert_waterline_mesh_fresh(&ctx, &app, i);
     }
 }
+
+fn container() -> (App, egui::Context) {
+    let path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut app = App::headless_for_test(Some(&path));
+    // 313 faces at level 4 is about 80 000 refined faces: over the budget for the window thread.
+    app.set_subdivision_level(4);
+    (app, egui::Context::default())
+}
+
+/// Frames (sleeping between them) until the level 4 mesh is in, checking each frame that the
+/// cached mesh is for the current model. Panics after 60 s.
+fn frames_until_refined(ctx: &egui::Context, app: &mut App) {
+    let start = std::time::Instant::now();
+    loop {
+        frame(ctx, app, Vec::new());
+        assert!(app.render_cache_is_current(), "a stale mesh is never drawn");
+        if !app.mesh_refining() {
+            return;
+        }
+        assert!(
+            start.elapsed().as_secs() < 60,
+            "the level 4 mesh never came"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A large hull draws a level 3 preview at once and the full level 4 from a background job.
+#[test]
+fn large_hull_refines_in_the_background() {
+    let (mut app, ctx) = container();
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(
+        app.render_cache_level(),
+        Some(3),
+        "the preview, built at once"
+    );
+    assert!(app.render_cache_is_current());
+    assert!(app.mesh_refining());
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+}
+
+/// An edit while the level 4 job runs: the old job's mesh is dropped, and a job for the edited
+/// hull brings level 4 back.
+#[test]
+fn a_superseded_mesh_job_is_dropped() {
+    let (mut app, ctx) = container();
+    frame(&ctx, &mut app, Vec::new());
+    assert!(app.mesh_refining());
+    let p = app.surface().unwrap().points[10].p;
+    app.move_point(10, p + seacraft_core::math::Vec3::new(0.0, 0.0, 0.5))
+        .expect("move");
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+    let moved = app.surface().unwrap().points[10].p;
+    assert!((moved.z - p.z - 0.5).abs() < 1e-9);
+}
+
+/// `refresh_cache` (the control channel's `ui.render`) builds the full level at once.
+#[test]
+fn refresh_cache_is_full_level_at_once() {
+    let (mut app, _ctx) = container();
+    app.refresh_cache();
+    assert_eq!(app.render_cache_level(), Some(4));
+    assert!(!app.mesh_refining());
+}
+
+/// A small hull at level 4 stays on the window thread, as before.
+#[test]
+fn small_hull_refines_at_once() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(4);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.render_cache_level(), Some(4));
+    assert!(!app.mesh_refining());
+}

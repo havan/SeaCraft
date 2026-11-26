@@ -45,6 +45,24 @@ pub const KG_UNSET_HINT: &str = "set KG first";
 /// Undo steps kept.
 const UNDO_LIMIT: usize = 64;
 
+/// The most refined faces (control-net faces × 4^level) built on the window thread. About 10 ms
+/// of refinement: `container-230m` (313 faces) takes about 140 ms at level 5, about 320 000 faces
+/// (ROADMAP M2). Above it the window draws a coarser level at once and a job builds the full one.
+const SYNC_REFINED_FACE_BUDGET: usize = 24_000;
+
+/// The level to refine `net_faces` to on the window thread when `level` is asked for: the
+/// highest within [`SYNC_REFINED_FACE_BUDGET`], never below level 1 (or `level`, if lower).
+fn sync_level(net_faces: usize, level: u8) -> u8 {
+    let floor = level.min(1);
+    (floor..=level)
+        .rev()
+        .find(|&l| {
+            net_faces.saturating_mul(4usize.saturating_pow(u32::from(l)))
+                <= SYNC_REFINED_FACE_BUDGET
+        })
+        .unwrap_or(floor)
+}
+
 /// Cached refined mesh, invalidated by the revision counter, level or mode.
 struct RenderCache {
     revision: u64,
@@ -1094,6 +1112,9 @@ pub struct App {
     cameras: [Camera; 4],
     active: usize,
     cache: Option<RenderCache>,
+    /// The full-level refined mesh when it is too large to build on the window thread
+    /// ([`sync_level`]); keyed by [`App::mesh_key`].
+    mesh_track: Track<RenderMesh>,
     selection: crate::selection::Selection,
     hovered_point: Option<usize>,
     selected_volume: Option<VolumeRef>,
@@ -1510,6 +1531,7 @@ impl App {
             ],
             active: 0,
             cache: None,
+            mesh_track: Track::default(),
             selection: crate::selection::Selection::default(),
             hovered_point: None,
             selected_volume: None,
@@ -1943,22 +1965,40 @@ impl App {
 
     /// Refine the hull when anything it depends on changed. While a point is
     /// being dragged the preview drops to level 2; the full level returns when
-    /// the drag ends.
+    /// the drag ends. A mesh too large for the window thread ([`sync_level`])
+    /// is drawn at a coarser level at once while a job builds the full one.
     fn sync_cache(&mut self) {
+        self.sync_cache_at(false);
+    }
+
+    /// [`App::sync_cache`]; with `full`, the full level is built on this thread whatever its size.
+    fn sync_cache_at(&mut self, full: bool) {
         let Some(surface) = &self.surface else {
             self.cache = None;
+            self.mesh_track.reset();
             return;
         };
-        let level = if self.drag.is_some() {
+        let dragging = self.drag.is_some();
+        let target = if dragging {
             self.level.min(2)
         } else {
             self.level
         };
+        let quick = if dragging || full {
+            target
+        } else {
+            sync_level(surface.faces.len(), target)
+        };
         let stale = match &self.cache {
-            Some(c) => c.revision != self.revision || c.level != level || c.mode != self.mode,
+            Some(c) => {
+                c.revision != self.revision
+                    || c.mode != self.mode
+                    || (c.level != target && c.level != quick)
+            }
             None => true,
         };
         if stale {
+            let level = quick;
             let mesh = export::render_mesh(surface, level, self.mode);
             let net_lines = seacraft_core::netlines::NetLines::of(surface);
             let (min, max) = crate::render::display_extents(surface);
@@ -1989,6 +2029,18 @@ impl App {
                 min,
                 max,
             });
+        }
+        let key = self.mesh_key();
+        let short = self.cache.as_ref().is_some_and(|c| c.level < target);
+        if dragging || full || !short {
+            // Nothing to build in the background: a drag previews at level 2, and a mesh at
+            // the full level needs no job.
+            self.mesh_track.reset();
+        } else if self.mesh_track.ready(key) {
+            let surface = surface.clone();
+            let (level, mode) = (target, self.mode);
+            self.mesh_track
+                .start(key, move || Ok(export::render_mesh(&surface, level, mode)));
         }
         if self.display.waterplane {
             let options = &self.hydro.options;
@@ -2022,7 +2074,9 @@ impl App {
                 {
                     cache.curves_stale = false;
                     cache.curves_for = Some(want);
-                    let opts = self.display.section_options(level, self.mode);
+                    // Cut at the level drawn: a preview's curves are cut again when the full
+                    // mesh replaces it.
+                    let opts = self.display.section_options(cache.level, self.mode);
                     cache.curves = Some(seacraft_core::linesplan::curves_3d(surface, opts));
                 }
             }
@@ -2342,6 +2396,13 @@ impl App {
                         SubdivisionMode::CatmullClark => "Catmull-Clark",
                     },
                 ));
+                if self.mesh_refining() {
+                    ui.spinner();
+                    ui.label(tr.fmt(
+                        seacraft_core::i18n::Key::StatusRefiningMesh,
+                        &[("level", &self.level.to_string())],
+                    ));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("v{}", seacraft_core::VERSION));
                     if let Some(p) = self.cursor_world {
@@ -5401,6 +5462,28 @@ impl App {
         ])
     }
 
+    /// The full-level mesh's inputs: the geometry, the level and the mode.
+    fn mesh_key(&self) -> u64 {
+        revision_key(&[self.revision, u64::from(self.level), self.mode as u64])
+    }
+
+    /// Take a finished full-level mesh: it replaces the preview when it is for the current
+    /// geometry, level and mode (the track drops any other).
+    fn install_mesh(&mut self, mesh: RenderMesh) {
+        let Some(cache) = self.cache.as_mut() else {
+            return;
+        };
+        if cache.revision != self.revision || cache.mode != self.mode || self.drag.is_some() {
+            return;
+        }
+        cache.mesh = mesh;
+        cache.level = self.level;
+        cache.bvh = None;
+        cache.waterline = None;
+        // The section curves were cut from the preview: cut them again from this mesh.
+        cache.curves_stale = cache.curves.is_some();
+    }
+
     fn resistance_key(&self) -> u64 {
         revision_key(&[self.revision, self.hydro_rev, self.perf_rev])
     }
@@ -6232,7 +6315,8 @@ impl App {
                 }
             }
         }
-        let busy = self.hydro.track.busy()
+        let busy = self.mesh_track.busy()
+            || self.hydro.track.busy()
             || self.hydro.curves_track.busy()
             || self.loading_track.busy()
             || self.damage_track.busy()
@@ -6252,6 +6336,11 @@ impl App {
     /// Take the results of finished jobs. A failure goes to the status line
     /// (and stays on its tab until the inputs change).
     fn poll_jobs(&mut self) {
+        match self.mesh_track.poll(self.mesh_key()) {
+            Some(Ok(mesh)) => self.install_mesh(mesh),
+            Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobRefinedHull, &e),
+            None => {}
+        }
         let key = self.hydro_key();
         match self.hydro.track.poll(key) {
             Some(Ok(out)) => self.install_hydro(out),
@@ -8372,6 +8461,25 @@ impl App {
         self.cache.as_ref().map(|c| &c.mesh)
     }
 
+    /// The level the cached mesh was refined to (test hook).
+    pub fn render_cache_level(&self) -> Option<u8> {
+        self.cache.as_ref().map(|c| c.level)
+    }
+
+    /// The cached mesh is for the model as it is now (test hook).
+    pub fn render_cache_is_current(&self) -> bool {
+        self.cache
+            .as_ref()
+            .is_some_and(|c| c.revision == self.revision && c.mode == self.mode)
+    }
+
+    /// The hull is drawn at a coarser level while the full one is built in the background.
+    pub fn mesh_refining(&self) -> bool {
+        self.drag.is_none()
+            && self.cache.as_ref().is_some_and(|c| c.level < self.level)
+            && self.mesh_track.failure(self.mesh_key()).is_none()
+    }
+
     /// Cached net lines for the current surface, once [`Self::refresh_cache`] has run.
     pub fn net_lines(&self) -> Option<&seacraft_core::netlines::NetLines> {
         self.cache.as_ref().map(|c| &c.net_lines)
@@ -9147,7 +9255,7 @@ impl App {
     /// Refine the hull now if anything it depends on changed (the control
     /// socket's `ui.render` needs a mesh without waiting for a frame).
     pub fn refresh_cache(&mut self) {
-        self.sync_cache();
+        self.sync_cache_at(true);
     }
 
     /// A status line for an action that changed nothing about the model.
@@ -10984,5 +11092,21 @@ impl App {
             ViewAction::Open(other) => self.open_analysis_view(other),
             ViewAction::OpenBuilderPanels => self.open_builder_panels(),
         }
+    }
+}
+
+#[cfg(test)]
+mod mesh_budget_tests {
+    use super::sync_level;
+
+    /// Net faces from `seacraft info`: demo-hull 81, wigley 180, container-230m 313.
+    #[test]
+    fn sync_level_keeps_small_hulls_whole() {
+        assert_eq!(sync_level(81, 4), 4);
+        assert_eq!(sync_level(313, 3), 3);
+        assert_eq!(sync_level(313, 5), 3);
+        assert_eq!(sync_level(180, 4), 3);
+        assert_eq!(sync_level(10_000, 2), 1, "never below level 1");
+        assert_eq!(sync_level(10_000, 0), 0);
     }
 }

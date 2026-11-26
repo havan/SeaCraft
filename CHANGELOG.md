@@ -4,6 +4,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- A large hull at a high subdivision level no longer freezes the window while it is refined: the window draws a
+  coarser level at once (level 3 for `container-230m`) and the full level replaces it when a background job has
+  built it, with "refining to level N…" in the status bar meanwhile. Smaller hulls (the demo hull up to level 4)
+  refine at once as before.
 - One speed for resistance, waves and seakeeping. The Performance tab's speed slider now sits above all three
   sections: it is marked on the resistance curve (click the curve to move it), the Wave pattern view computes at it,
   and seakeeping runs at it. Changing the speed in the Wave pattern view moves the same speed; its kn / Fn switch
