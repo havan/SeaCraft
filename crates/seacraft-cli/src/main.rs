@@ -93,6 +93,8 @@ enum Command {
     Heel(HeelArgs),
     /// Deterministic damage stability by the lost-buoyancy method
     Damage(DamageArgs),
+    /// Floodable length curves: the longest compartment that can flood without immersing the margin line
+    Floodable(FloodableArgs),
     /// Strip-theory heave and pitch motion RAOs in regular head seas (Salvesen, Tuck & Faltinsen 1970)
     Seakeeping(SeakeepingArgs),
     /// Linesplan: stations, buttocks and waterlines as SVG or DXF
@@ -1426,6 +1428,47 @@ struct DamageArgs {
 }
 
 #[derive(Args, Debug)]
+struct FloodableArgs {
+    /// Input .fef file
+    file: PathBuf,
+    /// Project file for `--condition` (defaults to the model's `<model>.seacraft.json` sidecar)
+    #[arg(long)]
+    project: Option<PathBuf>,
+    /// Loading condition of the project to float at (default: the hull at its design draft)
+    #[arg(long)]
+    condition: Option<String>,
+    /// Displacement (t), instead of a loading condition
+    #[arg(long)]
+    displacement: Option<f64>,
+    /// Longitudinal centre of gravity (m, model x); with `--displacement`
+    #[arg(long, requires = "displacement")]
+    lcg: Option<f64>,
+    /// Permeabilities, one curve each
+    #[arg(long, value_delimiter = ',', default_values_t = seacraft_core::floodable::DEFAULT_PERMEABILITIES)]
+    permeability: Vec<f64>,
+    /// Margin line depth below the deck edge (m)
+    #[arg(long, default_value_t = seacraft_core::floodable::DEFAULT_MARGIN_M)]
+    margin: f64,
+    /// Factor of subdivision: permissible length = factor x floodable length
+    #[arg(long)]
+    factor: Option<f64>,
+    /// Watertight bulkhead positions (m, model x), aft to forward, to check each compartment
+    #[arg(long, value_delimiter = ',')]
+    bulkheads: Vec<f64>,
+    /// Write the curves as an SVG plot
+    #[arg(long)]
+    svg: Option<PathBuf>,
+    #[command(flatten)]
+    subdiv: SubdivArgsCli,
+    /// Emit JSON instead of a table
+    #[arg(long, conflicts_with = "csv")]
+    json: bool,
+    /// Emit CSV, one row per curve point
+    #[arg(long)]
+    csv: bool,
+}
+
+#[derive(Args, Debug)]
 struct SeakeepingArgs {
     /// Input .fef file
     file: PathBuf,
@@ -1776,6 +1819,7 @@ fn run() -> Result<()> {
         Command::Materials(a) => cmd_materials(a, tr),
         Command::Heel(a) => cmd_heel(a, tr),
         Command::Damage(a) => cmd_damage(a, tr),
+        Command::Floodable(a) => cmd_floodable(a, tr),
         Command::Seakeeping(a) => cmd_seakeeping(a, tr),
         Command::Linesplan(a) => cmd_linesplan(a, tr),
         Command::Templates(a) => cmd_templates(a, tr),
@@ -5022,6 +5066,152 @@ fn cmd_stability(a: StabilityArgs, tr: Tr) -> Result<()> {
     }
     let _ = solve_draft; // keep the public helper referenced
     let _ = Vec3::ZERO;
+    Ok(())
+}
+
+fn cmd_floodable(a: FloodableArgs, tr: Tr) -> Result<()> {
+    use seacraft_core::floodable::{self, FloodableOptions};
+    let s = load(&a.file)?;
+    if a.displacement.is_some() && a.condition.is_some() {
+        bail!("give either --displacement or --condition, not both");
+    }
+    let mut case = damage::DamageCase::default();
+    if let Some(d) = a.displacement {
+        // `kg` does not enter the floodable length; set, it selects the explicit loading.
+        case.displacement_t = Some(d);
+        case.kg = Some(0.0);
+        case.lcg = a.lcg;
+    } else if let Some(name) = &a.condition {
+        let (source, path) = read_case_or_project(&a.file, a.project.as_deref())?;
+        let CaseSource::Project(p) = source else {
+            bail!("{} is not a project file", path.display());
+        };
+        case.loading_condition_name = Some(name.clone());
+        case = p
+            .resolve_damage_case(&case)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    }
+    let hopts = HydroOptions::from_surface(
+        &s,
+        SubdivisionOptions {
+            level: a.subdiv.level,
+            mode: a.subdiv.mode.into(),
+        },
+    );
+    let opts = FloodableOptions {
+        permeabilities: a.permeability.clone(),
+        margin_m: a.margin,
+        factor: a.factor,
+        bulkheads: a.bulkheads.clone(),
+        ..FloodableOptions::default()
+    };
+    let res = floodable::evaluate(&s, &hopts, &case, &opts).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    if let Some(path) = &a.svg {
+        let title = tr.fmt(Key::CliFloodableHeading, &[("name", &s.settings.name)]);
+        seacraft_core::io::write_atomic(path, floodable::svg_tr(&res, &title, tr))
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        if a.json || a.csv {
+            eprintln!(
+                "{}",
+                tr.fmt(
+                    Key::CliCommonWrote,
+                    &[("path", &path.display().to_string())]
+                )
+            );
+        }
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&res)?);
+        return Ok(());
+    }
+    if a.csv {
+        println!("permeability,x_mid,length,x_aft,x_fwd,trim_m,draft");
+        for c in &res.curves {
+            for p in &c.points {
+                println!(
+                    "{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}",
+                    c.permeability, p.x_mid, p.length, p.x_aft, p.x_fwd, p.trim_m, p.draft
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        tr.fmt(Key::CliFloodableHeading, &[("name", &s.settings.name)])
+    );
+    println!();
+    let row = |label: &str, value: String| println!("  {label:<26} {value}");
+    row(
+        tr.s(Key::CliFloodableLoading),
+        format!(
+            "{:.3} t, LCG {:.3} m, ρ {:.3} t/m³",
+            res.displacement_t, res.lcg, res.water_density
+        ),
+    );
+    row(
+        tr.s(Key::FloodableSvgMarginLine),
+        tr.fmt(
+            Key::CliFloodableMarginVal,
+            &[("margin", &format!("{:.3}", res.margin_m))],
+        ),
+    );
+    for c in &res.curves {
+        println!();
+        println!(
+            "{}",
+            tr.fmt(
+                Key::CliFloodableCurve,
+                &[("mu", &format!("{:.2}", c.permeability))]
+            )
+        );
+        if c.points.is_empty() {
+            println!(
+                "  {}",
+                tr.fmt(
+                    Key::WarnFloodableNoCurve,
+                    &[("mu", &format!("{:.2}", c.permeability))]
+                )
+            );
+            continue;
+        }
+        println!("  {}", tr.s(Key::CliFloodableColumns));
+        for p in &c.points {
+            println!(
+                "  {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>+9.3} {:>9.3}",
+                p.x_mid, p.length, p.x_aft, p.x_fwd, p.trim_m, p.draft
+            );
+        }
+        if !c.checks.is_empty() {
+            println!();
+            println!(
+                "  {}",
+                tr.fmt(
+                    Key::CliFloodableChecks,
+                    &[("factor", &format!("{:.2}", res.factor.unwrap_or(1.0)))]
+                )
+            );
+            for k in &c.checks {
+                let verdict = match k.passed {
+                    Some(true) => tr.s(Key::CliFloodablePass),
+                    Some(false) => tr.s(Key::CliFloodableFail),
+                    None => tr.s(Key::CliFloodableNotJudged),
+                };
+                let permissible = k
+                    .permissible
+                    .map_or_else(|| "-".to_owned(), |v| format!("{v:.3}"));
+                println!(
+                    "  {:>8.3} .. {:<8.3} {:>8.3} / {:>8} m  {verdict}",
+                    k.x_aft, k.x_fwd, k.length, permissible
+                );
+            }
+        }
+    }
+    for w in &res.warnings {
+        eprintln!("{}", tr.msg(w));
+    }
     Ok(())
 }
 
