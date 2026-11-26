@@ -2187,11 +2187,13 @@ fn gz_plot(
                 label: tr.s(Key::HeelPlotGzMomentSeries).into(),
                 points: pts(|s| draw::righting_moment_knm(s.displacement_t, s.gz_m)),
                 dashed: false,
+                muted: false,
             },
             PlotSeries {
                 label: tr.s(Key::HeelPlotHeelingMomentSeries).into(),
                 points: pts(|s| draw::righting_moment_knm(s.displacement_t, s.heeling_arm_m)),
                 dashed: true,
+                muted: false,
             },
         ]
     } else {
@@ -2200,11 +2202,13 @@ fn gz_plot(
                 label: tr.s(Key::HeelPlotGzLeverSeries).into(),
                 points: pts(|s| s.gz_m),
                 dashed: false,
+                muted: false,
             },
             PlotSeries {
                 label: tr.s(Key::HeelPlotHeelingArmSeries).into(),
                 points: pts(|s| s.heeling_arm_m),
                 dashed: true,
+                muted: false,
             },
         ]
     };

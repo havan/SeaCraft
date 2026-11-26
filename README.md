@@ -254,7 +254,8 @@ neighbouring extrema), and the summary names the speed regime in a sentence. The
 michell` adds the interference: the pair's wave resistance over twice one demihull's.
 
 In the window, Analysis → *Wave pattern* opens the pattern in the drawer under the viewports. One speed, typed or
-scrubbed, drives the regime sentence, the wavelength against the waterline, hull speed, the highest crest, the wave
+scrubbed, and the same one the Performance tab marks on the resistance curve and runs seakeeping at, drives the
+regime sentence, the wavelength against the waterline, hull speed, the highest crest, the wave
 drag here, the wash height and, for a catamaran, the interference, each in plain words with units. A banner says
 first when thin-ship theory does not fit the hull. The map shows dark calm water, the hull footprint, the Kelvin
 wedge and the wash lines (drag one to move them); the plots give C_w against Fn with hull speed, humps and hollows

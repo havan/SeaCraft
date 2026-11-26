@@ -684,8 +684,8 @@ pub fn to_csv_tr(table: &ViewTable, tr: Tr) -> String {
         let cells: Vec<String> = (0..table.columns.len())
             .map(|c| match row.get(c) {
                 None => String::new(),
-                Some(EngCell::Text(t)) if t == NO_VALUE => String::new(),
-                Some(EngCell::Text(t)) => field(t),
+                Some(EngCell::Text(t) | EngCell::Muted(t)) if t == NO_VALUE => String::new(),
+                Some(EngCell::Text(t) | EngCell::Muted(t)) => field(t),
                 Some(EngCell::Badge(passed, stale)) => {
                     field(panels::criteria_badge_style_tr(*passed, *stale, tr).0)
                 }

@@ -17,10 +17,16 @@
 //! percentage of the length) are derived from those measurements here. Nothing
 //! in this module looks at the control net.
 //!
-//! Limits worth stating in the answer rather than hiding: Holtrop–Mennen was
-//! fitted to `0.55 ≤ Cp ≤ 0.85`, `3.9 ≤ L/B ≤ 14.9`, `2.1 ≤ B/T ≤ 4.0` and
-//! `Fn ≤ 0.55`. [`HoltropInput::warnings`] reports the ones a given hull
-//! violates instead of silently extrapolating.
+//! Limits worth stating in the answer rather than hiding: Holtrop–Mennen is
+//! used here for `0.55 ≤ Cp ≤ 0.85`, `3.9 ≤ L/B ≤ 14.9` and `2.1 ≤ B/T ≤ 4.0`.
+//! Neither paper prints these figures (1982, p. 166, limits the method to hull
+//! forms resembling its average ship without a table), so their source is not
+//! cited yet (`docs/oracles.md` §42).
+//! [`HoltropInput::warnings`] reports the ones a given hull violates instead of
+//! silently extrapolating, and [`HoltropInput::outside_fitted_range`] says
+//! whether any does. Neither paper prints an upper Froude number: 1984 derives
+//! its high-speed fit "for the speed range Fn > 0.55" (p. 273) and stops there,
+//! so no speed is flagged on that account.
 //!
 //! Both papers print a worked example, and both are tests here. The 1984
 //! example (50 m at 25-35 kn, all on the high-speed fit) reproduces `1+k1`,
@@ -165,6 +171,26 @@ impl HoltropInput {
 
     /// The empirical validity ranges this hull falls outside, as short messages.
     pub fn warnings(&self) -> Vec<Msg> {
+        let mut out = self.form_range_warnings();
+        if self.bulb_area_m2 > 0.0 && self.bulb_centre_z > 0.6 * self.draft {
+            out.push(
+                Msg::new(Key::WarnHmBulb)
+                    .arg("z", format!("{:.2}", self.bulb_centre_z))
+                    .arg("limit", format!("{:.2}", 0.6 * self.draft)),
+            );
+        }
+        out
+    }
+
+    /// Whether the hull's form lies outside the Cp, L/B or B/T range the method was fitted to,
+    /// so every speed's answer is an extrapolation. A bulb set above 0.6 T does not count: the
+    /// method caps its height there (Holtrop 1984, p. 273) and stays within the fit.
+    pub fn outside_fitted_range(&self) -> bool {
+        !self.form_range_warnings().is_empty()
+    }
+
+    /// The Cp, L/B and B/T ranges this hull falls outside.
+    fn form_range_warnings(&self) -> Vec<Msg> {
         let mut out = Vec::new();
         let lb = self.length_wl / self.beam_wl;
         let bt = self.beam_wl / self.draft;
@@ -176,13 +202,6 @@ impl HoltropInput {
         }
         if !(2.1..=4.0).contains(&bt) {
             out.push(Msg::new(Key::WarnHmBt).arg("bt", format!("{bt:.2}")));
-        }
-        if self.bulb_area_m2 > 0.0 && self.bulb_centre_z > 0.6 * self.draft {
-            out.push(
-                Msg::new(Key::WarnHmBulb)
-                    .arg("z", format!("{:.2}", self.bulb_centre_z))
-                    .arg("limit", format!("{:.2}", 0.6 * self.draft)),
-            );
         }
         out
     }
@@ -1908,6 +1927,30 @@ mod tests {
         assert!(w.iter().any(|s| s.to_string().contains("Cp")), "{w:?}");
         assert!(w.iter().any(|s| s.to_string().contains("L/B")), "{w:?}");
         assert!(w.iter().any(|s| s.to_string().contains("B/T")), "{w:?}");
+    }
+
+    /// A hull outside the Cp, L/B or B/T range is outside the fit; a bulb set too high is not,
+    /// because the method caps its height at 0.6 T and carries on.
+    #[test]
+    fn outside_fitted_range_follows_the_form_ranges_not_the_bulb_cap() {
+        let mut i = sample();
+        assert!(!i.outside_fitted_range());
+        i.bulb_area_m2 = 1.0;
+        i.bulb_centre_z = 0.9 * i.draft;
+        assert!(!i.warnings().is_empty());
+        assert!(
+            !i.outside_fitted_range(),
+            "the bulb cap alone keeps the fit"
+        );
+        for change in [
+            |i: &mut HoltropInput| i.cp = 0.50,
+            |i: &mut HoltropInput| i.beam_wl = i.length_wl / 20.0,
+            |i: &mut HoltropInput| i.draft = i.beam_wl,
+        ] {
+            let mut j = sample();
+            change(&mut j);
+            assert!(j.outside_fitted_range(), "{:?}", j.warnings());
+        }
     }
 
     /// R8-2 A07. DSYHS regresses on the canoe body. The 10 m yacht floats

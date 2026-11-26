@@ -45,6 +45,24 @@ pub const KG_UNSET_HINT: &str = "set KG first";
 /// Undo steps kept.
 const UNDO_LIMIT: usize = 64;
 
+/// The most refined faces (control-net faces × 4^level) built on the window thread. About 10 ms
+/// of refinement: `container-230m` (313 faces) takes about 140 ms at level 5, about 320 000 faces
+/// (ROADMAP M2). Above it the window draws a coarser level at once and a job builds the full one.
+const SYNC_REFINED_FACE_BUDGET: usize = 24_000;
+
+/// The level to refine `net_faces` to on the window thread when `level` is asked for: the
+/// highest within [`SYNC_REFINED_FACE_BUDGET`], never below level 1 (or `level`, if lower).
+fn sync_level(net_faces: usize, level: u8) -> u8 {
+    let floor = level.min(1);
+    (floor..=level)
+        .rev()
+        .find(|&l| {
+            net_faces.saturating_mul(4usize.saturating_pow(u32::from(l)))
+                <= SYNC_REFINED_FACE_BUDGET
+        })
+        .unwrap_or(floor)
+}
+
 /// Cached refined mesh, invalidated by the revision counter, level or mode.
 struct RenderCache {
     revision: u64,
@@ -723,6 +741,10 @@ pub struct ResistanceRow {
     pub rt_kn: f64,
     pub pe_kw: Option<f64>,
     pub note: Option<String>,
+    /// False where the method is outside the range it was fitted to: the whole Holtrop curve
+    /// for a hull outside its Cp, L/B or B/T range, a DSYHS speed outside Fn 0.15 to 0.75. The
+    /// Performance tab greys these out.
+    pub in_range: bool,
 }
 
 /// Consolidated resistance prediction result for GUI display.
@@ -751,11 +773,20 @@ impl ResistanceResult {
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: None,
+                    in_range: true,
                 })
                 .collect(),
             warnings,
             rt_label: rt_label.to_string(),
         }
+    }
+
+    /// The same result with each row's `in_range` set by `in_range`.
+    pub fn with_in_range(mut self, in_range: impl Fn(&ResistanceRow) -> bool) -> Self {
+        for row in &mut self.rows {
+            row.in_range = in_range(row);
+        }
+        self
     }
 }
 
@@ -903,7 +934,9 @@ pub fn compute_raos_with_sea(
 pub struct PerformanceState {
     pub method: ResistanceMethod,
     pub speeds_kn: (f64, f64, f64),
-    pub sk_speed_kn: f64,
+    /// The one speed (knots) that resistance marks, the wave pattern is computed at and
+    /// seakeeping runs at; the Wave pattern view shows it in knots or as a Froude number.
+    pub speed_kn: f64,
     pub kg: Option<f64>,
     pub kyy_frac: f64,
     pub points: usize,
@@ -926,7 +959,7 @@ impl Default for PerformanceState {
         Self {
             method: ResistanceMethod::Holtrop,
             speeds_kn: (2.0, 12.0, 1.0),
-            sk_speed_kn: 6.0,
+            speed_kn: 6.0,
             kg: None,
             kyy_frac: 0.25,
             points: 30,
@@ -991,6 +1024,8 @@ impl From<OpenError> for String {
 /// waterline length and beam at the report's draft when a current result knows them.
 struct ReportWaves {
     settings: crate::waves::WaveSettings,
+    /// The shared speed ([`PerformanceState::speed_kn`]).
+    speed_kn: f64,
     lengths: Option<(f64, f64)>,
 }
 
@@ -1017,10 +1052,7 @@ impl ReportWaves {
             })
             .or(Some((surface.settings.length, surface.settings.beam)))
             .filter(|(l, b)| *l > 0.0 && *b >= 0.0);
-        let (speed_m_s, froude) = match w.speed {
-            crate::waves::WaveSpeed::Knots(kn) => (kn * seacraft_core::resistance::KNOT, None),
-            crate::waves::WaveSpeed::Froude(f) => (1.0, Some(f)),
-        };
+        let (speed_m_s, froude) = (self.speed_kn * seacraft_core::resistance::KNOT, None);
         let (wash, (ahead_l, behind_l, half_width_l)) = match lengths {
             Some((l, b)) => {
                 let wash = crate::waves::wash_distance(w, l, b);
@@ -1080,6 +1112,9 @@ pub struct App {
     cameras: [Camera; 4],
     active: usize,
     cache: Option<RenderCache>,
+    /// The full-level refined mesh when it is too large to build on the window thread
+    /// ([`sync_level`]); keyed by [`App::mesh_key`].
+    mesh_track: Track<RenderMesh>,
     selection: crate::selection::Selection,
     hovered_point: Option<usize>,
     selected_volume: Option<VolumeRef>,
@@ -1496,6 +1531,7 @@ impl App {
             ],
             active: 0,
             cache: None,
+            mesh_track: Track::default(),
             selection: crate::selection::Selection::default(),
             hovered_point: None,
             selected_volume: None,
@@ -1858,6 +1894,7 @@ impl App {
         self.picked_face = None;
         self.layer_panel = panels::LayerPanelState::default();
         self.cache = None;
+        self.mesh_track.reset();
         self.hydro.result = None;
         self.hydro.curves = None;
         self.hydro.hull = None;
@@ -1929,22 +1966,45 @@ impl App {
 
     /// Refine the hull when anything it depends on changed. While a point is
     /// being dragged the preview drops to level 2; the full level returns when
-    /// the drag ends.
+    /// the drag ends. A mesh too large for the window thread ([`sync_level`])
+    /// is drawn at a coarser level at once while a job builds the full one.
     fn sync_cache(&mut self) {
+        self.sync_cache_at(false);
+    }
+
+    /// [`App::sync_cache`]; with `full`, the full level is built on this thread whatever its size.
+    fn sync_cache_at(&mut self, full: bool) {
         let Some(surface) = &self.surface else {
             self.cache = None;
+            self.mesh_track.reset();
             return;
         };
-        let level = if self.drag.is_some() {
+        let dragging = self.drag.is_some();
+        let target = if dragging {
             self.level.min(2)
         } else {
             self.level
         };
+        let quick = if dragging || full {
+            target
+        } else {
+            sync_level(surface.faces.len(), target)
+        };
         let stale = match &self.cache {
-            Some(c) => c.revision != self.revision || c.level != level || c.mode != self.mode,
+            Some(c) => {
+                c.revision != self.revision
+                    || c.mode != self.mode
+                    || (c.level != target && c.level != quick)
+            }
             None => true,
         };
         if stale {
+            let level = quick;
+            if level < self.level {
+                // A finished full-level mesh is being replaced by a coarser one (a drag's
+                // preview): it is due again once the drag ends.
+                self.mesh_track.unstamp();
+            }
             let mesh = export::render_mesh(surface, level, self.mode);
             let net_lines = seacraft_core::netlines::NetLines::of(surface);
             let (min, max) = crate::render::display_extents(surface);
@@ -1975,6 +2035,17 @@ impl App {
                 min,
                 max,
             });
+        }
+        let key = self.mesh_key();
+        let short = self.cache.as_ref().is_some_and(|c| c.level < target);
+        // Nothing to build in the background during a drag (it previews at level 2) or for a
+        // mesh already at the full level. A job in flight is kept, not forgotten: its worker
+        // cannot be stopped, so a new one waits for it, and its result is dropped by key.
+        if !(dragging || full || !short) && self.mesh_track.ready(key) {
+            let surface = surface.clone();
+            let (level, mode) = (target, self.mode);
+            self.mesh_track
+                .start(key, move || Ok(export::render_mesh(&surface, level, mode)));
         }
         if self.display.waterplane {
             let options = &self.hydro.options;
@@ -2008,7 +2079,9 @@ impl App {
                 {
                     cache.curves_stale = false;
                     cache.curves_for = Some(want);
-                    let opts = self.display.section_options(level, self.mode);
+                    // Cut at the level drawn: a preview's curves are cut again when the full
+                    // mesh replaces it.
+                    let opts = self.display.section_options(cache.level, self.mode);
                     cache.curves = Some(seacraft_core::linesplan::curves_3d(surface, opts));
                 }
             }
@@ -2233,16 +2306,7 @@ impl App {
                 self.project_changed();
             }
             DockAction::Windage(panels::WindageAction::None) => {}
-            DockAction::Performance(panels::PerformanceAction::Changed) => {
-                self.performance_changed();
-            }
-            DockAction::Performance(panels::PerformanceAction::Compute) => {
-                self.start_performance_compute()
-            }
-            DockAction::Performance(panels::PerformanceAction::OpenWaveView) => {
-                self.set_wave_view_open(true);
-            }
-            DockAction::Performance(panels::PerformanceAction::None) => {}
+            DockAction::Performance(a) => self.apply_performance_action(a),
         }
         self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);
     }
@@ -2328,6 +2392,13 @@ impl App {
                         SubdivisionMode::CatmullClark => "Catmull-Clark",
                     },
                 ));
+                if self.mesh_refining() {
+                    ui.spinner();
+                    ui.label(tr.fmt(
+                        seacraft_core::i18n::Key::StatusRefiningMesh,
+                        &[("level", &self.level.to_string())],
+                    ));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(format!("v{}", seacraft_core::VERSION));
                     if let Some(p) = self.cursor_world {
@@ -3212,7 +3283,7 @@ impl App {
             .filter(|v| v.is_finite() && *v > 0.0);
         if let Some(v) = speed {
             self.perf_state.speeds_kn = crate::new_design::speed_range(v);
-            self.perf_state.sk_speed_kn = v;
+            self.perf_state.speed_kn = v;
             self.performance_changed();
         }
     }
@@ -5387,6 +5458,34 @@ impl App {
         ])
     }
 
+    /// The full-level mesh's inputs: the geometry, the level and the mode.
+    fn mesh_key(&self) -> u64 {
+        revision_key(&[self.revision, u64::from(self.level), self.mode as u64])
+    }
+
+    /// Take a finished full-level mesh: it replaces the preview when it is for the current
+    /// geometry, level and mode (the track drops any other).
+    fn install_mesh(&mut self, mesh: RenderMesh) {
+        let Some(cache) = self.cache.as_mut() else {
+            return;
+        };
+        // Also skipped when the full level is already there (built at once by `refresh_cache`
+        // while the job ran): the same mesh again would only throw away the BVH and waterline.
+        if cache.revision != self.revision
+            || cache.mode != self.mode
+            || cache.level == self.level
+            || self.drag.is_some()
+        {
+            return;
+        }
+        cache.mesh = mesh;
+        cache.level = self.level;
+        cache.bvh = None;
+        cache.waterline = None;
+        // The section curves were cut from the preview: cut them again from this mesh.
+        cache.curves_stale = cache.curves.is_some();
+    }
+
     fn resistance_key(&self) -> u64 {
         revision_key(&[self.revision, self.hydro_rev, self.perf_rev])
     }
@@ -5398,6 +5497,7 @@ impl App {
             self.revision,
             self.hydro_rev,
             crate::waves::settings_key(&self.perf_state.waves),
+            self.perf_state.speed_kn.to_bits(),
         ])
     }
 
@@ -5932,6 +6032,76 @@ impl App {
         self.last_change = Some(std::time::Instant::now());
     }
 
+    /// The waterline length and beam the Wave pattern view converts by: the kept pattern's,
+    /// else the hydrostatics'.
+    fn wave_lengths(&self) -> (Option<f64>, Option<f64>) {
+        let measured = self.perf_state.wave_result.as_ref();
+        let length_wl = measured
+            .map(|w| w.length_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl))
+            .filter(|l| *l > 0.0);
+        let beam_wl = measured
+            .map(|w| w.beam_wl)
+            .or_else(|| self.hydro.result.as_ref().map(|h| h.bwl));
+        (length_wl, beam_wl)
+    }
+
+    /// The shared speed as the Wave pattern view reads it: a Froude number when it shows one and
+    /// a waterline length is known, else knots.
+    pub fn wave_speed(&self) -> crate::waves::WaveSpeed {
+        let knots = crate::waves::WaveSpeed::Knots(self.perf_state.speed_kn);
+        match self.wave_lengths().0 {
+            Some(l) if self.perf_state.waves.froude_unit => knots.in_unit(false, l),
+            _ => knots,
+        }
+    }
+
+    /// Set the shared speed, in knots or as a Froude number (converted by the view's waterline
+    /// length; without one a Froude number is ignored), and show it in that unit.
+    pub fn set_wave_speed(&mut self, speed: crate::waves::WaveSpeed) {
+        let kn = match (speed, self.wave_lengths().0) {
+            (crate::waves::WaveSpeed::Knots(kn), _) => Some(kn),
+            (crate::waves::WaveSpeed::Froude(_), Some(l)) => {
+                Some(speed.m_s(l) / seacraft_core::resistance::KNOT)
+            }
+            (crate::waves::WaveSpeed::Froude(_), None) => None,
+        };
+        self.perf_state.waves.froude_unit = !speed.is_knots();
+        if let Some(kn) = kn.filter(|v| v.is_finite() && *v >= 0.0) {
+            self.set_shared_speed(kn);
+        }
+    }
+
+    /// Set the speed resistance, waves and seakeeping share (knots). The resistance curve does not
+    /// depend on it and stays current; the wave pattern and the RAOs key on it.
+    fn set_shared_speed(&mut self, speed_kn: f64) {
+        if self.perf_state.speed_kn != speed_kn {
+            self.perf_state.speed_kn = speed_kn;
+            self.speed_changed();
+        }
+    }
+
+    /// The shared speed moved: the results that depend on it recompute after the quiet period.
+    fn speed_changed(&mut self) {
+        self.last_change = Some(std::time::Instant::now());
+    }
+
+    /// Apply what the Performance tab asked for on one frame, all of it.
+    fn apply_performance_action(&mut self, a: panels::PerformanceAction) {
+        // A change bumps the revision, which already covers a speed moved with it.
+        if a.changed {
+            self.performance_changed();
+        } else if a.speed_changed {
+            self.speed_changed();
+        }
+        if a.compute {
+            self.start_performance_compute();
+        }
+        if a.open_wave_view {
+            self.set_wave_view_open(true);
+        }
+    }
+
     /// Open the Wave pattern view in the drawer (it computes while open), or close it if it is the
     /// view shown.
     pub fn set_wave_view_open(&mut self, open: bool) {
@@ -5987,6 +6157,7 @@ impl App {
             self.hydro.options.draft,
             self.hydro.options.water_density,
             &self.perf_state.waves,
+            crate::waves::WaveSpeed::Knots(self.perf_state.speed_kn),
         ) {
             Ok(w) => {
                 self.perf_state.wave_result = Some(w);
@@ -6012,9 +6183,10 @@ impl App {
         let draft = self.hydro.options.draft;
         let rho = self.hydro.options.water_density;
         let settings = self.perf_state.waves.clone();
+        let speed = crate::waves::WaveSpeed::Knots(self.perf_state.speed_kn);
         let key = self.waves_key();
         self.waves_track.start(key, move || {
-            crate::waves::compute_waves(&surface, subdivision, draft, rho, &settings)
+            crate::waves::compute_waves(&surface, subdivision, draft, rho, &settings, speed)
         });
     }
 
@@ -6026,6 +6198,7 @@ impl App {
             self.perf_rev,
             self.project_rev,
             self.loading_selected as u64,
+            self.perf_state.speed_kn.to_bits(),
         ])
     }
 
@@ -6167,7 +6340,8 @@ impl App {
                 }
             }
         }
-        let busy = self.hydro.track.busy()
+        let busy = self.mesh_track.busy()
+            || self.hydro.track.busy()
             || self.hydro.curves_track.busy()
             || self.loading_track.busy()
             || self.damage_track.busy()
@@ -6187,6 +6361,15 @@ impl App {
     /// Take the results of finished jobs. A failure goes to the status line
     /// (and stays on its tab until the inputs change).
     fn poll_jobs(&mut self) {
+        // A mesh is never installed during a drag, so it waits for the release: taken now, the
+        // track would call it current and never build it again.
+        if self.drag.is_none() {
+            match self.mesh_track.poll(self.mesh_key()) {
+                Some(Ok(mesh)) => self.install_mesh(mesh),
+                Some(Err(e)) => self.log_job_failure(seacraft_core::i18n::Key::JobRefinedHull, &e),
+                None => {}
+            }
+        }
         let key = self.hydro_key();
         match self.hydro.track.poll(key) {
             Some(Ok(out)) => self.install_hydro(out),
@@ -6670,6 +6853,7 @@ impl App {
             });
         let waves = self.waves_needed().then(|| ReportWaves {
             settings: self.perf_state.waves.clone(),
+            speed_kn: self.perf_state.speed_kn,
             lengths,
         });
         Some((opts, waves))
@@ -8020,7 +8204,7 @@ impl App {
         };
         Ok(SeakeepingSpec {
             draft,
-            speed_kn: self.perf_state.sk_speed_kn,
+            speed_kn: self.perf_state.speed_kn,
             kg,
             kyy,
             points: Some(self.perf_state.points),
@@ -8304,6 +8488,36 @@ impl App {
 
     pub fn render_cache(&self) -> Option<&RenderMesh> {
         self.cache.as_ref().map(|c| &c.mesh)
+    }
+
+    /// The level the cached mesh was refined to (test hook).
+    pub fn render_cache_level(&self) -> Option<u8> {
+        self.cache.as_ref().map(|c| c.level)
+    }
+
+    /// The cached mesh is for the model as it is now (test hook).
+    pub fn render_cache_is_current(&self) -> bool {
+        self.cache
+            .as_ref()
+            .is_some_and(|c| c.revision == self.revision && c.mode == self.mode)
+    }
+
+    /// The hull is drawn at a coarser level while the full one is built in the background.
+    pub fn mesh_refining(&self) -> bool {
+        self.drag.is_none()
+            && self
+                .surface
+                .as_ref()
+                .is_some_and(|s| sync_level(s.faces.len(), self.level) < self.level)
+            && self.cache.as_ref().is_some_and(|c| {
+                c.revision == self.revision && c.mode == self.mode && c.level < self.level
+            })
+            && self.mesh_track.failure(self.mesh_key()).is_none()
+    }
+
+    /// The background mesh job in flight is for the current geometry, level and mode (test hook).
+    pub fn mesh_job_is_current(&self) -> bool {
+        self.mesh_track.running_for() == Some(self.mesh_key())
     }
 
     /// Cached net lines for the current surface, once [`Self::refresh_cache`] has run.
@@ -9081,7 +9295,14 @@ impl App {
     /// Refine the hull now if anything it depends on changed (the control
     /// socket's `ui.render` needs a mesh without waiting for a frame).
     pub fn refresh_cache(&mut self) {
-        self.sync_cache();
+        self.sync_cache_at(true);
+    }
+
+    /// Refine as a frame does, without drawing or collecting finished jobs: a large hull gets
+    /// its preview and a background job for the full level (test hook; a frame may collect a
+    /// fast job in the same pass, which makes "still refining" a race).
+    pub fn sync_render_cache(&mut self) {
+        self.sync_cache_at(false);
     }
 
     /// A status line for an action that changed nothing about the model.
@@ -9609,14 +9830,17 @@ fn compute_resistance_impl(
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: None,
+                    in_range: true,
                 })
                 .collect();
+            let outside = input.outside_fitted_range();
             Ok(ResistanceResult {
                 method: "Holtrop & Mennen".to_string(),
                 rows,
                 warnings,
                 rt_label: "R_T (kN)".to_string(),
-            })
+            }
+            .with_in_range(|_| !outside))
         }
         ResistanceMethod::Dsyhs => {
             let dsyhs_in = resistance::DsyhsInput::measure(&hull, opts)
@@ -9636,6 +9860,7 @@ fn compute_resistance_impl(
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: None,
+                    in_range: true,
                 })
                 .collect();
             Ok(ResistanceResult {
@@ -9643,7 +9868,8 @@ fn compute_resistance_impl(
                 rows,
                 warnings,
                 rt_label: "R_T (kN)".to_string(),
-            })
+            }
+            .with_in_range(|r| (0.15..=0.75).contains(&r.fn_)))
         }
         ResistanceMethod::Savitsky => {
             let setup =
@@ -9664,6 +9890,7 @@ fn compute_resistance_impl(
                     rt_kn: p.resistance_n / 1000.0,
                     pe_kw: Some(p.pe_w / 1000.0),
                     note: Some(format!("trim {:.1}°", p.trim_deg)),
+                    in_range: true,
                 })
                 .collect();
             Ok(ResistanceResult {
@@ -9722,6 +9949,7 @@ fn compute_resistance_impl(
                     rt_kn: r.rt_n / 1000.0,
                     pe_kw: Some(r.pe_w / 1000.0),
                     note: Some(format!("Rw {:.2} kN", r.rw_n / 1000.0)),
+                    in_range: true,
                 })
                 .collect();
             Ok(ResistanceResult {
@@ -10500,16 +10728,12 @@ impl App {
             .map(str::to_owned);
         let heeled_or_trimmed =
             self.hydro.options.heel_deg != 0.0 || self.hydro.options.trim != 0.0;
+        let (length_wl, beam_wl) = self.wave_lengths();
         let measured = self.perf_state.wave_result.as_ref();
-        let length_wl = measured
-            .map(|w| w.length_wl)
-            .or_else(|| self.hydro.result.as_ref().map(|h| h.lwl));
-        let beam_wl = measured
-            .map(|w| w.beam_wl)
-            .or_else(|| self.hydro.result.as_ref().map(|h| h.bwl));
         let drag = self.wave_drag();
         let before = self.perf_state.waves.clone();
         let mut settings = before.clone();
+        let mut speed_kn = self.perf_state.speed_kn;
         let mut map = self.wave_map;
         let tr = self.tr();
         let mut action = WaveViewAction::None;
@@ -10524,6 +10748,7 @@ impl App {
                     ui,
                     WaveViewPanel {
                         settings: &mut settings,
+                        speed_kn: &mut speed_kn,
                         result: measured,
                         drag,
                         stale,
@@ -10545,13 +10770,14 @@ impl App {
             WaveViewAction::SaveImage => self.open_dialog(DialogKind::WaveImage),
             WaveViewAction::Close => self.close_analysis_view(),
             WaveViewAction::Open(other) => self.open_analysis_view(other),
-            WaveViewAction::SetSpeed(speed) => settings.speed = speed,
+            WaveViewAction::SetSpeed(kn) => speed_kn = kn,
             WaveViewAction::SetSpacing(spacing) => settings.cat_spacing_m = Some(spacing),
             WaveViewAction::SetWashDistance(d) => settings.wash_distance_m = Some(d),
         }
         if settings != before {
             self.set_wave_settings(settings);
         }
+        self.set_shared_speed(speed_kn);
     }
 
     /// The Heel view in the drawer under the viewports.
@@ -10913,5 +11139,53 @@ impl App {
             ViewAction::Open(other) => self.open_analysis_view(other),
             ViewAction::OpenBuilderPanels => self.open_builder_panels(),
         }
+    }
+}
+
+#[cfg(test)]
+mod mesh_budget_tests {
+    use super::sync_level;
+
+    /// Net faces from `seacraft info`: demo-hull 81, wigley 180, container-230m 313.
+    #[test]
+    fn sync_level_keeps_small_hulls_whole() {
+        assert_eq!(sync_level(81, 4), 4);
+        assert_eq!(sync_level(313, 3), 3);
+        assert_eq!(sync_level(313, 5), 3);
+        assert_eq!(sync_level(180, 4), 3);
+        assert_eq!(sync_level(10_000, 2), 1, "never below level 1");
+        assert_eq!(sync_level(10_000, 0), 0);
+    }
+}
+
+#[cfg(test)]
+mod performance_action_tests {
+    use super::App;
+    use crate::analysis_views::AnalysisView;
+    use crate::panels::PerformanceAction;
+
+    /// Agy review 2: a field committed on the same frame as a click on the curve or the
+    /// Compute button gives two actions; the App applies both instead of keeping the last.
+    #[test]
+    fn every_action_of_one_frame_is_applied() {
+        let demo = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/demo-hull.fef");
+        let mut app = App::headless_for_test(Some(demo));
+        let rev = app.perf_rev;
+        app.apply_performance_action(PerformanceAction {
+            changed: true,
+            speed_changed: true,
+            compute: true,
+            open_wave_view: true,
+        });
+        assert_eq!(
+            app.perf_rev,
+            rev + 1,
+            "the change marks the curve out of date"
+        );
+        assert!(
+            app.resistance_track.busy(),
+            "the Compute click starts the curve"
+        );
+        assert_eq!(app.analysis.open, Some(AnalysisView::Waves));
     }
 }

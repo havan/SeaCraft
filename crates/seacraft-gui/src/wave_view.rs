@@ -1,5 +1,6 @@
 //! The Wave pattern view in the Analysis drawer: one speed you can scrub drives the speed regime,
-//! humps and hollows of wave drag, catamaran interference, wash at a distance and the picture.
+//! humps and hollows of wave drag, catamaran interference, wash at a distance and the picture. It is
+//! the Performance tab's speed, the one resistance and seakeeping use too.
 //!
 //! The panel never changes the model or the app: it edits the wave settings it is given (view
 //! inputs, like the other Analysis views' inputs) and returns what the user asked for as a
@@ -25,7 +26,8 @@ pub enum WaveViewAction {
     Changed,
     /// "Save image…": PNG, SVG or VTI.
     SaveImage,
-    SetSpeed(WaveSpeed),
+    /// A speed (knots), from a click on the drag plot.
+    SetSpeed(f64),
     /// A catamaran spacing (m), from the spacing plot.
     SetSpacing(f64),
     /// A wash distance (m), from dragging the wash line.
@@ -56,6 +58,9 @@ pub struct MapState {
 /// The wave view's inputs.
 pub struct WaveViewPanel<'a> {
     pub settings: &'a mut WaveSettings,
+    /// The speed resistance, waves and seakeeping share (knots); the view edits it in knots or
+    /// as a Froude number.
+    pub speed_kn: &'a mut f64,
     /// The last pattern computed, current or not (`current`, `stale`).
     pub result: Option<&'a WaveResult>,
     /// The wave-drag curve, when current.
@@ -96,6 +101,7 @@ pub fn panel(ui: &mut egui::Ui, p: WaveViewPanel<'_>) -> WaveViewAction {
 pub fn panel_tr(ui: &mut egui::Ui, p: WaveViewPanel<'_>, tr: Tr) -> WaveViewAction {
     let WaveViewPanel {
         settings,
+        speed_kn,
         result,
         drag,
         stale,
@@ -138,7 +144,7 @@ pub fn panel_tr(ui: &mut egui::Ui, p: WaveViewPanel<'_>, tr: Tr) -> WaveViewActi
         ui.label(egui::RichText::new(tr.s(Key::WaveMethodTitle)).strong())
             .on_hover_text(tr.s(Key::WaveMethodHover));
         ui.separator();
-        if speed_control(ui, settings, length_wl, tr) {
+        if speed_control(ui, settings, speed_kn, length_wl, tr) {
             action = WaveViewAction::Changed;
         }
         if let Some(r) = result {
@@ -217,13 +223,35 @@ pub fn panel_tr(ui: &mut egui::Ui, p: WaveViewPanel<'_>, tr: Tr) -> WaveViewActi
 }
 
 /// The number field, the kn/Fn switch and the slider (Fn 0.10 to 1.00, shown in the field's unit).
-/// True when the speed changed.
-fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>, tr: Tr) -> bool {
+/// The speed is the shared one, in knots; the field shows it as a Froude number when the settings
+/// say so and a waterline length is known, else in knots. True when the speed or its unit changed.
+fn speed_control(
+    ui: &mut egui::Ui,
+    s: &mut WaveSettings,
+    speed_kn: &mut f64,
+    length_wl: Option<f64>,
+    tr: Tr,
+) -> bool {
     let mut changed = false;
     ui.label(tr.s(Key::WaveCtlSpeed))
         .on_hover_text(tr.s(Key::WaveCtlSpeedTip));
-    let knots = s.speed.is_knots();
-    let (mut value, range) = match s.speed {
+    let shown = |kn: f64| shown_speed(kn, s.froude_unit, length_wl);
+    let current = *speed_kn;
+    let to_kn = |v: WaveSpeed| match (v, length_wl) {
+        (WaveSpeed::Knots(kn), _) => kn,
+        (WaveSpeed::Froude(_), Some(l)) => v.m_s(l) / KNOT,
+        (WaveSpeed::Froude(_), None) => current,
+    };
+    let speed = shown(*speed_kn);
+    let knots = speed.is_knots();
+    let in_unit = |v: f64| {
+        if knots {
+            WaveSpeed::Knots(v)
+        } else {
+            WaveSpeed::Froude(v)
+        }
+    };
+    let (mut value, range) = match speed {
         WaveSpeed::Knots(v) => (v, 0.1..=100.0),
         WaveSpeed::Froude(v) => (v, 0.01..=2.0),
     };
@@ -232,41 +260,44 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
             theme::num(&mut value)
                 .speed(if knots { 0.05 } else { 0.002 })
                 .range(range)
+                // The shared speed can be outside this field's range (0 kn from the Performance
+                // slider, or a unit switch): showing it must not write a clamped speed back.
+                .clamp_existing_to_range(false)
                 .max_decimals(3),
         )
         .on_hover_text(tr.s(Key::WaveCtlSpeedDragTip))
         .changed()
     {
-        s.speed = if knots {
-            WaveSpeed::Knots(value)
-        } else {
-            WaveSpeed::Froude(value)
-        };
+        *speed_kn = to_kn(in_unit(value));
         changed = true;
     }
-    let mut to_knots = knots;
+    // The unit is only how the speed reads: switching it does not move the speed. Without a
+    // waterline length the speed reads in knots, and "Fn" cannot be picked.
+    let (selected, fn_enabled) = unit_switch(s.froude_unit, length_wl);
+    let mut froude = selected;
     theme::segmented(ui, |ui| {
-        ui.selectable_value(&mut to_knots, true, "kn")
+        ui.selectable_value(&mut froude, false, "kn")
             .on_hover_text(tr.s(Key::WaveCtlKnTip));
-        ui.selectable_value(&mut to_knots, false, "Fn")
-            .on_hover_text(tr.s(Key::WaveCtlFnTip));
+        ui.add_enabled_ui(fn_enabled, |ui| {
+            ui.selectable_value(&mut froude, true, "Fn")
+                .on_hover_text(tr.s(Key::WaveCtlFnTip))
+                .on_disabled_hover_text(tr.s(Key::WaveCtlFnNoLengthTip));
+        });
     });
-    if to_knots != knots {
-        // The speed itself does not jump: the value converts by the waterline length.
-        s.speed = match length_wl {
-            Some(l) => s.speed.in_unit(to_knots, l),
-            None if to_knots => WaveSpeed::Knots(value),
-            None => WaveSpeed::Froude(value),
-        };
+    if froude != selected {
+        s.froude_unit = froude;
         changed = true;
     }
     // The slider spans Fn 0.10 to 1.00 in the field's unit. It edits a copy, so a typed value
     // outside its range is kept until the slider itself is moved.
-    let unit = |f: f64| match (knots, length_wl) {
-        (true, Some(l)) => f * (GRAVITY * l).sqrt() / KNOT,
-        _ => f,
-    };
-    if !knots || length_wl.is_some() {
+    if let Some(l) = length_wl {
+        let unit = |f: f64| {
+            if knots {
+                f * (GRAVITY * l).sqrt() / KNOT
+            } else {
+                f
+            }
+        };
         let (lo, hi) = (unit(SLIDER_FN.0), unit(SLIDER_FN.1));
         let mut v = value;
         let r = theme::slider(
@@ -277,15 +308,27 @@ fn speed_control(ui: &mut egui::Ui, s: &mut WaveSettings, length_wl: Option<f64>
         )
         .on_hover_text(tr.s(Key::WaveCtlSpeedSliderTip));
         if r.changed() && v != value {
-            s.speed = if knots {
-                WaveSpeed::Knots(v)
-            } else {
-                WaveSpeed::Froude(v)
-            };
+            *speed_kn = to_kn(in_unit(v));
             changed = true;
         }
     }
     changed
+}
+
+/// The shared speed (knots) as the view shows it: a Froude number when `froude_unit` is set and a
+/// waterline length (m) is known, else knots.
+fn shown_speed(speed_kn: f64, froude_unit: bool, length_wl: Option<f64>) -> WaveSpeed {
+    match length_wl.filter(|l| *l > 0.0) {
+        Some(l) if froude_unit => WaveSpeed::Knots(speed_kn).in_unit(false, l),
+        _ => WaveSpeed::Knots(speed_kn),
+    }
+}
+
+/// The kn / Fn switch: whether "Fn" is the unit shown, and whether it can be picked (it needs a
+/// waterline length).
+fn unit_switch(froude_unit: bool, length_wl: Option<f64>) -> (bool, bool) {
+    let known = length_wl.is_some_and(|l| l > 0.0);
+    (froude_unit && known, known)
 }
 
 /// The short reasons thin-ship theory does not fit, for the banner: "L/B 3.1", "wide transom",
@@ -379,7 +422,7 @@ fn body_columns(
                 action = WaveViewAction::SetWashDistance(d);
             }
             if !wide {
-                let asked = plots(ui, r, drag, settings, map, tr);
+                let asked = plots(ui, r, drag, map, tr);
                 if asked != WaveViewAction::None {
                     action = asked;
                 }
@@ -387,7 +430,7 @@ fn body_columns(
         });
         if wide {
             ui.allocate_ui_with_layout(egui::vec2(plots_w, size.y), top_down, |ui| {
-                let asked = plots(ui, r, drag, settings, map, tr);
+                let asked = plots(ui, r, drag, map, tr);
                 if asked != WaveViewAction::None {
                     action = asked;
                 }
@@ -850,7 +893,6 @@ fn plots(
     ui: &mut egui::Ui,
     r: &WaveResult,
     drag: Option<&WaveDrag>,
-    settings: &WaveSettings,
     map: &mut MapState,
     tr: Tr,
 ) -> WaveViewAction {
@@ -876,11 +918,13 @@ fn plots(
                         label: tr.s(Key::WavePlotPairRatio).into(),
                         points: r.spacing_scan.clone(),
                         dashed: false,
+                        muted: false,
                     },
                     PlotSeries {
                         label: tr.s(Key::WavePlotNoInterference).into(),
                         points: vec![(s0, 1.0), (s1, 1.0)],
                         dashed: true,
+                        muted: false,
                     },
                 ];
                 let fn_s = format!("{:.2}", r.field.froude);
@@ -904,11 +948,13 @@ fn plots(
                                     label: tr.s(Key::WavePlotCatSeries).into(),
                                     points: pair.clone(),
                                     dashed: false,
+                                    muted: false,
                                 },
                                 PlotSeries {
                                     label: tr.s(Key::WavePlotTwoMonoSeries).into(),
                                     points: mono,
                                     dashed: true,
+                                    muted: false,
                                 },
                             ],
                             pair,
@@ -919,6 +965,7 @@ fn plots(
                             label: String::new(),
                             points: mono.clone(),
                             dashed: false,
+                            muted: false,
                         }],
                         mono,
                     ),
@@ -950,11 +997,9 @@ fn plots(
                     &marks,
                     Some(SLIDER_FN),
                 ) {
-                    let knots = settings.speed.is_knots();
-                    action = WaveViewAction::SetSpeed(
-                        WaveSpeed::Froude((f * 1000.0).round() / 1000.0)
-                            .in_unit(knots, d.length_wl),
-                    );
+                    let fn_ = (f * 1000.0).round() / 1000.0;
+                    action =
+                        WaveViewAction::SetSpeed(WaveSpeed::Froude(fn_).m_s(d.length_wl) / KNOT);
                 }
                 let fn_s = format!("{fn_now:.2}");
                 let kn_s = format!("{:.1}", r.field.speed_m_s / KNOT);
@@ -989,6 +1034,7 @@ fn plots(
                     .zip(r.wash_cut.zeta.iter().copied())
                     .collect(),
                 dashed: false,
+                muted: false,
             }];
             let d_s = format!("{:.1}", r.wash_distance_m);
             let caption = tr.fmt(Key::WavePlotWashCaption, &[("d", &d_s)]);
@@ -1181,6 +1227,17 @@ fn bottom_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review I2: without a waterline length the speed reads in knots, so "kn" is the unit
+    /// selected and "Fn" cannot be picked; with one, the switch follows the setting.
+    #[test]
+    fn the_unit_switch_shows_the_unit_drawn() {
+        assert_eq!(unit_switch(true, None), (false, false));
+        assert_eq!(unit_switch(false, None), (false, false));
+        assert_eq!(unit_switch(true, Some(10.7)), (true, true));
+        assert_eq!(unit_switch(false, Some(10.7)), (false, true));
+        assert_eq!(shown_speed(6.0, true, None), WaveSpeed::Knots(6.0));
+    }
 
     #[test]
     fn interference_is_worded() {

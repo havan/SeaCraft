@@ -119,7 +119,8 @@ fn open_view_computes_by_itself() {
         a.wave_current().is_some() && a.wave_drag().is_some()
     });
     let w = app.wave_current().expect("the pattern");
-    assert!((w.field.froude - 0.3).abs() < 1e-12);
+    // At the shared speed, 6 kn by default.
+    assert!((w.field.speed_m_s - 6.0 * seacraft_core::resistance::KNOT).abs() < 1e-12);
     assert!(!app.wave_settings().plan_contours, "Plan contours stay off");
 }
 
@@ -137,11 +138,8 @@ fn scrubbing_settles_on_the_last_speed() {
     let (mut app, ctx) = demo_with_waves();
     for k in 0..10 {
         let fn_ = 0.30 + 0.02 * k as f64;
-        app.set_wave_settings(WaveSettings {
-            speed: WaveSpeed::Froude(fn_),
-            ..app.wave_settings().clone()
-        });
-        // The demo starts at Fn 0.30, so the first step does not move the key.
+        app.set_wave_speed(WaveSpeed::Froude(fn_));
+        // The first step may land on the speed already shown (6 kn is Fn 0.301 on the demo).
         if k > 0 {
             assert!(app.wave_current().is_none(), "Fn {fn_}: the key moved");
         }
@@ -164,10 +162,7 @@ fn scrubbing_settles_on_the_last_speed() {
 #[test]
 fn a_settings_change_hides_the_old_pattern_at_once() {
     let (mut app, ctx) = demo_with_waves();
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Froude(0.4),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Froude(0.4));
     assert!(
         app.wave_current().is_none(),
         "the Fn 0.3 pattern is out of date"
@@ -346,7 +341,15 @@ fn demo_parts(
     };
     let mesh = seacraft_core::export::render_mesh(&surface, 2, Default::default());
     let draft = surface.settings.draft;
-    let w = compute_waves(&surface, subdiv, draft, 1025.0, settings).unwrap();
+    let w = compute_waves(
+        &surface,
+        subdiv,
+        draft,
+        1025.0,
+        settings,
+        WaveSpeed::Froude(0.30),
+    )
+    .unwrap();
     (surface, mesh, w)
 }
 
@@ -513,11 +516,8 @@ fn stale_pattern_is_not_drawn() {
     assert!(contoured(&out), "the current pattern is drawn");
     assert!(texts(&out)
         .iter()
-        .any(|t| t.starts_with("Waves · Fn 0.300")));
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Froude(0.45),
-        ..app.wave_settings().clone()
-    });
+        .any(|t| t.starts_with("Waves · Fn 0.301")));
+    app.set_wave_speed(WaveSpeed::Froude(0.45));
     let out = frame(&ctx, &mut app, Vec::new());
     assert!(
         !contoured(&out),
@@ -590,10 +590,7 @@ fn view_marks_a_stale_result() {
 #[test]
 fn speed_is_an_input() {
     let (mut app, ctx) = demo_with_waves();
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Knots(8.0),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Knots(8.0));
     frames_until(&ctx, &mut app, "the 8 kn pattern", |a| {
         a.wave_current().is_some()
     });
@@ -723,10 +720,7 @@ fn shown_pattern_goes_into_the_report() {
         .unwrap()
         .contains("id=\"waves\""));
     app.set_wave_view_open(true);
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Knots(6.0),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Knots(6.0));
     let html = scratch("report-shown.html");
     app.write_report_blocking(&html).unwrap();
     let text = std::fs::read_to_string(&html).unwrap();
@@ -741,10 +735,7 @@ fn drag_curve_ignores_speed() {
     app.set_wave_view_open(true);
     app.compute_wave_drag_blocking().unwrap();
     assert!(app.wave_drag().is_some());
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Froude(0.42),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Froude(0.42));
     assert!(app.wave_drag().is_some(), "the curve is still current");
     app.set_wave_settings(WaveSettings {
         cat_spacing_m: Some(8.0),
@@ -778,10 +769,7 @@ fn view_texts(ctx: &egui::Context, app: &mut App) -> Vec<String> {
 #[test]
 fn view_shows_plain_readouts() {
     let (mut app, ctx) = demo_with_waves();
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Froude(0.45),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Froude(0.45));
     let texts = view_texts(&ctx, &mut app);
     for want in [
         "Around hull speed",
@@ -854,12 +842,12 @@ fn catamaran_shows_interference() {
 #[test]
 fn typed_low_speed_is_kept_and_flagged() {
     let (mut app, ctx) = demo_with_waves();
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Froude(0.05),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Froude(0.05));
     let texts = view_texts(&ctx, &mut app);
-    assert_eq!(app.wave_settings().speed, WaveSpeed::Froude(0.05));
+    let WaveSpeed::Froude(f) = app.wave_speed() else {
+        panic!("{:?}", app.wave_speed())
+    };
+    assert!((f - 0.05).abs() < 1e-9, "Fn {f}");
     let banner = texts
         .iter()
         .find(|t| t.starts_with("Thin-ship theory does not fit this hull"))
@@ -1062,8 +1050,8 @@ fn dragging_the_drag_marker_sets_the_speed() {
     frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
     frame(&ctx, &mut app, vec![button(at, true)]);
     frame(&ctx, &mut app, vec![button(at, false)]);
-    let WaveSpeed::Froude(f) = app.wave_settings().speed else {
-        panic!("{:?}", app.wave_settings().speed)
+    let WaveSpeed::Froude(f) = app.wave_speed() else {
+        panic!("{:?}", app.wave_speed())
     };
     assert!(f > 0.30 && f <= 1.0, "Fn {f}");
 }
@@ -1312,10 +1300,7 @@ fn f5_with_an_older_wave_job_running_starts_no_second_job() {
     app.open_analysis_view(AnalysisView::Waves);
     app.recompute_stale();
     assert!(app.waves_running_current(), "F5 starts the pattern");
-    app.set_wave_settings(WaveSettings {
-        speed: WaveSpeed::Froude(0.45),
-        ..app.wave_settings().clone()
-    });
+    app.set_wave_speed(WaveSpeed::Knots(9.0));
     // No frame in between: the first job is still in flight, whether or not its thread ended.
     app.recompute_stale();
     assert!(
@@ -1380,4 +1365,84 @@ fn report_takes_no_waterline_from_heeled_hydrostatics() {
         text[at..at + 24].to_string()
     };
     assert_eq!(wash_at(10.0), wash_at(0.0));
+}
+
+/// One speed: a speed set in the Wave pattern view is the Performance tab's speed, which
+/// seakeeping runs at.
+#[test]
+fn wave_view_speed_moves_the_seakeeping_speed() {
+    let (mut app, _ctx) = demo_with_waves();
+    let lwl = app.wave_current().map(|w| w.length_wl).expect("a pattern");
+    app.set_wave_speed(WaveSpeed::Knots(8.0));
+    assert_eq!(app.performance_state().speed_kn, 8.0);
+    assert_eq!(app.seakeeping_spec().expect("demo KG").speed_kn, 8.0);
+    // A Froude number converts by the waterline length the view shows.
+    app.set_wave_speed(WaveSpeed::Froude(0.40));
+    let kn =
+        0.40 * (seacraft_core::resistance::GRAVITY * lwl).sqrt() / seacraft_core::resistance::KNOT;
+    assert!((app.performance_state().speed_kn - kn).abs() < 1e-9);
+    let WaveSpeed::Froude(f) = app.wave_speed() else {
+        panic!("{:?}", app.wave_speed())
+    };
+    assert!((f - 0.40).abs() < 1e-9, "Fn {f}");
+}
+
+/// The Performance tab's speed drives the wave pattern.
+#[test]
+fn performance_speed_moves_the_wave_speed() {
+    let (mut app, ctx) = demo_with_waves();
+    app.performance_state_mut().speed_kn = 9.0;
+    frames_until(&ctx, &mut app, "the 9 kn pattern", |a| {
+        a.wave_current().is_some_and(|w| {
+            (w.field.speed_m_s - 9.0 * seacraft_core::resistance::KNOT).abs() < 1e-12
+        })
+    });
+}
+
+/// With no hull there is no waterline length to give a Froude number by: the speed reads in knots.
+#[test]
+fn froude_unit_without_a_hull_reads_in_knots() {
+    let app = App::headless_empty();
+    assert!(app.wave_settings().froude_unit);
+    assert_eq!(
+        app.wave_speed(),
+        WaveSpeed::Knots(app.performance_state().speed_kn)
+    );
+}
+
+/// Review I1: the resistance curve does not depend on the shared speed, so moving the speed
+/// leaves it current; the RAOs, which do, go out of date.
+#[test]
+fn moving_the_speed_keeps_the_resistance_current() {
+    let (mut app, _ctx) = demo_with_waves();
+    app.compute_resistance_blocking().expect("resistance");
+    app.compute_raos_blocking().expect("raos");
+    assert!(!app.stale_results().contains(&"resistance"));
+    app.set_wave_speed(WaveSpeed::Knots(8.0));
+    let stale = app.stale_results();
+    assert!(!stale.contains(&"resistance"), "{stale:?}");
+    assert!(stale.contains(&"RAOs"), "{stale:?}");
+}
+
+/// Agy review 1: drawing the Wave pattern view does not move the shared speed. Its speed field
+/// has a narrower range (Fn 0.01–2, 0.1–100 kn) than the Performance slider, and a field that
+/// clamps the value it is shown would write the clamped speed back on the next frame.
+#[test]
+fn drawing_the_wave_view_keeps_a_speed_outside_its_field_range() {
+    let (mut app, ctx) = demo_with_waves();
+    for (froude_unit, kn) in [(true, 0.0), (false, 0.0), (false, 150.0)] {
+        app.set_wave_settings(WaveSettings {
+            froude_unit,
+            ..app.wave_settings().clone()
+        });
+        app.performance_state_mut().speed_kn = kn;
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        assert_eq!(
+            app.performance_state().speed_kn,
+            kn,
+            "Fn unit {froude_unit}"
+        );
+    }
 }

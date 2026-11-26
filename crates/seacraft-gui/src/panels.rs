@@ -2275,13 +2275,17 @@ pub fn report_options_tr(
     changed
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PerformanceAction {
-    None,
-    Changed,
-    Compute,
+/// What the user asked for on one frame. Several can come together (a field committed by the
+/// same click that moved the speed or pressed Compute), so each is a flag and the App applies all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PerformanceAction {
+    /// An input the resistance and the RAOs depend on changed.
+    pub changed: bool,
+    /// The shared speed moved (it is in the state already): only what depends on it recomputes.
+    pub speed_changed: bool,
+    pub compute: bool,
     /// "Open wave pattern": show the Wave pattern view in the Analysis drawer.
-    OpenWaveView,
+    pub open_wave_view: bool,
 }
 
 pub struct PerformancePanel<'a> {
@@ -2306,7 +2310,7 @@ pub fn performance(ui: &mut egui::Ui, panel: PerformancePanel<'_>) -> Performanc
 
 /// Localized form of [`performance`].
 pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) -> PerformanceAction {
-    let mut action = PerformanceAction::None;
+    let mut action = PerformanceAction::default();
     theme::heading(ui, tr.s(Key::PerfTitle));
     ui.add_space(4.0);
 
@@ -2315,7 +2319,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     ui.horizontal(|ui| {
         let btn = ui.add_enabled(!is_busy, egui::Button::new(tr.s(Key::CommonCompute)));
         if btn.clicked() {
-            action = PerformanceAction::Compute;
+            action.compute = true;
         }
         if is_busy {
             ui.spinner();
@@ -2328,6 +2332,21 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
             }
         }
     });
+
+    // One speed for the three sections below: marked on the resistance curve, the wave
+    // pattern's speed, and the speed seakeeping runs at.
+    let speed_max = panel.state.speeds_kn.1.max(20.0);
+    let speed_resp = theme::slider(
+        ui,
+        egui::Slider::new(&mut panel.state.speed_kn, 0.0..=speed_max)
+            .text(tr.s(Key::PerfSpeedKn))
+            .step_by(0.5)
+            .clamping(egui::SliderClamping::Edits),
+    )
+    .on_hover_text(tr.s(Key::PerfSpeedSharedTip));
+    if speed_resp.changed() {
+        action.speed_changed = true;
+    }
 
     ui.add_space(4.0);
     ui.separator();
@@ -2349,7 +2368,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
                         .selectable_value(&mut panel.state.method, m, m.label_tr(tr))
                         .clicked()
                     {
-                        action = PerformanceAction::Changed;
+                        action.changed = true;
                     }
                 }
             });
@@ -2376,14 +2395,22 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
                 .prefix(tr.s(Key::PerfStepColon)),
         );
         if r1.changed() || r2.changed() || r3.changed() {
-            action = PerformanceAction::Changed;
+            action.changed = true;
         }
     });
 
     if let Some(res) = &panel.state.resistance {
+        let mut picked = None;
         stale_section_tr(ui, panel.stale_resistance, tr, |ui| {
-            resistance_results(ui, res, tr);
+            picked = resistance_results(ui, res, panel.state.speed_kn, tr);
         });
+        if let Some(kn) = picked {
+            let kn = (kn * 10.0).round() / 10.0;
+            if kn != panel.state.speed_kn {
+                panel.state.speed_kn = kn;
+                action.speed_changed = true;
+            }
+        }
     }
 
     ui.add_space(4.0);
@@ -2395,7 +2422,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
         .on_hover_text(tr.s(Key::PerfOpenWavePatternTip))
         .clicked()
     {
-        action = PerformanceAction::OpenWaveView;
+        action.open_wave_view = true;
     }
     if let Some(sentence) = panel.wave_regime {
         ui.label(egui::RichText::new(sentence).color(theme::TEXT_SECONDARY));
@@ -2406,22 +2433,12 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     ui.strong(tr.s(Key::PerfSeakeepingHeading));
     ui.add_space(2.0);
 
-    let speed_resp = theme::slider(
-        ui,
-        egui::Slider::new(&mut panel.state.sk_speed_kn, 0.0..=20.0)
-            .text(tr.s(Key::PerfSpeedKn))
-            .step_by(0.5),
-    );
-    if speed_resp.changed() {
-        action = PerformanceAction::Changed;
-    }
-
     ui.horizontal(|ui| {
         ui.label("KG");
         let mut cur_kg = panel.state.kg.or(panel.default_kg);
         if kg_field(ui, &mut cur_kg, false, 50.0, 84.0, tr) {
             panel.state.kg = cur_kg;
-            action = PerformanceAction::Changed;
+            action.changed = true;
         }
         let default = match panel.default_kg {
             Some(kg) => format!("{kg:.2} m"),
@@ -2430,7 +2447,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
         if panel.state.kg.is_some() {
             if ui.small_button(tr.s(Key::CommonResetCap)).clicked() {
                 panel.state.kg = None;
-                action = PerformanceAction::Changed;
+                action.changed = true;
             }
             ui.label(tr.fmt(
                 Key::PerfKgDefaultSource,
@@ -2458,7 +2475,7 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
             )
             .on_hover_text(tr.s(Key::PerfFrequenciesTip));
         if kyy_resp.changed() || pts_resp.changed() {
-            action = PerformanceAction::Changed;
+            action.changed = true;
         }
     });
 
@@ -2471,29 +2488,41 @@ pub fn performance_tr(ui: &mut egui::Ui, panel: PerformancePanel<'_>, tr: Tr) ->
     ui.add_space(4.0);
     ui.separator();
     if sea_state_section(ui, panel.state, panel.stale_raos, tr) {
-        action = PerformanceAction::Changed;
+        action.changed = true;
     }
 
     action
 }
 
-/// The resistance curve and its table.
-fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr: Tr) {
+/// The resistance curve and its table, with the shared speed marked on the curve. Returns the
+/// speed (knots) the user clicked or dragged to on the plot.
+fn resistance_results(
+    ui: &mut egui::Ui,
+    res: &crate::app::ResistanceResult,
+    speed_kn: f64,
+    tr: Tr,
+) -> Option<f64> {
     for w in &res.warnings {
         ui.colored_label(theme::WARN, format!("⚠ {}", w.render(tr)));
     }
 
-    let series = vec![(
-        res.method.clone(),
-        res.rows.iter().map(|r| (r.speed_kn, r.rt_kn)).collect(),
-    )];
-    plot_xy_tr(
+    let series = resistance_series(res, tr);
+    let caption = tr.fmt(
+        Key::PlotXyCaption,
+        &[
+            ("title", tr.s(Key::PerfPlotResistance)),
+            ("y", &res.rt_label),
+            ("x", tr.s(Key::PerfPlotSpeedKn)),
+        ],
+    );
+    let (_, picked) = plot_interactive_sized(
         ui,
-        tr.s(Key::PerfPlotResistance),
-        tr.s(Key::PerfPlotSpeedKn),
-        &res.rt_label,
+        &caption,
         &series,
-        tr,
+        Some(speed_kn),
+        &[],
+        None,
+        PLOT_HEIGHT,
     );
 
     ui.add_space(2.0);
@@ -2509,6 +2538,49 @@ fn resistance_results(ui: &mut egui::Ui, res: &crate::app::ResistanceResult, tr:
         &resistance_table(res),
         tr,
     );
+    picked
+}
+
+/// The resistance curve as plot series: the whole curve in the method's colour, then, when any
+/// speed is outside the method's range, the segments touching one drawn again on top greyed out,
+/// with a NaN between separate stretches so the plotter breaks the grey line there.
+pub fn resistance_series(res: &crate::app::ResistanceResult, tr: Tr) -> Vec<PlotSeries> {
+    let points: Vec<(f64, f64)> = res.rows.iter().map(|r| (r.speed_kn, r.rt_kn)).collect();
+    // A segment is grey when either end is out of range; a lone speed has no segment.
+    let out = |i: usize| !res.rows[i].in_range;
+    let mut grey: Vec<(f64, f64)> = Vec::new();
+    let mut last: Option<usize> = None;
+    for i in 1..points.len() {
+        if !(out(i - 1) || out(i)) {
+            continue;
+        }
+        if last != Some(i - 1) {
+            if !grey.is_empty() {
+                grey.push((f64::NAN, f64::NAN));
+            }
+            grey.push(points[i - 1]);
+        }
+        grey.push(points[i]);
+        last = Some(i);
+    }
+    if points.len() == 1 && out(0) {
+        grey.push(points[0]);
+    }
+    let mut series = vec![PlotSeries {
+        label: res.method.clone(),
+        points,
+        dashed: false,
+        muted: false,
+    }];
+    if !grey.is_empty() {
+        series.push(PlotSeries {
+            label: tr.fmt(Key::PerfPlotOutsideRange, &[("method", &res.method)]),
+            points: grey,
+            dashed: false,
+            muted: true,
+        });
+    }
+    series
 }
 
 /// The natural periods and the motion RAO plot.
@@ -3472,6 +3544,8 @@ pub enum EngCell {
     Text(String),
     /// A criteria verdict: passed, stale.
     Badge(bool, bool),
+    /// Text drawn greyed out: a value outside its method's range, kept but played down.
+    Muted(String),
 }
 
 impl From<String> for EngCell {
@@ -3538,6 +3612,10 @@ pub fn eng_table_tr(
                 (t.clone(), body_font.clone(), theme::TEXT_MUTED)
             }
             (_, Some(EngCell::Text(t))) => (t.clone(), body_font.clone(), theme::TEXT_PRIMARY),
+            (ColumnKind::Number, Some(EngCell::Muted(t))) => {
+                (t.clone(), mono_font.clone(), theme::TEXT_MUTED)
+            }
+            (_, Some(EngCell::Muted(t))) => (t.clone(), body_font.clone(), theme::TEXT_MUTED),
         };
         painter.layout_no_wrap(text, font, colour)
     };
@@ -3666,13 +3744,21 @@ pub fn resistance_table(res: &crate::app::ResistanceResult) -> Vec<Vec<EngCell>>
     res.rows
         .iter()
         .map(|r| {
+            let cell = |text: String| {
+                if r.in_range {
+                    EngCell::Text(text)
+                } else {
+                    EngCell::Muted(text)
+                }
+            };
             vec![
-                format!("{:.2}", r.speed_kn).into(),
-                format!("{:.3}", r.fn_).into(),
-                format!("{:.2}", r.rt_kn).into(),
-                r.pe_kw
-                    .map_or_else(|| "—".to_owned(), |pe| format!("{pe:.2}"))
-                    .into(),
+                cell(format!("{:.2}", r.speed_kn)),
+                cell(format!("{:.3}", r.fn_)),
+                cell(format!("{:.2}", r.rt_kn)),
+                cell(
+                    r.pe_kw
+                        .map_or_else(|| "—".to_owned(), |pe| format!("{pe:.2}")),
+                ),
             ]
         })
         .collect()
@@ -4115,6 +4201,7 @@ fn draw_plot(
 ) -> egui::Rect {
     let style = PlotStyle {
         dashed: &[],
+        muted: &[],
         x_range: None,
         sense: egui::Sense::hover(),
     };
@@ -4127,9 +4214,27 @@ fn draw_plot(
 struct PlotStyle<'a> {
     /// Series `i` is dashed when `dashed[i]` (missing: solid).
     dashed: &'a [bool],
+    /// Series `i` is greyed out when `muted[i]` (missing: its palette colour): drawn in
+    /// [`theme::TEXT_MUTED`], a little wider so it covers a curve beneath, legend entry too.
+    muted: &'a [bool],
     /// Fix the x axis to this range instead of fitting it (with zero) to the data.
     x_range: Option<(f64, f64)>,
     sense: egui::Sense,
+}
+
+impl PlotStyle<'_> {
+    fn is_muted(&self, i: usize) -> bool {
+        self.muted.get(i).copied().unwrap_or(false)
+    }
+
+    /// Series `i`'s colour: grey when muted, else its place in the palette.
+    fn colour(&self, i: usize) -> egui::Color32 {
+        if self.is_muted(i) {
+            theme::TEXT_MUTED
+        } else {
+            theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()]
+        }
+    }
 }
 
 /// The plot [`draw_plot`] draws, returning its response (legend included) and its axes.
@@ -4154,10 +4259,7 @@ fn plot_core(
         }
         for (i, (label, _)) in series.iter().enumerate() {
             if !label.is_empty() {
-                entries.push((
-                    format!("━ {label}"),
-                    theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()],
-                ));
+                entries.push((format!("━ {label}"), style.colour(i)));
             }
         }
     }
@@ -4189,8 +4291,9 @@ fn plot_core(
     }
     axes.paint_frame(&painter);
     for (i, (_, pts)) in series.iter().enumerate() {
-        let colour = theme::PLOT_SERIES[i % theme::PLOT_SERIES.len()];
-        let stroke = egui::Stroke::new(1.4, colour);
+        let colour = style.colour(i);
+        let width = if style.is_muted(i) { 2.2 } else { 1.4 };
+        let stroke = egui::Stroke::new(width, colour);
         let dashed = style.dashed.get(i).copied().unwrap_or(false);
         for run in axes.polylines(pts) {
             if run.len() == 1 {
@@ -4223,6 +4326,8 @@ pub struct PlotSeries {
     pub label: String,
     pub points: Vec<(f64, f64)>,
     pub dashed: bool,
+    /// Greyed out (see [`PlotStyle`]'s `muted`).
+    pub muted: bool,
 }
 
 /// The plot as [`plot_xy`] draws it (same theme, axes and legend), plus dashed vertical `marks`,
@@ -4266,8 +4371,10 @@ pub fn plot_interactive_sized(
         .map(|s| (s.label.clone(), s.points.clone()))
         .collect();
     let dashed: Vec<bool> = series.iter().map(|s| s.dashed).collect();
+    let muted: Vec<bool> = series.iter().map(|s| s.muted).collect();
     let style = PlotStyle {
         dashed: &dashed,
+        muted: &muted,
         x_range,
         sense: egui::Sense::click_and_drag(),
     };
@@ -6926,6 +7033,7 @@ mod tests {
             label: String::new(),
             points: vec![(0.1, 1.0), (1.0, 3.0)],
             dashed: false,
+            muted: false,
         }];
         let ctx = egui::Context::default();
         theme::apply(&ctx);
@@ -7128,6 +7236,7 @@ mod tests {
                     rt_kn: 1.23456,
                     pe_kw: Some(3.8),
                     note: None,
+                    in_range: true,
                 },
                 crate::app::ResistanceRow {
                     speed_kn: 7.5,
@@ -7135,6 +7244,7 @@ mod tests {
                     rt_kn: 2.5,
                     pe_kw: None,
                     note: None,
+                    in_range: true,
                 },
             ],
             warnings: Vec::new(),
@@ -7143,7 +7253,7 @@ mod tests {
         let rows = resistance_table(&res);
         let text = |r: usize, c: usize| match &rows[r][c] {
             EngCell::Text(t) => t.clone(),
-            EngCell::Badge(..) => unreachable!(),
+            EngCell::Badge(..) | EngCell::Muted(_) => unreachable!(),
         };
         assert_eq!(
             [text(0, 0), text(0, 1), text(0, 2), text(0, 3)],

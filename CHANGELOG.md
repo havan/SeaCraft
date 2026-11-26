@@ -4,6 +4,25 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
+- A large hull at a high subdivision level no longer freezes the window while it is refined: the window draws a
+  coarser level at once (level 3 for `container-230m`) and the full level replaces it when a background job has
+  built it, with "refining to level N…" in the status bar meanwhile. Smaller hulls (the demo hull up to level 4)
+  refine at once as before.
+- One speed for resistance, waves and seakeeping. The Performance tab's speed slider now sits above all three
+  sections: it is marked on the resistance curve (click the curve to move it), the Wave pattern view computes at it,
+  and seakeeping runs at it. Changing the speed in the Wave pattern view moves the same speed; its kn / Fn switch
+  only changes how the speed reads. The Wave pattern view now opens at the Performance tab's speed (6 kn, or the
+  design speed) instead of Fn 0.30, and the design report's wave section uses it too.
+- The Performance tab greys out the resistance curve and table rows where the method is outside the range it was
+  fitted to, instead of drawing them like the rest: the whole Holtrop & Mennen curve for a hull outside its Cp, L/B
+  or B/T range (the demo hull is, at L/B 3.02 and B/T 5.71), and the DSYHS speeds outside Fn 0.15 to 0.75. The
+  numbers stay; the plot's legend says which part is outside.
+- The MCP `batch` tool now says what its rollback covers: on an error the session's model goes back to where it was
+  before the batch, but files written by earlier steps (a design report, an unfolded plate, a wave image) stay on disk.
+  It used to call the batch all-or-nothing (#8). Connected to the GUI, `load_hull`, `generate_hull` or `example`
+  inside a batch start a fresh history there, so the model is not rolled back past them. A rollback the GUI refuses,
+  or whose reply is lost, now shows as `restore_error` (unconfirmed) instead of passing in silence.
+
 ## 0.7.0 (2026-11-26)
 
 SeaCraft in Turkish. The desktop app, the command line and every document SeaCraft writes can now be read in

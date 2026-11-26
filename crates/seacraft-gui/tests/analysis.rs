@@ -107,7 +107,7 @@ fn open_from_menu(
 
 fn cell(row: &[EngCell], c: usize) -> &str {
     match &row[c] {
-        EngCell::Text(t) => t,
+        EngCell::Text(t) | EngCell::Muted(t) => t,
         EngCell::Badge(..) => panic!("a badge in column {c}"),
     }
 }

@@ -73,7 +73,10 @@ pub enum WaveDomain {
 /// What the Wave pattern view asks of the wave pattern.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaveSettings {
-    pub speed: WaveSpeed,
+    /// Show the speed as a Froude number rather than in knots. The speed itself is the
+    /// Performance tab's ([`crate::app::PerformanceState::speed_kn`]), one for resistance,
+    /// waves and seakeeping; this is only how the view reads it.
+    pub froude_unit: bool,
     pub domain: WaveDomain,
     /// Demihull centreline separation (m); `None` for a monohull.
     pub cat_spacing_m: Option<f64>,
@@ -92,7 +95,7 @@ pub struct WaveSettings {
 impl Default for WaveSettings {
     fn default() -> Self {
         Self {
-            speed: WaveSpeed::Froude(0.30),
+            froude_unit: true,
             domain: WaveDomain::Auto,
             cat_spacing_m: None,
             clip_m: None,
@@ -225,12 +228,13 @@ pub fn compute_waves(
     draft: f64,
     rho: f64,
     settings: &WaveSettings,
+    speed: WaveSpeed,
 ) -> Result<WaveResult, String> {
     let grid = michell_grid(surface, subdivision, draft)?;
     let (length_wl, beam_wl) = (grid.length_wl, grid.beam_wl);
     let wash_distance_m = wash_distance(settings, length_wl, beam_wl);
     let (ahead_l, behind_l, half_width_l) = domain_l(settings, length_wl, wash_distance_m);
-    let speed_m_s = settings.speed.m_s(length_wl);
+    let speed_m_s = speed.m_s(length_wl);
     let opts = WavePatternOptions {
         ahead_l,
         behind_l,
@@ -363,13 +367,10 @@ pub fn drag_key(cat_spacing_m: Option<f64>) -> u64 {
     h.finish()
 }
 
-/// A key over every setting that changes the result: all but `kelvin_wedge` and `plan_contours`.
+/// A key over every setting that changes the result: all but `froude_unit`, `kelvin_wedge` and
+/// `plan_contours`. The speed is not a setting here: the caller keys it.
 pub fn settings_key(settings: &WaveSettings) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    match settings.speed {
-        WaveSpeed::Knots(v) => (0u8, v.to_bits()).hash(&mut h),
-        WaveSpeed::Froude(v) => (1u8, v.to_bits()).hash(&mut h),
-    }
     match settings.domain {
         WaveDomain::Auto => 0u8.hash(&mut h),
         WaveDomain::Manual {
@@ -484,6 +485,9 @@ mod tests {
         assert!(image.pixels[0].r() > image.pixels[0].b());
     }
 
+    /// The view's old default speed, which these tests were written at.
+    const FN_030: WaveSpeed = WaveSpeed::Froude(0.30);
+
     fn demo() -> (seacraft_core::mesh::Surface, SubdivisionOptions, f64) {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/demo-hull.fef");
         let text = std::fs::read_to_string(path).expect("read demo-hull.fef");
@@ -499,7 +503,15 @@ mod tests {
     #[test]
     fn demo_pattern_is_calm_ahead_and_has_contours() {
         let (surface, subdiv, draft) = demo();
-        let w = compute_waves(&surface, subdiv, draft, RHO, &WaveSettings::default()).unwrap();
+        let w = compute_waves(
+            &surface,
+            subdiv,
+            draft,
+            RHO,
+            &WaveSettings::default(),
+            FN_030,
+        )
+        .unwrap();
         let f = &w.field;
         let (nx, ny) = (f.xs.len(), f.ys.len());
         assert!((f.froude - 0.3).abs() < 1e-12, "Fn {}", f.froude);
@@ -542,7 +554,7 @@ mod tests {
             cat_spacing_m: Some(8.0),
             ..WaveSettings::default()
         };
-        let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
+        let w = compute_waves(&surface, subdiv, draft, RHO, &settings, FN_030).unwrap();
         let f = &w.field;
         let nx = f.xs.len();
         let nearest = |y: f64| {
@@ -578,7 +590,7 @@ mod tests {
                 ..WaveSettings::default()
             },
         ] {
-            match compute_waves(&surface, subdiv, draft, RHO, &settings) {
+            match compute_waves(&surface, subdiv, draft, RHO, &settings, FN_030) {
                 Ok(w) => assert_eq!(w.image.size, [w.field.xs.len(), w.field.ys.len()]),
                 Err(e) => assert!(!e.is_empty()),
             }
@@ -588,7 +600,7 @@ mod tests {
     #[test]
     fn no_waterline_is_an_error() {
         let (surface, subdiv, _) = demo();
-        let err = compute_waves(&surface, subdiv, 0.0, RHO, &WaveSettings::default())
+        let err = compute_waves(&surface, subdiv, 0.0, RHO, &WaveSettings::default(), FN_030)
             .expect_err("no waterline at draft 0");
         assert!(err.contains("Michell"), "{err}");
     }
@@ -631,18 +643,14 @@ mod tests {
                 plan_contours: !base.plan_contours,
                 ..base.clone()
             },
+            WaveSettings {
+                froude_unit: !base.froude_unit,
+                ..base.clone()
+            },
         ] {
             assert_eq!(settings_key(&same), k0);
         }
         let changed = [
-            WaveSettings {
-                speed: WaveSpeed::Froude(0.31),
-                ..base.clone()
-            },
-            WaveSettings {
-                speed: WaveSpeed::Knots(0.30),
-                ..base.clone()
-            },
             WaveSettings {
                 domain: WaveDomain::Manual {
                     ahead_m: 5.0,
@@ -679,7 +687,7 @@ mod tests {
         for (i, s) in changed.iter().enumerate() {
             assert_ne!(settings_key(s), k0, "setting {i}");
         }
-        assert_ne!(settings_key(&changed[2]), settings_key(&changed[3]));
+        assert_ne!(settings_key(&changed[0]), settings_key(&changed[1]));
     }
 
     #[test]
@@ -718,11 +726,16 @@ mod tests {
     #[test]
     fn demo_result_has_every_readout() {
         let (surface, subdiv, draft) = demo();
-        let settings = WaveSettings {
-            speed: WaveSpeed::Froude(0.45),
-            ..WaveSettings::default()
-        };
-        let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
+        let settings = WaveSettings::default();
+        let w = compute_waves(
+            &surface,
+            subdiv,
+            draft,
+            RHO,
+            &settings,
+            WaveSpeed::Froude(0.45),
+        )
+        .unwrap();
         assert_eq!(w.regime, Regime::HullSpeed);
         assert!(w.wash.is_some());
         assert!(w.drag_here.rw_n > 0.0);
@@ -747,7 +760,7 @@ mod tests {
             cat_spacing_m: Some(8.0),
             ..WaveSettings::default()
         };
-        let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
+        let w = compute_waves(&surface, subdiv, draft, RHO, &settings, FN_030).unwrap();
         assert_eq!(w.spacing_scan.len(), 40);
         assert!(
             w.spacing_scan[0].0 >= 2.0 * w.beam_wl - 1e-12,
@@ -773,7 +786,7 @@ mod tests {
             wash_distance_m: Some(9.0),
             ..WaveSettings::default()
         };
-        let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
+        let w = compute_waves(&surface, subdiv, draft, RHO, &settings, FN_030).unwrap();
         assert!(w.wash.is_some());
         assert_eq!(w.wash_distance_m, 9.0);
     }
@@ -813,11 +826,16 @@ mod tests {
     #[test]
     fn very_low_speed_still_computes_with_its_wash() {
         let (surface, subdiv, draft) = demo();
-        let settings = WaveSettings {
-            speed: WaveSpeed::Froude(0.05),
-            ..WaveSettings::default()
-        };
-        let w = compute_waves(&surface, subdiv, draft, RHO, &settings).unwrap();
+        let settings = WaveSettings::default();
+        let w = compute_waves(
+            &surface,
+            subdiv,
+            draft,
+            RHO,
+            &settings,
+            WaveSpeed::Froude(0.05),
+        )
+        .unwrap();
         let ds = w.wash_cut.s[1] - w.wash_cut.s[0];
         assert!(ds < 0.5 * w.field.transverse_wavelength_m, "ds {ds}");
         assert!(w.field.xs.len() * w.field.ys.len() <= 250_000);

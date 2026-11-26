@@ -750,41 +750,35 @@ impl McpServer {
 
         for (i, call) in calls.iter().enumerate() {
             let Some(call_obj) = call.as_object() else {
-                if let Some(mark) = mark_id {
-                    let _ = remote.request("history.restore", json!({"mark": mark}));
-                }
-                return text_result(
-                    &json!({
+                return batch_remote_failed(
+                    remote,
+                    mark_id,
+                    json!({
                         "failed": {"index": i, "name": "", "error": "each call must be an object"},
                         "completed": i,
                     }),
-                    true,
                 );
             };
 
             let Some(name) = call_obj.get("name").and_then(Value::as_str) else {
-                if let Some(mark) = mark_id {
-                    let _ = remote.request("history.restore", json!({"mark": mark}));
-                }
-                return text_result(
-                    &json!({
+                return batch_remote_failed(
+                    remote,
+                    mark_id,
+                    json!({
                         "failed": {"index": i, "name": "", "error": "missing call `name`"},
                         "completed": i,
                     }),
-                    true,
                 );
             };
 
             if name == "batch" {
-                if let Some(mark) = mark_id {
-                    let _ = remote.request("history.restore", json!({"mark": mark}));
-                }
-                return text_result(
-                    &json!({
+                return batch_remote_failed(
+                    remote,
+                    mark_id,
+                    json!({
                         "failed": {"index": i, "name": "batch", "error": "nested batch is rejected"},
                         "completed": i,
                     }),
-                    true,
                 );
             }
 
@@ -794,15 +788,13 @@ impl McpServer {
             };
 
             if let Err(e) = check_arguments(name, &args) {
-                if let Some(mark) = mark_id {
-                    let _ = remote.request("history.restore", json!({"mark": mark}));
-                }
-                return text_result(
-                    &json!({
+                return batch_remote_failed(
+                    remote,
+                    mark_id,
+                    json!({
                         "failed": {"index": i, "name": name, "error": e},
                         "completed": i,
                     }),
-                    true,
                 );
             }
 
@@ -813,15 +805,13 @@ impl McpServer {
                     results.push(val);
                 }
                 Err(e) => {
-                    if let Some(mark) = mark_id {
-                        let _ = remote.request("history.restore", json!({"mark": mark}));
-                    }
-                    return text_result(
-                        &json!({
+                    return batch_remote_failed(
+                        remote,
+                        mark_id,
+                        json!({
                             "failed": {"index": i, "name": name, "error": e},
                             "completed": i,
                         }),
-                        true,
                     );
                 }
             }
@@ -3901,12 +3891,20 @@ pub fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "batch",
-            "Run several tool calls atomically",
-            "Run tool calls in order, stopping at the first error. Each step is {name, arguments}. On an error earlier steps \
-             are rolled back, so the batch is all-or-nothing (both headless and when connected to the GUI). Returns each \
-             call's result on success, or {failed: {index, name, error}, completed: N} on failure. At most 100 calls; \
-             nested batch is rejected, and so is export_panels with both `nest` and `path` (files on disk cannot be \
-             rolled back; call it on its own).",
+            "Run several tool calls, restoring the model on error",
+            "Run tool calls in order, stopping at the first error, which restores the model (connected to the GUI, \
+             not past a load_hull, generate_hull or example in the batch) but not files already written. Each step \
+             is {name, arguments}. On an error the session's model is restored to what it was before the batch, \
+             headless or connected to the GUI, but files written by earlier steps stay on disk, and so may a file \
+             the failing step wrote before it failed (a hull saved before its sidecar): a design report, an \
+             unfolded plate or a wave image is not removed. Connected to the GUI, a tool that replaces the whole \
+             model (load_hull, generate_hull, example) starts a fresh history there, so the model from before it \
+             is not restored. A failure with `restore_error` means the rollback could not be confirmed (the GUI \
+             refused it, or its reply was lost). Connected, hull_info shows no geometry to check that by, so before \
+             a batch that matters save the model with save_hull, and after such a failure load it again instead of \
+             mending the model in place. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
+             At most 100 calls; nested batch is rejected, and so is export_panels with both `nest` and `path` (call it \
+             on its own).",
             obj(
                 json!({
                     "calls": {
@@ -3928,6 +3926,18 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::Edits,
         ),
     ]
+}
+
+/// A connected batch failed: the GUI goes back to `mark`. A restore without a good reply is
+/// reported as unconfirmed, not dropped: the GUI refused it (a model replaced in the batch started
+/// a fresh history there), or it may have restored and lost the reply.
+fn batch_remote_failed(remote: &mut Remote, mark: Option<u64>, mut failure: Value) -> Value {
+    if let Some(mark) = mark {
+        if let Err(e) = remote.request("history.restore", json!({"mark": mark})) {
+            failure["restore_error"] = Value::String(e);
+        }
+    }
+    text_result(&failure, true)
 }
 
 /// The tools as a markdown list: name, title, first sentence, effect.
@@ -6472,6 +6482,53 @@ mod tests {
         handle.join().expect("server thread finished");
     }
 
+    /// CodeRabbit (PR #22): when the GUI cannot restore the mark (a `load_hull` inside the batch
+    /// started a fresh history there), the failure says so instead of dropping the error.
+    #[test]
+    fn connected_batch_reports_a_failed_restore() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut next = |expect: &str, reply: &[u8]| {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read");
+                let v: Value = serde_json::from_str(line.trim()).expect("json");
+                assert_eq!(v["method"], expect);
+                stream.write_all(reply).expect("write");
+            };
+            next("history.mark", b"{\"ok\":true,\"result\":{\"mark\":42}}\n");
+            next(
+                "model.split_face",
+                b"{\"ok\":false,\"error\":\"split error\"}\n",
+            );
+            next(
+                "history.restore",
+                b"{\"ok\":false,\"error\":\"unknown mark 42\"}\n",
+            );
+        });
+
+        let mut s = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
+        let err_text = fails(
+            &mut s,
+            1,
+            "batch",
+            json!({"calls": [{"name": "split_face", "arguments": {"face": 0}}]}),
+        );
+        let fail_json: Value = serde_json::from_str(&err_text).expect("fail json");
+        assert_eq!(fail_json["failed"]["name"], "split_face");
+        assert!(
+            fail_json["restore_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("unknown mark 42")),
+            "{fail_json}"
+        );
+        handle.join().expect("server thread finished");
+    }
+
     #[test]
     fn mcp_connect_with_token_file_succeeds_end_to_end() {
         use std::io::Write;
@@ -6796,6 +6853,58 @@ mod tests {
             })
         );
         assert_eq!(seen[1], json!({"path": "/tmp/lines.svg", "format": "svg"}));
+    }
+
+    #[test]
+    fn batch_description_says_files_are_not_rolled_back() {
+        let mut s = McpServer::new();
+        let list = request(&mut s, 1, "tools/list", json!({}));
+        let tool = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "batch")
+            .expect("batch")
+            .clone();
+        let description = tool["description"].as_str().unwrap();
+        assert!(
+            description.contains("files written by earlier steps stay on disk"),
+            "{description}"
+        );
+        assert!(!description.contains("all-or-nothing"), "{description}");
+        let title = tool["title"].as_str().unwrap_or_default();
+        assert!(!title.to_lowercase().contains("atomic"), "{title}");
+        // CodeRabbit (PR #22): the failing step itself can leave a file (a hull saved before
+        // its sidecar failed), and a hull loaded inside a GUI-connected batch is not undone.
+        assert!(description.contains("the failing step"), "{description}");
+        assert!(description.contains("load_hull"), "{description}");
+        assert!(description.contains("restore_error"), "{description}");
+        // CodeRabbit (PR #22, second review): a lost reply also gives `restore_error`, so it says
+        // the rollback is unconfirmed, not that it failed, and to look before mending.
+        assert!(
+            description.contains("could not be confirmed"),
+            "{description}"
+        );
+        // CodeRabbit (PR #22, third review): connected, hull_info shows no geometry, so the
+        // description names a baseline to take before the batch instead.
+        assert!(
+            description.contains("hull_info shows no geometry"),
+            "{description}"
+        );
+        assert!(description.contains("save_hull"), "{description}");
+        // CodeRabbit (fourth review): hydro_compute skips layers kept out of hydrostatics, so
+        // it is no baseline; the saved hull is, loaded again after a failure.
+        assert!(!description.contains("hydro_compute"), "{description}");
+        assert!(description.contains("load it again"), "{description}");
+        // The catalogue shows only the first sentence: it carries the caveat too.
+        let catalogue = tool_catalogue();
+        let line = catalogue
+            .lines()
+            .find(|l| l.starts_with("- `batch`"))
+            .expect("batch in the catalogue");
+        assert!(line.contains("files"), "{line}");
+        // ...and the exception for a model replaced inside a connected batch.
+        assert!(line.contains("load_hull"), "{line}");
     }
 
     #[test]

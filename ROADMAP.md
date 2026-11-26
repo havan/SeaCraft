@@ -75,7 +75,11 @@ path; each cell is the range of the medians of separate runs, frame time then CP
 
 At level 5 the old path asks wgpu for a 403 MiB vertex buffer, over its 256 MiB limit, and panics, so
 `--no-gpu-hull` is no way out there. A new level 5 mesh of `container-230m` (1.29 million triangles, 103 MiB)
-takes about 140 ms to build on the window thread and 12 ms to upload.
+takes about 140 ms to build and 12 ms to upload. Since 2026-11-26 a mesh over about 24 000 refined faces is built in
+a background job while the window draws the highest level under that at once (level 3 for `container-230m`), so an
+edit no longer waits for it; orbiting is unchanged (alternating runs against 0.7.0 on a loaded machine). A pause of
+about half a second after an edit to `container-230m` remains, at level 3 as well as 5, from something other than
+the mesh; it is not yet profiled.
 
 - [x] Profile the cost per frame.
 - [x] Cut the waterline once per mesh and plane instead of once per view per frame.
@@ -94,9 +98,10 @@ takes about 140 ms to build on the window thread and 12 ms to upload.
 
 - [ ] Floodable length curves.
 - [ ] VRML import, and edge extrusion in the GUI.
-- [ ] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
-- [ ] Grey out or cut the Holtrop curve where the method does not apply (on the demo hull R_T falls past
-  7.25 kn).
+- [x] One speed shared across the Performance tab and the Wave pattern view (resistance, waves, seakeeping).
+- [x] Grey out the resistance curve where the method does not apply: all of the Holtrop curve for a hull outside
+  its Cp, L/B or B/T range, and DSYHS speeds outside Fn 0.15 to 0.75. Neither Holtrop paper prints a top Froude
+  number, so no Holtrop speed is greyed on that account.
 - [ ] A 3D wave surface in Perspective view.
 - [ ] A wave pattern method for planing hulls; the Wave pattern view's title, "Thin-ship theory (Michell)",
   then becomes a drop-down that picks the method.

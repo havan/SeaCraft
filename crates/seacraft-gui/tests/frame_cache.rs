@@ -434,3 +434,183 @@ fn each_view_draws_a_kept_waterline_mesh_and_only_a_moved_view_rebuilds_it() {
         assert_waterline_mesh_fresh(&ctx, &app, i);
     }
 }
+
+fn container() -> (App, egui::Context) {
+    let path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut app = App::headless_for_test(Some(&path));
+    // 313 faces at level 4 is about 80 000 refined faces: over the budget for the window thread.
+    app.set_subdivision_level(4);
+    (app, egui::Context::default())
+}
+
+/// Frames (sleeping between them) until the level 4 mesh is in, checking each frame that the
+/// cached mesh is for the current model. Panics after 60 s.
+fn frames_until_refined(ctx: &egui::Context, app: &mut App) {
+    let start = std::time::Instant::now();
+    loop {
+        frame(ctx, app, Vec::new());
+        assert!(app.render_cache_is_current(), "a stale mesh is never drawn");
+        if !app.mesh_refining() {
+            return;
+        }
+        assert!(
+            start.elapsed().as_secs() < 60,
+            "the level 4 mesh never came"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A large hull draws a level 3 preview at once and the full level 4 from a background job.
+#[test]
+fn large_hull_refines_in_the_background() {
+    let (mut app, ctx) = container();
+    app.sync_render_cache();
+    assert_eq!(
+        app.render_cache_level(),
+        Some(3),
+        "the preview, built at once"
+    );
+    assert!(app.render_cache_is_current());
+    assert!(app.mesh_refining());
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+}
+
+/// An edit while the level 4 job runs: the old job's mesh is dropped, and a job for the edited
+/// hull brings level 4 back.
+#[test]
+fn a_superseded_mesh_job_is_dropped() {
+    let (mut app, ctx) = container();
+    app.sync_render_cache();
+    assert!(app.mesh_refining());
+    let p = app.surface().unwrap().points[10].p;
+    app.move_point(10, p + seacraft_core::math::Vec3::new(0.0, 0.0, 0.5))
+        .expect("move");
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+    let moved = app.surface().unwrap().points[10].p;
+    assert!((moved.z - p.z - 0.5).abs() < 1e-9);
+    // The mesh drawn is the moved hull's, not the one the superseded job built.
+    let expected =
+        seacraft_core::export::render_mesh(app.surface().unwrap(), 4, app.subdivision_mode());
+    assert_eq!(
+        app.render_cache().unwrap().verts,
+        expected.verts,
+        "the edited hull's level 4 mesh"
+    );
+}
+
+/// Agy review 3: no "refining" on the status bar for a hull whose full level builds at once,
+/// on the frame where the level was raised but the mesh is not rebuilt yet.
+#[test]
+fn a_small_hull_never_reads_as_refining() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(3);
+    app.sync_render_cache();
+    app.set_subdivision_level(4);
+    assert!(
+        !app.mesh_refining(),
+        "level 4 is built at once for 81 faces"
+    );
+}
+
+/// `refresh_cache` (the control channel's `ui.render`) builds the full level at once.
+#[test]
+fn refresh_cache_is_full_level_at_once() {
+    let (mut app, _ctx) = container();
+    app.refresh_cache();
+    assert_eq!(app.render_cache_level(), Some(4));
+    assert!(!app.mesh_refining());
+}
+
+/// A small hull at level 4 stays on the window thread, as before.
+#[test]
+fn small_hull_refines_at_once() {
+    let mut app = App::headless_for_test(Some(&demo_path()));
+    app.set_subdivision_level(4);
+    let ctx = egui::Context::default();
+    frame(&ctx, &mut app, Vec::new());
+    assert_eq!(app.render_cache_level(), Some(4));
+    assert!(!app.mesh_refining());
+}
+
+/// Agy review 5: opening another model drops the closed one's mesh job, so the new model's job
+/// starts at once instead of after it.
+#[test]
+fn opening_a_model_drops_the_old_mesh_job() {
+    let (mut app, _ctx) = container();
+    app.sync_render_cache();
+    assert!(app.mesh_job_is_current());
+    let path = format!(
+        "{}/../../examples/container-230m.fef",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    app.open_model(std::path::Path::new(&path)).expect("open");
+    app.set_subdivision_level(4);
+    app.sync_render_cache();
+    assert!(app.mesh_job_is_current(), "the new model's job runs");
+}
+
+/// The control point drawn nearest the middle of view 1, on screen.
+fn point_in_view(app: &App) -> egui::Pos2 {
+    let rect = app.viewport_rect(1);
+    let transform = app.cameras()[1].transform();
+    app.surface()
+        .unwrap()
+        .points
+        .iter()
+        .filter_map(|p| transform.project(p.p, rect))
+        .filter(|s| rect.shrink(20.0).contains(*s))
+        .min_by(|a, b| {
+            a.distance(rect.center())
+                .total_cmp(&b.distance(rect.center()))
+        })
+        .expect("a point in view")
+}
+
+/// CodeRabbit (PR #22): a press that starts a point drag while the full-level mesh is building
+/// keeps that job accounted for, so a release does not start a second build beside it. A release
+/// without a move then installs the mesh the job built.
+#[test]
+fn a_drag_keeps_the_running_mesh_job() {
+    let (mut app, ctx) = container();
+    // Lay the views out at level 3 (built at once, no job), then raise the level on the press.
+    app.set_subdivision_level(3);
+    frame(&ctx, &mut app, Vec::new());
+    let screen = point_in_view(&app);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    app.set_subdivision_level(5);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert!(app.mesh_job_is_current(), "the press kept the level 5 job");
+    frame(&ctx, &mut app, vec![button(screen, false)]);
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(5));
+}
+
+/// CodeRabbit (PR #22, second review): a click on a point after the full level is in drops the
+/// mesh to the drag preview; the release must build the full level again, not stop at the
+/// preview because the finished job still reads as current.
+#[test]
+fn a_click_after_refinement_builds_the_full_level_again() {
+    let (mut app, ctx) = container();
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+    let screen = point_in_view(&app);
+    frame(&ctx, &mut app, vec![egui::Event::PointerMoved(screen)]);
+    frame(&ctx, &mut app, vec![button(screen, true)]);
+    frame(&ctx, &mut app, Vec::new());
+    frame(&ctx, &mut app, vec![button(screen, false)]);
+    frame(&ctx, &mut app, Vec::new());
+    assert!(
+        app.mesh_job_is_current() || app.render_cache_level() == Some(4),
+        "the release builds level 4 again (level {:?})",
+        app.render_cache_level()
+    );
+    frames_until_refined(&ctx, &mut app);
+    assert_eq!(app.render_cache_level(), Some(4));
+}
