@@ -604,6 +604,52 @@ mod tests {
             .collect()
     }
 
+    /// The shell weights of `materials::estimate` (half mesh, mirrored by rule) equal the sum over
+    /// the full mirrored render mesh, which counts them another way. A consistency check, not an
+    /// oracle.
+    #[test]
+    fn materials_shell_matches_the_render_mesh_sum() {
+        use crate::materials::{estimate, Materials};
+        use crate::subdiv::{SubdivisionMode, SubdivisionOptions};
+        for e in Example::all() {
+            let (s, _) = build(e).unwrap();
+            assert!(s.layers.iter().all(|l| l.visible), "{e}: hidden layer");
+            let est = estimate(
+                &s,
+                &Materials::default(),
+                SubdivisionOptions {
+                    level: 3,
+                    mode: SubdivisionMode::Loop,
+                },
+            );
+            // The render mesh mirrors a face lying in `y = 0` onto itself, so it holds both
+            // copies; the schedule counts such a face once, so drop one copy from the reference.
+            let m = crate::export::render_mesh(&s, 3, SubdivisionMode::Loop);
+            let mut twice = vec![0.0; s.layers.len()];
+            for (f, &l) in m.faces.iter().zip(&m.face_layer) {
+                let poly: Vec<Vec3> = f.iter().map(|&i| m.verts[i]).collect();
+                if s.layers[l].symmetric && poly.iter().all(|p| p.y.abs() < 1e-9) {
+                    twice[l] += crate::math::polygon_area3(&poly);
+                }
+            }
+            let reference: Vec<f64> = plating_weights(&s)
+                .iter()
+                .zip(&twice)
+                .zip(&s.layers)
+                .map(|((w, d), l)| w - 0.5 * d * l.thickness * l.density / 1000.0)
+                .collect();
+            assert_eq!(est.layers.len(), reference.len(), "{e}");
+            for (row, t) in est.layers.iter().zip(&reference) {
+                let kg = row.shell_kg / 1000.0;
+                assert!(
+                    (kg - t).abs() <= 1e-9 * t.abs().max(1e-12),
+                    "{e} {}: {kg} vs {t}",
+                    row.layer
+                );
+            }
+        }
+    }
+
     /// Every GUI example carries its own plating from the material table
     /// (only steel layers may keep the default density), and the plating
     /// weight is a plausible share of the lightship: more than a tenth, less

@@ -843,6 +843,8 @@
   "log.templates_failed": "templates failed: {error}",
   "log.wave_image_failed": "Wave pattern image failed: {error}",
   "log.wave_image_saved": "Saved wave pattern to {path}",
+  "materials.warn.no_plating": "Layer {layer} has no density or no thickness, so its shell weighs nothing",
+  "materials.warn.unmatched_layer": "The schedule names layer {name}, which the hull does not have",
   "menu.analysis": "Analysis",
   "menu.edit": "Edit",
   "menu.edit.redo": "Redo",

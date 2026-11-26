@@ -1990,3 +1990,31 @@ mirrored $y \mapsto -y$ before posing):
 Synthetic shapes by construction and geometric invariants (no published benchmark). `nest::pack` is a deterministic
 largest-first heuristic, not minimum-sheet packing, and is not checked for plywood grain defects, kerf variation, or
 real shop tolerances.
+
+---
+
+## 51. Hull Materials: Layer Areas and Shell Weights
+
+### Formula
+On the refined half mesh (`subdiv::evaluate`), a layer's area $A$ is the sum of its face areas (`polygon_area3`), each
+counted twice when the layer is symmetric (the mirror lies at $-y$) unless every vertex of the face has $|y| < 10^{-9}$.
+The layer centre is the area centroid of the faces and their mirrors. Shell mass is $m = A\,t\,\rho$; glass is
+$A \sum g_i / 1000$ kg for plies of $g_i$ g/m²; resin is glass mass times `resin_per_glass`. The total centre is the
+mass-weighted mean of the layer centres.
+
+### Tests
+- `crates/seacraft-core/src/materials.rs`, `half_box_*`: a box open on $y = 0$ and $z = 1$, $x \in [0, 2]$, $y, z \in [0, 1]$,
+  with every edge creased and every point a corner, so subdivision leaves it exact. Hand-derived values at level 3:
+  - `Bottom` ($z = 0$): half area $2$ m², so $A = 4.0$ m²; centre $(1, 0, 0)$; 10 mm at 500 kg/m³ gives 20.0 kg.
+  - `Side` ($y = 1$): half area $2$, $A = 4.0$ m²; centre $(1, 0, 0.5)$; 6 mm at 500 gives 12.0 kg.
+  - `End` ($x = 0$ and $x = 2$, 1 m² each): half area $2$, $A = 4.0$ m²; centre $(1, 0, 0.5)$; 12 mm at 500 gives 24.0 kg.
+  - Total 56.0 kg (0.056 t), centre $z = (20 \cdot 0 + 12 \cdot 0.5 + 24 \cdot 0.5)/56 = 18/56$ m. Tolerance $10^{-9}$.
+  - `plies_add_glass_and_resin`: `Bottom` plies 200 + 200 g/m² give $4 \cdot 0.4 = 1.6$ kg glass and, at 1.2 resin per glass,
+    $1.6 \cdot 1.2 = 1.92$ kg resin. The glass and resin figures are the test's own inputs, not published values.
+- `crates/seacraft-core/src/examples/mod.rs`, `materials_shell_matches_the_render_mesh_sum`: every example's per-layer shell
+  mass equals the sum over `export::render_mesh` (the full mirrored mesh), within $10^{-9}$ relative. A consistency check
+  between two ways of summing the same mesh, not an oracle.
+
+### Provenance
+Hand-derived for the box (areas, centres, masses). Nothing here is published; the figures are the builder's numbers applied
+to the modelled surface, with no laminate thickness offset.

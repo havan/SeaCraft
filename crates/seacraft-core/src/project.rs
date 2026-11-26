@@ -508,10 +508,7 @@ mod tests {
             ..Default::default()
         };
         let e = p.validate().unwrap_err();
-        assert!(
-            e.contains("materials.") && e.contains("layers.Bottom[0].g_m2"),
-            "{e}"
-        );
+        assert!(e.contains("materials.layers.Bottom[0].g_m2"), "{e}");
     }
 
     #[test]
