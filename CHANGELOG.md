@@ -10,6 +10,10 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   reports, lines plans and plywood sheets the Turkish page links to are written in Turkish. The example-hull picker
   is now a row of buttons under its own heading, and clicking beside the heel drawing no longer leaves a large
   blinking text caret in it.
+- A new mark for the app icon, the website and its favicon: a hull's section as a body plan draws it, the
+  kayık example's outline, light above a red waterline and blue below, in place of the old shield-like shape.
+- The website's fonts now include Latin Extended, so Turkish `ğ`, `ş` and `İ` are drawn in the page's own fonts
+  instead of a fallback.
 - The website is now published when a release is published, so its numbers are the ones the downloads give,
   instead of from every change to `main`. Run by hand, the Website workflow publishes main's page with a release's
   program and example hulls.
