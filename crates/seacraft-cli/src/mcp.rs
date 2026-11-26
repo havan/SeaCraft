@@ -3892,15 +3892,17 @@ pub fn tool_definitions() -> Vec<Value> {
         tool(
             "batch",
             "Run several tool calls, restoring the model on error",
-            "Run tool calls in order, stopping at the first error, which restores the model but not files already \
-             written. Each step is {name, arguments}. On an error the session's model is restored to what it was \
-             before the batch (both headless and when connected to the GUI), but files written by earlier steps stay \
-             on disk, and so may a file the failing step wrote before it failed (a hull saved before its sidecar): a \
-             design report, an unfolded plate or a wave image is not removed. Connected to the GUI, a tool that \
-             replaces the whole model inside the batch (load_hull, generate_hull, example) starts a fresh history \
-             there, so the model from before it is not restored. A failure \
-             with `restore_error` means the rollback could not be confirmed (the GUI refused it, or its reply was \
-             lost): read the model with hull_info before any recovery edit. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
+            "Run tool calls in order, stopping at the first error, which restores the model (connected to the GUI, \
+             not past a load_hull, generate_hull or example in the batch) but not files already written. Each step \
+             is {name, arguments}. On an error the session's model is restored to what it was before the batch, \
+             headless or connected to the GUI, but files written by earlier steps stay on disk, and so may a file \
+             the failing step wrote before it failed (a hull saved before its sidecar): a design report, an \
+             unfolded plate or a wave image is not removed. Connected to the GUI, a tool that replaces the whole \
+             model (load_hull, generate_hull, example) starts a fresh history there, so the model from before it \
+             is not restored. A failure with `restore_error` means the rollback could not be confirmed (the GUI \
+             refused it, or its reply was lost). Connected, hull_info shows no geometry to check that by, so for a \
+             batch that matters take a baseline first: save the model with save_hull, or note a hydro_compute \
+             result at a fixed draft, and compare against it after a failure before any recovery edit. Returns each call's result on success, or {failed: {index, name, error}, completed: N} on failure. \
              At most 100 calls; nested batch is rejected, and so is export_panels with both `nest` and `path` (call it \
              on its own).",
             obj(
@@ -6883,7 +6885,14 @@ mod tests {
             description.contains("could not be confirmed"),
             "{description}"
         );
-        assert!(description.contains("hull_info"), "{description}");
+        // CodeRabbit (PR #22, third review): connected, hull_info shows no geometry, so the
+        // description names a baseline to take before the batch instead.
+        assert!(
+            description.contains("hull_info shows no geometry"),
+            "{description}"
+        );
+        assert!(description.contains("save_hull"), "{description}");
+        assert!(description.contains("hydro_compute"), "{description}");
         // The catalogue shows only the first sentence: it carries the caveat too.
         let catalogue = tool_catalogue();
         let line = catalogue
@@ -6891,6 +6900,8 @@ mod tests {
             .find(|l| l.starts_with("- `batch`"))
             .expect("batch in the catalogue");
         assert!(line.contains("files"), "{line}");
+        // ...and the exception for a model replaced inside a connected batch.
+        assert!(line.contains("load_hull"), "{line}");
     }
 
     #[test]
