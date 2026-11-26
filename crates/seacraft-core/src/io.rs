@@ -531,14 +531,17 @@ mod held {
 
     impl Folder {
         /// Open `root`, then each of `folders` below it, refusing a symbolic link or junction.
+        ///
+        /// Only reparse points that stand for another name are refused (the name-surrogate tags:
+        /// symbolic links and junctions, which the standard library reports as links); others,
+        /// such as a OneDrive folder's, are folders like any other.
         #[cfg(windows)]
         pub(super) fn open(root: &Path, folders: &[&OsStr]) -> io::Result<Folder> {
-            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+            use std::os::windows::fs::OpenOptionsExt;
             const FILE_SHARE_READ: u32 = 0x1;
             const FILE_SHARE_WRITE: u32 = 0x2;
             const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
             const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
             let hold = |path: &Path, flags: u32| {
                 fs::OpenOptions::new()
                     .read(true)
@@ -556,7 +559,7 @@ mod held {
                 let folder = hold(&path, FILE_FLAG_OPEN_REPARSE_POINT)
                     .map_err(|e| super::refused(root, name, e))?;
                 let meta = folder.metadata()?;
-                if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                if meta.file_type().is_symlink() || !meta.is_dir() {
                     return Err(super::refused(
                         root,
                         name,
