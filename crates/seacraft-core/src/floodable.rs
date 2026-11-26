@@ -174,11 +174,9 @@ fn compute_with_deck_edge(
             return trial;
         }
         let x_c = (v_w * b.x - p.target_volume * p.lcg) / lost;
-        let areas: Vec<f64> = grid
-            .stations
-            .iter()
-            .map(|&x| section_area(&hull.verts, &closed, x, &wp))
-            .collect();
+        let areas = crate::par::par_map(&grid.stations, |&x| {
+            section_area(&hull.verts, &closed, x, &wp)
+        });
         let cum = grid.cumulative(&areas);
         for (slot, &mu) in trial.points.iter_mut().zip(&opts.permeabilities) {
             *slot = cum
@@ -864,5 +862,105 @@ mod tests {
             .unwrap_err();
             assert!(err.contains("factor of subdivision"), "{f}: {err}");
         }
+    }
+
+    fn demo_hydro_options() -> (Surface, HydroOptions) {
+        let surface = crate::demo::demo_hull(false);
+        let hopts = HydroOptions::from_surface(
+            &surface,
+            SubdivisionOptions {
+                level: 3,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        (surface, hopts)
+    }
+
+    /// Two SeaCraft methods agree (not an external source): flooding the compartment a curve point gives, as an
+    /// ordinary damage case (lost buoyancy, compartment clipped to the hull), floats the demo hull upright with
+    /// its deck edge 76 mm clear, i.e. the margin line awash, at the point's trim. Tolerances: the curve
+    /// integrates 201 sectional areas, the damage case a clipped solid of the refined hull; 5 mm of freeboard
+    /// and 20 mm of trim cover that difference on a 12 m hull.
+    #[test]
+    fn curve_points_flood_the_demo_hull_to_its_margin_line() {
+        use crate::damage::{Compartment, CompartmentSpec};
+        let (surface, hopts) = demo_hydro_options();
+        let opts = FloodableOptions {
+            permeabilities: vec![0.85],
+            ..FloodableOptions::default()
+        };
+        let res = evaluate(&surface, &hopts, &DamageCase::default(), &opts).unwrap();
+        let pts = &res.curves[0].points;
+        assert!(pts.len() > 10, "{} points", pts.len());
+        let hull = Hull::new(&surface, hopts.subdivision);
+        for p in [pts[0], pts[pts.len() / 2], pts[pts.len() - 1]] {
+            let case = DamageCase {
+                name: "floodable point".into(),
+                compartments: vec![CompartmentSpec::Inline(Compartment {
+                    name: "flooded".into(),
+                    x_min: p.x_aft,
+                    x_max: p.x_fwd,
+                    y_min: -1e3,
+                    y_max: 1e3,
+                    z_min: hull.keel - 1.0,
+                    z_max: hull.model_max.z + 1.0,
+                    permeability: 0.85,
+                    clip_to_hull: true,
+                })],
+                displacement_t: Some(res.displacement_t),
+                kg: Some(0.75 * (hull.model_max.z - hull.keel)),
+                lcg: Some(res.lcg),
+                water_density: Some(res.water_density),
+                ..DamageCase::default()
+            };
+            let d = crate::damage::evaluate(&surface, &hopts, &case).unwrap();
+            assert!(
+                d.heel_deg.abs() < 0.05,
+                "x {}: heel {}",
+                p.x_mid,
+                d.heel_deg
+            );
+            let fb = d.freeboard_m.unwrap();
+            assert!(
+                (fb - DEFAULT_MARGIN_M).abs() < 0.005,
+                "x {}: freeboard {fb} m",
+                p.x_mid
+            );
+            assert!(
+                (d.trim_m - p.trim_m).abs() < 0.02,
+                "x {}: trim {} vs {}",
+                p.x_mid,
+                d.trim_m,
+                p.trim_m
+            );
+        }
+    }
+
+    /// Not published: recorded from SeaCraft on 2026-11-26 (demo hull, level 3, design draft, μ 0.85), to
+    /// catch a change, not to show the numbers are right (`docs/oracles.md`). The shape agrees with Gillmer &
+    /// Johnson's remark that the curve is "usually greatest amidships and least near the quarter length": here
+    /// least at the aft end, where the transom terminates it.
+    #[test]
+    fn demo_hull_curve_recorded() {
+        let (surface, hopts) = demo_hydro_options();
+        let opts = FloodableOptions {
+            permeabilities: vec![0.85],
+            ..FloodableOptions::default()
+        };
+        let res = evaluate(&surface, &hopts, &DamageCase::default(), &opts).unwrap();
+        let close = |got: f64, want: f64| (got / want - 1.0).abs() < 5e-3;
+        assert!(close(res.displacement_t, 12.1), "Δ {}", res.displacement_t);
+        assert!(close(res.lcg, 4.30), "LCG {}", res.lcg);
+        let curve = &res.curves[0];
+        assert!(curve.points.len() > 40, "{} points", curve.points.len());
+        let min = curve
+            .points
+            .iter()
+            .min_by(|a, b| a.length.total_cmp(&b.length))
+            .unwrap();
+        assert!(close(min.length, 1.39), "least {} m", min.length);
+        assert!(close(min.x_mid, 0.701), "least at x {} m", min.x_mid);
+        let mid = floodable_at(curve, 6.0).unwrap();
+        assert!(close(mid, 3.37), "at x = 6 m: {mid} m");
     }
 }
