@@ -114,6 +114,7 @@ the skin deducted (ask the builder for skin_mm; it defaults to none), export_off
 Project data: project_get and project_set read and write the design sidecar (loading conditions, compartments, damage cases, windage).
 Evaluate loading conditions with loading_condition {name} (or inline case / case_path).
 Evaluate damage stability with damage_stability {name} (or inline case / case_path).
+Draw floodable length curves (bulkhead spacing) with floodable_length {condition | displacement_t, lcg}.
 Tool failures come back as a normal result with isError true and a message; protocol errors are JSON-RPC errors.
 Resources: seacraft://hull (summary of the loaded hull) and seacraft://tools (catalogue with each tool's effect).";
 
@@ -855,6 +856,7 @@ impl McpServer {
             "heel_equilibrium" => self.heel_equilibrium(a),
             "weather_criterion" => self.weather_criterion(a),
             "damage_stability" => self.damage_stability(a),
+            "floodable_length" => self.floodable_length(a),
             "seakeeping_raos" => self.seakeeping_raos(a),
             "seakeeping_irregular" => self.seakeeping_irregular(a),
             "bonjean_curves" => self.bonjean_curves(a),
@@ -1708,6 +1710,64 @@ impl McpServer {
         let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
             o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn floodable_length(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        use seacraft_core::floodable::{self, FloodableOptions};
+        let err = |e: String| format!("floodable_length: {e}");
+        let locale = opt_locale(a)?;
+        let displacement = opt_number(a, "displacement_t")?;
+        let condition = str_arg(a, "condition");
+        if displacement.is_some() && condition.is_some() {
+            return Err(err(
+                "give either `condition` or `displacement_t`, not both".into()
+            ));
+        }
+        let mut case = seacraft_core::damage::DamageCase::default();
+        if let Some(d) = displacement {
+            // KG does not enter the floodable length; set, it selects the explicit loading.
+            case.displacement_t = Some(d);
+            case.kg = Some(0.0);
+            case.lcg = opt_number(a, "lcg")?;
+        } else if let Some(name) = condition {
+            case.loading_condition_name = Some(name.to_owned());
+            case = self.project.resolve_damage_case(&case).map_err(err)?;
+        }
+        let mut opts = FloodableOptions::default();
+        if let Some(v) = a.get("permeabilities").filter(|v| !v.is_null()) {
+            opts.permeabilities = numbers(v, "permeabilities")?;
+        }
+        if let Some(m) = opt_number(a, "margin_m")? {
+            opts.margin_m = m;
+        }
+        opts.factor = opt_number(a, "factor")?;
+        if let Some(v) = a.get("bulkheads").filter(|v| !v.is_null()) {
+            opts.bulkheads = numbers(v, "bulkheads")?;
+        }
+        let level = match a.get("level") {
+            None | Some(Value::Null) => self.opts.subdivision.level,
+            Some(_) => level_arg(a)?,
+        };
+        let mut hopts = self.opts.clone();
+        hopts.subdivision.level = level;
+        let res = floodable::evaluate(&self.surface, &hopts, &case, &opts).map_err(err)?;
+        let mut written = None;
+        if let Some(path) = str_arg(a, "svg_path").filter(|s| !s.trim().is_empty()) {
+            let tr = Tr::new(locale);
+            let title = tr.fmt(
+                Key::CliFloodableHeading,
+                &[("name", &self.surface.settings.name)],
+            );
+            seacraft_core::io::write_atomic(path, floodable::svg_tr(&res, &title, tr))
+                .map_err(|e| err(format!("cannot write {path}: {e}")))?;
+            written = Some(path.to_string());
+        }
+        let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+            o.insert("written".into(), json!(written));
         }
         Ok(v)
     }
@@ -3526,6 +3586,35 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "floodable_length",
+            "Floodable length curves (bulkhead spacing)",
+            "Floodable length curves by trial waterlines tangent to the margin line (margin_m below the deck edge at \
+             side, 0.076 m by default): for each position along the hull, the longest full-breadth compartment, \
+             centred there, that can flood (lost buoyancy, permeability mu) without immersing the margin line, \
+             ship upright and free to trim. One curve per permeability (default 0.60, 0.85, 0.95). With `factor` \
+             (factor of subdivision, 0-1) and `bulkheads` (x positions, aft to forward) each compartment is judged \
+             against the permissible length at its centre (passed, failed, or null when the curve does not reach \
+             it). Loading: a project `condition`, or `displacement_t` with optional `lcg`, or the design draft. \
+             Give `svg_path` to also write the plot. Checked against a box barge's closed form and the damage \
+             solver; not against a published floodable length table.",
+            obj(
+                json!({
+                    "condition": string("Name of a loading condition in the project"),
+                    "displacement_t": number("Displacement in tonnes, instead of a condition"),
+                    "lcg": number("Longitudinal centre of gravity (m, model x), with displacement_t"),
+                    "permeabilities": {"type": "array", "items": {"type": "number"}, "description": "One curve per permeability, each in (0, 1]"},
+                    "margin_m": number("Margin line depth below the deck edge in metres (default 0.076)"),
+                    "factor": number("Factor of subdivision in (0, 1]: permissible length = factor x floodable length"),
+                    "bulkheads": {"type": "array", "items": {"type": "number"}, "description": "Watertight bulkhead x positions in metres, aft to forward"},
+                    "svg_path": string("Write the curves as an SVG plot here"),
+                    "locale": string("Language of the SVG: en or tr (default en)"),
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                }),
+                &[],
+            ),
+            Effect::ReadOnly,
+        ),
+        tool(
             "seakeeping_raos",
             "Seakeeping RAOs (heave and pitch in regular head seas)",
             "Linear strip-theory heave and pitch motion Response Amplitude Operators (RAOs) in regular head seas \
@@ -4490,6 +4579,11 @@ impl Remote {
                 }
                 self.request("damage.compute", p)
             }
+            "floodable_length" => Err(
+                "floodable_length does not run while connected to the SeaCraft window yet; use the headless \
+                 server (seacraft mcp without --connect) or `seacraft floodable`"
+                    .into(),
+            ),
             "seakeeping_raos" => self.request("seakeeping.compute", Value::Object(a.clone())),
             "seakeeping_irregular" => {
                 self.request("seakeeping.irregular", Value::Object(a.clone()))
@@ -4985,6 +5079,7 @@ mod tests {
                 "heel_equilibrium",
                 "weather_criterion",
                 "damage_stability",
+                "floodable_length",
                 "seakeeping_raos",
                 "seakeeping_irregular",
                 "bonjean_curves",
@@ -6360,6 +6455,61 @@ mod tests {
         let crit = &res["criteria"];
         assert_eq!(crit["passed"], true);
         fails(&mut s, 2, "damage_stability", json!({}));
+    }
+
+    #[test]
+    fn floodable_length_tool_returns_curves() {
+        let mut s = McpServer::new();
+        let res = ok(
+            &mut s,
+            1,
+            "floodable_length",
+            json!({"level": 2, "permeabilities": [0.85], "factor": 0.5, "bulkheads": [3.0, 6.0, 9.0]}),
+        );
+        assert_eq!(res["backend"], "headless");
+        let curves = res["curves"].as_array().unwrap();
+        assert_eq!(curves.len(), 1);
+        assert_eq!(curves[0]["permeability"].as_f64(), Some(0.85));
+        assert!(curves[0]["points"].as_array().unwrap().len() > 10);
+        assert_eq!(curves[0]["checks"].as_array().unwrap().len(), 4);
+        assert_eq!(res["written"], Value::Null);
+
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-mcp-floodable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let svg = dir.join("floodable.svg");
+        let res = ok(
+            &mut s,
+            2,
+            "floodable_length",
+            json!({"level": 2, "svg_path": svg.to_string_lossy(), "locale": "tr"}),
+        );
+        assert_eq!(res["curves"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            res["written"].as_str(),
+            Some(svg.to_string_lossy().as_ref())
+        );
+        assert!(std::fs::read_to_string(&svg)
+            .unwrap()
+            .contains("Su alabilir boy"));
+        std::fs::remove_dir_all(&dir).ok();
+
+        let err = fails(
+            &mut s,
+            3,
+            "floodable_length",
+            json!({"bulkheads": [6.0, 3.0]}),
+        );
+        assert!(err.contains("bulkhead"), "{err}");
+        let err = fails(&mut s, 4, "floodable_length", json!({"condition": "Nope"}));
+        assert!(err.contains("Nope"), "{err}");
+        let err = fails(
+            &mut s,
+            5,
+            "floodable_length",
+            json!({"condition": "Design", "displacement_t": 10.0}),
+        );
+        assert!(err.contains("not both"), "{err}");
     }
 
     #[test]
