@@ -2208,6 +2208,30 @@ fn chosen_layers(surface: &Surface, names: Option<&[String]>) -> Result<Vec<usiz
 
 /// Finds, flattens and measures the panels and draws their patterns.
 pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, String> {
+    check_options(opts)?;
+    let layers = chosen_layers(surface, opts.layers.as_deref())?;
+    panel_set_on(surface, opts, &layers)
+}
+
+/// As [`panel_set`], on the layers at these indices of `surface.layers`, ignoring `opts.layers`:
+/// one of two layers that share a name can be taken alone. An index past the layers is refused.
+pub fn panel_set_of_layers(
+    surface: &Surface,
+    opts: &PanelOptions,
+    layers: &[usize],
+) -> Result<PanelSet, String> {
+    check_options(opts)?;
+    if let Some(i) = layers.iter().find(|&&i| i >= surface.layers.len()) {
+        return Err(format!(
+            "there is no layer {i}; the model has {}",
+            surface.layers.len()
+        ));
+    }
+    panel_set_on(surface, opts, layers)
+}
+
+/// The limits, offset spacing, stock and nesting gap a panel set is refused for.
+fn check_options(opts: &PanelOptions) -> Result<(), String> {
     let l = opts.limits;
     if !positive(l.seam_drift_m) || !positive(l.rms_stretch) {
         return Err("the seam drift and stretch limits must be more than zero".into());
@@ -2229,8 +2253,16 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
             );
         }
     }
+    Ok(())
+}
+
+fn panel_set_on(
+    surface: &Surface,
+    opts: &PanelOptions,
+    layers: &[usize],
+) -> Result<PanelSet, String> {
+    let st = opts.stock;
     let tr = Tr::new(opts.locale);
-    let layers = chosen_layers(surface, opts.layers.as_deref())?;
     // Only the model's extent is read from the hull: the panels' layers need not be in its
     // hydrostatics, and a chosen layer with no faces finds no panel below.
     let hull = crate::hydro::Hull::new(surface, opts.subdivision);
@@ -2244,7 +2276,7 @@ pub fn panel_set(surface: &Surface, opts: &PanelOptions) -> Result<PanelSet, Str
         })
         .collect();
     let (panels, mismatches, refused) =
-        measure_panels(surface, opts.subdivision, &layers, &xs, opts.limits);
+        measure_panels(surface, opts.subdivision, layers, &xs, opts.limits);
     if panels.is_empty() && refused.is_empty() {
         return Err("no panel was found on the chosen layers".into());
     }

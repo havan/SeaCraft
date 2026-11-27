@@ -5,13 +5,31 @@ use std::process::{Command, Output};
 
 const ITEM: &str = "Hull materials (estimate)";
 
+/// A test's directory, removed when it goes out of scope, a failed assertion included.
+struct Workdir(PathBuf);
+
+impl std::ops::Deref for Workdir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Workdir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// A fresh directory holding `hull.fef`, and `hull.seacraft.json` when `sidecar` is set, both
 /// copied from the example `name`.
-fn workdir(test: &str, name: &str, sidecar: bool) -> PathBuf {
+fn workdir(test: &str, name: &str, sidecar: bool) -> Workdir {
     let dir =
         std::env::temp_dir().join(format!("seacraft-materials-{}-{test}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("make the test directory");
+    let dir = Workdir(dir);
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     std::fs::copy(examples.join(format!("{name}.fef")), dir.join("hull.fef")).expect("copy hull");
     if sidecar {
@@ -138,6 +156,36 @@ fn add_to_refuses_a_bare_loading_condition() {
         &["materials", "hull.fef", "case.json", "--add-to", "Design"],
     );
     ok(&dir, &["materials", "hull.fef", "case.json"]);
+}
+
+#[test]
+fn a_project_file_that_does_not_parse_is_refused() {
+    // Truncated: not a project, and not a loading condition either, so it must not be read as
+    // a bare case and estimated with no schedule.
+    let dir = workdir("truncated", "skiff-4m", true);
+    let text = std::fs::read_to_string(dir.join("hull.seacraft.json")).unwrap();
+    std::fs::write(dir.join("hull.seacraft.json"), &text[..text.len() / 2]).unwrap();
+    let err = fails(&dir, &["materials", "hull.fef"]);
+    assert!(
+        err.contains("hull.seacraft.json") && err.contains("neither a project file"),
+        "{err}"
+    );
+}
+
+#[test]
+fn csv_sends_the_warnings_to_stderr() {
+    // A schedule layer named for no hull layer warns; the CSV on stdout stays rows only.
+    let dir = workdir("csvwarn", "skiff-4m", true);
+    let mut p = project(&dir);
+    p["materials"] = serde_json::json!({
+        "resin_per_glass": 1.0,
+        "layers": {"Botom": [{"g_m2": 200.0, "side": "outside"}]}
+    });
+    std::fs::write(dir.join("hull.seacraft.json"), p.to_string()).unwrap();
+    let out = ok(&dir, &["materials", "hull.fef", "--csv"]);
+    let err = text(&out.stderr);
+    assert!(err.contains("warning: ") && err.contains("Botom"), "{err}");
+    assert!(!text(&out.stdout).contains("Botom"));
 }
 
 #[test]

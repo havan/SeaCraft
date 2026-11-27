@@ -5422,7 +5422,21 @@ fn cmd_materials(a: MaterialsArgs, tr: Tr) -> Result<()> {
     if a.case.is_some() || sidecar.exists() {
         match read_case_or_project(&a.file, a.case.as_deref())? {
             (CaseSource::Project(p), path) => loaded = Some((*p, path)),
-            (CaseSource::Bare(_), path) => {
+            (CaseSource::Bare(text), path) => {
+                // A file that is no project must be a loading condition, or its schedule may
+                // have been lost to a typo and the estimate would quietly use none.
+                if let Err(e) = serde_json::from_str::<loading::LoadingCondition>(&text) {
+                    bail!(
+                        "{}",
+                        tr.fmt(
+                            Key::CliMaterialsNotACase,
+                            &[
+                                ("path", &path.display().to_string()),
+                                ("error", &e.to_string())
+                            ]
+                        )
+                    );
+                }
                 if a.add_to.is_some() {
                     bail!(
                         "{}",
@@ -5492,6 +5506,13 @@ fn cmd_materials(a: MaterialsArgs, tr: Tr) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&est)?);
     } else if a.csv {
         print!("{}", materials_csv(&est));
+        // Warnings go to stderr, so the CSV stays machine-readable.
+        for w in &est.warnings {
+            eprintln!(
+                "{}",
+                tr.fmt(Key::CliCommonWarning, &[("message", &w.render(tr))])
+            );
+        }
     } else {
         print_materials_table(&s.settings.name, &est, tr);
     }

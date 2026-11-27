@@ -250,8 +250,10 @@ pub struct LayerRow {
 pub struct SeamRow {
     /// The two layer names, sorted, so `Bottom / Side` and `Side / Bottom` group together.
     pub between: [String; 2],
-    /// Length over both sides of the hull: an edge off the centreline between symmetric layers
-    /// counts twice (port and starboard), a centreline edge once.
+    /// Length over both sides of the hull: an edge between two faces of symmetric layers counts
+    /// twice (port and starboard), even on the centreline, where the port copy is a joint of its
+    /// own (a bottom meeting each face of a centreline web); an edge where a layer folds against
+    /// its own mirror (a V keel) is one joint and counts once.
     pub length_m: f64,
     pub tape_kg: f64,
     pub tape_resin_kg: f64,
@@ -341,7 +343,7 @@ impl PlywoodRow {
 pub struct Estimate {
     pub layers: Vec<LayerRow>,
     pub seams: Vec<SeamRow>,
-    /// One row per distinct developable layer name; empty when none is developable.
+    /// One row per developable layer with faces; empty when none is developable.
     pub plywood: Vec<PlywoodRow>,
     pub total: Total,
     /// Schedule names that match no layer of the surface.
@@ -395,7 +397,8 @@ pub fn replaced_names(name: &str) -> Vec<&'static str> {
 
 /// Puts `item` in the project's loading condition called `condition`, as
 /// [`loading::put_item`](crate::loading::put_item) does with `also_replace`. An unknown condition
-/// is refused, in `locale`, with the names the project has, and nothing changes.
+/// is refused, in `locale`, with the names the project has, and so is an item whose mass is not
+/// finite and non-negative or whose centre is not finite; either way nothing changes.
 pub fn put_in_condition(
     project: &mut Project,
     condition: &str,
@@ -416,6 +419,14 @@ pub fn put_in_condition(
             )
         });
     };
+    if !(item.mass_t.is_finite() && item.mass_t >= 0.0)
+        || ![item.x, item.y, item.z].iter().all(|v| v.is_finite())
+    {
+        return Err(Tr::new(locale).fmt(
+            Key::MaterialsItemNotFinite,
+            &[("item", item.name.as_str()), ("name", condition)],
+        ));
+    }
     crate::loading::put_item(&mut conditions[i], item, also_replace);
     Ok(())
 }
@@ -474,15 +485,26 @@ impl Centroid {
 const ON_CENTRELINE: f64 = 1e-9;
 
 /// Area of a face as `polygon_area3` takes it (the same as the exports and `plating_weights`), and
-/// the centroid of its fan triangles weighted by their areas.
+/// the centroid of its fan triangles, each weighted by its area signed along the face's normal, so
+/// a triangle that folds back over a concave face takes its area away and the weights add up to
+/// the face's area. A face too small to have a normal is centred on its first point.
 fn polygon_centroid(poly: &[Vec3]) -> (f64, Vec3) {
-    let mut c = Centroid::default();
-    for i in 1..poly.len().saturating_sub(1) {
-        let tri = [poly[0], poly[i], poly[i + 1]];
-        c.add(
-            polygon_area3(&tri),
-            (tri[0] + tri[1] + tri[2]) * (1.0 / 3.0),
+    let tri_area = |i: usize| (poly[i] - poly[0]).cross(poly[i + 1] - poly[0]) * 0.5;
+    let fan = 1..poly.len().saturating_sub(1);
+    let normal = fan
+        .clone()
+        .fold(Vec3::ZERO, |acc, i| acc + tri_area(i))
+        .norm();
+    if normal == Vec3::ZERO {
+        return (
+            polygon_area3(poly),
+            poly.first().copied().unwrap_or_default(),
         );
+    }
+    let mut c = Centroid::default();
+    for i in fan {
+        let centre = (poly[0] + poly[i] + poly[i + 1]) * (1.0 / 3.0);
+        c.add(tri_area(i).dot(normal), centre);
     }
     (polygon_area3(poly), c.at())
 }
@@ -516,12 +538,19 @@ pub fn estimate(surface: &Surface, schedule: &Materials, opts: SubdivisionOption
             .get(&layer.name)
             .map_or(0.0, |p| p.iter().map(|p| p.g_m2).sum());
         let a = acc.weight;
-        let shell_kg = a * layer.thickness * layer.density;
+        // A plate of no thickness or density weighs nothing; nor does one with either below zero,
+        // which the project file allows but no plate has.
+        let plated = layer.density > 0.0 && layer.thickness > 0.0;
+        let shell_kg = if plated {
+            a * layer.thickness * layer.density
+        } else {
+            0.0
+        };
         let glass_kg = a * glass_g_m2 / 1000.0;
         let resin_kg = glass_kg * resin;
         let total_kg = shell_kg + glass_kg + resin_kg;
         total.add(total_kg, acc.at());
-        if !(layer.density > 0.0 && layer.thickness > 0.0) {
+        if !plated {
             warnings.push(Msg::new(Key::MaterialsWarnNoPlating).arg("layer", &layer.name));
         }
         rows.push(LayerRow {
@@ -564,21 +593,22 @@ pub fn estimate(surface: &Surface, schedule: &Materials, opts: SubdivisionOption
     }
 }
 
-/// Sheets per distinct developable layer name, so thicknesses are not added together. A stock or
-/// panel error is a warning and that layer gets no row.
+/// Sheets per developable layer, so thicknesses are not added together: two layers that share a
+/// name get a row each, at their own thickness. A layer with no faces, or a stock or panel error,
+/// is a warning and that layer gets no row.
 fn plywood_rows(
     surface: &Surface,
     schedule: &Materials,
     opts: SubdivisionOptions,
     warnings: &mut Vec<Msg>,
 ) -> Vec<PlywoodRow> {
-    let mut names: Vec<&Layer> = Vec::new();
-    for l in surface.layers.iter().filter(|l| l.developable) {
-        if !names.iter().any(|n| n.name == l.name) {
-            names.push(l);
-        }
-    }
-    if names.is_empty() {
+    let developable: Vec<(usize, &Layer)> = surface
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.developable)
+        .collect();
+    if developable.is_empty() {
         return Vec::new();
     }
     let failed = |layer: &str, reason: String| {
@@ -590,22 +620,26 @@ fn plywood_rows(
         None => Stock::default(),
         Some(Ok(s)) => s,
         Some(Err(e)) => {
-            for l in names {
+            for (_, l) in developable {
                 warnings.push(failed(&l.name, e.clone()));
             }
             return Vec::new();
         }
     };
     let mut rows = Vec::new();
-    for l in names {
-        let set = panels::panel_set(
+    for (i, l) in developable {
+        if !surface.face_layer.contains(&i) {
+            warnings.push(Msg::new(Key::MaterialsWarnPlywoodNoFaces).arg("layer", &l.name));
+            continue;
+        }
+        let set = panels::panel_set_of_layers(
             surface,
             &PanelOptions {
                 subdivision: opts,
-                layers: Some(vec![l.name.clone()]),
                 stock,
                 ..Default::default()
             },
+            &[i],
         );
         match set {
             Ok(set) => {
@@ -619,7 +653,7 @@ fn plywood_rows(
                     layer: l.name.clone(),
                     thickness_mm: l.thickness * 1000.0,
                     sheets: set.total_sheets,
-                    all_lie_flat: not_flat.is_empty(),
+                    all_lie_flat: set.all_lie_flat(),
                     not_flat,
                     refused: set.refused.iter().map(|r| r.panel.clone()).collect(),
                     not_counted: set
@@ -1059,6 +1093,64 @@ mod tests {
     }
 
     #[test]
+    fn put_in_condition_refuses_an_item_that_is_not_finite() {
+        let mut p = two_conditions("Hull");
+        let before = p.clone();
+        let good = WeightItem {
+            name: "Hull".into(),
+            mass_t: 2.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.5,
+        };
+        for bad in [
+            WeightItem {
+                mass_t: f64::INFINITY,
+                ..good.clone()
+            },
+            WeightItem {
+                mass_t: -1.0,
+                ..good.clone()
+            },
+            WeightItem {
+                z: f64::NAN,
+                ..good.clone()
+            },
+        ] {
+            let msg = put_in_condition(&mut p, "Light", bad, &[], Locale::En).unwrap_err();
+            assert!(
+                msg.contains("\"Hull\"") && msg.contains("\"Light\""),
+                "{msg}"
+            );
+            assert_eq!(p, before, "the earlier item stays");
+        }
+        put_in_condition(&mut p, "Light", good.clone(), &[], Locale::En).unwrap();
+        assert_eq!(
+            p.loading_conditions[1].items,
+            vec![good],
+            "a finite one replaces it"
+        );
+    }
+
+    #[test]
+    fn a_concave_face_is_centred_by_signed_area() {
+        // The square 0..2 less the notch (2,2), (1,0.5), (0,2): area 4 - 1.5 = 2.5 m²; centroid
+        // y = (4 * 1 - 1.5 * 1.5) / 2.5 = 0.7, x = 1 by symmetry. The fan from (0,0) has one
+        // triangle folded back, of area -0.5; weighed unsigned it would put y at 0.738.
+        let flat = |pts: &[(f64, f64)]| -> Vec<Vec3> {
+            pts.iter().map(|&(x, y)| Vec3::new(x, y, 0.0)).collect()
+        };
+        let notched = flat(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (1.0, 0.5), (0.0, 2.0)]);
+        let (a, c) = polygon_centroid(&notched);
+        close(a, 2.5);
+        close3([c.x, c.y, c.z], [1.0, 0.7, 0.0]);
+        // A convex face is unchanged: the unit square's centre.
+        let (a, c) = polygon_centroid(&flat(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]));
+        close(a, 1.0);
+        close3([c.x, c.y, c.z], [0.5, 0.5, 0.0]);
+    }
+
+    #[test]
     fn half_box_shell_masses() {
         let e = estimate(&half_box(), &Materials::default(), l3());
         close(e.layers[0].shell_kg, 20.0);
@@ -1149,6 +1241,24 @@ mod tests {
         assert_eq!(e.layers[0].shell_kg, 0.0);
         assert_eq!(e.warnings.len(), 1);
         assert_eq!(e.warnings[0].key(), Some(Key::MaterialsWarnNoPlating));
+    }
+
+    #[test]
+    fn negative_plating_warns_and_weighs_nothing() {
+        // The project file takes any finite density and thickness; one below zero must not take
+        // weight off the hull or move its centre.
+        for (density, thickness) in [(-500.0, 0.01), (500.0, -0.01)] {
+            let mut s = half_box();
+            s.layers[0].density = density;
+            s.layers[0].thickness = thickness;
+            let e = estimate(&s, &Materials::default(), l3());
+            assert_eq!(e.layers[0].shell_kg, 0.0);
+            assert_eq!(e.warnings.len(), 1);
+            assert_eq!(e.warnings[0].key(), Some(Key::MaterialsWarnNoPlating));
+            // Side 12 kg and End 24 kg, both centred at z = 0.5.
+            close(e.total.mass_kg, 36.0);
+            close3(e.total.centre, [1.0, 0.0, 0.5]);
+        }
     }
 
     /// A 1 m x 1 m plate in the centreline plane y = 0 on a symmetric layer (a skeg, a stem).
@@ -1361,6 +1471,37 @@ mod tests {
         }
         close(row.tape_kg, 2.0 * 0.075 * 0.2 * 2.0);
         close(row.fillet_kg, 2.0 * fillet_area(0.012, theta) * 1000.0);
+    }
+
+    #[test]
+    fn a_web_on_the_centreline_has_a_seam_each_side() {
+        // A flat bottom, z = 0, meets a web standing in the plane y = 0 along x 0..2. The web is
+        // its own mirror, but the bottom is not: the starboard bottom meets the web's starboard
+        // face and the port bottom its port face, two joints of 2 m, each with its own fillet at
+        // 90°. Unlike the V keel, where the bottom meets its own mirror in one joint.
+        let s = plates(
+            &[
+                (0.0, 0.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (2.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 0.5),
+                (2.0, 0.0, 0.5),
+            ],
+            &[(vec![0, 3, 2, 1], 0), (vec![0, 1, 5, 4], 1)],
+            &["Bottom", "Web"],
+            true,
+            // The joint creased, so refinement keeps both plates flat.
+            &[(0, 1)],
+        );
+        let e = estimate(&s, &tape_and_fillet(), l3());
+        assert_eq!(names(&e), vec!["Bottom / Web"]);
+        let row = group(&e, "Bottom", "Web");
+        close(row.length_m, 4.0);
+        close3(row.centre, [1.0, 0.0, 0.0]);
+        assert!(!row.concave);
+        close(row.tape_kg, 4.0 * 0.075 * 0.2 * 2.0);
+        close(row.fillet_kg, 4.0 * fillet_area(0.012, PI / 2.0) * 1000.0);
     }
 
     #[test]
@@ -1868,6 +2009,17 @@ mod tests {
         let default = estimate(&s, &Materials::default(), l3());
         let narrow = estimate(&s, &with_stock("2440x200"), l3());
         let short = estimate(&s, &with_stock("1000x1220"), l3());
+        // The same layers in the same order, so the rows below compare like with like, and a
+        // result that lost its rows fails here rather than zipping to nothing.
+        let layers = |e: &Estimate| {
+            e.plywood
+                .iter()
+                .map(|r| r.layer.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(layers(&default), ["Bottom", "Side", "Transom"]);
+        assert_eq!(layers(&narrow), layers(&default));
+        assert_eq!(layers(&short), layers(&default));
         for ((d, n), sh) in default
             .plywood
             .iter()
@@ -1887,6 +2039,63 @@ mod tests {
         assert!(
             sheets(&short) > sheets(&default),
             "shorter sheets, more of them"
+        );
+    }
+
+    #[test]
+    fn two_developable_layers_of_one_name_get_a_row_each() {
+        use crate::examples::{build, Example};
+        use crate::panels::{panel_set, PanelOptions};
+        let (s, _) = build(Example::Skiff4m).unwrap();
+        let transom = panel_set(
+            &s,
+            &PanelOptions {
+                subdivision: l3(),
+                layers: Some(vec!["Transom".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .total_sheets;
+        let mut named = s.clone();
+        let i = named
+            .layers
+            .iter()
+            .position(|l| l.name == "Transom")
+            .unwrap();
+        named.layers[i].name = "Side".into();
+        let e = estimate(&named, &Materials::default(), l3());
+        let got: Vec<(&str, f64)> = e
+            .plywood
+            .iter()
+            .map(|r| (r.layer.as_str(), r.thickness_mm))
+            .collect();
+        assert_eq!(got, vec![("Bottom", 9.0), ("Side", 6.0), ("Side", 12.0)]);
+        assert_eq!(e.plywood[2].sheets, transom, "the 12 mm layer's own panels");
+        let plain = estimate(&s, &Materials::default(), l3());
+        assert_eq!(
+            e.plywood[1].sheets, plain.plywood[1].sheets,
+            "the 6 mm Side alone"
+        );
+    }
+
+    #[test]
+    fn a_developable_layer_with_no_faces_is_a_keyed_warning() {
+        let mut s = half_box();
+        s.layers.push(crate::mesh::Layer {
+            name: "Deck".into(),
+            developable: true,
+            thickness: 0.006,
+            density: 500.0,
+            ..Default::default()
+        });
+        let e = estimate(&s, &Materials::default(), l3());
+        assert!(e.plywood.is_empty());
+        let keys: Vec<_> = e.warnings.iter().filter_map(Msg::key).collect();
+        assert_eq!(keys, vec![Key::MaterialsWarnPlywoodNoFaces]);
+        assert_eq!(
+            e.warnings[0].render(Tr::new(Locale::Tr)),
+            "Deck katmanı açınabilir ama yüzeyi yok, bu yüzden kontrplak gerektirmiyor"
         );
     }
 

@@ -1998,9 +1998,12 @@ real shop tolerances.
 ### Formula
 On the refined half mesh (`subdiv::evaluate`), a layer's area $A$ is the sum of its face areas (`polygon_area3`), each
 counted twice when the layer is symmetric (the mirror lies at $-y$) unless every vertex of the face has $|y| < 10^{-9}$.
-The layer centre is the area centroid of the faces and their mirrors. Shell mass is $m = A\,t\,\rho$; glass is
-$A \sum g_i / 1000$ kg for plies of $g_i$ g/m²; resin is glass mass times `resin_per_glass`. The total centre is the
-mass-weighted mean of the layer centres.
+The layer centre is the area centroid of the faces and their mirrors; a face's centroid weighs each triangle of its fan
+by its area signed along the face normal, so a triangle folded back over a concave face subtracts. Shell mass is
+$m = A\,t\,\rho$ when $t > 0$ and $\rho > 0$, and 0 otherwise, with a `materials.warn.no_plating` warning; glass is
+$A \sum g_i / 1000$ kg for plies of $g_i$ g/m²; resin is glass mass times `resin_per_glass`. The mass-weighted mean of
+the layer centres is the centre of shell and laminate; the total centre also weighs in the seams' tape and fillets at
+their own centres (§52).
 
 ### Tests
 - `crates/seacraft-core/src/materials.rs`, `half_box_*`: a box open on $y = 0$ and $z = 1$, $x \in [0, 2]$, $y, z \in [0, 1]$,
@@ -2016,6 +2019,11 @@ mass-weighted mean of the layer centres.
     on the centreline, so it is not mirrored: $A = 1.0$ m², not 2.0.
   - `zero_plating_warns_and_weighs_nothing`: the box with `Bottom` at density 0 gives `Bottom` a shell of exactly 0 kg
     ($A\,t \cdot 0$) and one `materials.warn.no_plating` warning.
+  - `negative_plating_warns_and_weighs_nothing`: `Bottom` at density $-500$ or thickness $-0.01$ m weighs 0 kg with one
+    `materials.warn.no_plating`; the total is `Side` 12.0 + `End` 24.0 = 36.0 kg at $(1, 0, 0.5)$.
+  - `a_concave_face_is_centred_by_signed_area`: the square $[0, 2]^2$ less the notch $(2,2), (1,0.5), (0,2)$ has
+    area $4 - 1.5 = 2.5$ m² and centroid $y = (4 \cdot 1 - 1.5 \cdot 1.5)/2.5 = 0.7$, $x = 1$; the unit square's
+    centroid is $(0.5, 0.5)$.
   - `a_layer_that_is_not_symmetric_counts_once_off_the_centreline`: the box with `Side` not symmetric has no mirror, so
     $A = 2.0$ m², centre $(1, 1, 0.5)$ (the face itself, not the mean of it and its mirror), shell
     $2 \cdot 0.006 \cdot 500 = 6.0$ kg.
@@ -2041,8 +2049,9 @@ An edge with three or more faces, no length, or a face of no area is not measure
 `materials.warn.seam_degenerate` per layer pair. With unit outward normals $n_1, n_2$, $e$
 along the edge as the first face winds it, and $\varphi = \angle(n_1, n_2)$, the edge is convex when
 $(n_1 \times n_2) \cdot e > 0$, and the inside angle is $\theta = \pi - \varphi$ (convex) or $\pi + \varphi$ (concave).
-$|\theta - \pi| \le 5^\circ$ is flat: no seam. An edge off the centreline between symmetric layers counts twice (port
-and starboard); a centreline edge once.
+$|\theta - \pi| \le 5^\circ$ is flat: no seam. A two-face edge between symmetric layers counts twice (port and
+starboard), even with both ends on $y = 0$: a bottom meeting a web in the centreline plane meets each face of the web,
+two joints. A one-face edge folded against its own mirror is one joint and counts once.
 
 Tape per metre of seam is $w \cdot n \cdot g \cdot s / 10^6$ kg for width $w$ mm, $n$ plies of $g$ g/m², on $s$
 faces (1 or 2); its resin is that times `resin_per_glass`. The fillet, only on a convex edge with $\theta > 5^\circ$, has
@@ -2077,6 +2086,11 @@ fillet figures are the tests' own inputs, not published values.
   on the centreline. Outward normal $(0, 1, -2)/\sqrt{5}$, mirror $(0, -1, -2)/\sqrt{5}$, $\cos\varphi = 3/5$, so
   $\varphi = 2\arctan(0.5)$ and $\theta = \pi - 2\arctan(0.5)$ (each side rises at $\arctan 0.5$). One
   `Bottom / Bottom` group of 2.0 m, counted once, centre $(1, 0, 0)$; fillet $2.0 \cdot A(\theta) \cdot 1000$ at
+  $r = 12$ mm.
+- `a_web_on_the_centreline_has_a_seam_each_side`: a flat bottom in $z = 0$, $y \in [0, 1]$, outward $-z$, meets a web
+  in $y = 0$, $z \in [0, 0.5]$, normal $-y$, along a creased 2 m edge on the centreline. Both layers are symmetric, so
+  the port bottom meets the web's port face: one `Bottom / Web` group of $2 \cdot 2.0 = 4.0$ m at $(1, 0, 0)$, convex at
+  $\theta = \pi/2$, tape $4.0 \cdot 0.075 \cdot 0.2 \cdot 2$ kg and fillet $4.0 \cdot A(\pi/2) \cdot 1000$ at
   $r = 12$ mm.
 - `colour_only_boundary_is_not_a_seam`: a flat, uncreased 2 m × 1 m plate split into two layers at $x = 1$: the
   boundary is flat ($\varphi = 0$), so no seam.

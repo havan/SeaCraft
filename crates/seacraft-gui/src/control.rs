@@ -972,6 +972,11 @@ fn build_materials(
         }
     };
     let given = app.project().materials.clone();
+    if given.is_none() {
+        if let Some(e) = app.project_error() {
+            return Err(err(unread_schedule(e)));
+        }
+    }
     let schedule = given.clone().unwrap_or_default();
     schedule
         .validate()
@@ -1054,6 +1059,15 @@ fn same_schedule(
 /// edit. `revision` and, when given, `schedule` are the ones the item was measured with
 /// (`build.materials` replies with both); a model or schedule changed since is refused, so a
 /// stale estimate never goes in as current.
+/// Why there is no estimate while the project file is unreadable and no schedule has been entered
+/// since: its own schedule is unknown, not empty.
+fn unread_schedule(error: &str) -> String {
+    format!(
+        "the project file could not be read ({error}), so its materials schedule is unknown; \
+         enter one or fix the file first"
+    )
+}
+
 fn put_loading_item(app: &mut App, p: &Value) -> Result<Value, String> {
     let condition = text(p, "condition")?
         .filter(|s| !s.trim().is_empty())
@@ -1096,6 +1110,12 @@ fn put_loading_item(app: &mut App, p: &Value) -> Result<Value, String> {
     if let Some(schedule) = &schedule {
         if !same_schedule(schedule, &app.project().materials) {
             return Err("the materials schedule changed since the estimate".into());
+        }
+        // An estimate with no schedule, while the project's could not be read, left it out.
+        if schedule.is_none() {
+            if let Some(e) = app.project_error() {
+                return Err(unread_schedule(e));
+            }
         }
     }
     let also = if also_replace_defaults {
@@ -3845,6 +3865,49 @@ mod tests {
             r["error"].as_str().unwrap().contains("schedule is invalid"),
             "no resin ratio: {r}"
         );
+    }
+
+    #[test]
+    fn an_unreadable_project_gives_no_estimate_until_a_schedule_is_entered() {
+        let dir =
+            std::env::temp_dir().join(format!("seacraft-control-unread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fef = dir.join("hull.fef");
+        std::fs::copy(
+            format!(
+                "{}/../../examples/demo-hull.fef",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+            &fef,
+        )
+        .unwrap();
+        std::fs::write(dir.join("hull.seacraft.json"), "{\"materials\": {").unwrap();
+        let (mut app, ctx) = demo();
+        app.open_model(&fef).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(app.project_error().is_some());
+        let r = call(&mut app, &ctx, "build.materials", json!({}));
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            r["error"].as_str().unwrap().contains("could not be read"),
+            "{r}"
+        );
+        let req = json!({
+            "condition": "Design",
+            "item": {"name": "Hull", "mass_t": 0.1, "x": 1.0, "y": 0.0, "z": 0.2},
+            "revision": app.revision(),
+            "schedule": null,
+        });
+        let r = call(&mut app, &ctx, "loading.put_item", req);
+        assert!(
+            r["error"].as_str().unwrap().contains("could not be read"),
+            "{r}"
+        );
+        // A schedule entered since is the one the estimate reads.
+        app.apply_materials_schedule(fillet_schedule(10.0));
+        assert!(app.project_error().is_some(), "still not saved over");
+        let r = call(&mut app, &ctx, "build.materials", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
     }
 
     #[test]

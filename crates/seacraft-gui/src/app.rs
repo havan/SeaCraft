@@ -6855,6 +6855,11 @@ impl App {
         &self.project
     }
 
+    /// Why the sidecar beside the model could not be read, while its design data is unknown.
+    pub fn project_error(&self) -> Option<&str> {
+        self.project_error.as_deref()
+    }
+
     /// Replace the design data; the model becomes unsaved.
     pub fn set_project(&mut self, project: Project) {
         self.project_edit_source = None;
@@ -7728,7 +7733,10 @@ impl App {
 
     /// Make `schedule` the project's (an empty one is no schedule); the caller records the undo
     /// step. A schedule that does not validate is refused, so the project file stays loadable.
-    fn apply_materials_schedule(&mut self, schedule: seacraft_core::materials::Materials) {
+    pub(crate) fn apply_materials_schedule(
+        &mut self,
+        schedule: seacraft_core::materials::Materials,
+    ) {
         if let Err(e) = schedule.check() {
             let msg = self.tr().fmt(
                 seacraft_core::i18n::Key::ReportMatScheduleInvalid,
@@ -7741,7 +7749,10 @@ impl App {
             (schedule != seacraft_core::materials::Materials::default()).then_some(schedule);
         if self.project.materials != schedule {
             self.project.materials = schedule;
-            self.project_changed();
+            // Not `project_changed`: no loading, damage or RAO result reads the schedule, and the
+            // estimate keys on it itself (`materials_key`). The estimate still waits for the edits
+            // to pause.
+            self.last_change = Some(std::time::Instant::now());
         }
     }
 
