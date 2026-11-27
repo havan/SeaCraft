@@ -13,6 +13,7 @@ use crate::hydro::{Hull, HydroOptions};
 use crate::i18n::{Key, Locale, Tr};
 use crate::linesplan::{self, LinesplanOptions};
 use crate::loading;
+use crate::materials;
 use crate::mesh::Surface;
 use crate::planing::{self, PlaningPoint};
 use crate::project::Project;
@@ -156,6 +157,9 @@ pub fn report_sections_with_project(opts: &ReportOptions, project: &Project) -> 
     };
     if has_damage {
         sections.push("damage");
+    }
+    if project.materials.is_some() {
+        sections.push("materials");
     }
     if project.report.seakeeping.is_some() {
         sections.push("seakeeping");
@@ -1337,6 +1341,31 @@ pub fn design_report_with_project(
         out.push_str("</section>\n\n");
     }
 
+    // ------------------------------------------------------------- 9b. Materials
+    if let Some(ref schedule) = project.materials {
+        out.push_str("<section id=\"materials\">\n");
+        let _ = writeln!(
+            out,
+            "  <h2>{}</h2>",
+            html_escape(tr.s(Key::ReportSecMaterials))
+        );
+        match schedule.validate() {
+            Err(reason) => {
+                // A bad schedule must not fail the whole report: say why it was not used.
+                let _ = writeln!(
+                    out,
+                    "  <p class=\"warn\">{}</p>",
+                    html_escape(&tr.fmt(Key::ReportMatScheduleInvalid, &[("reason", &reason)]))
+                );
+            }
+            Ok(()) => {
+                let est = materials::estimate(surface, schedule, subdiv);
+                write_materials_tables(&mut out, &est, tr);
+            }
+        }
+        out.push_str("</section>\n\n");
+    }
+
     // ------------------------------------------------------------- 10. Seakeeping
     if let Some(ref sk_conf) = project.report.seakeeping {
         out.push_str("<section id=\"seakeeping\">\n");
@@ -1840,6 +1869,145 @@ fn write_weather_table(out: &mut String, heading_tag: &str, weather_res: &Weathe
     );
     out.push_str("    </tbody>\n");
     out.push_str("  </table>\n");
+}
+
+/// The tables, total, warnings and note of the Materials section.
+fn write_materials_tables(out: &mut String, est: &materials::Estimate, tr: Tr) {
+    let th = |keys: &[Key]| -> String {
+        let mut s = String::from("      <tr>");
+        for (i, k) in keys.iter().enumerate() {
+            let class = if i == 0 { " class=\"text-left\"" } else { "" };
+            let _ = write!(s, "<th{class}>{}</th>", html_escape(tr.s(*k)));
+        }
+        s.push_str("</tr>\n");
+        s
+    };
+    out.push_str("  <table>\n    <thead>\n");
+    out.push_str(&th(&[
+        Key::ReportMatColLayer,
+        Key::ReportMatColArea,
+        Key::ReportMatColShell,
+        Key::ReportMatColGlass,
+        Key::ReportMatColResin,
+        Key::ReportMatColTotal,
+    ]));
+    out.push_str("    </thead>\n    <tbody>\n");
+    for r in &est.layers {
+        let _ = writeln!(
+            out,
+            "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_escape(&r.layer),
+            fmt_num(r.area_m2, 3),
+            fmt_num(r.shell_kg, 2),
+            fmt_num(r.glass_kg, 2),
+            fmt_num(r.resin_kg, 2),
+            fmt_num(r.total_kg, 2)
+        );
+    }
+    out.push_str("    </tbody>\n  </table>\n");
+
+    if !est.seams.is_empty() {
+        let _ = writeln!(
+            out,
+            "  <h4>{}</h4>",
+            html_escape(tr.s(Key::ReportMatSeamsHeading))
+        );
+        out.push_str("  <table>\n    <thead>\n");
+        out.push_str(&th(&[
+            Key::ReportMatColBetween,
+            Key::ReportMatColLength,
+            Key::ReportMatColTape,
+            Key::ReportMatColFillet,
+            Key::ReportMatColTotal,
+        ]));
+        out.push_str("    </thead>\n    <tbody>\n");
+        for r in &est.seams {
+            let _ = writeln!(
+                out,
+                "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&format!("{} / {}", r.between[0], r.between[1])),
+                fmt_num(r.length_m, 2),
+                fmt_num(r.tape_kg + r.tape_resin_kg, 2),
+                fmt_num(r.fillet_kg, 2),
+                fmt_num(r.total_kg, 2)
+            );
+        }
+        out.push_str("    </tbody>\n  </table>\n");
+    }
+
+    if !est.plywood.is_empty() {
+        let _ = writeln!(
+            out,
+            "  <h4>{}</h4>",
+            html_escape(tr.s(Key::ReportMatPlywoodHeading))
+        );
+        out.push_str("  <table>\n    <thead>\n");
+        out.push_str(&th(&[
+            Key::ReportMatColLayer,
+            Key::ReportMatColThickness,
+            Key::ReportMatColSheets,
+            Key::ReportMatColStatus,
+        ]));
+        out.push_str("    </thead>\n    <tbody>\n");
+        for r in &est.plywood {
+            let status = if !r.not_flat.is_empty() {
+                tr.fmt(
+                    Key::ReportMatPlywoodNotFlat,
+                    &[("panels", &r.not_flat.join(", "))],
+                )
+            } else if !r.refused.is_empty() {
+                tr.fmt(
+                    Key::ReportMatPlywoodRefused,
+                    &[("panels", &r.refused.join(", "))],
+                )
+            } else if r.all_lie_flat {
+                tr.s(Key::ReportMatPlywoodFlat).to_owned()
+            } else {
+                String::new()
+            };
+            let _ = writeln!(
+                out,
+                "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&r.layer),
+                fmt_num(r.thickness_mm, 1),
+                r.sheets,
+                html_escape(&status)
+            );
+        }
+        out.push_str("    </tbody>\n  </table>\n");
+    }
+
+    let [x, y, z] = est.total.centre;
+    let _ = writeln!(
+        out,
+        "  <p><strong>{}</strong></p>",
+        html_escape(&tr.fmt(
+            Key::ReportMatTotalLine,
+            &[
+                ("kg", &format!("{:.1}", est.total.mass_kg)),
+                ("t", &format!("{:.3}", est.total.mass_t)),
+                ("x", &format!("{x:.3}")),
+                ("y", &format!("{y:.3}")),
+                ("z", &format!("{z:.3}")),
+            ],
+        ))
+    );
+    if !est.has_glass {
+        let _ = writeln!(out, "  <p>{}</p>", html_escape(tr.s(Key::ReportMatNoGlass)));
+    }
+    for w in &est.warnings {
+        let _ = writeln!(
+            out,
+            "  <p class=\"warn\">{}</p>",
+            html_escape(&w.render(tr))
+        );
+    }
+    let _ = writeln!(out, "  <p>{}</p>", html_escape(tr.s(Key::ReportMatNote)));
+    let _ = writeln!(
+        out,
+        "  <p class=\"not-validated\">{}</p>",
+        html_escape(crate::not_validated_note(tr.locale()))
+    );
 }
 
 /// Escape text safely for embedding in HTML.
@@ -2730,6 +2898,85 @@ mod tests {
             r1, r2,
             "empty project report must be byte-identical to design_report"
         );
+    }
+
+    fn one_ply_schedule() -> crate::materials::Materials {
+        use crate::materials::{Materials, Ply, Side};
+        let mut m = Materials {
+            resin_per_glass: Some(1.0),
+            ..Materials::default()
+        };
+        m.layers.insert(
+            "Bottom".into(),
+            vec![Ply {
+                g_m2: 300.0,
+                side: Side::Outside,
+            }],
+        );
+        m
+    }
+
+    #[test]
+    fn materials_section_only_with_a_schedule() {
+        let surface = demo::demo_hull(true);
+        let opts = ReportOptions::from_surface(&surface);
+        let none = report_sections_with_project(&opts, &Project::default());
+        assert!(!none.contains(&"materials"));
+        let project = Project {
+            materials: Some(crate::materials::Materials::default()),
+            ..Project::default()
+        };
+        let some = report_sections_with_project(&opts, &project);
+        assert!(some.contains(&"materials"));
+    }
+
+    #[test]
+    fn materials_section_renders_totals() {
+        use crate::examples::{build, Example};
+        let (surface, _) = build(Example::Skiff4m).unwrap();
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+        let project = Project {
+            materials: Some(one_ply_schedule()),
+            ..Project::default()
+        };
+        let html = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(html.contains("id=\"materials\""));
+        let est = crate::materials::estimate(
+            &surface,
+            project.materials.as_ref().unwrap(),
+            SubdivisionOptions {
+                level: opts.level,
+                mode: opts.mode,
+            },
+        );
+        assert!(est.total.mass_kg > 0.0);
+        assert!(
+            html.contains(&format!("{:.1}", est.total.mass_kg)),
+            "total kg missing"
+        );
+        assert!(html.contains("if cut from plywood"));
+        assert!(html.contains(crate::not_validated_note(Locale::En)));
+        assert_eq!(
+            html.matches("<section").count(),
+            html.matches("</section>").count()
+        );
+    }
+
+    #[test]
+    fn materials_section_shows_the_refusal_for_a_bad_schedule() {
+        let surface = demo::demo_hull(true);
+        let mut opts = ReportOptions::from_surface(&surface);
+        opts.level = 2;
+        let mut m = one_ply_schedule();
+        m.resin_per_glass = None;
+        let project = Project {
+            materials: Some(m),
+            ..Project::default()
+        };
+        let html = design_report_with_project(&surface, &opts, &project).unwrap();
+        assert!(html.contains("id=\"materials\""));
+        assert!(html.contains("resin_per_glass"));
     }
 
     fn demo_hull_project() -> (Surface, ReportOptions, Project) {

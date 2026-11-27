@@ -737,6 +737,7 @@ seacraft loadcase  hull.fef [case.json|project.json] [--name NAME] [--json]
 seacraft heel      hull.fef (--kg m [--draft T] [--lcg x] | --condition NAME [--case project.json] | --case case.json|project.json)
                             [--weight t@x,y,z]... [--heel deg] [--json]
 seacraft damage    hull.fef [case.json|project.json] [--name NAME] [--json]
+seacraft materials hull.fef [project.json] [--json|--csv] [--level N] [--add-to CONDITION [--item NAME]]
 seacraft seakeeping hull.fef --draft T [--speed KN] [--kg KG] [--kyy KYY] [--stations N]
                             [--lambda-min 0.3] [--lambda-max 3.0] [--points 30] [--csv|--json]
                             [--hs M --tp S [--gamma G] [--point NAME:X]...]
@@ -954,7 +955,7 @@ the hull, where the local disturbance it leaves out matters, and transom sterns 
   `transform_hull`, `hydro_compute`, `hydro_table`, `stability_cross_curves`,
   `bonjean_curves`, `table_of_offsets`, `unfold_plate`, `resistance_curve`,
   `planing_curve`, `wave_pattern`, `trim_scan`, `heel_equilibrium`, `optimize_hull`, `export_linesplan`, `export_templates`,
-  `export_panels`, `export_offsets_pdf` and `render_png`.
+  `export_panels`, `materials_estimate`, `export_offsets_pdf` and `render_png`.
   Agent skills that teach an AI agent to use these tools well (hull design,
   fairing, stability checks) are in [`skills/`](skills/README.md), with install
   steps and the CI test that keeps them in step with the tools.

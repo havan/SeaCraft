@@ -36,6 +36,17 @@ For a hard-chine hull built stitch-and-glue, each panel is laid flat and measure
 4. Then write: `export_panels {"path": "/tmp/panels.pdf"}` (or `.svg` / `.dxf`; e.g. `export_panels {"path": "/tmp/panels.svg", "nest": "split", "gap_mm": 10}`). With nesting on, SVG and DXF also write one full-size per-sheet cutting file listed in `sheet_files` (relay every written path; `stale_sheet_files` names older ones from a larger earlier layout, left in place, so tell the builder to set them aside), and a PDF puts scaled layout overview pages at the front before the full-size patterns and offsets tables (`"offsets_pages": false` leaves the tables out). When a panel does not lie flat, nothing is written: the reply has `"written": false` and the `reason`. Write anyway only when the builder asks, with `"allow_undevelopable": true`, and say which panels fail and by how much; those patterns are headed "Does not lie flat".
 5. The measures are against the modelled surface, with no plywood thickness: not a bending test of real plywood. Every pattern carries its overall size, baseline offsets and seam lengths as reference lines and text, never cut lines.
 
+## Materials
+
+To estimate what the hull weighs and what to buy, ask the builder for every glass and resin figure: grams per square metre of each ply and which layer and side it goes on, the resin mass per unit of glass, and the tape width, plies and sides and the fillet radius and mix density if there are seams to tape. Never invent, assume or "typically use" one: the program has no defaults for them.
+
+1. Put the figures in the project with `project_set` (the `materials` key: `resin_per_glass`, `layers` keyed by layer name, optional `seams` and `plywood`). A layer's density and thickness are the hull's own; ask if a layer has none.
+2. `materials_estimate {}` (optionally `level` and `mode`) returns a row for each layer (area, shell, glass, resin, total, centre), each seam group, and each developable layer's plywood, then the total and its centre. With no schedule it reports shell weights and says no glass or resin was entered.
+3. Relay every entry of `warnings`, every name in `unmatched_layers` (a schedule key that matches no layer, often after a rename) and the note, word for word.
+4. Plywood sheet counts are "if cut from plywood": a developable layer need not be plywood. They are end to end with no nesting, an upper bound; give `export_panels` with `nest` for a layout.
+5. To put the total in a loading condition, call it with `add_to_condition` (and `item_name`). That changes the session project; `save_hull` writes it later, so say so.
+6. The figures are the builder's numbers applied to the modelled surface, with no laminate thickness offset. Say they are not validated (see `DISCLAIMER.md`).
+
 ## Read the reply
 
 - `sheets` has a row a pattern: `x`, `half_breadth_m`, `face` and `max_bevel_deg`. `face` says which side of the mould goes on its station line so the mould needs no bevel to clear the skin: `forward` means the hull narrows going forward and the mould stands aft of its line; `aft` the other way; `either` where the hull is parallel. Where parts of a section narrow opposite ways, `face` follows the greater length and the sheet's notes say which face to bevel, and by up to how much, where the rest stands proud; relay that note.
@@ -52,6 +63,7 @@ For a hard-chine hull built stitch-and-glue, each panel is laid flat and measure
 
 ## Red flags
 
+- Inventing a glass or resin figure (weight per area, resin ratio, tape or fillet size) the builder did not give.
 - Writing a pattern with `skin_mm` you did not get from the builder.
 - Calling a pattern or nested layout accurate, checked, optimal, verified, validated or ready to cut. Say what it was computed from and what the builder must measure against the full-size patterns.
 - Dropping or summarising away a warning or an entry in `layout.not_placed`.
