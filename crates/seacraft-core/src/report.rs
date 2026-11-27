@@ -1952,21 +1952,7 @@ fn write_materials_tables(out: &mut String, est: &materials::Estimate, tr: Tr) {
         ]));
         out.push_str("    </thead>\n    <tbody>\n");
         for r in &est.plywood {
-            let status = if !r.not_flat.is_empty() {
-                tr.fmt(
-                    Key::ReportMatPlywoodNotFlat,
-                    &[("panels", &r.not_flat.join(", "))],
-                )
-            } else if !r.refused.is_empty() {
-                tr.fmt(
-                    Key::ReportMatPlywoodRefused,
-                    &[("panels", &r.refused.join(", "))],
-                )
-            } else if r.all_lie_flat {
-                tr.s(Key::ReportMatPlywoodFlat).to_owned()
-            } else {
-                String::new()
-            };
+            let status = r.status_tr(tr);
             let _ = writeln!(
                 out,
                 "      <tr><td class=\"text-left\">{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -1986,11 +1972,11 @@ fn write_materials_tables(out: &mut String, est: &materials::Estimate, tr: Tr) {
         html_escape(&tr.fmt(
             Key::ReportMatTotalLine,
             &[
-                ("kg", &format!("{:.1}", est.total.mass_kg)),
-                ("t", &format!("{:.3}", est.total.mass_t)),
-                ("x", &format!("{x:.3}")),
-                ("y", &format!("{y:.3}")),
-                ("z", &format!("{z:.3}")),
+                ("kg", &fmt_num(est.total.mass_kg, 1)),
+                ("t", &fmt_num(est.total.mass_t, 3)),
+                ("x", &fmt_num(x, 3)),
+                ("y", &fmt_num(y, 3)),
+                ("z", &fmt_num(z, 3)),
             ],
         ))
     );
@@ -2972,6 +2958,36 @@ mod tests {
         assert_eq!(
             html.matches("<section").count(),
             html.matches("</section>").count()
+        );
+    }
+
+    #[test]
+    fn materials_tables_name_uncounted_panels_and_print_no_negative_zero() {
+        use crate::examples::{build, Example};
+        let (surface, _) = build(Example::Runabout6m).unwrap();
+        let mut est = crate::materials::estimate(
+            &surface,
+            &crate::materials::Materials::default(),
+            SubdivisionOptions {
+                level: 2,
+                mode: crate::subdiv::SubdivisionMode::Loop,
+            },
+        );
+        // A centre a rounding step to port of the centreline.
+        est.total.centre[1] = -1e-9;
+        let mut html = String::new();
+        write_materials_tables(&mut html, &est, Tr::new(Locale::En));
+        assert!(
+            html.contains("not counted: Bottom (wider than the stock)"),
+            "{html}"
+        );
+        assert!(html.contains(" y 0.000 z "), "{html}");
+        assert!(!html.contains("-0.000"), "{html}");
+        let mut html = String::new();
+        write_materials_tables(&mut html, &est, Tr::new(Locale::Tr));
+        assert!(
+            html.contains("sayıma dahil edilmedi: Bottom (plakadan geniş)"),
+            "{html}"
         );
     }
 

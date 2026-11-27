@@ -279,6 +279,56 @@ pub struct PlywoodRow {
     pub not_flat: Vec<String>,
     /// Panels the layout refused.
     pub refused: Vec<String>,
+    /// Panels flattened but not laid out on the stock, so `sheets` leaves them out.
+    pub not_counted: Vec<NotCounted>,
+}
+
+/// A panel a plywood count leaves out, and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NotCounted {
+    pub panel: String,
+    /// Serialized in English, rendered in the reader's language.
+    pub reason: Msg,
+}
+
+impl PlywoodRow {
+    /// The panels `sheets` leaves out, each with why in a few words, as `seacraft panels` names
+    /// them: `Bottom (wider than the stock)`. `None` when every panel laid out is counted.
+    pub fn not_counted_tr(&self, tr: Tr) -> Option<String> {
+        if self.not_counted.is_empty() {
+            return None;
+        }
+        let parts: Vec<String> = self
+            .not_counted
+            .iter()
+            .map(|n| {
+                let why = panels::not_laid_out_why_tr(Some(&n.reason), tr);
+                format!("{} ({why})", n.panel)
+            })
+            .collect();
+        Some(parts.join(", "))
+    }
+
+    /// The row's status as every front end shows it: whether its panels lie flat (or which do
+    /// not, or were refused), then which panels `sheets` leaves out, joined by "; ".
+    pub fn status_tr(&self, tr: Tr) -> String {
+        let mut parts = Vec::new();
+        if !self.not_flat.is_empty() {
+            let panels = self.not_flat.join(", ");
+            parts.push(tr.fmt(Key::MaterialsPlywoodNotFlat, &[("panels", &panels)]));
+        }
+        if !self.refused.is_empty() {
+            let panels = self.refused.join(", ");
+            parts.push(tr.fmt(Key::MaterialsPlywoodRefused, &[("panels", &panels)]));
+        }
+        if parts.is_empty() && self.all_lie_flat {
+            parts.push(tr.s(Key::MaterialsPlywoodFlat).to_owned());
+        }
+        if let Some(panels) = self.not_counted_tr(tr) {
+            parts.push(tr.fmt(Key::MaterialsPlywoodNotCounted, &[("panels", &panels)]));
+        }
+        parts.join("; ")
+    }
 }
 
 /// What the schedule adds up to on a surface.
@@ -567,6 +617,18 @@ fn plywood_rows(
                     all_lie_flat: not_flat.is_empty(),
                     not_flat,
                     refused: set.refused.iter().map(|r| r.panel.clone()).collect(),
+                    not_counted: set
+                        .stock
+                        .iter()
+                        .filter(|r| r.sheets_each.is_none())
+                        .map(|r| NotCounted {
+                            panel: r.panel.clone(),
+                            reason: r
+                                .note
+                                .clone()
+                                .unwrap_or_else(|| Msg::new(Key::PanelsCountNotLaidOut)),
+                        })
+                        .collect(),
                 });
             }
             Err(e) => warnings.push(failed(&l.name, e)),
@@ -1641,6 +1703,125 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.key() == Some(Key::MaterialsWarnPlywoodFailed)));
+    }
+
+    #[test]
+    fn a_plywood_row_names_the_panels_it_does_not_count() {
+        use crate::examples::{build, Example};
+        // The runabout's bottom is wider than the default 1220 mm stock: `seacraft panels`
+        // counts it out ("not counted: Bottom (wider than the stock)"), and so does the row.
+        let (s, _) = build(Example::Runabout6m).unwrap();
+        let e = estimate(&s, &Materials::default(), l3());
+        let bottom = e.plywood.iter().find(|r| r.layer == "Bottom").unwrap();
+        assert_eq!(bottom.sheets, 0);
+        let names: Vec<&str> = bottom
+            .not_counted
+            .iter()
+            .map(|n| n.panel.as_str())
+            .collect();
+        assert_eq!(names, vec!["Bottom"]);
+        assert_eq!(
+            bottom.not_counted[0].reason.key(),
+            Some(Key::PanelsStockWider)
+        );
+        assert_eq!(
+            bottom.not_counted_tr(Tr::new(Locale::En)).as_deref(),
+            Some("Bottom (wider than the stock)")
+        );
+        assert_eq!(
+            bottom.not_counted_tr(Tr::new(Locale::Tr)).as_deref(),
+            Some("Bottom (plakadan geniş)")
+        );
+        let v = serde_json::to_value(bottom).unwrap();
+        assert_eq!(v["not_counted"][0]["panel"], "Bottom", "{v}");
+        assert!(
+            v["not_counted"][0]["reason"]
+                .as_str()
+                .is_some_and(|r| r.starts_with("wider than the stock")),
+            "{v}"
+        );
+        let topsides = e.plywood.iter().find(|r| r.layer == "Topsides").unwrap();
+        assert!(topsides.not_counted.is_empty());
+        assert_eq!(topsides.not_counted_tr(Tr::new(Locale::En)), None);
+        // The status every front end shows says both: flatness, then what the count leaves out.
+        assert_eq!(
+            bottom.status_tr(Tr::new(Locale::En)),
+            "not flat: Bottom; not counted: Bottom (wider than the stock)"
+        );
+        assert_eq!(
+            bottom.status_tr(Tr::new(Locale::Tr)),
+            "düz değil: Bottom; sayıma dahil edilmedi: Bottom (plakadan geniş)"
+        );
+        assert_eq!(
+            topsides.status_tr(Tr::new(Locale::En)),
+            "not flat: Topsides"
+        );
+    }
+
+    #[test]
+    fn a_plywood_status_names_every_reason() {
+        let mut row = PlywoodRow {
+            layer: "Side".into(),
+            thickness_mm: 6.0,
+            sheets: 2,
+            all_lie_flat: true,
+            not_flat: Vec::new(),
+            refused: Vec::new(),
+            not_counted: Vec::new(),
+        };
+        let en = Tr::new(Locale::En);
+        assert_eq!(row.status_tr(en), "flat");
+        row.not_counted.push(NotCounted {
+            panel: "Side".into(),
+            reason: Msg::new(Key::PanelsStockScarfTooLong),
+        });
+        assert_eq!(
+            row.status_tr(en),
+            "flat; not counted: Side (the scarf is as long as the sheet)"
+        );
+        row.all_lie_flat = false;
+        row.not_flat.push("Side".into());
+        row.refused.push("Bow".into());
+        assert_eq!(
+            row.status_tr(en),
+            "not flat: Side; refused: Bow; not counted: Side (the scarf is as long as the sheet)"
+        );
+    }
+
+    #[test]
+    fn the_schedules_stock_reaches_the_panel_layout() {
+        use crate::examples::{build, Example};
+        let (s, _) = build(Example::Skiff4m).unwrap();
+        let with_stock = |stock_mm: &str| Materials {
+            plywood: Some(PlywoodStock {
+                stock_mm: stock_mm.into(),
+                scarf_mm: 0.0,
+            }),
+            ..Default::default()
+        };
+        let default = estimate(&s, &Materials::default(), l3());
+        let narrow = estimate(&s, &with_stock("2440x200"), l3());
+        let short = estimate(&s, &with_stock("1000x1220"), l3());
+        for ((d, n), sh) in default
+            .plywood
+            .iter()
+            .zip(&narrow.plywood)
+            .zip(&short.plywood)
+        {
+            assert!(d.not_counted.is_empty(), "{}", d.layer);
+            assert!(
+                !n.not_counted.is_empty(),
+                "{}: narrower than every panel",
+                n.layer
+            );
+            assert_eq!(n.sheets, 0, "{}", n.layer);
+            assert!(sh.sheets >= d.sheets, "{}", sh.layer);
+        }
+        let sheets = |e: &Estimate| e.plywood.iter().map(|r| r.sheets).sum::<usize>();
+        assert!(
+            sheets(&short) > sheets(&default),
+            "shorter sheets, more of them"
+        );
     }
 
     #[test]

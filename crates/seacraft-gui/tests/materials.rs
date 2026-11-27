@@ -476,3 +476,39 @@ fn an_unfinished_draft_does_not_follow_another_model() {
     assert!(w.buttons("Remove ply").is_empty(), "{:?}", w.widgets);
     assert!(!w.shows("Not applied yet"));
 }
+
+#[test]
+fn the_results_name_uncounted_panels_and_print_no_negative_zero() {
+    // The runabout's bottom is wider than the default stock, so its row counts no sheets and
+    // says why; the total's centre lies a rounding step to port of the centreline.
+    let (surface, _) = seacraft_core::examples::build(seacraft_core::examples::Example::Runabout6m)
+        .expect("runabout");
+    let mut est = seacraft_core::materials::estimate(
+        &surface,
+        &Materials::default(),
+        seacraft_core::subdiv::SubdivisionOptions {
+            level: 2,
+            mode: seacraft_core::subdiv::SubdivisionMode::Loop,
+        },
+    );
+    est.total.centre[1] = -1e-9;
+    let ctx = egui::Context::default();
+    let tr = seacraft_core::i18n::Tr::new(seacraft_core::i18n::Locale::En);
+    let mut state = MaterialsDialogState::default();
+    state.sync(None, &["Bottom".to_owned(), "Topsides".to_owned()]);
+    let mut texts = Vec::new();
+    for _ in 0..2 {
+        let mut out = ctx.run_ui(input(vec![]), |ui| {
+            builder_materials::show(ui, &mut state, MaterialsStatus::Ready(&est), &[], tr);
+        });
+        out.textures_delta.clear();
+        texts = painted(&out);
+    }
+    let shows = |s: &str| texts.iter().any(|(t, _)| t.contains(s));
+    assert!(
+        shows("not flat: Bottom; not counted: Bottom (wider than the stock)"),
+        "{texts:?}"
+    );
+    assert!(shows(" y 0.000 z "), "{texts:?}");
+    assert!(!shows("-0.000"), "{texts:?}");
+}

@@ -10,6 +10,7 @@ use seacraft_core::i18n::{Key, Tr};
 use seacraft_core::materials::{
     Estimate, Fillet, Materials, Ply, PlywoodStock, Side, Tape, TapeSides,
 };
+use seacraft_core::units::fixed;
 
 use crate::theme;
 
@@ -500,25 +501,10 @@ fn results(ui: &mut egui::Ui, status: &MaterialsStatus<'_>, tr: Tr) {
                     ],
                 );
                 for r in &est.plywood {
-                    let status = if !r.not_flat.is_empty() {
-                        tr.fmt(
-                            Key::ReportMatPlywoodNotFlat,
-                            &[("panels", &r.not_flat.join(", "))],
-                        )
-                    } else if !r.refused.is_empty() {
-                        tr.fmt(
-                            Key::ReportMatPlywoodRefused,
-                            &[("panels", &r.refused.join(", "))],
-                        )
-                    } else if r.all_lie_flat {
-                        tr.s(Key::ReportMatPlywoodFlat).to_owned()
-                    } else {
-                        String::new()
-                    };
                     ui.label(text(r.layer.clone()));
-                    ui.label(text(format!("{:.1}", r.thickness_mm)));
+                    ui.label(text(fixed(r.thickness_mm, 1)));
                     ui.label(text(r.sheets.to_string()));
-                    ui.label(text(status));
+                    ui.label(text(r.status_tr(tr)));
                     ui.end_row();
                 }
             });
@@ -529,11 +515,11 @@ fn results(ui: &mut egui::Ui, status: &MaterialsStatus<'_>, tr: Tr) {
     let total = tr.fmt(
         Key::ReportMatTotalLine,
         &[
-            ("kg", &format!("{:.1}", est.total.mass_kg)),
-            ("t", &format!("{:.3}", est.total.mass_t)),
-            ("x", &format!("{x:.3}")),
-            ("y", &format!("{y:.3}")),
-            ("z", &format!("{z:.3}")),
+            ("kg", &fixed(est.total.mass_kg, 1)),
+            ("t", &fixed(est.total.mass_t, 3)),
+            ("x", &fixed(x, 3)),
+            ("y", &fixed(y, 3)),
+            ("z", &fixed(z, 3)),
         ],
     );
     ui.label(if stale {

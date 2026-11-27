@@ -5282,14 +5282,15 @@ fn csv_field(s: &str) -> String {
     }
 }
 
-/// One CSV row per layer, seam and plywood line. Tape resin rides with the tape column.
+/// One CSV row per layer, seam and plywood line. Tape resin rides with the tape column; a
+/// plywood row's `not_counted` names, in English, the panels its `sheets` leaves out and why.
 fn materials_csv(est: &seacraft_core::materials::Estimate) -> String {
     let mut out = String::from(
-        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x_m,y_m,z_m,sheets\n",
+        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x_m,y_m,z_m,sheets,thickness_mm,not_counted\n",
     );
     for r in &est.layers {
         out.push_str(&format!(
-            "layer,{},,{},{},{},{},,,{},{},{},{},\n",
+            "layer,{},,{},{},{},{},,,{},{},{},{},,,\n",
             csv_field(&r.layer),
             r.area_m2,
             r.shell_kg,
@@ -5303,7 +5304,7 @@ fn materials_csv(est: &seacraft_core::materials::Estimate) -> String {
     }
     for r in &est.seams {
         out.push_str(&format!(
-            "seam,{},{},,,,,{},{},{},{},{},{},\n",
+            "seam,{},{},,,,,{},{},{},{},{},{},,,\n",
             csv_field(&format!("{} / {}", r.between[0], r.between[1])),
             r.length_m,
             r.tape_kg + r.tape_resin_kg,
@@ -5315,10 +5316,13 @@ fn materials_csv(est: &seacraft_core::materials::Estimate) -> String {
         ));
     }
     for r in &est.plywood {
+        let not_counted = r.not_counted_tr(Tr::new(Locale::En)).unwrap_or_default();
         out.push_str(&format!(
-            "plywood,{},,,,,,,,,,,,{}\n",
+            "plywood,{},,,,,,,,,,,,{},{},{}\n",
             csv_field(&r.layer),
-            r.sheets
+            r.sheets,
+            r.thickness_mm,
+            csv_field(&not_counted)
         ));
     }
     out
@@ -5368,29 +5372,18 @@ fn print_materials_table(name: &str, est: &seacraft_core::materials::Estimate, t
         println!();
         println!("{}", tr.s(Key::CliMaterialsPlywoodHeading));
         for r in &est.plywood {
+            let key = match tr.locale().plural_category(r.sheets) {
+                seacraft_core::i18n::PluralCategory::One => Key::CliMaterialsPlywoodSheetsOne,
+                seacraft_core::i18n::PluralCategory::Other => Key::CliMaterialsPlywoodSheetsOther,
+            };
             let sheets = tr.fmt(
-                Key::CliMaterialsPlywoodSheets,
+                key,
                 &[
-                    ("sheets", &r.sheets.to_string()),
-                    ("thickness", &format!("{:.1}", r.thickness_mm)),
+                    ("count", &r.sheets.to_string()),
+                    ("thickness", &seacraft_core::units::fixed(r.thickness_mm, 1)),
                 ],
             );
-            let note = if !r.not_flat.is_empty() {
-                tr.fmt(
-                    Key::CliMaterialsPlywoodNotFlat,
-                    &[("panels", &r.not_flat.join(", "))],
-                )
-            } else if !r.refused.is_empty() {
-                tr.fmt(
-                    Key::CliMaterialsPlywoodRefused,
-                    &[("panels", &r.refused.join(", "))],
-                )
-            } else if r.all_lie_flat {
-                tr.s(Key::CliMaterialsPlywoodFlat).to_owned()
-            } else {
-                String::new()
-            };
-            println!("  {:<18} {}  {}", r.layer, sheets, note);
+            println!("  {:<18} {}  {}", r.layer, sheets, r.status_tr(tr));
         }
     }
     println!();
@@ -5401,11 +5394,11 @@ fn print_materials_table(name: &str, est: &seacraft_core::materials::Estimate, t
         tr.fmt(
             Key::CliMaterialsTotalLine,
             &[
-                ("kg", &format!("{:.1}", est.total.mass_kg)),
-                ("t", &format!("{:.3}", est.total.mass_t)),
-                ("x", &format!("{x:.3}")),
-                ("y", &format!("{y:.3}")),
-                ("z", &format!("{z:.3}")),
+                ("kg", &seacraft_core::units::fixed(est.total.mass_kg, 1)),
+                ("t", &seacraft_core::units::fixed(est.total.mass_t, 3)),
+                ("x", &seacraft_core::units::fixed(x, 3)),
+                ("y", &seacraft_core::units::fixed(y, 3)),
+                ("z", &seacraft_core::units::fixed(z, 3)),
             ]
         )
     );

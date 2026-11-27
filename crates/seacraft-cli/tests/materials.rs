@@ -146,10 +146,56 @@ fn csv_has_kind_column() {
     let out = text(&ok(&dir, &["materials", "hull.fef", "--csv"]).stdout);
     assert_eq!(
         out.lines().next().unwrap(),
-        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x_m,y_m,z_m,sheets"
+        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x_m,y_m,z_m,sheets,thickness_mm,not_counted"
     );
     assert!(out.lines().any(|l| l.starts_with("layer,")));
-    assert!(out.lines().any(|l| l.starts_with("plywood,")));
+    assert!(
+        out.lines().any(|l| l == "plywood,Transom,,,,,,,,,,,,1,12,"),
+        "{out}"
+    );
+}
+
+#[test]
+fn plywood_rows_name_the_panels_they_do_not_count() {
+    // The runabout's bottom is wider than the default stock: 0 sheets, and the row says why.
+    let dir = workdir("notcounted", "runabout-6m", true);
+    let out = text(&ok(&dir, &["materials", "hull.fef"]).stdout);
+    let bottom = out
+        .lines()
+        .find(|l| l.trim_start().starts_with("Bottom ") && l.contains("mm)"))
+        .unwrap_or_else(|| panic!("no plywood Bottom row: {out}"));
+    assert!(
+        bottom.contains("not counted: Bottom (wider than the stock)"),
+        "{bottom}"
+    );
+    let csv = text(&ok(&dir, &["materials", "hull.fef", "--csv"]).stdout);
+    assert!(
+        csv.lines()
+            .any(|l| l == "plywood,Bottom,,,,,,,,,,,,0,10,Bottom (wider than the stock)"),
+        "{csv}"
+    );
+    let width = csv_columns(csv.lines().next().unwrap());
+    for l in csv.lines() {
+        assert_eq!(csv_columns(l), width, "{l}");
+    }
+}
+
+#[test]
+fn one_sheet_is_one_sheet() {
+    let dir = workdir("onesheet", "skiff-4m", true);
+    let out = text(&ok(&dir, &["materials", "hull.fef"]).stdout);
+    assert!(out.contains("1 sheet (12.0 mm)"), "{out}");
+    assert!(out.contains("2 sheets (9.0 mm)"), "{out}");
+    assert!(!out.contains("1 sheets"), "{out}");
+}
+
+#[test]
+fn the_total_centre_prints_no_negative_zero() {
+    // The demo hull's centre lies a rounding step to port of the centreline.
+    let dir = workdir("negzero", "demo-hull", false);
+    let out = text(&ok(&dir, &["materials", "hull.fef"]).stdout);
+    assert!(out.contains(" y 0.000 z "), "{out}");
+    assert!(!out.contains("-0.000"), "{out}");
 }
 
 fn read(dir: &Path, name: &str) -> Vec<u8> {
