@@ -2144,22 +2144,27 @@ is evaluated with exact piecewise integrals.
 `crates/seacraft-core/src/floodable.rs`:
 - `box_barge_even_keel_point_matches_closed_form`: $L = 10$, $B = 4$, $D = 2$ m, $T = 0.80$ m, $\rho = 1$ t/m³,
   $m = 0.076$ m ($z_m = 1.924$ m), $\mu \in \{0.60, 0.85, 0.95\}$: $x_{mid} = 5.0$ m within $10^{-3}$ m and
-  $l = 5.842 / \mu$ m within $10^{-3}$ relative (9.737, 6.873, 6.150 m).
+  $l = 5.842 / \mu$ m within $10^{-3}$ relative (9.737, 6.873, 6.149 m).
 - `box_barge_trimmed_points_satisfy_the_analytic_balance`: every point of the three curves satisfies both balance
   equations within $2 \times 10^{-3}$ relative.
 - `a_dried_end_keeps_the_solve_finite`: the same at $T = 0.20$ m, where some trial waterlines lift one end of the
   bottom out of the water.
 - `tangent_waterline_touches_the_margin_line_and_stays_below_it`, `curve_covers_the_hull_and_stops_inside_its_ends`,
   `bulkheads_split_the_hull_and_are_judged_at_their_midpoints` (factor 0.5: amidships 6.87 m floodable, 3.44 m
-  permissible, a 2 m compartment passes), `a_compartment_outside_the_curve_is_not_judged`, and the error tests.
+  permissible, a 2 m compartment passes), `a_compartment_outside_the_curve_is_not_judged`,
+  `hull_ends_ignore_vertices_outside_the_panels`, and the error tests (`unphysical_particulars_are_errors` among them).
+- `a_curve_does_not_depend_on_the_other_permeabilities` (demo hull, level 2, 8 t): the $\mu = 0.60$ curve asked
+  alone agrees with the same curve asked with 0.85 and 0.95 within 1 % at mid-range. SeaCraft against itself, not a
+  source.
 
 ### Provenance
-The definitions (margin line 76 mm or 3 in below the bulkhead deck at side, floodable length centred at the point,
-permissible length = floodable length × factor of subdivision, the triangle check of base angle $\tan^{-1} 2$ and
-the terminals at the ends) are from Rawson & Tupper, *Basic Ship Theory*, Vol. 1, 5th ed., ch. 5, pp. 155-156, and
-Gillmer & Johnson, *Introduction to Naval Architecture* (1982), §10-1, pp. 180-182, which also give the method
-(trial waterlines tangent to the margin line, sectional areas to each waterline, Eq. 10-1 and 10-2). Neither book
-prints worked numbers. The box barge values are derived here from the lost-buoyancy balance, not published.
+Both books give the definitions: the margin line 76 mm (3 in) below the bulkhead deck at side, the floodable length
+centred at the point, and permissible length = floodable length × factor of subdivision (Rawson & Tupper, *Basic
+Ship Theory*, Vol. 1, 5th ed., ch. 5, pp. 155-156; Gillmer & Johnson, *Introduction to Naval Architecture* (1982),
+§10-1, pp. 180-182). Rawson & Tupper alone give the triangle check of base angle $\tan^{-1} 2$ and the forward and
+after terminals at the ends. Gillmer & Johnson alone give the method: trial waterlines tangent to the margin line,
+sectional areas to each waterline from Bonjean curves, the flooding water's position from a moment balance and the
+compartment volume from it (Eq. 10-1 and 10-2). Neither book prints worked numbers. The box barge values are derived here from the lost-buoyancy balance, not published.
 SeaCraft measures the margin line from the moulded deck edge (no deck thickness).
 
 ---
