@@ -571,6 +571,7 @@ struct ModelState {
     /// The dock KG and whether it is an estimate.
     kg: (Option<f64>, bool),
     project_error: Option<String>,
+    materials_entered: bool,
     path: Option<PathBuf>,
     saved_state: Option<(String, Project)>,
 }
@@ -1082,6 +1083,9 @@ pub struct App {
     project: Project,
     /// Why the sidecar could not be read; while set, saving leaves it alone.
     project_error: Option<String>,
+    /// A materials schedule was entered since the sidecar was read, even one cleared again, so
+    /// an empty schedule is the user's, not the unread file's.
+    materials_entered: bool,
     status: String,
     /// How serious the status line is: a logged warning or error keeps its
     /// colour until the next status replaces it.
@@ -1520,6 +1524,7 @@ impl App {
             path: None,
             project: Project::default(),
             project_error: None,
+            materials_entered: false,
             status: String::new(),
             status_level: Level::Info,
             messages: MessageLog::default(),
@@ -1754,6 +1759,7 @@ impl App {
         self.path = Some(path.to_path_buf());
         self.project = project;
         self.project_error = project_error;
+        self.materials_entered = false;
         self.dirty = false;
         self.autosave.note_model_replaced(false);
         self.adopt_project_kg();
@@ -4147,6 +4153,7 @@ impl App {
                     project: self.project.clone(),
                     kg: (self.hydro.kg, self.hydro.kg_estimate),
                     project_error: self.project_error.clone(),
+                    materials_entered: self.materials_entered,
                     path: self.path.clone(),
                     saved_state: self.saved_state.clone(),
                 })
@@ -4305,6 +4312,7 @@ impl App {
         if let Some(m) = snap.model {
             self.project = m.project;
             self.project_error = m.project_error;
+            self.materials_entered = m.materials_entered;
             self.path = m.path;
             self.saved_state = m.saved_state;
             (self.hydro.kg, self.hydro.kg_estimate) = m.kg;
@@ -6860,6 +6868,16 @@ impl App {
         self.project_error.as_deref()
     }
 
+    /// Why the project has no materials schedule of its own: the sidecar could not be read and
+    /// none has been entered since. A schedule entered and then cleared is the user's empty one.
+    pub fn materials_unknown(&self) -> Option<&str> {
+        if self.project.materials.is_some() || self.materials_entered {
+            None
+        } else {
+            self.project_error()
+        }
+    }
+
     /// Replace the design data; the model becomes unsaved.
     pub fn set_project(&mut self, project: Project) {
         self.project_edit_source = None;
@@ -7745,6 +7763,7 @@ impl App {
             self.log(Level::Error, msg);
             return;
         }
+        self.materials_entered = true;
         let schedule =
             (schedule != seacraft_core::materials::Materials::default()).then_some(schedule);
         if self.project.materials != schedule {
@@ -10820,6 +10839,7 @@ impl App {
             .original_path
             .as_deref()
             .and_then(|orig| Project::load_for_model(orig).err());
+        self.materials_entered = false;
         self.saved_state = saved_state;
         self.dirty = true;
         self.autosave.note_model_replaced(true);

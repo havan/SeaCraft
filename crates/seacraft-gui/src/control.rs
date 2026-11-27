@@ -972,10 +972,8 @@ fn build_materials(
         }
     };
     let given = app.project().materials.clone();
-    if given.is_none() {
-        if let Some(e) = app.project_error() {
-            return Err(err(unread_schedule(e)));
-        }
+    if let Some(e) = app.materials_unknown() {
+        return Err(err(unread_schedule(e)));
     }
     let schedule = given.clone().unwrap_or_default();
     schedule
@@ -1113,7 +1111,7 @@ fn put_loading_item(app: &mut App, p: &Value) -> Result<Value, String> {
         }
         // An estimate with no schedule, while the project's could not be read, left it out.
         if schedule.is_none() {
-            if let Some(e) = app.project_error() {
+            if let Some(e) = app.materials_unknown() {
                 return Err(unread_schedule(e));
             }
         }
@@ -3898,7 +3896,7 @@ mod tests {
             "revision": app.revision(),
             "schedule": null,
         });
-        let r = call(&mut app, &ctx, "loading.put_item", req);
+        let r = call(&mut app, &ctx, "loading.put_item", req.clone());
         assert!(
             r["error"].as_str().unwrap().contains("could not be read"),
             "{r}"
@@ -3908,6 +3906,22 @@ mod tests {
         assert!(app.project_error().is_some(), "still not saved over");
         let r = call(&mut app, &ctx, "build.materials", json!({}));
         assert_eq!(r["ok"], true, "{r}");
+        // Cleared again, it is the user's empty schedule, not the unread file's.
+        app.apply_materials_schedule(seacraft_core::materials::Materials::default());
+        assert_eq!(app.project().materials, None);
+        assert!(app.project_error().is_some(), "still not saved over");
+        let r = call(&mut app, &ctx, "build.materials", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        let mut req = req;
+        req["revision"] = json!(app.revision());
+        let r = call(&mut app, &ctx, "loading.put_item", req);
+        assert!(
+            !r["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("could not be read"),
+            "{r}"
+        );
     }
 
     #[test]
