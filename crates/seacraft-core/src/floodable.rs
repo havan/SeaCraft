@@ -31,6 +31,8 @@ pub const DEFAULT_PERMEABILITIES: [f64; 3] = [0.60, 0.85, 0.95];
 pub const DEFAULT_STATIONS: usize = 201;
 /// Most trial waterlines one computation runs.
 const MAX_WATERLINES: usize = 400;
+/// Most sectional-area stations per trial waterline: fifty times the default, far finer than the panels.
+pub const MAX_STATIONS: usize = 10_001;
 
 /// What to compute: permeabilities, margin line, and the optional bulkhead check.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -44,7 +46,7 @@ pub struct FloodableOptions {
     pub factor: Option<f64>,
     /// Watertight bulkhead positions (model x, m), strictly increasing, inside the hull.
     pub bulkheads: Vec<f64>,
-    /// Sectional-area stations per trial waterline (at least 11).
+    /// Sectional-area stations per trial waterline (11 to [`MAX_STATIONS`]).
     pub stations: usize,
 }
 
@@ -128,6 +130,22 @@ pub fn evaluate(
     case: &DamageCase,
     opts: &FloodableOptions,
 ) -> Result<FloodableResult, String> {
+    if let Some(name) = &case.loading_condition_name {
+        if case.loading_condition.is_none() {
+            return Err(format!(
+                "damage case `{}` refers to loading condition `{name}` by name; evaluate it through a project file",
+                case.name
+            ));
+        }
+    }
+    // `resolve_particulars` floors the density at 0.1 t/m³; a density that is not water is an error here.
+    let density = case.water_density.unwrap_or(hopts.water_density / 1000.0);
+    if !(density.is_finite() && density >= 0.1) {
+        return Err(format!(
+            "water density {} kg/m³ is not water",
+            density * 1000.0
+        ));
+    }
     let hull = Hull::new(surface, hopts.subdivision);
     let p = resolve_particulars(surface, hopts, &hull, case);
     compute(&hull, &p, opts)
@@ -179,9 +197,10 @@ fn compute_with_deck_edge(
         let lost = v_w - p.target_volume;
         let mut trial = Trial {
             trim,
+            floats: lost > 1e-9 * p.target_volume.max(1.0),
             points: vec![None; opts.permeabilities.len()],
         };
-        if lost <= 1e-9 * p.target_volume.max(1.0) {
+        if !trial.floats {
             return trial;
         }
         let x_c = (v_w * b.x - p.target_volume * p.lcg) / lost;
@@ -207,17 +226,14 @@ fn compute_with_deck_edge(
         trial
     };
 
-    let even = eval(0.0);
-    if even.points.iter().all(Option::is_none) {
-        let (_, wp) = tangent_waterline(hull, &margin, 0.0);
-        if hull.buoyancy_in(&wp).0 <= p.target_volume {
-            return Err(format!(
-                "a displacement of {:.3} t already sinks the hull to its margin line at even keel",
-                p.displacement_t
-            ));
-        }
+    let trials = sweep(hull, &margin, eval(0.0), &eval, x_fwd - x_aft);
+    // Free to trim: the loading is too heavy only when no trial waterline floats more than it.
+    if trials.iter().all(|t| !t.floats) {
+        return Err(format!(
+            "a displacement of {:.3} t already sinks the hull to its margin line at every trim tried",
+            p.displacement_t
+        ));
     }
-    let trials = sweep(hull, &margin, even, &eval, x_fwd - x_aft);
 
     let mut warnings = Vec::new();
     let curves = opts
@@ -303,6 +319,12 @@ fn validate(opts: &FloodableOptions) -> Result<(), String> {
             opts.stations
         ));
     }
+    if opts.stations > MAX_STATIONS {
+        return Err(format!(
+            "{} stations are too many; use at most {MAX_STATIONS}",
+            opts.stations
+        ));
+    }
     Ok(())
 }
 
@@ -339,8 +361,9 @@ fn validate_bulkheads(bulkheads: &[f64], x_aft: f64, x_fwd: f64) -> Result<(), S
 }
 
 /// The compartments the bulkheads make, from the aft end of the hull to its forward end, each judged against
-/// the permissible length at its centre: the triangle on it, as high as it is long, stays under the
-/// permissible curve exactly when its length does not exceed the permissible length there.
+/// the permissible length at its centre only: it passes when its length does not exceed the permissible length
+/// there, so the apex of the triangle on it, as high as it is long, is not above the permissible curve. The
+/// triangle's sides are not compared with the curve; where the curve dips steeply they can cross it.
 fn check_compartments(
     curve: &FloodableCurve,
     bulkheads: &[f64],
@@ -378,6 +401,8 @@ fn check_compartments(
 #[derive(Debug, Clone)]
 struct Trial {
     trim: f64,
+    /// The waterline floats more than the ship: there is water to lose.
+    floats: bool,
     points: Vec<Option<FloodablePoint>>,
 }
 
@@ -611,10 +636,13 @@ pub fn svg_tr(res: &FloodableResult, title: &str, tr: crate::i18n::Tr) -> String
     let plot_w = w - ml - mr;
     let plot_h = h - mt - gap - band - 40.0;
     let span = (res.hull_x_fwd - res.hull_x_aft).max(1e-6);
+    // The curves and the compartments drawn on the first one, so no triangle loses its apex.
+    let checks = res.curves.first().map_or(&[][..], |c| &c.checks[..]);
     let longest = res
         .curves
         .iter()
         .flat_map(|c| c.points.iter().map(|p| p.length))
+        .chain(checks.iter().map(|c| c.length))
         .fold(0.0, f64::max)
         .max(1e-6);
     // One scale for both axes (px per metre).
@@ -667,7 +695,12 @@ pub fn svg_tr(res: &FloodableResult, title: &str, tr: crate::i18n::Tr) -> String
             base + 14.0,
             fmt_tick(x)
         );
-        x += step;
+        // Far from the origin `x + step` can round back to `x`.
+        let next = x + step;
+        if next <= x {
+            break;
+        }
+        x = next;
     }
     let mut l = step;
     while l <= top_len + 1e-9 {
@@ -1103,6 +1136,92 @@ mod tests {
         assert!(err.contains("margin line"), "{err}");
     }
 
+    /// Free to trim, a loading heavier than the even-keel margin waterline floats is not too heavy when a
+    /// trimmed one floats more: a deck rising 1 m from aft to forward puts the margin line at z = 1 + 0.1 x, so
+    /// at even keel the tangent waterline floats 40 m³ but the one parallel to it 60 m³ (hand integration over
+    /// the 10 × 4 m box), more than the 50 m³ ship.
+    #[test]
+    fn a_rising_margin_line_floods_trimmed_past_the_even_keel_limit() {
+        let hull = barge_hull();
+        let deck: Vec<Vec3> = (0..=10)
+            .flat_map(|i| {
+                let x = i as f64;
+                [-0.5 * B, 0.5 * B].map(|y| Vec3::new(x, y, 1.0 + 0.1 * x + M))
+            })
+            .collect();
+        let p = Particulars {
+            displacement_t: 50.0,
+            target_volume: 50.0,
+            lcg: 5.6,
+            ..barge_particulars(1.0)
+        };
+        let res = compute_with_deck_edge(&hull, &p, &FloodableOptions::default(), &deck).unwrap();
+        for curve in &res.curves {
+            assert!(!curve.points.is_empty(), "μ {}", curve.permeability);
+            assert!(curve.points.iter().all(|q| q.trim_m.abs() > 1e-9));
+        }
+    }
+
+    #[test]
+    fn too_many_stations_is_an_error() {
+        let hull = barge_hull();
+        let opts = FloodableOptions {
+            stations: MAX_STATIONS + 1,
+            ..FloodableOptions::default()
+        };
+        let err = compute(&hull, &barge_particulars(0.8), &opts).unwrap_err();
+        assert!(err.contains("too many"), "{err}");
+    }
+
+    fn barge_surface_options() -> (Surface, HydroOptions) {
+        let surface = make_box_barge(L, B, D);
+        let hopts = HydroOptions::from_surface(
+            &surface,
+            SubdivisionOptions {
+                level: 0,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        (surface, hopts)
+    }
+
+    /// A loading condition named but not resolved through a project is an error, as in `damage::evaluate`,
+    /// not the design-draft loading.
+    #[test]
+    fn an_unresolved_loading_condition_name_is_an_error() {
+        let (surface, hopts) = barge_surface_options();
+        let case = DamageCase {
+            loading_condition_name: Some("Departure".into()),
+            ..DamageCase::default()
+        };
+        let err = evaluate(&surface, &hopts, &case, &FloodableOptions::default()).unwrap_err();
+        assert!(err.contains("Departure"), "{err}");
+    }
+
+    /// A model's water density that is not water is an error, never floored to 100 kg/m³; a case's own
+    /// density still overrides the model's.
+    #[test]
+    fn a_water_density_that_is_not_water_is_an_error() {
+        let (surface, mut hopts) = barge_surface_options();
+        let case = DamageCase {
+            displacement_t: Some(L * B * 0.8),
+            kg: Some(0.0),
+            ..DamageCase::default()
+        };
+        for rho in [0.0, -1025.0, f64::NAN, f64::INFINITY, 50.0] {
+            hopts.water_density = rho;
+            let err = evaluate(&surface, &hopts, &case, &FloodableOptions::default()).unwrap_err();
+            assert!(err.contains("water density"), "{rho}: {err}");
+        }
+        hopts.water_density = 0.0;
+        let own = DamageCase {
+            water_density: Some(1.0),
+            ..case
+        };
+        let res = evaluate(&surface, &hopts, &own, &FloodableOptions::default()).unwrap();
+        assert_eq!(res.water_density, 1.0);
+    }
+
     #[test]
     fn bad_permeability_is_an_error() {
         let hull = barge_hull();
@@ -1429,5 +1548,76 @@ mod tests {
         let tr = svg_tr(&res, "Duba", crate::i18n::Tr::new(crate::i18n::Locale::Tr));
         assert!(tr.contains("Su alabilir boy"), "{tr}");
         assert!(tr.contains("Sınır hattı"));
+    }
+
+    /// The `(x, y)` points of each bulkhead triangle in an SVG.
+    fn triangles(svg: &str) -> Vec<Vec<(f64, f64)>> {
+        svg.lines()
+            .filter(|l| l.contains("class=\"triangle"))
+            .map(|l| {
+                let pts = l
+                    .split("points=\"")
+                    .nth(1)
+                    .unwrap()
+                    .split('"')
+                    .next()
+                    .unwrap();
+                pts.split(' ')
+                    .map(|xy| {
+                        let (x, y) = xy.split_once(',').unwrap();
+                        (x.parse().unwrap(), y.parse().unwrap())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A compartment longer than any floodable length still gets its whole triangle, as high as it is long, on
+    /// the one scale of both axes: deep in the water (1.90 m of the 1.924 m to the margin line) the curves are
+    /// short, the middle compartment is 8 m.
+    #[test]
+    fn the_plot_scale_holds_the_longest_compartment() {
+        let hull = barge_hull();
+        let opts = FloodableOptions {
+            bulkheads: vec![1.0, 9.0],
+            ..FloodableOptions::default()
+        };
+        let res = compute(&hull, &barge_particulars(1.90), &opts).unwrap();
+        let longest = res
+            .curves
+            .iter()
+            .flat_map(|c| &c.points)
+            .map(|p| p.length)
+            .fold(0.0, f64::max);
+        assert!(longest < 8.0, "longest point {longest} m");
+        let tris = triangles(&svg(&res, "Barge"));
+        assert_eq!(tris.len(), 3);
+        for t in tris {
+            let (base, apex) = ((t[2].0 - t[0].0), (t[0].1 - t[1].1));
+            assert!(
+                (apex - base).abs() < 0.3,
+                "base {base} px, height {apex} px"
+            );
+        }
+    }
+
+    /// Hull ends far from the origin, where `x + step` rounds back to `x`, still end the x ticks.
+    #[test]
+    fn far_from_the_origin_the_ticks_end() {
+        let res = FloodableResult {
+            displacement_t: 1.0,
+            lcg: 0.0,
+            water_density: 1.0,
+            margin_m: M,
+            hull_x_aft: 1e16,
+            hull_x_fwd: 1e16 + 2.0,
+            factor: None,
+            margin_line: Vec::new(),
+            curves: Vec::new(),
+            warnings: Vec::new(),
+            profile: Vec::new(),
+        };
+        let out = svg(&res, "Far");
+        assert!(out.len() < 100_000, "{} bytes", out.len());
     }
 }

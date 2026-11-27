@@ -2153,6 +2153,13 @@ is evaluated with exact piecewise integrals.
   `bulkheads_split_the_hull_and_are_judged_at_their_midpoints` (factor 0.5: amidships 6.87 m floodable, 3.44 m
   permissible, a 2 m compartment passes), `a_compartment_outside_the_curve_is_not_judged`,
   `hull_ends_ignore_vertices_outside_the_panels`, and the error tests (`unphysical_particulars_are_errors` among them).
+- `a_rising_margin_line_floods_trimmed_past_the_even_keel_limit`: the same box with a margin line
+  $z = 1 + 0.1x$ m (a deck rising 1 m aft to forward) and $\nabla = 50$ m³, $LCG = 5.6$ m. The even-keel tangent
+  waterline floats $B \cdot L \cdot 1 = 40$ m³, less than the ship; the waterline parallel to the margin line floats
+  $B \int_0^L (1 + 0.1x)\,dx = 60$ m³, more. Free to trim, every curve has points, all at nonzero trim, and no
+  error is raised.
+- `the_plot_scale_holds_the_longest_compartment`: at $T = 1.90$ m the longest point is under 8 m; with bulkheads at
+  1 and 9 m each of the three SVG triangles is as high as its base is long within 0.3 px.
 - `a_curve_does_not_depend_on_the_other_permeabilities` (demo hull, level 2, 8 t): the $\mu = 0.60$ curve asked
   alone agrees with the same curve asked with 0.85 and 0.95 within 1 % at mid-range. SeaCraft against itself, not a
   source.

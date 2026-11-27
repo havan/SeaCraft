@@ -5135,6 +5135,9 @@ fn cmd_floodable(a: FloodableArgs, tr: Tr) -> Result<()> {
                 );
             }
         }
+        for w in &res.warnings {
+            eprintln!("{}", tr.msg(w));
+        }
         return Ok(());
     }
 
