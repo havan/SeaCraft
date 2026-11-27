@@ -149,3 +149,43 @@ fn floodable_project_needs_a_condition() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("--condition"), "{err}");
 }
+
+/// A curve with no points is reported on stderr with `--csv` too, in the chosen language, and stdout stays the
+/// CSV header alone: light (2 t) the demo hull would need more than its whole volume at μ 0.05.
+#[test]
+fn floodable_csv_reports_an_empty_curve_on_stderr() {
+    let hull = example("demo-hull.fef");
+    let args = [
+        "floodable",
+        &hull,
+        "--csv",
+        "--permeability",
+        "0.05",
+        "--displacement",
+        "2",
+    ];
+    for (lang, warning) in [
+        (
+            "en",
+            "no floodable length curve found for permeability 0.05",
+        ),
+        (
+            "tr",
+            "0.05 geçirgenliği için su alabilir boy eğrisi bulunamadı",
+        ),
+    ] {
+        let out = run_lang(lang, &args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        assert_eq!(
+            stdout.trim_end(),
+            "permeability,x_mid,length,x_aft,x_fwd,trim_m,draft"
+        );
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(stderr.contains(warning), "{lang}: {stderr}");
+    }
+}

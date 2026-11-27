@@ -2158,6 +2158,12 @@ is evaluated with exact piecewise integrals.
   waterline floats $B \cdot L \cdot 1 = 40$ m³, less than the ship; the waterline parallel to the margin line floats
   $B \int_0^L (1 + 0.1x)\,dx = 60$ m³, more. Free to trim, every curve has points, all at nonzero trim, and no
   error is raised.
+- `a_margin_line_near_the_keel_still_sweeps_the_whole_trim_range`: the same box with a margin line
+  $z = 0.2 + 0.18x$ m, $\nabla = 30$ m³, $LCG = 6.5$ m. The waterline parallel to it, at a trim of 1.8 m, floats
+  $B \int_0^L (0.2 + 0.18x)\,dx = 44$ m³; the sweep reaches trims beyond 1.0 m and finds points there.
+- `a_compartment_stops_at_the_water_at_both_dry_ends`: cumulative volumes by construction, dry over $[0, 2]$ and
+  $[4, 6]$ m with 1 m³ in each of $[2, 3]$ and $[3, 4]$ m (centroids 2.5 and 3.5 m): the compartment holding all 2 m³
+  with its centroid at 3 m is $[2, 4]$ m within $10^{-9}$ m.
 - `the_plot_scale_holds_the_longest_compartment`: at $T = 1.90$ m the longest point is under 8 m; with bulkheads at
   1 and 9 m each of the three SVG triangles is as high as its base is long within 0.3 px.
 - `a_curve_does_not_depend_on_the_other_permeabilities` (demo hull, level 2, 8 t): the $\mu = 0.60$ curve asked

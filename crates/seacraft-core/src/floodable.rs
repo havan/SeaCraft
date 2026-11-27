@@ -138,13 +138,28 @@ pub fn evaluate(
             ));
         }
     }
-    // `resolve_particulars` floors the density at 0.1 t/m³; a density that is not water is an error here.
-    let density = case.water_density.unwrap_or(hopts.water_density / 1000.0);
-    if !(density.is_finite() && density >= 0.1) {
-        return Err(format!(
-            "water density {} kg/m³ is not water",
-            density * 1000.0
-        ));
+    if let Some(lc) = &case.loading_condition {
+        crate::loading::validate(lc).map_err(|e| format!("loading condition: {e}"))?;
+    }
+    // `resolve_particulars` floors the density and the appendage coefficient; values that are not water or not
+    // a coefficient are errors here, in the range `damage::validate` holds a case's density to.
+    match case.water_density {
+        Some(rho) if !(0.5..=2.0).contains(&rho) => {
+            return Err(format!(
+                "`water_density` is in t/m³ and must be between 0.5 and 2.0 (got {rho})"
+            ));
+        }
+        None if !(500.0..=2000.0).contains(&hopts.water_density) => {
+            return Err(format!(
+                "the model's water density {} kg/m³ is not between 500 and 2000 kg/m³",
+                hopts.water_density
+            ));
+        }
+        _ => {}
+    }
+    let app = hopts.appendage_coefficient;
+    if !(app.is_finite() && app > 0.0) {
+        return Err(format!("appendage coefficient {app} is not positive"));
     }
     let hull = Hull::new(surface, hopts.subdivision);
     let p = resolve_particulars(surface, hopts, &hull, case);
@@ -418,11 +433,13 @@ fn sweep(
     span: f64,
 ) -> Vec<Trial> {
     let low = margin.iter().map(|q| q.z).fold(f64::INFINITY, f64::min);
-    let step = 0.05 * (low - hull.keel).max(1e-3);
     let reach = 2.0 * (hull.model_max.z - hull.keel).max(1e-3);
+    let share = MAX_WATERLINES / 4;
+    // Fine enough near even keel, coarse enough that each direction's share reaches the whole trim range even
+    // where the margin line dips close to the keel.
+    let step = (0.05 * (low - hull.keel).max(1e-3)).max(reach / share as f64);
     let even_hit = even.points.iter().any(Option::is_some);
     let mut trials = vec![even];
-    let share = MAX_WATERLINES / 4;
     for sign in [1.0, -1.0] {
         let mut seen = even_hit;
         let mut misses = 0;
@@ -528,11 +545,18 @@ struct Cumulative {
 }
 
 impl Cumulative {
-    /// The first x where Q reaches `u`, and M there. Within an interval Q and M are taken to grow in
-    /// proportion (the interval's volume spread evenly over it), which keeps both exact at the stations.
-    fn at_volume(&self, u: f64) -> (f64, f64) {
+    /// The first x where Q reaches `u` (`last` false: a compartment's forward end) or the last x where Q is
+    /// still `u` (`last` true: its aft end), and M there; so a compartment never runs on into a dry end at
+    /// either end. Within an interval Q and M are taken to grow in proportion (the interval's volume spread
+    /// evenly over it), which keeps both exact at the stations.
+    fn at_volume(&self, u: f64, last: bool) -> (f64, f64) {
         let n = self.q.len();
-        let k = self.q.partition_point(|&q| q < u).clamp(1, n - 1);
+        let k = if last {
+            self.q.partition_point(|&q| q <= u)
+        } else {
+            self.q.partition_point(|&q| q < u)
+        }
+        .clamp(1, n - 1);
         let (q0, q1) = (self.q[k - 1], self.q[k]);
         let (x0, x1) = (self.xs[k - 1], self.xs[k]);
         if q1 - q0 <= 0.0 {
@@ -552,8 +576,8 @@ impl Cumulative {
             return None;
         }
         let centroid = |u: f64| -> (f64, f64, f64) {
-            let (a, ma) = self.at_volume(u);
-            let (b, mb) = self.at_volume(u + need);
+            let (a, ma) = self.at_volume(u, true);
+            let (b, mb) = self.at_volume(u + need, false);
             (a, b, (mb - ma) / need)
         };
         let (mut lo, mut hi) = (0.0, total - need);
@@ -602,7 +626,7 @@ pub fn floodable_at(curve: &FloodableCurve, x: f64) -> Option<f64> {
     let pts = &curve.points;
     let first = pts.first()?;
     let last = pts.last()?;
-    if x < first.x_mid || x > last.x_mid {
+    if !(first.x_mid..=last.x_mid).contains(&x) {
         return None;
     }
     let k = pts.partition_point(|p| p.x_mid < x);
@@ -1162,6 +1186,62 @@ mod tests {
         }
     }
 
+    /// A margin line dipping close to the keel at one end (z = 0.2 + 0.18 x) makes the fine trim step small;
+    /// the sweep must still reach the trims where the ship floats. The waterline parallel to that line floats
+    /// B ∫ (0.2 + 0.18 x) dx = 4 · 11 = 44 m³ (hand integration), more than the 30 m³ ship, at a trim of 1.8 m,
+    /// beyond the 1.0 m the old 0.01 m step reached in its 100 steps.
+    #[test]
+    fn a_margin_line_near_the_keel_still_sweeps_the_whole_trim_range() {
+        let hull = barge_hull();
+        let deck: Vec<Vec3> = (0..=10)
+            .flat_map(|i| {
+                let x = i as f64;
+                [-0.5 * B, 0.5 * B].map(|y| Vec3::new(x, y, 0.2 + 0.18 * x + M))
+            })
+            .collect();
+        let p = Particulars {
+            displacement_t: 30.0,
+            target_volume: 30.0,
+            lcg: 6.5,
+            ..barge_particulars(1.0)
+        };
+        let res = compute_with_deck_edge(&hull, &p, &FloodableOptions::default(), &deck).unwrap();
+        assert!(
+            res.curves
+                .iter()
+                .any(|c| c.points.iter().any(|q| q.trim_m.abs() > 1.0)),
+            "{:?}",
+            res.curves
+                .iter()
+                .map(|c| c.points.len())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// With both ends of the hull dry under a waterline, a compartment holding all the water spans only the
+    /// wet part, the same at either end: dry [0, 2] and [4, 6] m around 1 m³ in each of [2, 3] and [3, 4] m
+    /// (centroids 2.5 and 3.5 m) gives [2, 4] m.
+    #[test]
+    fn a_compartment_stops_at_the_water_at_both_dry_ends() {
+        let cum = Cumulative {
+            xs: (0..=6).map(f64::from).collect(),
+            q: vec![0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0],
+            m: vec![0.0, 0.0, 0.0, 2.5, 6.0, 6.0, 6.0],
+        };
+        let (a, b) = cum.compartment(2.0, 3.0).unwrap();
+        assert!(
+            (a - 2.0).abs() < 1e-9 && (b - 4.0).abs() < 1e-9,
+            "[{a}, {b}]"
+        );
+    }
+
+    #[test]
+    fn floodable_at_a_nan_is_none() {
+        let hull = barge_hull();
+        let res = compute(&hull, &barge_particulars(0.8), &FloodableOptions::default()).unwrap();
+        assert_eq!(floodable_at(&res.curves[0], f64::NAN), None);
+    }
+
     #[test]
     fn too_many_stations_is_an_error() {
         let hull = barge_hull();
@@ -1208,10 +1288,20 @@ mod tests {
             kg: Some(0.0),
             ..DamageCase::default()
         };
-        for rho in [0.0, -1025.0, f64::NAN, f64::INFINITY, 50.0] {
+        for rho in [0.0, -1025.0, f64::NAN, f64::INFINITY, 50.0, 1.025] {
             hopts.water_density = rho;
             let err = evaluate(&surface, &hopts, &case, &FloodableOptions::default()).unwrap_err();
             assert!(err.contains("water density"), "{rho}: {err}");
+        }
+        // A case's density is in t/m³: 1025 is kg/m³ given by mistake.
+        hopts.water_density = 1000.0;
+        for rho in [0.0, f64::NAN, 1025.0] {
+            let bad = DamageCase {
+                water_density: Some(rho),
+                ..case.clone()
+            };
+            let err = evaluate(&surface, &hopts, &bad, &FloodableOptions::default()).unwrap_err();
+            assert!(err.contains("water_density"), "{rho}: {err}");
         }
         hopts.water_density = 0.0;
         let own = DamageCase {
@@ -1220,6 +1310,34 @@ mod tests {
         };
         let res = evaluate(&surface, &hopts, &own, &FloodableOptions::default()).unwrap();
         assert_eq!(res.water_density, 1.0);
+    }
+
+    /// An appendage coefficient that is not a positive number is an error, not floored to 10⁻⁶; an invalid
+    /// inline loading condition is an error, as in `damage::evaluate`.
+    #[test]
+    fn a_bad_appendage_coefficient_or_loading_condition_is_an_error() {
+        let (surface, mut hopts) = barge_surface_options();
+        let case = DamageCase {
+            displacement_t: Some(L * B * 0.8),
+            kg: Some(0.0),
+            ..DamageCase::default()
+        };
+        for c in [0.0, -1.0, f64::NAN] {
+            hopts.appendage_coefficient = c;
+            let err = evaluate(&surface, &hopts, &case, &FloodableOptions::default()).unwrap_err();
+            assert!(err.contains("appendage"), "{c}: {err}");
+        }
+        hopts.appendage_coefficient = 1.0;
+        let lc: crate::loading::LoadingCondition = serde_json::from_str(
+            r#"{"name": "Bad", "lightship": {"name": "Lightship", "mass_t": -5.0, "x": 5.0, "y": 0.0, "z": 1.0}}"#,
+        )
+        .unwrap();
+        let bad = DamageCase {
+            loading_condition: Some(lc),
+            ..DamageCase::default()
+        };
+        let err = evaluate(&surface, &hopts, &bad, &FloodableOptions::default()).unwrap_err();
+        assert!(err.contains("loading condition"), "{err}");
     }
 
     #[test]
