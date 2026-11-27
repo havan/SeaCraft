@@ -1432,7 +1432,7 @@ struct FloodableArgs {
     /// Input .fef file
     file: PathBuf,
     /// Project file for `--condition` (defaults to the model's `<model>.seacraft.json` sidecar)
-    #[arg(long)]
+    #[arg(long, requires = "condition")]
     project: Option<PathBuf>,
     /// Loading condition of the project to float at (default: the hull at its design draft)
     #[arg(long)]

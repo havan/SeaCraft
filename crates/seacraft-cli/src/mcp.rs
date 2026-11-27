@@ -1725,12 +1725,16 @@ impl McpServer {
                 "give either `condition` or `displacement_t`, not both".into()
             ));
         }
+        let lcg = opt_number(a, "lcg")?;
+        if lcg.is_some() && displacement.is_none() {
+            return Err(err("`lcg` needs `displacement_t`".into()));
+        }
         let mut case = seacraft_core::damage::DamageCase::default();
         if let Some(d) = displacement {
             // KG does not enter the floodable length; set, it selects the explicit loading.
             case.displacement_t = Some(d);
             case.kg = Some(0.0);
-            case.lcg = opt_number(a, "lcg")?;
+            case.lcg = lcg;
         } else if let Some(name) = condition {
             case.loading_condition_name = Some(name.to_owned());
             case = self.project.resolve_damage_case(&case).map_err(err)?;
@@ -6510,6 +6514,9 @@ mod tests {
             json!({"condition": "Design", "displacement_t": 10.0}),
         );
         assert!(err.contains("not both"), "{err}");
+        // An LCG without a displacement would otherwise be dropped without a word.
+        let err = fails(&mut s, 6, "floodable_length", json!({"lcg": 4.0}));
+        assert!(err.contains("displacement_t"), "{err}");
     }
 
     #[test]

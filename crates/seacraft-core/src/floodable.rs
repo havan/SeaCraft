@@ -5,14 +5,14 @@
 //! 76 mm below the bulkhead deck at side (Rawson & Tupper, *Basic Ship Theory*, Vol. 1, 5th ed., pp. 155-156;
 //! Gillmer & Johnson, *Introduction to Naval Architecture*, 1982, pp. 180-182). Permissible length is the
 //! floodable length times a factor of subdivision; a compartment passes when its length does not exceed the
-//! permissible length at its centre (the triangle check of both books).
+//! permissible length at its centre (the triangle check of Rawson & Tupper, with base angle tan⁻¹ 2).
 //!
-//! The method is the one both books describe. Each trial waterline is tangent to the margin line. The hull
+//! The method is Gillmer & Johnson's. Each trial waterline is tangent to the margin line. The hull
 //! floats it with the flooded compartment's water counted as lost buoyancy, so the lost volume is
 //! `v = V_W − ∇` and its centroid follows from the moment balance `V_W · x_B − ∇ · LCG = v · x_c`
 //! (Gillmer & Johnson Eq. 10-1 and 10-2, there by added weight, which gives the same waterline). The
 //! compartment is the full-breadth slice of the hull under that waterline holding `v / μ` with its centroid at
-//! `x_c`, found from the sectional areas under the waterline (Bonjean curves in the books). Compartments are
+//! `x_c`, found from the sectional areas under the waterline (Bonjean curves in Gillmer & Johnson). Compartments are
 //! full breadth and the ship upright; the deck edge is the moulded sheer, with no deck thickness.
 
 use crate::damage::{hull_deck_edge_vertices, resolve_particulars, DamageCase, Particulars};
@@ -149,6 +149,7 @@ fn compute_with_deck_edge(
     deck_edge: &[Vec3],
 ) -> Result<FloodableResult, String> {
     validate(opts)?;
+    validate_particulars(p)?;
     if deck_edge.is_empty() {
         return Err("the hull has no deck edge to draw a margin line under".into());
     }
@@ -157,12 +158,18 @@ fn compute_with_deck_edge(
         .map(|q| Vec3::new(q.x, q.y, q.z - opts.margin_m))
         .collect();
     margin.sort_by(|a, b| a.x.total_cmp(&b.x));
-    let (x_aft, x_fwd) = hull
-        .verts
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-            (lo.min(v.x), hi.max(v.x))
-        });
+    // The ends of the hull's own panels: `verts` also holds points no panel uses.
+    let (x_aft, x_fwd) =
+        hull.tris
+            .iter()
+            .flatten()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &i| {
+                let x = hull.verts[i].x;
+                (lo.min(x), hi.max(x))
+            });
+    if x_aft >= x_fwd {
+        return Err("the hull has no panels to float".into());
+    }
     validate_bulkheads(&opts.bulkheads, x_aft, x_fwd)?;
     let grid = Grid::new(x_aft, x_fwd, opts.stations);
     let closed = hull.closed_tris();
@@ -178,6 +185,9 @@ fn compute_with_deck_edge(
             return trial;
         }
         let x_c = (v_w * b.x - p.target_volume * p.lcg) / lost;
+        if !x_c.is_finite() {
+            return trial;
+        }
         let areas = crate::par::par_map(&grid.stations, |&x| {
             section_area(&hull.verts, &closed, x, &wp)
         });
@@ -296,6 +306,24 @@ fn validate(opts: &FloodableOptions) -> Result<(), String> {
     Ok(())
 }
 
+/// The loading must be a ship: a positive displacement and water density, the volume they float, and an LCG.
+fn validate_particulars(p: &Particulars) -> Result<(), String> {
+    let positive = |v: f64| v.is_finite() && v > 0.0;
+    if !positive(p.displacement_t) || !positive(p.target_volume) {
+        return Err(format!(
+            "a displacement of {} t is not a ship to flood",
+            p.displacement_t
+        ));
+    }
+    if !positive(p.density) {
+        return Err(format!("water density {} t/m³ is not positive", p.density));
+    }
+    if !p.lcg.is_finite() {
+        return Err(format!("LCG {} m is not a position", p.lcg));
+    }
+    Ok(())
+}
+
 fn validate_bulkheads(bulkheads: &[f64], x_aft: f64, x_fwd: f64) -> Result<(), String> {
     for &x in bulkheads {
         if !(x > x_aft && x < x_fwd) {
@@ -353,8 +381,10 @@ struct Trial {
     points: Vec<Option<FloodablePoint>>,
 }
 
-/// Trims outward from even keel in both directions until no permeability gives a point, then trims between
-/// neighbours whose points lie far apart along the hull or where a curve ends.
+/// Trims outward from even keel in both directions, past trims where no permeability gives a point yet, until
+/// three in a row give none after one has; then trims between neighbours whose points lie far apart along the
+/// hull or where a curve ends. Each direction has its own share of the waterlines, so a long run one way does
+/// not starve the other.
 fn sweep(
     hull: &Hull,
     margin: &[Vec3],
@@ -365,23 +395,25 @@ fn sweep(
     let low = margin.iter().map(|q| q.z).fold(f64::INFINITY, f64::min);
     let step = 0.05 * (low - hull.keel).max(1e-3);
     let reach = 2.0 * (hull.model_max.z - hull.keel).max(1e-3);
+    let even_hit = even.points.iter().any(Option::is_some);
     let mut trials = vec![even];
+    let share = MAX_WATERLINES / 4;
     for sign in [1.0, -1.0] {
+        let mut seen = even_hit;
         let mut misses = 0;
-        let mut k = 1;
-        while trials.len() < MAX_WATERLINES {
-            let trim = sign * step * f64::from(k);
+        for k in 1..=share {
+            let trim = sign * step * k as f64;
             if trim.abs() > reach {
                 break;
             }
             let t = eval(trim);
             let any = t.points.iter().any(Option::is_some);
             trials.push(t);
+            seen |= any;
             misses = if any { 0 } else { misses + 1 };
-            if misses >= 3 {
+            if seen && misses >= 3 {
                 break;
             }
-            k += 1;
         }
     }
     trials.sort_by(|a, b| a.trim.total_cmp(&b.trim));
@@ -1098,6 +1130,96 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("deck edge"), "{err}");
+    }
+
+    /// A loading that is not a ship (no displacement, no water, an LCG that is not a number) is an error, never
+    /// a curve computed from NaN.
+    #[test]
+    fn unphysical_particulars_are_errors() {
+        let hull = barge_hull();
+        let good = barge_particulars(0.8);
+        let cases = [
+            Particulars {
+                displacement_t: 0.0,
+                target_volume: 0.0,
+                ..good
+            },
+            Particulars {
+                displacement_t: -5.0,
+                target_volume: -5.0,
+                ..good
+            },
+            Particulars {
+                displacement_t: f64::NAN,
+                target_volume: f64::NAN,
+                ..good
+            },
+            Particulars {
+                density: 0.0,
+                ..good
+            },
+            Particulars {
+                lcg: f64::NAN,
+                ..good
+            },
+            Particulars {
+                lcg: f64::INFINITY,
+                ..good
+            },
+        ];
+        for p in cases {
+            let res = compute(&hull, &p, &FloodableOptions::default());
+            assert!(res.is_err(), "{p:?} gave {:?}", res.map(|r| r.curves));
+        }
+    }
+
+    /// Hull ends come from the hull's own panels: a vertex the panels do not use (a layer that is not part of
+    /// the hydrostatic hull) does not move them.
+    #[test]
+    fn hull_ends_ignore_vertices_outside_the_panels() {
+        let mut hull = barge_hull();
+        hull.verts.push(Vec3::new(-3.0, 0.0, 1.0));
+        hull.verts.push(Vec3::new(L + 3.0, 0.0, 1.0));
+        let res = compute(&hull, &barge_particulars(0.8), &FloodableOptions::default()).unwrap();
+        assert_eq!((res.hull_x_aft, res.hull_x_fwd), (0.0, L));
+    }
+
+    /// A permeability's curve does not depend on which other permeabilities are asked with it. Light (8 t)
+    /// the demo hull at even keel needs more than its whole volume for μ 0.60, so that curve starts only
+    /// several trims out from even keel.
+    #[test]
+    fn a_curve_does_not_depend_on_the_other_permeabilities() {
+        let surface = crate::demo::demo_hull(false);
+        let hopts = HydroOptions::from_surface(
+            &surface,
+            SubdivisionOptions {
+                level: 2,
+                mode: SubdivisionMode::Loop,
+            },
+        );
+        let case = DamageCase {
+            displacement_t: Some(8.0),
+            kg: Some(0.0),
+            ..DamageCase::default()
+        };
+        let run = |permeabilities: Vec<f64>| {
+            let opts = FloodableOptions {
+                permeabilities,
+                ..FloodableOptions::default()
+            };
+            evaluate(&surface, &hopts, &case, &opts).unwrap()
+        };
+        let alone = run(vec![0.60]);
+        let together = run(vec![0.60, 0.85, 0.95]);
+        let (a, t) = (&alone.curves[0], &together.curves[0]);
+        assert!(t.points.len() > 10, "together: {} points", t.points.len());
+        assert!(a.points.len() > 10, "alone: {} points", a.points.len());
+        let x = 0.5 * (t.points[0].x_mid + t.points[t.points.len() - 1].x_mid);
+        let (la, lt) = (floodable_at(a, x).unwrap(), floodable_at(t, x).unwrap());
+        assert!(
+            (la / lt - 1.0).abs() < 1e-2,
+            "at x {x}: {la} alone, {lt} together"
+        );
     }
 
     fn check_opts(bulkheads: Vec<f64>, factor: Option<f64>) -> FloodableOptions {

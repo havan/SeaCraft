@@ -135,3 +135,17 @@ fn floodable_rejects_bad_bulkheads() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("bulkhead"), "{err}");
 }
+
+/// `--project` only names where `--condition` is looked up; alone, it would be ignored without a word.
+#[test]
+fn floodable_project_needs_a_condition() {
+    let hull = example("demo-hull.fef");
+    let project = example("demo-hull.seacraft.json");
+    let out = run_lang(
+        "en",
+        &["floodable", &hull, "--level", "2", "--project", &project],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--condition"), "{err}");
+}
