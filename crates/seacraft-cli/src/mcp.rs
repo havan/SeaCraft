@@ -1484,6 +1484,15 @@ impl McpServer {
 
         let mut v = serde_json::to_value(&est).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
+            // As the app's `build.materials` reply says them.
+            o.insert("level".into(), json!(sub.level));
+            o.insert(
+                "mode".into(),
+                json!(match sub.mode {
+                    SubdivisionMode::Loop => "loop",
+                    SubdivisionMode::CatmullClark => "catmull-clark",
+                }),
+            );
             o.insert(
                 "note".into(),
                 json!(seacraft_core::not_validated_note(
@@ -6162,6 +6171,17 @@ mod tests {
         assert!(r["note"].as_str().is_some_and(|n| !n.is_empty()), "{r}");
         assert_eq!(r["backend"], "headless");
         assert!(r.get("added").is_none(), "{r}");
+        // What it was measured at, as the app's reply says it.
+        assert_eq!(r["level"], json!(s.opts.subdivision.level), "{r}");
+        assert_eq!(r["mode"], "loop", "{r}");
+        let r = ok(
+            &mut s,
+            3,
+            "materials_estimate",
+            json!({"level": 1, "mode": "cc"}),
+        );
+        assert_eq!(r["level"], 1, "{r}");
+        assert_eq!(r["mode"], "catmull-clark", "{r}");
     }
 
     #[test]
