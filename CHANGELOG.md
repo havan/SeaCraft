@@ -4,15 +4,16 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
-- Builder materials and weight: from the desktop app (File ▸ Builder materials…, which edits the schedule, weighs
-  it in the background and adds the total to a loading condition, both undoable), the CLI (`seacraft materials`),
-  the MCP server (`materials_estimate`), the control channel (`build.materials`, `loading.put_item`, undoable and
-  refused when the model or schedule changed since the estimate) and the design report's new Materials section you
-  can now estimate what the hull is made of
-  and what it weighs: shell weight, glass and resin, seam tape and fillets, and plywood sheets "if cut from
-  plywood", with the centre of the weight, and add the total to a loading condition as one named item. The
-  schedule (plies per layer, tape, fillet, resin per glass) is saved in the project file. Every glass and resin
-  figure is the builder's own, with no built-in default, and nothing here is validated against a built hull.
+- Builder materials and weight. You can now estimate what the hull is made of and what it weighs from the desktop
+  app (File ▸ Builder materials…), the command line (`seacraft materials`), MCP (`materials_estimate`), the control
+  channel (`build.materials`, `loading.put_item`) and a new Materials section in the design report: the shell of
+  each layer, glass and resin, seam tape and fillets, and plywood sheets "if cut from plywood", counted end to end
+  and naming any panel the count leaves out, with the centre of the total. The total goes into a loading condition
+  as one named weight item; in the app that is an undoable edit, refused when the model or the schedule changed
+  since the estimate. The schedule (plies per layer, tape, fillet, resin per glass, plywood sheet) is saved in the
+  project file. Every glass and resin figure is the builder's own, with no built-in default, and nothing here is
+  validated against a built hull. Known limit: the centreline edges of a solid foil, such as a fin keel or a rudder,
+  are counted as seams.
 - A large hull at a high subdivision level no longer freezes the window while it is refined: the window draws a
   coarser level at once (level 3 for `container-230m`) and the full level replaces it when a background job has
   built it, with "refining to level N…" in the status bar meanwhile. Smaller hulls (the demo hull up to level 4)
