@@ -210,6 +210,23 @@ pub struct LoadingResult {
     pub weather: Option<WeatherResult>,
 }
 
+/// Put `item` into `cond`: it takes the place of the first item named like `item` or any of
+/// `also_replace`, later items with those names are removed, and without a match it is appended.
+pub fn put_item(cond: &mut LoadingCondition, item: WeightItem, also_replace: &[&str]) {
+    let hit = |name: &str| name == item.name || also_replace.contains(&name);
+    match cond.items.iter().position(|w| hit(&w.name)) {
+        Some(first) => {
+            let mut i = 0;
+            cond.items.retain(|w| {
+                i += 1;
+                i - 1 <= first || !hit(&w.name)
+            });
+            cond.items[first] = item;
+        }
+        None => cond.items.push(item),
+    }
+}
+
 /// Validate a [`LoadingCondition`] before evaluation.
 pub fn validate(cond: &LoadingCondition) -> Result<(), String> {
     let check_item = |w: &WeightItem, label: &str| -> Result<(), String> {
@@ -771,6 +788,58 @@ pub fn evaluate(surface: &Surface, opts: &HydroOptions, cond: &LoadingCondition)
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn item(name: &str, mass_t: f64) -> WeightItem {
+        WeightItem {
+            name: name.into(),
+            mass_t,
+            x: 1.0,
+            y: 0.0,
+            z: 0.5,
+        }
+    }
+
+    fn empty_cond() -> LoadingCondition {
+        LoadingCondition {
+            name: "Test".into(),
+            lightship: item("Lightship", 1.0),
+            items: Vec::new(),
+            tanks: Vec::new(),
+            windage_extra: Vec::new(),
+            bilge: BilgeKind::default(),
+            downflooding_deg: None,
+        }
+    }
+
+    #[test]
+    fn put_item_appends_then_replaces() {
+        let mut c = empty_cond();
+        put_item(&mut c, item("Hull", 1.0), &[]);
+        assert_eq!(c.items.len(), 1);
+        put_item(&mut c, item("Hull", 2.0), &[]);
+        assert_eq!(c.items.len(), 1);
+        assert_eq!(c.items[0].mass_t, 2.0);
+    }
+
+    #[test]
+    fn put_item_removes_duplicates() {
+        let mut c = empty_cond();
+        c.items = vec![item("Hull", 1.0), item("Other", 3.0), item("Hull", 2.0)];
+        put_item(&mut c, item("Hull", 5.0), &[]);
+        assert_eq!(c.items.len(), 2);
+        assert_eq!((c.items[0].name.as_str(), c.items[0].mass_t), ("Hull", 5.0));
+        assert_eq!(c.items[1].name, "Other");
+    }
+
+    #[test]
+    fn put_item_replaces_the_other_languages_default() {
+        let mut c = empty_cond();
+        c.items = vec![item("Tekne", 1.0), item("Other", 3.0)];
+        put_item(&mut c, item("Hull", 5.0), &["Tekne", "Hull"]);
+        assert_eq!(c.items.len(), 2);
+        assert_eq!(c.items[0].name, "Hull");
+        assert_eq!(c.items[0].mass_t, 5.0);
+    }
+
     use crate::subdiv::{SubdivisionMode, SubdivisionOptions};
 
     #[test]

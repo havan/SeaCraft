@@ -59,6 +59,7 @@ pub mod io;
 pub mod lackenby;
 pub mod linesplan;
 pub mod loading;
+pub mod materials;
 pub mod math;
 pub mod mesh;
 pub mod michell;

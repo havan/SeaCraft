@@ -55,6 +55,10 @@ Terminology conventions for SeaCraft's Turkish (`tr`) translation.
 | IS Code Part A | IS Kodu Bölüm A | IS Kodu Bölüm A | |
 | Loll | Yatık denge (loll) | Yatık denge | |
 | Seam (plywood, stitch-and-glue) | Dikiş | Dikiş | *Seam drift*: dikiş sapması |
+| Glass cloth (fibreglass) | Cam elyaf | Cam elyaf | Never *cam yünü* (insulation wool) |
+| Seam tape | Dikiş bandı | Bant | Glass tape laid over a seam |
+| Fillet (resin cove in a seam) | Köşe dolgusu | Köşe dolgusu | Not *filet* |
+| Resin | Reçine | Reçine | |
 | Thin-ship theory | İnce gemi (thin-ship) kuramı | İnce gemi | |
 | Lies flat / does not lie flat | Düz açılır / Düz açılmaz | Düz açılır / Düz açılmaz | |
 | Degrees | ° | ° | Never *der* (rule 2) |

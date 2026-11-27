@@ -571,6 +571,7 @@ struct ModelState {
     /// The dock KG and whether it is an estimate.
     kg: (Option<f64>, bool),
     project_error: Option<String>,
+    materials_entered: bool,
     path: Option<PathBuf>,
     saved_state: Option<(String, Project)>,
 }
@@ -1082,6 +1083,9 @@ pub struct App {
     project: Project,
     /// Why the sidecar could not be read; while set, saving leaves it alone.
     project_error: Option<String>,
+    /// A materials schedule was entered since the sidecar was read, even one cleared again, so
+    /// an empty schedule is the user's, not the unread file's.
+    materials_entered: bool,
     status: String,
     /// How serious the status line is: a logged warning or error keeps its
     /// colour until the next status replaces it.
@@ -1106,6 +1110,10 @@ pub struct App {
     revision: u64,
     /// `revision`, readable from a worker thread ([`App::revision_watch`]).
     revision_watch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Bumped when the project's materials schedule is seen to change, readable from a worker
+    /// thread ([`App::schedule_watch`]); `schedule_seen` is the schedule it last saw.
+    schedule_watch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    schedule_seen: Option<seacraft_core::materials::Materials>,
     level: u8,
     mode: SubdivisionMode,
     display: DisplayOptions,
@@ -1213,6 +1221,13 @@ pub struct App {
     panels_sheets_view: crate::sheet_view::SheetView,
     panels_show_sheets: bool,
     panels_selected: Option<usize>,
+    /// The File > Builder materials window is open.
+    show_materials: bool,
+    /// The window's schedule draft and add-to-condition choices.
+    materials_state: crate::builder_materials::MaterialsDialogState,
+    /// The last estimate, current or not ([`App::materials_key`] says).
+    materials_result: Option<seacraft_core::materials::Estimate>,
+    materials_track: Track<seacraft_core::materials::Estimate>,
     loading_selected: usize,
     loading_result: Option<LoadingResult>,
     loading_track: Track<LoadingResult>,
@@ -1509,6 +1524,7 @@ impl App {
             path: None,
             project: Project::default(),
             project_error: None,
+            materials_entered: false,
             status: String::new(),
             status_level: Level::Info,
             messages: MessageLog::default(),
@@ -1520,6 +1536,8 @@ impl App {
             pending_recent: None,
             revision: 0,
             revision_watch: Default::default(),
+            schedule_watch: Default::default(),
+            schedule_seen: None,
             level: 3,
             mode: SubdivisionMode::Loop,
             display: DisplayOptions::default(),
@@ -1586,6 +1604,10 @@ impl App {
             panels_sheets_view: crate::sheet_view::SheetView::default(),
             panels_show_sheets: false,
             panels_selected: None,
+            show_materials: false,
+            materials_state: Default::default(),
+            materials_result: None,
+            materials_track: Track::default(),
             loading_selected: 0,
             loading_result: None,
             loading_track: Track::default(),
@@ -1737,6 +1759,7 @@ impl App {
         self.path = Some(path.to_path_buf());
         self.project = project;
         self.project_error = project_error;
+        self.materials_entered = false;
         self.dirty = false;
         self.autosave.note_model_replaced(false);
         self.adopt_project_kg();
@@ -1934,6 +1957,11 @@ impl App {
         self.panels_sheets_view = crate::sheet_view::SheetView::default();
         self.panels_show_sheets = false;
         self.panels_selected = None;
+        // Another hull's estimate is not this one's, even out of date, nor its unfinished
+        // schedule: the window starts again from the new project's.
+        self.materials_result = None;
+        self.materials_track.reset();
+        self.materials_state.forget_schedule();
         // Keep the chosen panel layers the new model has; with none of them, go back to the
         // layers marked developable rather than fail on names the window cannot show.
         if let (Some(chosen), Some(s)) = (&mut self.panels_params.layers, &self.surface) {
@@ -2508,6 +2536,7 @@ impl App {
         self.report_options_window(ui);
         self.templates_window(ui);
         self.panels_window(ui);
+        self.materials_window(ui);
         self.finish_project_edit_frame(ui.ctx());
         self.messages_window(ui);
         self.poll_report(ui.ctx());
@@ -2833,6 +2862,16 @@ impl App {
                         .clicked()
                     {
                         self.open_builder_panels();
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.surface.is_some(),
+                            egui::Button::new(tr.s(Key::MenuFileBuilderMaterials)),
+                        )
+                        .clicked()
+                    {
+                        self.open_builder_materials();
                         ui.close();
                     }
                     if ui
@@ -4114,6 +4153,7 @@ impl App {
                     project: self.project.clone(),
                     kg: (self.hydro.kg, self.hydro.kg_estimate),
                     project_error: self.project_error.clone(),
+                    materials_entered: self.materials_entered,
                     path: self.path.clone(),
                     saved_state: self.saved_state.clone(),
                 })
@@ -4272,6 +4312,7 @@ impl App {
         if let Some(m) = snap.model {
             self.project = m.project;
             self.project_error = m.project_error;
+            self.materials_entered = m.materials_entered;
             self.path = m.path;
             self.saved_state = m.saved_state;
             (self.hydro.kg, self.hydro.kg_estimate) = m.kg;
@@ -5745,6 +5786,41 @@ impl App {
         ));
     }
 
+    /// Puts `item` in the loading condition called `condition` as one undoable project edit,
+    /// replacing an item of the same name and any named in `also_replace`
+    /// ([`seacraft_core::loading::put_item`]). An unknown condition is refused, in `locale`, with
+    /// the names the project has, and nothing changes.
+    pub fn put_loading_item(
+        &mut self,
+        condition: &str,
+        item: seacraft_core::loading::WeightItem,
+        also_replace: &[&str],
+        locale: seacraft_core::i18n::Locale,
+    ) -> Result<(), String> {
+        let Some(surface) = self.surface.as_ref() else {
+            return Err("no model is loaded".into());
+        };
+        let before = self.project.clone();
+        seacraft_core::materials::put_in_condition(
+            &mut self.project,
+            condition,
+            item,
+            also_replace,
+            locale,
+        )?;
+        let snap = Snapshot::project_edit(
+            surface,
+            self.hydro.options.draft,
+            before,
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
+        self.history.snapshot(&snap);
+        self.project_edit_source = None;
+        self.project_changed();
+        self.refresh_dirty();
+        Ok(())
+    }
+
     /// A sweep job is running (the condition, not the drawings' hull).
     pub fn heel_sweep_busy(&self) -> bool {
         self.heel_sweep_track.busy()
@@ -6229,6 +6305,7 @@ impl App {
     /// Collect finished jobs, then start the automatic recomputes that are
     /// due. Called once per frame; never blocks.
     fn run_jobs(&mut self, ctx: &egui::Context) {
+        self.sync_schedule_watch();
         self.poll_jobs();
         let quiet = |ms: u64| {
             self.last_change
@@ -6784,6 +6861,21 @@ impl App {
     /// The design data saved beside the model.
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// Why the sidecar beside the model could not be read, while its design data is unknown.
+    pub fn project_error(&self) -> Option<&str> {
+        self.project_error.as_deref()
+    }
+
+    /// Why the project has no materials schedule of its own: the sidecar could not be read and
+    /// none has been entered since. A schedule entered and then cleared is the user's empty one.
+    pub fn materials_unknown(&self) -> Option<&str> {
+        if self.project.materials.is_some() || self.materials_entered {
+            None
+        } else {
+            self.project_error()
+        }
     }
 
     /// Replace the design data; the model becomes unsaved.
@@ -7517,6 +7609,241 @@ impl App {
     /// Why measuring the panels for the current options and model failed, if it did.
     pub fn panels_failure(&self) -> Option<&str> {
         self.panels_track.failure(self.panels_key())
+    }
+
+    /// What the materials estimate depends on: the model, the project's schedule and the
+    /// refinement it is measured at. Not the loading conditions, so adding the total to one
+    /// leaves the estimate current.
+    fn materials_key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        serde_json::to_string(&self.project.materials)
+            .unwrap_or_default()
+            .hash(&mut h);
+        revision_key(&[
+            self.revision,
+            h.finish(),
+            u64::from(self.level),
+            self.mode as u64,
+        ])
+    }
+
+    /// Collect the estimate and start the next when it is due: one job at a time (the plywood
+    /// count lays panels flat, which is slow), never while a point is dragged, and only once
+    /// edits have paused. A schedule that does not validate fails at once, without a job.
+    fn drive_materials(&mut self, ctx: &egui::Context) {
+        let key = self.materials_key();
+        if let Some(Ok(est)) = self.materials_track.poll(key) {
+            self.materials_result = Some(est);
+        }
+        let quiet = self
+            .last_change
+            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_millis(300));
+        if self.materials_track.ready(key) && self.drag.is_none() {
+            match (&self.surface, quiet) {
+                (Some(surface), true) => {
+                    let schedule = self.project.materials.clone().unwrap_or_default();
+                    if let Err(e) = schedule.check() {
+                        let msg = self.tr().fmt(
+                            seacraft_core::i18n::Key::ReportMatScheduleInvalid,
+                            &[("reason", &e.render(self.tr()))],
+                        );
+                        self.materials_track.fail(key, msg);
+                    } else {
+                        let surface = surface.clone();
+                        let opts = seacraft_core::subdiv::SubdivisionOptions {
+                            level: self.level,
+                            mode: self.mode,
+                        };
+                        self.materials_track.start(key, move || {
+                            Ok(seacraft_core::materials::estimate(
+                                &surface, &schedule, opts,
+                            ))
+                        });
+                    }
+                }
+                (Some(_), false) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100))
+                }
+                (None, _) => {}
+            }
+        }
+        if self.materials_track.busy() || self.materials_track.due(key) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Where the estimate stands for the current model and schedule.
+    fn materials_status(&self) -> crate::builder_materials::MaterialsStatus<'_> {
+        use crate::builder_materials::MaterialsStatus;
+        let key = self.materials_key();
+        if let Some(reason) = self.materials_track.failure(key) {
+            return MaterialsStatus::Failed(reason);
+        }
+        match &self.materials_result {
+            Some(e) if self.materials_track.is_current(key) => MaterialsStatus::Ready(e),
+            Some(e) => MaterialsStatus::Stale(e),
+            None => MaterialsStatus::Computing,
+        }
+    }
+
+    /// The File > Builder materials window.
+    fn materials_window(&mut self, ui: &mut egui::Ui) {
+        if !self.show_materials {
+            return;
+        }
+        let Some(surface) = &self.surface else {
+            self.show_materials = false;
+            return;
+        };
+        let layers: Vec<String> = surface.layers.iter().map(|l| l.name.clone()).collect();
+        self.drive_materials(ui.ctx());
+        let conditions: Vec<String> = self
+            .project
+            .loading_conditions
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        let mut state = std::mem::take(&mut self.materials_state);
+        state.sync(self.project.materials.as_ref(), &layers);
+        let pre_drag = ui.ctx().dragged_id();
+        let pre_focus = ui
+            .ctx()
+            .text_edit_focused()
+            .then(|| ui.ctx().memory(|m| m.focused()))
+            .flatten();
+        let before = (
+            self.project.clone(),
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
+        let tr = self.tr();
+        let mut open = true;
+        let mut action = None;
+        {
+            let status = self.materials_status();
+            egui::Window::new(tr.s(seacraft_core::i18n::Key::DialogBuilderMaterials))
+                .id(egui::Id::unique("builder_materials_window"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(980.0)
+                .default_height(640.0)
+                .show(ui.ctx(), |ui| {
+                    action =
+                        crate::builder_materials::show(ui, &mut state, status, &conditions, tr);
+                });
+        }
+        self.materials_state = state;
+        match action {
+            Some(crate::builder_materials::MaterialsAction::SetSchedule(schedule)) => {
+                self.apply_materials_schedule(schedule);
+                // One undo step for a whole drag or typed number, as the dock's edits.
+                self.record_project_edit(ui.ctx(), before, pre_drag, pre_focus);
+            }
+            Some(crate::builder_materials::MaterialsAction::AddToCondition {
+                condition,
+                item_name,
+            }) => self.add_materials_to_condition(&condition, &item_name),
+            None => {}
+        }
+        self.show_materials = open;
+    }
+
+    /// Make `schedule` the project's (an empty one is no schedule); the caller records the undo
+    /// step. A schedule that does not validate is refused, so the project file stays loadable.
+    pub(crate) fn apply_materials_schedule(
+        &mut self,
+        schedule: seacraft_core::materials::Materials,
+    ) {
+        if let Err(e) = schedule.check() {
+            let msg = self.tr().fmt(
+                seacraft_core::i18n::Key::ReportMatScheduleInvalid,
+                &[("reason", &e.render(self.tr()))],
+            );
+            self.log(Level::Error, msg);
+            return;
+        }
+        self.materials_entered = true;
+        let schedule =
+            (schedule != seacraft_core::materials::Materials::default()).then_some(schedule);
+        if self.project.materials != schedule {
+            self.project.materials = schedule;
+            // Not `project_changed`: no loading, damage or RAO result reads the schedule, and the
+            // estimate keys on it itself (`materials_key`). The estimate still waits for the edits
+            // to pause.
+            self.last_change = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Put the current estimate's total in the loading condition called `condition` as one
+    /// undoable edit ([`App::put_loading_item`]), named `item_name` or, when that is empty, the
+    /// localized default; an out-of-date estimate is refused.
+    fn add_materials_to_condition(&mut self, condition: &str, item_name: &str) {
+        let tr = self.tr();
+        let name = match item_name.trim() {
+            "" => seacraft_core::materials::default_item_name(self.locale),
+            name => name,
+        };
+        let Some(item) = self.materials_estimate().map(|e| e.weight_item(name)) else {
+            self.log(
+                Level::Warning,
+                tr.s(seacraft_core::i18n::Key::MaterialsAddWait),
+            );
+            return;
+        };
+        let mass = item.mass_t;
+        let also_replace = seacraft_core::materials::replaced_names(name);
+        match self.put_loading_item(condition, item, &also_replace, self.locale) {
+            Ok(()) => self.set_status(tr.fmt(
+                seacraft_core::i18n::Key::StatusMaterialsAdded,
+                &[
+                    ("item", name),
+                    ("mass", &format!("{mass:.3}")),
+                    ("condition", condition),
+                ],
+            )),
+            Err(e) => self.log(Level::Error, e),
+        }
+    }
+
+    /// Open File > Builder materials; the item name starts as the default in the current
+    /// language unless the user named it.
+    pub fn open_builder_materials(&mut self) {
+        if self.surface.is_none() {
+            return;
+        }
+        self.show_materials = true;
+        let name = self.materials_state.item_name.as_str();
+        if name.is_empty() || seacraft_core::materials::default_item_names().contains(&name) {
+            self.materials_state.item_name =
+                seacraft_core::materials::default_item_name(self.locale).to_owned();
+        }
+    }
+
+    /// Is the Builder materials window open?
+    pub fn show_materials(&self) -> bool {
+        self.show_materials
+    }
+
+    pub fn set_show_materials(&mut self, show: bool) {
+        if show {
+            self.open_builder_materials();
+        } else {
+            self.show_materials = false;
+        }
+    }
+
+    /// The estimate for the current model and schedule; `None` while it is being weighed, after
+    /// a failure, or when only an out-of-date one is kept.
+    pub fn materials_estimate(&self) -> Option<&seacraft_core::materials::Estimate> {
+        self.materials_result
+            .as_ref()
+            .filter(|_| self.materials_track.is_current(self.materials_key()))
+    }
+
+    /// Why weighing the current schedule failed, if it did.
+    pub fn materials_failure(&self) -> Option<&str> {
+        self.materials_track.failure(self.materials_key())
     }
 
     /// Is the Builder templates window open?
@@ -8703,6 +9030,24 @@ impl App {
     /// The model revision as a worker thread sees it: always equal to [`App::revision`].
     pub fn revision_watch(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
         self.revision_watch.clone()
+    }
+
+    /// The materials schedule's change count as a worker thread sees it, brought up to date here;
+    /// also once a frame and after every control request.
+    pub fn schedule_watch(&mut self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.sync_schedule_watch();
+        self.schedule_watch.clone()
+    }
+
+    /// Bumps [`App::schedule_watch`] when the project's schedule differs from the last one seen.
+    /// The project is replaced in many places (open, undo, `project.set`, the dialogs), so the
+    /// schedule is compared here rather than each of them told.
+    pub fn sync_schedule_watch(&mut self) {
+        if self.schedule_seen != self.project.materials {
+            self.schedule_seen = self.project.materials.clone();
+            self.schedule_watch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Bumps the model revision; the only place it changes.
@@ -10494,6 +10839,7 @@ impl App {
             .original_path
             .as_deref()
             .and_then(|orig| Project::load_for_model(orig).err());
+        self.materials_entered = false;
         self.saved_state = saved_state;
         self.dirty = true;
         self.autosave.note_model_replaced(true);

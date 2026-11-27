@@ -8,8 +8,9 @@
 /// Metres in one inch, exactly, by the 1959 international definition.
 pub const M_PER_IN: f64 = 0.0254;
 
-/// A number with `decimals` places, and no minus sign on a zero.
-fn fixed(v: f64, decimals: usize) -> String {
+/// A number with `decimals` places, and no minus sign on a zero: a value a rounding step below
+/// zero prints `0.000`, not `-0.000`.
+pub fn fixed(v: f64, decimals: usize) -> String {
     let s = format!("{v:.decimals$}");
     match s.strip_prefix('-') {
         Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_owned(),
