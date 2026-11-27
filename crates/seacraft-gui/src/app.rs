@@ -5745,6 +5745,41 @@ impl App {
         ));
     }
 
+    /// Puts `item` in the loading condition called `condition` as one undoable project edit,
+    /// replacing an item of the same name and any named in `also_replace`
+    /// ([`seacraft_core::loading::put_item`]). An unknown condition is refused, in `locale`, with
+    /// the names the project has, and nothing changes.
+    pub fn put_loading_item(
+        &mut self,
+        condition: &str,
+        item: seacraft_core::loading::WeightItem,
+        also_replace: &[&str],
+        locale: seacraft_core::i18n::Locale,
+    ) -> Result<(), String> {
+        let Some(surface) = self.surface.as_ref() else {
+            return Err("no model is loaded".into());
+        };
+        let before = self.project.clone();
+        seacraft_core::materials::put_in_condition(
+            &mut self.project,
+            condition,
+            item,
+            also_replace,
+            locale,
+        )?;
+        let snap = Snapshot::project_edit(
+            surface,
+            self.hydro.options.draft,
+            before,
+            (self.hydro.kg, self.hydro.kg_estimate),
+        );
+        self.history.snapshot(&snap);
+        self.project_edit_source = None;
+        self.project_changed();
+        self.refresh_dirty();
+        Ok(())
+    }
+
     /// A sweep job is running (the condition, not the drawings' hull).
     pub fn heel_sweep_busy(&self) -> bool {
         self.heel_sweep_track.busy()

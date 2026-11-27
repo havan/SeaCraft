@@ -3425,7 +3425,8 @@ pub fn tool_definitions() -> Vec<Value> {
              are the builder's numbers applied to the modelled surface, not validated; there is no laminate \
              thickness offset. With `add_to_condition` (a loading condition of the project) the total goes in as \
              one weight item named `item_name`, replacing an earlier one, in the session project: the reply says \
-             `saved: false`, and save_hull writes it. Refused while the project file failed to load.",
+             `saved: false`, and save_hull writes it. Connected to the app, it is one undoable edit there, refused \
+             when the model changed since the estimate. Headless, refused while the project file failed to load.",
             obj(
                 json!({
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
@@ -4424,9 +4425,55 @@ impl Remote {
                 let p = a.get("project").ok_or("project_set: give `project`")?;
                 self.request("project.set", json!({ "project": p }))
             }
-            "materials_estimate" => Err(
-                "materials_estimate needs the headless server until the window supports it".into(),
-            ),
+            "materials_estimate" => {
+                let mut p = json!({});
+                for key in ["level", "mode"] {
+                    if let Some(v) = a.get(key).filter(|v| !v.is_null()) {
+                        p[key] = v.clone();
+                    }
+                }
+                let mut r = self.request("build.materials", p)?;
+                let Some(cond_name) = str_arg(a, "add_to_condition") else {
+                    return Ok(r);
+                };
+                let num = |v: &Value| {
+                    v.as_f64()
+                        .ok_or("materials_estimate: the app's estimate has no total")
+                };
+                let total = &r["total"];
+                let name = str_arg(a, "item_name").unwrap_or_else(|| {
+                    seacraft_core::materials::default_item_name(seacraft_core::i18n::Locale::En)
+                });
+                let item = loading::WeightItem {
+                    name: name.to_owned(),
+                    mass_t: num(&total["mass_t"])?,
+                    x: num(&total["centre"][0])?,
+                    y: num(&total["centre"][1])?,
+                    z: num(&total["centre"][2])?,
+                };
+                // The app refuses the item when its model changed since the estimate.
+                self.request(
+                    "loading.put_item",
+                    json!({
+                        "condition": cond_name,
+                        "item": item,
+                        "revision": r["revision"],
+                        "also_replace_defaults": true,
+                    }),
+                )?;
+                if let Some(o) = r.as_object_mut() {
+                    o.insert(
+                        "added".into(),
+                        json!({"condition": cond_name, "item": item.name, "mass_t": item.mass_t}),
+                    );
+                    o.insert("saved".into(), json!(false));
+                    o.insert(
+                        "saved_note".into(),
+                        json!("the app's project changed; save_hull writes it"),
+                    );
+                }
+                Ok(r)
+            }
             "heel_equilibrium" => self.request("stability.heel", Value::Object(a.clone())),
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
             "damage_stability" if a.contains_key("case") || a.contains_key("case_path") => {
@@ -7451,6 +7498,88 @@ mod tests {
         );
         assert_eq!(r["pages"], 8, "{r}");
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Connected to the app, `materials_estimate` asks `build.materials`; with `add_to_condition`
+    /// it then puts the total in with `loading.put_item` at the estimate's revision, and the app's
+    /// refusal (a model changed since) is the tool's.
+    #[test]
+    fn connected_materials_estimate_puts_the_total_at_the_estimate_revision() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let estimate = br#"{"ok":true,"result":{"layers":[],"total":{"mass_kg":50.0,"mass_t":0.05,"centre":[1.0,0.0,0.3]},"revision":7,"model_changed":false,"note":"n","backend":"app"}}"#;
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut seen = Vec::new();
+            let mut next = |reply: &[u8]| {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read");
+                let v: Value = serde_json::from_str(line.trim()).expect("json");
+                seen.push((v["method"].clone(), v["params"].clone()));
+                stream.write_all(reply).expect("write");
+                stream.write_all(b"\n").expect("write");
+            };
+            next(estimate);
+            next(estimate);
+            next(br#"{"ok":true,"result":{"condition":"Design"}}"#);
+            next(estimate);
+            next(
+                br#"{"ok":false,"error":"the model changed since the estimate (revision 7 to 8)"}"#,
+            );
+            seen
+        });
+        let mut s = McpServer::connect_no_auth(&addr.to_string()).expect("connect");
+        let r = ok(&mut s, 1, "materials_estimate", json!({}));
+        assert!(r.get("added").is_none(), "{r}");
+        assert_eq!(r["note"], "n");
+        let r = ok(
+            &mut s,
+            2,
+            "materials_estimate",
+            json!({"add_to_condition": "Design", "level": 3, "mode": "cc"}),
+        );
+        let default = seacraft_core::materials::default_item_name(seacraft_core::i18n::Locale::En);
+        assert_eq!(
+            r["added"],
+            json!({"condition": "Design", "item": default, "mass_t": 0.05}),
+            "{r}"
+        );
+        assert_eq!(r["saved"], false);
+        assert_eq!(r["backend"], "app");
+        let msg = fails(
+            &mut s,
+            3,
+            "materials_estimate",
+            json!({"add_to_condition": "Design", "item_name": "Hull shell"}),
+        );
+        assert!(msg.contains("model changed"), "{msg}");
+
+        let seen = handle.join().expect("server thread finished");
+        let methods: Vec<&str> = seen.iter().map(|(m, _)| m.as_str().unwrap()).collect();
+        assert_eq!(
+            methods,
+            [
+                "build.materials",
+                "build.materials",
+                "loading.put_item",
+                "build.materials",
+                "loading.put_item"
+            ]
+        );
+        assert_eq!(seen[0].1, json!({}));
+        assert_eq!(seen[1].1, json!({"level": 3, "mode": "cc"}));
+        assert_eq!(
+            seen[2].1,
+            json!({
+                "condition": "Design",
+                "item": {"name": default, "mass_t": 0.05, "x": 1.0, "y": 0.0, "z": 0.3},
+                "revision": 7,
+                "also_replace_defaults": true,
+            })
+        );
+        assert_eq!(seen[4].1["item"]["name"], "Hull shell");
     }
 
     /// Connected to the app, the two tools forward to `build.templates` and to `model.export`

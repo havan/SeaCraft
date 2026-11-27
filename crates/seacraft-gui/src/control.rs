@@ -44,9 +44,8 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long a connection waits for the reply to `method`.
 fn reply_timeout(method: &str) -> Duration {
     match method {
-        "build.templates" | "build.panels" | "stability.heel" | "heel_equilibrium" => {
-            WORKER_TIMEOUT
-        }
+        "build.templates" | "build.panels" | "build.materials" | "stability.heel"
+        | "heel_equilibrium" => WORKER_TIMEOUT,
         _ => REPLY_TIMEOUT,
     }
 }
@@ -738,6 +737,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Optio
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match req.method.as_str() {
             "build.templates" => build_templates(app, p, &req.reply),
             "build.panels" => build_panels(app, p, &req.reply),
+            "build.materials" => build_materials(app, p, &req.reply),
             "stability.heel" | "heel_equilibrium" => stability_heel(app, p, &req.reply),
             _ => handle_inner(app, ctx, req, p).map(Some),
         }));
@@ -947,6 +947,114 @@ fn build_panels(app: &mut App, p: &Value, reply: &Sender<Value>) -> Result<Optio
         Ok(v)
     });
     Ok(None)
+}
+
+/// `build.materials`: the project's schedule checked here, the estimate measured by a worker
+/// ([`reply_later`]) on the refined mesh at `level` and `mode` (default: the app's). Read-only:
+/// `loading.put_item` adds the total to a condition, with the reply's `revision`.
+fn build_materials(
+    app: &mut App,
+    p: &Value,
+    reply: &Sender<Value>,
+) -> Result<Option<Value>, String> {
+    let err = |e: String| format!("build.materials: {e}");
+    let level = level_arg(p)?.unwrap_or_else(|| app.subdivision_level());
+    let mode = match text(p, "mode")? {
+        None => app.subdivision_mode(),
+        Some("loop") => SubdivisionMode::Loop,
+        Some("cc" | "catmull-clark") => SubdivisionMode::CatmullClark,
+        Some(other) => {
+            return Err(err(format!(
+                "`mode` must be \"loop\" or \"cc\", not `{other}`"
+            )))
+        }
+    };
+    let schedule = app.project().materials.clone().unwrap_or_default();
+    schedule
+        .validate()
+        .map_err(|e| err(format!("the schedule is invalid: {e}")))?;
+    let surface = app
+        .surface()
+        .ok_or_else(|| err("no model is loaded".into()))?
+        .clone();
+    reply_later(
+        reply.clone(),
+        app.revision(),
+        app.revision_watch(),
+        move || {
+            let sub = seacraft_core::subdiv::SubdivisionOptions { level, mode };
+            let est = seacraft_core::materials::estimate(&surface, &schedule, sub);
+            let mut v = serde_json::to_value(&est).map_err(|e| e.to_string())?;
+            if let Some(o) = v.as_object_mut() {
+                o.insert("level".into(), json!(level));
+                o.insert("mode".into(), json!(mode_name(mode)));
+                o.insert(
+                    "note".into(),
+                    json!(seacraft_core::not_validated_note(
+                        seacraft_core::i18n::Locale::En
+                    )),
+                );
+                o.insert("backend".into(), json!("app"));
+            }
+            Ok(v)
+        },
+    );
+    Ok(None)
+}
+
+/// `loading.put_item`: one weight item into a loading condition of the project, as one undoable
+/// edit. `revision` is the one the item was measured on (`build.materials` replies with it); a
+/// model changed since is refused, so a stale estimate never goes in as current.
+fn put_loading_item(app: &mut App, p: &Value) -> Result<Value, String> {
+    let condition = text(p, "condition")?
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("missing `condition`: the name of a loading condition of the project")?;
+    let item: seacraft_core::loading::WeightItem = match p.get("item") {
+        None | Some(Value::Null) => return Err("missing `item` {name, mass_t, x, y, z}".into()),
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| format!("`item` must be {{name, mass_t, x, y, z}}: {e}"))?,
+    };
+    if item.name.trim().is_empty() {
+        return Err("`item.name` must not be empty".into());
+    }
+    if !(item.mass_t.is_finite() && (0.0..=1.0e6).contains(&item.mass_t)) {
+        return Err("`item.mass_t` must be from 0 to 1000000 t".into());
+    }
+    if [item.x, item.y, item.z]
+        .iter()
+        .any(|c| !(c.is_finite() && c.abs() <= 1.0e6))
+    {
+        return Err("`item` x, y and z must be finite numbers within 1000 km".into());
+    }
+    let revision = p
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("`revision` must be the whole number `build.materials` replied with")?;
+    let also_replace_defaults = boolean(p, "also_replace_defaults")?.unwrap_or(false);
+    let now = app.revision();
+    if revision != now {
+        return Err(format!(
+            "the model changed since the estimate (revision {revision} → {now})"
+        ));
+    }
+    let also = if also_replace_defaults {
+        seacraft_core::materials::replaced_names(&item.name)
+    } else {
+        Vec::new()
+    };
+    app.put_loading_item(
+        condition,
+        item.clone(),
+        &also,
+        seacraft_core::i18n::Locale::En,
+    )?;
+    Ok(json!({
+        "condition": condition,
+        "item": item,
+        "revision": now,
+        "dirty": app.is_dirty(),
+        "undo_len": app.undo_len(),
+    }))
 }
 
 /// `build.templates`: checked here, drawn and written by a worker ([`reply_later`]).
@@ -2124,6 +2232,7 @@ fn handle_inner(
             }
             Ok(v)
         }
+        "loading.put_item" => put_loading_item(app, p),
         "loading.compute" => {
             let name = text(p, "name")?;
             let res = app.compute_loading_blocking(name)?;
@@ -3443,6 +3552,212 @@ mod tests {
         assert_eq!(reply_timeout("build.templates"), Duration::from_secs(300));
         assert_eq!(reply_timeout("build.panels"), Duration::from_secs(300));
         assert_eq!(reply_timeout("ui.inspect"), REPLY_TIMEOUT);
+    }
+
+    /// The demo with the example loading condition, named `Design`, in its project.
+    fn demo_with_condition() -> (App, egui::Context) {
+        let (mut app, ctx) = demo();
+        let text = std::fs::read_to_string(format!(
+            "{}/../../examples/demo-loadcase.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let mut cond: seacraft_core::loading::LoadingCondition =
+            serde_json::from_str(&text).unwrap();
+        cond.name = "Design".into();
+        cond.items.clear();
+        app.set_project(seacraft_core::project::Project {
+            loading_conditions: vec![cond],
+            ..Default::default()
+        });
+        (app, ctx)
+    }
+
+    /// `build.materials`, then the request `loading.put_item` gets from it.
+    fn estimate_and_item(app: &mut App, ctx: &egui::Context, name: &str) -> Value {
+        let r = call(app, ctx, "build.materials", json!({}));
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        json!({
+            "condition": "Design",
+            "item": {
+                "name": name,
+                "mass_t": v["total"]["mass_t"],
+                "x": v["total"]["centre"][0],
+                "y": v["total"]["centre"][1],
+                "z": v["total"]["centre"][2],
+            },
+            "revision": v["revision"],
+        })
+    }
+
+    fn items(app: &App) -> Vec<seacraft_core::loading::WeightItem> {
+        app.project().loading_conditions[0].items.clone()
+    }
+
+    #[test]
+    fn build_materials_answers_from_a_worker() {
+        assert_eq!(reply_timeout("build.materials"), WORKER_TIMEOUT);
+        let (mut app, ctx) = demo();
+        let (tx, rx) = mpsc::channel();
+        let req = ControlRequest::new("build.materials", json!({ "mode": "cc" }), tx);
+        assert!(
+            handle(&mut app, &ctx, &req).is_none(),
+            "answered by a worker"
+        );
+        let r = rx.recv_timeout(Duration::from_secs(60)).expect("a reply");
+        assert_eq!(r["ok"], true, "{r}");
+        let v = &r["result"];
+        assert_eq!(v["layers"].as_array().unwrap().len(), 3, "the demo: {v}");
+        assert_eq!(v["has_glass"], false, "no schedule: {v}");
+        assert!(v["total"]["mass_t"].as_f64().unwrap() > 0.0, "{v}");
+        assert_eq!(v["revision"], app.revision());
+        assert_eq!(v["model_changed"], false);
+        assert_eq!(v["level"], 2);
+        assert_eq!(v["mode"], "catmull-clark");
+        assert!(v["note"].as_str().is_some_and(|n| !n.is_empty()), "{v}");
+        assert_eq!(v["backend"], "app");
+    }
+
+    #[test]
+    fn build_materials_refuses_bad_input_at_once() {
+        let (mut app, ctx) = demo();
+        for params in [
+            json!({ "mode": "butterfly" }),
+            json!({ "level": 9 }),
+            json!({ "level": "two" }),
+        ] {
+            let (tx, _rx) = mpsc::channel();
+            let req = ControlRequest::new("build.materials", params.clone(), tx);
+            let r = handle(&mut app, &ctx, &req).expect("answered at once");
+            assert_eq!(r["ok"], false, "{params}: {r}");
+        }
+        let mut project = app.project().clone();
+        project.materials = Some(seacraft_core::materials::Materials {
+            layers: [(
+                "Bottom".to_string(),
+                vec![seacraft_core::materials::Ply {
+                    g_m2: 1.0,
+                    side: seacraft_core::materials::Side::Outside,
+                }],
+            )]
+            .into(),
+            ..Default::default()
+        });
+        app.set_project(project);
+        let (tx, _rx) = mpsc::channel();
+        let req = ControlRequest::new("build.materials", json!({}), tx);
+        let r = handle(&mut app, &ctx, &req).expect("answered at once");
+        assert!(
+            r["error"].as_str().unwrap().contains("schedule is invalid"),
+            "no resin ratio: {r}"
+        );
+    }
+
+    #[test]
+    fn put_item_adds_the_estimate_to_a_condition() {
+        let (mut app, ctx) = demo_with_condition();
+        let req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        let r = call(&mut app, &ctx, "loading.put_item", req.clone());
+        assert_eq!(r["ok"], true, "{r}");
+        assert_eq!(r["result"]["condition"], "Design");
+        assert_eq!(r["result"]["item"]["name"], "Hull shell");
+        assert_eq!(r["result"]["dirty"], true);
+        call(&mut app, &ctx, "loading.put_item", req);
+        let now = items(&app);
+        assert_eq!(now.len(), 1, "a second put replaces the first: {now:?}");
+        assert_eq!(now[0].name, "Hull shell");
+        assert!(now[0].mass_t > 0.0);
+    }
+
+    #[test]
+    fn put_item_replaces_either_default_name_when_asked() {
+        let (mut app, ctx) = demo_with_condition();
+        let [en, tr] = seacraft_core::materials::default_item_names();
+        let req = estimate_and_item(&mut app, &ctx, tr);
+        assert_eq!(call(&mut app, &ctx, "loading.put_item", req)["ok"], true);
+        let mut req = estimate_and_item(&mut app, &ctx, en);
+        call(&mut app, &ctx, "loading.put_item", req.clone());
+        assert_eq!(items(&app).len(), 2, "without the flag both stay");
+        req["also_replace_defaults"] = json!(true);
+        call(&mut app, &ctx, "loading.put_item", req);
+        let now = items(&app);
+        assert_eq!(now.len(), 1, "{now:?}");
+        assert_eq!(now[0].name, en);
+    }
+
+    #[test]
+    fn put_item_refuses_a_stale_revision() {
+        let (mut app, ctx) = demo_with_condition();
+        let req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        let then = req["revision"].as_u64().unwrap();
+        let moved = call(
+            &mut app,
+            &ctx,
+            "points.move",
+            json!({ "points": [0], "delta": [0.0, 0.0, 0.01] }),
+        );
+        assert_eq!(moved["ok"], true, "{moved}");
+        let now = app.revision();
+        let undo_len = app.undo_len();
+        let r = call(&mut app, &ctx, "loading.put_item", req);
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(
+            r["error"],
+            format!("the model changed since the estimate (revision {then} → {now})")
+        );
+        assert!(items(&app).is_empty());
+        assert_eq!(app.undo_len(), undo_len, "a refusal records nothing");
+    }
+
+    #[test]
+    fn put_item_refuses_bad_requests_and_changes_nothing() {
+        let (mut app, ctx) = demo_with_condition();
+        let good = estimate_and_item(&mut app, &ctx, "Hull shell");
+        let with = |key: &str, v: Value| {
+            let mut r = good.clone();
+            r[key] = v;
+            r
+        };
+        let mut no_revision = good.clone();
+        no_revision.as_object_mut().unwrap().remove("revision");
+        let mut negative = good.clone();
+        negative["item"]["mass_t"] = json!(-1.0);
+        let mut unnamed = good.clone();
+        unnamed["item"]["name"] = json!("  ");
+        for (req, says) in [
+            (with("condition", json!("Nope")), "Design"),
+            (with("condition", Value::Null), "condition"),
+            (with("item", json!("heavy")), "item"),
+            (no_revision, "revision"),
+            (with("revision", json!(-1)), "revision"),
+            (
+                with("also_replace_defaults", json!("yes")),
+                "also_replace_defaults",
+            ),
+            (negative, "mass_t"),
+            (unnamed, "name"),
+        ] {
+            let r = call(&mut app, &ctx, "loading.put_item", req.clone());
+            assert_eq!(r["ok"], false, "{req}: {r}");
+            let e = r["error"].as_str().unwrap();
+            assert!(e.contains(says), "{req}: {e}");
+        }
+        assert!(items(&app).is_empty());
+        assert_eq!(app.undo_len(), 0);
+    }
+
+    #[test]
+    fn put_item_is_undoable() {
+        let (mut app, ctx) = demo_with_condition();
+        let req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        assert_eq!(call(&mut app, &ctx, "loading.put_item", req)["ok"], true);
+        assert_eq!(items(&app).len(), 1);
+        assert_eq!(app.undo_len(), 1);
+        assert_eq!(call(&mut app, &ctx, "history.undo", json!({}))["ok"], true);
+        assert!(items(&app).is_empty(), "the condition has no item");
+        assert_eq!(call(&mut app, &ctx, "history.redo", json!({}))["ok"], true);
+        assert_eq!(items(&app).len(), 1);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

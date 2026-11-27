@@ -4,12 +4,13 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
-- Builder materials and weight: from the CLI (`seacraft materials`), the MCP server (`materials_estimate`) and the
-  design report's new Materials section you can now estimate what the hull is made of and what it weighs: shell
-  weight, glass and resin, seam tape and fillets, and plywood sheets "if cut from plywood", with the centre of the
-  weight, and add the total to a loading condition as one named item. The schedule (plies per layer, tape,
-  fillet, resin per glass) is saved in the project file. Every glass and resin figure is the builder's own, with no
-  built-in default, and nothing here is validated against a built hull.
+- Builder materials and weight: from the CLI (`seacraft materials`), the MCP server (`materials_estimate`), the
+  control channel (`build.materials`, `loading.put_item`, undoable and refused when the model changed since the
+  estimate) and the design report's new Materials section you can now estimate what the hull is made of and what
+  it weighs: shell weight, glass and resin, seam tape and fillets, and plywood sheets "if cut from plywood", with
+  the centre of the weight, and add the total to a loading condition as one named item. The schedule (plies per
+  layer, tape, fillet, resin per glass) is saved in the project file. Every glass and resin figure is the
+  builder's own, with no built-in default, and nothing here is validated against a built hull.
 - A large hull at a high subdivision level no longer freezes the window while it is refined: the window draws a
   coarser level at once (level 3 for `container-230m`) and the full level replaces it when a background job has
   built it, with "refining to level N…" in the status bar meanwhile. Smaller hulls (the demo hull up to level 4)
