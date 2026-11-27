@@ -1474,6 +1474,38 @@ mod tests {
     }
 
     #[test]
+    fn a_seam_folded_shut_either_way_is_told_truly() {
+        // B folded back over A (inside angle under 5°) and under it (over 355°, concave): the
+        // same warning, worded so it is true of both.
+        for (z, concave) in [(0.05, false), (-0.05, true)] {
+            let s = fold([(2.0, 0.0, z), (0.0, 0.0, z)]);
+            let e = estimate(&s, &tape_and_fillet(), l3());
+            assert_eq!(e.seams[0].concave, concave);
+            assert_eq!(e.seams[0].fillet_kg, 0.0);
+            for t in seam_angles(&s, l3(), ["Hull", "Hull"]) {
+                assert!(if concave {
+                    t >= 355f64.to_radians()
+                } else {
+                    t <= 5f64.to_radians()
+                });
+            }
+            assert_eq!(e.warnings.len(), 1, "{:?}", e.warnings);
+            let w = &e.warnings[0];
+            assert_eq!(w.key(), Some(Key::MaterialsWarnSeamClosed));
+            assert_eq!(
+                w.render(Tr::new(Locale::En)),
+                "The Hull / Hull seam is folded almost shut, its two faces 5° or less apart, \
+                 so it gets no fillet"
+            );
+            assert_eq!(
+                w.render(Tr::new(Locale::Tr)),
+                "Hull / Hull dikişi neredeyse kapanacak kadar katlanmış, iki yüzü arasında 5° \
+                 veya daha az açı var, bu yüzden köşe dolgusu almıyor"
+            );
+        }
+    }
+
+    #[test]
     fn two_faces_winding_an_edge_the_same_way_warn_and_are_not_a_seam() {
         let mut s = fold([(2.0, 1.0, -1.0), (0.0, 1.0, -1.0)]);
         s.faces[1].reverse();
