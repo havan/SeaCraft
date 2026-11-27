@@ -2122,7 +2122,7 @@ no laminate thickness offset.
 
 ---
 
-## 52. Floodable Length: Box Barge Closed Form and Lost-Buoyancy Balance
+## 53. Floodable Length: Box Barge Closed Form and Lost-Buoyancy Balance
 
 ### Formula
 The floodable length at a point is the length of a compartment, with that point as centre, that can be flooded
@@ -2169,7 +2169,7 @@ SeaCraft measures the margin line from the moulded deck edge (no deck thickness)
 
 ---
 
-## 53. Floodable Length: Cross-Check with the Damage Solver
+## 54. Floodable Length: Cross-Check with the Damage Solver
 
 ### Formula
 A compartment from a floodable length curve, flooded as an ordinary damage case (lost buoyancy, compartment clipped
@@ -2188,7 +2188,7 @@ damage equilibrium solver), not an external source.
 
 ---
 
-## 54. Floodable Length: Demo Hull, Recorded
+## 55. Floodable Length: Demo Hull, Recorded
 
 ### Tests
 `crates/seacraft-core/src/floodable.rs::demo_hull_curve_recorded`: demo hull, level 3, design draft, $\mu = 0.85$:

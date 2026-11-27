@@ -55,7 +55,7 @@ Floodable length curves (`seacraft floodable`, the MCP tool `floodable_length`) 
 Tupper (*Basic Ship Theory*, Vol. 1) and Gillmer & Johnson (*Introduction to Naval Architecture*, 1982), the
 trial-waterline method of Gillmer & Johnson and the triangle check of Rawson & Tupper; neither book prints worked
 numbers. They are checked against a box barge's closed form and against SeaCraft's own
-damage solver ([`docs/oracles.md`](docs/oracles.md) §51-§53), not against a published floodable length table or
+damage solver ([`docs/oracles.md`](docs/oracles.md) §53-§55), not against a published floodable length table or
 approved software. The margin line is measured from the moulded deck edge, with no deck thickness, every
 compartment is full breadth with one permeability, and the factor of subdivision is the user's: SeaCraft does not
 compute it from the rules. A compartment that passes the check is not shown to meet SOLAS or any other rule.
