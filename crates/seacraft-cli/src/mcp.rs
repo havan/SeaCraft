@@ -1467,34 +1467,18 @@ impl McpServer {
 
         let mut added = None;
         if let Some(cond_name) = str_arg(a, "add_to_condition") {
-            let names: Vec<String> = self
-                .project
-                .loading_conditions
-                .iter()
-                .map(|c| c.name.clone())
-                .collect();
-            let Some(cond) = self
-                .project
-                .loading_conditions
-                .iter_mut()
-                .find(|c| c.name == cond_name)
-            else {
-                return Err(err(format!(
-                    "no loading condition named {cond_name:?}; the project has: {}",
-                    names.join(", ")
-                )));
-            };
-            let item_name = str_arg(a, "item_name")
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    materials::default_item_name(seacraft_core::i18n::Locale::En).to_owned()
-                });
-            let also = materials::replaced_names(&item_name);
-            loading::put_item(cond, est.weight_item(&item_name), &also);
+            let item = materials::add_to_condition(
+                &mut self.project,
+                cond_name,
+                str_arg(a, "item_name"),
+                seacraft_core::i18n::Locale::En,
+                &est,
+            )
+            .map_err(err)?;
             added = Some(json!({
                 "condition": cond_name,
-                "item": item_name,
-                "mass_t": est.total.mass_t,
+                "item": item.name,
+                "mass_t": item.mass_t,
             }));
         }
 

@@ -5470,40 +5470,25 @@ fn cmd_materials(a: MaterialsArgs, tr: Tr) -> Result<()> {
     let mut wrote = None;
     if let Some(cond_name) = &a.add_to {
         let (mut proj, path) = loaded.expect("add-to without a project was refused above");
-        let names: Vec<String> = proj
-            .loading_conditions
-            .iter()
-            .map(|c| c.name.clone())
-            .collect();
-        let Some(cond) = proj
-            .loading_conditions
-            .iter_mut()
-            .find(|c| &c.name == cond_name)
-        else {
-            bail!(
-                "{}",
-                tr.fmt(
-                    Key::CliMaterialsAddToUnknown,
-                    &[
-                        ("name", cond_name),
-                        ("path", &path.display().to_string()),
-                        ("names", &names.join(", ")),
-                    ]
-                )
-            );
-        };
-        let item_name = a
-            .item
-            .clone()
-            .unwrap_or_else(|| seacraft_core::materials::default_item_name(tr.locale()).to_owned());
-        let also = seacraft_core::materials::replaced_names(&item_name);
-        loading::put_item(cond, est.weight_item(&item_name), &also);
+        let item = seacraft_core::materials::add_to_condition(
+            &mut proj,
+            cond_name,
+            a.item.as_deref(),
+            tr.locale(),
+            &est,
+        )
+        .map_err(|reason| {
+            anyhow::anyhow!(tr.fmt(
+                Key::CliMaterialsAddToUnknown,
+                &[("path", &path.display().to_string()), ("reason", &reason)]
+            ))
+        })?;
         proj.save(&path).map_err(|e| anyhow::anyhow!(e))?;
         wrote = Some(tr.fmt(
             Key::CliMaterialsWrote,
             &[
                 ("path", &path.display().to_string()),
-                ("item", &item_name),
+                ("item", &item.name),
                 ("mass", &format!("{:.3}", est.total.mass_t)),
                 ("condition", cond_name),
             ],

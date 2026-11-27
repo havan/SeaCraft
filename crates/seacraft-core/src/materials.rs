@@ -15,6 +15,7 @@ use crate::math::{polygon_area3, Vec3};
 use crate::mesh::{Layer, Surface};
 use crate::panel_choices::{self, Choices};
 use crate::panels::{self, PanelOptions, Stock};
+use crate::project::Project;
 use crate::subdiv::{self, SubdivMesh, SubdivisionOptions};
 
 /// Which face of the shell a ply sits on. It does not change the mass.
@@ -267,6 +268,56 @@ pub fn replaced_names(name: &str) -> Vec<&'static str> {
     } else {
         Vec::new()
     }
+}
+
+/// Puts `item` in the project's loading condition called `condition`, as
+/// [`loading::put_item`](crate::loading::put_item) does with `also_replace`. An unknown condition
+/// is refused, in `locale`, with the names the project has, and nothing changes.
+pub fn put_in_condition(
+    project: &mut Project,
+    condition: &str,
+    item: WeightItem,
+    also_replace: &[&str],
+    locale: Locale,
+) -> Result<(), String> {
+    let conditions = &mut project.loading_conditions;
+    let Some(i) = conditions.iter().position(|c| c.name == condition) else {
+        let tr = Tr::new(locale);
+        return Err(if conditions.is_empty() {
+            tr.fmt(Key::MaterialsNoConditions, &[("name", condition)])
+        } else {
+            let names: Vec<&str> = conditions.iter().map(|c| c.name.as_str()).collect();
+            tr.fmt(
+                Key::MaterialsUnknownCondition,
+                &[("name", condition), ("names", &names.join(", "))],
+            )
+        });
+    };
+    crate::loading::put_item(&mut conditions[i], item, also_replace);
+    Ok(())
+}
+
+/// Adds the estimate's total to the project's loading condition called `condition` as one weight
+/// item named `item_name` (by default [`default_item_name`] in `locale`), replacing an earlier one
+/// of that name, and either default name when it is a default ([`replaced_names`]). Returns the
+/// item written; refuses an unknown condition as [`put_in_condition`] does.
+pub fn add_to_condition(
+    project: &mut Project,
+    condition: &str,
+    item_name: Option<&str>,
+    locale: Locale,
+    est: &Estimate,
+) -> Result<WeightItem, String> {
+    let name = item_name.unwrap_or_else(|| default_item_name(locale));
+    let item = est.weight_item(name);
+    put_in_condition(
+        project,
+        condition,
+        item.clone(),
+        &replaced_names(name),
+        locale,
+    )?;
+    Ok(item)
 }
 
 /// Accumulates a mass-weighted centre.
@@ -787,6 +838,83 @@ mod tests {
         assert_ne!(en, tr);
         assert_eq!(replaced_names(tr), vec![en, tr]);
         assert!(replaced_names("Mine").is_empty());
+    }
+
+    /// A project with two loading conditions; `Light` already holds an item called `old`.
+    fn two_conditions(old: &str) -> crate::project::Project {
+        let item = |name: &str| WeightItem {
+            name: name.into(),
+            mass_t: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let cond = |name: &str, items: Vec<WeightItem>| crate::loading::LoadingCondition {
+            name: name.into(),
+            lightship: item("Lightship"),
+            items,
+            tanks: Vec::new(),
+            windage_extra: Vec::new(),
+            bilge: Default::default(),
+            downflooding_deg: None,
+        };
+        crate::project::Project {
+            loading_conditions: vec![cond("Design", Vec::new()), cond("Light", vec![item(old)])],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn add_to_condition_writes_the_total_under_the_given_name() {
+        let e = estimate(&half_box(), &Materials::default(), l3());
+        let mut p = two_conditions("Hull");
+        let w = add_to_condition(&mut p, "Light", Some("Hull"), Locale::En, &e).unwrap();
+        assert_eq!(w, e.weight_item("Hull"));
+        assert_eq!(p.loading_conditions[1].items, vec![w]);
+        assert!(p.loading_conditions[0].items.is_empty());
+    }
+
+    #[test]
+    fn add_to_condition_defaults_the_name_and_replaces_either_default() {
+        let e = estimate(&half_box(), &Materials::default(), l3());
+        let [en, tr] = default_item_names();
+        let mut p = two_conditions(en);
+        let w = add_to_condition(&mut p, "Light", None, Locale::Tr, &e).unwrap();
+        assert_eq!(w.name, tr);
+        assert_eq!(p.loading_conditions[1].items, vec![w]);
+    }
+
+    #[test]
+    fn add_to_condition_refuses_an_unknown_condition_with_the_names() {
+        let e = estimate(&half_box(), &Materials::default(), l3());
+        let mut p = two_conditions("Hull");
+        let before = p.clone();
+        let msg = add_to_condition(&mut p, "Nope", None, Locale::En, &e).unwrap_err();
+        assert!(
+            msg.contains("Nope") && msg.contains("Design, Light"),
+            "{msg}"
+        );
+        assert_eq!(p, before, "nothing changed");
+        let mut empty = crate::project::Project::default();
+        let msg = add_to_condition(&mut empty, "Nope", None, Locale::En, &e).unwrap_err();
+        assert!(msg.contains("Nope") && msg.contains("none"), "{msg}");
+    }
+
+    #[test]
+    fn put_in_condition_replaces_only_what_it_is_told_to() {
+        let mut p = two_conditions("Old");
+        let item = WeightItem {
+            name: "New".into(),
+            mass_t: 2.0,
+            x: 1.0,
+            y: 0.0,
+            z: 0.5,
+        };
+        put_in_condition(&mut p, "Light", item.clone(), &[], Locale::En).unwrap();
+        assert_eq!(p.loading_conditions[1].items.len(), 2);
+        put_in_condition(&mut p, "Light", item.clone(), &["Old"], Locale::En).unwrap();
+        assert_eq!(p.loading_conditions[1].items, vec![item.clone()]);
+        assert!(put_in_condition(&mut p, "light", item, &[], Locale::En).is_err());
     }
 
     #[test]
