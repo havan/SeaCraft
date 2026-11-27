@@ -851,6 +851,7 @@ impl McpServer {
             "hydro_compute" => self.hydro_compute(a),
             "stability_cross_curves" => self.stability_curves(a),
             "loading_condition" => self.loading_condition(a),
+            "materials_estimate" => self.materials_estimate(a),
             "heel_equilibrium" => self.heel_equilibrium(a),
             "weather_criterion" => self.weather_criterion(a),
             "damage_stability" => self.damage_stability(a),
@@ -1432,6 +1433,87 @@ impl McpServer {
         let res = loading::evaluate(&self.surface, &opts, &cond);
         let mut v = serde_json::to_value(&res).map_err(|e| e.to_string())?;
         if let Some(o) = v.as_object_mut() {
+            o.insert("backend".into(), json!("headless"));
+        }
+        Ok(v)
+    }
+
+    fn materials_estimate(&mut self, a: &Map<String, Value>) -> Result<Value, String> {
+        use seacraft_core::materials;
+        let err = |e: String| format!("materials_estimate: {e}");
+        if let Some(e) = &self.project_error {
+            return Err(err(format!("the project file failed to load: {e}")));
+        }
+        let mut sub = self.opts.subdivision;
+        if a.contains_key("level") {
+            sub.level = level_arg(a)?;
+        }
+        if let Some(mode) = str_arg(a, "mode") {
+            sub.mode = match mode.to_ascii_lowercase().as_str() {
+                "loop" => SubdivisionMode::Loop,
+                "cc" => SubdivisionMode::CatmullClark,
+                other => {
+                    return Err(err(format!(
+                        "`mode` must be \"loop\" or \"cc\", not {other:?}"
+                    )))
+                }
+            };
+        }
+        let schedule = self.project.materials.clone().unwrap_or_default();
+        schedule
+            .validate()
+            .map_err(|e| err(format!("the schedule is invalid: {e}")))?;
+        let est = materials::estimate(&self.surface, &schedule, sub);
+
+        let mut added = None;
+        if let Some(cond_name) = str_arg(a, "add_to_condition") {
+            let names: Vec<String> = self
+                .project
+                .loading_conditions
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
+            let Some(cond) = self
+                .project
+                .loading_conditions
+                .iter_mut()
+                .find(|c| c.name == cond_name)
+            else {
+                return Err(err(format!(
+                    "no loading condition named {cond_name:?}; the project has: {}",
+                    names.join(", ")
+                )));
+            };
+            let item_name = str_arg(a, "item_name")
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    materials::default_item_name(seacraft_core::i18n::Locale::En).to_owned()
+                });
+            let also = materials::replaced_names(&item_name);
+            loading::put_item(cond, est.weight_item(&item_name), &also);
+            added = Some(json!({
+                "condition": cond_name,
+                "item": item_name,
+                "mass_t": est.total.mass_t,
+            }));
+        }
+
+        let mut v = serde_json::to_value(&est).map_err(|e| e.to_string())?;
+        if let Some(o) = v.as_object_mut() {
+            o.insert(
+                "note".into(),
+                json!(seacraft_core::not_validated_note(
+                    seacraft_core::i18n::Locale::En
+                )),
+            );
+            if let Some(added) = added {
+                o.insert("added".into(), added);
+                o.insert("saved".into(), json!(false));
+                o.insert(
+                    "saved_note".into(),
+                    json!("the session project changed; save_hull writes it"),
+                );
+            }
             o.insert("backend".into(), json!("headless"));
         }
         Ok(v)
@@ -3352,6 +3434,26 @@ pub fn tool_definitions() -> Vec<Value> {
             Effect::ReadOnly,
         ),
         tool(
+            "materials_estimate",
+            "Builder materials estimate",
+            "Shell weights, seams, fillets and plywood sheets of the loaded hull from the project's `materials` \
+             schedule (set it with `project_set`; with none, shell weights only and no glass or resin). The figures \
+             are the builder's numbers applied to the modelled surface, not validated; there is no laminate \
+             thickness offset. With `add_to_condition` (a loading condition of the project) the total goes in as \
+             one weight item named `item_name`, replacing an earlier one, in the session project: the reply says \
+             `saved: false`, and save_hull writes it. Refused while the project file failed to load.",
+            obj(
+                json!({
+                    "level": integer("Subdivision level 0-6 (default: the server's)"),
+                    "mode": {"type": "string", "enum": ["loop", "cc"], "description": "Subdivision scheme (default: the server's)"},
+                    "add_to_condition": string("Name of a loading condition of the project to add the total to"),
+                    "item_name": string("Weight item name (default: the English default name)"),
+                }),
+                &[],
+            ),
+            Effect::Edits,
+        ),
+        tool(
             "heel_equilibrium",
             "Heel equilibrium under trial weights",
             "Where the hull settles, large-angle and always free to trim, when point weights are added to the bare \
@@ -4338,6 +4440,9 @@ impl Remote {
                 let p = a.get("project").ok_or("project_set: give `project`")?;
                 self.request("project.set", json!({ "project": p }))
             }
+            "materials_estimate" => Err(
+                "materials_estimate needs the headless server until the window supports it".into(),
+            ),
             "heel_equilibrium" => self.request("stability.heel", Value::Object(a.clone())),
             "weather_criterion" => self.request("stability.weather", Value::Object(a.clone())),
             "damage_stability" if a.contains_key("case") || a.contains_key("case_path") => {
@@ -4841,6 +4946,7 @@ mod tests {
                 "hydro_compute",
                 "stability_cross_curves",
                 "loading_condition",
+                "materials_estimate",
                 "heel_equilibrium",
                 "weather_criterion",
                 "damage_stability",
@@ -6018,6 +6124,66 @@ mod tests {
         );
 
         fails(&mut s, 3, "loading_condition", json!({}));
+    }
+
+    #[test]
+    fn materials_estimate_reports_the_example() {
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "skiff-4m"}));
+        let r = ok(&mut s, 2, "materials_estimate", json!({}));
+        assert_eq!(r["layers"].as_array().unwrap().len(), 3, "{r}");
+        assert_eq!(r["plywood"].as_array().unwrap().len(), 3, "{r}");
+        assert!(r["note"].as_str().is_some_and(|n| !n.is_empty()), "{r}");
+        assert_eq!(r["backend"], "headless");
+        assert!(r.get("added").is_none(), "{r}");
+    }
+
+    #[test]
+    fn materials_estimate_adds_to_the_session_project() {
+        let mut s = McpServer::new();
+        ok(&mut s, 1, "example", json!({"name": "skiff-4m"}));
+        let cond = ok(&mut s, 2, "project_get", json!({}))["loading_conditions"][0]["name"]
+            .as_str()
+            .expect("a condition")
+            .to_owned();
+        let r = ok(
+            &mut s,
+            3,
+            "materials_estimate",
+            json!({"add_to_condition": cond, "item_name": "Hull shell"}),
+        );
+        assert_eq!(r["added"]["condition"], json!(cond), "{r}");
+        assert_eq!(r["added"]["item"], "Hull shell");
+        assert_eq!(r["saved"], false);
+        assert!(r["saved_note"].as_str().unwrap().contains("save_hull"));
+        ok(
+            &mut s,
+            4,
+            "materials_estimate",
+            json!({"add_to_condition": cond, "item_name": "Hull shell"}),
+        );
+        let p = ok(&mut s, 5, "project_get", json!({}));
+        let items = p["loading_conditions"][0]["items"].as_array().unwrap();
+        assert_eq!(
+            items.iter().filter(|i| i["name"] == "Hull shell").count(),
+            1,
+            "{p}"
+        );
+        let msg = fails(
+            &mut s,
+            6,
+            "materials_estimate",
+            json!({"add_to_condition": "no such condition"}),
+        );
+        assert!(msg.contains(&cond), "{msg}");
+    }
+
+    #[test]
+    fn materials_estimate_refuses_with_a_broken_project() {
+        let mut s = McpServer::new();
+        s.project_error = Some("bad json".into());
+        let msg = fails(&mut s, 1, "materials_estimate", json!({}));
+        assert!(msg.contains("failed to load"), "{msg}");
     }
 
     /// R8-3 (A08 follow-up): the reply says when no equilibrium was found
