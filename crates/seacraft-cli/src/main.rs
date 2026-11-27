@@ -5285,7 +5285,7 @@ fn csv_field(s: &str) -> String {
 /// One CSV row per layer, seam and plywood line. Tape resin rides with the tape column.
 fn materials_csv(est: &seacraft_core::materials::Estimate) -> String {
     let mut out = String::from(
-        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x,y,z,sheets\n",
+        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x_m,y_m,z_m,sheets\n",
     );
     for r in &est.layers {
         out.push_str(&format!(
@@ -5454,9 +5454,9 @@ fn cmd_materials(a: MaterialsArgs, tr: Tr) -> Result<()> {
         .as_ref()
         .and_then(|(p, _)| p.materials.clone())
         .unwrap_or_default();
-    schedule
-        .validate()
-        .map_err(|e| anyhow::anyhow!("materials: {e}"))?;
+    schedule.validate().map_err(|e| {
+        anyhow::anyhow!(tr.fmt(Key::CliMaterialsScheduleInvalid, &[("reason", e.as_str())]))
+    })?;
     let est = seacraft_core::materials::estimate(
         &s,
         &schedule,

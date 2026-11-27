@@ -243,6 +243,7 @@
   "cli.materials.plywood_not_flat": "düz değil: {panels}",
   "cli.materials.plywood_refused": "reddedildi: {panels}",
   "cli.materials.plywood_sheets": "{sheets} levha ({thickness} mm)",
+  "cli.materials.schedule_invalid": "malzeme çizelgesi: {reason}",
   "cli.materials.seams_heading": "Dikişler",
   "cli.materials.total": "Toplam",
   "cli.materials.total_line": "{kg} kg ({t} t), merkez x {x} y {y} z {z} m",

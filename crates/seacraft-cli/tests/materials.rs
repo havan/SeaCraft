@@ -146,8 +146,129 @@ fn csv_has_kind_column() {
     let out = text(&ok(&dir, &["materials", "hull.fef", "--csv"]).stdout);
     assert_eq!(
         out.lines().next().unwrap(),
-        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x,y,z,sheets"
+        "kind,name,length_m,area_m2,shell_kg,glass_kg,resin_kg,tape_kg,fillet_kg,total_kg,x_m,y_m,z_m,sheets"
     );
     assert!(out.lines().any(|l| l.starts_with("layer,")));
     assert!(out.lines().any(|l| l.starts_with("plywood,")));
+}
+
+fn read(dir: &Path, name: &str) -> Vec<u8> {
+    std::fs::read(dir.join(name)).unwrap()
+}
+
+/// Counts the columns of one CSV line, honouring double quotes.
+fn csv_columns(line: &str) -> usize {
+    let (mut n, mut quoted) = (1, false);
+    for c in line.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            ',' if !quoted => n += 1,
+            _ => {}
+        }
+    }
+    n
+}
+
+#[test]
+fn csv_rows_keep_the_header_width_when_a_layer_name_has_a_comma() {
+    let dir = workdir("csvcomma", "skiff-4m", true);
+    let fef = std::fs::read_to_string(dir.join("hull.fef")).unwrap();
+    assert!(fef.contains("\nTransom\n"));
+    std::fs::write(
+        dir.join("hull.fef"),
+        fef.replace("\nTransom\n", "\nTran,som\n"),
+    )
+    .unwrap();
+    let out = text(&ok(&dir, &["materials", "hull.fef", "--csv"]).stdout);
+    assert!(out.contains("\"Tran,som\""), "{out}");
+    let width = csv_columns(out.lines().next().unwrap());
+    for l in out.lines() {
+        assert_eq!(csv_columns(l), width, "{l}");
+    }
+}
+
+#[test]
+fn an_invalid_schedule_is_refused_naming_the_field() {
+    let dir = workdir("invalid", "skiff-4m", true);
+    let mut p = project(&dir);
+    p["materials"] = serde_json::json!({
+        "resin_per_glass": 1.0,
+        "layers": {"Bottom": [{"g_m2": 0.0, "side": "outside"}]}
+    });
+    std::fs::write(dir.join("hull.seacraft.json"), p.to_string()).unwrap();
+    let err = fails(&dir, &["materials", "hull.fef"]);
+    assert!(err.contains("layers.Bottom[0].g_m2"), "{err}");
+}
+
+#[test]
+fn bare_refusal_names_the_file() {
+    let dir = workdir("barename", "demo-hull", false);
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    std::fs::copy(examples.join("demo-loadcase.json"), dir.join("case.json")).unwrap();
+    let err = fails(
+        &dir,
+        &["materials", "hull.fef", "case.json", "--add-to", "Design"],
+    );
+    assert!(err.contains("case.json"), "{err}");
+}
+
+#[test]
+fn refusals_leave_the_project_file_unchanged() {
+    let dir = workdir("unchanged", "skiff-4m", true);
+    let before = read(&dir, "hull.seacraft.json");
+    fails(&dir, &["materials", "hull.fef", "--add-to", "Nope"]);
+    assert_eq!(read(&dir, "hull.seacraft.json"), before);
+    let dir = workdir("unchanged-nosidecar", "skiff-4m", false);
+    fails(&dir, &["materials", "hull.fef", "--add-to", "Design"]);
+    assert!(!dir.join("hull.seacraft.json").exists());
+}
+
+#[test]
+fn item_names_the_written_weight_item() {
+    let dir = workdir("item", "skiff-4m", true);
+    let cond = first_condition(&dir);
+    ok(
+        &dir,
+        &[
+            "materials",
+            "hull.fef",
+            "--add-to",
+            &cond,
+            "--item",
+            "My hull",
+        ],
+    );
+    let items = project(&dir)["loading_conditions"][0]["items"].clone();
+    assert!(items
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|i| i["name"] == "My hull"));
+}
+
+#[test]
+fn default_table_prints_the_not_validated_note() {
+    let dir = workdir("note", "skiff-4m", true);
+    let out = text(&ok(&dir, &["materials", "hull.fef"]).stdout);
+    let note = seacraft_core::not_validated_note(seacraft_core::i18n::Locale::En);
+    assert!(out.contains(note), "{out}");
+}
+
+#[test]
+fn written_mass_equals_the_estimate_total() {
+    let dir = workdir("mass", "skiff-4m", true);
+    let cond = first_condition(&dir);
+    let json = text(&ok(&dir, &["materials", "hull.fef", "--json"]).stdout);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let total = v["total"]["mass_t"].as_f64().unwrap();
+    ok(&dir, &["materials", "hull.fef", "--add-to", &cond]);
+    let items = project(&dir)["loading_conditions"][0]["items"].clone();
+    let item = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == ITEM)
+        .unwrap()
+        .clone();
+    assert!((item["mass_t"].as_f64().unwrap() - total).abs() < 1e-12);
 }

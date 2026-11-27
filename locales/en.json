@@ -243,6 +243,7 @@
   "cli.materials.plywood_not_flat": "not flat: {panels}",
   "cli.materials.plywood_refused": "refused: {panels}",
   "cli.materials.plywood_sheets": "{sheets} sheets ({thickness} mm)",
+  "cli.materials.schedule_invalid": "materials schedule: {reason}",
   "cli.materials.seams_heading": "Seams",
   "cli.materials.total": "Total",
   "cli.materials.total_line": "{kg} kg ({t} t), centre x {x} y {y} z {z} m",
