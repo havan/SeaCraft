@@ -490,6 +490,21 @@ mod tests {
     }
 
     #[test]
+    fn a_project_with_a_misspelt_seam_key_fails_to_load_naming_it() {
+        let text = serde_json::json!({
+            "format": PROJECT_FORMAT,
+            "version": PROJECT_VERSION,
+            "materials": {
+                "resin_per_glass": 1.0,
+                "seams": {"tapes": {"width_mm": 75.0, "g_m2": 200.0, "plies": 1, "sides": "both"}}
+            }
+        })
+        .to_string();
+        let e = Project::from_json(&text).unwrap_err();
+        assert!(e.contains("`tapes`"), "{e}");
+    }
+
+    #[test]
     fn project_validate_checks_the_schedule() {
         use crate::materials::{Materials, Ply, Side};
         let p = Project {

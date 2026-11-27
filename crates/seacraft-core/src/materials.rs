@@ -28,6 +28,7 @@ pub enum Side {
 
 /// One ply of glass cloth.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Ply {
     /// Glass mass per square metre of shell.
     pub g_m2: f64,
@@ -55,6 +56,7 @@ impl TapeSides {
 
 /// Tape laid over a seam.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tape {
     pub width_mm: f64,
     /// Glass mass per square metre of tape, per ply.
@@ -65,6 +67,7 @@ pub struct Tape {
 
 /// The cove filling the inside of a seam.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fillet {
     pub radius_mm: f64,
     pub density_kg_m3: f64,
@@ -72,6 +75,7 @@ pub struct Fillet {
 
 /// The seam schedule; every part is optional.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Seams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tape: Option<Tape>,
@@ -81,6 +85,7 @@ pub struct Seams {
 
 /// The plywood sheets the panels are cut from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlywoodStock {
     /// `LENGTHxWIDTH` in millimetres, such as `2440x1220`.
     pub stock_mm: String,
@@ -1568,6 +1573,35 @@ mod tests {
         assert_eq!(m.layers["Bottom"].len(), 2);
         assert_eq!(m.seams.tape.as_ref().unwrap().sides.count(), 2.0);
         assert_eq!(serde_json::to_value(&m).unwrap(), v);
+    }
+
+    #[test]
+    fn a_misspelt_key_in_the_schedule_is_refused_by_name() {
+        // A typo must not drop a part of the schedule without a word.
+        for (v, key) in [
+            (json!({"seams": {"tapes": {}}}), "tapes"),
+            (
+                json!({"seams": {"tape": {"width_mm": 75.0, "g_m2": 200.0, "plies": 1,
+                    "sides": "both", "ply": 2}}}),
+                "ply",
+            ),
+            (
+                json!({"seams": {"fillet": {"radius_mm": 12.0, "density_kg_m3": 1000.0,
+                    "density": 900.0}}}),
+                "density",
+            ),
+            (
+                json!({"layers": {"Bottom": [{"g_m2": 200.0, "side": "outside", "gsm": 1}]}}),
+                "gsm",
+            ),
+            (
+                json!({"plywood": {"stock_mm": "2440x1220", "scarf": 25.0}}),
+                "scarf",
+            ),
+        ] {
+            let e = serde_json::from_value::<Materials>(v.clone()).unwrap_err();
+            assert!(e.to_string().contains(&format!("`{key}`")), "{v}: {e}");
+        }
     }
 
     #[test]
