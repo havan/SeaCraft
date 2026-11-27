@@ -6082,8 +6082,22 @@ mod tests {
             json!({ "path": path.to_string_lossy() }),
         );
         let kept = std::fs::read_to_string(outside.join("kept.json")).unwrap();
+        let hull_written = path.is_file();
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(r["ok"], false, "{r}");
+        assert!(
+            hull_written,
+            "hull should be written before the sidecar is refused: {r}"
+        );
+        let err = r["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("hull.seacraft.json"),
+            "error should name the sidecar: {r}"
+        );
+        assert!(
+            err.contains("a link that leads out of the write roots"),
+            "error should identify the sidecar link refusal: {r}"
+        );
         assert_eq!(kept, "kept", "written out of the root through the link");
         assert!(
             seacraft_core::io::write_roots().is_empty(),
