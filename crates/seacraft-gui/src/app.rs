@@ -1951,9 +1951,11 @@ impl App {
         self.panels_sheets_view = crate::sheet_view::SheetView::default();
         self.panels_show_sheets = false;
         self.panels_selected = None;
-        // Another hull's estimate is not this one's, even out of date.
+        // Another hull's estimate is not this one's, even out of date, nor its unfinished
+        // schedule: the window starts again from the new project's.
         self.materials_result = None;
         self.materials_track.reset();
+        self.materials_state.forget_schedule();
         // Keep the chosen panel layers the new model has; with none of them, go back to the
         // layers marked developable rather than fail on names the window cannot show.
         if let (Some(chosen), Some(s)) = (&mut self.panels_params.layers, &self.surface) {
@@ -7618,10 +7620,10 @@ impl App {
             match (&self.surface, quiet) {
                 (Some(surface), true) => {
                     let schedule = self.project.materials.clone().unwrap_or_default();
-                    if let Err(e) = schedule.validate() {
+                    if let Err(e) = schedule.check() {
                         let msg = self.tr().fmt(
                             seacraft_core::i18n::Key::ReportMatScheduleInvalid,
-                            &[("reason", &e)],
+                            &[("reason", &e.render(self.tr()))],
                         );
                         self.materials_track.fail(key, msg);
                     } else {
@@ -7727,10 +7729,10 @@ impl App {
     /// Make `schedule` the project's (an empty one is no schedule); the caller records the undo
     /// step. A schedule that does not validate is refused, so the project file stays loadable.
     fn apply_materials_schedule(&mut self, schedule: seacraft_core::materials::Materials) {
-        if let Err(e) = schedule.validate() {
+        if let Err(e) = schedule.check() {
             let msg = self.tr().fmt(
                 seacraft_core::i18n::Key::ReportMatScheduleInvalid,
-                &[("reason", &e)],
+                &[("reason", &e.render(self.tr()))],
             );
             self.log(Level::Error, msg);
             return;

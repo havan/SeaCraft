@@ -87,6 +87,15 @@ impl MaterialsDialogState {
     pub fn draft(&self) -> &Materials {
         &self.draft
     }
+
+    /// Drop the draft, finished or not, and what it was matched to (another model was loaded):
+    /// the next [`MaterialsDialogState::sync`] starts from that project's schedule. The condition
+    /// and item name are kept.
+    pub fn forget_schedule(&mut self) {
+        self.draft = Materials::default();
+        self.applied = Materials::default();
+        self.layers.clear();
+    }
 }
 
 /// The schedule editor, the estimate and the add button. Returns what the user asked for.
@@ -107,12 +116,12 @@ pub fn show(
                 .id_salt("materials_schedule_scroll")
                 .show(ui, |ui| {
                     schedule_editor(ui, state, tr);
-                    invalid = state.draft.validate().err();
+                    invalid = state.draft.check().err().map(|m| m.render(tr));
                     if let Some(reason) = &invalid {
                         ui.add_space(6.0);
                         ui.colored_label(
                             theme::WARN,
-                            tr.fmt(Key::MaterialsInvalid, &[("reason", reason)]),
+                            tr.fmt(Key::MaterialsNotApplied, &[("reason", reason)]),
                         );
                     }
                 });

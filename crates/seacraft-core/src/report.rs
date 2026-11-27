@@ -1350,8 +1350,9 @@ pub fn design_report_with_project(
             "  <h2>{}</h2>",
             html_escape(tr.s(Key::ReportSecMaterials))
         );
-        match schedule.validate() {
+        match schedule.check() {
             Err(reason) => {
+                let reason = reason.render(tr);
                 // A bad schedule must not fail the whole report: say why it was not used.
                 let _ = writeln!(
                     out,
@@ -2988,7 +2989,12 @@ mod tests {
         let html = design_report_with_project(&surface, &opts, &project).unwrap();
         assert!(html.contains("id=\"materials\""));
         assert!(html.contains("<div class=\"warn-box\">"));
-        assert!(html.contains("resin_per_glass"));
+        // Named for the reader, not by the project file's field path.
+        assert!(
+            html.contains("Resin per glass: enter it, since a ply or tape is given"),
+            "{html}"
+        );
+        assert!(!html.contains("resin_per_glass"));
     }
 
     fn demo_hull_project() -> (Surface, ReportOptions, Project) {

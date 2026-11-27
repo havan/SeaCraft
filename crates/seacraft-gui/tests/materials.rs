@@ -380,3 +380,99 @@ fn the_file_menu_offers_builder_materials_only_with_a_model() {
     w.click("Builder materials…");
     assert!(w.app.show_materials());
 }
+
+/// The painted "not applied" lines, in Turkish.
+fn not_applied_tr(w: &Window) -> Vec<String> {
+    w.painted
+        .iter()
+        .map(|(t, _)| t.clone())
+        .filter(|t| t.starts_with("Henüz uygulanmadı:"))
+        .collect()
+}
+
+#[test]
+fn an_unfinished_schedule_is_explained_in_the_users_language() {
+    let mut app = skiff("an_unfinished_schedule_is_explained_in_the_users_language");
+    app.set_locale(seacraft_core::i18n::Locale::Tr);
+    app.open_builder_materials();
+    let mut w = Window::new(app);
+    // A ply with no resin ratio yet.
+    w.click("Kat ekle");
+    let lines = not_applied_tr(&w);
+    assert_eq!(lines.len(), 1, "{:?}", w.painted);
+    assert!(lines[0].contains("Cam elyaf başına reçine"), "{lines:?}");
+
+    // With a resin ratio, the new ply's zero is what is missing.
+    w.app.set_project(seacraft_core::project::Project {
+        materials: Some(two_plies()),
+        ..Default::default()
+    });
+    w.frame(vec![]);
+    w.frame(vec![]);
+    w.click("Kat ekle");
+    let lines = not_applied_tr(&w);
+    assert_eq!(lines.len(), 1, "{:?}", w.painted);
+    // Whichever layer's button came first: the ply is named by layer and number.
+    assert!(
+        lines[0].contains(" katmanındaki ") && lines[0].contains(". kat: "),
+        "{lines:?}"
+    );
+    for path in ["g_m2", "resin_per_glass", "layers.", "["] {
+        assert!(!lines[0].contains(path), "{path} in {lines:?}");
+    }
+    assert_eq!(w.app.project().materials, Some(two_plies()), "not applied");
+}
+
+#[test]
+fn a_schedule_edit_makes_the_estimate_stale() {
+    let mut app = skiff("a_schedule_edit_makes_the_estimate_stale");
+    app.set_project(seacraft_core::project::Project {
+        materials: Some(two_plies()),
+        loading_conditions: vec![design_condition()],
+        ..Default::default()
+    });
+    app.open_builder_materials();
+    let mut w = Window::new(app);
+    w.until("the estimate", |app| app.materials_estimate().is_some());
+    w.frame(vec![]);
+    assert!(!w.button("Add to loading condition").0);
+    w.click("Remove ply");
+    assert_eq!(
+        w.app.project().materials.as_ref().unwrap().layers["Bottom"].len(),
+        1
+    );
+    assert!(w.app.materials_estimate().is_none(), "stale at once");
+    assert!(w.button("Add to loading condition").0, "add disabled");
+    assert!(w.shows("Out of date"));
+    w.until("the estimate for the new schedule", |app| {
+        app.materials_estimate().is_some()
+    });
+    let est = w.app.materials_estimate().unwrap();
+    assert_eq!(
+        est.layers
+            .iter()
+            .find(|r| r.layer == "Bottom")
+            .unwrap()
+            .glass_g_m2,
+        200.0
+    );
+}
+
+#[test]
+fn an_unfinished_draft_does_not_follow_another_model() {
+    let mut app = skiff("an_unfinished_draft_does_not_follow_another_model");
+    app.open_builder_materials();
+    let mut w = Window::new(app);
+    w.click("Add ply");
+    assert_eq!(w.buttons("Remove ply").len(), 1, "the unfinished ply");
+    assert!(w.shows("Not applied yet"));
+    assert_eq!(w.app.project().materials, None);
+
+    // Another hull whose project has no schedule either: the draft goes with the old hull.
+    w.app.load_demo();
+    w.frame(vec![]);
+    w.frame(vec![]);
+    assert!(w.app.show_materials());
+    assert!(w.buttons("Remove ply").is_empty(), "{:?}", w.widgets);
+    assert!(!w.shows("Not applied yet"));
+}

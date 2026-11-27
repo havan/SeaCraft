@@ -91,14 +91,16 @@ pub struct PlywoodStock {
 impl PlywoodStock {
     /// The stock in the units the panel layout takes, checked as `seacraft panels` checks it.
     pub fn stock(&self) -> Result<Stock, String> {
+        self.checked().map_err(|e| e.to_string())
+    }
+
+    fn checked(&self) -> Result<Stock, panel_choices::ChoiceError> {
         let choices = Choices {
             stock_mm: self.stock_mm.clone(),
             scarf_mm: self.scarf_mm,
             ..Choices::default()
         };
-        panel_choices::check(&choices)
-            .map(|c| c.stock)
-            .map_err(|e| e.to_string())
+        panel_choices::check(&choices).map(|c| c.stock)
     }
 }
 
@@ -117,13 +119,25 @@ pub struct Materials {
     pub plywood: Option<PlywoodStock>,
 }
 
-fn positive(field: &str, v: f64) -> Result<(), String> {
+/// A refused schedule: the English refusal naming the project file's field (`validate`), and the
+/// same refusal for a reader, naming the field as the schedule editor labels it (`check`).
+struct Refusal {
+    path: String,
+    msg: Msg,
+}
+
+/// `v` as a refusal unless it is finite and positive; `path` is the field in the project file,
+/// `label` its name for a reader.
+fn positive(path: &str, label: Msg, v: f64) -> Result<(), Refusal> {
     if v.is_finite() && v > 0.0 {
         Ok(())
     } else {
-        Err(format!(
-            "{field} must be finite and more than zero, got {v}"
-        ))
+        Err(Refusal {
+            path: format!("{path} must be finite and more than zero, got {v}"),
+            msg: Msg::new(Key::MaterialsInvalidNotPositive)
+                .arg_msg("field", label)
+                .arg("value", v),
+        })
     }
 }
 
@@ -133,31 +147,78 @@ impl Materials {
         self.layers.values().any(|p| !p.is_empty()) || self.seams.tape.is_some()
     }
 
-    /// Checks every number is finite and positive; a refusal names the field.
+    /// Checks every number is finite and positive; a refusal names the field as the project file
+    /// spells it (`layers.Bottom[0].g_m2`), in English, for whoever edits that file.
     pub fn validate(&self) -> Result<(), String> {
+        self.refusal().map_err(|r| r.path)
+    }
+
+    /// As [`Materials::validate`], with the refusal as a message for a reader in any language: the
+    /// field named as the schedule editor labels it (ply 1 on Bottom, tape width), not by its path.
+    pub fn check(&self) -> Result<(), Msg> {
+        self.refusal().map_err(|r| r.msg)
+    }
+
+    fn refusal(&self) -> Result<(), Refusal> {
         if let Some(r) = self.resin_per_glass {
-            positive("resin_per_glass", r)?;
+            positive("resin_per_glass", Msg::new(Key::MaterialsFieldResin), r)?;
         } else if self.has_glass() {
-            return Err("resin_per_glass is required when a ply or tape is given".to_owned());
+            return Err(Refusal {
+                path: "resin_per_glass is required when a ply or tape is given".to_owned(),
+                msg: Msg::new(Key::MaterialsInvalidResinMissing),
+            });
         }
         for (name, plies) in &self.layers {
             for (i, ply) in plies.iter().enumerate() {
-                positive(&format!("layers.{name}[{i}].g_m2"), ply.g_m2)?;
+                let label = Msg::new(Key::MaterialsFieldPly)
+                    .arg("n", i + 1)
+                    .arg("layer", name);
+                positive(&format!("layers.{name}[{i}].g_m2"), label, ply.g_m2)?;
             }
         }
         if let Some(t) = &self.seams.tape {
-            positive("seams.tape.width_mm", t.width_mm)?;
-            positive("seams.tape.g_m2", t.g_m2)?;
+            positive(
+                "seams.tape.width_mm",
+                Msg::new(Key::MaterialsFieldTapeWidth),
+                t.width_mm,
+            )?;
+            positive(
+                "seams.tape.g_m2",
+                Msg::new(Key::MaterialsFieldTapeGlass),
+                t.g_m2,
+            )?;
             if t.plies < 1 {
-                return Err("seams.tape.plies must be at least 1, got 0".to_owned());
+                return Err(Refusal {
+                    path: "seams.tape.plies must be at least 1, got 0".to_owned(),
+                    msg: Msg::new(Key::MaterialsInvalidTapePlies),
+                });
             }
         }
         if let Some(f) = &self.seams.fillet {
-            positive("seams.fillet.radius_mm", f.radius_mm)?;
-            positive("seams.fillet.density_kg_m3", f.density_kg_m3)?;
+            positive(
+                "seams.fillet.radius_mm",
+                Msg::new(Key::MaterialsFieldFilletRadius),
+                f.radius_mm,
+            )?;
+            positive(
+                "seams.fillet.density_kg_m3",
+                Msg::new(Key::MaterialsFieldFilletDensity),
+                f.density_kg_m3,
+            )?;
         }
         if let Some(p) = &self.plywood {
-            p.stock().map_err(|e| format!("plywood: {e}"))?;
+            if let Err(e) = p.checked() {
+                let msg = match e.field {
+                    panel_choices::Field::Scarf => {
+                        Msg::new(Key::MaterialsInvalidScarf).arg("value", p.scarf_mm)
+                    }
+                    _ => Msg::new(Key::MaterialsInvalidStock).arg("value", &p.stock_mm),
+                };
+                return Err(Refusal {
+                    path: format!("plywood: {e}"),
+                    msg,
+                });
+            }
         }
         Ok(())
     }
@@ -1493,6 +1554,44 @@ mod tests {
         });
         let e = m.validate().unwrap_err();
         assert!(e.contains("stock_mm") && e.contains("2440x"), "{e}");
+    }
+
+    #[test]
+    fn check_names_the_field_for_a_reader_in_either_language() {
+        let en = Tr::new(Locale::En);
+        let tr = Tr::new(Locale::Tr);
+        let e = with_ply(0.0).check().unwrap_err();
+        assert_eq!(
+            e.render(en),
+            "Ply 1 on Bottom: enter a number more than zero, not 0"
+        );
+        assert_eq!(
+            e.render(tr),
+            "Bottom katmanındaki 1. kat: sıfırdan büyük bir sayı girin, 0 değil"
+        );
+        let mut m = with_ply(200.0);
+        m.resin_per_glass = None;
+        let e = m.check().unwrap_err();
+        assert_eq!(e.key(), Some(Key::MaterialsInvalidResinMissing));
+        let mut m = with_ply(200.0);
+        m.seams.tape = Some(Tape {
+            width_mm: 0.0,
+            g_m2: 200.0,
+            plies: 1,
+            sides: TapeSides::Both,
+        });
+        assert!(m.check().unwrap_err().render(en).starts_with("Tape width:"));
+        let mut m = with_ply(200.0);
+        m.plywood = Some(PlywoodStock {
+            stock_mm: "2440x".into(),
+            scarf_mm: 0.0,
+        });
+        let e = m.check().unwrap_err();
+        assert_eq!(e.key(), Some(Key::MaterialsInvalidStock));
+        assert!(e.render(tr).contains("\"2440x\""));
+        // The project file's form is unchanged.
+        assert!(m.validate().unwrap_err().contains("stock_mm"));
+        assert!(with_ply(200.0).check().is_ok());
     }
 
     #[test]
