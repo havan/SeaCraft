@@ -181,6 +181,7 @@ pub fn report_sections_with_project(opts: &ReportOptions, project: &Project) -> 
 /// - `stability`
 /// - `resistance`
 /// - `planing` (when `opts.include_planing` is true)
+/// - `materials` (when the project has a materials schedule)
 pub fn design_report(surface: &Surface, opts: &ReportOptions) -> Result<String, String> {
     design_report_with_project(surface, opts, &Project::default())
 }
@@ -1354,7 +1355,7 @@ pub fn design_report_with_project(
                 // A bad schedule must not fail the whole report: say why it was not used.
                 let _ = writeln!(
                     out,
-                    "  <p class=\"warn\">{}</p>",
+                    "  <div class=\"warn-box\">{}</div>",
                     html_escape(&tr.fmt(Key::ReportMatScheduleInvalid, &[("reason", &reason)]))
                 );
             }
@@ -1998,7 +1999,7 @@ fn write_materials_tables(out: &mut String, est: &materials::Estimate, tr: Tr) {
     for w in &est.warnings {
         let _ = writeln!(
             out,
-            "  <p class=\"warn\">{}</p>",
+            "  <div class=\"warn-box\">{}</div>",
             html_escape(&w.render(tr))
         );
     }
@@ -2956,6 +2957,16 @@ mod tests {
             "total kg missing"
         );
         assert!(html.contains("if cut from plywood"));
+        let mut bad = project.clone();
+        bad.materials.as_mut().unwrap().layers.insert(
+            "NoSuchLayer".into(),
+            one_ply_schedule().layers["Bottom"].clone(),
+        );
+        let html_bad = design_report_with_project(&surface, &opts, &bad).unwrap();
+        assert!(
+            html_bad.contains("<div class=\"warn-box\">The schedule names layer NoSuchLayer"),
+            "unmatched layer warning not in a warn-box"
+        );
         assert!(html.contains(crate::not_validated_note(Locale::En)));
         assert_eq!(
             html.matches("<section").count(),
@@ -2976,6 +2987,7 @@ mod tests {
         };
         let html = design_report_with_project(&surface, &opts, &project).unwrap();
         assert!(html.contains("id=\"materials\""));
+        assert!(html.contains("<div class=\"warn-box\">"));
         assert!(html.contains("resin_per_glass"));
     }
 
