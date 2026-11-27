@@ -683,6 +683,16 @@ File ▸ Builder panels…, with a live list of the panels, a **Panels | Sheets*
 switch for the patterns and full-size sheets, and the MCP server exposes
 `export_panels`, which can also measure without writing.
 
+`seacraft materials` weighs what the hull is made of from the builder's own
+schedule, saved in the project file: the shell of each layer (its thickness and
+density), glass and resin per layer, seam tape and fillets, and plywood sheets
+if cut from plywood, with the centre of the total, which `--add-to` puts in a
+loading condition as one item. Nothing has a built-in glass or resin figure, and
+the laminate adds no thickness to the modelled surface. The desktop app has the
+same under File ▸ Builder materials…, which edits the schedule and adds the
+total to a condition as an undoable edit, and the MCP server as
+`materials_estimate`.
+
 ---
 
 ## 3. Command line

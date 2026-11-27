@@ -143,7 +143,8 @@ the mesh; it is not yet profiled.
   (`nest.rs`, `panel_layout.rs`, `panel_dims.rs`).
 - [ ] Build a skiff from the panel patterns and recalibrate the 2 mm / 0.1 % limits on it (`skiff-4m` is the
   candidate).
-- [ ] Materials and weight: skin area, plywood sheets, glass and resin, and the weight they add.
+- [x] Materials and weight: skin area, plywood sheets, glass and resin, and the weight they add
+  (`materials.rs`; `seacraft materials`, `materials_estimate`, File ▸ Builder materials…).
 - [ ] A build pack: patterns, offsets, panels and a cutting list in one document.
 
 ## Possible later work

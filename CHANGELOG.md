@@ -4,9 +4,11 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
 
 ## Unreleased
 
-- Builder materials and weight: from the CLI (`seacraft materials`), the MCP server (`materials_estimate`), the
-  control channel (`build.materials`, `loading.put_item`, undoable and refused when the model or schedule changed
-  since the estimate) and the design report's new Materials section you can now estimate what the hull is made of
+- Builder materials and weight: from the desktop app (File ▸ Builder materials…, which edits the schedule, weighs
+  it in the background and adds the total to a loading condition, both undoable), the CLI (`seacraft materials`),
+  the MCP server (`materials_estimate`), the control channel (`build.materials`, `loading.put_item`, undoable and
+  refused when the model or schedule changed since the estimate) and the design report's new Materials section you
+  can now estimate what the hull is made of
   and what it weighs: shell weight, glass and resin, seam tape and fillets, and plywood sheets "if cut from
   plywood", with the centre of the weight, and add the total to a loading condition as one named item. The
   schedule (plies per layer, tape, fillet, resin per glass) is saved in the project file. Every glass and resin
