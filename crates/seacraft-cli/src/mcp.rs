@@ -3426,7 +3426,7 @@ pub fn tool_definitions() -> Vec<Value> {
              thickness offset. With `add_to_condition` (a loading condition of the project) the total goes in as \
              one weight item named `item_name`, replacing an earlier one, in the session project: the reply says \
              `saved: false`, and save_hull writes it. Connected to the app, it is one undoable edit there, refused \
-             when the model changed since the estimate. Headless, refused while the project file failed to load.",
+             when the model or the schedule changed since the estimate. Headless, refused while the project file failed to load.",
             obj(
                 json!({
                     "level": integer("Subdivision level 0-6 (default: the server's)"),
@@ -4436,31 +4436,26 @@ impl Remote {
                 let Some(cond_name) = str_arg(a, "add_to_condition") else {
                     return Ok(r);
                 };
-                let num = |v: &Value| {
-                    v.as_f64()
-                        .ok_or("materials_estimate: the app's estimate has no total")
-                };
-                let total = &r["total"];
+                let total: seacraft_core::materials::Total =
+                    serde_json::from_value(r["total"].clone()).map_err(|e| {
+                        format!("materials_estimate: the app's estimate has no total: {e}")
+                    })?;
                 let name = str_arg(a, "item_name").unwrap_or_else(|| {
                     seacraft_core::materials::default_item_name(seacraft_core::i18n::Locale::En)
                 });
-                let item = loading::WeightItem {
-                    name: name.to_owned(),
-                    mass_t: num(&total["mass_t"])?,
-                    x: num(&total["centre"][0])?,
-                    y: num(&total["centre"][1])?,
-                    z: num(&total["centre"][2])?,
-                };
-                // The app refuses the item when its model changed since the estimate.
-                self.request(
-                    "loading.put_item",
-                    json!({
-                        "condition": cond_name,
-                        "item": item,
-                        "revision": r["revision"],
-                        "also_replace_defaults": true,
-                    }),
-                )?;
+                let item = total.weight_item(name);
+                let mut put = json!({
+                    "condition": cond_name,
+                    "item": item,
+                    "revision": r["revision"],
+                    "also_replace_defaults": true,
+                });
+                // `null` is a schedule too (none), so only one the reply gave is passed on.
+                if let Some(schedule) = r.get("schedule") {
+                    put["schedule"] = schedule.clone();
+                }
+                // The app refuses the item when its model or schedule changed since the estimate.
+                self.request("loading.put_item", put)?;
                 if let Some(o) = r.as_object_mut() {
                     o.insert(
                         "added".into(),
@@ -7508,7 +7503,7 @@ mod tests {
         use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let estimate = br#"{"ok":true,"result":{"layers":[],"total":{"mass_kg":50.0,"mass_t":0.05,"centre":[1.0,0.0,0.3]},"revision":7,"model_changed":false,"note":"n","backend":"app"}}"#;
+        let estimate = br#"{"ok":true,"result":{"layers":[],"total":{"mass_kg":50.0,"mass_t":0.05,"centre":[1.0,0.0,0.3]},"revision":7,"schedule":{"layers":{},"seams":{"fillet":{"radius_mm":10.0,"density_kg_m3":1.0}}},"model_changed":false,"note":"n","backend":"app"}}"#;
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
             let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
@@ -7576,6 +7571,7 @@ mod tests {
                 "condition": "Design",
                 "item": {"name": default, "mass_t": 0.05, "x": 1.0, "y": 0.0, "z": 0.3},
                 "revision": 7,
+                "schedule": {"layers": {}, "seams": {"fillet": {"radius_mm": 10.0, "density_kg_m3": 1.0}}},
                 "also_replace_defaults": true,
             })
         );

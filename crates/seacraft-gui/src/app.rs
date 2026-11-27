@@ -1106,6 +1106,10 @@ pub struct App {
     revision: u64,
     /// `revision`, readable from a worker thread ([`App::revision_watch`]).
     revision_watch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Bumped when the project's materials schedule is seen to change, readable from a worker
+    /// thread ([`App::schedule_watch`]); `schedule_seen` is the schedule it last saw.
+    schedule_watch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    schedule_seen: Option<seacraft_core::materials::Materials>,
     level: u8,
     mode: SubdivisionMode,
     display: DisplayOptions,
@@ -1520,6 +1524,8 @@ impl App {
             pending_recent: None,
             revision: 0,
             revision_watch: Default::default(),
+            schedule_watch: Default::default(),
+            schedule_seen: None,
             level: 3,
             mode: SubdivisionMode::Loop,
             display: DisplayOptions::default(),
@@ -6264,6 +6270,7 @@ impl App {
     /// Collect finished jobs, then start the automatic recomputes that are
     /// due. Called once per frame; never blocks.
     fn run_jobs(&mut self, ctx: &egui::Context) {
+        self.sync_schedule_watch();
         self.poll_jobs();
         let quiet = |ms: u64| {
             self.last_change
@@ -8738,6 +8745,24 @@ impl App {
     /// The model revision as a worker thread sees it: always equal to [`App::revision`].
     pub fn revision_watch(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
         self.revision_watch.clone()
+    }
+
+    /// The materials schedule's change count as a worker thread sees it, brought up to date here;
+    /// also once a frame and after every control request.
+    pub fn schedule_watch(&mut self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.sync_schedule_watch();
+        self.schedule_watch.clone()
+    }
+
+    /// Bumps [`App::schedule_watch`] when the project's schedule differs from the last one seen.
+    /// The project is replaced in many places (open, undo, `project.set`, the dialogs), so the
+    /// schedule is compared here rather than each of them told.
+    pub fn sync_schedule_watch(&mut self) {
+        if self.schedule_seen != self.project.materials {
+            self.schedule_seen = self.project.materials.clone();
+            self.schedule_watch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Bumps the model revision; the only place it changes.

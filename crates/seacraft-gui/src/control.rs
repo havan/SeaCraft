@@ -741,6 +741,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context, req: &ControlRequest) -> Optio
             "stability.heel" | "heel_equilibrium" => stability_heel(app, p, &req.reply),
             _ => handle_inner(app, ctx, req, p).map(Some),
         }));
+    // A `build.materials` worker still running sees a schedule this request changed.
+    app.sync_schedule_watch();
     match res {
         Ok(Ok(Some(v))) => Some(json!({ "ok": true, "result": v })),
         Ok(Ok(None)) => None,
@@ -969,7 +971,8 @@ fn build_materials(
             )))
         }
     };
-    let schedule = app.project().materials.clone().unwrap_or_default();
+    let given = app.project().materials.clone();
+    let schedule = given.clone().unwrap_or_default();
     schedule
         .validate()
         .map_err(|e| err(format!("the schedule is invalid: {e}")))?;
@@ -977,6 +980,8 @@ fn build_materials(
         .surface()
         .ok_or_else(|| err("no model is loaded".into()))?
         .clone();
+    let schedule_watch = app.schedule_watch();
+    let seen = schedule_watch.load(Ordering::SeqCst);
     reply_later(
         reply.clone(),
         app.revision(),
@@ -988,6 +993,11 @@ fn build_materials(
             if let Some(o) = v.as_object_mut() {
                 o.insert("level".into(), json!(level));
                 o.insert("mode".into(), json!(mode_name(mode)));
+                // What `loading.put_item` compares with the project's schedule then.
+                o.insert(
+                    "schedule".into(),
+                    serde_json::to_value(&given).map_err(|e| e.to_string())?,
+                );
                 o.insert(
                     "note".into(),
                     json!(seacraft_core::not_validated_note(
@@ -996,15 +1006,54 @@ fn build_materials(
                 );
                 o.insert("backend".into(), json!("app"));
             }
+            mark_schedule_change(&mut v, seen, &schedule_watch);
             Ok(v)
         },
     );
     Ok(None)
 }
 
+/// Says in `v`, as `schedule_changed`, whether the schedule `watch` counts has changed since it
+/// stood at `seen`, as [`reply_later`] says `model_changed` for the model.
+fn mark_schedule_change(v: &mut Value, seen: u64, watch: &AtomicU64) {
+    if let Some(o) = v.as_object_mut() {
+        let changed = watch.load(Ordering::SeqCst) != seen;
+        o.insert("schedule_changed".into(), json!(changed));
+    }
+}
+
+/// Whether two schedules are the same, numbers equal to 1e-12 relative: a schedule echoed back
+/// through JSON may come back a rounding step away, since `serde_json` does not parse every
+/// float to the nearest one.
+fn same_schedule(
+    a: &Option<seacraft_core::materials::Materials>,
+    b: &Option<seacraft_core::materials::Materials>,
+) -> bool {
+    fn close(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
+                (Some(x), Some(y)) => (x - y).abs() <= 1e-12 * x.abs().max(y.abs()),
+                _ => x == y,
+            },
+            (Value::Array(x), Value::Array(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| close(x, y))
+            }
+            (Value::Object(x), Value::Object(y)) => {
+                x.len() == y.len() && x.iter().all(|(k, x)| y.get(k).is_some_and(|y| close(x, y)))
+            }
+            _ => a == b,
+        }
+    }
+    match (serde_json::to_value(a), serde_json::to_value(b)) {
+        (Ok(a), Ok(b)) => close(&a, &b),
+        _ => false,
+    }
+}
+
 /// `loading.put_item`: one weight item into a loading condition of the project, as one undoable
-/// edit. `revision` is the one the item was measured on (`build.materials` replies with it); a
-/// model changed since is refused, so a stale estimate never goes in as current.
+/// edit. `revision` and, when given, `schedule` are the ones the item was measured with
+/// (`build.materials` replies with both); a model or schedule changed since is refused, so a
+/// stale estimate never goes in as current.
 fn put_loading_item(app: &mut App, p: &Value) -> Result<Value, String> {
     let condition = text(p, "condition")?
         .filter(|s| !s.trim().is_empty())
@@ -1031,11 +1080,23 @@ fn put_loading_item(app: &mut App, p: &Value) -> Result<Value, String> {
         .and_then(Value::as_u64)
         .ok_or("`revision` must be the whole number `build.materials` replied with")?;
     let also_replace_defaults = boolean(p, "also_replace_defaults")?.unwrap_or(false);
+    // Given (`null` for none), the schedule the estimate was measured with.
+    let schedule: Option<Option<seacraft_core::materials::Materials>> = match p.get("schedule") {
+        None => None,
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| {
+            format!("`schedule` must be the one `build.materials` replied with: {e}")
+        })?),
+    };
     let now = app.revision();
     if revision != now {
         return Err(format!(
             "the model changed since the estimate (revision {revision} → {now})"
         ));
+    }
+    if let Some(schedule) = &schedule {
+        if !same_schedule(schedule, &app.project().materials) {
+            return Err("the materials schedule changed since the estimate".into());
+        }
     }
     let also = if also_replace_defaults {
         seacraft_core::materials::replaced_names(&item.name)
@@ -3588,7 +3649,139 @@ mod tests {
                 "z": v["total"]["centre"][2],
             },
             "revision": v["revision"],
+            "schedule": v["schedule"],
         })
+    }
+
+    /// A schedule of the test's own: fillets only, so no resin ratio is needed.
+    fn fillet_schedule(radius_mm: f64) -> seacraft_core::materials::Materials {
+        seacraft_core::materials::Materials {
+            seams: seacraft_core::materials::Seams {
+                tape: None,
+                fillet: Some(seacraft_core::materials::Fillet {
+                    radius_mm,
+                    density_kg_m3: 1.0,
+                }),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// `project.set` with the project's schedule replaced by `schedule`.
+    fn set_schedule(
+        app: &mut App,
+        ctx: &egui::Context,
+        schedule: Option<seacraft_core::materials::Materials>,
+    ) {
+        let mut project = app.project().clone();
+        project.materials = schedule;
+        let r = call(app, ctx, "project.set", json!({ "project": project }));
+        assert_eq!(r["ok"], true, "{r}");
+    }
+
+    #[test]
+    fn build_materials_echoes_the_schedule_it_measured() {
+        let (mut app, ctx) = demo_with_condition();
+        let r = call(&mut app, &ctx, "build.materials", json!({}));
+        assert_eq!(r["result"]["schedule"], Value::Null, "none yet: {r}");
+        assert_eq!(r["result"]["schedule_changed"], false, "{r}");
+        set_schedule(&mut app, &ctx, Some(fillet_schedule(10.0)));
+        let r = call(&mut app, &ctx, "build.materials", json!({}));
+        assert_eq!(
+            r["result"]["schedule"],
+            serde_json::to_value(fillet_schedule(10.0)).unwrap(),
+            "{r}"
+        );
+        assert_eq!(r["result"]["schedule_changed"], false, "{r}");
+    }
+
+    #[test]
+    fn put_item_refuses_an_item_from_a_changed_schedule() {
+        let (mut app, ctx) = demo_with_condition();
+        set_schedule(&mut app, &ctx, Some(fillet_schedule(10.0)));
+        let req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        set_schedule(&mut app, &ctx, Some(fillet_schedule(20.0)));
+        let undo_len = app.undo_len();
+        let r = call(&mut app, &ctx, "loading.put_item", req.clone());
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(
+            r["error"],
+            "the materials schedule changed since the estimate"
+        );
+        set_schedule(&mut app, &ctx, None);
+        let r = call(&mut app, &ctx, "loading.put_item", req);
+        assert_eq!(r["ok"], false, "a schedule removed is a change too: {r}");
+        assert!(items(&app).is_empty());
+        assert_eq!(app.undo_len(), undo_len, "a refusal records nothing");
+
+        // The same schedule again, or no `schedule` given at all, goes in.
+        set_schedule(&mut app, &ctx, Some(fillet_schedule(20.0)));
+        let req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        assert_eq!(
+            call(&mut app, &ctx, "loading.put_item", req.clone())["ok"],
+            true
+        );
+        let mut without = req;
+        without.as_object_mut().unwrap().remove("schedule");
+        assert_eq!(
+            call(&mut app, &ctx, "loading.put_item", without)["ok"],
+            true
+        );
+        assert_eq!(items(&app).len(), 1);
+    }
+
+    #[test]
+    fn put_item_refuses_a_schedule_that_is_not_one() {
+        let (mut app, ctx) = demo_with_condition();
+        let mut req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        req["schedule"] = json!({ "layers": 3 });
+        let r = call(&mut app, &ctx, "loading.put_item", req);
+        assert!(r["error"].as_str().unwrap().contains("`schedule`"), "{r}");
+        assert!(items(&app).is_empty());
+    }
+
+    /// The watch a `build.materials` worker checks moves with the schedule, not with other
+    /// project edits.
+    #[test]
+    fn the_schedule_watch_follows_schedule_edits_only() {
+        let (mut app, ctx) = demo_with_condition();
+        let watch = app.schedule_watch();
+        let before = watch.load(Ordering::SeqCst);
+        let req = estimate_and_item(&mut app, &ctx, "Hull shell");
+        assert_eq!(call(&mut app, &ctx, "loading.put_item", req)["ok"], true);
+        assert_eq!(
+            watch.load(Ordering::SeqCst),
+            before,
+            "an item is not the schedule"
+        );
+        set_schedule(&mut app, &ctx, Some(fillet_schedule(10.0)));
+        assert!(watch.load(Ordering::SeqCst) > before);
+    }
+
+    /// A schedule a rounding step away through JSON is the same one; a real change is not.
+    #[test]
+    fn same_schedule_allows_a_json_rounding_step_only() {
+        let s = |r: f64| Some(fillet_schedule(r));
+        assert!(same_schedule(&None, &None));
+        assert!(same_schedule(
+            &s(10.0),
+            &s(f64::from_bits(10.0f64.to_bits() + 1))
+        ));
+        assert!(!same_schedule(&s(10.0), &s(10.001)));
+        assert!(!same_schedule(&s(10.0), &None));
+        assert!(!same_schedule(&Some(Default::default()), &None));
+    }
+
+    /// A worker's estimate says when the schedule changed while it was measured.
+    #[test]
+    fn a_materials_reply_says_when_the_schedule_changed_meanwhile() {
+        let watch = Arc::new(AtomicU64::new(3));
+        let mut v = json!({});
+        mark_schedule_change(&mut v, 3, &watch);
+        assert_eq!(v["schedule_changed"], false);
+        watch.store(4, Ordering::SeqCst);
+        mark_schedule_change(&mut v, 3, &watch);
+        assert_eq!(v["schedule_changed"], true);
     }
 
     fn items(app: &App) -> Vec<seacraft_core::loading::WeightItem> {

@@ -199,7 +199,7 @@ pub struct SeamRow {
 }
 
 /// Mass and centre of everything counted.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Total {
     pub mass_kg: f64,
     pub mass_t: f64,
@@ -235,17 +235,24 @@ pub struct Estimate {
     pub has_glass: bool,
 }
 
-impl Estimate {
-    /// The total as a loading-condition weight item (tonnes) at the total centre.
+impl Total {
+    /// The total as a loading-condition weight item (tonnes) at its centre.
     pub fn weight_item(&self, name: &str) -> WeightItem {
-        let [x, y, z] = self.total.centre;
+        let [x, y, z] = self.centre;
         WeightItem {
             name: name.to_owned(),
-            mass_t: self.total.mass_t,
+            mass_t: self.mass_t,
             x,
             y,
             z,
         }
+    }
+}
+
+impl Estimate {
+    /// The total as a loading-condition weight item (tonnes) at the total centre.
+    pub fn weight_item(&self, name: &str) -> WeightItem {
+        self.total.weight_item(name)
     }
 }
 
@@ -829,6 +836,12 @@ mod tests {
         close(w.mass_t, 0.056);
         assert_eq!([w.x, w.y, w.z], e.total.centre);
         assert_eq!(w.name, "Hull");
+        let back: Total = serde_json::from_value(json!(e.total)).unwrap();
+        assert_eq!(
+            back.weight_item("Hull"),
+            w,
+            "the total read back from JSON gives the same item"
+        );
     }
 
     #[test]
@@ -891,7 +904,7 @@ mod tests {
         let before = p.clone();
         let msg = add_to_condition(&mut p, "Nope", None, Locale::En, &e).unwrap_err();
         assert!(
-            msg.contains("Nope") && msg.contains("Design, Light"),
+            msg.contains("\"Nope\"") && msg.contains("Design, Light"),
             "{msg}"
         );
         assert_eq!(p, before, "nothing changed");
