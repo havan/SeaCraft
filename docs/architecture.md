@@ -192,16 +192,18 @@ rename), so a crash cannot truncate it. Autosave keeps a locked session pair in 
 Authentication is on by default: a random token in a file only the user can read, compared in constant time
 (`crates/seacraft-core/src/control_auth.rs`), with optional read and write roots for file access.
 `check_write_path` decides whether a path lies under a write root. The write itself is held to the root too:
-each request, and the worker that answers it, runs inside `io::within_write_roots`, so `write_atomic`
-opens the file's folder from the root one folder at a time without following a link, and stages and renames
-in that open folder (`openat`/`renameat` on Unix; on Windows every folder on the way is held open so none can
-be swapped). A folder replaced by a link between the check and the write then fails the write rather than
-leading it out of the root. Inside `within_write_roots` every write must lie under a root as it resolves at
-that moment, spelled as `check_write_path` returns it, or it fails; the app's own settings file, which a
-request that saves a model also flushes, is written inside `within_write_roots(&[], ..)`. On Linux the
-folders passed through are opened with `O_PATH`, so a traverse-only folder works; on macOS they are opened
-for reading. On Windows only symbolic links and junctions are refused, not other reparse points such as
-OneDrive's.
+each request, and the worker that answers it, runs inside `io::within_write_roots`, so when the root list
+is non-empty, `write_atomic` opens the file's folder from the root one folder at a time without following a
+link, and stages and renames in that open folder (`openat`/`renameat` on Unix; on Windows every folder on
+the way is held open so none can be swapped). A folder replaced by a link between the check and the write
+then fails the write rather than leading it out of the root. When the root list in `within_write_roots` is
+non-empty, every write must lie under a root as it resolves at that moment, spelled as `check_write_path`
+returns it, or it fails; an empty root list leaves writes unrestricted (`held_folder` returns `None` and the
+path-based writer is used), which covers both runs without configured write roots and deliberate empty scopes
+such as flushing the app's own settings file during a model save (`within_write_roots(&[], ..)`). On Linux,
+Android and FreeBSD the folders passed through are opened with `O_PATH`, and on macOS with `O_SEARCH`
+(`O_EXEC | O_DIRECTORY`), so a traverse-only folder works; on other Unixes they are opened for reading. On
+Windows only symbolic links and junctions are refused, not other reparse points such as OneDrive's.
 
 Known gap, Windows: holding a folder stops it being renamed or removed, not an empty folder being turned into
 a junction in place, and the temporary file and the rename still go by path. A process that wins that race

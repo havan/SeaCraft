@@ -32,9 +32,13 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   It used to call the batch all-or-nothing (#8). Connected to the GUI, `load_hull`, `generate_hull` or `example`
   inside a batch start a fresh history there, so the model is not rolled back past them. A rollback the GUI refuses,
   or whose reply is lost, now shows as `restore_error` (unconfirmed) instead of passing in silence.
-- With write roots set (`seacraft-gui --control-write-root`), a control-channel write can no longer be led out of
-  its root by a folder swapped for a link after the path was checked, or by a link at a file written beside it:
-  such a write now fails, and nothing lands outside the root.
+- With write roots set (`seacraft-gui --control-write-root`), control-channel writes are held inside their root
+  if a folder is swapped for a link after the path was checked or if a link at a file written beside the target
+  points outside (on Unix via folder-relative operations; on Windows folders on the way are held open against
+  being renamed or removed, while staging and rename still go by path and turning an empty folder into a
+  junction in place remains a known limitation documented in `docs/architecture.md`). A refused write leaves
+  nothing outside the root; on multi-file saves such as `model.save`, the hull file inside the root may
+  already be written before a linked sidecar is refused.
 
 ## 0.7.0 (2026-11-26)
 
