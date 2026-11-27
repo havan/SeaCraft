@@ -359,7 +359,12 @@ impl eframe::Storage for JsonFileStorage {
             let _ = std::fs::create_dir_all(dir);
         }
         let text = serde_json::to_string_pretty(&self.values).unwrap_or_else(|_| "{}".to_owned());
-        match seacraft_core::io::write_atomic(&self.path, text) {
+        // The app's own settings, which a control request that saves a model also flushes: not
+        // a file the request asked for, so not held to its write roots.
+        let written = seacraft_core::io::within_write_roots(&[], || {
+            seacraft_core::io::write_atomic(&self.path, text)
+        });
+        match written {
             Ok(()) => {
                 self.dirty = false;
                 self.flush_error = None;
@@ -552,6 +557,27 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The settings file is the app's own: a control request's write roots, which refuse any
+    /// file outside them, do not stop it being written.
+    #[test]
+    fn settings_are_written_while_a_request_is_held_to_write_roots() {
+        let path = temp_storage_path("held");
+        let root =
+            std::env::temp_dir().join(format!("seacraft-gui-recent-root-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut storage = JsonFileStorage::open(&path);
+        ConnectedChoice::default().save(&mut storage);
+        seacraft_core::io::within_write_roots(std::slice::from_ref(&root), || {
+            eframe::Storage::flush(&mut storage)
+        });
+        let failure = eframe::Storage::get_string(&storage, FLUSH_ERROR_KEY);
+        let written = path.exists();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(failure, None);
+        assert!(written);
     }
 
     #[test]

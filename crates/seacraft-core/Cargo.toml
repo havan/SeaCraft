@@ -20,4 +20,8 @@ serde_json.workspace = true
 [target.'cfg(not(unix))'.dependencies]
 getrandom = "0.4"
 
+# A write under the control channel's write roots opens each folder relative to the one before.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["fs", "std"] }
+
 [dev-dependencies]
