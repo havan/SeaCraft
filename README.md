@@ -141,6 +141,7 @@ FREE!ship does **not** use ordinate tables. `TFreeHydrostaticCalc.Calculate`
 | CPU z-buffer rasterizer + waterplane depth + PNG | `raster.rs` |
 | OBJ / STL / 3MF / PLY / IGES / HTML viewer | `export.rs` |
 | Deterministic damage stability (lost buoyancy) | `damage.rs` |
+| Floodable length curves and the bulkhead check | `floodable.rs` |
 | IMO 2008 IS Code weather criterion | `weather.rs` |
 | Holtrop & Mennen still-water resistance | `resistance.rs` |
 | Michell thin-ship wave resistance | `michell.rs` |
@@ -426,6 +427,15 @@ checks freeboard to the deck edge at the lowest point, samples the residual GZ
 curve from equilibrium (heels 0–60°, free trim), and evaluates indicative
 SOLAS-style residual criteria (SOLAS II-1 Reg. 7-2 spirit: range $\ge 15^\circ$,
 max $GZ \ge 0.10$ m, area $\ge 0.015$ m·rad).
+
+`floodable::evaluate` (`seacraft floodable hull.fef` / MCP `floodable_length`)
+draws floodable length curves by trial waterlines tangent to the margin line
+(76 mm below the deck edge at side by default): for each position, the longest
+full-breadth compartment, centred there, that floods without immersing the
+margin line, ship upright and free to trim, one curve per permeability. With a
+factor of subdivision (`--factor`) and bulkhead positions (`--bulkheads`), each
+compartment is judged against the permissible length at its centre; `--svg`
+draws the curves with the terminals and the bulkhead triangles.
 
 ### Project file (`hull.seacraft.json`)
 

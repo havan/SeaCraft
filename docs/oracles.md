@@ -2119,3 +2119,96 @@ fillet figures are the tests' own inputs, not published values.
 Hand-derived: the fillet cross-section (plane geometry above), the box seams and the V bottom's angle. Nothing here is
 published; the figures are the builder's numbers applied to the modelled surface, not validated (`DISCLAIMER.md`), with
 no laminate thickness offset.
+
+---
+
+## 53. Floodable Length: Box Barge Closed Form and Lost-Buoyancy Balance
+
+### Formula
+The floodable length at a point is the length of a compartment, with that point as centre, that can be flooded
+without immersing any part of the margin line when the ship has no list; the margin line is at least 76 mm (3 in)
+below the bulkhead deck at side. Each trial waterline $W$ is tangent to the margin line; with $V_W$ and $x_B$ the
+volume and centroid under it, $\nabla$ the floating volume and $\mu$ the permeability, the lost volume and its
+centroid are
+$$v = V_W - \nabla, \qquad x_c = \frac{V_W x_B - \nabla \cdot LCG}{v},$$
+and the compartment $[a, b]$ holds $v / \mu$ under $W$ with its centroid at $x_c$.
+
+For a box barge $L \times B \times D$ floating at $T$ with $LCG = L/2$ and margin line height $z_m = D - m$, the
+even-keel point is amidships with
+$$l = \frac{L (z_m - T)}{\mu \, z_m}.$$
+At a trimmed waterline the height above the keel is linear, $h(x) = c - s x$ (clamped to $[0, D]$), and the balance
+$\mu B \int_a^b h\,dx = B \int_0^L h\,dx - \nabla$, $\mu B \int_a^b x h\,dx = B \int_0^L x h\,dx - \nabla \cdot L/2$
+is evaluated with exact piecewise integrals.
+
+### Tests
+`crates/seacraft-core/src/floodable.rs`:
+- `box_barge_even_keel_point_matches_closed_form`: $L = 10$, $B = 4$, $D = 2$ m, $T = 0.80$ m, $\rho = 1$ t/m³,
+  $m = 0.076$ m ($z_m = 1.924$ m), $\mu \in \{0.60, 0.85, 0.95\}$: $x_{mid} = 5.0$ m within $10^{-3}$ m and
+  $l = 5.842 / \mu$ m within $10^{-3}$ relative (9.737, 6.873, 6.149 m).
+- `box_barge_trimmed_points_satisfy_the_analytic_balance`: every point of the three curves satisfies both balance
+  equations within $2 \times 10^{-3}$ relative.
+- `a_dried_end_keeps_the_solve_finite`: the same at $T = 0.20$ m, where some trial waterlines lift one end of the
+  bottom out of the water.
+- `tangent_waterline_touches_the_margin_line_and_stays_below_it`, `curve_covers_the_hull_and_stops_inside_its_ends`,
+  `bulkheads_split_the_hull_and_are_judged_at_their_midpoints` (factor 0.5: amidships 6.87 m floodable, 3.44 m
+  permissible, a 2 m compartment passes), `a_compartment_outside_the_curve_is_not_judged`,
+  `hull_ends_ignore_vertices_outside_the_panels`, and the error tests (`unphysical_particulars_are_errors` among them).
+- `a_rising_margin_line_floods_trimmed_past_the_even_keel_limit`: the same box with a margin line
+  $z = 1 + 0.1x$ m (a deck rising 1 m aft to forward) and $\nabla = 50$ m³, $LCG = 5.6$ m. The even-keel tangent
+  waterline floats $B \cdot L \cdot 1 = 40$ m³, less than the ship; the waterline parallel to the margin line floats
+  $B \int_0^L (1 + 0.1x)\,dx = 60$ m³, more. Free to trim, every curve has points, all at nonzero trim, and no
+  error is raised.
+- `a_margin_line_near_the_keel_still_sweeps_the_whole_trim_range`: the same box with a margin line
+  $z = 0.2 + 0.18x$ m, $\nabla = 30$ m³, $LCG = 6.5$ m. The waterline parallel to it, at a trim of 1.8 m, floats
+  $B \int_0^L (0.2 + 0.18x)\,dx = 44$ m³; the sweep reaches trims beyond 1.0 m and finds points there.
+- `a_compartment_stops_at_the_water_at_both_dry_ends`: cumulative volumes by construction, dry over $[0, 2]$ and
+  $[4, 6]$ m with 1 m³ in each of $[2, 3]$ and $[3, 4]$ m (centroids 2.5 and 3.5 m): the compartment holding all 2 m³
+  with its centroid at 3 m is $[2, 4]$ m within $10^{-9}$ m.
+- `the_plot_scale_holds_the_longest_compartment`: at $T = 1.90$ m the longest point is under 8 m; with bulkheads at
+  1 and 9 m each of the three SVG triangles is as high as its base is long within 0.3 px.
+- `a_curve_does_not_depend_on_the_other_permeabilities` (demo hull, level 2, 8 t): the $\mu = 0.60$ curve asked
+  alone agrees with the same curve asked with 0.85 and 0.95 within 1 % at mid-range. SeaCraft against itself, not a
+  source.
+
+### Provenance
+Both books give the definitions: the margin line 76 mm (3 in) below the bulkhead deck at side, the floodable length
+centred at the point, and permissible length = floodable length × factor of subdivision (Rawson & Tupper, *Basic
+Ship Theory*, Vol. 1, 5th ed., ch. 5, pp. 155-156; Gillmer & Johnson, *Introduction to Naval Architecture* (1982),
+§10-1, pp. 180-182). Rawson & Tupper alone give the triangle check of base angle $\tan^{-1} 2$ and the forward and
+after terminals at the ends. Gillmer & Johnson alone give the method: trial waterlines tangent to the margin line,
+sectional areas to each waterline from Bonjean curves, the flooding water's position from a moment balance and the
+compartment volume from it (Eq. 10-1 and 10-2). Neither book prints worked numbers. The box barge values are derived here from the lost-buoyancy balance, not published.
+SeaCraft measures the margin line from the moulded deck edge (no deck thickness).
+
+---
+
+## 54. Floodable Length: Cross-Check with the Damage Solver
+
+### Formula
+A compartment from a floodable length curve, flooded as an ordinary damage case (lost buoyancy, compartment clipped
+to the hull, `damage::evaluate`), must float the hull upright with the margin line awash: minimum freeboard to the
+deck edge equal to the margin depth $m$, at the curve point's trim.
+
+### Tests
+`crates/seacraft-core/src/floodable.rs::curve_points_flood_the_demo_hull_to_its_margin_line`: demo hull, level 3,
+design-draft loading, $\mu = 0.85$, the first, middle and last points of the curve. Asserted: heel below 0.05°,
+freeboard within 5 mm of 0.076 m, trim within 20 mm of the point's. Flooding the same compartments at $\mu = 0.95$
+instead fails the test (freeboard 0.016 m at the aft point).
+
+### Provenance
+Agreement between two SeaCraft methods (sectional areas under trial waterlines against a clipped solid in the
+damage equilibrium solver), not an external source.
+
+---
+
+## 55. Floodable Length: Demo Hull, Recorded
+
+### Tests
+`crates/seacraft-core/src/floodable.rs::demo_hull_curve_recorded`: demo hull, level 3, design draft, $\mu = 0.85$:
+$\Delta = 12.1$ t, $LCG = 4.30$ m, least floodable length 1.39 m at $x = 0.701$ m, 3.37 m at $x = 6.0$ m, each
+within 0.5 %.
+
+### Provenance
+Not published: recorded from SeaCraft on 2026-11-26 to catch a change. The curve's shape (least near the aft end,
+highest amidships, a second low near the forward quarter) agrees with Gillmer & Johnson's remark (glossary, p. 304)
+that the floodable length "is usually greatest amidships and least near the quarter length".

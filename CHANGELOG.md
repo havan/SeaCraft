@@ -39,6 +39,13 @@ Versions follow [semantic versioning](https://semver.org/), with `0.x` meaning t
   junction in place remains a known limitation documented in `docs/architecture.md`). A refused write leaves
   nothing outside the root; on multi-file saves such as `model.save`, the hull file inside the root may
   already be written before a linked sidecar is refused.
+- Floodable length curves, for spacing watertight bulkheads: `seacraft floodable` and the MCP tool
+  `floodable_length` draw, for each position along the hull, the longest full-breadth compartment that can flood
+  without immersing the margin line (76 mm below the deck edge at side by default), upright and free to trim, one
+  curve per permeability. With a factor of subdivision and bulkhead positions, each compartment is judged against
+  the permissible length at its centre, as a table, JSON, CSV or an SVG plot with the terminals and the bulkhead
+  triangles, in English or Turkish. The curves are checked against a box barge's closed form and against
+  SeaCraft's damage solver, not against a published floodable length table. Not in the window yet.
 
 ## 0.7.0 (2026-11-26)
 

@@ -156,14 +156,14 @@ pub fn prismatic_from_sac(sac: &[SectionArea]) -> Option<f64> {
 // SVG plots
 // ---------------------------------------------------------------------------
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
 
-fn chart_frame(out: &mut String, title: &str, w: f64, h: f64) {
+pub(crate) fn chart_frame(out: &mut String, title: &str, w: f64, h: f64) {
     let _ = writeln!(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
     let _ = writeln!(
         out,
