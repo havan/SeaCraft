@@ -158,8 +158,10 @@ pub fn evaluate(
         _ => {}
     }
     let app = hopts.appendage_coefficient;
-    if !(app.is_finite() && app > 0.0) {
-        return Err(format!("appendage coefficient {app} is not positive"));
+    if !(app.is_finite() && app >= 1e-6) {
+        return Err(format!(
+            "appendage coefficient {app} is not a coefficient: it must be at least 1e-6"
+        ));
     }
     let hull = Hull::new(surface, hopts.subdivision);
     let p = resolve_particulars(surface, hopts, &hull, case);
@@ -212,6 +214,7 @@ fn compute_with_deck_edge(
         let lost = v_w - p.target_volume;
         let mut trial = Trial {
             trim,
+            lost,
             floats: lost > 1e-9 * p.target_volume.max(1.0),
             points: vec![None; opts.permeabilities.len()],
         };
@@ -259,6 +262,14 @@ fn compute_with_deck_edge(
             let mut points: Vec<FloodablePoint> =
                 trials.iter().filter_map(|t| t.points[i]).collect();
             points.sort_by(|a, b| a.x_mid.total_cmp(&b.x_mid));
+            // One point per centre, the longest, for both the plot and the checks.
+            points.dedup_by(|later, kept| {
+                let same = later.x_mid == kept.x_mid;
+                if same && later.length > kept.length {
+                    *kept = *later;
+                }
+                same
+            });
             if points.is_empty() {
                 warnings.push(Msg::new(Key::WarnFloodableNoCurve).arg("mu", format!("{mu:.2}")));
             }
@@ -416,6 +427,8 @@ fn check_compartments(
 #[derive(Debug, Clone)]
 struct Trial {
     trim: f64,
+    /// Volume the waterline floats beyond the ship's (m³), negative when it floats less.
+    lost: f64,
     /// The waterline floats more than the ship: there is water to lose.
     floats: bool,
     points: Vec<Option<FloodablePoint>>,
@@ -424,7 +437,9 @@ struct Trial {
 /// Trims outward from even keel in both directions, past trims where no permeability gives a point yet, until
 /// three in a row give none after one has; then trims between neighbours whose points lie far apart along the
 /// hull or where a curve ends. Each direction has its own share of the waterlines, so a long run one way does
-/// not starve the other.
+/// not starve the other. When no sampled trim floats the ship, the trims around the one that floats most are
+/// searched before the loading is called too heavy: the most can lie between samples, where the margin point
+/// the waterline touches changes.
 fn sweep(
     hull: &Hull,
     margin: &[Vec3],
@@ -459,6 +474,12 @@ fn sweep(
         }
     }
     trials.sort_by(|a, b| a.trim.total_cmp(&b.trim));
+    if trials.iter().all(|t| !t.floats) {
+        if let Some(t) = floating_between_samples(&trials, step, eval) {
+            trials.push(t);
+            trials.sort_by(|a, b| a.trim.total_cmp(&b.trim));
+        }
+    }
 
     let gap = span / 50.0;
     let min_dt = (step / 64.0).max(1e-4);
@@ -491,6 +512,40 @@ fn sweep(
     trials
 }
 
+/// A trim that floats the ship near the sampled one that floats most, `trials` sorted by trim: a golden-section
+/// search for the most floated between that sample's neighbours, stopping at the first trim that floats.
+fn floating_between_samples(
+    trials: &[Trial],
+    step: f64,
+    eval: &dyn Fn(f64) -> Trial,
+) -> Option<Trial> {
+    const R: f64 = 0.618_033_988_749_895; // (√5 − 1) / 2
+    let i = (0..trials.len()).max_by(|&a, &b| trials[a].lost.total_cmp(&trials[b].lost))?;
+    let mut lo = i
+        .checked_sub(1)
+        .map_or(trials[i].trim - step, |j| trials[j].trim);
+    let mut hi = trials.get(i + 1).map_or(trials[i].trim + step, |t| t.trim);
+    let mut c = eval(hi - R * (hi - lo));
+    let mut d = eval(lo + R * (hi - lo));
+    for _ in 0..40 {
+        for t in [&c, &d] {
+            if t.floats {
+                return Some(t.clone());
+            }
+        }
+        if c.lost > d.lost {
+            hi = d.trim;
+            d = c;
+            c = eval(hi - R * (hi - lo));
+        } else {
+            lo = c.trim;
+            c = d;
+            d = eval(lo + R * (hi - lo));
+        }
+    }
+    [c, d].into_iter().find(|t| t.floats)
+}
+
 /// Stations along the hull: strictly inside its ends, where a section cut is well defined, plus the ends.
 struct Grid {
     /// The hull's aft end, the stations, the forward end.
@@ -519,36 +574,39 @@ impl Grid {
         a.push(areas[0]);
         a.extend(areas);
         a.push(areas[areas.len() - 1]);
-        let mut q = vec![0.0; self.xs.len()];
-        let mut m = vec![0.0; self.xs.len()];
-        for k in 1..self.xs.len() {
-            let (x0, x1) = (self.xs[k - 1], self.xs[k]);
+        Cumulative::new(self.xs.clone(), a)
+    }
+}
+
+/// Volume Q(x) and moment M(x) of the hull under a waterline from its aft end to x, the sectional area linear
+/// between stations.
+struct Cumulative {
+    xs: Vec<f64>,
+    /// Sectional area at each of `xs`.
+    a: Vec<f64>,
+    q: Vec<f64>,
+    m: Vec<f64>,
+}
+
+impl Cumulative {
+    fn new(xs: Vec<f64>, a: Vec<f64>) -> Self {
+        let mut q = vec![0.0; xs.len()];
+        let mut m = vec![0.0; xs.len()];
+        for k in 1..xs.len() {
+            let (x0, x1) = (xs[k - 1], xs[k]);
             let dq = 0.5 * (a[k - 1] + a[k]) * (x1 - x0);
             // ∫ x A dx over a linear A, exactly.
             let dm = (x1 - x0) / 6.0 * (a[k - 1] * (2.0 * x0 + x1) + a[k] * (x0 + 2.0 * x1));
             q[k] = q[k - 1] + dq;
             m[k] = m[k - 1] + dm;
         }
-        Cumulative {
-            xs: self.xs.clone(),
-            q,
-            m,
-        }
+        Self { xs, a, q, m }
     }
-}
 
-/// Volume Q(x) and moment M(x) of the hull under a waterline from its aft end to x.
-struct Cumulative {
-    xs: Vec<f64>,
-    q: Vec<f64>,
-    m: Vec<f64>,
-}
-
-impl Cumulative {
     /// The first x where Q reaches `u` (`last` false: a compartment's forward end) or the last x where Q is
     /// still `u` (`last` true: its aft end), and M there; so a compartment never runs on into a dry end at
-    /// either end. Within an interval Q and M are taken to grow in proportion (the interval's volume spread
-    /// evenly over it), which keeps both exact at the stations.
+    /// either end. Within an interval the area is linear, as in [`Cumulative::new`]: Q is inverted and M
+    /// integrated exactly there.
     fn at_volume(&self, u: f64, last: bool) -> (f64, f64) {
         let n = self.q.len();
         let k = if last {
@@ -562,11 +620,20 @@ impl Cumulative {
         if q1 - q0 <= 0.0 {
             return (x0, self.m[k - 1]);
         }
-        let f = ((u - q0) / (q1 - q0)).clamp(0.0, 1.0);
-        (
-            x0 + f * (x1 - x0),
-            self.m[k - 1] + f * (self.m[k] - self.m[k - 1]),
-        )
+        // A(x0 + t) = a0 + d·t, so Q = q0 + a0·t + d·t²/2: the root t ≥ 0 in its cancellation-free form.
+        let h = x1 - x0;
+        let a0 = self.a[k - 1];
+        let d = (self.a[k] - a0) / h;
+        let r = (u - q0).clamp(0.0, q1 - q0);
+        let root = (a0 * a0 + 2.0 * d * r).max(0.0).sqrt();
+        let t = if a0 + root > 0.0 {
+            (2.0 * r / (a0 + root)).clamp(0.0, h)
+        } else {
+            0.0
+        };
+        // ∫ x A dx from x0 to x0 + t.
+        let dm = x0 * a0 * t + 0.5 * (x0 * d + a0) * t * t + d * t * t * t / 3.0;
+        (x0 + t, self.m[k - 1] + dm)
     }
 
     /// The compartment `[a, b]` holding `need` with its centroid at `x_c`, or `None` past the hull's ends.
@@ -630,13 +697,17 @@ pub fn floodable_at(curve: &FloodableCurve, x: f64) -> Option<f64> {
         return None;
     }
     let k = pts.partition_point(|p| p.x_mid < x);
-    if k == 0 {
-        return Some(first.length);
+    // Points centred at x itself: the longest is the floodable length there.
+    let at = pts[k..]
+        .iter()
+        .take_while(|p| p.x_mid == x)
+        .map(|p| p.length)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if at > f64::NEG_INFINITY {
+        return Some(at);
     }
-    let (p0, p1) = (pts[k - 1], pts[k.min(pts.len() - 1)]);
-    if p1.x_mid - p0.x_mid <= 0.0 {
-        return Some(p0.length.min(p1.length));
-    }
+    // Strictly between the first and last points here, so 0 < k < len and the points differ in x.
+    let (p0, p1) = (pts[k - 1], pts[k]);
     let f = (x - p0.x_mid) / (p1.x_mid - p0.x_mid);
     Some(p0.length + f * (p1.length - p0.length))
 }
@@ -791,7 +862,8 @@ pub fn svg_tr(res: &FloodableResult, title: &str, tr: crate::i18n::Tr) -> String
             .collect::<Vec<_>>()
             .join(" ")
     };
-    // Labels at each curve's forward end, kept 13 px apart.
+    // Labels at each curve's forward end, kept 13 px apart down to the plot's foot; when that many do not fit,
+    // closer, in a smaller font.
     let mut labels: Vec<(f64, f64)> = Vec::new();
     for (i, c) in res.curves.iter().enumerate() {
         if c.points.is_empty() {
@@ -807,13 +879,29 @@ pub fn svg_tr(res: &FloodableResult, title: &str, tr: crate::i18n::Tr) -> String
         labels.push((sy(last.length.min(top_len)) + 4.0, c.permeability));
     }
     labels.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (top, foot) = (mt + 10.0, base + 4.0);
+    let pitch = match labels.len() {
+        0 | 1 => 13.0,
+        n => f64::min(13.0, (foot - top) / (n - 1) as f64),
+    };
     for i in 1..labels.len() {
-        labels[i].0 = labels[i].0.max(labels[i - 1].0 + 13.0);
+        labels[i].0 = labels[i].0.max(labels[i - 1].0 + pitch);
     }
+    if let Some(last) = labels.last_mut() {
+        last.0 = last.0.min(foot);
+    }
+    for i in (1..labels.len()).rev() {
+        labels[i - 1].0 = labels[i - 1].0.min(labels[i].0 - pitch);
+    }
+    let font = if pitch < 13.0 {
+        format!(" style=\"font-size:{:.1}px\"", 11.0 * pitch / 13.0)
+    } else {
+        String::new()
+    };
     for (y, mu) in labels {
         let _ = writeln!(
             out,
-            "<text class=\"label\" x=\"{:.1}\" y=\"{y:.1}\">μ = {mu:.2}</text>",
+            "<text class=\"label\" x=\"{:.1}\" y=\"{y:.1}\"{font}>μ = {mu:.2}</text>",
             sx(res.hull_x_fwd) + 6.0
         );
     }
@@ -849,13 +937,15 @@ pub fn svg_tr(res: &FloodableResult, title: &str, tr: crate::i18n::Tr) -> String
         );
     }
 
-    // Profile band: hull, margin line, bulkheads.
+    // Profile band: hull, deck edge, margin line, bulkheads.
     let band_top = base + gap;
     let (z_lo, z_hi) = res
         .profile
         .iter()
         .flatten()
-        .chain(res.margin_line.iter())
+        .copied()
+        .chain(res.margin_line.iter().copied())
+        .chain(res.margin_line.iter().map(|p| [p[0], p[1] + res.margin_m]))
         .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
             (lo.min(p[1]), hi.max(p[1]))
         });
@@ -1186,6 +1276,28 @@ mod tests {
         }
     }
 
+    /// The trim that floats most can fall between the sweep's samples: with the margin line at z = 1 + 0.099 x
+    /// the tangent waterline lies along it at a trim of −0.99 m and floats 4 ∫ (1 + 0.099 x) dx = 59.8 m³,
+    /// but the 0.05 m samples either side, −0.95 and −1.00 m, float 59.0 and 59.6 m³ (hand integration over the
+    /// 10 × 4 m box). A 59.7 m³ ship is not too heavy.
+    #[test]
+    fn a_floating_trim_between_the_sweep_samples_is_found() {
+        let hull = barge_hull();
+        let deck: Vec<Vec3> = (0..=10)
+            .flat_map(|i| {
+                let x = i as f64;
+                [-0.5 * B, 0.5 * B].map(|y| Vec3::new(x, y, 1.0 + 0.099 * x + M))
+            })
+            .collect();
+        let p = Particulars {
+            displacement_t: 59.7,
+            target_volume: 59.7,
+            ..barge_particulars(1.0)
+        };
+        let res = compute_with_deck_edge(&hull, &p, &FloodableOptions::default(), &deck);
+        assert!(res.is_ok(), "{:?}", res.err());
+    }
+
     /// A margin line dipping close to the keel at one end (z = 0.2 + 0.18 x) makes the fine trim step small;
     /// the sweep must still reach the trims where the ship floats. The waterline parallel to that line floats
     /// B ∫ (0.2 + 0.18 x) dx = 4 · 11 = 44 m³ (hand integration), more than the 30 m³ ship, at a trim of 1.8 m,
@@ -1223,16 +1335,59 @@ mod tests {
     /// (centroids 2.5 and 3.5 m) gives [2, 4] m.
     #[test]
     fn a_compartment_stops_at_the_water_at_both_dry_ends() {
-        let cum = Cumulative {
-            xs: (0..=6).map(f64::from).collect(),
-            q: vec![0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0],
-            m: vec![0.0, 0.0, 0.0, 2.5, 6.0, 6.0, 6.0],
-        };
+        let cum = Cumulative::new(
+            (0..=6).map(f64::from).collect(),
+            vec![0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0],
+        );
         let (a, b) = cum.compartment(2.0, 3.0).unwrap();
         assert!(
             (a - 2.0).abs() < 1e-9 && (b - 4.0).abs() < 1e-9,
             "[{a}, {b}]"
         );
+    }
+
+    /// Inside one station interval the compartment's centroid is the slice's own: a unit sectional area over
+    /// [0, 2] m with stations at 0, 1 and 2 m puts 0.25 m³ centred at 0.25 m in [0.125, 0.375] m; and a
+    /// sectional area rising 0 → 2 m² over [0, 1] m (Q = x², M = 2x³/3) puts the 0.25 m³ after the first in
+    /// [0.5, √0.5] m, centred at (2/3)(√0.5³ − 0.5³)/0.25 m.
+    #[test]
+    fn a_compartment_inside_one_station_interval_has_its_own_centroid() {
+        let flat = Cumulative::new(vec![0.0, 1.0, 2.0], vec![1.0; 3]);
+        let (a, b) = flat.compartment(0.25, 0.25).unwrap();
+        assert!(
+            (a - 0.125).abs() < 1e-9 && (b - 0.375).abs() < 1e-9,
+            "[{a}, {b}]"
+        );
+        let rising = Cumulative::new(vec![0.0, 1.0], vec![0.0, 2.0]);
+        let fwd = 0.5f64.sqrt();
+        let x_c = 2.0 / 3.0 * (fwd.powi(3) - 0.125) / 0.25;
+        let (a, b) = rising.compartment(0.25, x_c).unwrap();
+        assert!(
+            (a - 0.5).abs() < 1e-9 && (b - fwd).abs() < 1e-9,
+            "[{a}, {b}]"
+        );
+    }
+
+    /// Two trials centred at one x give the longest of their lengths there, whichever sorts first.
+    #[test]
+    fn floodable_at_a_shared_centre_is_the_longest() {
+        let pt = |x_mid: f64, length: f64| FloodablePoint {
+            x_mid,
+            length,
+            x_aft: x_mid - 0.5 * length,
+            x_fwd: x_mid + 0.5 * length,
+            trim_m: 0.0,
+            draft: 1.0,
+        };
+        let curve = FloodableCurve {
+            permeability: 0.85,
+            points: vec![pt(4.0, 1.0), pt(5.0, 2.0), pt(5.0, 4.0), pt(6.0, 1.0)],
+            checks: Vec::new(),
+        };
+        assert_eq!(floodable_at(&curve, 5.0), Some(4.0));
+        assert_eq!(floodable_at(&curve, 4.5), Some(1.5));
+        assert_eq!(floodable_at(&curve, 4.0), Some(1.0));
+        assert_eq!(floodable_at(&curve, 6.0), Some(1.0));
     }
 
     #[test]
@@ -1312,8 +1467,8 @@ mod tests {
         assert_eq!(res.water_density, 1.0);
     }
 
-    /// An appendage coefficient that is not a positive number is an error, not floored to 10⁻⁶; an invalid
-    /// inline loading condition is an error, as in `damage::evaluate`.
+    /// An appendage coefficient below 10⁻⁶ is an error, not floored to 10⁻⁶ (which would float another volume);
+    /// an invalid inline loading condition is an error, as in `damage::evaluate`.
     #[test]
     fn a_bad_appendage_coefficient_or_loading_condition_is_an_error() {
         let (surface, mut hopts) = barge_surface_options();
@@ -1322,7 +1477,7 @@ mod tests {
             kg: Some(0.0),
             ..DamageCase::default()
         };
-        for c in [0.0, -1.0, f64::NAN] {
+        for c in [0.0, -1.0, f64::NAN, 5e-7] {
             hopts.appendage_coefficient = c;
             let err = evaluate(&surface, &hopts, &case, &FloodableOptions::default()).unwrap_err();
             assert!(err.contains("appendage"), "{c}: {err}");
@@ -1717,6 +1872,84 @@ mod tests {
                 "base {base} px, height {apex} px"
             );
         }
+    }
+
+    /// The y of every `<{tag} class="{class}" …>` attribute `attr`, or of every point of its `points`.
+    fn ys(svg: &str, tag: &str, class: &str, attr: &str) -> Vec<f64> {
+        let open = format!("<{tag} class=\"{class}\"");
+        svg.lines()
+            .filter(|l| l.starts_with(&open))
+            .flat_map(|l| {
+                let key = format!(" {attr}=\"");
+                let v = &l[l.find(&key).unwrap() + key.len()..];
+                let v = &v[..v.find('"').unwrap()];
+                if attr == "points" {
+                    v.split(' ')
+                        .map(|p| p.split(',').nth(1).unwrap().parse().unwrap())
+                        .collect::<Vec<f64>>()
+                } else {
+                    vec![v.parse().unwrap()]
+                }
+            })
+            .collect()
+    }
+
+    /// Every permeability's label stays inside the 600 px chart, however many curves: 48 of them on the barge
+    /// at 0.8 m all have points.
+    #[test]
+    fn every_permeability_label_stays_inside_the_chart() {
+        let hull = barge_hull();
+        let opts = FloodableOptions {
+            permeabilities: (0..48).map(|i| 0.60 + 0.4 * f64::from(i) / 47.0).collect(),
+            ..FloodableOptions::default()
+        };
+        let res = compute(&hull, &barge_particulars(0.8), &opts).unwrap();
+        assert!(res.curves.iter().all(|c| !c.points.is_empty()));
+        let out = svg(&res, "Barge");
+        let labels: Vec<f64> = out
+            .lines()
+            .filter(|l| l.contains(">μ = "))
+            .map(|l| {
+                let v = &l[l.find(" y=\"").unwrap() + 4..];
+                v[..v.find('"').unwrap()].parse().unwrap()
+            })
+            .collect();
+        assert_eq!(labels.len(), 48);
+        assert!(
+            labels.iter().all(|&y| (40.0..=600.0).contains(&y)),
+            "{labels:?}"
+        );
+    }
+
+    /// A side deck above the centreline profile is drawn inside the profile band (y 450 to 560 px): a profile
+    /// from z = 0 to 1 m, the deck at 2 m and the margin line 1.1 m under it.
+    #[test]
+    fn the_side_deck_stays_inside_the_profile_band() {
+        let res = FloodableResult {
+            displacement_t: 1.0,
+            lcg: 5.0,
+            water_density: 1.0,
+            margin_m: 1.1,
+            hull_x_aft: 0.0,
+            hull_x_fwd: 10.0,
+            factor: None,
+            margin_line: vec![[0.0, 0.9], [10.0, 0.9]],
+            curves: Vec::new(),
+            warnings: Vec::new(),
+            profile: vec![vec![
+                [0.0, 0.0],
+                [10.0, 0.0],
+                [10.0, 1.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+            ]],
+        };
+        let deck = ys(&svg(&res, "Deck"), "polyline", "deck", "points");
+        assert!(!deck.is_empty());
+        assert!(
+            deck.iter().all(|&y| (449.9..=560.1).contains(&y)),
+            "{deck:?}"
+        );
     }
 
     /// Hull ends far from the origin, where `x + step` rounds back to `x`, still end the x ticks.

@@ -189,3 +189,31 @@ fn floodable_csv_reports_an_empty_curve_on_stderr() {
         assert!(stderr.contains(warning), "{lang}: {stderr}");
     }
 }
+
+/// Without a curve the table still lists every compartment, not judged: light (2 t) at μ 0.05 the demo hull
+/// gives no points, and the bulkheads at 3, 6 and 9 m make four compartments.
+#[test]
+fn floodable_table_lists_unjudged_compartments_without_a_curve() {
+    let hull = example("demo-hull.fef");
+    let text = stdout(
+        "en",
+        &[
+            "floodable",
+            &hull,
+            "--permeability",
+            "0.05",
+            "--displacement",
+            "2",
+            "--bulkheads",
+            "3,6,9",
+            "--factor",
+            "0.5",
+        ],
+    );
+    assert_eq!(
+        text.matches("not judged: the curve does not reach its centre")
+            .count(),
+        4,
+        "{text}"
+    );
+}

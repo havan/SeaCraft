@@ -3598,8 +3598,9 @@ pub fn tool_definitions() -> Vec<Value> {
              ship upright and free to trim. One curve per permeability (default 0.60, 0.85, 0.95). With `factor` \
              (factor of subdivision, 0-1) and `bulkheads` (x positions, aft to forward) each compartment is judged \
              against the permissible length at its centre (passed, failed, or null when the curve does not reach \
-             it). Loading: a project `condition`, or `displacement_t` with optional `lcg`, or the design draft. \
-             Give `svg_path` to also write the plot. Checked against a box barge's closed form and the damage \
+             it). Loading: a project `condition`, or `displacement_t` with optional `lcg`, or else the hull at the \
+             session's draft, as `damage_stability` takes it: the design draft until a call such as hydro_compute \
+             or optimize_hull measures at another. Give `svg_path` to also write the plot. Checked against a box barge's closed form and the damage \
              solver; not against a published floodable length table.",
             obj(
                 json!({

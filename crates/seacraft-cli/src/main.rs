@@ -5178,15 +5178,16 @@ fn cmd_floodable(a: FloodableArgs, tr: Tr) -> Result<()> {
                     &[("mu", &format!("{:.2}", c.permeability))]
                 )
             );
-            continue;
+        } else {
+            println!("  {}", tr.s(Key::CliFloodableColumns));
+            for p in &c.points {
+                println!(
+                    "  {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>+9.3} {:>9.3}",
+                    p.x_mid, p.length, p.x_aft, p.x_fwd, p.trim_m, p.draft
+                );
+            }
         }
-        println!("  {}", tr.s(Key::CliFloodableColumns));
-        for p in &c.points {
-            println!(
-                "  {:>9.3} {:>9.3} {:>9.3} {:>9.3} {:>+9.3} {:>9.3}",
-                p.x_mid, p.length, p.x_aft, p.x_fwd, p.trim_m, p.draft
-            );
-        }
+        // Without a curve the compartments are still listed, each not judged.
         if !c.checks.is_empty() {
             println!();
             println!(
